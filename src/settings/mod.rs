@@ -143,10 +143,8 @@ pub struct AppConfig {
     // field (`scene.master_voxel_grid` / `master_block_lattice` / `master_floor_grid`).
     // No `deny_unknown_fields`, so an OLD config still carrying those keys loads fine
     // (serde ignores the now-unknown keys); the scene's own masters are authoritative.
-    #[snapshot(settings)]
-    pub show_view_cube: bool,
     /// Whether the Points' axes draw on top of the model vs occluded (ADR 0031). ON by
-    /// default; the same display-preference footing as `show_view_cube`.
+    /// default; a display preference that outlives a project.
     #[snapshot(settings)]
     pub axes_on_top: bool,
     // NOTE: the legacy `show_origin_gizmo` field was removed in the issue #29 S6
@@ -279,7 +277,6 @@ impl Default for AppConfig {
             voxels_per_block: default_density(),
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
-            show_view_cube: true,
             axes_on_top: true,
             applied_block_label: None,
             snap_to_blocks: true,
@@ -327,7 +324,6 @@ impl AppConfig {
             // truth on the `scene` field above (`scene.master_*`). The legacy
             // `show_grid_overlay` / `show_block_lattice` / `show_floor_grid` mirror
             // fields were deleted, so there is no stale mirror to drift out of sync.
-            show_view_cube: panel.show_view_cube,
             axes_on_top: panel.axes_on_top,
             applied_block_label: panel.applied_block_label.clone(),
             snap_to_blocks: panel.layer_range.snap_to_blocks,
@@ -408,7 +404,6 @@ impl AppConfig {
             },
             projection_mode: self.projection_mode,
             material: self.material,
-            show_view_cube: self.show_view_cube,
             axes_on_top: self.axes_on_top,
             // ADR 0024: the debug verification modes are session state and are restored,
             // not reset. They used to be hard-coded to `false` here while classified as

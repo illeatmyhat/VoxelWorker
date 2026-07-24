@@ -16,7 +16,6 @@
             voxels_per_block: 24,
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,
-            show_view_cube: false,
             axes_on_top: false,
             applied_block_label: Some("Granite".to_string()),
             snap_to_blocks: false,

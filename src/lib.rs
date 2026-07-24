@@ -557,9 +557,8 @@ pub fn run_egui_frame(
         let cube_bottom = central_rect_points.top() + cube_margin + cube_size;
         let cube_right_inset_px = (cube_right_inset * pixels_per_point).round() as u32;
         view_cube_right_inset_px = cube_right_inset_px;
-        let cube_fits = panel_state.show_view_cube
-            && central_rect_points.width() * pixels_per_point
-                >= cube_right_inset_px as f32 + VIEW_CUBE_VIEWPORT_PIXELS as f32
+        let cube_fits = central_rect_points.width() * pixels_per_point
+            >= cube_right_inset_px as f32 + VIEW_CUBE_VIEWPORT_PIXELS as f32
             && central_rect_points.height() * pixels_per_point
                 >= (display::renderer::VIEW_CUBE_VIEWPORT_MARGIN + VIEW_CUBE_VIEWPORT_PIXELS) as f32;
 

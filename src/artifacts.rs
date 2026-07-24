@@ -162,9 +162,6 @@ pub struct SettingsArtifact {
     /// The procedural material the viewport shades with.
     #[serde(default)]
     pub material: MaterialChoice,
-    /// Whether the corner view cube is drawn.
-    #[serde(default = "default_true")]
-    pub show_view_cube: bool,
     /// Whether the Points' axes draw on top of the model vs occluded (ADR 0031).
     #[serde(default = "default_true")]
     pub axes_on_top: bool,
@@ -365,7 +362,6 @@ impl DocumentArtifact {
             // person's setup on everyone who opened it.
             projection_mode: _,
             material: _,
-            show_view_cube: _,
             axes_on_top: _,
             applied_block_label: _,
             home_theta: _,
@@ -396,7 +392,6 @@ impl Dump {
             voxels_per_block,
             projection_mode,
             material,
-            show_view_cube,
             axes_on_top,
             applied_block_label,
             snap_to_blocks,
@@ -427,7 +422,6 @@ impl Dump {
             settings: SettingsArtifact {
                 projection_mode: *projection_mode,
                 material: *material,
-                show_view_cube: *show_view_cube,
                 axes_on_top: *axes_on_top,
                 applied_block_label: applied_block_label.clone(),
                 home_theta: *home_theta,
@@ -479,7 +473,6 @@ impl Dump {
             voxels_per_block: view.voxels_per_block,
             projection_mode: settings.projection_mode,
             material: settings.material,
-            show_view_cube: settings.show_view_cube,
             axes_on_top: settings.axes_on_top,
             applied_block_label: settings.applied_block_label,
             snap_to_blocks: view.snap_to_blocks,
@@ -554,7 +547,6 @@ impl Default for SettingsArtifact {
         Self {
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
-            show_view_cube: true,
             axes_on_top: true,
             applied_block_label: None,
             home_theta: default_theta(),
@@ -627,7 +619,6 @@ mod tests {
             voxels_per_block: 24,
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,
-            show_view_cube: false,
             axes_on_top: false,
             applied_block_label: Some("Granite".to_string()),
             snap_to_blocks: false,

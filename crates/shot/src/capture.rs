@@ -101,7 +101,6 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         geometry: options.geometry.clone(),
         projection_mode: options.projection_mode,
         material: options.material,
-        show_view_cube: options.show_view_cube,
         // Issue #31: the grid masters are no longer mirrored onto PanelState. The CLI
         // `--grid`/`--lattice`/`--floor` flags drive `scene.master_*` directly below
         // (the single source of truth); the scene's masters otherwise default ON.
@@ -1259,11 +1258,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         brick_raymarch: brick_raymarch_renderer.as_ref(),
         // ADR 0012: onion ghost when the band is a real onion slab (`onion_depth > 0`).
         onion_ghost_active: band.onion_depth > 0,
-        view_cube: if options.show_view_cube {
-            Some(&view_cube_renderer)
-        } else {
-            None
-        },
+        // The view cube is always drawn.
+        view_cube: Some(&view_cube_renderer),
         cube_hovered_zone: options.cube_hover,
         // #13 Step 6 follow-up: rotate arrows draw persistently when face-constrained; a
         // forced `--cube-hover rotate-*` also enables them so a golden can pin the arrows.

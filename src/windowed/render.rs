@@ -734,11 +734,8 @@ impl WindowedState {
             },
             // ADR 0012: ghost the onion slabs after the solid draw (uniforms/geometry prepared above).
             onion_ghost_active,
-            view_cube: if self.panel_state.show_view_cube {
-                Some(&self.view_cube_renderer)
-            } else {
-                None
-            },
+            // The view cube is always drawn.
+            view_cube: Some(&self.view_cube_renderer),
             // #13 Step 4: live hover — the chrome zone under the cursor so the hovered arrow brightens.
             cube_hovered_zone: self.hovered_cube_zone,
             // #13 Step 6 follow-up: the rotate arrows are a standing affordance whenever the view

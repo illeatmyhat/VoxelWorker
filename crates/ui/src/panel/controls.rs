@@ -33,7 +33,7 @@ pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, resp
     // LOCAL copies and a change emits ONE `SetGridMasters`. The masters are read live
     // by the per-frame line batch / mesh shader (no re-resolve), so `SetGridMasters`'s
     // effect is `none()` — no rebuild, no auto-frame — matching the old direct writes.
-    // `show_view_cube` / `debug_face_orientation` are PanelState DISPLAY fields (not
+    // `axes_on_top` / `debug_face_orientation` are PanelState DISPLAY fields (not
     // scene mutations), so they keep mutating in place.
     let mut voxel = state.scene.master_voxel_grid;
     let mut lattice = state.scene.master_block_lattice;
@@ -50,7 +50,6 @@ pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, resp
     if masters_changed {
         response.emit(Intent::SetGridMasters { voxel, lattice, floor });
     }
-    ui.checkbox(&mut state.show_view_cube, "View cube");
     // ADR 0031: the Points' axes as a nav marker through the model (on) vs occluded scaffold (off).
     ui.checkbox(&mut state.axes_on_top, "Axes on top");
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the

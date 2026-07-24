@@ -72,8 +72,6 @@ pub(crate) struct ShotOptions {
     /// When `Some`, write the resolved grid to this `.vox` path (M8
     /// `--export-vox`) instead of (or in addition to) rendering a PNG.
     pub(crate) export_vox_path: Option<PathBuf>,
-    /// Whether the view cube is drawn (M5; ON by default, `--no-viewcube` hides).
-    pub(crate) show_view_cube: bool,
     /// When `Some`, set the camera directly to this element's snapped angles (M5
     /// `--snap`), overriding `--theta`/`--phi` so the snap table can be verified
     /// headlessly (no tween). Faces, edges (`front-top`) and corners
@@ -340,7 +338,6 @@ impl Default for ShotOptions {
             extra_point_blocks: None,
             debug_face_orientation: false,
             export_vox_path: None,
-            show_view_cube: true,
             snap_element: None,
             cube_hover: None,
             theta: 0.7,
@@ -786,9 +783,6 @@ pub(crate) fn parse_options() -> ShotOptions {
                     args.next().expect("--export-vox requires a path argument"),
                 ));
             }
-            "--no-viewcube" => {
-                options.show_view_cube = false;
-            }
             "--snap" => {
                 options.snap_element =
                     Some(parse_snap_element(&args.next().expect("--snap requires a value")));
@@ -851,7 +845,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--synthetic-block] [--two-layer]\n\
                      \x20            [--replay <script.jsonl>]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--stack-folded] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--stack-folded] [--lattice] [--floor] [--points] [--point-at <X Y Z>]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\

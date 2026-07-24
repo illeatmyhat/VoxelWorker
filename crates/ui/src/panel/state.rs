@@ -493,9 +493,6 @@ pub struct PanelState {
     /// to, and travels in the scene.
     #[snapshot(settings)]
     pub material: MaterialChoice,
-    /// Whether the corner view cube is drawn (M5 Display toggle, ON by default).
-    #[snapshot(settings)]
-    pub show_view_cube: bool,
     /// Whether the Points' axes draw ON TOP of the model (depth off, through it — a nav marker)
     /// vs occluded by it (depth-tested scaffold). ON by default; screen-stable either way
     /// (ADR 0031). A display preference that outlives a project, so settings like the view cube.
@@ -632,11 +629,11 @@ pub struct PanelState {
 }
 
 impl PanelState {
-    /// Sensible defaults for the windowed app: like [`Default`] but with the view
-    /// cube enabled (prototype `showCube: true`).
+    /// Sensible display defaults for the windowed app: like [`Default`] but with the Point
+    /// axes on top (the derived default is off). The view cube is always drawn, so it is no
+    /// longer a toggle here.
     pub fn with_view_cube_default() -> Self {
         let mut state = Self {
-            show_view_cube: true,
             axes_on_top: true,
             ..Self::default()
         };

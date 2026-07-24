@@ -77,10 +77,9 @@ impl ApplicationHandler for App {
             } => {
                 if button_state == ElementState::Pressed {
                     let position = state.last_cursor_position;
-                    let in_cube = state.panel_state.show_view_cube
-                        && position
-                            .map(|(x, y)| state.position_in_view_cube(x, y))
-                            .unwrap_or(false);
+                    let in_cube = position
+                        .map(|(x, y)| state.position_in_view_cube(x, y))
+                        .unwrap_or(false);
                     state.press_position = position;
                     state.press_in_view_cube = in_cube;
                     state.view_cube_drag_active = false;
@@ -292,10 +291,9 @@ impl ApplicationHandler for App {
                 // right-press closes a menu that was open.
                 if button_state == ElementState::Pressed && !egui_consumed {
                     let position = state.last_cursor_position;
-                    let in_cube = state.panel_state.show_view_cube
-                        && position
-                            .map(|(x, y)| state.position_in_view_cube(x, y))
-                            .unwrap_or(false);
+                    let in_cube = position
+                        .map(|(x, y)| state.position_in_view_cube(x, y))
+                        .unwrap_or(false);
                     // A right-click on a sketch ENTITY opens the menu even though the vertex handle
                     // registers as chrome (a handle rect is in the chrome set) — the entity
                     // hit-test tells a sketch handle from the real Signal chrome (ADR 0030, Fusion:
@@ -403,13 +401,11 @@ impl ApplicationHandler for App {
                 // screen-rect tests, and we DELIBERATELY pass a `None` body picker so
                 // the expensive cube raycast never fires for hover — a body-region
                 // hover resolves to `None` (the body doesn't highlight anyway). Hover
-                // stays `None` while orbiting/dragging, when egui ate the move, when
-                // the cube is hidden, or when the cursor is outside the cube rect, so
-                // it never interferes with drag-orbit, the click dispatch, or the
-                // scene input.
+                // stays `None` while orbiting/dragging, when egui ate the move, or when
+                // the cursor is outside the cube rect, so it never interferes with
+                // drag-orbit, the click dispatch, or the scene input.
                 state.hovered_cube_zone = if orbiting
                     || egui_consumed
-                    || !state.panel_state.show_view_cube
                     || !state.position_in_view_cube(current.0, current.1)
                 {
                     None
