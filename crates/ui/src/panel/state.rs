@@ -257,7 +257,7 @@ pub enum SketchTool {
 }
 
 /// A sketch editing **selection** — the set of picked points and segments (ADR 0030 /
-/// `docs/design/sketch-selection.md`). Points and segments carry disjoint [`EntityId`]s (one
+/// `docs/design/sketch-selection.md`). Points and segments carry disjoint `EntityId`s (one
 /// `next_id` counter per sketch), but the kind still matters for rendering and for delete
 /// (a point cascades its segments, a segment deletes alone), so the two are held apart.
 ///

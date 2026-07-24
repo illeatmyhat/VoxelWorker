@@ -16,6 +16,8 @@
 // cross-reference is deliberate and stays a navigable link under `--document-private-items`.
 // The CI doc gate denies broken and redundant links but permits these.
 #![allow(rustdoc::private_intra_doc_links)]
+// Colours live in `ui::theme::color_palette`; a raw `Color32::from_*` elsewhere is an error.
+#![deny(clippy::disallowed_methods)]
 
 // ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
 pub mod app_core;
@@ -659,8 +661,8 @@ pub fn run_egui_frame(
                                 egui::RichText::new(label)
                                     .monospace()
                                     .size(10.0)
-                                    // Signal "text — faint" (#4d565f) readout.
-                                    .color(egui::Color32::from_rgb(0x4d, 0x56, 0x5f)),
+                                    // Signal "text — faint" readout.
+                                    .color(ui::theme::TEXT_FAINT),
                             );
                         },
                     );

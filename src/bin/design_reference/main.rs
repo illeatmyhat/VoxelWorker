@@ -15,6 +15,9 @@
 //! Run with `cargo run --bin design_reference`. It links no document, no evaluator and no 3D
 //! pipeline: one winit window, one wgpu surface, one egui pass.
 
+// This reference tool's own page/backing chrome is dev-only, not app theme colours.
+#![allow(clippy::disallowed_methods)]
+
 use std::sync::Arc;
 
 use voxel_worker::gpu::GpuContext;

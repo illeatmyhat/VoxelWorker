@@ -1,0 +1,12 @@
+# Colours must be defined as tokens in ui::theme::color_palette and referenced by name; a raw
+# Color32::from_* elsewhere won't reflow under a light theme. The palette module opts out.
+disallowed-methods = [
+    { path = "egui::Color32::from_rgb", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+    { path = "egui::Color32::from_rgb_additive", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+    { path = "egui::Color32::from_rgba_premultiplied", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+    { path = "egui::Color32::from_rgba_unmultiplied", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+    { path = "egui::Color32::from_gray", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+    { path = "egui::Color32::from_white_alpha", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+    { path = "egui::Color32::from_black_alpha", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+    { path = "egui::Color32::from_additive_luminance", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
+]

@@ -1,45 +1,28 @@
-//! `theme::palette` — the Signal design language's colour tokens, as one registry
-//! (`docs/design/viewport-chrome-signal.md` §Tokens; ADR 0018).
-//!
-//! Every colour the UI paints with is a `pub const` here, defined through [`color_token!`] so it
-//! ALSO lands in [`SWATCHES`] — the design_reference sheet renders that registry, so a colour
-//! **cannot exist without a swatch in the sheet** and the two can never drift (owner 2026-07-23,
-//! "shown by construction, much like settings show up in a config file by construction"). Add a
-//! colour by adding a line to the [`color_token!`] block; the sheet needs no edit.
-//!
-//! These consts are the Signal (dark) values. When a second theme lands (light / system scheme),
-//! the token NAMES and meanings stay — this is the single registry — and the values move behind a
-//! resolved-per-theme lookup; the [`crate::theme`] module is the seam for that.
-//!
-//! Re-exported at [`crate::theme`] (`pub use color_palette::*`), so call sites read `theme::ACCENT`.
+//! The Signal colour tokens as one registry. Each is a `pub const` defined via `color_token!`,
+//! which also emits its [`SWATCHES`] entry — so the design_reference sheet renders every token by
+//! construction and none can drift. Re-exported at [`crate::theme`] (`theme::ACCENT`). Values are
+//! the Signal (dark) theme; a second theme resolves the same token names differently.
+
+#![allow(clippy::disallowed_methods)]
 
 use egui::Color32;
 
-/// One colour token as the design_reference sheet renders it: its const name, its value, and the
-/// meaning it is permitted to carry. Built only by [`color_token!`], so every entry is a real
-/// `pub const` and vice-versa.
+/// A colour token: its const name, value, and permitted meaning (the sheet's row).
 #[derive(Debug, Clone, Copy)]
 pub struct Swatch {
-    /// The token's const identifier (e.g. `"ACCENT"`).
     pub name: &'static str,
-    /// Its colour value.
     pub color: Color32,
-    /// The meaning it may carry — the sheet's third column and the const's own doc.
     pub meaning: &'static str,
 }
 
-/// Define the Signal colour tokens. Each entry emits BOTH a `pub const <NAME>: Color32` (its doc =
-/// its meaning) AND an entry in the [`SWATCHES`] registry — so a colour token **cannot exist
-/// without a swatch in the design_reference sheet**, which renders by construction. Adding a token
-/// here is the only way to add one; the sheet needs no edit.
+/// Emit each Signal colour token as a `pub const` plus its [`SWATCHES`] entry.
 macro_rules! color_token {
     ($( $name:ident = $color:expr, $meaning:literal );* $(;)?) => {
         $(
             #[doc = $meaning]
             pub const $name: Color32 = $color;
         )*
-        /// Every colour token, in declaration order — the ONE registry the design_reference sheet
-        /// iterates. By construction a token is here iff it is a `pub const` above.
+        /// Every colour token, in declaration order — the registry the design_reference iterates.
         pub const SWATCHES: &[Swatch] = &[
             $( Swatch { name: stringify!($name), color: $name, meaning: $meaning } ),*
         ];
@@ -67,4 +50,11 @@ color_token! {
     SKETCH_PLANE_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x0f), "sketch working-plane fill — accent at low alpha, so the profile stays primary (ADR 0028)";
     SKETCH_PLANE_GRID = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x24), "sketch plane fine grid lines — accent, quiet";
     SKETCH_PLANE_GRID_BLOCK = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x55), "sketch plane block grid lines — accent, brighter, reads through the fine grid";
+    ACCENT_FAINT = Color32::from_rgba_premultiplied(0x2f, 0x37, 0x43, 0x4d), "a faint accent tint — the rail's lit-cell glow / the DISPLAY-stack accent wash (premultiplied)";
+    SCRUBBER_TRACK = Color32::from_rgb(0x1b, 0x17, 0x12), "layer scrubber — the track background (a warm-dark channel the band rides in)";
+    SCRUBBER_TICK = Color32::from_rgb(0x3a, 0x5f, 0x57), "layer scrubber — the block-boundary snap ticks (teal)";
+    SCRUBBER_BAND = Color32::from_rgba_unmultiplied_const(0x5f, 0xb8, 0xa4, 70), "layer scrubber — the selected-band fill (teal, translucent)";
+    SCRUBBER_HANDLE_EDGE = Color32::from_rgb(0x10, 0x0c, 0x08), "layer scrubber — the handle border (near-black warm)";
+    DIALOG_BG = Color32::from_rgb(0x12, 0x14, 0x18), "floating dialog background (the Add-shape dialog)";
+    DIALOG_BORDER = Color32::from_rgb(0x3c, 0x42, 0x4a), "floating dialog border";
 }

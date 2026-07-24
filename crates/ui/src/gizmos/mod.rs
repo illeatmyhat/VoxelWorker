@@ -16,7 +16,7 @@
 //!
 //! The sketch is authored on a plane **in 3D**, under the free orbit camera. These primitives are
 //! the 2D overlay pass on top of that: the feature projects each profile vertex's world position →
-//! a screen [`Pos2`](egui::Pos2) once, then calls these to draw the manipulators there. That is
+//! a screen [`Pos2`] once, then calls these to draw the manipulators there. That is
 //! not an approximation — it is how grabbable handles must work over a 3D plane. A handle billboards
 //! (constant pixel size, camera-facing) so it stays clickable when the plane tilts edge-on, where a
 //! foreshortened one would collapse to a sliver; a straight profile edge projects to a straight 2D

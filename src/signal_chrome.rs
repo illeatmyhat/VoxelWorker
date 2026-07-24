@@ -19,33 +19,23 @@
 use egui::{Color32, FontId, Id, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, TextFormat, Vec2};
 use ui::icons::Icon;
 use ui::panel::SketchExit;
+use ui::theme;
 
 use crate::ViewMode;
 
-// --- Signal tokens (docs/design/viewport-chrome-signal.md §Tokens) ---
-/// Panel background `#0b0d0f`, OPAQUE (issue #91 item 6): the rail must read solid over a
-/// textured voxel scene (matching the approved screenshots), so no scene bleeds through.
-const RAIL_BG: Color32 = Color32::from_rgb(0x0b, 0x0d, 0x0f);
-/// Hairline outer border `#2b3238`.
-const BORDER: Color32 = Color32::from_rgb(0x2b, 0x32, 0x38);
-/// Hairline inner rule / separator `#1c2126`.
-const SEPARATOR: Color32 = Color32::from_rgb(0x1c, 0x21, 0x26);
-/// Idle rail glyph `#78828c`.
-const GLYPH_IDLE: Color32 = Color32::from_rgb(0x78, 0x82, 0x8c);
-/// Hover rail glyph `#c7d3e0`.
-const GLYPH_HOVER: Color32 = Color32::from_rgb(0xc7, 0xd3, 0xe0);
-/// Hover rail-button fill `#161a1e`.
-const HOVER_BG: Color32 = Color32::from_rgb(0x16, 0x1a, 0x1e);
-/// The single accent — the ADR 0012 onion-haze hue `#9cb4d8` (lit mode glyph + bar).
-const ACCENT: Color32 = Color32::from_rgb(0x9c, 0xb4, 0xd8);
-/// Lit mode-button fill `#12161b`.
-const LIT_BG: Color32 = Color32::from_rgb(0x12, 0x16, 0x1b);
-/// Status-line faint text `#4d565f`.
-const STATUS_FAINT: Color32 = Color32::from_rgb(0x4d, 0x56, 0x5f);
-/// The immersive sketch-mode border tint — the accent at ~33% (C2 mock `#9cb4d84d`).
-const ACCENT_FAINT: Color32 = Color32::from_rgba_premultiplied(0x2f, 0x37, 0x43, 0x4d);
-/// Near-opaque panel fill for the floating exit buttons (mock `#0b0d0feb`).
-const FLOAT_BG: Color32 = Color32::from_rgb(0x0b, 0x0d, 0x0f);
+// Local aliases onto the theme palette (were raw duplicates; kept named so the painters below
+// read RAIL_BG / HOVER_BG / …). Fold away when this chrome is carved into `ui` components.
+const RAIL_BG: Color32 = theme::BG;
+const BORDER: Color32 = theme::BORDER;
+const SEPARATOR: Color32 = theme::RULE;
+const GLYPH_IDLE: Color32 = theme::TEXT_MUTED;
+const GLYPH_HOVER: Color32 = theme::HANDLE_HOVER;
+const HOVER_BG: Color32 = theme::ACTIVE_BG;
+const ACCENT: Color32 = theme::ACCENT;
+const LIT_BG: Color32 = theme::HOVER_BG;
+const STATUS_FAINT: Color32 = theme::TEXT_FAINT;
+const ACCENT_FAINT: Color32 = theme::ACCENT_FAINT;
+const FLOAT_BG: Color32 = theme::BG;
 
 /// Rail column width (design points; §Chrome layout: 34 px).
 const RAIL_WIDTH: f32 = 34.0;
@@ -363,7 +353,7 @@ pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, ui::gizmos::Han
 }
 
 /// Draw the sketch profile's **vertex handles** (ADR 0028, #94) at their already-projected
-/// screen positions, each in the given [`HandleState`], and register each handle's grab
+/// screen positions, each in the given [`HandleState`](ui::gizmos::HandleState), and register each handle's grab
 /// rect as chrome so a press on a handle drags the vertex instead of orbiting the camera.
 ///
 /// Mirrors [`sketch_exit_control`]'s foreground-`layer_painter` idiom so the handles render

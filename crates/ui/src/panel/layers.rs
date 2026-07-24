@@ -112,7 +112,7 @@ fn layer_scrubber(
     let visuals = ui.visuals();
 
     // Track background.
-    painter.rect_filled(track_rect, 3.0, egui::Color32::from_rgb(0x1b, 0x17, 0x12));
+    painter.rect_filled(track_rect, 3.0, crate::theme::SCRUBBER_TRACK);
 
     // Block-boundary tick marks every `voxels_per_block` layers (the snap points).
     let mut boundary = 0u32;
@@ -120,7 +120,7 @@ fn layer_scrubber(
         let x = layer_to_x(boundary);
         painter.line_segment(
             [egui::pos2(x, track_top), egui::pos2(x, track_bottom)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
+            egui::Stroke::new(1.0_f32, crate::theme::SCRUBBER_TICK),
         );
         if boundary == grid_z {
             break;
@@ -131,7 +131,7 @@ fn layer_scrubber(
             let x = layer_to_x(grid_z);
             painter.line_segment(
                 [egui::pos2(x, track_top), egui::pos2(x, track_bottom)],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
+                egui::Stroke::new(1.0_f32, crate::theme::SCRUBBER_TICK),
             );
             break;
         }
@@ -144,7 +144,7 @@ fn layer_scrubber(
         egui::pos2(lower_x.min(upper_x), track_top),
         egui::pos2(lower_x.max(upper_x), track_bottom),
     );
-    painter.rect_filled(band_rect, 0.0, egui::Color32::from_rgba_unmultiplied(0x5f, 0xb8, 0xa4, 70));
+    painter.rect_filled(band_rect, 0.0, crate::theme::SCRUBBER_BAND);
 
     // Drag handling: on press, grab whichever handle is nearer the pointer; while
     // dragging, that handle follows the pointer.
@@ -194,7 +194,7 @@ fn layer_scrubber(
         painter.rect_stroke(
             handle_rect,
             2.0,
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x10, 0x0c, 0x08)),
+            egui::Stroke::new(1.0_f32, crate::theme::SCRUBBER_HANDLE_EDGE),
             egui::StrokeKind::Inside,
         );
     }

@@ -17,8 +17,8 @@ use super::state::{AngleSnap, PanelState, PlacementPivot, PositionSnap};
 const DIALOG_MARGIN: f32 = 12.0;
 /// Fixed dialog width (points) — wide enough for the three-position row's labels.
 const DIALOG_WIDTH: f32 = 232.0;
-const BG: egui::Color32 = egui::Color32::from_rgb(18, 20, 24);
-const BORDER: egui::Color32 = egui::Color32::from_rgb(60, 66, 74);
+const BG: egui::Color32 = crate::theme::DIALOG_BG;
+const BORDER: egui::Color32 = crate::theme::DIALOG_BORDER;
 
 /// Human label for the dialog title.
 fn shape_label(kind: ShapeKind) -> &'static str {
