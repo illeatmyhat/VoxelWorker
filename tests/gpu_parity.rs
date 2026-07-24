@@ -696,7 +696,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         app_core.camera.target = glam::Vec3::ZERO;
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
-        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
         let viewport_px = [0u32, 0, width, height];
         let band = LayerBand::FULL;
 
@@ -717,7 +717,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         );
         let frame = renderer.update_uniforms(
             &gpu.queue,
-            view_projection,
+            scene_matrices,
             viewport_px,
             grid_dimensions,
             band,
@@ -869,7 +869,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     let mut app_core = AppCore::new(OrbitCamera::default());
     app_core.camera.target = glam::Vec3::ZERO;
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
-    let view_projection = app_core.view_projection(width as f32 / height as f32, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(width as f32 / height as f32, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
 
     let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
@@ -928,7 +928,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     renderer.set_loaded_material_active(true);
     let frame = renderer.update_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         viewport_px,
         grid_dimensions,
         LayerBand::FULL,
@@ -1056,7 +1056,7 @@ fn brick_surface_elision_hit_set_unchanged() {
         app_core.camera.target = glam::Vec3::ZERO;
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
-        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
         let viewport_px = [0u32, 0, width, height];
         let band = LayerBand::FULL;
 
@@ -1074,7 +1074,7 @@ fn brick_surface_elision_hit_set_unchanged() {
             );
             renderer.update_uniforms(
                 &gpu.queue,
-                view_projection,
+                scene_matrices,
                 viewport_px,
                 grid_dimensions,
                 band,
@@ -1180,7 +1180,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
         app_core.camera.target = glam::Vec3::ZERO;
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
-        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
         let viewport_px = [0u32, 0, width, height];
 
         let mut band_clip_seen = false;
@@ -1198,7 +1198,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
             );
             let frame = renderer.update_uniforms(
                 &gpu.queue,
-                view_projection,
+                scene_matrices,
                 viewport_px,
                 grid_dimensions,
                 band,
@@ -1338,7 +1338,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     app_core.camera.target = glam::Vec3::ZERO;
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
-    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
     let band = LayerBand::FULL;
 
@@ -1372,7 +1372,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     }
     incremental_renderer.update_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         viewport_px,
         grid_dimensions,
         band,
@@ -1397,7 +1397,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     );
     wholesale_renderer.update_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         viewport_px,
         grid_dimensions,
         band,
@@ -1550,14 +1550,14 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     app_core.camera.target = glam::Vec3::ZERO;
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
-    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
     let band = LayerBand::FULL;
 
     let render = |renderer: &mut BrickRaymarchRenderer| {
         renderer.update_uniforms(
             &gpu.queue,
-            view_projection,
+            scene_matrices,
             viewport_px,
             grid_dimensions,
             band,
@@ -1662,14 +1662,14 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         app_core.camera.target = glam::Vec3::ZERO;
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
-        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
         let viewport_px = [0u32, 0, width, height];
         let band = LayerBand::FULL;
 
         let render_image = |renderer: &BrickRaymarchRenderer| {
             renderer.update_uniforms(
                 &gpu.queue,
-                view_projection,
+                scene_matrices,
                 viewport_px,
                 grid_dimensions,
                 band,
@@ -1807,7 +1807,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
         app_core.camera.target = glam::Vec3::ZERO;
         app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
         let aspect_ratio = width as f32 / height as f32;
-        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
         let viewport_px = [0u32, 0, width, height];
         let band = LayerBand::FULL;
         let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
@@ -1826,7 +1826,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
             );
             renderer.update_uniforms(
                 &gpu.queue,
-                view_projection,
+                scene_matrices,
                 viewport_px,
                 grid_dimensions,
                 band,
@@ -1979,7 +1979,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     let mut app_core = AppCore::new(OrbitCamera::default());
     app_core.camera.target = glam::Vec3::ZERO;
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
-    let view_projection = app_core.view_projection(width as f32 / height as f32, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(width as f32 / height as f32, grid_dimensions);
 
     let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     renderer.install_brick_field(
@@ -1993,7 +1993,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         [0, 0, width, height],
         grid_dimensions,
         LayerBand::FULL,
@@ -2132,7 +2132,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     app_core.camera.target = glam::Vec3::ZERO;
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
-    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
 
     let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
@@ -2152,7 +2152,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     let hit_zs = |renderer: &BrickRaymarchRenderer, clip: LayerBand| -> Vec<i32> {
         renderer.update_uniforms(
             &gpu.queue,
-            view_projection,
+            scene_matrices,
             viewport_px,
             grid_dimensions,
             clip,
@@ -2192,7 +2192,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     // Uniform-only (ADR 0012): rebinding the ghost slabs for two different bands must NOT
     // touch the installed field — no re-mesh / atlas re-upload on a brick-path band scrub.
     let record_count_before = renderer.record_count();
-    renderer.update_ghost_uniforms(&gpu.queue, view_projection, viewport_px, grid_dimensions, band, None);
+    renderer.update_ghost_uniforms(&gpu.queue, scene_matrices, viewport_px, grid_dimensions, band, None);
     let scrubbed = LayerBand {
         band_min: band.band_min + 3,
         band_max: band.band_max + 3,
@@ -2200,7 +2200,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     };
     renderer.update_ghost_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         viewport_px,
         grid_dimensions,
         scrubbed,
@@ -2294,7 +2294,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
     app_core.camera.target = glam::Vec3::ZERO;
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
-    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
 
     let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
@@ -2314,7 +2314,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
      -> Vec<[u32; 4]> {
         renderer.update_uniforms(
             &gpu.queue,
-            view_projection,
+            scene_matrices,
             viewport_px,
             grid_dimensions,
             clip,
@@ -2397,7 +2397,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
     let _ = render(&renderer, scrubbed, Some(region));
     renderer.update_ghost_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         viewport_px,
         grid_dimensions,
         LayerBand { onion_depth: 4, ..band },
@@ -2500,7 +2500,7 @@ fn brick_mixed_material_matches_cpu_reference() {
     let mut app_core = AppCore::new(OrbitCamera::default());
     app_core.camera.target = glam::Vec3::splat(centre);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
-    let view_projection = app_core.view_projection(width as f32 / height as f32, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(width as f32 / height as f32, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
     let band = LayerBand::FULL;
 
@@ -2520,7 +2520,7 @@ fn brick_mixed_material_matches_cpu_reference() {
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         viewport_px,
         grid_dimensions,
         band,

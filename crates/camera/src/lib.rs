@@ -49,7 +49,7 @@ pub mod view_cube;
 pub use authorable::MIN_BLOCK_SCREEN_FRACTION;
 pub use frustum::{Frustum, RealAabb};
 pub use orbit::{HomeView, OrbitCamera, ProjectionMode, POLE_EPSILON};
-pub use projection::unproject_screen_point_to_ray;
+pub use projection::{unproject_screen_point_to_ray, SceneMatrices};
 pub use tween::{ease_in_out_quad, nearest_equivalent_theta, normalize_roll, SnapTween};
 pub use view_cube::{
     adjacent_face, chrome_zone_left_click_action, classify_cube_point, view_cube_zone_readout,

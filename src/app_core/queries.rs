@@ -80,6 +80,63 @@ impl AppCore {
         )
     }
 
+    /// [`view_projection`](Self::view_projection) plus its camera-relative companion and
+    /// the eye, bundled ([`camera::SceneMatrices`]). The per-fragment-unprojecting passes
+    /// (analytic infinite grid, brick raymarch ray setup) consume the camera-relative
+    /// matrix — inverting one that carries a ~10^5-voxel eye translation melts the `/w`
+    /// divide at wide-baseline coordinates — and add the eye back outside the matrix math.
+    pub fn scene_matrices(
+        &self,
+        aspect_ratio: f32,
+        region_dimensions: [u32; 3],
+    ) -> camera::SceneMatrices {
+        self.camera.scene_matrices(
+            aspect_ratio,
+            glam::Vec3::ZERO,
+            Self::scene_radius(region_dimensions),
+        )
+    }
+
+    /// The depth-off overlay matrix the screen-stable Point axes draw with — the SINGLE
+    /// source both the shell and `shot` consume (the [`view_projection`] pattern), so the
+    /// two never drift.
+    ///
+    /// Centred on the camera TARGET, with the radius EXPANDED to reach every visible Point's
+    /// axes. Target-centred alone is not enough: orbiting a distant node with the world origin
+    /// in view puts the origin Point thousands of blocks beyond the target depth — on screen,
+    /// yet outside any bracket sized to the target (in perspective, "on screen" bounds nothing
+    /// along the view axis). So the radius starts at 2× the viewport's world extent at the
+    /// target depth (spans the screen-stable axes' zoom-growing size at any grazing angle) and
+    /// grows to `distance(target, point) + extent-at-point` for each axes-bearing Point.
+    /// Depth-off ⇒ a generous radius costs nothing.
+    ///
+    /// [`view_projection`]: Self::view_projection
+    pub fn points_overlay_view_projection(
+        &self,
+        aspect_ratio: f32,
+        scene: &Scene,
+        density: u32,
+    ) -> glam::Mat4 {
+        let camera = &self.camera;
+        let mut radius = camera.view_extent_at_depth(camera.orbit_distance).max(1.0) * 2.0;
+        let recentre = scene.recentre_voxels_for_resolve(density).voxels();
+        let forward = -camera.direction();
+        for point in &scene.points {
+            if point.hidden || !(point.axis_x || point.axis_y || point.axis_z) {
+                continue;
+            }
+            let origin = glam::Vec3::new(
+                (point.position_blocks[0] * density as i64 - recentre[0]) as f32,
+                (point.position_blocks[1] * density as i64 - recentre[1]) as f32,
+                (point.position_blocks[2] * density as i64 - recentre[2]) as f32,
+            );
+            let depth_at_point = (origin - camera.eye()).dot(forward);
+            let axis_reach = camera.view_extent_at_depth(depth_at_point);
+            radius = radius.max(camera.target.distance(origin) + axis_reach);
+        }
+        camera.view_projection(aspect_ratio, camera.target, radius)
+    }
+
     /// The bounding-sphere radius the scene near/far are sized from — half the region diagonal
     /// (× 1.15 for sub-voxel asymmetry, floored for tiny scenes).
     fn scene_radius(region_dimensions: [u32; 3]) -> f32 {

@@ -1063,7 +1063,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // the side panel. Then upload every uniform that depends on the camera matrix.
     let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
     let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
-    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
+    let view_projection = scene_matrices.view_projection;
     let gizmo_pivot = gizmo_placement
         .map(|(pivot, _)| glam::Vec3::from_array(pivot))
         .unwrap_or(glam::Vec3::ZERO);
@@ -1075,59 +1076,30 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         .camera
         .overlay_view_projection(aspect_ratio, gizmo_pivot);
     transform_gizmo_renderer.update_uniforms(&gpu.queue, gizmo_vp, gizmo_model);
-    // Build this capture's per-object grid batch from the scene's grid-enabled nodes
-    // (issue #29 S3), then upload the camera matrix.
-    scene_grid_renderer.rebuild_from_scene(
+    // Scene scaffold uniforms (per-object scene grid + world-reference Points + analytic
+    // infinite grid), shared with the windowed shell through one orchestration point (ADR 0031).
+    // `--points` gates the Points/infinite grid (default OFF keeps the goldens unchanged).
+    let axes_through = options.axes_on_top;
+    let overlay_vp = app_core.points_overlay_view_projection(
+        aspect_ratio,
+        &panel_state.scene,
+        options.geometry.voxels_per_block,
+    );
+    voxel_worker::frame::render::upload_scene_scaffold(
         &gpu.device,
         &gpu.queue,
         &panel_state.scene,
         options.geometry.voxels_per_block,
+        &app_core.camera,
+        scene_matrices,
+        overlay_vp,
+        options.show_points,
+        axes_through,
+        &mut scene_grid_renderer,
+        &mut points_renderer,
+        &mut points_overlay_renderer,
+        &mut infinite_grid_renderer,
     );
-    scene_grid_renderer.update_uniforms(&gpu.queue, view_projection);
-    // World reference grid (issue #29 S5): build the visible Points' tiled planes +
-    // axes, centred on the camera's projection onto each plane. Only wired into the
-    // overlays when `--points` is passed (default OFF keeps the goldens unchanged).
-    // The Points' axes are a screen-stable nav marker (ADR 0031). THROUGH (setting on): the
-    // overlay instance (depth off, never-clip matrix) drawn over the model. OCCLUDED: the overlay
-    // instance drawn BEFORE the model (paint-order occlusion, invariant at any distance) PLUS the
-    // depth instance (depth-tested scene matrix) for crisp near occlusion — the depth one clips
-    // out on its own far out, so both run always with no distance threshold.
-    let axes_through = options.axes_on_top;
-    if options.show_points {
-        let overlay_vp = app_core
-            .camera
-            .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO);
-        points_overlay_renderer.rebuild_from_scene(
-            &gpu.device,
-            &gpu.queue,
-            &panel_state.scene,
-            options.geometry.voxels_per_block,
-            &app_core.camera,
-            false,
-        );
-        points_overlay_renderer.update_uniforms(&gpu.queue, overlay_vp);
-        if !axes_through {
-            points_renderer.rebuild_from_scene(
-                &gpu.device,
-                &gpu.queue,
-                &panel_state.scene,
-                options.geometry.voxels_per_block,
-                &app_core.camera,
-                true,
-            );
-            points_renderer.update_uniforms(&gpu.queue, view_projection);
-        }
-        // The analytic infinite grid (issue #29 Points fast-follow): build the visible
-        // Points' planes with the camera matrices (recentred frame) so the fullscreen
-        // ray-plane shader can intersect each pixel's view ray with the plane.
-        infinite_grid_renderer.rebuild_from_scene(
-            &gpu.queue,
-            &panel_state.scene,
-            options.geometry.voxels_per_block,
-            view_projection,
-            app_core.camera.eye().to_array(),
-        );
-    }
     // ADR 0022: arm the placement ghost from `panel_state.placement_ghost`. The
     // render-frame field centre is resolved from THIS grid's recentre (`grid.recentre_voxels`)
     // via the frame law — the same recentre the solid voxels were resolved in — so a ghost
@@ -1194,7 +1166,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     if let Some(brick_raymarch) = &mut brick_raymarch_renderer {
         brick_raymarch.update_uniforms(
             &gpu.queue,
-            view_projection,
+            scene_matrices,
             prepared.viewport_px,
             grid_dimensions,
             band,
@@ -1206,7 +1178,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // ADR 0012 (H1): prepare the onion GHOST slabs (self-gates on `band.onion_depth`).
         brick_raymarch.update_ghost_uniforms(
             &gpu.queue,
-            view_projection,
+            scene_matrices,
             prepared.viewport_px,
             grid_dimensions,
             band,

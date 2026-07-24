@@ -46,8 +46,19 @@
 // shader's `voxel_absolute_position` frame) and `world = p − grid_half_extent`.
 
 struct BrickUniforms {
-    view_projection: mat4x4<f32>,
-    inverse_view_projection: mat4x4<f32>,
+    // The RAY-FRAME matrices (camera::SceneMatrices): eye-anchored under perspective
+    // (a full-matrix per-fragment unprojection melts at a wide-baseline recentre, and
+    // a scene-bracketed z=0/z=1 pair cancels in the ray direction when the scene is a
+    // thin distant slab), the plain render frame under ortho (affine unprojection,
+    // no /w — and bit-stable with the CPU mirror). Unproject through the inverse for
+    // the ray; forward-project `hit_sv − eye_sv` for depth — the identical clip
+    // result, computed on small numbers.
+    ray_view_projection: mat4x4<f32>,
+    ray_inverse_unprojection: mat4x4<f32>,
+    // The ray-frame origin in the SHIFTED march frame (ray_eye + grid_half_extent +
+    // lattice_shift, pre-combined CPU-side), xyz; .w unused. The ray origin's one
+    // large-magnitude term.
+    eye_sv: vec4<f32>,
     // The central 3D viewport rect in physical pixels: x, y, width, height. The
     // fullscreen triangle is viewport-mapped, so NDC must be derived from the
     // fragment position RELATIVE to this rect (matching the camera's aspect).
@@ -307,19 +318,21 @@ struct Ray {
     safe_direction: vec3<f32>,
 }
 
-// Unproject a framebuffer pixel position through the inverse view-projection into
-// an sv-frame ray. Near/far unprojection handles perspective AND orthographic.
+// Unproject a framebuffer pixel position through the CAMERA-RELATIVE inverse
+// view-projection into an sv-frame ray. Near/far unprojection handles perspective
+// AND orthographic; the points come out EYE-RELATIVE (small, precise at any
+// recentre) and `eye_sv` — the pre-combined eye + half-extent + shift — carries
+// the sv frame's one large term.
 fn camera_ray(pixel: vec2<f32>) -> Ray {
     let ndc_x = (pixel.x - uniforms.viewport.x) / uniforms.viewport.z * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y - uniforms.viewport.y) / uniforms.viewport.w * 2.0;
-    let near_h = uniforms.inverse_view_projection * vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
-    let far_h = uniforms.inverse_view_projection * vec4<f32>(ndc_x, ndc_y, 1.0, 1.0);
-    let near_world = near_h.xyz / near_h.w;
-    let far_world = far_h.xyz / far_h.w;
-    let direction = normalize(far_world - near_world);
-    let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
+    let near_h = uniforms.ray_inverse_unprojection * vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    let far_h = uniforms.ray_inverse_unprojection * vec4<f32>(ndc_x, ndc_y, 1.0, 1.0);
+    let near_eye_relative = near_h.xyz / near_h.w;
+    let far_eye_relative = far_h.xyz / far_h.w;
+    let direction = normalize(far_eye_relative - near_eye_relative);
     var ray: Ray;
-    ray.origin = near_world + uniforms.grid_half_extent + shift;
+    ray.origin = uniforms.eye_sv.xyz + near_eye_relative;
     ray.direction = direction;
     ray.safe_direction = vec3<f32>(
         guard_direction_component(direction.x),
@@ -1214,10 +1227,12 @@ fn fragment_render(
     let world_normal = select(vec3<f32>(0.0), vec3<f32>(hit.normal_sign), entry_axis_mask);
 
     // Per-sample depth from the SAMPLE ray's own hit point (the rasterizer
-    // interpolates depth per sample).
+    // interpolates depth per sample). Eye-relative (`− eye_sv`, a subtraction of
+    // nearby sv values) through the camera-relative matrix — the same clip result
+    // as the full-frame pair, computed on small numbers.
     let hit_sv = sample_ray.origin + sample_ray.direction * hit.hit_t;
-    let hit_world = hit_sv - shift - uniforms.grid_half_extent;
-    let clip = uniforms.view_projection * vec4<f32>(hit_world, 1.0);
+    let hit_eye_relative = hit_sv - uniforms.eye_sv.xyz;
+    let clip = uniforms.ray_view_projection * vec4<f32>(hit_eye_relative, 1.0);
 
     var output: FragmentOutput;
     // ADR 0012 (H1): the onion ghost shades flat translucent (no texture / material /
@@ -1460,9 +1475,8 @@ fn fragment_ghost_haze(@builtin(position) position: vec4<f32>) -> FragmentOutput
     let opacity = 1.0 - exp(-HAZE_STRENGTH_PER_VOXEL * haze.accumulated_length);
 
     let hit_sv = ray.origin + ray.direction * haze.first_hit_t;
-    let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
-    let hit_world = hit_sv - shift - uniforms.grid_half_extent;
-    let clip = uniforms.view_projection * vec4<f32>(hit_world, 1.0);
+    let hit_eye_relative = hit_sv - uniforms.eye_sv.xyz;
+    let clip = uniforms.ray_view_projection * vec4<f32>(hit_eye_relative, 1.0);
 
     var output: FragmentOutput;
     output.color = vec4<f32>(uniforms.ghost_tint.rgb, opacity);

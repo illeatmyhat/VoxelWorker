@@ -8,11 +8,18 @@ use super::*;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct InfiniteGridUniforms {
-    view_projection: [[f32; 4]; 4],
-    inverse_view_projection: [[f32; 4]; 4],
-    /// Camera eye (recentred frame); `.w` unused.
-    eye: [f32; 4],
-    /// Plane origin (the Point's recentred position); `.w` unused.
+    /// The RAY-FRAME matrices ([`camera::SceneMatrices`]): eye-anchored under
+    /// perspective (a full-matrix per-fragment unprojection melts at wide-baseline
+    /// coordinates; the scene-bracketed z=0/z=1 pair also cancels in the ray
+    /// direction when the scene is a thin distant slab), the plain render frame
+    /// under ortho (affine unprojection, no `/w`). The shader is frame-agnostic —
+    /// every position it touches is expressed in this same frame.
+    ray_view_projection: [[f32; 4]; 4],
+    ray_inverse_unprojection: [[f32; 4]; 4],
+    /// Plane origin RELATIVE to the ray-frame origin, slid along the in-plane axes by
+    /// multiples of the coarsest tier spacing to land near the eye's footprint
+    /// (pattern-invariant; keeps `fract`/`fwidth` off ~10^5-magnitude coordinates);
+    /// `.w` unused.
     plane_origin: [f32; 4],
     /// In-plane unit axes spanning the plane, and the plane normal (`.w` unused).
     u_axis: [f32; 4],
@@ -165,29 +172,61 @@ impl InfiniteGridRenderer {
 
     /// Rebuild this frame's analytic-grid planes by walking `scene.points` (issue #29
     /// Points fast-follow), uploading one plane uniform per visible Point × enabled
-    /// plane. `view_projection` and its inverse + `camera_eye` are all in the
-    /// recentred render frame the voxels live in. With no enabled plane this uploads
-    /// nothing and [`Self::draw`] becomes a no-op.
+    /// plane. The whole shader runs in the EYE-TRANSLATED frame
+    /// ([`camera::SceneMatrices`]) — the ray-plane math is translation-invariant, and
+    /// small coordinates keep the per-fragment unprojection precise at wide-baseline
+    /// scenes. Each plane origin is additionally slid along its in-plane axes by
+    /// multiples of the coarsest tier spacing (8 blocks — every tier's spacing divides
+    /// it, so the line pattern is invariant) to land near the eye's footprint, keeping
+    /// the shader's `fract`/`fwidth` off ~10^5-magnitude in-plane coordinates. With no
+    /// enabled plane this uploads nothing and [`Self::draw`] becomes a no-op.
     pub fn rebuild_from_scene(
         &mut self,
         queue: &wgpu::Queue,
         scene: &Scene,
         voxels_per_block: u32,
-        view_projection: glam::Mat4,
-        camera_eye: [f32; 3],
+        scene_matrices: camera::SceneMatrices,
     ) {
         let planes = enabled_grid_planes(scene, voxels_per_block);
         let density = voxels_per_block.max(1) as f32;
-        let inverse_view_projection = view_projection.inverse();
+        let ray_inverse_unprojection =
+            scene_matrices.ray_unprojection.inverse();
         let line_color = srgb_hex_to_linear(POINT_PLANE_COLOR_HEX);
+        let coarse_spacing = f64::from(voxels_per_block.max(1)) * 8.0;
+        let eye = scene_matrices.ray_eye.as_dvec3();
 
         let count = planes.len().min(MAX_GRID_PLANES);
         for (index, plane) in planes.iter().take(count).enumerate() {
+            // Slide the origin toward the eye by whole coarse cells (exact integer
+            // steps in f64), THEN subtract the eye — the residual is small, so the
+            // shader's in-plane coordinates stay near zero where the lines resolve.
+            let mut origin = glam::DVec3::new(
+                f64::from(plane.origin[0]),
+                f64::from(plane.origin[1]),
+                f64::from(plane.origin[2]),
+            );
+            for axis in [plane.u_axis, plane.v_axis] {
+                let axis = glam::DVec3::new(
+                    f64::from(axis[0]),
+                    f64::from(axis[1]),
+                    f64::from(axis[2]),
+                );
+                let cells_toward_eye = ((eye - origin).dot(axis) / coarse_spacing).round();
+                origin += axis * (cells_toward_eye * coarse_spacing);
+            }
+            let origin_relative = origin - eye;
             let uniforms = InfiniteGridUniforms {
-                view_projection: view_projection.to_cols_array_2d(),
-                inverse_view_projection: inverse_view_projection.to_cols_array_2d(),
-                eye: [camera_eye[0], camera_eye[1], camera_eye[2], 0.0],
-                plane_origin: [plane.origin[0], plane.origin[1], plane.origin[2], 0.0],
+                ray_view_projection: scene_matrices
+                    .ray_view_projection
+                    .to_cols_array_2d(),
+                ray_inverse_unprojection: ray_inverse_unprojection
+                    .to_cols_array_2d(),
+                plane_origin: [
+                    origin_relative.x as f32,
+                    origin_relative.y as f32,
+                    origin_relative.z as f32,
+                    0.0,
+                ],
                 u_axis: [plane.u_axis[0], plane.u_axis[1], plane.u_axis[2], 0.0],
                 v_axis: [plane.v_axis[0], plane.v_axis[1], plane.v_axis[2], 0.0],
                 normal_axis: [plane.normal[0], plane.normal[1], plane.normal[2], 0.0],

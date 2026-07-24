@@ -22,6 +22,41 @@ use substrate::spatial::Ray;
 
 use crate::orbit::{OrbitCamera, ProjectionMode, ORTHO_HALF_HEIGHT_FACTOR, PERSPECTIVE_FOV_Y};
 
+/// The scene camera matrices one frame renders with, bundled so the full and
+/// camera-relative forms can never drift apart: `view_projection` for
+/// forward-projected geometry (the view multiply makes vertices eye-relative before
+/// any precision-losing arithmetic), `camera_relative_view_projection` for the
+/// passes that UNPROJECT per fragment (brick raymarch ray setup, analytic infinite
+/// grid) — inverting a matrix that carries a ~10^5-voxel eye translation melts the
+/// `/w` divide — and the `camera_eye` those passes add back OUTSIDE the matrix math.
+#[derive(Debug, Clone, Copy)]
+pub struct SceneMatrices {
+    pub view_projection: Mat4,
+    /// The forward matrix of the RAY FRAME — the frame the per-fragment-unprojecting
+    /// passes (brick raymarch, analytic infinite grid) run their ray + `frag_depth`
+    /// math in. PERSPECTIVE anchors it at the eye (rotation-only view): the full
+    /// matrix's inverse mixes a ~10^5-voxel eye translation into the `/w` divide and
+    /// melts at wide-baseline coordinates. ORTHOGRAPHIC keeps the plain render frame
+    /// (this is just `view_projection`): affine unprojection carries no `/w` and is
+    /// precise at any coordinate, and reusing the exact pre-existing arithmetic keeps
+    /// the GPU march bit-agreeing with its CPU mirror (the zero-tolerance parity net).
+    pub ray_view_projection: Mat4,
+    /// The RAY-RECONSTRUCTION matrix (same frame as `ray_view_projection`), whose
+    /// inverse the passes unproject through. Under PERSPECTIVE its near/far come from
+    /// the CAMERA (a 2·orbit_distance sphere around the target), not the scene: a
+    /// compact scene viewed from 10^5 voxels away makes the scene bracket a thin
+    /// distant slab whose z=0/z=1 unprojections are two huge nearly-equal points —
+    /// their difference, the ray direction, cancels catastrophically. Ray geometry is
+    /// independent of clip planes, so the conditioned bracket is free; depth still
+    /// projects through `ray_view_projection`. Under ORTHOGRAPHIC this is the scene
+    /// matrix itself.
+    pub ray_unprojection: Mat4,
+    /// The ray frame's origin in the recentred render frame: the eye under
+    /// PERSPECTIVE, zero under ORTHOGRAPHIC. Consumers add it back outside the
+    /// matrix math.
+    pub ray_eye: Vec3,
+}
+
 impl OrbitCamera {
     /// Build the combined `view_projection` matrix for an aspect ratio (w/h), with
     /// the near/far planes derived to ENCLOSE the scene's bounding sphere
@@ -50,6 +85,79 @@ impl OrbitCamera {
         scene_radius: f32,
     ) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
+        self.projection_enclosing_sphere(aspect_ratio, scene_centre, scene_radius) * view
+    }
+
+    /// [`view_projection`](Self::view_projection) with the camera EYE at the frame
+    /// origin: the identical projection (same near/far derivation) composed with the
+    /// view's ROTATION only. Unprojecting through this matrix's inverse yields
+    /// EYE-RELATIVE points — small numbers even when the render frame puts the eye at
+    /// ~10^5 voxels — which keeps per-fragment unprojection (the `/w` divide) precise
+    /// at wide-baseline coordinates. Recover render-frame positions by adding the eye
+    /// back OUTSIDE the matrix math; symmetrically, forward-project points translated
+    /// by `−eye`.
+    pub fn camera_relative_view_projection(
+        &self,
+        aspect_ratio: f32,
+        scene_centre: Vec3,
+        scene_radius: f32,
+    ) -> Mat4 {
+        // look_at_rh = [R | R·(−eye)]; zeroing the translation column leaves exactly
+        // the rotation the full view matrix applies — same bits, no re-derivation.
+        let mut rotation_only_view =
+            Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
+        rotation_only_view.w_axis = Vec4::W;
+        self.projection_enclosing_sphere(aspect_ratio, scene_centre, scene_radius)
+            * rotation_only_view
+    }
+
+    /// Both scene matrices + the eye as one [`SceneMatrices`] bundle — the form the
+    /// per-fragment-unprojecting display passes consume.
+    pub fn scene_matrices(
+        &self,
+        aspect_ratio: f32,
+        scene_centre: Vec3,
+        scene_radius: f32,
+    ) -> SceneMatrices {
+        let view_projection = self.view_projection(aspect_ratio, scene_centre, scene_radius);
+        match self.projection_mode {
+            ProjectionMode::Perspective => SceneMatrices {
+                view_projection,
+                ray_view_projection: self.camera_relative_view_projection(
+                    aspect_ratio,
+                    scene_centre,
+                    scene_radius,
+                ),
+                // Camera-sized bracket: the near clamps to the 0.05 floor (eye inside
+                // the sphere), giving a near point AT the eye — no cancellation in
+                // `far − near` at any scene distance.
+                ray_unprojection: self.camera_relative_view_projection(
+                    aspect_ratio,
+                    self.target,
+                    (self.orbit_distance * 2.0).max(1.0),
+                ),
+                ray_eye: self.eye(),
+            },
+            // Ortho: the plain render frame, bit-identical to the historical path.
+            ProjectionMode::Orthographic => SceneMatrices {
+                view_projection,
+                ray_view_projection: view_projection,
+                ray_unprojection: view_projection,
+                ray_eye: Vec3::ZERO,
+            },
+        }
+    }
+
+    /// The projection half of [`view_projection`](Self::view_projection): near/far
+    /// placed a sphere-radius (plus margin) either side of the bounding-sphere
+    /// centre's view depth. Eye-position-independent apart from that depth, so the
+    /// full and camera-relative view-projections share it verbatim.
+    fn projection_enclosing_sphere(
+        &self,
+        aspect_ratio: f32,
+        scene_centre: Vec3,
+        scene_radius: f32,
+    ) -> Mat4 {
         // Signed depth from the eye to the bounding-sphere centre along the view
         // axis (forward = the unit look direction, target − eye = −direction()).
         let forward = -self.direction();
@@ -58,7 +166,7 @@ impl OrbitCamera {
         let margin = scene_radius * 0.05 + 0.5;
         let mut near = centre_depth - scene_radius - margin;
         let mut far = centre_depth + scene_radius + margin;
-        let projection = match self.projection_mode {
+        match self.projection_mode {
             ProjectionMode::Perspective => {
                 // Perspective needs near > 0; clamp to a small floor and keep far
                 // strictly beyond it (the matrix stays finite even when the scene
@@ -81,8 +189,7 @@ impl OrbitCamera {
                     far,
                 )
             }
-        };
-        projection * view
+        }
     }
 
     /// View-projection for the corner view cube: an orthographic camera whose eye

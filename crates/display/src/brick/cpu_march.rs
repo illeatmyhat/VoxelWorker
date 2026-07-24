@@ -10,21 +10,20 @@ pub struct CpuMarchHit {
     pub face_normal: [i32; 3],
 }
 
-/// The pixel-centre camera ray in the shifted march frame — mirrors `camera_ray`.
+/// The pixel-centre camera ray in the shifted march frame — mirrors `camera_ray`:
+/// the CAMERA-RELATIVE unproject yields eye-relative points, and `eye_sv` (the
+/// pre-combined eye + half-extent + shift) carries the sv frame's one large term.
 pub(crate) fn cpu_camera_ray(frame: &BrickMarchFrame, pixel: glam::Vec2) -> (glam::Vec3, glam::Vec3) {
     let ndc_x = (pixel.x - frame.viewport[0]) / frame.viewport[2] * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y - frame.viewport[1]) / frame.viewport[3] * 2.0;
-    let near_h = frame.inverse_view_projection * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-    let far_h = frame.inverse_view_projection * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-    let near_world = near_h.truncate() / near_h.w;
-    let far_world = far_h.truncate() / far_h.w;
-    let direction = (far_world - near_world).normalize();
-    let shift = glam::Vec3::new(
-        frame.lattice_shift[0] as f32,
-        frame.lattice_shift[1] as f32,
-        frame.lattice_shift[2] as f32,
-    );
-    (near_world + frame.grid_half_extent + shift, direction)
+    let near_h =
+        frame.ray_inverse_unprojection * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+    let far_h =
+        frame.ray_inverse_unprojection * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+    let near_eye_relative = near_h.truncate() / near_h.w;
+    let far_eye_relative = far_h.truncate() / far_h.w;
+    let direction = (far_eye_relative - near_eye_relative).normalize();
+    (frame.eye_sv + near_eye_relative, direction)
 }
 
 /// Is a sculpted brick's block-local voxel occupied in the build's atlas bytes?

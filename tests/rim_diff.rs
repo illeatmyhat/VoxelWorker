@@ -86,7 +86,7 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
     app_core.camera.projection_mode = ProjectionMode::Orthographic;
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let aspect_ratio = width as f32 / height as f32;
-    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
     let band = LayerBand::FULL;
 
@@ -104,7 +104,7 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
-        view_projection,
+        scene_matrices,
         viewport_px,
         grid_dimensions,
         band,

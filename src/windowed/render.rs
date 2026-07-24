@@ -416,7 +416,8 @@ impl WindowedState {
         // region's extent), not the active node's geometry — with several nodes the
         // region is the per-axis max of their sizes (ADR 0001 step 2).
         let grid_dimensions = self.region_dimensions;
-        let view_projection = self.app_core.view_projection(aspect_ratio, grid_dimensions);
+        let scene_matrices = self.app_core.scene_matrices(aspect_ratio, grid_dimensions);
+        let view_projection = scene_matrices.view_projection;
         // ADR 0028 (#94): refresh the sketch vertex-handle overlay from the CURRENT geometry
         // (post-rebuild recentre) and camera, caching the projected handles for NEXT frame's
         // draw (in `run_egui_frame`) and the press hit-test (in `events`). A one-frame lag on
@@ -496,7 +497,7 @@ impl WindowedState {
             renderer.set_debug_mode(u32::from(self.panel_state.debug_brick_faces));
             renderer.update_uniforms(
                 &self.gpu.queue,
-                view_projection,
+                scene_matrices,
                 prepared.viewport_px,
                 grid_dimensions,
                 band,
@@ -510,7 +511,7 @@ impl WindowedState {
             // `band.onion_depth == 0`, so this is a cheap no-op when onion is off.
             renderer.update_ghost_uniforms(
                 &self.gpu.queue,
-                view_projection,
+                scene_matrices,
                 prepared.viewport_px,
                 grid_dimensions,
                 band,
@@ -546,59 +547,29 @@ impl WindowedState {
         // scene master ANDed with the node's own toggle), its enclosing-block lattice
         // / base-plane floor lines. Empty when no node enables a grid (the new
         // default — per-object grids are OFF until the user turns them on).
-        self.scene_grid_renderer.rebuild_from_scene(
-            &self.gpu.device,
-            &self.gpu.queue,
+        // Scene scaffold uniforms (per-object scene grid + world-reference Points + analytic
+        // infinite grid), shared with `shot` through one orchestration point (ADR 0031). The
+        // shell always draws the Points; `axes_on_top` skips the depth-tested Points instance.
+        let axes_through = self.panel_state.axes_on_top;
+        let overlay_vp = self.app_core.points_overlay_view_projection(
+            aspect_ratio,
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
         );
-        self.scene_grid_renderer
-            .update_uniforms(&self.gpu.queue, view_projection);
-        // World reference AXES (issue #29 S5): screen-stable-sized from the camera (ADR 0031).
-        // Two instances drawn each frame. The OVERLAY instance (depth off, generous overlay
-        // matrix that never clips at any distance) is the on-top nav marker when the setting is
-        // on, and the occluded setting's paint-order pass (drawn BEFORE the model so geometry
-        // paints over it) otherwise. The DEPTH instance (depth-tested, scene matrix) adds crisp
-        // near occlusion for the occluded setting; it simply clips out on its own once the camera
-        // is far — the overlay pass carries there. Both occluded passes run always: no distance
-        // threshold, no mode-switch pop.
-        let axes_through = self.panel_state.axes_on_top;
-        let overlay_vp = self
-            .app_core
-            .camera
-            .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO);
-        self.points_overlay_renderer.rebuild_from_scene(
+        crate::frame::render::upload_scene_scaffold(
             &self.gpu.device,
             &self.gpu.queue,
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             &self.app_core.camera,
-            false,
-        );
-        self.points_overlay_renderer
-            .update_uniforms(&self.gpu.queue, overlay_vp);
-        if !axes_through {
-            self.points_renderer.rebuild_from_scene(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &self.panel_state.scene,
-                self.panel_state.geometry.voxels_per_block,
-                &self.app_core.camera,
-                true,
-            );
-            self.points_renderer
-                .update_uniforms(&self.gpu.queue, view_projection);
-        }
-        // Analytic infinite reference grid (issue #29 Points fast-follow): rebuild the
-        // visible Points' enabled PLANES with the camera matrices (recentred frame) so
-        // the fullscreen ray-plane shader intersects each pixel's ray with the plane —
-        // the grid extends to the horizon with no finite edge, fading with distance.
-        self.infinite_grid_renderer.rebuild_from_scene(
-            &self.gpu.queue,
-            &self.panel_state.scene,
-            self.panel_state.geometry.voxels_per_block,
-            view_projection,
-            self.app_core.camera.eye().to_array(),
+            scene_matrices,
+            overlay_vp,
+            true,
+            axes_through,
+            &mut self.scene_grid_renderer,
+            &mut self.points_renderer,
+            &mut self.points_overlay_renderer,
+            &mut self.infinite_grid_renderer,
         );
         // ADR 0022 live placement: while a tool is armed and the cursor is over the
         // viewport, resolve where it would drop (via the headless `place_primitive`) and

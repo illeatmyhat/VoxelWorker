@@ -31,12 +31,16 @@
 //     under the model, never an overlay on top of it.
 
 struct GridUniforms {
-    // Camera matrices, both in the RECENTRED render frame the voxels live in.
-    view_projection: mat4x4<f32>,
-    inverse_view_projection: mat4x4<f32>,
-    // Camera eye (recentred frame), xyz; .w unused.
-    eye: vec4<f32>,
-    // Plane origin (the Point's recentred position), xyz; .w unused.
+    // The RAY-FRAME matrices (camera::SceneMatrices): eye-anchored under perspective
+    // (full-matrix unprojection melts at wide-baseline coordinates, and a scene-
+    // bracketed z=0/z=1 pair cancels in the ray direction when the scene is a thin
+    // distant slab), the plain render frame under ortho (affine unprojection, no /w).
+    // This shader is frame-agnostic: ray, plane and clip all live in the same frame.
+    ray_view_projection: mat4x4<f32>,
+    ray_inverse_unprojection: mat4x4<f32>,
+    // Plane origin RELATIVE to the ray-frame origin, slid along the in-plane axes by
+    // coarse-cell multiples to sit near the eye's footprint (pattern-invariant — see
+    // the CPU builder), xyz; .w unused.
     plane_origin: vec4<f32>,
     // Plane orientation: which world axes are the two IN-PLANE axes (u, v) and the
     // constant (normal) axis, encoded as basis vectors. u_axis/v_axis span the
@@ -77,10 +81,11 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
     return out;
 }
 
-// Unproject an NDC point (z in [0,1]) to world space (recentred frame).
+// Unproject an NDC point (z in [0,1]) to the EYE-RELATIVE frame (recentred frame
+// translated by −eye — small coordinates, so the /w divide keeps its precision).
 fn unproject(ndc: vec3<f32>) -> vec3<f32> {
-    let world = grid.inverse_view_projection * vec4<f32>(ndc, 1.0);
-    return world.xyz / world.w;
+    let eye_relative = grid.ray_inverse_unprojection * vec4<f32>(ndc, 1.0);
+    return eye_relative.xyz / eye_relative.w;
 }
 
 // Robust anti-aliased "pristine grid" coverage for one tier at the given spacing
@@ -190,7 +195,9 @@ fn fragment_main(input: VsOut) -> FsOut {
     // already sit below the plane for foreground pixels, so a `t` test wrongly culls
     // the foreground and produces the hard near-side cutoff. `clip.w` is the correct,
     // projection-aware behind-camera test.
-    let clip = grid.view_projection * vec4<f32>(hit, 1.0);
+    // `hit` is eye-relative, so it projects through the camera-relative matrix —
+    // identical clip result to the full-frame pair, computed on small numbers.
+    let clip = grid.ray_view_projection * vec4<f32>(hit, 1.0);
     if (clip.w <= 0.0) {
         discard;
     }

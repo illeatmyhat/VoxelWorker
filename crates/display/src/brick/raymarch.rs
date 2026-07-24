@@ -5,8 +5,20 @@ use super::*;
 /// IDENTICAL parameters (ADR 0008: the frame is carried, never re-derived).
 #[derive(Debug, Clone, Copy)]
 pub struct BrickMarchFrame {
-    pub view_projection: glam::Mat4,
-    pub inverse_view_projection: glam::Mat4,
+    /// CAMERA-RELATIVE matrices (eye at the frame origin): the forward matrix projects
+    /// `hit − eye` for `frag_depth` — the identical clip result to the full-frame pair,
+    /// computed on small numbers (the full matrix's inverse melts when the render frame
+    /// puts the eye at ~10^5 voxels). The inverse is of the UNPROJECTION matrix (the
+    /// camera-sized ray-reconstruction bracket, `SceneMatrices::ray_unprojection`),
+    /// not of the scene-bracketed forward matrix: a compact scene viewed from afar makes the
+    /// scene near/far a thin distant slab whose z=0/z=1 unprojections cancel catastrophically
+    /// in the ray direction.
+    pub ray_view_projection: glam::Mat4,
+    pub ray_inverse_unprojection: glam::Mat4,
+    /// The camera eye in the SHIFTED march frame (`eye + grid_half_extent +
+    /// lattice_shift`), pre-combined CPU-side so the ray origin's one large-magnitude
+    /// term is a per-frame constant and the shader only adds small eye-relative offsets.
+    pub eye_sv: glam::Vec3,
     /// x, y, width, height in physical pixels.
     pub viewport: [f32; 4],
     /// `floor(grid_dimensions / 2)` — the cuboid path's corner-anchoring half.
@@ -93,8 +105,10 @@ pub(crate) fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<Occupancy
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct BrickUniformsPod {
-    view_projection: [[f32; 4]; 4],
-    inverse_view_projection: [[f32; 4]; 4],
+    ray_view_projection: [[f32; 4]; 4],
+    ray_inverse_unprojection: [[f32; 4]; 4],
+    // The eye in the shifted march frame, xyz; .w unused.
+    eye_sv: [f32; 4],
     viewport: [f32; 4],
     grid_half_extent: [f32; 3],
     voxels_per_block: f32,
@@ -1185,7 +1199,7 @@ impl BrickRaymarchRenderer {
     /// CPU reference march.
     pub fn march_frame(
         &self,
-        view_projection: glam::Mat4,
+        scene_matrices: camera::SceneMatrices,
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
         band: LayerBand,
@@ -1292,9 +1306,23 @@ impl BrickRaymarchRenderer {
         }
         let (region_lo_sv, region_hi_sv) = region_sv.unwrap_or(([0; 3], [0; 3]));
 
+        // The one large-magnitude ray-origin term, combined in f64 (exact for these
+        // integer halves/shifts and the f32 eye) before the single f32 downcast.
+        let eye_sv = (scene_matrices.ray_eye.as_dvec3()
+            + glam::DVec3::new(half[0] as f64, half[1] as f64, half[2] as f64)
+            + glam::DVec3::new(
+                lattice_shift[0] as f64,
+                lattice_shift[1] as f64,
+                lattice_shift[2] as f64,
+            ))
+        .as_vec3();
+
         BrickMarchFrame {
-            view_projection,
-            inverse_view_projection: view_projection.inverse(),
+            ray_view_projection: scene_matrices.ray_view_projection,
+            ray_inverse_unprojection: scene_matrices
+                .ray_unprojection
+                .inverse(),
+            eye_sv,
             viewport: [
                 viewport_px[0] as f32,
                 viewport_px[1] as f32,
@@ -1329,7 +1357,7 @@ impl BrickRaymarchRenderer {
     pub fn update_uniforms(
         &self,
         queue: &wgpu::Queue,
-        view_projection: glam::Mat4,
+        scene_matrices: camera::SceneMatrices,
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
         band: LayerBand,
@@ -1340,7 +1368,7 @@ impl BrickRaymarchRenderer {
         // ADR 0018 Decision 5 (S5): the SOLID march confines the band to the region
         // (ConfineBand); outside the region it renders finished. `ghost_confine = false`.
         let frame =
-            self.march_frame(view_projection, viewport_px, grid_dimensions, band, region, false);
+            self.march_frame(scene_matrices, viewport_px, grid_dimensions, band, region, false);
         // The bound procedural material drives modulation exactly as the cuboid
         // path: `Some` enables the relative base-colour array, `None` (a loaded VS
         // block — the brick path disengages for those, but mirror anyway) is neutral.
@@ -1387,8 +1415,13 @@ impl BrickRaymarchRenderer {
         let material_atlas = crate::texture_atlas::MaterialAtlas::from_procedural_materials();
         let overlay = crate::renderer::grid_overlay_params();
         BrickUniformsPod {
-            view_projection: frame.view_projection.to_cols_array_2d(),
-            inverse_view_projection: frame.inverse_view_projection.to_cols_array_2d(),
+            ray_view_projection: frame
+                .ray_view_projection
+                .to_cols_array_2d(),
+            ray_inverse_unprojection: frame
+                .ray_inverse_unprojection
+                .to_cols_array_2d(),
+            eye_sv: [frame.eye_sv.x, frame.eye_sv.y, frame.eye_sv.z, 0.0],
             viewport: frame.viewport,
             grid_half_extent: frame.grid_half_extent.to_array(),
             voxels_per_block: self.brick_edge_voxels.max(1) as f32,
@@ -1485,7 +1518,7 @@ impl BrickRaymarchRenderer {
     pub fn update_ghost_uniforms(
         &mut self,
         queue: &wgpu::Queue,
-        view_projection: glam::Mat4,
+        scene_matrices: camera::SceneMatrices,
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
         band: LayerBand,
@@ -1510,7 +1543,7 @@ impl BrickRaymarchRenderer {
             };
             // ClipToRegion: the slab AND the region confine the traversal AABB (`ghost_confine`).
             let frame =
-                self.march_frame(view_projection, viewport_px, grid_dimensions, slab, region, true);
+                self.march_frame(scene_matrices, viewport_px, grid_dimensions, slab, region, true);
             let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
             queue.write_buffer(
                 &self.uniform_buffer,
@@ -1528,7 +1561,7 @@ impl BrickRaymarchRenderer {
                 onion_depth: 0,
             };
             let frame =
-                self.march_frame(view_projection, viewport_px, grid_dimensions, slab, region, true);
+                self.march_frame(scene_matrices, viewport_px, grid_dimensions, slab, region, true);
             let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
             queue.write_buffer(
                 &self.uniform_buffer,

@@ -85,6 +85,52 @@ pub struct FramePhases<'a> {
     pub target_height: u32,
 }
 
+/// Upload the per-frame **scene scaffold** uniforms shared by the windowed shell and `shot`
+/// (ADR 0031): the per-object scene grid, the world-reference Points (screen-stable axes +
+/// planes), and the analytic infinite grid. Both paths previously drove these renderers with
+/// byte-identical orchestration inline — the drift that let the overlay matrix diverge between
+/// them (a Point far from the render origin clipped in one path but not the other). Centralising
+/// it here makes that divergence unrepresentable: one place computes the sequence, both call it.
+///
+/// `scene_matrices` bundles the scene matrix, its camera-relative companion (the infinite
+/// grid unprojects per fragment and melts on the full matrix at wide-baseline coordinates),
+/// and the eye; `overlay_view_projection` is the depth-off axes matrix (all from the shared
+/// [`AppCore`](crate::AppCore) getters). The scene grid always uploads.
+/// `show_points` gates the Points + infinite grid (the shell always draws them; `shot` only under
+/// `--points`). `axes_through` ("axes on top") skips the depth-tested Points instance, leaving
+/// only the depth-off overlay instance.
+#[allow(clippy::too_many_arguments)]
+pub fn upload_scene_scaffold(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene: &Scene,
+    density: u32,
+    camera: &camera::OrbitCamera,
+    scene_matrices: camera::SceneMatrices,
+    overlay_view_projection: glam::Mat4,
+    show_points: bool,
+    axes_through: bool,
+    scene_grid: &mut SceneGridRenderer,
+    points: &mut PointsRenderer,
+    points_overlay: &mut PointsRenderer,
+    infinite_grid: &mut InfiniteGridRenderer,
+) {
+    scene_grid.rebuild_from_scene(device, queue, scene, density);
+    scene_grid.update_uniforms(queue, scene_matrices.view_projection);
+    if !show_points {
+        return;
+    }
+    // Depth-off overlay instance (the on-top / paint-order axes) — always drawn.
+    points_overlay.rebuild_from_scene(device, queue, scene, density, camera, false);
+    points_overlay.update_uniforms(queue, overlay_view_projection);
+    // Depth-tested instance for crisp near occlusion — only when NOT drawing axes on top.
+    if !axes_through {
+        points.rebuild_from_scene(device, queue, scene, density, camera, true);
+        points.update_uniforms(queue, scene_matrices.view_projection);
+    }
+    infinite_grid.rebuild_from_scene(queue, scene, density, scene_matrices);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     bridge: &mut EguiPaintBridge,
