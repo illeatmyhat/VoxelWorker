@@ -70,3 +70,36 @@ pub mod mesh;
 pub mod renderer;
 mod shaders;
 pub mod texture_atlas;
+
+/// Anything that records itself into a frame phase with one draw call (ADR 0031). The shell
+/// groups scene draws into ordered phases — background, over-model ghosts, scaffold, on-top —
+/// and records each phase's slice in turn into the single viewport pass. The solid model and
+/// the view cube are NOT scene draws (they need the material bind group / their own sub-pass);
+/// everything else drawn in the viewport is.
+pub trait SceneDraw {
+    /// Record this draw into the in-progress viewport render pass. Self-gating: an empty batch
+    /// (nothing to show this frame) records nothing.
+    fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>);
+}
+
+/// Delegate `SceneDraw::draw` to each renderer's inherent `draw` (inherent methods win method
+/// resolution, so this is a plain forward, not recursion). The draw logic stays in each
+/// renderer's own file; this is only the roster of what the shell may put in a phase.
+macro_rules! impl_scene_draw {
+    ($($ty:ty),+ $(,)?) => {
+        $(impl SceneDraw for $ty {
+            fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+                self.draw(render_pass)
+            }
+        })+
+    };
+}
+impl_scene_draw!(
+    renderer::BackgroundGradientRenderer,
+    renderer::SceneGridRenderer,
+    renderer::InfiniteGridRenderer,
+    renderer::PointsRenderer,
+    renderer::TransformGizmoRenderer,
+    renderer::PlacementGhostRenderer,
+    mesh::SelectedOperandGhostRenderer,
+);

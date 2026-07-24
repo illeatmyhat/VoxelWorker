@@ -742,70 +742,22 @@ pub fn run_egui_frame(
 ///
 /// `msaa_color_view` and `depth_view` are render-target-agnostic: the window and
 /// the headless capture pass their own 4-sample textures sized to the same target.
-/// Optional M5 overlays for [`render_frame`]: the origin gizmo (drawn in the
-/// MSAA pass, depth-test off) and the corner view cube (its own scissored pass).
-/// Each is `None` when its Display toggle is off, so the caller controls
-/// visibility without the renderer caring.
-pub struct FrameOverlays<'a> {
-    /// The viewport background gradient (issue #91): a fullscreen radial field painted
-    /// FIRST in the 3D MSAA pass (before the voxels, depth-test off), so both display
-    /// paths and `shot` composite the scene over the same Signal background.
-    pub background_gradient: &'a display::renderer::BackgroundGradientRenderer,
-    pub gizmo: Option<&'a display::renderer::TransformGizmoRenderer>,
-    pub view_cube: Option<&'a display::renderer::ViewCubeRenderer>,
-    /// The ViewCube chrome zone under the cursor (#13 Step 2). Drives which hover
-    /// arrows the cube draws and which glyph is highlighted. `None` = nothing
-    /// hovered (the normal render: compass + Home/Fit only, no arrows).
-    pub cube_hovered_zone: Option<camera::CubeChromeZone>,
-    /// #13 Step 6 follow-up: draw all four ViewCube rotate arrows PERSISTENTLY (set
-    /// when the view is face-constrained), with the hovered one brightened. `false`
-    /// (off-face view) draws no rotate arrows. Decoupled from `cube_hovered_zone` so
-    /// the arrows are a standing affordance, not a hover-only reveal.
-    pub cube_rotate_arrows_visible: bool,
-    /// The per-object block lattice + floor grid (issue #29 S3). Drawn in the MSAA
-    /// pass (depth-tested) before the gizmo. The renderer's per-frame batch already
-    /// holds only the grid-enabled nodes' lines (master AND per-object), so the draw
-    /// is self-gating; `None` skips it entirely.
-    pub scene_grid: Option<&'a display::renderer::SceneGridRenderer>,
-    /// The world reference AXES (issue #29 S5): every visible Point's axis lines.
-    /// Drawn in the MSAA pass (depth-tested) with the scene-grid line batch, so opaque
-    /// voxels occlude them. Its batch already holds only the visible Points' enabled
-    /// axes (self-gating); `None` skips it entirely (the `shot` default, so the
-    /// existing goldens are unchanged).
-    pub points: Option<&'a display::renderer::PointsRenderer>,
-    /// The analytic infinite reference grid (issue #29 Points fast-follow): every
-    /// visible Point's enabled PLANES, drawn as fullscreen ray-plane passes in the
-    /// MSAA pass after the voxels (depth-tested via `frag_depth`), so opaque objects
-    /// occlude the grid. Replaces the old finite tiled-line ground plane. Self-gating
-    /// (no enabled plane → no draw); `None` skips it (the `shot` default).
-    pub infinite_grid: Option<&'a display::renderer::InfiniteGridRenderer>,
-    /// ADR 0012: draw the onion GHOST pass this frame. When `true`, immediately
-    /// after the solid voxel draw (inside the shared MSAA pass), the engaged display
-    /// path (brick raymarch when present, else the cuboid mesh) draws its translucent
-    /// ghost of the voxels in the onion slabs — recentred-Z in `[onion_z_min,
-    /// band_z_min) ∪ (band_z_max, onion_z_max]`. Depth-tested `Less` + alpha-blended, with
-    /// depth WRITE ON so only the NEAREST ghost surface shows (blended once — a
-    /// builder-independent render that matches across display paths); the solid, drawn
-    /// first, still occludes the ghost. Replaces the volumetric fog pass; a band scrub is a pure uniform (brick)
-    /// or thin-slab-remesh (mesh) update, never the fog atlas rebuild. The ghost
-    /// uniforms/geometry must already be prepared by the renderers' `update_uniforms`.
-    pub onion_ghost_active: bool,
-    /// ADR 0018 Decision 6: the boolean-operand ghost — every Subtract/Intersect operand
-    /// body in the selected subtree as an operation-coded x-ray (quiet where directly
-    /// visible, loud where buried; ADR 0012 H1 is the ghost-pass precedent). Drawn
-    /// immediately after the solid + onion ghost inside the shared MSAA pass, so it
-    /// composes over BOTH display paths (the brick raymarch writes ray-hit depth into the
-    /// same attachment the passes test against). Self-gating (no bodies → no draw — the
-    /// ghost is empty outside Show-booleans mode); `None` skips it entirely (the
-    /// debug-faces diagnostic mode, which suppresses every ghost).
-    pub selected_operand_ghost: Option<&'a display::mesh::SelectedOperandGhostRenderer>,
-    /// ADR 0022: the armed-tool PLACEMENT GHOST — a translucent analytic SDF drawn where
-    /// the armed primitive's voxels will land ("nothing recomposes during the gesture,
-    /// render a coloured transparent SDF where the voxels will be"). Drawn immediately
-    /// after the operand ghost inside the shared MSAA pass so it depth-tests against and
-    /// blends over the solid voxels on BOTH display paths. Self-gating (disarmed → no
-    /// draw); `None` skips it entirely (nothing armed — the default for every golden).
-    pub placement_ghost: Option<&'a display::renderer::PlacementGhostRenderer>,
+/// The viewport render as ordered frame phases (ADR 0031). [`render_frame`] records these into
+/// the single MSAA pass in a FIXED order — background → model → over-model → scaffold → on-top —
+/// then the view cube in its own corner pass. Each phase slice is a caller-filled list of
+/// [`SceneDraw`](display::SceneDraw)s (self-gating, so an empty batch draws nothing); the model
+/// and the cube are special (material bind / own sub-pass) and stay named fields.
+pub struct FramePhases<'a> {
+    /// Fullscreen, pre-solid, depth off (the Signal background gradient, issue #91).
+    pub background: &'a [&'a dyn display::SceneDraw],
+    /// Translucent ghosts blended over the solid, depth-tested no-write (the operand x-ray,
+    /// the placement ghost). Drawn after the model so both display paths' depth is final.
+    pub over_model: &'a [&'a dyn display::SceneDraw],
+    /// Depth-tested reference lines the model occludes (block/floor grids, point axes,
+    /// analytic infinite grid) — scaffold behind/under the model.
+    pub scaffold: &'a [&'a dyn display::SceneDraw],
+    /// Depth off, drawn through the model (the manipulator gizmos).
+    pub on_top: &'a [&'a dyn display::SceneDraw],
     /// The cuboid mesh renderer — the CPU voxel render path (part of #20; the legacy
     /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
@@ -815,16 +767,32 @@ pub struct FrameOverlays<'a> {
     /// ADR 0011 G1: the brick raymarch display sink. `Some` replaces the cuboid
     /// mesh DRAW for this frame (single ported-producer scenes on the GPU path) —
     /// the pass runs in the same MSAA pass and writes ray-hit depth, so every
-    /// overlay/fog/cube/egui pass after it composites unchanged. `None` keeps the
-    /// mesh path (multi-producer, loaded materials, debug modes, no-GPU builds).
+    /// phase after it composites unchanged. `None` keeps the mesh path (multi-producer,
+    /// loaded materials, debug modes, no-GPU builds).
     pub brick_raymarch: Option<&'a display::brick::BrickRaymarchRenderer>,
+    /// ADR 0012: draw the onion GHOST this frame. When `true`, immediately after the solid
+    /// voxel draw (inside the model phase), the engaged display path (brick raymarch when
+    /// present, else the cuboid mesh) draws its translucent ghost of the voxels in the onion
+    /// slabs. Depth-tested `Less` + alpha-blended, depth WRITE ON so only the NEAREST ghost
+    /// surface shows; the solid, drawn first, still occludes it. The ghost uniforms/geometry
+    /// must already be prepared by the renderers' `update_uniforms`.
+    pub onion_ghost_active: bool,
+    /// The corner view cube (its own scissored pass). `None` when its Display toggle is off.
+    pub view_cube: Option<&'a display::renderer::ViewCubeRenderer>,
+    /// The ViewCube chrome zone under the cursor (#13 Step 2). Drives which hover
+    /// arrows the cube draws and which glyph is highlighted. `None` = nothing hovered.
+    pub cube_hovered_zone: Option<camera::CubeChromeZone>,
+    /// #13 Step 6 follow-up: draw all four ViewCube rotate arrows PERSISTENTLY (set
+    /// when the view is face-constrained), with the hovered one brightened. `false`
+    /// (off-face view) draws no rotate arrows.
+    pub cube_rotate_arrows_visible: bool,
+    /// Signal (issue #88): the view cube's right inset (physical px) = the floating display
+    /// stack's current width, so the GPU-drawn cube slides left of the stack. From
+    /// `PreparedEguiFrame`.
+    pub view_cube_right_inset_px: u32,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
-    /// Signal (issue #88): the view cube's right inset (physical px) = the floating display
-    /// stack's current width, so the GPU-drawn cube slides left of the stack and matches the
-    /// egui rail's anchor (both via [`view_cube_corner`]). From `PreparedEguiFrame`.
-    pub view_cube_right_inset_px: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -836,7 +804,7 @@ pub fn render_frame(
     msaa_color_view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
     material: display::renderer::MaterialSource,
-    overlays: &FrameOverlays,
+    phases: &FramePhases,
     prepared: &PreparedEguiFrame,
 ) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -899,10 +867,11 @@ pub fn render_frame(
         );
         voxel_pass.set_scissor_rect(viewport_x, viewport_y, viewport_width, viewport_height);
 
-        // Issue #91 (item 1): the Signal viewport background — a fullscreen radial
-        // gradient painted FIRST (depth-test off / no write), so every voxel + overlay
-        // below composites over it and both display paths + `shot` share one background.
-        overlays.background_gradient.draw(&mut voxel_pass);
+        // Background phase (ADR 0031): fullscreen, pre-solid, depth off — the Signal
+        // background gradient — so every voxel + phase below composites over it.
+        for draw in phases.background {
+            draw.draw(&mut voxel_pass);
+        }
 
         // The voxel model: the brick raymarch (ADR 0011 G1) when engaged, else the
         // cuboid mesh path. When a VS block is applied the mesh path binds the
@@ -914,14 +883,14 @@ pub fn render_frame(
             display::renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
             display::renderer::MaterialSource::Procedural(_) => None,
         };
-        if let Some(brick_raymarch) = overlays.brick_raymarch {
+        if let Some(brick_raymarch) = phases.brick_raymarch {
             // ADR 0011 G2: a loaded VS block now textures the raymarch too — bind the
             // block's 6-layer D2Array at group(2) so solid hits shade per-face by the
             // owner's lattice rule (the brick renderer's `loaded_material_active` flag,
             // set alongside its uniforms, selects that branch). `None` binds the dummy.
             brick_raymarch.draw(&mut voxel_pass, loaded_material);
         } else {
-            overlays.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
+            phases.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
         }
 
         // ADR 0012 (H1) — the onion GHOST pass. Immediately after the SOLID band draw,
@@ -932,79 +901,51 @@ pub fn render_frame(
         // brick ghost is two per-slab raymarches; the mesh ghost is two thin per-slab
         // meshes — both shaded flat translucent (the retired fog haze's hue). This
         // REPLACES the former volumetric fog pass (Pass 1a below, now always `None`).
-        if overlays.onion_ghost_active {
-            if let Some(brick_raymarch) = overlays.brick_raymarch {
+        if phases.onion_ghost_active {
+            if let Some(brick_raymarch) = phases.brick_raymarch {
                 brick_raymarch.draw_ghost(&mut voxel_pass);
             } else {
-                overlays.cuboid_mesh.draw_ghost(&mut voxel_pass);
+                phases.cuboid_mesh.draw_ghost(&mut voxel_pass);
             }
         }
 
-        // Issue #78 — the selected-operand ghost: the ACTIVE node's own body, drawn
-        // twice against the solid depth already in the attachment (quiet `LessEqual` /
-        // loud `Greater`, no depth writes). Runs after the solid + onion ghost so both
-        // display paths' depth is final; before the depth-tested overlays below, which
-        // it cannot occlude (it writes no depth).
-        // ADR 0018 Decision 6: the boolean-operand ghost (Show-booleans mode). Writes no
-        // depth; empty outside the mode, so this is a no-op then.
-        if let Some(selected_operand_ghost) = overlays.selected_operand_ghost {
-            selected_operand_ghost.draw(&mut voxel_pass);
+        // Over-model phase (ADR 0031): translucent ghosts blended over the solid, depth-tested
+        // no-write — the operand x-ray (#78 / ADR 0018 D6) and the armed-tool placement ghost
+        // (ADR 0022). After the solid + onion ghost so both display paths' depth is final;
+        // before the scaffold, which they cannot occlude (they write no depth).
+        for draw in phases.over_model {
+            draw.draw(&mut voxel_pass);
         }
 
-        // ADR 0022 — the armed-tool PLACEMENT GHOST. Drawn immediately after the operand
-        // ghost, in the SAME MSAA pass, so it depth-tests against the solid voxels already
-        // in the attachment (both display paths wrote their ray-hit / mesh depth) and
-        // blends over them: the ghost's translucent SDF shows exactly where a drop lands,
-        // occluded where solid geometry is in front. Self-gating (disarmed → no draw);
-        // `None` skips it (nothing armed).
-        if let Some(placement_ghost) = overlays.placement_ghost {
-            placement_ghost.draw(&mut voxel_pass);
+        // Scaffold phase (ADR 0031): depth-tested reference lines the solid model occludes —
+        // per-object block/floor grids (#29 S3), the analytic infinite reference grid (#29
+        // Points fast-follow, depth-tested via `frag_depth`), and the visible Points' axes
+        // (#29 S5). Scaffold behind/under the model, not an overlay on top.
+        for draw in phases.scaffold {
+            draw.draw(&mut voxel_pass);
         }
 
-        // Per-object block lattice + floor grid (issue #29 S3): same MSAA pass,
-        // depth-tested so the solid model occludes them (a scaffold around/under it).
-        if let Some(scene_grid) = overlays.scene_grid {
-            scene_grid.draw(&mut voxel_pass);
-        }
-
-        // Analytic infinite reference grid (issue #29 Points fast-follow): the visible
-        // Points' enabled PLANES as fullscreen ray-plane passes, AFTER the voxels (so
-        // the depth buffer holds the model) and depth-tested via `frag_depth` so opaque
-        // objects occlude the grid. Replaces the old finite tiled-line ground plane —
-        // the grid now extends smoothly to the horizon with no finite edge / near-clip
-        // cutoff at shallow angles, fading with distance.
-        if let Some(infinite_grid) = overlays.infinite_grid {
-            infinite_grid.draw(&mut voxel_pass);
-        }
-
-        // World reference AXES (issue #29 S5): the visible Points' axis lines, same
-        // MSAA pass, depth-tested so opaque voxels occlude them (subtle frame markers
-        // behind/under the model, not an overlay on top).
-        if let Some(points) = overlays.points {
-            points.draw(&mut voxel_pass);
-        }
-
-        // Origin gizmo: same MSAA pass, after the voxels, depth-test OFF so it
-        // shows through the solid model.
-        if let Some(gizmo) = overlays.gizmo {
-            gizmo.draw(&mut voxel_pass);
+        // On-top phase (ADR 0031): depth-test OFF, drawn through the solid model — the
+        // manipulator gizmos.
+        for draw in phases.on_top {
+            draw.draw(&mut voxel_pass);
         }
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).
     // Drawn after the 3D resolve, before egui (render layering).
-    if let Some(view_cube) = overlays.view_cube {
+    if let Some(view_cube) = phases.view_cube {
         view_cube.draw(
             device,
             queue,
             &mut encoder,
             target_view,
-            overlays.target_width,
-            overlays.target_height,
+            phases.target_width,
+            phases.target_height,
             prepared.viewport_px,
-            overlays.view_cube_right_inset_px,
-            overlays.cube_hovered_zone,
-            overlays.cube_rotate_arrows_visible,
+            phases.view_cube_right_inset_px,
+            phases.cube_hovered_zone,
+            phases.cube_rotate_arrows_visible,
         );
     }
 

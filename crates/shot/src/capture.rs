@@ -6,7 +6,7 @@ use voxel_worker::block_palette::PaletteHost;
 use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppCore, CuboidMeshRenderer, EguiPaintBridge, FrameOverlays, GpuContext,
+    run_egui_frame, AppCore, CuboidMeshRenderer, EguiPaintBridge, FramePhases, GpuContext,
     InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
     OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, VoxelBody, Point,
     PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape, SelectedOperandGhostRenderer,
@@ -1206,56 +1206,55 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         None => MaterialSource::Procedural(options.material),
     };
 
-    let overlays = FrameOverlays {
-        background_gradient: &background_gradient_renderer,
-        gizmo: gizmo_placement
-            .is_some()
-            .then_some(&transform_gizmo_renderer),
+    // The ordered frame phases (ADR 0031), gated for `shot` so the existing goldens stay
+    // byte-identical (Points suppressed unless `--points`, gizmo only with a placement, etc.).
+    let background: [&dyn display::SceneDraw; 1] = [&background_gradient_renderer];
+    let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
+    // ADR 0018 Decision 6: operand x-ray, suppressed in debug-faces; self-gates otherwise.
+    if !options.debug_face_orientation {
+        over_model.push(&selected_operand_ghost_renderer);
+    }
+    // ADR 0022: the armed-tool placement ghost (self-gates on being armed).
+    if panel_state.placement_ghost.is_some() {
+        over_model.push(&placement_ghost_renderer);
+    }
+    // Scaffold: grids always (self-gate); Points' planes + axes only under `--points`.
+    let mut scaffold: Vec<&dyn display::SceneDraw> = vec![&scene_grid_renderer];
+    if options.show_points {
+        scaffold.push(&infinite_grid_renderer);
+        scaffold.push(&points_renderer);
+    }
+    let mut on_top: Vec<&dyn display::SceneDraw> = Vec::new();
+    if gizmo_placement.is_some() {
+        on_top.push(&transform_gizmo_renderer);
+    }
+    let phases = FramePhases {
+        background: &background,
+        over_model: &over_model,
+        scaffold: &scaffold,
+        on_top: &on_top,
+        cuboid_mesh: &cuboid_mesh_renderer,
+        // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw (the mesh
+        // renderer above was built empty); everything else is unchanged.
+        brick_raymarch: brick_raymarch_renderer.as_ref(),
+        // ADR 0012: onion ghost when the band is a real onion slab (`onion_depth > 0`).
+        onion_ghost_active: band.onion_depth > 0,
         view_cube: if options.show_view_cube {
             Some(&view_cube_renderer)
         } else {
             None
         },
         cube_hovered_zone: options.cube_hover,
-        // #13 Step 6 follow-up: the four rotate arrows draw persistently when the view
-        // is face-constrained. A forced `--cube-hover rotate-*` also enables them so a
-        // golden can pin the arrow render even from a non-face camera.
+        // #13 Step 6 follow-up: rotate arrows draw persistently when face-constrained; a
+        // forced `--cube-hover rotate-*` also enables them so a golden can pin the arrows.
         cube_rotate_arrows_visible: app_core.camera.is_face_constrained()
             || matches!(
                 options.cube_hover,
                 Some(camera::CubeChromeZone::RotateArrow(_))
             ),
-        scene_grid: Some(&scene_grid_renderer),
-        // Issue #29 S5: Points SUPPRESSED unless `--points` (keeps the 6 goldens
-        // byte-identical); the new `demo-village --points` golden enables them.
-        points: options.show_points.then_some(&points_renderer),
-        // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes),
-        // suppressed with the rest of Points unless `--points`.
-        infinite_grid: options.show_points.then_some(&infinite_grid_renderer),
-        // ADR 0012: draw the onion ghost pass when the band is a real onion slab
-        // (`band.onion_depth > 0` ⇔ onion skin on, non-full-range, not debug-faces).
-        // The display ghosts the onion slabs (prepared in the cuboid/brick
-        // `update_uniforms` above); the volumetric fog is retired.
-        onion_ghost_active: band.onion_depth > 0,
-        // ADR 0018 Decision 6: the boolean-operand ghost draws over BOTH display paths
-        // (mesh + brick). Suppressed in debug-faces mode (a diagnostic render — every
-        // ghost is off there); self-gates on an empty ghost (only Show-booleans populates
-        // it).
-        selected_operand_ghost: (!options.debug_face_orientation)
-            .then_some(&selected_operand_ghost_renderer),
-        // ADR 0022: the armed-tool placement ghost (self-gates on being armed).
-        placement_ghost: panel_state
-            .placement_ghost
-            .as_ref()
-            .map(|_| &placement_ghost_renderer),
-        cuboid_mesh: &cuboid_mesh_renderer,
-        // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw
-        // (the mesh renderer above was built empty); everything else is unchanged.
-        brick_raymarch: brick_raymarch_renderer.as_ref(),
+        view_cube_right_inset_px: prepared.view_cube_right_inset_px,
         target_width: options.width,
         target_height: options.height,
-        // Signal (issue #88): slide the cube left of the floating display stack.
-        view_cube_right_inset_px: prepared.view_cube_right_inset_px,
     };
 
     // Paint via the exact same render-target-agnostic core the window uses.
@@ -1267,7 +1266,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &msaa_color_view,
         &depth_view,
         material,
-        &overlays,
+        &phases,
         &prepared,
     );
 

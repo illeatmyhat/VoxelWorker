@@ -677,61 +677,60 @@ impl WindowedState {
         // when `onion_ghost_active`).
         let _ = layer_range;
 
-        let overlays = FrameOverlays {
-            background_gradient: &self.background_gradient_renderer,
-            gizmo: gizmo_placement
-                .is_some()
-                .then_some(&self.transform_gizmo_renderer),
-            view_cube: if self.panel_state.show_view_cube {
-                Some(&self.view_cube_renderer)
-            } else {
-                None
-            },
-            // #13 Step 4: live hover — the chrome zone under the cursor (computed
-            // cheaply in `CursorMoved`) so the hovered rotate/roll arrow brightens.
-            // `None` when nothing's hovered or while orbiting/dragging.
-            cube_hovered_zone: self.hovered_cube_zone,
-            // #13 Step 6 follow-up: the four rotate arrows are a standing affordance
-            // whenever the view is constrained to a face (not hover-gated), with the
-            // hovered one brightened. Off-face views show none.
-            cube_rotate_arrows_visible: self.app_core.camera.is_face_constrained(),
-            scene_grid: Some(&self.scene_grid_renderer),
-            // Issue #29 S5: the windowed app always shows the Points (the Origin's
-            // ground+axes are on by default); the batch self-gates on hidden/off.
-            points: Some(&self.points_renderer),
-            // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes);
-            // self-gates on no enabled plane.
-            infinite_grid: Some(&self.infinite_grid_renderer),
-            // ADR 0012: draw the onion GHOST pass this frame (the engaged display path
-            // ghosts the onion slabs after its solid draw). Its uniforms/geometry were
-            // prepared by the renderers' `update_uniforms` / `update_ghost_uniforms` above.
-            onion_ghost_active,
-            // ADR 0018 Decision 6: the boolean-operand ghost draws over BOTH display
-            // paths. Suppressed in debug-faces mode (a diagnostic render — every ghost is
-            // off there, matching the onion ghost's forced-FULL band); self-gates on an
-            // empty ghost (Normal / Onion-fog mode, or no covered boolean).
-            selected_operand_ghost: (!self.panel_state.debug_face_orientation)
-                .then_some(&self.selected_operand_ghost_renderer),
-            // ADR 0022: the armed-tool placement ghost draws over both display paths; the
-            // renderer self-gates on being armed, so pass it whenever a tool is armed.
-            placement_ghost: self
-                .panel_state
-                .placement_ghost
-                .as_ref()
-                .map(|_| &self.placement_ghost_renderer),
+        // The ordered frame phases (ADR 0031). Each renderer self-gates (empty batch → no
+        // draw), so an always-included draw is a cheap no-op; only the gizmo (a fixed unit
+        // gizmo, always non-empty) is gated on there being a selection.
+        let background: [&dyn display::SceneDraw; 1] = [&self.background_gradient_renderer];
+        let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
+        // ADR 0018 Decision 6: the operand x-ray, suppressed in debug-faces mode; self-gates
+        // on an empty ghost otherwise.
+        if !self.panel_state.debug_face_orientation {
+            over_model.push(&self.selected_operand_ghost_renderer);
+        }
+        // ADR 0022: the armed-tool placement ghost self-gates on being armed.
+        if self.panel_state.placement_ghost.is_some() {
+            over_model.push(&self.placement_ghost_renderer);
+        }
+        // Scaffold: per-object grids, the analytic infinite grid (Points' planes), the Points'
+        // axes — each self-gates (grids off / no plane / hidden Point).
+        let scaffold: [&dyn display::SceneDraw; 3] = [
+            &self.scene_grid_renderer,
+            &self.infinite_grid_renderer,
+            &self.points_renderer,
+        ];
+        let mut on_top: Vec<&dyn display::SceneDraw> = Vec::new();
+        if gizmo_placement.is_some() {
+            on_top.push(&self.transform_gizmo_renderer);
+        }
+        let phases = FramePhases {
+            background: &background,
+            over_model: &over_model,
+            scaffold: &scaffold,
+            on_top: &on_top,
             cuboid_mesh: self.display.cuboid_mesh_renderer(),
-            // ADR 0011 G1: when engaged (field installed, no mesh-only mode), the
-            // brick raymarch replaces the cuboid-mesh DRAW for this frame; the mesh
-            // stays built as the fallback + A/B reference (ADR 0011 Decision 6).
+            // ADR 0011 G1: when engaged, the brick raymarch replaces the cuboid-mesh DRAW for
+            // this frame; the mesh stays built as the fallback + A/B reference.
             brick_raymarch: if brick_raymarch_engaged {
                 self.display.brick_raymarch_renderer()
             } else {
                 None
             },
-            target_width: self.surface_config.width,
-            target_height: self.surface_config.height,
+            // ADR 0012: ghost the onion slabs after the solid draw (uniforms/geometry prepared above).
+            onion_ghost_active,
+            view_cube: if self.panel_state.show_view_cube {
+                Some(&self.view_cube_renderer)
+            } else {
+                None
+            },
+            // #13 Step 4: live hover — the chrome zone under the cursor so the hovered arrow brightens.
+            cube_hovered_zone: self.hovered_cube_zone,
+            // #13 Step 6 follow-up: the rotate arrows are a standing affordance whenever the view
+            // is face-constrained (not hover-gated).
+            cube_rotate_arrows_visible: self.app_core.camera.is_face_constrained(),
             // Signal (issue #88): slide the cube left of the floating display stack.
             view_cube_right_inset_px: prepared.view_cube_right_inset_px,
+            target_width: self.surface_config.width,
+            target_height: self.surface_config.height,
         };
 
         // M6: an applied VS block overrides the procedural material selection.
@@ -750,7 +749,7 @@ impl WindowedState {
                 &self.msaa_color_view,
                 &self.depth_view,
                 material,
-                &overlays,
+                &phases,
                 &prepared,
             );
 

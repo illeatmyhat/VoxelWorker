@@ -30,7 +30,7 @@ use crate::{
     run_egui_frame, AppConfig, AppCore, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
     RebuildOutcome, RebuildOutput, RecentreVoxels,
     EguiPaintBridge,
-    FrameOverlays,
+    FramePhases,
     TransformGizmoRenderer,
     GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, PointsRenderer,
     SceneGridRenderer,

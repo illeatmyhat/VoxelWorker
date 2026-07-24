@@ -291,6 +291,22 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   applies the mode scene-wide; with nothing selected a mode has no target and the scene
   renders finished.
 
+- **Frame phase** — one ordered group of draws recorded into the single viewport MSAA pass,
+  grouped by depth semantics. In order: **background** (fullscreen, pre-solid, depth off) →
+  **model** (the solid voxels — brick raymarch or cuboid mesh — plus its onion ghost) →
+  **over-model** (translucent ghosts that blend over the solid: operand x-ray, placement ghost) →
+  **scaffold** (depth-tested reference lines the model occludes: block/floor grids, point axes) →
+  **on-top** (depth off, drawn through the model: the manipulator gizmos). The **view cube** is a
+  separate scissored corner pass, not a phase. The phase *order* is fixed in one place; each phase's
+  *contents* are a caller-filled list. "Phase" is deliberately distinct from a wgpu render pass
+  (there is one) and from a Z-**layer**/**band**.
+
+- **Scene draw** — anything that records itself into a frame phase via one `draw(pass)` call (the
+  `SceneDraw` trait). Background, ghosts, scaffold lines, and gizmos are all scene draws; the model
+  and the view cube are not (they need the material binding / their own sub-pass). NOTE: distinct
+  from **overlay**, which in this glossary is the on-face-grid flag half of a [cell key](#cell-key),
+  not a thing drawn.
+
 ## Persistence
 
 - **Document** — the project artifact: what a user saves, shares, and reopens. Carries what
