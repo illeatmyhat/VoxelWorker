@@ -91,15 +91,29 @@ impl AppCore {
             std::array::from_fn(|axis| recentre_voxels[axis] - half[axis]);
 
         let aspect_ratio = viewport[2] / viewport[3];
-        let view_projection = self.view_projection(aspect_ratio, region_dimensions);
         let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
         let normalized_y = 1.0 - (cursor[1] - viewport[1]) / viewport[3] * 2.0;
-        let world_ray = unproject_screen_point_to_ray(view_projection, normalized_x, normalized_y)?;
+        // Unproject through the RAY FRAME, not the full scene VP (a06d215's wide-baseline fix,
+        // now for the CPU pick): under perspective `ray_unprojection` is the camera-relative,
+        // camera-bracketed matrix whose inverse yields an EYE-RELATIVE ray — small, precise even
+        // when the render frame puts the eye ~10^5 voxels out — and `ray_eye` carries the one
+        // large term added back OUTSIDE the melting `/w` divide. This is the CPU mirror of the
+        // brick shader's `camera_ray`. Under ortho it is bit-identical to the old full-VP path
+        // (`ray_unprojection == view_projection`, `ray_eye == 0`).
+        let scene_matrices = self.scene_matrices(aspect_ratio, region_dimensions);
+        let eye_relative_ray = unproject_screen_point_to_ray(
+            scene_matrices.ray_unprojection,
+            normalized_x,
+            normalized_y,
+        )?;
+        let world_origin = eye_relative_ray.origin + scene_matrices.ray_eye;
         // Into the shading-absolute frame: the same `+ grid_half_extent` the display's camera ray
         // applies, so a pick and a pixel agree about where the ray is.
         let half_extent = glam::Vec3::new(half[0] as f32, half[1] as f32, half[2] as f32);
-        let march_ray =
-            substrate::spatial::Ray::new(world_ray.origin + half_extent, world_ray.direction);
+        let march_ray = substrate::spatial::Ray::new(
+            world_origin + half_extent,
+            eye_relative_ray.direction,
+        );
 
         // Index the resident set by chunk coord so the occupancy closure is a hash lookup per
         // step rather than a scan of the covering set — a ray crosses many chunks, and the huge
@@ -400,6 +414,123 @@ mod tests {
             lowest_hit_z < mid_layer,
             "a FULL-band pick must reach BELOW the region mid-plane {mid_layer} (lowest hit was \
              {lowest_hit_z}) — the spurious half-Z band floor made the lower half unpickable"
+        );
+    }
+
+    /// **A pick at a WIDE BASELINE hits the far object (2026-07-24 melt guard).** With two
+    /// objects near the ±1M-block authoring cap the composite recentre is ~10^7 voxels, so the
+    /// render frame puts the eye ~10^7 out. The old pick unprojected through the FULL scene
+    /// view-projection; inverting a matrix carrying that eye translation melts the `/w` divide (the
+    /// same disease a06d215 fixed for rendering), yielding a garbage ray direction that misses the
+    /// object or names a phantom non-solid voxel. The fix unprojects through the camera-relative
+    /// RAY FRAME (`SceneMatrices::ray_unprojection`) and adds `ray_eye` back outside the matrix
+    /// math. Verified: at this baseline the old full-VP path scored 0/49 hits; the ray-frame path
+    /// connects on nearly every ray. (Nearer baselines melt sub-voxel and pass either way — the
+    /// cap-adjacent distance is what makes the guard bite.)
+    ///
+    /// This targets the FAR box and sweeps a grid of cursors: every hit must be a genuinely SOLID
+    /// voxel IN the far box's absolute AABB (the near box sits ~160k voxels behind the camera, off
+    /// screen), and enough rays must connect for the solidity check to bite. Under the melt the
+    /// direction is wrong, so the far box is missed entirely (0 hits) or a hit lands on air.
+    #[test]
+    fn a_wide_baseline_pick_hits_the_far_object() {
+        use document::scene::{Node, NodeContent, NodeTransform, Scene};
+
+        const VPB: u32 = 16;
+        const FAR_BLOCKS: i64 = 900_000;
+        let box_shape =
+            || SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, VPB);
+
+        // Near box at the origin; far box ~10,000 blocks out on +X. The composite spans both, so
+        // the recentre — and thus the render-frame eye — is ~10^5 voxels (the wide baseline).
+        let near = Node::new(
+            "Near",
+            NodeContent::Tool { shape: box_shape(), material: MaterialChoice::Stone },
+        );
+        let mut far = Node::new(
+            "Far",
+            NodeContent::Tool { shape: box_shape(), material: MaterialChoice::Stone },
+        );
+        far.transform = NodeTransform::from_blocks([FAR_BLOCKS, 0, 0], VPB);
+        let mut scene = Scene::from_nodes(vec![near, far]);
+        scene.voxels_per_block = VPB;
+
+        // The far box's absolute voxel AABB: X in [FAR·VPB, (FAR+4)·VPB), Y/Z in [0, 4·VPB).
+        let far_lo_x = FAR_BLOCKS * VPB as i64; // 160_000
+        let far_hi_x = (FAR_BLOCKS + 4) * VPB as i64; // 160_064
+        let box_half = 2 * VPB as i64; // 4-block box, half = 2 blocks
+
+        // Aim the camera at the FAR box's render-frame centre so it fills the screen. Render frame
+        // = absolute − recentre; the far box centre is absolute [far_lo_x + box_half, box_half,
+        // box_half]. Derive it from the actual recentre after a rebuild rather than hand-fixing it.
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        let RebuildOutcome::Built(probe) = app_core.rebuild(&scene, VPB) else {
+            panic!("the fixture's density is in bounds");
+        };
+        let recentre = probe.recentre_voxels.voxels();
+        let far_centre_render = glam::Vec3::new(
+            (far_lo_x + box_half - recentre[0]) as f32,
+            (box_half - recentre[1]) as f32,
+            (box_half - recentre[2]) as f32,
+        );
+        let camera = OrbitCamera {
+            target: far_centre_render,
+            orbit_theta: 0.6,
+            orbit_phi: 1.0,
+            orbit_distance: 160.0, // frames the 64-voxel box
+            roll: 0.0,
+            projection_mode: camera::ProjectionMode::Perspective, // the melting projection
+        };
+        app_core = AppCore::new(camera);
+        let RebuildOutcome::Built(output) = app_core.rebuild(&scene, VPB) else {
+            panic!("the fixture's density is in bounds");
+        };
+        let region_dimensions = output.region_dimensions;
+        let recentre_voxels = output.recentre_voxels.voxels();
+        let chunks = output.two_layer_chunks.clone();
+        let chunk_extent = (CHUNK_BLOCKS * VPB) as i64;
+        let resident: HashMap<[i32; 3], &TwoLayerChunk> =
+            chunks.iter().map(|(coord, chunk)| (*coord, chunk.as_ref())).collect();
+        let frame = PickFrame {
+            region_dimensions,
+            recentre_voxels,
+            density: VPB,
+            chunks: &chunks,
+            band: LayerBand::FULL,
+        };
+
+        let mut hits = 0;
+        for row in 1..8 {
+            for column in 1..8 {
+                let cursor =
+                    [VIEWPORT[2] * column as f32 / 8.0, VIEWPORT[3] * row as f32 / 8.0];
+                let Some(pick) = app_core.pick_voxel(cursor, VIEWPORT, &frame) else {
+                    continue;
+                };
+                hits += 1;
+
+                // The hit must be a genuinely solid voxel (the melt names phantom air).
+                let coord = pick.absolute_voxel.map(|v| v.div_euclid(chunk_extent) as i32);
+                let local = pick.absolute_voxel.map(|v| v.rem_euclid(chunk_extent) as u32);
+                let solid =
+                    resident.get(&coord).is_some_and(|chunk| chunk.voxel_occupied(local));
+                assert!(
+                    solid,
+                    "wide-baseline pick at {cursor:?} named {:?}, which is not solid",
+                    pick.absolute_voxel
+                );
+                // ...and it must be the FAR box, not a phantom near the origin.
+                assert!(
+                    (far_lo_x..far_hi_x).contains(&pick.absolute_voxel[0]),
+                    "wide-baseline pick named {:?}, outside the far box X range [{far_lo_x}, \
+                     {far_hi_x}) — a melted ray direction",
+                    pick.absolute_voxel
+                );
+            }
+        }
+        assert!(
+            hits >= 10,
+            "only {hits}/49 wide-baseline rays hit the far box — a melted unprojection misses it"
         );
     }
 }

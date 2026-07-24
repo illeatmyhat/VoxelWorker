@@ -308,9 +308,13 @@ impl WindowedState {
         let drag_effect = {
             let [_, _, drag_vw, drag_vh] = prepared.viewport_px;
             let drag_aspect = drag_vw as f32 / drag_vh.max(1) as f32;
-            let drag_view_projection =
-                self.app_core.view_projection(drag_aspect, self.region_dimensions);
-            self.update_sketch_vertex_drag(drag_view_projection, prepared.viewport_px)
+            // The cursor→plane INVERSE map wants the ray-frame matrix (wide-baseline precise);
+            // the forward handle projection below keeps the full VP.
+            let drag_ray_unprojection = self
+                .app_core
+                .scene_matrices(drag_aspect, self.region_dimensions)
+                .ray_unprojection;
+            self.update_sketch_vertex_drag(drag_ray_unprojection, prepared.viewport_px)
         };
         let mut intents = std::mem::take(&mut prepared.panel_response.intents);
         // ADR 0022 live placement: a viewport click's drop intent is applied through the
@@ -430,9 +434,10 @@ impl WindowedState {
         // draw (in `run_egui_frame`) and the press hit-test (in `events`). A one-frame lag on
         // the handles is imperceptible and self-corrects.
         self.refresh_sketch_overlay(view_projection, prepared.viewport_px, pixels_per_point);
-        // #95: cache the projection so the release handler (in `events`) can invert a cursor
-        // into a profile coordinate for an add-point insert, using the SAME frame the overlay saw.
-        self.last_view_projection = Some(view_projection);
+        // #95: cache the ray-frame matrix so the release handler (in `events`) can invert a
+        // cursor into a profile coordinate for an add-point insert, using the SAME frame the
+        // overlay saw and without the wide-baseline `/w` melt of the full-VP inverse.
+        self.last_ray_unprojection = Some(scene_matrices.ray_unprojection);
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.
@@ -656,7 +661,8 @@ impl WindowedState {
             self.placement_ghost_renderer.update_uniforms(
                 &self.gpu.queue,
                 view_projection,
-                view_projection.inverse(),
+                scene_matrices.ray_unprojection.inverse(),
+                scene_matrices.ray_eye,
                 prepared.viewport_px,
                 glam::Vec3::from_array(ghost.center_world(recentre, voxels_per_block)),
                 ghost.shape.kind,
@@ -783,10 +789,10 @@ impl WindowedState {
     /// [`commit_sketch_vertex_drag`]: Self::commit_sketch_vertex_drag
     fn update_sketch_vertex_drag(
         &mut self,
-        view_projection: glam::Mat4,
+        ray_unprojection: glam::Mat4,
         viewport_px: [u32; 4],
     ) -> crate::IntentEffect {
-        self.preview_sketch_vertex_drag(view_projection, viewport_px)
+        self.preview_sketch_vertex_drag(ray_unprojection, viewport_px)
     }
 
     /// The live-preview half: project the cursor onto the sketch plane, grid-snap the profile
@@ -797,7 +803,7 @@ impl WindowedState {
     /// re-resolve — no command recorded. `none` when nothing changed this frame.
     fn preview_sketch_vertex_drag(
         &mut self,
-        view_projection: glam::Mat4,
+        ray_unprojection: glam::Mat4,
         viewport_px: [u32; 4],
     ) -> crate::IntentEffect {
         use crate::IntentEffect;
@@ -829,7 +835,7 @@ impl WindowedState {
         // Cursor → the continuous profile coordinate under it, then grid-snap (round to the
         // nearest voxel). The ray/plane math is shared with the add-point insert.
         let Some(profile_coord) =
-            self.cursor_to_profile_coord(cursor_x, cursor_y, view_projection, viewport_px, &handles)
+            self.cursor_to_profile_coord(cursor_x, cursor_y, ray_unprojection, viewport_px, &handles)
         else {
             return IntentEffect::none();
         };
@@ -970,18 +976,23 @@ impl WindowedState {
     /// zoom and can sit past the target plane (placement casts from the eye for the same reason);
     /// orthographic keeps the near-plane point (parallel rays have no single eye). `None` when the
     /// unprojection fails, the ray is parallel to the plane, or the plane is behind the viewer.
+    ///
+    /// `ray_unprojection` is the RAY-FRAME matrix (`SceneMatrices::ray_unprojection`), not the full
+    /// scene VP: under perspective the full inverse melts the `/w` divide at a wide-baseline
+    /// recentre (a06d215), so we unproject the DIRECTION through the camera-relative bracket and
+    /// take the origin from the eye. Ortho keeps the plain frame (`ray_unprojection == view_projection`).
     fn cursor_to_profile_coord(
         &self,
         cursor_x: f64,
         cursor_y: f64,
-        view_projection: glam::Mat4,
+        ray_unprojection: glam::Mat4,
         viewport_px: [u32; 4],
         handles: &document::scene::SketchHandles,
     ) -> Option<[f64; 2]> {
         let [vx, vy, vw, vh] = viewport_px;
         let ndc_x = (cursor_x as f32 - vx as f32) / vw.max(1) as f32 * 2.0 - 1.0;
         let ndc_y = 1.0 - (cursor_y as f32 - vy as f32) / vh.max(1) as f32 * 2.0;
-        let ray = camera::unproject_screen_point_to_ray(view_projection, ndc_x, ndc_y)?;
+        let ray = camera::unproject_screen_point_to_ray(ray_unprojection, ndc_x, ndc_y)?;
         let ray_origin = match self.app_core.camera.projection_mode {
             camera::ProjectionMode::Perspective => self.app_core.camera.eye(),
             camera::ProjectionMode::Orthographic => ray.origin,
@@ -1070,7 +1081,7 @@ impl WindowedState {
         let coord = self.cursor_to_profile_coord(
             cursor_x,
             cursor_y,
-            self.last_view_projection?,
+            self.last_ray_unprojection?,
             self.last_viewport_px,
             &handles,
         )?;

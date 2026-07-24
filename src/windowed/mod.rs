@@ -316,10 +316,11 @@ struct WindowedState {
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
     /// Refreshed alongside the handles; drawn as a diamond on the next frame.
     sketch_insert_preview: Option<egui::Pos2>,
-    /// The last frame's world→clip matrix, cached so the release handler (in `events`) can
-    /// invert a cursor into a profile coordinate for an add-point insert — the same projection
-    /// `render` fed the overlay refresh. `None` before the first frame.
-    last_view_projection: Option<glam::Mat4>,
+    /// The last frame's RAY-FRAME unprojection matrix (`SceneMatrices::ray_unprojection`), cached
+    /// so the release handler (in `events`) can invert a cursor into a profile coordinate for an
+    /// add-point insert — the same frame `render` fed the overlay refresh, WITHOUT the wide-baseline
+    /// `/w` melt the full-VP inverse suffers (a06d215). `None` before the first frame.
+    last_ray_unprojection: Option<glam::Mat4>,
     /// Whether the most recent left-press armed a sketch add-point / delete edit (sketch mode,
     /// an edit tool, on the live viewport). A STATIONARY release with this set performs the
     /// edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so a
@@ -652,7 +653,7 @@ impl WindowedState {
             sketch_segments: Vec::new(),
             sketch_segment_lines: Vec::new(),
             sketch_insert_preview: None,
-            last_view_projection: None,
+            last_ray_unprojection: None,
             sketch_edit_press: false,
             sketch_select_press: false,
             sketch_drag: None,

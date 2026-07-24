@@ -17,7 +17,13 @@ use super::*;
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct PlacementGhostUniforms {
     view_projection: [[f32; 4]; 4],
-    inverse_view_projection: [[f32; 4]; 4],
+    /// The RAY-FRAME unprojection matrix (`SceneMatrices::ray_unprojection`), inverted — the
+    /// wide-baseline-precise unproject the shader casts through (a06d215). `view_projection`
+    /// still reprojects the hit for depth (forward projection is immune).
+    ray_inverse_unprojection: [[f32; 4]; 4],
+    /// The ray frame's render-frame origin (`SceneMatrices::ray_eye`): the eye under perspective,
+    /// zero under ortho. xyz; `w` padding. Added back to the eye-relative unprojected ray.
+    ray_eye: [f32; 4],
     /// The central 3D viewport rect in physical pixels (x, y, width, height).
     viewport: [f32; 4],
     /// xyz: the shape's field centre in the world/render frame. w: the `ShapeKind`
@@ -187,9 +193,10 @@ impl PlacementGhostRenderer {
         }
     }
 
-    /// Arm and upload this frame's ghost. `view_projection` / `inverse_view_projection`
-    /// and `viewport_px` are the SAME values the voxel pass used, so the analytic ray and
-    /// the voxel ray are the same ray.
+    /// Arm and upload this frame's ghost. `view_projection` / `ray_inverse_unprojection` /
+    /// `ray_eye` are the SAME ray-frame values the voxel pass used (`SceneMatrices`), so the
+    /// analytic ray and the voxel ray are the same ray — and the unprojection stays precise at a
+    /// wide-baseline recentre (a06d215).
     ///
     /// `center_world` is the field centre in the display's render frame — the caller
     /// resolves it via the frame law (`world_offset + grid/2 - recentre`, ADR 0008);
@@ -201,7 +208,8 @@ impl PlacementGhostRenderer {
         &mut self,
         queue: &wgpu::Queue,
         view_projection: glam::Mat4,
-        inverse_view_projection: glam::Mat4,
+        ray_inverse_unprojection: glam::Mat4,
+        ray_eye: glam::Vec3,
         viewport_px: [u32; 4],
         center_world: glam::Vec3,
         shape_kind: voxel_core::voxel::ShapeKind,
@@ -212,7 +220,8 @@ impl PlacementGhostRenderer {
     ) {
         let uniforms = PlacementGhostUniforms {
             view_projection: view_projection.to_cols_array_2d(),
-            inverse_view_projection: inverse_view_projection.to_cols_array_2d(),
+            ray_inverse_unprojection: ray_inverse_unprojection.to_cols_array_2d(),
+            ray_eye: [ray_eye.x, ray_eye.y, ray_eye.z, 0.0],
             viewport: [
                 viewport_px[0] as f32,
                 viewport_px[1] as f32,
@@ -271,12 +280,12 @@ mod tests {
     }
 
     /// The Rust twin's size is a multiple of 16 bytes (std140 uniform alignment) and
-    /// matches the blocks the WGSL struct declares: two mat4 (128) + five vec4 (viewport,
-    /// center_and_kind, semi_axes_and_wall, tint, params = 80) + a mat3x3 (three padded vec4
-    /// columns = 48, the ADR 0026 inverse orientation) = 256 bytes.
+    /// matches the blocks the WGSL struct declares: two mat4 (128) + six vec4 (ray_eye,
+    /// viewport, center_and_kind, semi_axes_and_wall, tint, params = 96) + a mat3x3 (three padded
+    /// vec4 columns = 48, the ADR 0026 inverse orientation) = 272 bytes.
     #[test]
     fn uniform_layout_is_std140_sized() {
-        assert_eq!(std::mem::size_of::<PlacementGhostUniforms>(), 256);
+        assert_eq!(std::mem::size_of::<PlacementGhostUniforms>(), 272);
         assert_eq!(std::mem::size_of::<PlacementGhostUniforms>() % 16, 0);
     }
 }

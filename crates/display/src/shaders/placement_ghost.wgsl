@@ -29,7 +29,15 @@
 
 struct PlacementGhostUniforms {
     view_projection: mat4x4<f32>,
-    inverse_view_projection: mat4x4<f32>,
+    // The RAY-FRAME unprojection matrix (camera::SceneMatrices::ray_unprojection), inverted:
+    // eye-anchored + camera-bracketed under perspective (a full-VP inverse melts the `/w` divide
+    // at a wide-baseline recentre — a06d215), the plain frame under ortho. Unproject through it
+    // for an EYE-RELATIVE ray; `ray_eye` carries the render-frame origin added back outside the
+    // matrix math. `view_projection` (forward, immune) still reprojects the hit for depth.
+    ray_inverse_unprojection: mat4x4<f32>,
+    // The ray frame's origin in the render frame (SceneMatrices::ray_eye): the eye under
+    // perspective, zero under ortho. xyz; .w unused.
+    ray_eye: vec4<f32>,
     // The central 3D viewport rect in physical pixels (x, y, width, height).
     viewport: vec4<f32>,
     // xyz: the shape's field centre in the world/render frame (see the frame note
@@ -173,20 +181,22 @@ struct Ray {
     direction: vec3<f32>,
 };
 
-// Unproject a framebuffer pixel through the inverse view-projection into a WORLD ray.
-// Near/far unprojection handles perspective AND orthographic. Same construction as
-// `camera_ray` in brick_raymarch.wgsl, minus the sv-frame shift (this pass works in
-// world coordinates and moves the SHAPE into them instead).
+// Unproject a framebuffer pixel through the RAY-FRAME inverse into a render-frame ray.
+// Near/far unprojection handles perspective AND orthographic; the points come out
+// EYE-RELATIVE (small, precise at any recentre) and `ray_eye` carries the render frame's
+// one large term added back OUTSIDE the melting `/w` divide — the CPU pick's `pick_voxel`
+// and the brick shader's `camera_ray` do the identical thing (minus the sv-frame shift;
+// this pass works in the render frame and moves the SHAPE into it instead).
 fn camera_ray(pixel: vec2<f32>) -> Ray {
     let ndc_x = (pixel.x - uniforms.viewport.x) / uniforms.viewport.z * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y - uniforms.viewport.y) / uniforms.viewport.w * 2.0;
-    let near_h = uniforms.inverse_view_projection * vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
-    let far_h = uniforms.inverse_view_projection * vec4<f32>(ndc_x, ndc_y, 1.0, 1.0);
-    let near_world = near_h.xyz / near_h.w;
-    let far_world = far_h.xyz / far_h.w;
+    let near_h = uniforms.ray_inverse_unprojection * vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    let far_h = uniforms.ray_inverse_unprojection * vec4<f32>(ndc_x, ndc_y, 1.0, 1.0);
+    let near_eye_relative = near_h.xyz / near_h.w;
+    let far_eye_relative = far_h.xyz / far_h.w;
     var ray: Ray;
-    ray.origin = near_world;
-    ray.direction = normalize(far_world - near_world);
+    ray.origin = uniforms.ray_eye.xyz + near_eye_relative;
+    ray.direction = normalize(far_eye_relative - near_eye_relative);
     return ray;
 }
 

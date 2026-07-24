@@ -1116,7 +1116,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         placement_ghost_renderer.update_uniforms(
             &gpu.queue,
             view_projection,
-            view_projection.inverse(),
+            scene_matrices.ray_unprojection.inverse(),
+            scene_matrices.ray_eye,
             prepared.viewport_px,
             glam::Vec3::from_array(center_world),
             ghost.shape.kind,

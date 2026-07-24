@@ -214,10 +214,25 @@ impl AppCore {
             return None;
         }
         let aspect_ratio = viewport[2] / viewport[3];
-        let view_projection = self.view_projection(aspect_ratio, frame.region_dimensions);
         let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
         let normalized_y = 1.0 - (cursor[1] - viewport[1]) / viewport[3] * 2.0;
-        let render_ray = unproject_screen_point_to_ray(view_projection, normalized_x, normalized_y)?;
+        // Unproject through the RAY FRAME (a06d215's wide-baseline fix): under perspective the
+        // full scene VP's inverse melts the `/w` divide at a ~10^5-voxel recentre, so use the
+        // camera-relative `ray_unprojection` (precise eye-relative ray) and add `ray_eye` back
+        // outside the matrix math — the same as the brick shader's `camera_ray` and the CPU pick.
+        // Ortho is bit-identical to the old full-VP path (`ray_unprojection == view_projection`,
+        // `ray_eye == 0`). The direction is what surface intersection needs precise;
+        // `cursor_ray_origin_absolute` casts perspective from the eye regardless.
+        let scene_matrices = self.scene_matrices(aspect_ratio, frame.region_dimensions);
+        let eye_relative_ray = unproject_screen_point_to_ray(
+            scene_matrices.ray_unprojection,
+            normalized_x,
+            normalized_y,
+        )?;
+        let render_ray = Ray::new(
+            eye_relative_ray.origin + scene_matrices.ray_eye,
+            eye_relative_ray.direction,
+        );
         let recentre = frame.recentre_voxels;
         let recentre_vec = Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
         let unit_direction = render_ray.direction.normalize();
