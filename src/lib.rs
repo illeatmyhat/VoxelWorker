@@ -33,10 +33,6 @@ pub mod gpu;
 // classified state record, this one holds where it goes and enforces that it gets there.
 pub mod artifacts;
 pub mod settings;
-// The Signal viewport chrome that renders in egui (ADR 0018 Decision 8): the icon rail
-// under the view cube + the bottom-left status line. Built inside `run_egui_frame` so
-// both the windowed surface and the headless `shot` capture draw it identically.
-pub mod signal_chrome;
 // The palette PREVIEW thumbnail renderer: a shell-side GPU sink that draws the UI's
 // 45° cube tiles (NOT the scene), reaching down into `display` only for the shared
 // block-texture bind-group layout. Kept out of the `display` scene-view crate.
@@ -574,8 +570,8 @@ pub fn run_egui_frame(
         // off. Rendered here (inside `run_egui_frame`) so it draws on BOTH the windowed
         // surface and the `shot` capture.
         if cube_fits {
-            chrome_rects_points.push(signal_chrome::rail_rect(cube_left, cube_bottom, cube_size));
-            if let Some(click) = signal_chrome::icon_rail(
+            chrome_rects_points.push(ui::chrome::rail_rect(cube_left, cube_bottom, cube_size));
+            if let Some(click) = ui::chrome::icon_rail(
                 ui,
                 cube_left,
                 cube_bottom,
@@ -583,9 +579,9 @@ pub fn run_egui_frame(
                 panel_state.view_mode,
             ) {
                 match click {
-                    signal_chrome::RailClick::Home => rail_action = Some(ChromeClickAction::Home),
-                    signal_chrome::RailClick::Fit => rail_action = Some(ChromeClickAction::Fit),
-                    signal_chrome::RailClick::CycleMode => {
+                    ui::chrome::RailClick::Home => rail_action = Some(ChromeClickAction::Home),
+                    ui::chrome::RailClick::Fit => rail_action = Some(ChromeClickAction::Fit),
+                    ui::chrome::RailClick::CycleMode => {
                         panel_state.view_mode = panel_state.view_mode.next();
                     }
                 }
@@ -603,7 +599,7 @@ pub fn run_egui_frame(
                 .active_node()
                 .map(|node| node.name.as_str())
                 .filter(|name| !name.is_empty());
-            signal_chrome::status_line(
+            ui::chrome::status_line(
                 ui,
                 central_rect_points,
                 panel_state.view_mode,
@@ -619,7 +615,7 @@ pub fn run_egui_frame(
         // headless `shot` capture. A click routes onto the response as `exit_sketch`; the
         // button rects register as chrome so they never leak to the camera orbit.
         if panel_state.sketch_mode.is_some() {
-            if let Some(exit) = signal_chrome::sketch_exit_control(
+            if let Some(exit) = ui::chrome::sketch_exit_control(
                 ui,
                 central_rect_points,
                 &mut chrome_rects_points,
@@ -629,15 +625,15 @@ pub fn run_egui_frame(
             // ADR 0030: the committed segment lines, drawn FIRST so the vertex dots sit on top.
             // Not chrome — a segment press is handled by the shell's hit-test, and these are a
             // passive under-layer.
-            signal_chrome::sketch_segment_lines(ui, sketch_segment_lines);
+            ui::chrome::sketch_segment_lines(ui, sketch_segment_lines);
             // ADR 0028 (#94): the draggable profile-vertex handles, drawn at the shell's
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).
-            signal_chrome::sketch_vertex_handles(ui, sketch_handles, &mut chrome_rects_points);
+            ui::chrome::sketch_vertex_handles(ui, sketch_handles, &mut chrome_rects_points);
             // ADR 0028 (#95): the add-point insert preview — a diamond on the hovered edge. NOT
             // chrome (a passive marker), so a click passes through to the stationary-release insert.
             if let Some(center) = sketch_insert_preview {
-                signal_chrome::sketch_insert_marker(ui, center);
+                ui::chrome::sketch_insert_marker(ui, center);
             }
         }
 
@@ -646,7 +642,7 @@ pub fn run_egui_frame(
         // so it tracks the cube as the side panel resizes. Non-interactive (a pure label);
         // windowed-only (the `shot` path passes `None`).
         if let Some(label) = view_cube_zone_readout {
-            let readout_top = signal_chrome::rail_top(cube_bottom) + signal_chrome::rail_height() + 4.0;
+            let readout_top = ui::chrome::rail_top(cube_bottom) + ui::chrome::rail_height() + 4.0;
             let context = ui.ctx().clone();
             egui::Area::new(egui::Id::new("view_cube_zone_readout"))
                 .order(egui::Order::Foreground)

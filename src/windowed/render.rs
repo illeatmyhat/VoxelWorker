@@ -995,8 +995,8 @@ impl WindowedState {
     /// cache, so it shares the exact projection the overlay drew. Used by the vertex-drag grab
     /// (#94) and the delete hit-test (#95).
     fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
-        let grab_px = (crate::signal_chrome::SKETCH_HANDLE_HALF
-            + crate::signal_chrome::SKETCH_HANDLE_GRAB_PAD)
+        let grab_px = (ui::chrome::SKETCH_HANDLE_HALF
+            + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
             * self.window.scale_factor() as f32;
         let mut nearest: Option<(usize, f32)> = None;
         for (index, center) in self.sketch_vertex_px.iter().enumerate() {
@@ -1018,7 +1018,7 @@ impl WindowedState {
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<(document::sketch::EntityId, egui::Pos2, egui::Pos2)> {
-        let pad_px = crate::signal_chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
+        let pad_px = ui::chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
         let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
         let mut nearest: Option<(document::sketch::EntityId, egui::Pos2, egui::Pos2, f32)> = None;
         for &(seg_id, a_idx, b_idx) in &self.sketch_segments {
@@ -1274,7 +1274,7 @@ impl WindowedState {
         let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
         let hover_radius_px =
-            (crate::signal_chrome::SKETCH_HANDLE_HALF + crate::signal_chrome::SKETCH_HANDLE_GRAB_PAD)
+            (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
                 * pixels_per_point;
         for (index, vertex) in handles.vertices.iter().enumerate() {
             let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
