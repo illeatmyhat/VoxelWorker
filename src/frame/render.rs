@@ -35,6 +35,11 @@ use super::egui_frame::{EguiPaintBridge, PreparedEguiFrame};
 pub struct FramePhases<'a> {
     /// Fullscreen, pre-solid, depth off (the Signal background gradient, issue #91).
     pub background: &'a [&'a dyn display::SceneDraw],
+    /// Depth-off draws recorded BEFORE the model so opaque geometry paints over them —
+    /// paint-order occlusion (ADR 0031). The far-distance reference-axes fallback lives here:
+    /// invariant (never clips) yet still occluded by geometry, where depth-testing can't survive
+    /// the collapsed near/far.
+    pub behind_model: &'a [&'a dyn display::SceneDraw],
     /// Translucent ghosts blended over the solid, depth-tested no-write (the operand x-ray,
     /// the placement ghost). Drawn after the model so both display paths' depth is final.
     pub over_model: &'a [&'a dyn display::SceneDraw],
@@ -155,6 +160,12 @@ pub fn render_frame(
         // Background phase (ADR 0031): fullscreen, pre-solid, depth off — the Signal
         // background gradient — so every voxel + phase below composites over it.
         for draw in phases.background {
+            draw.draw(&mut voxel_pass);
+        }
+
+        // Behind-model phase (ADR 0031): depth-off draws recorded before the model, so the opaque
+        // model paints over them (paint-order occlusion) — the far-distance reference-axes fallback.
+        for draw in phases.behind_model {
             draw.draw(&mut voxel_pass);
         }
 

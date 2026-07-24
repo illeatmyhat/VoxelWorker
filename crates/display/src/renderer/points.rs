@@ -18,11 +18,8 @@ pub(crate) const POINT_PLANE_MAJOR_ALPHA: f32 = 0.18;
 /// Fraction of the viewport height each half-axis spans — the Point axes are a screen-stable
 /// nav marker (ADR 0031), so they hold a constant on-screen size at any zoom instead of a fixed
 /// world length that clips against the scene's near/far. Fed to
-/// [`OrbitCamera::screen_stable_size`](camera::OrbitCamera::screen_stable_size). **Public** so the
-/// shell can bracket the shared scene near/far around it: the OCCLUDED (depth-tested) axes draw
-/// with the scene matrix, whose model-tight window would otherwise clip these growing-with-zoom
-/// axes at far zoom.
-pub const POINT_AXIS_SCREEN_FRACTION: f32 = 0.09;
+/// [`OrbitCamera::screen_stable_size`](camera::OrbitCamera::screen_stable_size).
+const POINT_AXIS_SCREEN_FRACTION: f32 = 0.09;
 /// Base alpha of a Point's axis lines.
 pub(crate) const POINT_AXIS_ALPHA: f32 = 0.85;
 
@@ -191,15 +188,15 @@ pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlan
 /// batch from `scene.points` via [`Self::rebuild_from_scene`], then uploads the camera matrix.
 /// With no visible Point (all hidden / axes off) the batch is empty and [`Self::draw`] is a no-op.
 pub struct PointsRenderer {
-    /// Depth-tested pipeline — the axes read as scaffold the model occludes (ADR 0031 scaffold
-    /// phase; the `axes_on_top` setting off).
+    /// Depth-tested pipeline — the near occluded case: opaque geometry occludes the axes by depth
+    /// (ADR 0031, scaffold phase).
     pipeline: wgpu::RenderPipeline,
-    /// Depth-OFF pipeline — the axes read through the model as a nav marker (ADR 0031 on-top
-    /// phase; the default). Chosen per frame by [`on_top`](Self::on_top).
-    pipeline_on_top: wgpu::RenderPipeline,
-    /// Whether this frame draws through the model (on-top) or occluded. Set by
+    /// Depth-OFF pipeline — the on-top nav marker AND the far-distance paint-order fallback (both
+    /// draw without depth-testing; the phase they sit in decides whether geometry paints over).
+    pipeline_off: wgpu::RenderPipeline,
+    /// Whether this frame depth-tests (near occluded) or not (on-top / far fallback). Set by
     /// [`rebuild_from_scene`](Self::rebuild_from_scene).
-    on_top: bool,
+    depth_tested: bool,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
     vertex_capacity: u32,
@@ -237,19 +234,19 @@ impl PointsRenderer {
             true,
             MSAA_SAMPLE_COUNT,
         );
-        let pipeline_on_top = build_line_pipeline(
+        let pipeline_off = build_line_pipeline(
             device,
             color_format,
             &uniform_bind_group_layout,
-            "points on-top",
+            "points depth-off",
             false,
             MSAA_SAMPLE_COUNT,
         );
 
         Self {
             pipeline,
-            pipeline_on_top,
-            on_top: true,
+            pipeline_off,
+            depth_tested: false,
             vertex_buffer,
             vertex_count: 0,
             vertex_capacity,
@@ -269,9 +266,9 @@ impl PointsRenderer {
         scene: &Scene,
         voxels_per_block: u32,
         camera: &camera::OrbitCamera,
-        on_top: bool,
+        depth_tested: bool,
     ) {
-        self.on_top = on_top;
+        self.depth_tested = depth_tested;
         let vertices = points_line_batch(scene, voxels_per_block, camera);
         self.vertex_count = upload_lines(
             device,
@@ -299,10 +296,10 @@ impl PointsRenderer {
         if self.vertex_count == 0 {
             return;
         }
-        let pipeline = if self.on_top {
-            &self.pipeline_on_top
-        } else {
+        let pipeline = if self.depth_tested {
             &self.pipeline
+        } else {
+            &self.pipeline_off
         };
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);

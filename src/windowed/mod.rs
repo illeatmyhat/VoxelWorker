@@ -98,8 +98,14 @@ struct WindowedState {
     /// rebuilt each frame from the visible nodes' enabled grids.
     scene_grid_renderer: SceneGridRenderer,
     /// The world reference AXES (issue #29 S5): every visible Point's axis lines. Its
-    /// line batch is rebuilt each frame from `scene.points`.
+    /// line batch is rebuilt each frame from `scene.points`. This instance is the DEPTH-TESTED
+    /// occluded pass (scene matrix); [`points_overlay_renderer`](Self::points_overlay_renderer)
+    /// is the depth-off pass. Two instances so the occluded axes can draw both ways at once
+    /// (ADR 0031): crisp depth occlusion near, invariant paint-order occlusion far.
     points_renderer: PointsRenderer,
+    /// The DEPTH-OFF axes pass (generous overlay matrix that never clips): the on-top nav marker
+    /// when that setting is on, or the occluded setting's paint-order pass otherwise (ADR 0031).
+    points_overlay_renderer: PointsRenderer,
     /// The analytic infinite reference grid (issue #29 Points fast-follow): every
     /// visible Point's enabled PLANES, drawn as fullscreen ray-plane passes. Replaces
     /// the old finite tiled-line ground plane.
@@ -520,6 +526,7 @@ impl WindowedState {
         // The world reference grid (issue #29 S5): the visible Points' tiled planes +
         // axes. Its batch is rebuilt per frame from the scene + camera, so empty here.
         let points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        let points_overlay_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         // ADR 0022: the armed-tool placement ghost, held permanently (disarmed until a
         // frame arms it from `PanelState::placement_ghost`).
@@ -580,6 +587,7 @@ impl WindowedState {
             selected_ghost_view_mode: crate::ViewMode::Normal,
             scene_grid_renderer,
             points_renderer,
+            points_overlay_renderer,
             infinite_grid_renderer,
             placement_ghost_renderer,
             view_cube_renderer,

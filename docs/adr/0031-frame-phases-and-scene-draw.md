@@ -28,12 +28,24 @@ of a [cell key](../../CONTEXT.md), not on "a thing drawn in the pass."
 The single viewport MSAA pass is recorded as ordered **frame phases**, grouped by depth semantics:
 
 1. **background** — fullscreen, pre-solid, depth off.
-2. **model** — the solid voxels (brick raymarch or cuboid mesh) plus its onion ghost. **Special**,
+2. **behind-model** — depth-off draws recorded before the model so opaque geometry paints over them
+   (paint-order occlusion). Holds the reference axes' far-distance fallback (see below).
+3. **model** — the solid voxels (brick raymarch or cuboid mesh) plus its onion ghost. **Special**,
    not a `SceneDraw` list: it needs the material bind group and the brick/mesh choice (ADR 0011).
-3. **over-model** — translucent ghosts that blend over the solid: the operand x-ray, the placement
+4. **over-model** — translucent ghosts that blend over the solid: the operand x-ray, the placement
    ghost.
-4. **scaffold** — depth-tested reference lines the model occludes: block/floor grids, point axes.
-5. **on-top** — depth off, drawn through the model: the manipulator gizmos.
+5. **scaffold** — depth-tested reference lines the model occludes: block/floor grids, point axes.
+6. **on-top** — depth off, drawn through the model: the manipulator gizmos.
+
+The reference axes are **screen-stable** (constant on-screen size at any zoom), which makes their
+*world* size grow with distance. Drawn depth-tested (occluded) they share the scene near/far, whose
+model-tight window clips them far out and collapses entirely in f32 at extreme distance — so the
+**occluded** setting draws them BOTH ways every frame: the depth-tested scaffold pass (crisp near
+occlusion, which simply clips out on its own far out) AND a depth-off `behind-model` pass on a
+generous overlay matrix that never clips (invariant, geometry paints over it). No distance threshold,
+no mode-switch pop. The **on-top** setting is a single depth-off overlay pass in the on-top phase.
+Two `PointsRenderer` instances back the two passes. Deliberately not a max-zoom clamp — far cameras
+are legitimate for large/sparse scenes.
 
 The **view cube** is a separate scissored corner pass, not a phase. The phase *order* lives in one
 place (`render_frame`); each phase's *contents* are a caller-filled slice, so shot can gate draws off

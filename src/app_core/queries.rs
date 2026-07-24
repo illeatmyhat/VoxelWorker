@@ -73,24 +73,23 @@ impl AppCore {
     /// sub-voxel asymmetry and a floor for tiny scenes). The camera derives its
     /// near/far from that sphere so no part of the scene is ever depth-clipped.
     pub fn view_projection(&self, aspect_ratio: f32, region_dimensions: [u32; 3]) -> glam::Mat4 {
+        self.camera.view_projection(
+            aspect_ratio,
+            glam::Vec3::ZERO,
+            Self::scene_radius(region_dimensions),
+        )
+    }
+
+    /// The bounding-sphere radius the scene near/far are sized from — half the region diagonal
+    /// (× 1.15 for sub-voxel asymmetry, floored for tiny scenes).
+    fn scene_radius(region_dimensions: [u32; 3]) -> f32 {
         let diagonal = glam::Vec3::new(
             region_dimensions[0] as f32,
             region_dimensions[1] as f32,
             region_dimensions[2] as f32,
         )
         .length();
-        let scene_radius = (0.5 * diagonal * 1.15).max(1.0);
-        // Bracket the screen-stable reference axes (ADR 0031): drawn OCCLUDED they share this
-        // matrix, and their world size grows with zoom, so a model-tight window clips them at far
-        // zoom. `screen_stable_size` grows with depth too, so this tracks; when a model is framed
-        // it is smaller than the model radius and the `.max` is a no-op (picking/precision intact).
-        let axis_radius = self
-            .camera
-            .screen_stable_size(glam::Vec3::ZERO, display::renderer::POINT_AXIS_SCREEN_FRACTION)
-            * 1.3;
-        let scene_radius = scene_radius.max(axis_radius);
-        self.camera
-            .view_projection(aspect_ratio, glam::Vec3::ZERO, scene_radius)
+        (0.5 * diagonal * 1.15).max(1.0)
     }
 
     /// Where the transform gizmo (issue #29 S2) should sit: the SELECTED node's

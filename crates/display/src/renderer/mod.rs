@@ -60,7 +60,7 @@ pub use view_cube::{
 pub use targets::{create_depth_view, create_msaa_color_view, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 pub use gizmo::{TransformGizmoRenderer, GIZMO_SCREEN_FRACTION};
 pub use grid::SceneGridRenderer;
-pub use points::{enabled_grid_planes, GridPlaneInstance, PointsRenderer, POINT_AXIS_SCREEN_FRACTION};
+pub use points::{enabled_grid_planes, GridPlaneInstance, PointsRenderer};
 pub use infinite_grid::InfiniteGridRenderer;
 pub use onion::{onion_ghost_tint, OnionFogParams};
 pub use operand_ghost::{operand_ghost_loud_tint, operand_ghost_quiet_tint, OperandGhostStyle};

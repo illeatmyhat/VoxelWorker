@@ -554,28 +554,41 @@ impl WindowedState {
         );
         self.scene_grid_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
-        // World reference AXES (issue #29 S5): rebuild the visible Points' axis lines,
-        // screen-stable-sized from the camera (ADR 0031). On-top (depth off) reads as a nav
-        // marker through the model with a generous overlay near/far so the screen-stable axes
-        // never clip; occluded uses the scene matrix + the depth-tested scaffold phase.
-        let axes_on_top = self.panel_state.axes_on_top;
-        self.points_renderer.rebuild_from_scene(
+        // World reference AXES (issue #29 S5): screen-stable-sized from the camera (ADR 0031).
+        // Two instances drawn each frame. The OVERLAY instance (depth off, generous overlay
+        // matrix that never clips at any distance) is the on-top nav marker when the setting is
+        // on, and the occluded setting's paint-order pass (drawn BEFORE the model so geometry
+        // paints over it) otherwise. The DEPTH instance (depth-tested, scene matrix) adds crisp
+        // near occlusion for the occluded setting; it simply clips out on its own once the camera
+        // is far — the overlay pass carries there. Both occluded passes run always: no distance
+        // threshold, no mode-switch pop.
+        let axes_through = self.panel_state.axes_on_top;
+        let overlay_vp = self
+            .app_core
+            .camera
+            .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO);
+        self.points_overlay_renderer.rebuild_from_scene(
             &self.gpu.device,
             &self.gpu.queue,
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             &self.app_core.camera,
-            axes_on_top,
+            false,
         );
-        let points_vp = if axes_on_top {
-            self.app_core
-                .camera
-                .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO)
-        } else {
-            view_projection
-        };
-        self.points_renderer
-            .update_uniforms(&self.gpu.queue, points_vp);
+        self.points_overlay_renderer
+            .update_uniforms(&self.gpu.queue, overlay_vp);
+        if !axes_through {
+            self.points_renderer.rebuild_from_scene(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &self.panel_state.scene,
+                self.panel_state.geometry.voxels_per_block,
+                &self.app_core.camera,
+                true,
+            );
+            self.points_renderer
+                .update_uniforms(&self.gpu.queue, view_projection);
+        }
         // Analytic infinite reference grid (issue #29 Points fast-follow): rebuild the
         // visible Points' enabled PLANES with the camera matrices (recentred frame) so
         // the fullscreen ray-plane shader intersects each pixel's ray with the plane —
@@ -704,23 +717,30 @@ impl WindowedState {
         if self.panel_state.placement_ghost.is_some() {
             over_model.push(&self.placement_ghost_renderer);
         }
+        // Behind-model: the occluded axes' paint-order pass (depth-off overlay), drawn before the
+        // model so geometry paints over it — the invariant part that never clips.
+        let mut behind_model: Vec<&dyn display::SceneDraw> = Vec::new();
+        if !axes_through {
+            behind_model.push(&self.points_overlay_renderer);
+        }
         // Scaffold: per-object grids + the analytic infinite grid (Points' planes) — each
-        // self-gates. The Points' axes join the scaffold only when NOT on-top (occluded).
+        // self-gates. The Points' axes' depth-tested pass joins it only when occluded.
         let mut scaffold: Vec<&dyn display::SceneDraw> =
             vec![&self.scene_grid_renderer, &self.infinite_grid_renderer];
-        if !axes_on_top {
+        if !axes_through {
             scaffold.push(&self.points_renderer);
         }
-        // On-top: the Points' axes (when on-top, the default) then the manipulator gizmo.
+        // On-top: the Points' axes (overlay instance, when the on-top setting is on) then the gizmo.
         let mut on_top: Vec<&dyn display::SceneDraw> = Vec::new();
-        if axes_on_top {
-            on_top.push(&self.points_renderer);
+        if axes_through {
+            on_top.push(&self.points_overlay_renderer);
         }
         if gizmo_placement.is_some() {
             on_top.push(&self.transform_gizmo_renderer);
         }
         let phases = FramePhases {
             background: &background,
+            behind_model: &behind_model,
             over_model: &over_model,
             scaffold: &scaffold,
             on_top: &on_top,

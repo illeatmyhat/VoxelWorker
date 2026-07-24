@@ -778,6 +778,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // goldens are byte-identical); `--points` enables it. Its batch is built below
     // from `scene.points` + the camera once the view matrix is known.
     let mut points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+    let mut points_overlay_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // The analytic infinite reference grid (issue #29 Points fast-follow): the Points'
     // enabled planes. SUPPRESSED by default with the rest of Points; `--points` enables
     // it. Built below from `scene.points` + the camera once the view matrix is known.
@@ -1086,26 +1087,36 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // World reference grid (issue #29 S5): build the visible Points' tiled planes +
     // axes, centred on the camera's projection onto each plane. Only wired into the
     // overlays when `--points` is passed (default OFF keeps the goldens unchanged).
-    // The Points' axes are a screen-stable nav marker; on-top (default) draws through the model
-    // with a generous overlay near/far, occluded uses the scene matrix + scaffold phase.
-    let axes_on_top = options.axes_on_top;
+    // The Points' axes are a screen-stable nav marker (ADR 0031). THROUGH (setting on): the
+    // overlay instance (depth off, never-clip matrix) drawn over the model. OCCLUDED: the overlay
+    // instance drawn BEFORE the model (paint-order occlusion, invariant at any distance) PLUS the
+    // depth instance (depth-tested scene matrix) for crisp near occlusion — the depth one clips
+    // out on its own far out, so both run always with no distance threshold.
+    let axes_through = options.axes_on_top;
     if options.show_points {
-        points_renderer.rebuild_from_scene(
+        let overlay_vp = app_core
+            .camera
+            .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO);
+        points_overlay_renderer.rebuild_from_scene(
             &gpu.device,
             &gpu.queue,
             &panel_state.scene,
             options.geometry.voxels_per_block,
             &app_core.camera,
-            axes_on_top,
+            false,
         );
-        let points_vp = if axes_on_top {
-            app_core
-                .camera
-                .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO)
-        } else {
-            view_projection
-        };
-        points_renderer.update_uniforms(&gpu.queue, points_vp);
+        points_overlay_renderer.update_uniforms(&gpu.queue, overlay_vp);
+        if !axes_through {
+            points_renderer.rebuild_from_scene(
+                &gpu.device,
+                &gpu.queue,
+                &panel_state.scene,
+                options.geometry.voxels_per_block,
+                &app_core.camera,
+                true,
+            );
+            points_renderer.update_uniforms(&gpu.queue, view_projection);
+        }
         // The analytic infinite grid (issue #29 Points fast-follow): build the visible
         // Points' planes with the camera matrices (recentred frame) so the fullscreen
         // ray-plane shader can intersect each pixel's view ray with the plane.
@@ -1233,25 +1244,31 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     if panel_state.placement_ghost.is_some() {
         over_model.push(&placement_ghost_renderer);
     }
-    // Scaffold: grids always (self-gate); Points' planes only under `--points`. The Points'
-    // axes join the scaffold only when NOT on-top.
+    // Behind-model: the occluded axes' paint-order pass (overlay instance, depth off), under `--points`.
+    let mut behind_model: Vec<&dyn display::SceneDraw> = Vec::new();
+    if options.show_points && !axes_through {
+        behind_model.push(&points_overlay_renderer);
+    }
+    // Scaffold: grids always (self-gate); Points' planes only under `--points`. The Points' axes'
+    // depth-tested pass joins it only when occluded.
     let mut scaffold: Vec<&dyn display::SceneDraw> = vec![&scene_grid_renderer];
     if options.show_points {
         scaffold.push(&infinite_grid_renderer);
-        if !axes_on_top {
+        if !axes_through {
             scaffold.push(&points_renderer);
         }
     }
-    // On-top: the Points' axes (when on-top, under `--points`) then the manipulator gizmo.
+    // On-top: the Points' axes (overlay instance, when on-top under `--points`) then the gizmo.
     let mut on_top: Vec<&dyn display::SceneDraw> = Vec::new();
-    if options.show_points && axes_on_top {
-        on_top.push(&points_renderer);
+    if options.show_points && axes_through {
+        on_top.push(&points_overlay_renderer);
     }
     if gizmo_placement.is_some() {
         on_top.push(&transform_gizmo_renderer);
     }
     let phases = FramePhases {
         background: &background,
+        behind_model: &behind_model,
         over_model: &over_model,
         scaffold: &scaffold,
         on_top: &on_top,
