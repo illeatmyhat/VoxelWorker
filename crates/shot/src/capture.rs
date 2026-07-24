@@ -1063,10 +1063,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let gizmo_pivot = gizmo_placement
         .map(|(pivot, _)| glam::Vec3::from_array(pivot))
         .unwrap_or(glam::Vec3::ZERO);
-    let gizmo_model = app_core
-        .camera
-        .screen_stable_model(gizmo_pivot, display::renderer::GIZMO_SCREEN_FRACTION);
-    transform_gizmo_renderer.update_uniforms(&gpu.queue, view_projection, gizmo_model);
+    let gizmo_fraction = display::renderer::GIZMO_SCREEN_FRACTION;
+    let gizmo_model = app_core.camera.screen_stable_model(gizmo_pivot, gizmo_fraction);
+    // The gizmo gets its OWN near/far (screen-stable size grows with zoom); depth-OFF draw.
+    let gizmo_vp =
+        app_core
+            .camera
+            .screen_stable_view_projection(aspect_ratio, gizmo_pivot, gizmo_fraction);
+    transform_gizmo_renderer.update_uniforms(&gpu.queue, gizmo_vp, gizmo_model);
     // Build this capture's per-object grid batch from the scene's grid-enabled nodes
     // (issue #29 S3), then upload the camera matrix.
     scene_grid_renderer.rebuild_from_scene(

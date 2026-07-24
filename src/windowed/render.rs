@@ -529,12 +529,17 @@ impl WindowedState {
             self.panel_state.geometry.voxels_per_block,
         );
         if let Some((pivot, _extent)) = gizmo_placement {
-            let model = self.app_core.camera.screen_stable_model(
-                glam::Vec3::from_array(pivot),
-                display::renderer::GIZMO_SCREEN_FRACTION,
-            );
+            let pivot = glam::Vec3::from_array(pivot);
+            let fraction = display::renderer::GIZMO_SCREEN_FRACTION;
+            let model = self.app_core.camera.screen_stable_model(pivot, fraction);
+            // The gizmo gets its OWN near/far (its world size grows with zoom, so the scene's
+            // tight window would clip it); it draws depth-OFF, so this disturbs nothing else.
+            let gizmo_vp =
+                self.app_core
+                    .camera
+                    .screen_stable_view_projection(aspect_ratio, pivot, fraction);
             self.transform_gizmo_renderer
-                .update_uniforms(&self.gpu.queue, view_projection, model);
+                .update_uniforms(&self.gpu.queue, gizmo_vp, model);
         }
         // Per-object block lattice + floor grid (issue #29 S3): rebuild this frame's
         // line batch from the scene — for every node whose grids are enabled (the

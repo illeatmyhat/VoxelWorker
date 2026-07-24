@@ -124,6 +124,22 @@ impl OrbitCamera {
         )
     }
 
+    /// A view-projection for a screen-stable gizmo at `anchor` whose near/far bracket the
+    /// gizmo itself. Zoomed far out, a screen-stable gizmo's *world* size grows with depth, so
+    /// the scene's own tight near/far window (sized to the model) would clip its axes — this
+    /// keeps the same eye and frustum but widens the depth range to `anchor ± size`. Meant for a
+    /// depth-test-OFF overlay pass, where its private depth range disturbs nothing else.
+    pub fn screen_stable_view_projection(
+        &self,
+        aspect_ratio: f32,
+        anchor: glam::Vec3,
+        screen_fraction: f32,
+    ) -> glam::Mat4 {
+        // Axis tips sit one `size` from the anchor; a margin covers the diagonal + slack.
+        let radius = self.screen_stable_size(anchor, screen_fraction) * 1.3;
+        self.view_projection(aspect_ratio, anchor, radius)
+    }
+
     /// The farthest `orbit_distance` at which a block of `block_size` world units still spans
     /// [`MIN_BLOCK_SCREEN_FRACTION`] of the viewport — i.e. is still worth authoring against.
     ///
@@ -263,6 +279,34 @@ mod tests {
                     "{mode:?} at distance {orbit_distance}: apparent {apparent}, expected {FRACTION}"
                 );
             }
+        }
+    }
+
+    /// Whether a world point survives near/far clipping under `vp` — clip-space z within
+    /// `[0, w]` (glam's `*_rh` matrices use the wgpu [0,1] depth range).
+    fn within_depth(vp: glam::Mat4, point: glam::Vec3) -> bool {
+        let clip = vp * point.extend(1.0);
+        clip.w > 0.0 && (0.0..=clip.w).contains(&clip.z)
+    }
+
+    /// The regression for the far-zoom cut-off: at a large orbit distance a screen-stable gizmo
+    /// is big in world units, so its axis tip falls OUTSIDE the scene's tight near/far window —
+    /// [`screen_stable_view_projection`](OrbitCamera::screen_stable_view_projection) widens the
+    /// depth range to keep it whole.
+    #[test]
+    fn the_gizmo_projection_keeps_a_far_zoomed_gizmo_off_the_clip_planes() {
+        const FRACTION: f32 = 0.16;
+        let anchor = glam::Vec3::ZERO;
+        for mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
+            let probe = camera(mode, 4096.0);
+            let size = probe.screen_stable_size(anchor, FRACTION);
+            let axis_tip = anchor + glam::Vec3::Z * size;
+            // The scene's own matrix, sized to a small (~5-block) model, clips the tip.
+            let scene_vp = probe.view_projection(1.6, anchor, 45.0);
+            assert!(!within_depth(scene_vp, axis_tip), "{mode:?}: scene matrix should clip the tip");
+            // The gizmo's own matrix brackets it.
+            let gizmo_vp = probe.screen_stable_view_projection(1.6, anchor, FRACTION);
+            assert!(within_depth(gizmo_vp, axis_tip), "{mode:?}: gizmo matrix must keep the tip");
         }
     }
 }
