@@ -18,8 +18,11 @@ pub(crate) const POINT_PLANE_MAJOR_ALPHA: f32 = 0.18;
 /// Fraction of the viewport height each half-axis spans — the Point axes are a screen-stable
 /// nav marker (ADR 0031), so they hold a constant on-screen size at any zoom instead of a fixed
 /// world length that clips against the scene's near/far. Fed to
-/// [`OrbitCamera::screen_stable_size`](camera::OrbitCamera::screen_stable_size).
-const POINT_AXIS_SCREEN_FRACTION: f32 = 0.09;
+/// [`OrbitCamera::screen_stable_size`](camera::OrbitCamera::screen_stable_size). **Public** so the
+/// shell can bracket the shared scene near/far around it: the OCCLUDED (depth-tested) axes draw
+/// with the scene matrix, whose model-tight window would otherwise clip these growing-with-zoom
+/// axes at far zoom.
+pub const POINT_AXIS_SCREEN_FRACTION: f32 = 0.09;
 /// Base alpha of a Point's axis lines.
 pub(crate) const POINT_AXIS_ALPHA: f32 = 0.85;
 

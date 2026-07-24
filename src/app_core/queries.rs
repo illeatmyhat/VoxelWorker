@@ -80,6 +80,15 @@ impl AppCore {
         )
         .length();
         let scene_radius = (0.5 * diagonal * 1.15).max(1.0);
+        // Bracket the screen-stable reference axes (ADR 0031): drawn OCCLUDED they share this
+        // matrix, and their world size grows with zoom, so a model-tight window clips them at far
+        // zoom. `screen_stable_size` grows with depth too, so this tracks; when a model is framed
+        // it is smaller than the model radius and the `.max` is a no-op (picking/precision intact).
+        let axis_radius = self
+            .camera
+            .screen_stable_size(glam::Vec3::ZERO, display::renderer::POINT_AXIS_SCREEN_FRACTION)
+            * 1.3;
+        let scene_radius = scene_radius.max(axis_radius);
         self.camera
             .view_projection(aspect_ratio, glam::Vec3::ZERO, scene_radius)
     }

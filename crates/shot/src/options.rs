@@ -60,6 +60,9 @@ pub(crate) struct ShotOptions {
     /// goldens (which never pass `--points`) stay byte-identical; `--points` enables
     /// the Origin Point (and any others) so a deliberate Points golden can be captured.
     pub(crate) show_points: bool,
+    /// Whether the Points' axes draw ON TOP of the model (ADR 0031). DEFAULT true (the app
+    /// default); `--axes-occluded` flips it to the depth-tested scaffold path.
+    pub(crate) axes_on_top: bool,
     /// An OPTIONAL extra Point at the given world BLOCK position (issue #29 Points
     /// fast-follow `--point-at X Y Z`), with its XY ground plane (Z-up) + axes ON, so a
     /// headless capture can verify a second analytic grid plane at a different height
@@ -338,6 +341,7 @@ impl Default for ShotOptions {
             extra_point_blocks: None,
             debug_face_orientation: false,
             export_vox_path: None,
+            axes_on_top: true,
             snap_element: None,
             cube_hover: None,
             theta: 0.7,
@@ -783,6 +787,9 @@ pub(crate) fn parse_options() -> ShotOptions {
                     args.next().expect("--export-vox requires a path argument"),
                 ));
             }
+            "--axes-occluded" => {
+                options.axes_on_top = false;
+            }
             "--snap" => {
                 options.snap_element =
                     Some(parse_snap_element(&args.next().expect("--snap requires a value")));
@@ -845,7 +852,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--synthetic-block] [--two-layer]\n\
                      \x20            [--replay <script.jsonl>]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--stack-folded] [--lattice] [--floor] [--points] [--point-at <X Y Z>]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--stack-folded] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--axes-occluded]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\

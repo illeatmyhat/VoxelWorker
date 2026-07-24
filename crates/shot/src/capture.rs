@@ -1086,10 +1086,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // World reference grid (issue #29 S5): build the visible Points' tiled planes +
     // axes, centred on the camera's projection onto each plane. Only wired into the
     // overlays when `--points` is passed (default OFF keeps the goldens unchanged).
-    // The Points' axes are a screen-stable nav marker drawn ON TOP (ADR 0031); a generous
-    // overlay near/far keeps them off the clip planes at any zoom (the scene's tight window
-    // would cut them). `shot` matches the app default (on-top).
-    let axes_on_top = true;
+    // The Points' axes are a screen-stable nav marker; on-top (default) draws through the model
+    // with a generous overlay near/far, occluded uses the scene matrix + scaffold phase.
+    let axes_on_top = options.axes_on_top;
     if options.show_points {
         points_renderer.rebuild_from_scene(
             &gpu.device,
