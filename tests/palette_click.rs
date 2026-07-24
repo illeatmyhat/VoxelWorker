@@ -22,7 +22,8 @@ use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 
 use assets::BlockGroup;
 use voxel_worker::block_palette::PaletteHost;
-use voxel_worker::{build_panel, EguiPaintBridge, GpuContext, PanelState};
+use voxel_worker::frame::egui_frame::EguiPaintBridge;
+use voxel_worker::{build_panel, GpuContext, PanelState};
 
 /// A tiny solid-colour decoded RGBA image to stand in for a block texture.
 fn dummy_decoded() -> (u32, u32, Vec<u8>) {

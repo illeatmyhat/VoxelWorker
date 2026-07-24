@@ -54,7 +54,7 @@ pub enum ViewCubeMenuRequest {
 
 /// The fully-prepared egui draw data for one frame.
 ///
-/// Produced by [`run_egui_frame`] and consumed by [`render_frame`]. Keeping it
+/// Produced by [`run_egui_frame`] and consumed by [`render_frame`](super::render::render_frame). Keeping it
 /// in a struct lets the windowed path interleave winit-specific work (feeding
 /// `platform_output` back to the window) between the two steps.
 pub struct PreparedEguiFrame {

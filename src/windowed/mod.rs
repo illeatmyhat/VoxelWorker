@@ -24,18 +24,17 @@ use display::block_texture::LoadedMaterial;
 use work::workers::scan::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
+use crate::frame::{
+    egui_frame::{run_egui_frame, EguiPaintBridge, ViewCubeMenuRequest},
+    render::{render_frame, FramePhases},
+};
 use crate::{
     chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
-    procedural_material_average_color, render_frame,
-    run_egui_frame, AppConfig, AppCore, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
-    RebuildOutcome, RebuildOutput, RecentreVoxels,
-    EguiPaintBridge,
-    FramePhases,
-    TransformGizmoRenderer,
+    procedural_material_average_color, AppConfig, AppCore, ChromeClickAction, CubeChromeZone,
+    CubeFace, CubeRect, RebuildOutcome, RebuildOutput, RecentreVoxels, TransformGizmoRenderer,
     GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, PointsRenderer,
     SceneGridRenderer,
     HomeView, NodeSpec, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
-    ViewCubeMenuRequest,
     ViewCubeRenderer, COLOR_TARGET_FORMAT,
     view_cube_corner, VIEW_CUBE_VIEWPORT_PIXELS,
 };

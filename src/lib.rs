@@ -4,7 +4,7 @@
 //! (`src/main.rs`) and the headless screenshot harness, which is now its own package
 //! at `crates/shot/`:
 //!
-//!   * A render-target-agnostic frame function ([`render_frame`]) that paints
+//!   * A render-target-agnostic frame function ([`frame::render::render_frame`]) that paints
 //!     into any [`wgpu::TextureView`]. It knows nothing about winit or surfaces,
 //!     so the same code draws the on-screen surface texture and the offscreen
 //!     capture texture — guaranteeing the screenshot matches the window.
@@ -175,11 +175,8 @@ pub const WORKSHOP_CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-// The per-frame pipeline (ADR 0031): egui pass + GPU viewport pass. Split out of this root so
-// the two responsibilities stop sharing a file; re-exported flat so `voxel_worker::<name>` uses
-// keep resolving for the bins, the shot harness, and the tests.
-mod frame;
-pub use frame::egui_frame::{
-    run_egui_frame, EguiPaintBridge, PreparedEguiFrame, ViewCubeMenuRequest,
-};
-pub use frame::render::{render_frame, FramePhases};
+// The per-frame pipeline (ADR 0031): egui pass ([`frame::egui_frame`]) + GPU viewport pass
+// ([`frame::render`]). Split out of this root so the two responsibilities stop sharing a file.
+// A public module, NOT re-exported flat: callers name `voxel_worker::frame::render::render_frame`
+// etc. directly.
+pub mod frame;

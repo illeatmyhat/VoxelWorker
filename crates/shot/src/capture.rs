@@ -4,9 +4,13 @@
 use display::block_texture::LoadedMaterial;
 use voxel_worker::block_palette::PaletteHost;
 use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
+use voxel_worker::frame::{
+    egui_frame::{run_egui_frame, EguiPaintBridge},
+    render::{render_frame, FramePhases},
+};
 use voxel_worker::{
-    create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppCore, CuboidMeshRenderer, EguiPaintBridge, FramePhases, GpuContext,
+    create_depth_view, create_msaa_color_view, procedural_material_average_color,
+    AppCore, CuboidMeshRenderer, GpuContext,
     InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
     OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, VoxelBody, Point,
     PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape, SelectedOperandGhostRenderer,

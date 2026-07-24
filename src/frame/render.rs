@@ -4,6 +4,7 @@
 //! [`egui_frame`](super::egui_frame).
 
 use crate::*;
+use super::egui_frame::{EguiPaintBridge, PreparedEguiFrame};
 
 
 /// Render a complete frame into `target_view`.
