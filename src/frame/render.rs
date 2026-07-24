@@ -131,6 +131,43 @@ pub fn upload_scene_scaffold(
     infinite_grid.rebuild_from_scene(queue, scene, density, scene_matrices);
 }
 
+/// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot` (ADR 0031):
+/// the selection-follow transform gizmo, the boolean-operand x-ray ghost, and the corner view
+/// cube. Each is a pure camera upload with no scene rebuild — the drift these previously risked
+/// (a gizmo matrix or cube projection computed two different ways) is made unrepresentable by one
+/// call site.
+///
+/// The gizmo uploads ONLY when `gizmo_placement` is `Some` (the selection has an extent); both
+/// paths already gate the gizmo DRAW on the same condition, so skipping the upload on `None` is
+/// the shell's existing behaviour and a harmless no-op for `shot` (which formerly uploaded a
+/// throwaway origin-pivot gizmo it never drew). `view_projection` is the scene matrix
+/// ([`SceneMatrices::view_projection`](camera::SceneMatrices)); `aspect_ratio` sizes the gizmo's
+/// generous depth-off overlay bracket.
+#[allow(clippy::too_many_arguments)]
+pub fn upload_overlay_uniforms(
+    queue: &wgpu::Queue,
+    camera: &camera::OrbitCamera,
+    aspect_ratio: f32,
+    view_projection: glam::Mat4,
+    gizmo_placement: Option<([f32; 3], [f32; 3])>,
+    transform_gizmo: &TransformGizmoRenderer,
+    selected_operand_ghost: &SelectedOperandGhostRenderer,
+    view_cube: &ViewCubeRenderer,
+) {
+    // The gizmo FOLLOWS the selection: size it screen-stable to its pivot and bake the recentred
+    // pivot into a generous depth-off overlay matrix (the scene's tight near/far would clip a
+    // screen-stable gizmo when zoomed far). No selection extent ⇒ nothing to place.
+    if let Some((pivot, _extent)) = gizmo_placement {
+        let pivot = glam::Vec3::from_array(pivot);
+        let model = camera.screen_stable_model(pivot, display::renderer::GIZMO_SCREEN_FRACTION);
+        let gizmo_view_projection = camera.overlay_view_projection(aspect_ratio, pivot);
+        transform_gizmo.update_uniforms(queue, gizmo_view_projection, model);
+    }
+    // ADR 0018 Decision 6: the operand ghost + the corner cube ride the scene camera directly.
+    selected_operand_ghost.update_uniforms(queue, view_projection);
+    view_cube.update_uniforms(queue, camera.view_cube_view_projection());
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     bridge: &mut EguiPaintBridge,

@@ -1065,17 +1065,6 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
     let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
     let view_projection = scene_matrices.view_projection;
-    let gizmo_pivot = gizmo_placement
-        .map(|(pivot, _)| glam::Vec3::from_array(pivot))
-        .unwrap_or(glam::Vec3::ZERO);
-    let gizmo_fraction = display::renderer::GIZMO_SCREEN_FRACTION;
-    let gizmo_model = app_core.camera.screen_stable_model(gizmo_pivot, gizmo_fraction);
-    // Depth-OFF draw with a generous overlay near/far (the scene's tight window would clip the
-    // screen-stable gizmo when zoomed far).
-    let gizmo_vp = app_core
-        .camera
-        .overlay_view_projection(aspect_ratio, gizmo_pivot);
-    transform_gizmo_renderer.update_uniforms(&gpu.queue, gizmo_vp, gizmo_model);
     // Scene scaffold uniforms (per-object scene grid + world-reference Points + analytic
     // infinite grid), shared with the windowed shell through one orchestration point (ADR 0031).
     // `--points` gates the Points/infinite grid (default OFF keeps the goldens unchanged).
@@ -1127,10 +1116,19 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             ghost.rotation_inverse_columns(),
         );
     }
-    // ADR 0018 Decision 6: the boolean-operand ghost's camera + tint upload (mesh was
-    // built at derivation above).
-    selected_operand_ghost_renderer.update_uniforms(&gpu.queue, view_projection);
-    view_cube_renderer.update_uniforms(&gpu.queue, app_core.camera.view_cube_view_projection());
+    // Overlay uniforms shared with the shell (ADR 0031): the selection-follow gizmo, the
+    // boolean-operand x-ray ghost, and the corner view cube — one orchestration point so the two
+    // paths cannot drift. The gizmo uploads only when placed (drawn under the same condition below).
+    voxel_worker::frame::render::upload_overlay_uniforms(
+        &gpu.queue,
+        &app_core.camera,
+        aspect_ratio,
+        view_projection,
+        gizmo_placement,
+        &transform_gizmo_renderer,
+        &selected_operand_ghost_renderer,
+        &view_cube_renderer,
+    );
 
     // Part of #20: upload the cuboid path's uniforms (camera + per-material base
     // colours + band clip) and frustum-cull its mesh chunks. A loaded VS block

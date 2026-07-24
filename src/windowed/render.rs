@@ -533,27 +533,14 @@ impl WindowedState {
         } else {
             false
         };
-        // Transform gizmo (issue #29 S2): it FOLLOWS the selected node. Size it to
-        // the selected node's own extent and bake its recentred pivot into the
-        // camera matrix. `None` (nothing selected, or selection has no extent) hides
-        // it — visibility is selection-driven, no longer a Display toggle.
+        // Transform gizmo (issue #29 S2): it FOLLOWS the selected node — `None` (nothing
+        // selected, or selection has no extent) hides it. Its camera upload rides the shared
+        // overlay-uniforms call below; here we only resolve WHETHER it is placed (the phase
+        // assembly gates its draw on this).
         let gizmo_placement = AppCore::gizmo_placement(
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
         );
-        if let Some((pivot, _extent)) = gizmo_placement {
-            let pivot = glam::Vec3::from_array(pivot);
-            let fraction = display::renderer::GIZMO_SCREEN_FRACTION;
-            let model = self.app_core.camera.screen_stable_model(pivot, fraction);
-            // The gizmo draws depth-OFF with a generous overlay near/far (the scene's tight
-            // window, sized to the model, would clip the screen-stable gizmo when zoomed far).
-            let gizmo_vp = self
-                .app_core
-                .camera
-                .overlay_view_projection(aspect_ratio, pivot);
-            self.transform_gizmo_renderer
-                .update_uniforms(&self.gpu.queue, gizmo_vp, model);
-        }
         // Per-object block lattice + floor grid (issue #29 S3): rebuild this frame's
         // line batch from the scene — for every node whose grids are enabled (the
         // scene master ANDed with the node's own toggle), its enclosing-block lattice
@@ -674,12 +661,19 @@ impl WindowedState {
         } else {
             self.placement_ghost_renderer.disarm();
         }
-        // ADR 0018 Decision 6: the boolean-operand ghost's per-frame camera + tint upload
-        // (the meshes were derived at the selection/geometry/mode seam above, never here).
-        self.selected_operand_ghost_renderer
-            .update_uniforms(&self.gpu.queue, view_projection);
-        self.view_cube_renderer
-            .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
+        // Overlay uniforms shared with `shot` (ADR 0031): the selection-follow gizmo, the
+        // boolean-operand x-ray ghost, and the corner view cube — one orchestration point so the
+        // two paths cannot drift.
+        crate::frame::render::upload_overlay_uniforms(
+            &self.gpu.queue,
+            &self.app_core.camera,
+            aspect_ratio,
+            view_projection,
+            gizmo_placement,
+            &self.transform_gizmo_renderer,
+            &self.selected_operand_ghost_renderer,
+            &self.view_cube_renderer,
+        );
 
         // ADR 0012: the onion-skin VOLUMETRIC FOG is retired. Onion context draws as the
         // display paths' ghost pass (prepared above: the brick slabs in `update_ghost_uniforms`,
