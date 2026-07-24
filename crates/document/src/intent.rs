@@ -401,6 +401,11 @@ pub struct IntentEffect {
     /// inspector mirror (the panel folds this into `scene_changed` today, but the
     /// typed effect separates it so a pure selection switch re-resolves nothing).
     pub selection_changed: bool,
+    /// The edit was REJECTED because it would push a node past the ±1,000,000-block
+    /// display coordinate envelope ([`COORDINATE_LIMIT_BLOCKS`](crate::scene::COORDINATE_LIMIT_BLOCKS)):
+    /// the scene was NOT mutated and no undo step was recorded. The shell latches this
+    /// into the inspector's coordinate-limit warning; an accepted geometry edit clears it.
+    pub coordinate_limit_rejected: bool,
 }
 
 impl IntentEffect {
@@ -434,6 +439,15 @@ impl IntentEffect {
         }
     }
 
+    /// An effect flagging that the edit was rejected by the coordinate-limit gate — no
+    /// mutation, no undo step (the shell shows the coordinate-limit warning).
+    pub fn rejected() -> Self {
+        Self {
+            coordinate_limit_rejected: true,
+            ..Self::none()
+        }
+    }
+
     /// The OR-merge of two effects — the union of their set flags. Useful when a
     /// later slice batches several intents into one frame's effect.
     pub fn merged_with(self, other: Self) -> Self {
@@ -441,6 +455,8 @@ impl IntentEffect {
             scene_changed: self.scene_changed || other.scene_changed,
             points_changed: self.points_changed || other.points_changed,
             selection_changed: self.selection_changed || other.selection_changed,
+            coordinate_limit_rejected: self.coordinate_limit_rejected
+                || other.coordinate_limit_rejected,
         }
     }
 }

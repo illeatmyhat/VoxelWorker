@@ -530,6 +530,15 @@ pub struct PanelState {
     /// every rebuild. Dropping it costs one more count and changes nothing else.
     #[snapshot(derived)]
     pub voxel_cap_warning_millions: Option<f32>,
+    /// When `true`, the last authored edit was REJECTED because it would push a node
+    /// past the ±1,000,000-block display coordinate envelope. The panel shows a warning.
+    /// Set by the caller on a rejected intent, cleared on the next accepted geometry edit.
+    ///
+    /// **Derived**, on the same footing as [`voxel_cap_warning_millions`](Self::voxel_cap_warning_millions):
+    /// a function of the last edit's outcome, recomputed at every apply, and dropping it
+    /// changes nothing else.
+    #[snapshot(derived)]
+    pub coordinate_limit_warning: bool,
     /// When `Some`, a loaded VS block (M6) is the active material; the value is
     /// its label, shown under the Material selector. `None` = a procedural
     /// material is active.

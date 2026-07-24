@@ -904,6 +904,7 @@
                 scene_changed: true,
                 points_changed: true,
                 selection_changed: true,
+                coordinate_limit_rejected: false,
             },
             "undo no longer returns blanket-true",
         );

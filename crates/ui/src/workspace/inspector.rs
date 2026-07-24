@@ -55,6 +55,14 @@ pub(super) fn build_inspector(
                             format!("3D paused — {millions:.1}M voxels; lower size/density"),
                         );
                     }
+                    if state.coordinate_limit_warning {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.colored_label(
+                            theme::WARN,
+                            "position exceeds the ±1,000,000-block coordinate limit",
+                        );
+                    }
                 });
         });
 }

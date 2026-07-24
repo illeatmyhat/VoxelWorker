@@ -413,6 +413,7 @@ impl AppConfig {
             debug_face_orientation: self.debug_face_orientation,
             debug_brick_faces: self.debug_brick_faces,
             voxel_cap_warning_millions: None,
+            coordinate_limit_warning: false,
             // Re-applied lazily/best-effort: only the label is restored (for the
             // panel readout); the material itself reverts to procedural.
             applied_block_label: self.applied_block_label.clone(),

@@ -97,6 +97,14 @@ impl AppCore {
             return effect;
         }
 
+        // Authoring-time coordinate wall: an edit that would push a node past the
+        // ±COORDINATE_LIMIT_BLOCKS display envelope is rejected here — the scene is not
+        // mutated and no command is recorded (so undo has nothing to reverse). The shell
+        // surfaces the returned rejection as the inspector's coordinate-limit warning.
+        if scene.intent_exceeds_coordinate_limit(&intent, scene.voxels_per_block) {
+            return IntentEffect::rejected();
+        }
+
         let (command, effect) = self.record(scene, intent);
         // ADR 0028 §4: while a sketch group is OPEN, every undoable edit routes into the
         // session (fine-grained in-mode undo/redo) through this SAME apply door — so apply and

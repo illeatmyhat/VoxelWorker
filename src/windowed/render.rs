@@ -324,6 +324,13 @@ impl WindowedState {
                 .apply_intent(&mut self.panel_state.scene, intent);
             merged_effect = merged_effect.merged_with(effect);
         }
+        // Coordinate-limit warning (authoring-time only): latch a rejected edit into the
+        // inspector warning, and clear it on the next accepted geometry edit.
+        if merged_effect.coordinate_limit_rejected {
+            self.panel_state.coordinate_limit_warning = true;
+        } else if merged_effect.scene_changed {
+            self.panel_state.coordinate_limit_warning = false;
+        }
         if merged_effect.selection_changed || merged_effect.scene_changed {
             // Re-sync the inspector mirror to the active node. The OLD panel called
             // `sync_mirror_from_active` after EVERY structural action (add / group /

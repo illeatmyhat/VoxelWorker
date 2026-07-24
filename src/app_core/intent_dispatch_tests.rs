@@ -4,6 +4,7 @@
     use document::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
     use document::scene::{
         DefId, Node, NodeBuilder, NodeContent, NodeGrids, NodeId, NodeTransform, VoxelBody, Point, Scene,
+        COORDINATE_LIMIT_BLOCKS,
     };
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     use voxel_core::voxel::{ShapeKind};
@@ -394,6 +395,96 @@
                 }
             },
         );
+    }
+
+    // === Coordinate limit (display envelope) ===
+
+    #[test]
+    fn offset_just_inside_coordinate_limit_is_applied() {
+        // A whole-block offset whose far box corner lands exactly on the ±wall is inside
+        // it (the bound is inclusive), so the edit applies and records one undo step.
+        let scene = two_tool_scene();
+        let target = root_id(&scene, 0); // the [2, 2, 2]-block box
+        let inside = COORDINATE_LIMIT_BLOCKS - 2; // far corner = inside + 2 == the wall
+        let mut core = test_core();
+        let mut applied = scene.clone();
+        let effect = core.apply_intent(
+            &mut applied,
+            Intent::SetOffset { target, offset_measurements: whole_block_offset([inside, 0, 0]) },
+        );
+        assert!(effect.scene_changed, "an in-bounds offset applies");
+        assert!(!effect.coordinate_limit_rejected);
+        assert_eq!(core.undo_depth(), 1, "an accepted edit records one undo step");
+        assert_eq!(
+            applied.node_by_id(target).unwrap().transform.offset_voxels,
+            [inside * 16, 0, 0],
+            "the node moved to the authored offset",
+        );
+    }
+
+    #[test]
+    fn offset_beyond_coordinate_limit_is_rejected() {
+        // One block past the wall: rejected with the scene untouched and no undo entry.
+        let scene = two_tool_scene();
+        let target = root_id(&scene, 0);
+        let beyond = COORDINATE_LIMIT_BLOCKS + 1;
+        let mut core = test_core();
+        let mut applied = scene.clone();
+        let effect = core.apply_intent(
+            &mut applied,
+            Intent::SetOffset { target, offset_measurements: whole_block_offset([beyond, 0, 0]) },
+        );
+        assert_eq!(applied, scene, "a rejected edit leaves the scene untouched");
+        assert!(effect.coordinate_limit_rejected, "the effect flags the rejection");
+        assert!(!effect.scene_changed);
+        assert_eq!(core.undo_depth(), 0, "a rejected edit records no undo step");
+    }
+
+    #[test]
+    fn place_node_beyond_coordinate_limit_is_rejected() {
+        // The placement intent is gated too: a drop far past the wall adds no node.
+        let scene = two_tool_scene();
+        let roots_before = scene.roots.len();
+        let mut core = test_core();
+        let mut applied = scene.clone();
+        let effect = core.apply_intent(
+            &mut applied,
+            Intent::PlaceNode {
+                content: NodeSpec::Tool { shape: box_shape([2, 2, 2]), material: MaterialChoice::Stone },
+                offset_voxels: [(COORDINATE_LIMIT_BLOCKS + 10) * 16, 0, 0],
+                offset_local: [0.0, 0.0, 0.0],
+                rotation_quaternion: None,
+            },
+        );
+        assert_eq!(applied, scene, "a rejected placement leaves the scene untouched");
+        assert_eq!(applied.roots.len(), roots_before, "no node was added");
+        assert!(effect.coordinate_limit_rejected);
+        assert_eq!(core.undo_depth(), 0);
+    }
+
+    #[test]
+    fn rejection_flags_the_effect_then_an_accepted_edit_clears_it() {
+        // The rejection surfaces as `coordinate_limit_rejected` (the shell latches this
+        // into the inspector warning); the next in-bounds edit reports no rejection (the
+        // shell clears the warning on any accepted geometry edit).
+        let scene = two_tool_scene();
+        let target = root_id(&scene, 0);
+        let mut core = test_core();
+        let mut applied = scene.clone();
+        let rejected = core.apply_intent(
+            &mut applied,
+            Intent::SetOffset {
+                target,
+                offset_measurements: whole_block_offset([COORDINATE_LIMIT_BLOCKS + 50, 0, 0]),
+            },
+        );
+        assert!(rejected.coordinate_limit_rejected);
+        let accepted = core.apply_intent(
+            &mut applied,
+            Intent::SetOffset { target, offset_measurements: whole_block_offset([1, 0, 0]) },
+        );
+        assert!(!accepted.coordinate_limit_rejected);
+        assert!(accepted.scene_changed);
     }
 
     #[test]

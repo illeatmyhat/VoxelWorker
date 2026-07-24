@@ -45,7 +45,9 @@ mod spatial;
 #[cfg(test)]
 mod tests;
 
-pub use extent::{NodeTransform, RegionBlocks};
+pub use extent::{
+    block_aabb_exceeds_coordinate_limit, NodeTransform, RegionBlocks, COORDINATE_LIMIT_BLOCKS,
+};
 pub use sketch_handles::SketchHandles;
 pub use graph::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point,

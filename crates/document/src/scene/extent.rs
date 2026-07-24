@@ -8,9 +8,32 @@ use serde::{Deserialize, Serialize};
 
 use voxel_core::units::{ExactRational, Measurement};
 
+use crate::intent::{Intent, NodeSpec};
 use super::producers::{outset_voxels_at, LeafBody};
 use super::*;
 use voxel_core::voxel::RecentreVoxels;
+
+/// The display path's hard coordinate envelope, in whole blocks (±this on any axis).
+/// Authoring rejects a placement whose block AABB reaches past it, because two
+/// independent display walls sit at this magnitude:
+/// - brick record keys pack the ABSOLUTE block coordinate with a `+2^20` bias into
+///   three 21-bit lanes (`cpu_pack_key_split`); past ±2^20 blocks the key overflows and
+///   the object silently stops rendering;
+/// - f32 render-frame coordinates stop naming individual voxels past 2^24 voxels
+///   (= 2^20 blocks at density 16) from the recentre.
+///
+/// The document side is i64 and exact; this is the DISPLAY limit, enforced at the one
+/// authoring door (ADR 0006) so a node never silently disappears.
+pub const COORDINATE_LIMIT_BLOCKS: i64 = 1_000_000;
+
+/// Whether any corner of the whole-block AABB `(min_corner, max_corner)` sits past the
+/// ±[`COORDINATE_LIMIT_BLOCKS`] wall on any axis.
+pub fn block_aabb_exceeds_coordinate_limit(min_corner: [i64; 3], max_corner: [i64; 3]) -> bool {
+    (0..3).any(|axis| {
+        min_corner[axis].abs() > COORDINATE_LIMIT_BLOCKS
+            || max_corner[axis].abs() > COORDINATE_LIMIT_BLOCKS
+    })
+}
 
 /// The working volume the scene resolves into, expressed in **whole blocks**
 /// (ADR 0001 "Scale": the canvas is the user-set stock / build volume). The whole
@@ -849,6 +872,127 @@ impl Scene {
         }
     }
 
+}
+
+impl Scene {
+    /// Whether applying `intent` would push a node's placed block extent past the
+    /// ±[`COORDINATE_LIMIT_BLOCKS`] display wall on any axis — the authoring gate
+    /// `AppCore::apply_intent` consults BEFORE it mutates (ADR 0006). Only a
+    /// geometry-placing / moving / growing intent can cross the wall; every other intent
+    /// returns `false`. Cheap: one leaf's would-be voxel box (or the target subtree's
+    /// voxel extent shifted by the offset delta), enclosed to blocks — no scene resolve.
+    pub fn intent_exceeds_coordinate_limit(&self, intent: &Intent, voxels_per_block: u32) -> bool {
+        let would_be_voxel_box = match intent {
+            Intent::PlaceNode { content, offset_voxels, rotation_quaternion, .. } => {
+                place_node_voxel_box(content, *offset_voxels, *rotation_quaternion, voxels_per_block)
+            }
+            Intent::SetOffset { target, offset_measurements } => {
+                self.set_offset_voxel_box(*target, offset_measurements, voxels_per_block)
+            }
+            Intent::SetShape { target, shape } => {
+                self.set_body_voxel_box(*target, voxels_per_block, |content| match content {
+                    NodeContent::Tool { shape: node_shape, .. } => {
+                        *node_shape = shape.clone();
+                        true
+                    }
+                    _ => false,
+                })
+            }
+            Intent::SetSketch { target, producer } => {
+                self.set_body_voxel_box(*target, voxels_per_block, |content| match content {
+                    NodeContent::SketchTool { producer: node_producer, .. } => {
+                        *node_producer = producer.clone();
+                        true
+                    }
+                    _ => false,
+                })
+            }
+            _ => None,
+        };
+        match would_be_voxel_box {
+            Some((low_voxels, high_voxels)) => {
+                let density = voxels_per_block.max(1) as i64;
+                let (min_block, max_block) =
+                    substrate::spatial::enclosing_block_aabb(low_voxels, high_voxels, density);
+                block_aabb_exceeds_coordinate_limit(min_block, max_block)
+            }
+            None => false,
+        }
+    }
+
+    /// The would-be voxel box of the subtree at `target` after its own offset becomes the
+    /// value `offset_measurements` derives: the current subtree voxel extent shifted by
+    /// the per-axis offset delta (a node's own offset translates its whole subtree
+    /// equally, so no re-walk of the new position is needed). `None` for a missing /
+    /// size-less node.
+    fn set_offset_voxel_box(
+        &self,
+        target: NodeId,
+        offset_measurements: &[Measurement; 3],
+        voxels_per_block: u32,
+    ) -> Option<([i64; 3], [i64; 3])> {
+        let path = self.path_of(target)?;
+        let old_offset_voxels = self.node_by_id(target)?.transform.offset_voxels;
+        let new_offset_voxels =
+            NodeTransform::from_measurements(*offset_measurements, voxels_per_block).offset_voxels;
+        let (low_voxels, high_voxels) = self.node_subtree_extent_voxels(&path, voxels_per_block)?;
+        let delta: [i64; 3] =
+            std::array::from_fn(|axis| new_offset_voxels[axis] - old_offset_voxels[axis]);
+        Some((
+            std::array::from_fn(|axis| low_voxels[axis] + delta[axis]),
+            std::array::from_fn(|axis| high_voxels[axis] + delta[axis]),
+        ))
+    }
+
+    /// The would-be voxel box of the leaf at `target` after `edit` rewrites a CLONE of its
+    /// content (the body-set intents' shared shape), at the leaf's current world offset.
+    /// `None` when the node is missing, the edit does not apply (wrong content kind), or
+    /// the body has no localisable extent.
+    fn set_body_voxel_box(
+        &self,
+        target: NodeId,
+        voxels_per_block: u32,
+        edit: impl FnOnce(&mut NodeContent) -> bool,
+    ) -> Option<([i64; 3], [i64; 3])> {
+        let path = self.path_of(target)?;
+        let (_target_id, parent_offset_voxels) = self.subtree_walk_target(&path)?;
+        let node = self.node_by_id(target)?;
+        let mut content = node.content.clone();
+        if !edit(&mut content) {
+            return None;
+        }
+        let world_offset_voxels: [i64; 3] = std::array::from_fn(|axis| {
+            parent_offset_voxels[axis] + node.transform.offset_voxels[axis]
+        });
+        leaf_placed_voxel_box(
+            world_offset_voxels,
+            node.transform.rotation(),
+            &LeafBody::Content(&content),
+            node.outset,
+            voxels_per_block,
+        )
+    }
+}
+
+/// The would-be voxel box of a freshly PLACED root leaf built from `content` at
+/// `offset_voxels` (ADR 0008 absolute frame) under `rotation_quaternion`. A root has no
+/// parent offset and a default (zero) outset. `None` for a size-less body (a Clouds /
+/// Group). The sub-voxel `offset_local` (< 1 voxel) is immaterial at block granularity.
+fn place_node_voxel_box(
+    content: &NodeSpec,
+    offset_voxels: [i64; 3],
+    rotation_quaternion: Option<[f32; 4]>,
+    voxels_per_block: u32,
+) -> Option<([i64; 3], [i64; 3])> {
+    let node = content.clone().into_node();
+    let rotation = rotation_quaternion.map(Quat::from_array).unwrap_or(Quat::IDENTITY);
+    leaf_placed_voxel_box(
+        offset_voxels,
+        rotation,
+        &LeafBody::Content(&node.content),
+        node.outset,
+        voxels_per_block,
+    )
 }
 
 /// The whole-block extent of a leaf node's producer, or `None` for a non-leaf /
