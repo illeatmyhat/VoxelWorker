@@ -51,6 +51,8 @@ pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, resp
         response.emit(Intent::SetGridMasters { voxel, lattice, floor });
     }
     ui.checkbox(&mut state.show_view_cube, "View cube");
+    // ADR 0031: the Points' axes as a nav marker through the model (on) vs occluded scaffold (off).
+    ui.checkbox(&mut state.axes_on_top, "Axes on top");
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
     // active node), so it no longer has a Display toggle.
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");

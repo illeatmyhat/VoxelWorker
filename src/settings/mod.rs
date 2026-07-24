@@ -145,6 +145,10 @@ pub struct AppConfig {
     // (serde ignores the now-unknown keys); the scene's own masters are authoritative.
     #[snapshot(settings)]
     pub show_view_cube: bool,
+    /// Whether the Points' axes draw on top of the model vs occluded (ADR 0031). ON by
+    /// default; the same display-preference footing as `show_view_cube`.
+    #[snapshot(settings)]
+    pub axes_on_top: bool,
     // NOTE: the legacy `show_origin_gizmo` field was removed in the issue #29 S6
     // cleanup. The old origin-gizmo Display toggle was replaced by the
     // selection-driven transform gizmo, so the field drove nothing. There is no
@@ -276,6 +280,7 @@ impl Default for AppConfig {
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
             show_view_cube: true,
+            axes_on_top: true,
             applied_block_label: None,
             snap_to_blocks: true,
             onion_skin: false,
@@ -323,6 +328,7 @@ impl AppConfig {
             // `show_grid_overlay` / `show_block_lattice` / `show_floor_grid` mirror
             // fields were deleted, so there is no stale mirror to drift out of sync.
             show_view_cube: panel.show_view_cube,
+            axes_on_top: panel.axes_on_top,
             applied_block_label: panel.applied_block_label.clone(),
             snap_to_blocks: panel.layer_range.snap_to_blocks,
             onion_skin: panel.layer_range.onion_skin,
@@ -403,6 +409,7 @@ impl AppConfig {
             projection_mode: self.projection_mode,
             material: self.material,
             show_view_cube: self.show_view_cube,
+            axes_on_top: self.axes_on_top,
             // ADR 0024: the debug verification modes are session state and are restored,
             // not reset. They used to be hard-coded to `false` here while classified as
             // reaching the dump — a category promising one thing and the code doing

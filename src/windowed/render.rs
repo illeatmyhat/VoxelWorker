@@ -555,10 +555,10 @@ impl WindowedState {
         self.scene_grid_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
         // World reference AXES (issue #29 S5): rebuild the visible Points' axis lines,
-        // screen-stable-sized from the camera (ADR 0031). Drawn ON TOP (depth off) so they
-        // read as a nav marker through the model; with a generous overlay near/far so the
-        // screen-stable axes never clip at far zoom (the scene's tight window would).
-        let axes_on_top = true;
+        // screen-stable-sized from the camera (ADR 0031). On-top (depth off) reads as a nav
+        // marker through the model with a generous overlay near/far so the screen-stable axes
+        // never clip; occluded uses the scene matrix + the depth-tested scaffold phase.
+        let axes_on_top = self.panel_state.axes_on_top;
         self.points_renderer.rebuild_from_scene(
             &self.gpu.device,
             &self.gpu.queue,

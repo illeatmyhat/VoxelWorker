@@ -165,6 +165,9 @@ pub struct SettingsArtifact {
     /// Whether the corner view cube is drawn.
     #[serde(default = "default_true")]
     pub show_view_cube: bool,
+    /// Whether the Points' axes draw on top of the model vs occluded (ADR 0031).
+    #[serde(default = "default_true")]
+    pub axes_on_top: bool,
     /// The applied VS block's **label** only. Re-resolving its texture on load is heavy
     /// (a folder scan plus JSON resolution), so the label is restored best-effort for the
     /// readout and the material reverts to procedural until the user re-applies. An
@@ -363,6 +366,7 @@ impl DocumentArtifact {
             projection_mode: _,
             material: _,
             show_view_cube: _,
+            axes_on_top: _,
             applied_block_label: _,
             home_theta: _,
             home_phi: _,
@@ -393,6 +397,7 @@ impl Dump {
             projection_mode,
             material,
             show_view_cube,
+            axes_on_top,
             applied_block_label,
             snap_to_blocks,
             onion_skin,
@@ -423,6 +428,7 @@ impl Dump {
                 projection_mode: *projection_mode,
                 material: *material,
                 show_view_cube: *show_view_cube,
+                axes_on_top: *axes_on_top,
                 applied_block_label: applied_block_label.clone(),
                 home_theta: *home_theta,
                 home_phi: *home_phi,
@@ -474,6 +480,7 @@ impl Dump {
             projection_mode: settings.projection_mode,
             material: settings.material,
             show_view_cube: settings.show_view_cube,
+            axes_on_top: settings.axes_on_top,
             applied_block_label: settings.applied_block_label,
             snap_to_blocks: view.snap_to_blocks,
             onion_skin: view.onion_skin,
@@ -548,6 +555,7 @@ impl Default for SettingsArtifact {
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
             show_view_cube: true,
+            axes_on_top: true,
             applied_block_label: None,
             home_theta: default_theta(),
             home_phi: default_phi(),
@@ -620,6 +628,7 @@ mod tests {
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,
             show_view_cube: false,
+            axes_on_top: false,
             applied_block_label: Some("Granite".to_string()),
             snap_to_blocks: false,
             onion_skin: true,

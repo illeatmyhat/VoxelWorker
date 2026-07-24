@@ -496,6 +496,11 @@ pub struct PanelState {
     /// Whether the corner view cube is drawn (M5 Display toggle, ON by default).
     #[snapshot(settings)]
     pub show_view_cube: bool,
+    /// Whether the Points' axes draw ON TOP of the model (depth off, through it — a nav marker)
+    /// vs occluded by it (depth-tested scaffold). ON by default; screen-stable either way
+    /// (ADR 0031). A display preference that outlives a project, so settings like the view cube.
+    #[snapshot(settings)]
+    pub axes_on_top: bool,
     /// Whether the voxel cubes render in face-orientation debug mode (colour by
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
@@ -632,6 +637,7 @@ impl PanelState {
     pub fn with_view_cube_default() -> Self {
         let mut state = Self {
             show_view_cube: true,
+            axes_on_top: true,
             ..Self::default()
         };
         state.seed_scene_from_geometry();
