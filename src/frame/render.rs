@@ -168,6 +168,71 @@ pub fn upload_overlay_uniforms(
     view_cube.update_uniforms(queue, camera.view_cube_view_projection());
 }
 
+/// Upload the per-frame **voxel-model** uniforms shared by the windowed shell and `shot`
+/// (ADR 0031): the cuboid mesh path and, when engaged, the brick raymarch that REPLACES the mesh
+/// draw for this frame. Both consume the same camera + band + region + grid-overlay-master +
+/// bound-material inputs, so a single call keeps the two render paths pixel-comparable — the whole
+/// premise of the gpu_parity net. Returns whether the brick path is engaged (`brick.is_some()`),
+/// which the caller feeds to [`FramePhases::brick_raymarch`].
+///
+/// The caller decides engagement (`DisplayOrchestrator::brick_display_engaged` in the shell, the
+/// brick renderer's presence in `shot`) and passes `brick = None` when the mesh path takes the
+/// frame. `grid_overlay_master` is the user's on-face-grid switch (`scene.master_voxel_grid` /
+/// `--grid`). `loaded_material_active` / `debug_brick_faces` are the brick shader's interactive
+/// flags — the shell drives them live; `shot` passes its defaults (`false` / `0`).
+#[allow(clippy::too_many_arguments)]
+pub fn upload_voxel_uniforms(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene_matrices: camera::SceneMatrices,
+    viewport_px: [u32; 4],
+    grid_dimensions: [u32; 3],
+    voxels_per_block: u32,
+    band: display::renderer::LayerBand,
+    region: Option<display::renderer::RegionClip>,
+    grid_overlay_master: bool,
+    bound: Option<voxel_core::core_geom::MaterialChoice>,
+    debug_face_orientation: bool,
+    loaded_material_active: bool,
+    debug_brick_faces: u32,
+    cuboid: &mut display::mesh::CuboidMeshRenderer,
+    brick: Option<&mut display::brick::BrickRaymarchRenderer>,
+) -> bool {
+    cuboid.update_uniforms(
+        device,
+        queue,
+        scene_matrices.view_projection,
+        grid_dimensions,
+        voxels_per_block,
+        grid_overlay_master,
+        bound,
+        band,
+        region,
+        debug_face_orientation,
+    );
+    let Some(brick) = brick else {
+        return false;
+    };
+    // ADR 0011 G2: mirror the applied-block state into the shader (solid hits shade from the
+    // block's D2Array); the grazing-rim diagnostic swaps the shade for face-axis colour. Both are
+    // per-frame toggles, no rebuild — shot leaves them at their defaults.
+    brick.set_loaded_material_active(loaded_material_active);
+    brick.set_debug_mode(debug_brick_faces);
+    brick.update_uniforms(
+        queue,
+        scene_matrices,
+        viewport_px,
+        grid_dimensions,
+        band,
+        region,
+        grid_overlay_master,
+        bound,
+    );
+    // The two onion ghost slab uniforms (self-gates on `band.onion_depth == 0`).
+    brick.update_ghost_uniforms(queue, scene_matrices, viewport_px, grid_dimensions, band, region);
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     bridge: &mut EguiPaintBridge,

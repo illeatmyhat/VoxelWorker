@@ -1139,17 +1139,26 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         Some(_) => None,
         None => Some(options.material),
     };
-    cuboid_mesh_renderer.update_uniforms(
+    // Voxel-model uniforms, shared with the shell (ADR 0031): the cuboid mesh + (when present) the
+    // brick raymarch that replaces its draw. One call keeps the two paths pixel-comparable (the
+    // gpu_parity premise). `shot` has no interactive brick flags, so it passes the defaults
+    // (`false` / `0`); presence of the brick renderer IS its engagement.
+    voxel_worker::frame::render::upload_voxel_uniforms(
         &gpu.device,
         &gpu.queue,
-        view_projection,
+        scene_matrices,
+        prepared.viewport_px,
         grid_dimensions,
         options.geometry.voxels_per_block,
-        options.show_grid_overlay,
-        bound,
         band,
         clip.region,
+        options.show_grid_overlay,
+        bound,
         options.debug_face_orientation,
+        false,
+        0,
+        &mut cuboid_mesh_renderer,
+        brick_raymarch_renderer.as_mut(),
     );
     println!(
         "cuboid mesher: {} boxes → {} exposed faces ({} triangles), {} chunks",
@@ -1158,32 +1167,6 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         cuboid_mesh_renderer.triangle_count(),
         cuboid_mesh_renderer.chunk_count(),
     );
-
-    // ADR 0011 G1: the brick pass's per-frame uniforms mirror the cuboid path's
-    // shading inputs (camera, viewport, band clip, overlay master, bound material)
-    // so the two paths render pixel-comparable.
-    if let Some(brick_raymarch) = &mut brick_raymarch_renderer {
-        brick_raymarch.update_uniforms(
-            &gpu.queue,
-            scene_matrices,
-            prepared.viewport_px,
-            grid_dimensions,
-            band,
-            // ADR 0018 Decision 5 (S5): the brick path honours the region clip too.
-            clip.region,
-            options.show_grid_overlay,
-            bound,
-        );
-        // ADR 0012 (H1): prepare the onion GHOST slabs (self-gates on `band.onion_depth`).
-        brick_raymarch.update_ghost_uniforms(
-            &gpu.queue,
-            scene_matrices,
-            prepared.viewport_px,
-            grid_dimensions,
-            band,
-            clip.region,
-        );
-    }
 
     // ADR 0002 E2 (#19): the frustum cull ran inside `update_uniforms`. Report the
     // drawn/total chunk counts so the chunking + culling are verifiable headlessly.

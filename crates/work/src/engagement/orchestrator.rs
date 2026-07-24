@@ -1142,4 +1142,17 @@ impl DisplayOrchestrator {
     pub fn brick_raymarch_renderer_mut(&mut self) -> Option<&mut BrickRaymarchRenderer> {
         self.brick_raymarch_renderer.as_mut()
     }
+
+    /// Both voxel-model renderers mutably in ONE borrow: the cuboid mesh and the optional brick
+    /// raymarch. The two `_mut` accessors above each take `&mut self` exclusively, so a caller
+    /// that must upload BOTH this frame (the shared `upload_voxel_uniforms`, ADR 0031) cannot hold
+    /// them at once — this splits the borrow once so it can. Engagement (whether the brick draw
+    /// REPLACES the mesh this frame) is a separate, caller-side decision via
+    /// [`brick_display_engaged`](Self::brick_display_engaged); a present-but-not-engaged brick
+    /// renderer is returned regardless, and the caller passes `None` when it is not engaged.
+    pub fn voxel_renderers_mut(
+        &mut self,
+    ) -> (&mut CuboidMeshRenderer, Option<&mut BrickRaymarchRenderer>) {
+        (&mut self.cuboid_mesh_renderer, self.brick_raymarch_renderer.as_mut())
+    }
 }

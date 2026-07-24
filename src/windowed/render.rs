@@ -461,78 +461,43 @@ impl WindowedState {
             Some(_) => None,
             None => Some(self.panel_state.material),
         };
-        self.display.cuboid_mesh_renderer_mut().update_uniforms(
+        // ADR 0012 (H1): the onion GHOST replaces the volumetric fog. Active when onion skin is on
+        // and the band is a real slab (`current_layer_band` sets a non-zero `onion_depth` exactly
+        // then; debug-face mode forces FULL → 0). The engaged display path draws the ghost after
+        // its solid pass (`render_frame`); a band scrub is a pure uniform update on the brick path,
+        // a thin-slab re-mesh on the cuboid path — never the fog atlas rebuild.
+        let onion_ghost_active = band.onion_depth > 0;
+        // Voxel-model uniforms, shared with `shot` (ADR 0031): the cuboid mesh + (when engaged) the
+        // brick raymarch that replaces its draw. One call keeps the two paths pixel-comparable (the
+        // gpu_parity premise). Interactive-only brick flags (loaded-material shade, the brick-faces
+        // diagnostic) travel as params; the on-face-grid MASTER (#29 S4) is `scene.master_voxel_grid`.
+        let grid_overlay_master = self.panel_state.scene.master_voxel_grid;
+        let debug_face_orientation = self.panel_state.debug_face_orientation;
+        let loaded_material_active = self.loaded_material.is_some();
+        let debug_brick_faces = u32::from(self.panel_state.debug_brick_faces);
+        let voxels_per_block = geometry.voxels_per_block;
+        let region = clip.region;
+        // A live brick field AND no mesh-only mode ⇒ the brick draw replaces the mesh this frame.
+        let brick_engaged = self.display.brick_display_engaged(debug_face_orientation);
+        let (cuboid, brick_present) = self.display.voxel_renderers_mut();
+        let brick = if brick_engaged { brick_present } else { None };
+        let brick_raymarch_engaged = crate::frame::render::upload_voxel_uniforms(
             &self.gpu.device,
             &self.gpu.queue,
-            view_projection,
+            scene_matrices,
+            prepared.viewport_px,
             grid_dimensions,
-            geometry.voxels_per_block,
-            // Issue #29 S4: the on-face-grid MASTER (Display checkbox →
-            // `scene.master_voxel_grid`). The shader ANDs it with each voxel's
-            // per-object flag bit packed into `material_id`.
-            self.panel_state.scene.master_voxel_grid,
-            bound,
+            voxels_per_block,
             band,
-            clip.region,
-            self.panel_state.debug_face_orientation,
+            region,
+            grid_overlay_master,
+            bound,
+            debug_face_orientation,
+            loaded_material_active,
+            debug_brick_faces,
+            cuboid,
+            brick,
         );
-        // ADR 0011 G1: the brick raymarch takes THIS frame's voxel-model draw when a
-        // field is installed and no mesh-only display mode is active — debug-faces
-        // and a loaded VS material are per-frame toggles that never rebuild geometry,
-        // so the draw decision is per-frame (the field stays installed). Its uniforms
-        // mirror the cuboid upload above (camera, viewport, band, overlay master,
-        // bound material) so the two paths render pixel-comparable.
-        // Shared engagement gate (term-identical to `ensure_display_mesh_current`): a live brick
-        // field AND no mesh-only mode. When engaged, upload the raymarch uniforms (mirroring the
-        // cuboid upload above) so the brick draw replaces the mesh draw this frame.
-        // ADR 0012 (H1): the onion GHOST replaces the volumetric fog. Active when onion
-        // skin is on and the band is a real slab (`current_layer_band` sets a non-zero
-        // `onion_depth` exactly then; debug-face mode forces FULL → 0). The engaged display
-        // path draws the ghost after its solid pass (`render_frame`); a band scrub is a pure
-        // uniform update on the brick path, a thin-slab re-mesh on the cuboid path — never
-        // the fog atlas rebuild.
-        let onion_ghost_active = band.onion_depth > 0;
-        let brick_raymarch_engaged = if self
-            .display
-            .brick_display_engaged(self.panel_state.debug_face_orientation)
-        {
-            let has_loaded_material = self.loaded_material.is_some();
-            let renderer = self
-                .display
-                .brick_raymarch_renderer_mut()
-                .expect("brick_display_engaged ⇒ renderer holds a live field");
-            // ADR 0011 G2: mirror the applied-block state into the shader so solid hits
-            // shade from the block's D2Array (its bind group is passed to `draw`).
-            renderer.set_loaded_material_active(has_loaded_material);
-            // Grazing-rim diagnostic (Display → "Debug: brick faces"): face-axis colour +
-            // UV checkerboard in place of the material shade. Per-frame toggle, no rebuild.
-            renderer.set_debug_mode(u32::from(self.panel_state.debug_brick_faces));
-            renderer.update_uniforms(
-                &self.gpu.queue,
-                scene_matrices,
-                prepared.viewport_px,
-                grid_dimensions,
-                band,
-                // ADR 0018 Decision 5 (S5): the region-scoped clip on the brick path too — the
-                // band bites only inside the selected object's AABB (`None` ⇒ whole scene).
-                clip.region,
-                self.panel_state.scene.master_voxel_grid,
-                bound,
-            );
-            // Prepare the two onion ghost slab uniforms (slots 1 + 2). Self-gates on
-            // `band.onion_depth == 0`, so this is a cheap no-op when onion is off.
-            renderer.update_ghost_uniforms(
-                &self.gpu.queue,
-                scene_matrices,
-                prepared.viewport_px,
-                grid_dimensions,
-                band,
-                clip.region,
-            );
-            true
-        } else {
-            false
-        };
         // Transform gizmo (issue #29 S2): it FOLLOWS the selected node — `None` (nothing
         // selected, or selection has no extent) hides it. Its camera upload rides the shared
         // overlay-uniforms call below; here we only resolve WHETHER it is placed (the phase
