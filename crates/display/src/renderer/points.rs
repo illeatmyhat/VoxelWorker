@@ -15,11 +15,12 @@ pub(crate) const POINT_PLANE_MINOR_ALPHA: f32 = 0.08;
 /// (issue #91 item 4) from the old 3× ratio so the field stays calm over the gradient.
 pub(crate) const POINT_PLANE_MAJOR_ALPHA: f32 = 0.18;
 
-/// Half-length (in BLOCKS) of each Point's axis lines, drawn through the Point
-/// origin in the reference axis colours. A few blocks is enough to read as a frame
-/// marker without dominating the scene.
-const POINT_AXIS_HALF_BLOCKS: i64 = 6;
-/// Base alpha of a Point's axis lines (depth-tested, so opaque voxels occlude them).
+/// Fraction of the viewport height each half-axis spans — the Point axes are a screen-stable
+/// nav marker (ADR 0031), so they hold a constant on-screen size at any zoom instead of a fixed
+/// world length that clips against the scene's near/far. Fed to
+/// [`OrbitCamera::screen_stable_size`](camera::OrbitCamera::screen_stable_size).
+const POINT_AXIS_SCREEN_FRACTION: f32 = 0.09;
+/// Base alpha of a Point's axis lines.
 pub(crate) const POINT_AXIS_ALPHA: f32 = 0.85;
 
 /// Which reference plane a tiled grid lies in (issue #29 S5). The plane is spanned
@@ -38,15 +39,14 @@ enum ReferencePlane {
 /// `origin_voxels` (the recentred render-frame position), reusing the gizmo axis
 /// colours. `enabled[axis]` gates each axis independently (X = red +X, Y = green
 /// +Y, Z = blue +Z), so e.g. turning Y off drops the green line and emits only the
-/// X and Z segments. Each enabled axis spans `±POINT_AXIS_HALF_BLOCKS` blocks.
-/// Depth-tested at draw time so opaque voxels occlude the parts behind them.
+/// X and Z segments. Each enabled axis spans `±half` world units — a screen-stable
+/// length the caller derives per Point from the camera.
 fn point_axes_into(
     vertices: &mut Vec<LineVertex>,
     origin_voxels: [f32; 3],
-    step: u32,
+    half: f32,
     enabled: [bool; 3],
 ) {
-    let half = POINT_AXIS_HALF_BLOCKS as f32 * step.max(1) as f32;
     let colors = [
         with_alpha(srgb_hex_to_linear(GIZMO_AXIS_X_HEX), POINT_AXIS_ALPHA),
         with_alpha(srgb_hex_to_linear(GIZMO_AXIS_Y_HEX), POINT_AXIS_ALPHA),
@@ -88,7 +88,11 @@ fn point_origin_voxels(point: &Point, recentre: RecentreVoxels, density: i64) ->
 /// ray-plane shader), which fixes the old finite tiled quad's hard edge / near-clip
 /// cutoff at shallow angles. This batch is now AXES-only (the axes were fine as
 /// lines and stay unchanged). A hidden Point contributes nothing.
-pub(crate) fn points_line_batch(scene: &Scene, voxels_per_block: u32) -> Vec<LineVertex> {
+pub(crate) fn points_line_batch(
+    scene: &Scene,
+    voxels_per_block: u32,
+    camera: &camera::OrbitCamera,
+) -> Vec<LineVertex> {
     let mut vertices = Vec::new();
     let step = voxels_per_block.max(1);
     let density = step as i64;
@@ -99,10 +103,13 @@ pub(crate) fn points_line_batch(scene: &Scene, voxels_per_block: u32) -> Vec<Lin
         }
         let origin = point_origin_voxels(point, recentre, density);
         if point.axis_x || point.axis_y || point.axis_z {
+            // Screen-stable half-length at this Point's depth (ADR 0031).
+            let half = camera
+                .screen_stable_size(glam::Vec3::from_array(origin), POINT_AXIS_SCREEN_FRACTION);
             point_axes_into(
                 &mut vertices,
                 origin,
-                step,
+                half,
                 [point.axis_x, point.axis_y, point.axis_z],
             );
         }
@@ -170,19 +177,26 @@ pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlan
     planes
 }
 
-/// The world reference AXES (issue #29 S5): every visible [`Point`]'s axis lines,
-/// batched into one **depth-tested, alpha-blended** line buffer — the SAME pass
-/// family as [`SceneGridRenderer`], so opaque voxels OCCLUDE the axes while a node's
-/// on-face voxel grid (a fragment overlay) stays visible on top of its faces.
+/// The world reference AXES (issue #29 S5): every visible [`Point`]'s axis lines, batched into
+/// one alpha-blended line buffer. Since ADR 0031 the axes are a **screen-stable nav marker** —
+/// each half-axis spans a fixed fraction of the viewport ([`POINT_AXIS_SCREEN_FRACTION`]) at any
+/// zoom — drawn ON TOP by default (depth off, through the model) with the option to occlude
+/// (depth-tested), selected per frame by [`rebuild_from_scene`](Self::rebuild_from_scene).
 ///
-/// Issue #29 Points fast-follow: the reference PLANES moved to
-/// [`InfiniteGridRenderer`] (an analytic infinite grid); this renderer now draws
-/// AXES only (unchanged). Each frame the caller rebuilds the batch from
-/// `scene.points` via [`Self::rebuild_from_scene`], then uploads the camera matrix.
-/// With no visible Point (all hidden / axes off) the batch is empty and
-/// [`Self::draw`] is a no-op.
+/// Issue #29 Points fast-follow: the reference PLANES moved to [`InfiniteGridRenderer`] (an
+/// analytic infinite grid); this renderer draws AXES only. Each frame the caller rebuilds the
+/// batch from `scene.points` via [`Self::rebuild_from_scene`], then uploads the camera matrix.
+/// With no visible Point (all hidden / axes off) the batch is empty and [`Self::draw`] is a no-op.
 pub struct PointsRenderer {
+    /// Depth-tested pipeline — the axes read as scaffold the model occludes (ADR 0031 scaffold
+    /// phase; the `axes_on_top` setting off).
     pipeline: wgpu::RenderPipeline,
+    /// Depth-OFF pipeline — the axes read through the model as a nav marker (ADR 0031 on-top
+    /// phase; the default). Chosen per frame by [`on_top`](Self::on_top).
+    pipeline_on_top: wgpu::RenderPipeline,
+    /// Whether this frame draws through the model (on-top) or occluded. Set by
+    /// [`rebuild_from_scene`](Self::rebuild_from_scene).
+    on_top: bool,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
     vertex_capacity: u32,
@@ -210,8 +224,8 @@ impl PointsRenderer {
         let (uniform_bind_group_layout, uniform_bind_group) =
             line_uniform_bind_group(device, &uniform_buffer, "points");
 
-        // Depth-tested (true) so opaque voxels occlude the reference planes/axes —
-        // the Points read as world scaffold behind/under the model, not an overlay.
+        // Two pipelines: depth-tested (occluded scaffold) and depth-OFF (on-top nav marker,
+        // the default). The caller picks per frame via `on_top` (ADR 0031).
         let pipeline = build_line_pipeline(
             device,
             color_format,
@@ -220,9 +234,19 @@ impl PointsRenderer {
             true,
             MSAA_SAMPLE_COUNT,
         );
+        let pipeline_on_top = build_line_pipeline(
+            device,
+            color_format,
+            &uniform_bind_group_layout,
+            "points on-top",
+            false,
+            MSAA_SAMPLE_COUNT,
+        );
 
         Self {
             pipeline,
+            pipeline_on_top,
+            on_top: true,
             vertex_buffer,
             vertex_count: 0,
             vertex_capacity,
@@ -241,8 +265,11 @@ impl PointsRenderer {
         queue: &wgpu::Queue,
         scene: &Scene,
         voxels_per_block: u32,
+        camera: &camera::OrbitCamera,
+        on_top: bool,
     ) {
-        let vertices = points_line_batch(scene, voxels_per_block);
+        self.on_top = on_top;
+        let vertices = points_line_batch(scene, voxels_per_block, camera);
         self.vertex_count = upload_lines(
             device,
             queue,
@@ -269,7 +296,12 @@ impl PointsRenderer {
         if self.vertex_count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.pipeline);
+        let pipeline = if self.on_top {
+            &self.pipeline_on_top
+        } else {
+            &self.pipeline
+        };
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.draw(0..self.vertex_count, 0..1);

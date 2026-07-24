@@ -1083,14 +1083,27 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // World reference grid (issue #29 S5): build the visible Points' tiled planes +
     // axes, centred on the camera's projection onto each plane. Only wired into the
     // overlays when `--points` is passed (default OFF keeps the goldens unchanged).
+    // The Points' axes are a screen-stable nav marker drawn ON TOP (ADR 0031); a generous
+    // overlay near/far keeps them off the clip planes at any zoom (the scene's tight window
+    // would cut them). `shot` matches the app default (on-top).
+    let axes_on_top = true;
     if options.show_points {
         points_renderer.rebuild_from_scene(
             &gpu.device,
             &gpu.queue,
             &panel_state.scene,
             options.geometry.voxels_per_block,
+            &app_core.camera,
+            axes_on_top,
         );
-        points_renderer.update_uniforms(&gpu.queue, view_projection);
+        let points_vp = if axes_on_top {
+            app_core
+                .camera
+                .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO)
+        } else {
+            view_projection
+        };
+        points_renderer.update_uniforms(&gpu.queue, points_vp);
         // The analytic infinite grid (issue #29 Points fast-follow): build the visible
         // Points' planes with the camera matrices (recentred frame) so the fullscreen
         // ray-plane shader can intersect each pixel's view ray with the plane.
@@ -1218,13 +1231,20 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     if panel_state.placement_ghost.is_some() {
         over_model.push(&placement_ghost_renderer);
     }
-    // Scaffold: grids always (self-gate); Points' planes + axes only under `--points`.
+    // Scaffold: grids always (self-gate); Points' planes only under `--points`. The Points'
+    // axes join the scaffold only when NOT on-top.
     let mut scaffold: Vec<&dyn display::SceneDraw> = vec![&scene_grid_renderer];
     if options.show_points {
         scaffold.push(&infinite_grid_renderer);
-        scaffold.push(&points_renderer);
+        if !axes_on_top {
+            scaffold.push(&points_renderer);
+        }
     }
+    // On-top: the Points' axes (when on-top, under `--points`) then the manipulator gizmo.
     let mut on_top: Vec<&dyn display::SceneDraw> = Vec::new();
+    if options.show_points && axes_on_top {
+        on_top.push(&points_renderer);
+    }
     if gizmo_placement.is_some() {
         on_top.push(&transform_gizmo_renderer);
     }

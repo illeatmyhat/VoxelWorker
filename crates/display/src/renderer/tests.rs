@@ -279,10 +279,11 @@ fn origin_point_scene_axes(
 /// AXES-only.
 #[test]
 fn points_visible_yields_batch_hidden_yields_none() {
+    let cam = camera::OrbitCamera::default();
     for density in [1u32, 15, 16] {
         // Z-up: the ground plane is XY (the 2nd flag of `origin_point_scene`).
         let mut scene = origin_point_scene(false, true, false, true);
-        let batch = points_line_batch(&scene, density);
+        let batch = points_line_batch(&scene, density, &cam);
         assert!(!batch.is_empty(), "@d{density}: visible axes ⇒ non-empty batch");
         assert_eq!(batch.len() % 2, 0, "@d{density}: whole line segments");
 
@@ -291,7 +292,7 @@ fn points_visible_yields_batch_hidden_yields_none() {
         assert_eq!(planes.len(), 1, "@d{density}: the Origin ground plane ⇒ one grid plane");
 
         scene.points[0].hidden = true;
-        let hidden = points_line_batch(&scene, density);
+        let hidden = points_line_batch(&scene, density, &cam);
         assert!(hidden.is_empty(), "@d{density}: a hidden Point renders no axes");
         assert!(
             enabled_grid_planes(&scene, density).is_empty(),
@@ -307,8 +308,9 @@ fn points_visible_yields_batch_hidden_yields_none() {
 #[test]
 fn points_plane_and_axis_toggles_gate() {
     let density = 16u32;
+    let cam = camera::OrbitCamera::default();
     // Everything off → no axes, no planes.
-    let none = points_line_batch(&origin_point_scene(false, false, false, false), density);
+    let none = points_line_batch(&origin_point_scene(false, false, false, false), density, &cam);
     assert!(none.is_empty(), "all axes off ⇒ empty axis batch");
     assert!(
         enabled_grid_planes(&origin_point_scene(false, false, false, false), density).is_empty(),
@@ -316,7 +318,7 @@ fn points_plane_and_axis_toggles_gate() {
     );
 
     // Axes only → exactly 3 segments = 6 vertices, through the origin; no planes.
-    let axes_only = points_line_batch(&origin_point_scene(false, false, false, true), density);
+    let axes_only = points_line_batch(&origin_point_scene(false, false, false, true), density, &cam);
     assert_eq!(axes_only.len(), 6, "axes alone ⇒ three line segments");
     assert!(
         enabled_grid_planes(&origin_point_scene(false, false, false, true), density).is_empty(),
@@ -336,6 +338,7 @@ fn points_plane_and_axis_toggles_gate() {
 /// leaves the red (X) and blue (Z) ones; a single axis on ⇒ exactly one segment.
 #[test]
 fn points_axes_toggle_per_axis() {
+    let cam = camera::OrbitCamera::default();
     for density in [1u32, 15, 16] {
         let green = with_alpha(srgb_hex_to_linear(GIZMO_AXIS_Y_HEX), POINT_AXIS_ALPHA);
         let is_green = |v: &LineVertex| v.color == green;
@@ -344,6 +347,7 @@ fn points_axes_toggle_per_axis() {
         let all = points_line_batch(
             &origin_point_scene_axes(false, false, false, [true, true, true]),
             density,
+            &cam,
         );
         assert_eq!(all.len(), 6, "@d{density}: three axes ⇒ three segments");
         assert_eq!(all.iter().filter(|v| is_green(v)).count(), 2, "@d{density}: one green (Y) segment, two vertices");
@@ -352,6 +356,7 @@ fn points_axes_toggle_per_axis() {
         let no_y = points_line_batch(
             &origin_point_scene_axes(false, false, false, [true, false, true]),
             density,
+            &cam,
         );
         assert_eq!(no_y.len(), 4, "@d{density}: Y off ⇒ two segments");
         assert!(!no_y.iter().any(is_green), "@d{density}: no green (Y) line when Y is off");
@@ -360,6 +365,7 @@ fn points_axes_toggle_per_axis() {
         let only_y = points_line_batch(
             &origin_point_scene_axes(false, false, false, [false, true, false]),
             density,
+            &cam,
         );
         assert_eq!(only_y.len(), 2, "@d{density}: only Y ⇒ one segment");
         assert!(only_y.iter().all(is_green), "@d{density}: the only line is green (Y)");
@@ -417,7 +423,7 @@ fn points_offset_point_frame_sits_at_world_position() {
         [(10 * density) as f32, 0.0, (-4 * density) as f32],
         "the grid plane origin is at the Point's world position",
     );
-    let batch = points_line_batch(&scene, density as u32);
+    let batch = points_line_batch(&scene, density as u32, &camera::OrbitCamera::default());
     assert_eq!(batch.len(), 6, "axes only ⇒ three segments");
     // The axes cross at the Point origin; every axis segment shares that centre on
     // its two non-running coordinates. Recover the centre as the midpoint of the X

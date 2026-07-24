@@ -554,15 +554,28 @@ impl WindowedState {
         );
         self.scene_grid_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
-        // World reference AXES (issue #29 S5): rebuild the visible Points' axis lines.
+        // World reference AXES (issue #29 S5): rebuild the visible Points' axis lines,
+        // screen-stable-sized from the camera (ADR 0031). Drawn ON TOP (depth off) so they
+        // read as a nav marker through the model; with a generous overlay near/far so the
+        // screen-stable axes never clip at far zoom (the scene's tight window would).
+        let axes_on_top = true;
         self.points_renderer.rebuild_from_scene(
             &self.gpu.device,
             &self.gpu.queue,
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
+            &self.app_core.camera,
+            axes_on_top,
         );
+        let points_vp = if axes_on_top {
+            self.app_core
+                .camera
+                .overlay_view_projection(aspect_ratio, glam::Vec3::ZERO)
+        } else {
+            view_projection
+        };
         self.points_renderer
-            .update_uniforms(&self.gpu.queue, view_projection);
+            .update_uniforms(&self.gpu.queue, points_vp);
         // Analytic infinite reference grid (issue #29 Points fast-follow): rebuild the
         // visible Points' enabled PLANES with the camera matrices (recentred frame) so
         // the fullscreen ray-plane shader intersects each pixel's ray with the plane —
@@ -691,14 +704,18 @@ impl WindowedState {
         if self.panel_state.placement_ghost.is_some() {
             over_model.push(&self.placement_ghost_renderer);
         }
-        // Scaffold: per-object grids, the analytic infinite grid (Points' planes), the Points'
-        // axes — each self-gates (grids off / no plane / hidden Point).
-        let scaffold: [&dyn display::SceneDraw; 3] = [
-            &self.scene_grid_renderer,
-            &self.infinite_grid_renderer,
-            &self.points_renderer,
-        ];
+        // Scaffold: per-object grids + the analytic infinite grid (Points' planes) — each
+        // self-gates. The Points' axes join the scaffold only when NOT on-top (occluded).
+        let mut scaffold: Vec<&dyn display::SceneDraw> =
+            vec![&self.scene_grid_renderer, &self.infinite_grid_renderer];
+        if !axes_on_top {
+            scaffold.push(&self.points_renderer);
+        }
+        // On-top: the Points' axes (when on-top, the default) then the manipulator gizmo.
         let mut on_top: Vec<&dyn display::SceneDraw> = Vec::new();
+        if axes_on_top {
+            on_top.push(&self.points_renderer);
+        }
         if gizmo_placement.is_some() {
             on_top.push(&self.transform_gizmo_renderer);
         }
