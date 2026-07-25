@@ -52,9 +52,10 @@ struct GridUniforms {
     // clarity / future tuning).
     line_color: vec4<f32>,
     // Grid tuning: x = block spacing (= density, voxels per block), y = minor (per
-    // voxel) base alpha, z = major (per block) base alpha. w = legacy fade distance,
-    // now UNUSED (the fixed world-distance fade was removed; fading is per-tier LOD
-    // only) but kept in the layout for uniform-buffer stability.
+    // voxel) base alpha, z = major (per block) base alpha. w = the per-tier LOD fade
+    // SCALE: both ends of the sub-pixel fade window are multiplied by it, so a smaller
+    // value keeps each tier lit further out. 1.0 = ortho (the base window), 0.5 =
+    // perspective (fades ~twice as far from the camera). See `grid_coverage`.
     params: vec4<f32>,
 };
 
@@ -136,10 +137,14 @@ fn grid_coverage(coord: vec2<f32>, spacing: f32, line_pixels: f32) -> vec2<f32> 
     // unaffected: its near cells are many px and keep lod≈1).
     let cells_per_pixel = max(derivative.x, derivative.y);
     let pixels_per_cell = 1.0 / max(cells_per_pixel, 1e-8);
-    // Issue #91 (item 4): fade each tier out EARLIER (a cell must span ~3→7 px to be fully
-    // lit, vs the old 2→4) so the plane dissolves harder toward the rim/distance and stays
-    // a calm scaffold rather than a noisy sheet that buries the bottom-left status text.
-    let lod = smoothstep(3.0, 7.0, pixels_per_cell);
+    // Issue #91 (item 4) set the base window to 3→7 px. `lod_fade_scale` (params.w) scales both
+    // ends per projection: 1.0 under ORTHO (its fade is a zoom dissolve and this cutoff IS the
+    // moiré guard above — never loosen it), 0.5 under PERSPECTIVE, which pushes each tier's fade
+    // ~2× further out. Widening this alone only adds sub-pixel grey; it pays off in company with
+    // the sub-block tier below, which is coarse enough to still resolve out there. Guarded so a
+    // zero window can't make smoothstep divide by zero.
+    let lod_fade_scale = max(grid.params.w, 1e-3);
+    let lod = smoothstep(3.0 * lod_fade_scale, 7.0 * lod_fade_scale, pixels_per_cell);
     return vec2<f32>(clamp(coverage, 0.0, 1.0), lod);
 }
 
@@ -210,11 +215,14 @@ fn fragment_main(input: VsOut) -> FsOut {
     let block_spacing = grid.params.x;
     let minor_alpha = grid.params.y;
     let major_alpha = grid.params.z;
+    let lod_fade_scale = max(grid.params.w, 1e-3);
 
-    // THREE-tier coverage, each at a coarser spacing than the last:
-    //   * minor  — fine per-VOXEL lines (spacing 1),
-    //   * major  — bold per-BLOCK lines (spacing = density),
-    //   * coarse — a per-8-BLOCK lattice that only carries weight once the finer tiers
+    // FOUR-tier coverage, each at a coarser spacing than the last:
+    //   * minor     — fine per-VOXEL lines (spacing 1),
+    //   * sub_block — a QUARTER-BLOCK subdivision keeping fine structure alive once voxels go
+    //     sub-pixel (see below),
+    //   * major     — bold per-BLOCK lines (spacing = density),
+    //   * coarse    — a per-8-BLOCK lattice that only carries weight once the finer tiers
     //     have gone sub-pixel.
     // Each `grid_coverage` returns (coverage, lod_visibility); the lod factor fades a
     // tier OUT as its cells drop below ~1 pixel so a tier NEVER saturates into a solid
@@ -228,8 +236,17 @@ fn fragment_main(input: VsOut) -> FsOut {
     // all the way to the perspective horizon. When zoomed very far out in ortho, the
     // coarse 8-block tier keeps block-scale structure visible after the per-block tier
     // has gone sub-pixel.
+    // Quarter-block tier: without it the ladder jumps straight from the voxel tier to the block
+    // tier, so the moment voxels go sub-pixel the line density drops by a whole `density` in one
+    // step — the "grid gave up too early" cliff. Being 4× coarser than a voxel it stays RESOLVABLE
+    // ~4× further out (real lines, unlike widening the LOD window, which only adds sub-pixel grey).
+    // `coarse / sub_block` is 32 for ANY density, so the divides-the-coarsest invariant the CPU's
+    // plane-origin slide relies on holds; the clamp keeps it >= 1 voxel at density <= 4, where it
+    // simply coincides with the voxel tier.
+    let sub_block_spacing = max(block_spacing * 0.25, 1.0);
     let coarse_spacing = block_spacing * 8.0;
     let minor = grid_coverage(plane_coord, 1.0, 1.0);
+    let sub_block = grid_coverage(plane_coord, sub_block_spacing, 1.0);
     let major = grid_coverage(plane_coord, block_spacing, 1.0);
     let coarse = grid_coverage(plane_coord, coarse_spacing, 1.0);
 
@@ -237,12 +254,24 @@ fn fragment_main(input: VsOut) -> FsOut {
     // (major) base alpha so that, once the block tier fades out when zoomed far, the
     // coarse 8-block lattice still reads at a comparable weight rather than vanishing.
     let minor_contribution = minor.x * minor_alpha * minor.y;
+    // The sub-block tier carries the FINE (minor) alpha — it is a subdivision line, so it must
+    // read like the voxel lines it is standing in for, not like a block boundary.
+    // The quarter-block tier is a perspective-only density bridge. Keep orthographic output
+    // unchanged: its existing voxel/block/coarse ladder is already tuned for zoom.
+    let sub_block_contribution = select(
+        0.0,
+        sub_block.x * minor_alpha * sub_block.y,
+        lod_fade_scale < 0.75,
+    );
     let major_contribution = major.x * major_alpha * major.y;
     let coarse_contribution = coarse.x * major_alpha * coarse.y;
 
     // Take the strongest contribution so a line shared by several tiers reads at the
     // bold alpha rather than summing past it.
-    let final_alpha = max(max(minor_contribution, major_contribution), coarse_contribution);
+    let final_alpha = max(
+        max(minor_contribution, sub_block_contribution),
+        max(major_contribution, coarse_contribution),
+    );
     if (final_alpha < 0.002) {
         discard;
     }

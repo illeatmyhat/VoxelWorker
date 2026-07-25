@@ -27,12 +27,20 @@ struct InfiniteGridUniforms {
     normal_axis: [f32; 4],
     /// Line colour (linear RGB); `.w` = voxel spacing (1.0).
     line_color: [f32; 4],
-    /// `[block_spacing(=density), minor_alpha, major_alpha, reserved]`. The shader
-    /// reads only `.x/.y/.z`; `.w` is a reserved padding slot (the old fixed
-    /// world-distance fade was removed — fading is now per-tier LOD in the shader).
-    /// Kept as `vec4` for the std140 16-byte uniform alignment.
+    /// `[block_spacing(=density), minor_alpha, major_alpha, lod_fade_scale]`. `.w` scales
+    /// BOTH ends of the shader's per-tier sub-pixel fade window, so a smaller value keeps
+    /// each tier lit further out — see [`PERSPECTIVE_LOD_FADE_SCALE`].
     params: [f32; 4],
 }
+
+/// Scales the shader's sub-pixel fade window (3→7 px) under **perspective**, pushing each tier's
+/// fade ~2× further out. Only worth it alongside the shader's sub-block tier — on its own a wider
+/// window adds sub-pixel grey, not lines.
+const PERSPECTIVE_LOD_FADE_SCALE: f32 = 0.5;
+
+/// The base fade window under **orthographic**, unchanged: ortho's fade is a zoom dissolve, not a
+/// distance one, and its sub-pixel cutoff is the moiré guard. Do not loosen.
+const ORTHOGRAPHIC_LOD_FADE_SCALE: f32 = 1.0;
 
 /// Maximum number of analytic-grid planes drawn in one frame (3 planes × a handful
 /// of Points). Bounds the dynamic-offset uniform buffer; extra planes are dropped.
@@ -180,17 +188,26 @@ impl InfiniteGridRenderer {
     /// it, so the line pattern is invariant) to land near the eye's footprint, keeping
     /// the shader's `fract`/`fwidth` off ~10^5-magnitude in-plane coordinates. With no
     /// enabled plane this uploads nothing and [`Self::draw`] becomes a no-op.
+    ///
+    /// `projection_mode` selects the per-tier LOD fade window: perspective fades ~twice as far
+    /// from the camera ([`PERSPECTIVE_LOD_FADE_SCALE`]), orthographic keeps the base window
+    /// ([`ORTHOGRAPHIC_LOD_FADE_SCALE`]) — its dissolve is zoom-driven and its cutoff is the
+    /// moiré guard.
     pub fn rebuild_from_scene(
         &mut self,
         queue: &wgpu::Queue,
         scene: &Scene,
         voxels_per_block: u32,
         scene_matrices: camera::SceneMatrices,
+        projection_mode: camera::ProjectionMode,
     ) {
+        let lod_fade_scale = match projection_mode {
+            camera::ProjectionMode::Perspective => PERSPECTIVE_LOD_FADE_SCALE,
+            camera::ProjectionMode::Orthographic => ORTHOGRAPHIC_LOD_FADE_SCALE,
+        };
         let planes = enabled_grid_planes(scene, voxels_per_block);
         let density = voxels_per_block.max(1) as f32;
-        let ray_inverse_unprojection =
-            scene_matrices.ray_unprojection.inverse();
+        let ray_inverse_unprojection = scene_matrices.ray_unprojection.inverse();
         let line_color = srgb_hex_to_linear(POINT_PLANE_COLOR_HEX);
         let coarse_spacing = f64::from(voxels_per_block.max(1)) * 8.0;
         let eye = scene_matrices.ray_eye.as_dvec3();
@@ -206,21 +223,15 @@ impl InfiniteGridRenderer {
                 f64::from(plane.origin[2]),
             );
             for axis in [plane.u_axis, plane.v_axis] {
-                let axis = glam::DVec3::new(
-                    f64::from(axis[0]),
-                    f64::from(axis[1]),
-                    f64::from(axis[2]),
-                );
+                let axis =
+                    glam::DVec3::new(f64::from(axis[0]), f64::from(axis[1]), f64::from(axis[2]));
                 let cells_toward_eye = ((eye - origin).dot(axis) / coarse_spacing).round();
                 origin += axis * (cells_toward_eye * coarse_spacing);
             }
             let origin_relative = origin - eye;
             let uniforms = InfiniteGridUniforms {
-                ray_view_projection: scene_matrices
-                    .ray_view_projection
-                    .to_cols_array_2d(),
-                ray_inverse_unprojection: ray_inverse_unprojection
-                    .to_cols_array_2d(),
+                ray_view_projection: scene_matrices.ray_view_projection.to_cols_array_2d(),
+                ray_inverse_unprojection: ray_inverse_unprojection.to_cols_array_2d(),
                 plane_origin: [
                     origin_relative.x as f32,
                     origin_relative.y as f32,
@@ -231,13 +242,11 @@ impl InfiniteGridRenderer {
                 v_axis: [plane.v_axis[0], plane.v_axis[1], plane.v_axis[2], 0.0],
                 normal_axis: [plane.normal[0], plane.normal[1], plane.normal[2], 0.0],
                 line_color: [line_color[0], line_color[1], line_color[2], 1.0],
-                // `.w` is a reserved padding slot (the shader reads only x/y/z); the
-                // old world-distance fade was removed in favour of per-tier LOD fade.
                 params: [
                     density,
                     POINT_PLANE_MINOR_ALPHA,
                     POINT_PLANE_MAJOR_ALPHA,
-                    0.0,
+                    lod_fade_scale,
                 ],
             };
             let offset = (index as u32 * self.aligned_stride) as u64;

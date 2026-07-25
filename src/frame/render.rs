@@ -128,7 +128,13 @@ pub fn upload_scene_scaffold(
         points.rebuild_from_scene(device, queue, scene, density, camera, true);
         points.update_uniforms(queue, scene_matrices.view_projection);
     }
-    infinite_grid.rebuild_from_scene(queue, scene, density, scene_matrices);
+    infinite_grid.rebuild_from_scene(
+        queue,
+        scene,
+        density,
+        scene_matrices,
+        camera.projection_mode,
+    );
 }
 
 /// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot` (ADR 0031):
