@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use voxel_core::units::{ExactRational, Measurement};
 
-use super::producers::{outset_voxels_at, LeafBody};
+use super::producers::{outset_voxels_at, LeafBody, VisitedLeaf};
 use super::*;
 use crate::intent::{Intent, NodeSpec};
 use voxel_core::voxel::RecentreVoxels;
@@ -676,14 +676,13 @@ impl Scene {
             [0.0, 0.0, 0.0],
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels,
-                  _offset_local_voxels,
-                  rotation,
-                  body,
-                  _grid_on_faces,
-                  _operation,
-                  outset,
-                  _scope_path| {
+            &mut |VisitedLeaf {
+                      world_offset_voxels,
+                      rotation,
+                      body,
+                      outset,
+                      ..
+                  }| {
                 visit(world_offset_voxels, rotation, &body, outset);
             },
         );
@@ -694,14 +693,13 @@ impl Scene {
     /// [`walk_subtree_leaves`](Self::walk_subtree_leaves). Keeps the full-visitor-to-subset
     /// shim in ONE place so both scene-wide extents differ only in the per-leaf box.
     pub(super) fn walk_scene_leaves(&self, visit: &mut ReducedLeafVisitor<'_>) {
-        self.for_each_leaf(&mut |world_offset_voxels,
-                                 _offset_local_voxels,
-                                 rotation,
-                                 body,
-                                 _grid_on_faces,
-                                 _operation,
-                                 outset,
-                                 _scope_path| {
+        self.for_each_leaf(&mut |VisitedLeaf {
+                                     world_offset_voxels,
+                                     rotation,
+                                     body,
+                                     outset,
+                                     ..
+                                 }| {
             visit(world_offset_voxels, rotation, &body, outset);
         });
     }

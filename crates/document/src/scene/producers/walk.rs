@@ -49,24 +49,22 @@ impl Scene {
         if let Some(composed) =
             self.composed_scope_leaf(&self.root, &self.roots, [0, 0, 0], &mut def_path)
         {
-            visitor(
-                composed.origin_voxels,
+            visitor(VisitedLeaf {
+                world_offset_voxels: composed.origin_voxels,
                 // ADR 0027: the root composite sits at its integer origin with no continuous
                 // slide of its own (its members' float offsets are baked into the composed
-                // producer, not carried here).
-                [0.0, 0.0, 0.0],
-                // ADR 0027: a composed scope carries no continuous rotation of its own — its
-                // members bake into the composite producer, so the composite is upright.
-                glam::Quat::IDENTITY,
-                LeafBody::Composed {
+                // producer, not carried here), and carries no rotation — so it is upright.
+                offset_local_voxels: [0.0, 0.0, 0.0],
+                rotation: glam::Quat::IDENTITY,
+                body: LeafBody::Composed {
                     producer: composed.producer,
                     fingerprint: composed.fingerprint,
                 },
-                self.root.grids.voxel_grid_on_faces,
-                CombineOp::Union,
-                self.root.outset,
-                &scope_path,
-            );
+                grid_on_faces: self.root.grids.voxel_grid_on_faces,
+                operation: CombineOp::Union,
+                outset: self.root.outset,
+                scope_path: &scope_path,
+            });
             return;
         }
         self.walk_nodes(
@@ -93,14 +91,16 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels,
-                                 offset_local_voxels,
-                                 rotation,
-                                 body,
-                                 grid_on_faces,
-                                 operation,
-                                 outset,
-                                 scope_path| {
+        self.for_each_leaf(&mut |VisitedLeaf {
+                                     world_offset_voxels,
+                                     offset_local_voxels,
+                                     rotation,
+                                     body,
+                                     grid_on_faces,
+                                     operation,
+                                     outset,
+                                     scope_path,
+                                 }| {
             // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds. Wrapping the
             // producer (rather than teaching the fold a new arm) means the classifier's
             // `cell_field_interval` call below and the voxel-set fold both see one definition
@@ -381,20 +381,20 @@ impl Scene {
                     // ADR 0017: the leaf carries its OWN `operation` plus the chain
                     // of enclosing sealed-scope frames (issue #74) into the flat
                     // walk — consumers reconstruct the scoped fold from the paths.
-                    visitor(
+                    visitor(VisitedLeaf {
                         world_offset_voxels,
-                        world_offset_local,
+                        offset_local_voxels: world_offset_local,
                         // ADR 0027: the leaf's continuous rotation, the whole tilt seated
                         // against the surface it was dropped on. The classifier reads this
                         // quaternion directly (a lattice turn is just a rotation on the exact
                         // classifier path).
-                        node.transform.rotation(),
-                        LeafBody::Content(&node.content),
-                        node.grids.voxel_grid_on_faces,
-                        node.operation,
-                        node.outset,
+                        rotation: node.transform.rotation(),
+                        body: LeafBody::Content(&node.content),
+                        grid_on_faces: node.grids.voxel_grid_on_faces,
+                        operation: node.operation,
+                        outset: node.outset,
                         scope_path,
-                    );
+                    });
                 }
                 NodeContent::Group(children) => {
                     // ADR 0019 Decision 7: an outset on a SCOPE dilates the scope's COMPOSED
@@ -406,22 +406,22 @@ impl Scene {
                     if let Some(composed) =
                         self.composed_scope_leaf(node, children, world_offset_voxels, def_path)
                     {
-                        visitor(
-                            composed.origin_voxels,
+                        visitor(VisitedLeaf {
+                            world_offset_voxels: composed.origin_voxels,
                             // ADR 0027: a composed scope carries no continuous slide of its own
-                            // (members' float offsets are baked into the composite producer).
-                            [0.0, 0.0, 0.0],
-                            // ADR 0027: identity continuous rotation — the composite is upright.
-                            glam::Quat::IDENTITY,
-                            LeafBody::Composed {
+                            // (members' float offsets are baked into the composite producer)
+                            // and no rotation of its own — the composite is upright.
+                            offset_local_voxels: [0.0, 0.0, 0.0],
+                            rotation: glam::Quat::IDENTITY,
+                            body: LeafBody::Composed {
                                 producer: composed.producer,
                                 fingerprint: composed.fingerprint,
                             },
-                            node.grids.voxel_grid_on_faces,
-                            node.operation,
-                            node.outset,
+                            grid_on_faces: node.grids.voxel_grid_on_faces,
+                            operation: node.operation,
+                            outset: node.outset,
                             scope_path,
-                        );
+                        });
                         continue;
                     }
                     // ADR 0017 Decision 3 (issue #74): a Group is a SEALED

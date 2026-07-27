@@ -138,14 +138,16 @@ impl Scene {
         // the shared inverse-gather ([`gather_placed_field_into_grid`]) AND its chunk-skip AABB is
         // taken from the ROTATED world box (the placement affine), so a tilted body is neither
         // truncated by the upright skip nor stamped upright.
-        self.for_each_leaf(&mut |world_offset_voxels,
-                                 offset_local_voxels,
-                                 rotation,
-                                 body,
-                                 grid_on_faces,
-                                 operation,
-                                 outset,
-                                 scope_path| {
+        self.for_each_leaf(&mut |VisitedLeaf {
+                                     world_offset_voxels,
+                                     offset_local_voxels,
+                                     rotation,
+                                     body,
+                                     grid_on_faces,
+                                     operation,
+                                     outset,
+                                     scope_path,
+                                 }| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // An outset body grows on every side, so its low corner moves DOWN by the
             // outset — and the skip AABB below must use the DILATED span, or a cutter whose

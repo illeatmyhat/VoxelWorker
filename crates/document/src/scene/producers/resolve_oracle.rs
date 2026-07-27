@@ -100,7 +100,16 @@ impl Scene {
         // ([`gather_placed_field_into_grid`], substrate's ONE placement affine) so the dense
         // reference agrees with the live path on rotated / sub-voxel seats. A whole-phase leaf
         // (integer offset, axis-aligned rotation) keeps the exact translate-and-stamp path below.
-        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |VisitedLeaf {
+                                     world_offset_voxels,
+                                     offset_local_voxels,
+                                     rotation,
+                                     body,
+                                     grid_on_faces,
+                                     operation,
+                                     outset,
+                                     scope_path,
+                                 }| {
             sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
             let target: &mut VoxelGrid = match scope_stack.last_mut() {
                 Some((_, scratch)) => scratch,

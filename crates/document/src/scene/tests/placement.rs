@@ -1,5 +1,5 @@
 use super::*;
-use crate::scene::producers::outset_voxels_at;
+use crate::scene::producers::{outset_voxels_at, VisitedLeaf};
 use crate::voxel::GeometryParams;
 use crate::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
@@ -235,14 +235,12 @@ fn walk_leaf_aabbs_intersecting(
     query: &voxel_core::spatial_index::VoxelAabb,
 ) -> Vec<voxel_core::spatial_index::VoxelAabb> {
     let mut matched = Vec::new();
-    scene.for_each_leaf(&mut |world_offset_voxels,
-                              _offset_local_voxels,
-                              _rotation,
-                              body,
-                              _grid_on_faces,
-                              _operation,
-                              outset,
-                              _scope_path| {
+    scene.for_each_leaf(&mut |VisitedLeaf {
+                                  world_offset_voxels,
+                                  body,
+                                  outset,
+                                  ..
+                              }| {
         let outset_voxels = outset_voxels_at(outset, voxels_per_block);
         let world_offset_voxels: [i64; 3] =
             std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);

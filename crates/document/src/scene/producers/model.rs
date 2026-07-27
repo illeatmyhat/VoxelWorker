@@ -104,35 +104,45 @@ pub struct ScopeFrame {
     pub operation: CombineOp,
 }
 
+/// One enabled leaf, as [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] hand it to a visitor.
+///
+/// A struct rather than a positional argument list: the walk carries two coordinate triples
+/// and (with ADR 0032's picked-node resolver) two node ids, and adjacent same-shaped
+/// parameters are exactly what ADR 0008's carried-frame discipline exists to stop being
+/// confused. Consumers destructure the fields they want and `..` the rest, so adding a field
+/// touches only the sites that need it.
+pub(crate) struct VisitedLeaf<'walk> {
+    /// The accumulated world VOXEL offset (integer) — the leaf's corner-anchored low corner
+    /// in the scene's absolute voxel frame.
+    pub world_offset_voxels: [i64; 3],
+    /// The accumulated **continuous** local float offset relative to
+    /// [`world_offset_voxels`](Self::world_offset_voxels) (ADR 0027), summed from each
+    /// ancestor's `offset_local_voxels`.
+    pub offset_local_voxels: [f32; 3],
+    /// The leaf's continuous rotation (ADR 0027) — `node.transform.rotation()`, the whole
+    /// tilt seated against the surface it was dropped on. The classifier reads this
+    /// quaternion directly; a lattice turn is just a rotation that lands on the exact path.
+    pub rotation: glam::Quat,
+    /// Ordinary document content, or a sealed scope already pre-composed into one producer.
+    pub body: LeafBody<'walk>,
+    /// The node's on-face-grid flag (issue #29 S4).
+    pub grid_on_faces: bool,
+    /// The node's own [`CombineOp`] role in the ordered fold (ADR 0017).
+    pub operation: CombineOp,
+    /// The node's outset (ADR 0019 Decision 7), an UNEVALUATED [`Measurement`] because the
+    /// walk carries no density. Each consumer resolves it against its own `voxels_per_block`,
+    /// which is what keeps the authored intent (`"1/4 block"`) rather than a number derived
+    /// at the wrong moment.
+    ///
+    /// [`Measurement`]: voxel_core::units::Measurement
+    pub outset: voxel_core::units::Measurement,
+    /// The chain of enclosing sealed scopes, outermost first (see [`ScopeFrame`]).
+    pub scope_path: &'walk [ScopeFrame],
+}
+
 /// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
-/// enabled leaf with `(world_offset_voxels, offset_local_voxels, rotation, content,
-/// grid_on_faces, operation, outset, scope_path)` — the accumulated world VOXEL offset
-/// (integer), the accumulated **continuous** local float offset relative to it (ADR 0027),
-/// the leaf's continuous `Quat` rotation (ADR 0027), the leaf content, the node's on-face-grid
-/// flag (issue #29 S4), the node's own [`CombineOp`] role in the ordered fold (ADR 0017), the
-/// node's outset (ADR 0019 Decision 7), and the chain of enclosing sealed scopes (outermost
-/// first — see [`ScopeFrame`]).
-///
-/// **ADR 0027.** Placement, rotation and off-lattice slide are all carried by the continuous
-/// `Quat` and the `[f32; 3]` float offset; the classifier reads that quaternion directly. The
-/// `Quat` a leaf carries is `node.transform.rotation()` — the whole tilt seated against the
-/// surface it was dropped on.
-///
-/// The outset arrives as an unevaluated [`Measurement`] because the walk carries no density.
-/// Each consumer resolves it against its own `voxels_per_block`, which is what keeps the
-/// authored intent (`"1/4 block"`) rather than a number derived at the wrong moment.
-///
-/// [`Measurement`]: voxel_core::units::Measurement
-pub(crate) type LeafVisitor<'walk> = dyn FnMut(
-        [i64; 3],
-        [f32; 3],
-        glam::Quat,
-        LeafBody<'_>,
-        bool,
-        CombineOp,
-        voxel_core::units::Measurement,
-        &[ScopeFrame],
-    ) + 'walk;
+/// enabled leaf with the [`VisitedLeaf`] describing it.
+pub(crate) type LeafVisitor<'walk> = dyn FnMut(VisitedLeaf<'_>) + 'walk;
 
 /// What a visited leaf actually IS: ordinary document content, or a sealed scope that has
 /// been pre-composed into one producer because it carries an outset.
