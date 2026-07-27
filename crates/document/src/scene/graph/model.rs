@@ -31,6 +31,45 @@ pub struct DefId(pub u32);
 )]
 pub struct NodeId(pub u64);
 
+/// Which document node a walked body came from, and the outermost `Instance` it was
+/// expanded under — the two facts ADR 0032's picked-node rule is decided from.
+///
+/// The walk reports both rather than the answer, because they are different questions: the
+/// node is the leaf's own identity (fingerprints, debugging), while the host is the
+/// definition-boundary redirect. [`picked_node`](Self::picked_node) is the one place the
+/// rule turns them into a selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeafOrigin {
+    /// The node whose content produced this body. For a pre-composed scope this is the
+    /// SCOPE node (the Group, the Instance, or the root part) — the composite has no single
+    /// leaf, and its members carry their own origins.
+    pub node: NodeId,
+    /// The OUTERMOST `Instance` node this body was expanded under, or `None` for a body
+    /// authored directly in the scene. Set on entering an instance and never overwritten
+    /// deeper, so a definition containing another instance still redirects to the placement
+    /// the user can actually see. Populated for FIXTURE expansions too, which push no
+    /// [`ScopeFrame`] and so are otherwise indistinguishable from host leaves.
+    pub instance_host: Option<NodeId>,
+}
+
+impl LeafOrigin {
+    /// A body authored directly in the scene, under no instance.
+    pub fn authored(node: NodeId) -> Self {
+        Self {
+            node,
+            instance_host: None,
+        }
+    }
+
+    /// The node a viewport pick on this body selects (ADR 0032): the body's own node, unless
+    /// it was expanded from a definition — an instance picks as ITSELF, never into its
+    /// definition (ADR 0017). Selecting a node inside a definition would address geometry
+    /// shared by every other placement of it.
+    pub fn picked_node(self) -> NodeId {
+        self.instance_host.unwrap_or(self.node)
+    }
+}
+
 /// The reserved identity of the always-present **root part** (ADR 0018 Decision 2):
 /// the concrete container node whose children are the scene's top-level nodes
 /// ([`Scene::roots`]). It is minted once, never handed to a user node (the mint

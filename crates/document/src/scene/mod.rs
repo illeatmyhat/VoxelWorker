@@ -49,8 +49,8 @@ pub use extent::{
     block_aabb_exceeds_coordinate_limit, NodeTransform, RegionBlocks, COORDINATE_LIMIT_BLOCKS,
 };
 pub use graph::{
-    AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point,
-    ROOT_NODE_ID,
+    AssemblyDef, CombineOp, DefId, LeafOrigin, Node, NodeBuilder, NodeGrids, NodeId, NodePath,
+    Point, ROOT_NODE_ID,
 };
 pub use producers::{operation_masks_beyond_bounds, quat_from_lattice, LeafProducer, ScopeFrame};
 pub use producers::{NodeContent, VoxelBody};

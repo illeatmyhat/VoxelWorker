@@ -47,7 +47,7 @@ impl Scene {
         // Without this a top-level emboss reaches the voxel-set fold, which has no `A − N`
         // to read, and no-ops — and most scenes put their nodes at the top level.
         if let Some(composed) =
-            self.composed_scope_leaf(&self.root, &self.roots, [0, 0, 0], &mut def_path)
+            self.composed_scope_leaf(&self.root, &self.roots, [0, 0, 0], &mut def_path, None)
         {
             visitor(VisitedLeaf {
                 world_offset_voxels: composed.origin_voxels,
@@ -64,15 +64,18 @@ impl Scene {
                 operation: CombineOp::Union,
                 outset: self.root.outset,
                 scope_path: &scope_path,
+                // The whole scene collapsed into the root part: the composite IS the root,
+                // and its members carry the per-node origins a pick descends into.
+                origin: LeafOrigin::authored(self.root.id),
             });
             return;
         }
         self.walk_nodes(
             &self.roots,
-            [0, 0, 0],
-            [0.0, 0.0, 0.0],
+            AccumulatedOffset::origin(),
             &mut def_path,
             &mut scope_path,
+            None,
             visitor,
         );
     }
@@ -100,6 +103,7 @@ impl Scene {
                                      operation,
                                      outset,
                                      scope_path,
+                                     origin,
                                  }| {
             // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds. Wrapping the
             // producer (rather than teaching the fold a new arm) means the classifier's
@@ -128,6 +132,7 @@ impl Scene {
                 grid_overlay: grid_on_faces,
                 operation,
                 scope_path: scope_path.to_vec(),
+                origin,
             });
         });
         leaves
@@ -186,6 +191,7 @@ impl Scene {
         children: &[NodeId],
         world_offset_voxels: [i64; 3],
         def_path: &mut Vec<DefId>,
+        instance_host: Option<NodeId>,
     ) -> Option<ComposedScope> {
         // Two reasons to pre-compose: the scope is DILATED as a whole (ADR 0019 Decision 7),
         // or one of its members EMBOSSES and so needs the accumulated body as a field rather
@@ -204,6 +210,7 @@ impl Scene {
             children,
             world_offset_voxels,
             def_path,
+            instance_host,
             &mut members,
             &mut fingerprints,
         )?;
@@ -225,6 +232,7 @@ impl Scene {
         spine: &[NodeId],
         parent_offset: [i64; 3],
         def_path: &mut Vec<DefId>,
+        instance_host: Option<NodeId>,
         members: &mut Vec<crate::voxel::CompositeMember>,
         fingerprints: &mut Vec<String>,
     ) -> Option<()> {
@@ -256,10 +264,19 @@ impl Scene {
                         operation: node.operation,
                         material,
                         producer,
+                        source: LeafOrigin {
+                            node: node.id,
+                            instance_host,
+                        },
                     });
                 }
                 NodeContent::Group(children) => {
-                    let nested = self.composed_subtree(children, world_offset_voxels, def_path)?;
+                    let nested = self.composed_subtree(
+                        children,
+                        world_offset_voxels,
+                        def_path,
+                        instance_host,
+                    )?;
                     fingerprints.push(format!("{}({})", node.id.0, nested.fingerprint));
                     members.push(crate::voxel::CompositeMember {
                         offset_voxels: nested.origin_voxels,
@@ -269,6 +286,10 @@ impl Scene {
                             Box::new(nested.producer),
                             node.outset.to_voxels(1).unwrap_or(0),
                         ),
+                        source: LeafOrigin {
+                            node: node.id,
+                            instance_host,
+                        },
                     });
                 }
                 NodeContent::Instance(def_id) => {
@@ -277,6 +298,10 @@ impl Scene {
                     }
                     let def = self.def_by_id(*def_id)?;
                     def_path.push(*def_id);
+                    // ADR 0032: the OUTERMOST instance wins, so an already-set host is
+                    // kept — a definition containing another instance still redirects a pick
+                    // to the placement the user can see.
+                    let inner_host = instance_host.or(Some(node.id));
                     let outcome = if def.fixture {
                         // ADR 0017 Decision 4: a fixture does NOT pre-compose — its children
                         // splice into the hosting scope's fold under their own operations.
@@ -284,23 +309,33 @@ impl Scene {
                             &def.children,
                             world_offset_voxels,
                             def_path,
+                            inner_host,
                             members,
                             fingerprints,
                         )
                     } else {
-                        self.composed_subtree(&def.children, world_offset_voxels, def_path)
-                            .map(|nested| {
-                                fingerprints.push(format!("{}[{}]", node.id.0, nested.fingerprint));
-                                members.push(crate::voxel::CompositeMember {
-                                    offset_voxels: nested.origin_voxels,
-                                    operation: node.operation,
-                                    material: None,
-                                    producer: crate::voxel::OutsetProducer::wrap(
-                                        Box::new(nested.producer),
-                                        node.outset.to_voxels(1).unwrap_or(0),
-                                    ),
-                                });
-                            })
+                        self.composed_subtree(
+                            &def.children,
+                            world_offset_voxels,
+                            def_path,
+                            inner_host,
+                        )
+                        .map(|nested| {
+                            fingerprints.push(format!("{}[{}]", node.id.0, nested.fingerprint));
+                            members.push(crate::voxel::CompositeMember {
+                                offset_voxels: nested.origin_voxels,
+                                operation: node.operation,
+                                material: None,
+                                producer: crate::voxel::OutsetProducer::wrap(
+                                    Box::new(nested.producer),
+                                    node.outset.to_voxels(1).unwrap_or(0),
+                                ),
+                                source: LeafOrigin {
+                                    node: node.id,
+                                    instance_host,
+                                },
+                            });
+                        })
                     };
                     def_path.pop();
                     outcome?;
@@ -319,6 +354,7 @@ impl Scene {
         children: &[NodeId],
         world_offset_voxels: [i64; 3],
         def_path: &mut Vec<DefId>,
+        instance_host: Option<NodeId>,
     ) -> Option<ComposedScope> {
         let mut members = Vec::new();
         let mut fingerprints = Vec::new();
@@ -326,6 +362,7 @@ impl Scene {
             children,
             world_offset_voxels,
             def_path,
+            instance_host,
             &mut members,
             &mut fingerprints,
         )?;
@@ -333,11 +370,12 @@ impl Scene {
     }
 
     /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`
-    /// is the accumulated world VOXEL offset of the assembly that owns `nodes`;
-    /// `parent_offset_local` is the accumulated **continuous** local float offset (ADR
-    /// 0027) summed the same way from each ancestor's `offset_local_voxels`, carried
-    /// alongside the integer offset and handed to the visitor (additive — resolve still
-    /// reads the integer offset, so occupancy is unchanged);
+    /// is the accumulated placement offset of the assembly that owns `nodes` — the
+    /// integer world VOXEL offset plus the continuous float slide relative to it (ADR
+    /// 0027), carried together and handed to the visitor (additive — resolve still reads
+    /// the integer offset, so occupancy is unchanged);
+    /// `instance_host` is the outermost `Instance` this spine is being expanded under, or
+    /// `None` in the scene proper — what a viewport pick redirects to (ADR 0032);
     /// `def_path` is the stack of definition ids currently being expanded (for the
     /// cycle guard — an `Instance` that would re-enter a definition already on the
     /// path is skipped instead of recursing forever); `scope_path` is the stack of
@@ -347,10 +385,10 @@ impl Scene {
     pub(crate) fn walk_nodes(
         &self,
         spine: &[NodeId],
-        parent_offset: [i64; 3],
-        parent_offset_local: [f32; 3],
+        parent_offset: AccumulatedOffset,
         def_path: &mut Vec<DefId>,
         scope_path: &mut Vec<ScopeFrame>,
+        instance_host: Option<NodeId>,
         visitor: &mut LeafVisitor<'_>,
     ) {
         // GOLDEN-CRITICAL (ADR 0003 B5): iterate the id-spine for ORDER (document
@@ -364,16 +402,10 @@ impl Scene {
             if !node.enabled {
                 continue;
             }
-            let world_offset_voxels = [
-                parent_offset[0] + node.transform.offset_voxels[0],
-                parent_offset[1] + node.transform.offset_voxels[1],
-                parent_offset[2] + node.transform.offset_voxels[2],
-            ];
-            // ADR 0027: accumulate the continuous local float offset exactly like the integer
-            // offset above — additive, carried to the visitor, unread by resolve this slice.
-            let world_offset_local: [f32; 3] = std::array::from_fn(|axis| {
-                parent_offset_local[axis] + node.transform.offset_local_voxels[axis]
-            });
+            // ADR 0027: the integer offset and the continuous float slide accumulate the
+            // same way, additively, and travel together to the visitor.
+            let world_offset = parent_offset.plus(&node.transform);
+            let world_offset_voxels = world_offset.world_voxels;
             match &node.content {
                 NodeContent::Tool { .. }
                 | NodeContent::SketchTool { .. }
@@ -383,7 +415,7 @@ impl Scene {
                     // walk — consumers reconstruct the scoped fold from the paths.
                     visitor(VisitedLeaf {
                         world_offset_voxels,
-                        offset_local_voxels: world_offset_local,
+                        offset_local_voxels: world_offset.local_voxels,
                         // ADR 0027: the leaf's continuous rotation, the whole tilt seated
                         // against the surface it was dropped on. The classifier reads this
                         // quaternion directly (a lattice turn is just a rotation on the exact
@@ -394,6 +426,10 @@ impl Scene {
                         operation: node.operation,
                         outset: node.outset,
                         scope_path,
+                        origin: LeafOrigin {
+                            node: node.id,
+                            instance_host,
+                        },
                     });
                 }
                 NodeContent::Group(children) => {
@@ -403,9 +439,13 @@ impl Scene {
                     // dilation is a different operation and the ADR rejects it: it would
                     // make an internal Subtract cutter carve MORE, where dilating the
                     // composed Part grows the finished body and partly closes that cut.
-                    if let Some(composed) =
-                        self.composed_scope_leaf(node, children, world_offset_voxels, def_path)
-                    {
+                    if let Some(composed) = self.composed_scope_leaf(
+                        node,
+                        children,
+                        world_offset_voxels,
+                        def_path,
+                        instance_host,
+                    ) {
                         visitor(VisitedLeaf {
                             world_offset_voxels: composed.origin_voxels,
                             // ADR 0027: a composed scope carries no continuous slide of its own
@@ -421,6 +461,10 @@ impl Scene {
                             operation: node.operation,
                             outset: node.outset,
                             scope_path,
+                            origin: LeafOrigin {
+                                node: node.id,
+                                instance_host,
+                            },
                         });
                         continue;
                     }
@@ -435,10 +479,10 @@ impl Scene {
                     });
                     self.walk_nodes(
                         children,
-                        world_offset_voxels,
-                        world_offset_local,
+                        world_offset,
                         def_path,
                         scope_path,
+                        instance_host,
                         visitor,
                     );
                     scope_path.pop();
@@ -460,6 +504,10 @@ impl Scene {
                         continue;
                     };
                     def_path.push(*def_id);
+                    // ADR 0032: the OUTERMOST instance wins — set on first entry and kept
+                    // through any nested instance, so a pick redirects to the placement the
+                    // user can actually see rather than one buried in a definition.
+                    let inner_host = instance_host.or(Some(node.id));
                     if def.fixture {
                         // ADR 0017 Decision 4 (issue #77): a FIXTURE definition does
                         // NOT pre-compose — NO scope frame is pushed, so its children
@@ -482,10 +530,10 @@ impl Scene {
                         // wholesale-clear fingerprint kind either way).
                         self.walk_nodes(
                             &def.children,
-                            world_offset_voxels,
-                            world_offset_local,
+                            world_offset,
                             def_path,
                             scope_path,
+                            inner_host,
                             visitor,
                         );
                     } else {
@@ -501,10 +549,10 @@ impl Scene {
                         });
                         self.walk_nodes(
                             &def.children,
-                            world_offset_voxels,
-                            world_offset_local,
+                            world_offset,
                             def_path,
                             scope_path,
+                            inner_host,
                             visitor,
                         );
                         scope_path.pop();

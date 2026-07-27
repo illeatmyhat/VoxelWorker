@@ -2,7 +2,7 @@
 //! (ADR 0019 Decision 7, ADR 0017 Decision 3).
 
 use super::{Field, FieldInterval, VoxelProducer};
-use crate::scene::CombineOp;
+use crate::scene::{CombineOp, LeafOrigin};
 use voxel_core::core_geom::BlockId;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{BlockAttrs, Voxel, VoxelGrid, SURFACE_ISOLEVEL};
@@ -13,6 +13,10 @@ pub struct CompositeMember {
     pub offset_voxels: [i64; 3],
     /// The member's role in the ordered fold (ADR 0017).
     pub operation: CombineOp,
+    /// Which node this member came from (ADR 0032). A pre-composed scope is ONE leaf to the
+    /// walk, so without this a viewport pick anywhere inside it could only name the scope —
+    /// and a single top-level Emboss pre-composes the whole scene.
+    pub source: LeafOrigin,
     /// The single material a `Union` member stamps, or `None` for a member that brings its
     /// own per-voxel materials (a nested composite, a VoxelBody).
     pub material: Option<BlockId>,

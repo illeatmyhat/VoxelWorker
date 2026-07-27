@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use voxel_core::units::{ExactRational, Measurement};
 
-use super::producers::{outset_voxels_at, LeafBody, VisitedLeaf};
+use super::producers::{outset_voxels_at, AccumulatedOffset, LeafBody, VisitedLeaf};
 use super::*;
 use crate::intent::{Intent, NodeSpec};
 use voxel_core::voxel::RecentreVoxels;
@@ -672,10 +672,13 @@ impl Scene {
         let mut scope_path: Vec<ScopeFrame> = Vec::new();
         self.walk_nodes(
             &[target_id],
-            parent_offset_voxels,
-            [0.0, 0.0, 0.0],
+            AccumulatedOffset {
+                world_voxels: parent_offset_voxels,
+                local_voxels: [0.0; 3],
+            },
             &mut def_path,
             &mut scope_path,
+            None,
             &mut |VisitedLeaf {
                       world_offset_voxels,
                       rotation,

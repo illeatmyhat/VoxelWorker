@@ -8,6 +8,7 @@ mod fixture_definitions;
 mod graph;
 mod grids;
 mod intersect;
+mod leaf_origin;
 mod operand_body;
 mod placement;
 mod resolve;

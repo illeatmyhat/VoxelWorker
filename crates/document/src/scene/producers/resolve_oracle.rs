@@ -109,6 +109,7 @@ impl Scene {
                                      operation,
                                      outset,
                                      scope_path,
+                                     ..
                                  }| {
             sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
             let target: &mut VoxelGrid = match scope_stack.last_mut() {

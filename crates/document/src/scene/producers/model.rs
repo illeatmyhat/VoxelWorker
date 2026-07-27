@@ -104,6 +104,46 @@ pub struct ScopeFrame {
     pub operation: CombineOp,
 }
 
+/// A placement offset accumulated down the walk (ADR 0008: the frame is carried, never
+/// re-derived): the integer world VOXEL offset plus the **continuous** local float slide
+/// measured relative to it (ADR 0027).
+///
+/// One value rather than two parameters because they are one fact — the float slide means
+/// nothing without the integer origin it is relative to, and two adjacent `[_; 3]`
+/// arguments are exactly the confusion the carried-frame discipline exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AccumulatedOffset {
+    /// The accumulated world VOXEL offset — the corner-anchored low corner in the scene's
+    /// absolute voxel frame.
+    pub world_voxels: [i64; 3],
+    /// The accumulated continuous float slide relative to
+    /// [`world_voxels`](Self::world_voxels), summed from each ancestor's
+    /// `offset_local_voxels`. Zero for every voxel-snapped placement.
+    pub local_voxels: [f32; 3],
+}
+
+impl AccumulatedOffset {
+    /// The scene origin: no integer offset, no continuous slide.
+    pub fn origin() -> Self {
+        Self {
+            world_voxels: [0, 0, 0],
+            local_voxels: [0.0, 0.0, 0.0],
+        }
+    }
+
+    /// This offset advanced by a node's own transform — both components summed the same way.
+    pub fn plus(self, transform: &NodeTransform) -> Self {
+        Self {
+            world_voxels: std::array::from_fn(|axis| {
+                self.world_voxels[axis] + transform.offset_voxels[axis]
+            }),
+            local_voxels: std::array::from_fn(|axis| {
+                self.local_voxels[axis] + transform.offset_local_voxels[axis]
+            }),
+        }
+    }
+}
+
 /// One enabled leaf, as [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] hand it to a visitor.
 ///
 /// A struct rather than a positional argument list: the walk carries two coordinate triples
@@ -138,6 +178,8 @@ pub(crate) struct VisitedLeaf<'walk> {
     pub outset: voxel_core::units::Measurement,
     /// The chain of enclosing sealed scopes, outermost first (see [`ScopeFrame`]).
     pub scope_path: &'walk [ScopeFrame],
+    /// Which node this leaf came from, and the instance it was expanded under (ADR 0032).
+    pub origin: LeafOrigin,
 }
 
 /// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
@@ -405,6 +447,10 @@ pub struct LeafProducer {
     /// leaves' paths (see [`ScopeFrame`]). Empty for a root-level leaf, which folds
     /// directly into the scene's root accumulator — the pre-#74 behaviour.
     pub scope_path: Vec<ScopeFrame>,
+    /// Which node this leaf came from, and the instance it was expanded under (ADR 0032) —
+    /// what a viewport pick that lands on this body resolves to. For a pre-composed scope
+    /// this names the SCOPE, and the composite's members carry their own origins.
+    pub origin: LeafOrigin,
 }
 
 impl LeafProducer {

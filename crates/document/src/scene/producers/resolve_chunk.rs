@@ -147,6 +147,7 @@ impl Scene {
                                      operation,
                                      outset,
                                      scope_path,
+                                     ..
                                  }| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // An outset body grows on every side, so its low corner moves DOWN by the
