@@ -172,6 +172,58 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   authored and placed like any other (possibly as a fixture) — never a world-frame patch
   on the composed result.
 
+## Tool modes
+
+- **Tool mode** — the workspace's exclusive interaction mode, the Maya/Fusion Q/W/E/R set:
+  **Select** (Q), and Select **plus a manipulator** — Move (W), Rotate (E), Scale (R). Global —
+  a mode acts on whatever the [selection](#selection) holds, in normal and sketch mode alike.
+  The set is exhaustive: everything else that changes what a click does is a transient state
+  *over* a mode, never a fifth mode. Workspace state, like a view mode.
+
+- **Armed placement** — the ghost-follows-cursor state while a create tool is armed: a
+  **transient overlay on the current tool mode**, not a mode. A click places (the tool stays
+  armed), Esc / right-click disarms, and pressing any mode key disarms first — a mode key
+  outranks the pending ghost.
+
+- **Orbit center** — the **persistent** orbit pivot: the camera's target point, which zoom, the
+  view cube, and explicit orbit mode all operate about. User-placeable (explicit orbit mode's
+  reticle click, the context menu) by raycasting a surface — geometry or a visible picking
+  plane — which **pans** the view onto the new pivot. Distinct from the **transient pivot**:
+  Shift+MMB orbits about the surface point under the cursor at press, raycast per gesture and
+  never stored. Two pivots by design (the Fusion model) — they never merge.
+
+- **Orbit type** — **Constrained Orbit** (world-up fixed, the turntable — the default) or
+  **Free Orbit** (full trackball, roll allowed), Fusion's names. A **most-recently-used session
+  variable** shared by every orbit entry path; the two types share the orbit logic and the
+  entry paths differ only by pivot. _Avoid_: sub-mode, axis-constrained (say Constrained Orbit).
+
+## Selection
+
+- **Selection** — the one set of picked **selection targets** the tool modes (Q/W/E/R) act on:
+  selection is the shared substrate, every mode is "select plus a manipulator". One mixed-kind
+  set, not one set per kind — a marquee over a box and a Point returns both. Which kinds *can*
+  enter the set is a property of the current editing mode (sketch mode admits sketch entities,
+  normal mode admits nodes and Points), not a second data structure. A property of the
+  **workspace, never the document** (like a view mode or the rollback cursor): selecting is not
+  an edit, so it never enters undo history and never travels in a shared file — it rides the
+  dump. Structural edits still *steer* it (a created node arrives selected; undoing a delete
+  re-selects what came back) as an effect on the workspace, not as document truth. _Avoid_:
+  active node (the legacy single-`NodeId` document field this supersedes).
+
+- **Selection target** — one selectable thing, tagged by kind: a scene **node**, a reference
+  **Point**, or a **sketch entity** (point / segment). Sketch entities are a different target
+  kind than scene objects — they live in a sealed sketch scope and are only addressable from
+  inside it — but they are targets of the *same* selection substrate, not a parallel system.
+
+- **Picked node** — the node a viewport click on composed geometry resolves to: the **leaf
+  producer** whose geometry made the clicked surface (any depth — the viewport agrees with the
+  browser, ADR 0001), except an **instance**, which picks as itself (its internals are sealed,
+  ADR 0017). Ownership follows the ordered fold: a surviving voxel belongs to the **additive**
+  node it survived from — clicking the wall of a carved hole picks the carved body, never the
+  cutter; where unioned bodies overlap, the later node in fold order wins. A rule evaluated
+  against authoring truth, not a stored attribution. _Avoid_: drill-down (no click-count
+  descent; the leaf is picked directly).
+
 ## Sketching
 
 - **Sketch entity** — a first-class piece of sketch geometry the author add/deletes independently:
@@ -320,9 +372,11 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   omits (a **rollback** position, a **view mode**). A superset of the document rather than a
   variant of it. Unversioned — it is read by the version that wrote it.
 
-- **Settings** — user preference that outlives any one project: window size, projection mode,
-  the saved Home view. Reaches the dump but never the document, because a preference travelling
-  inside a shared file would impose one person's setup on everyone who opened it.
+- **Settings** — user preference that outlives any one project: window size, the saved Home
+  view. Reaches the dump but never the document, because a preference travelling inside a
+  shared file would impose one person's setup on everyone who opened it. **Projection mode is
+  NOT a setting** — it is a session variable (owner ruling 2026-07-26), like the orbit type:
+  how the workspace was left, not who the user is.
 
 - **Classified state** — every piece of application state carries a category (settings,
   document, view, …) naming which artifacts it reaches. State that is classified but reaches

@@ -44,22 +44,36 @@ A **global** mode set over the current selection, the Maya/3ds-Max industry shor
 Orbit is **not** on the left button. There are two **orbit sub-modes** and two ways to enter orbit,
 around two different pivots.
 
-### Orbit sub-modes
+### Orbit types (owner-resolved 2026-07-26, Fusion naming)
 
-- **Axis-constrained** — keeps the world-up fixed, so the camera never rolls (the turntable).
-- **Free orbit** — full trackball, roll allowed.
-- **Open:** how the two are toggled, and which is the default.
+- **Constrained Orbit** — keeps the world-up fixed, so the camera never rolls (the turntable).
+  The **default**.
+- **Free Orbit** — full trackball, roll allowed.
+- The active type is a **most-recently-used session variable** (never Settings, never the
+  document), shared by every orbit entry path — Shift+MMB and explicit orbit mode both perform
+  whichever type was last used. The two types share the orbit logic; the entry paths differ
+  only by pivot (see below).
+- **UI (Fusion's split button):** the display icon rail holds an orbit button whose face is the
+  MRU type, with a dropdown offering the other (Free Orbit lives only there); the context menu
+  offers Constrained Orbit.
+- **Camera representation:** whichever parameterization is most durable to degenerate cases
+  (gimbal lock at the poles) — i.e. orientation-first (quaternion), with theta/phi as a derived
+  readout for the view cube / Home persistence, not the storage.
 
-### Entering orbit — two paths, two pivots
+### Entering orbit — two paths, two pivots (owner-resolved 2026-07-26, Fusion's actual model)
 
-1. **Shift + Middle-mouse (transient).** Hold Shift+MMB to orbit about the **orbit center** — a
-   persistent point the camera pivots around, **placed / reset via the general context menu**. (Plain
-   MMB stays **pan**, which the app already has.)
-2. **Explicit orbit mode (persistent).** Entered by a button in the **display-settings icon rail** or
-   the **context menu**. In this mode the left button *is* orbit, and it is **independent of the orbit
-   center**: **left-clicking geometry raycasts and pans the camera to that hit point**, making it the
-   pivot, so an **LMB-drag then orbits around whatever you clicked**. Leaving the mode restores
-   LMB = select.
+There really are **two pivots**, one per entry path — they do not share a point:
+
+1. **Shift + Middle-mouse (transient pivot).** Hold Shift+MMB to orbit about the **surface point
+   under the cursor at press** — raycast per-gesture, never stored. (Plain MMB stays **pan**.)
+2. **Explicit orbit mode (persistent pivot = `camera.target`).** Entered by a button in the
+   **display-settings icon rail** or the **context menu**. A **targeting reticle** overlays the
+   viewport; **LMB-drag orbits about `camera.target`**, and an **LMB-click raycasts a surface
+   (geometry or a visible picking plane) and sets `camera.target` to the hit — a pan** that
+   re-centers the view on the new pivot. Every non-Shift+MMB mechanism (this mode, the view
+   cube, zoom) orbits/operates about `camera.target`. Leaving the mode restores LMB = select.
+
+The general context menu's "place / reset orbit center" writes `camera.target` the same way.
 
 ### The rest
 
@@ -80,12 +94,32 @@ around two different pivots.
 
 ## Open questions
 
-1. Orbit sub-mode toggle + default (axis-constrained vs free).
-2. Sketch E/R: disabled, or remapped — and to what.
-3. Does entering explicit orbit mode change the cursor / chrome so the flipped LMB verb is legible?
-4. Interaction of Q/W/E/R with the existing **armed placement** flow (the "+ Add" ghost-follows-cursor
-   tool) — is arming a placement a transient state on top of a mode, or its own mode?
+1. ~~Orbit type toggle + default~~ — RESOLVED 2026-07-26 (see "Orbit types": Constrained
+   default, MRU split button, session variable).
+2. Sketch E/R: disabled, or remapped — and to what. (Still open; deferred with the W/E/R epic.)
+3. ~~Orbit-mode legibility~~ — RESOLVED 2026-07-26: the targeting reticle overlay IS the
+   flipped-verb affordance.
+4. ~~Q/W/E/R × armed placement~~ — RESOLVED 2026-07-26: arming is a **transient overlay on the
+   current mode**, never a mode (CONTEXT.md "Armed placement"); a mode key disarms first.
 5. Scope / sequencing (below).
+
+## Q-slice scope (owner-resolved 2026-07-26)
+
+**In:** unified `Selection` (one mixed-kind set; `Scene::active` + `active_point` die; session
+state, undo steers it as an effect — CONTEXT.md "Selection"); the picked-node resolver
+(CONTEXT.md "Picked node"); LMB = select + shift-click accumulate; orbit rebind (Shift+MMB
+transient pivot, explicit orbit mode + reticle, orbit-type split button, quaternion camera);
+projection mode reclassified Settings→session.
+
+**Deferred:** scene-node marquee (built once with the sketch marquee, sequencing step 3);
+viewport Point picking (Points enter `Selection` as targets now, gizmo hit-testing later);
+multi-select inspector editing (N>1 shows a count summary only).
+
+**Selection feedback (owner-resolved 2026-07-26):** a selected node renders with a **cel
+shader over its geometry** (outline-emphasis, depth-tested against the composed model) — not a
+translucent x-ray tint. The node's own body is derived per selection change via the same
+bounded per-node derivation the operand ghost uses; only the shading differs. Applies in all
+three view modes.
 
 ## Sequencing (owner-ordered 2026-07-23)
 
