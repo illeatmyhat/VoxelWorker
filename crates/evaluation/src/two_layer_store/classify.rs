@@ -85,23 +85,6 @@ pub(crate) fn scoped_leaf_steps<'leaf>(
     steps
 }
 
-/// Whether this leaf can ADD occupancy to the scene's root accumulator: its own operation
-/// is `Union` and every enclosing scope folds under `Union` (ADR 0017 Decision 3). A
-/// boolean anywhere on the path makes the leaf's root-level influence purely
-/// removing — e.g. a Union leaf inside a Group placed under Subtract only ever CARVES
-/// the parent (its body enters the group's composed occupancy, which is then removed
-/// from the parent), and a Union leaf inside a Group placed under Intersect (#75) only
-/// ever PRESERVES parent cells its scope's body covers (it never creates root
-/// occupancy of its own). Purely additive leaves are also the only leaves that ever
-/// STAMP material at the root (booleans never stamp — Decision 1).
-pub(crate) fn leaf_is_purely_additive(leaf: &LeafProducer) -> bool {
-    leaf.operation == CombineOp::Union
-        && leaf
-            .scope_path
-            .iter()
-            .all(|frame| frame.operation == CombineOp::Union)
-}
-
 /// Map the document's [`CombineOp`] onto the substrate kernel's [`CellCombineOp`] role.
 fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
     match operation {
@@ -177,7 +160,7 @@ pub(crate) fn classify_chunk_block(
     // Occupancy at the root can only be CREATED by a purely additive leaf (ADR 0017:
     // booleans — Subtract and Intersect, at any scope depth — only ever remove). No
     // overlapping purely-additive leaf ⇒ provably empty.
-    if !overlapping.iter().any(|leaf| leaf_is_purely_additive(leaf)) {
+    if !overlapping.iter().any(|leaf| leaf.is_purely_additive()) {
         return BlockClassification::Air;
     }
 
@@ -246,9 +229,7 @@ pub(crate) fn classify_chunk_block(
             // VoxelBody's per-voxel materials) is forced BOUNDARY so the per-voxel pass
             // decides — still exact, just unelided. When in doubt, Boundary: it is
             // always exact.
-            let mut additive_leaves = overlapping
-                .iter()
-                .filter(|leaf| leaf_is_purely_additive(leaf));
+            let mut additive_leaves = overlapping.iter().filter(|leaf| leaf.is_purely_additive());
             match (additive_leaves.next(), additive_leaves.next()) {
                 // Single single-material additive leaf provably filling the block ⇒ coarse.
                 (Some(leaf), None) => match leaf.material {
@@ -368,7 +349,7 @@ pub(crate) fn producer_local_voxel_to_abs(
     leaf_affine(leaf, voxels_per_block).world_cell_of_local_centre(local_index)
 }
 
-/// The FIRST **purely additive** leaf (see [`leaf_is_purely_additive`]) whose grid AABB
+/// The FIRST **purely additive** leaf (see [`LeafProducer::is_purely_additive`]) whose grid AABB
 /// overlaps `block_abs_voxels`, or `None` if none does. The overlap test mirrors
 /// [`classify_chunk_block`]'s exactly, so the same leaf is found. A coarse-solid block is
 /// owned by exactly one purely additive leaf (the classifier forces any multi-additive
@@ -382,7 +363,7 @@ pub(crate) fn single_overlapping_leaf<'a>(
     leaves
         .iter()
         .copied()
-        .filter(|leaf| leaf_is_purely_additive(leaf))
+        .filter(|leaf| leaf.is_purely_additive())
         .find(|leaf| leaf_world_box(leaf, voxels_per_block).intersects(&block_abs_voxels))
 }
 
@@ -458,7 +439,7 @@ pub(crate) fn classify_whole_chunk(
     // is a recorded follow-up, deliberately not this slice.
     if leaves.iter().any(|leaf| leaf.masks_beyond_bounds()) {
         let any_additive_overlaps = leaves.iter().any(|leaf| {
-            leaf_is_purely_additive(leaf)
+            leaf.is_purely_additive()
                 && leaf_world_box(leaf, voxels_per_block).intersects(&chunk_abs_voxels)
         });
         return if any_additive_overlaps {
@@ -499,7 +480,7 @@ pub(crate) fn classify_whole_chunk(
             // trivially all-air regardless (booleans only remove; every sub-block
             // sees no additive leaf either).
             let any_additive_overlaps = leaves.iter().any(|leaf| {
-                leaf_is_purely_additive(leaf)
+                leaf.is_purely_additive()
                     && leaf_world_box(leaf, voxels_per_block).intersects(&chunk_abs_voxels)
             });
             if !any_additive_overlaps
@@ -555,7 +536,7 @@ fn chunk_fold_is_scope_transparent(
     leaves
         .iter()
         .filter(|leaf| leaf_world_box(leaf, voxels_per_block).intersects(&chunk_abs_voxels))
-        .all(|leaf| leaf_is_purely_additive(leaf) || leaf.scope_path.is_empty())
+        .all(|leaf| leaf.is_purely_additive() || leaf.scope_path.is_empty())
 }
 
 /// Whether every SUBTRACTIVE-influence leaf (any leaf that is not purely additive) whose
@@ -572,7 +553,7 @@ fn subtractive_leaves_contain_chunk(
 ) -> bool {
     leaves
         .iter()
-        .filter(|leaf| !leaf_is_purely_additive(leaf))
+        .filter(|leaf| !leaf.is_purely_additive())
         .map(|leaf| leaf_world_box(leaf, voxels_per_block))
         .all(|cutter_box| {
             !cutter_box.intersects(&chunk_abs_voxels) || cutter_box.contains_box(&chunk_abs_voxels)

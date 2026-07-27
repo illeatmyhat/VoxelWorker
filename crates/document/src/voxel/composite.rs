@@ -162,6 +162,66 @@ impl CompositeProducer {
         (distance, last_inside_material.or(nearest_material))
     }
 
+    /// Which node authored the geometry at a composite-frame point (ADR 0032) — the same
+    /// walk [`sample`](Self::sample) does for material, answering with origins instead.
+    ///
+    /// The two rules are deliberately identical (last containing `Union` member inside the
+    /// body, nearest one out in an outset shell), because the pick follows the material: the
+    /// node you select is the node that coloured the voxel you clicked. A nested composite
+    /// answers for itself, so a pick names the innermost authored leaf rather than the Group
+    /// enclosing it — ADR 0032 picks the leaf at any depth; only the instance boundary
+    /// redirects, and that redirect is already baked into each member's origin by the walk.
+    ///
+    /// Masks are skipped rather than folded: the caller runs the scoped fold and only asks
+    /// about a point the composite already resolved as solid, so a `Subtract` that would
+    /// have removed it did not.
+    ///
+    /// **The outset shell.** A point out in the dilation reaches no member's body, and the
+    /// nearest member answers — the same member whose material the shell takes
+    /// ([`OutsetProducer::material_at`](super::OutsetProducer)), because the shell is
+    /// continuous with the surface it grew from. So a click on a Part's dilation selects the
+    /// member under it, not the scope node carrying the outset; reaching that property is a
+    /// navigation step (parent), not a different pick.
+    fn origin_at_point(
+        &self,
+        point_local_voxels: [f32; 3],
+        voxels_per_block: u32,
+    ) -> Option<LeafOrigin> {
+        let mut last_inside: Option<LeafOrigin> = None;
+        let mut nearest: Option<LeafOrigin> = None;
+        let mut nearest_distance = f32::INFINITY;
+
+        for member in &self.members {
+            if member.operation != CombineOp::Union {
+                continue;
+            }
+            let Some(member_distance) =
+                self.member_distance(member, point_local_voxels, voxels_per_block)
+            else {
+                continue;
+            };
+            let local = std::array::from_fn(|axis| {
+                point_local_voxels[axis] - member.offset_voxels[axis] as f32
+            });
+            // A nested scope answers for its own innermost member; a plain body has no
+            // opinion and IS the member, so it answers as itself.
+            let origin = member
+                .producer
+                .origin_at(local, voxels_per_block)
+                .unwrap_or(member.source);
+            // `is_sign_negative`, not `< 0.0`: a sample can land exactly on the surface,
+            // where only the sign bit carries the inside/outside verdict (as `sample` does).
+            if member_distance.is_sign_negative() {
+                last_inside = Some(origin);
+            }
+            if member_distance < nearest_distance {
+                nearest_distance = member_distance;
+                nearest = Some(origin);
+            }
+        }
+        last_inside.or(nearest)
+    }
+
     /// Members that can GROW the composite's extent: `Union` and `Emboss` ones.
     ///
     /// A `Subtract` or `Intersect` member's effect is contained in the accumulator (ADR 0020
@@ -183,6 +243,10 @@ impl CompositeProducer {
 }
 
 impl VoxelProducer for CompositeProducer {
+    fn origin_at(&self, point_local_voxels: [f32; 3], voxels_per_block: u32) -> Option<LeafOrigin> {
+        self.origin_at_point(point_local_voxels, voxels_per_block)
+    }
+
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
         let [x, y, z] = self.full_dimensions(voxels_per_block);
         self.resolve_into(

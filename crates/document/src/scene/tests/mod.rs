@@ -10,6 +10,7 @@ mod grids;
 mod intersect;
 mod leaf_origin;
 mod operand_body;
+mod pick;
 mod placement;
 mod resolve;
 mod sealed_scopes;

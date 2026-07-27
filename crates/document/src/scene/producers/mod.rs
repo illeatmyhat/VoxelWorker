@@ -5,6 +5,7 @@
 
 mod gather;
 mod model;
+mod pick;
 mod resolve_chunk;
 #[cfg(any(test, feature = "oracle"))]
 mod resolve_oracle;

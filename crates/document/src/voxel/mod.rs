@@ -145,6 +145,30 @@ pub trait VoxelProducer: Send + Sync {
         None
     }
 
+    /// Which node authored the geometry at a point in this producer's own `[0, full_dim)`
+    /// voxel frame — what a viewport pick landing there selects (ADR 0032).
+    ///
+    /// The default `None` means "I am one node's body, ask the leaf" — the case for every
+    /// Tool and sketch solid, whose leaf already names its node. Only a
+    /// [`CompositeProducer`] answers: a pre-composed scope is ONE leaf to the walk, so
+    /// without this a pick anywhere inside it could name only the scope.
+    ///
+    /// **The pick follows the material.** The rule here is the one
+    /// [`material_at`](VoxelProducer::material_at) uses — last containing `Union` member
+    /// inside the body, nearest one out in an outset shell — so the node you select is the
+    /// node that coloured the voxel you clicked. Two answers here would be two answers to
+    /// "whose voxel is this", and the user can see the material.
+    ///
+    /// [`CompositeProducer`]: crate::voxel::CompositeProducer
+    fn origin_at(
+        &self,
+        point_local_voxels: [f32; 3],
+        voxels_per_block: u32,
+    ) -> Option<crate::scene::LeafOrigin> {
+        let _ = (point_local_voxels, voxels_per_block);
+        None
+    }
+
     /// This producer's signed distance field, when it has one (ADR 0020 Decision 1).
     ///
     /// `None` is not a failure — it is the honest answer for a producer whose occupancy is

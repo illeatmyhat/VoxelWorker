@@ -462,6 +462,25 @@ impl LeafProducer {
     pub fn masks_beyond_bounds(&self) -> bool {
         operation_masks_beyond_bounds(self.operation, &self.scope_path)
     }
+
+    /// Whether this leaf can ADD occupancy to the scene's root accumulator: its own operation
+    /// is `Union` and every enclosing scope folds under `Union` (ADR 0017 Decision 3). A
+    /// boolean anywhere on the path makes the leaf's root-level influence purely
+    /// removing — e.g. a Union leaf inside a Group placed under Subtract only ever CARVES
+    /// the parent (its body enters the group's composed occupancy, which is then removed
+    /// from the parent), and a Union leaf inside a Group placed under Intersect (#75) only
+    /// ever PRESERVES parent cells its scope's body covers (it never creates root
+    /// occupancy of its own). Purely additive leaves are also the only leaves that ever
+    /// STAMP material at the root (booleans never stamp — Decision 1), which is why a
+    /// viewport pick considers only these (ADR 0032): the leaf that coloured a voxel is the
+    /// leaf that owns it.
+    pub fn is_purely_additive(&self) -> bool {
+        self.operation == CombineOp::Union
+            && self
+                .scope_path
+                .iter()
+                .all(|frame| frame.operation == CombineOp::Union)
+    }
 }
 
 /// The continuous `glam::Quat` equivalent of a discrete [`LatticeOrientation`] (ADR 0027

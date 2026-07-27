@@ -191,6 +191,15 @@ impl VoxelProducer for OutsetProducer {
             .material_at(self.to_inner_point(point_local_voxels), voxels_per_block)
     }
 
+    fn origin_at(
+        &self,
+        point_local_voxels: [f32; 3],
+        voxels_per_block: u32,
+    ) -> Option<crate::scene::LeafOrigin> {
+        self.inner
+            .origin_at(self.to_inner_point(point_local_voxels), voxels_per_block)
+    }
+
     fn as_field(&self) -> Option<&dyn Field> {
         Some(self)
     }
