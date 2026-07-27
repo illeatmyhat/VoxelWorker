@@ -1082,7 +1082,7 @@ use crate::voxel::VoxelProducer;
             group_id,
             Node::new("child", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 })),
         );
-        assert!(added, "the wrapped node is a Group so a child can be added");
+        assert!(added.is_some(), "the wrapped node is a Group so a child can be added");
 
         let rows = scene.tree_rows();
         let paths: Vec<(Vec<usize>, usize)> =

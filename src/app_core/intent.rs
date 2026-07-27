@@ -12,6 +12,59 @@ use document::voxel::SdfShape;
 
 use super::AppCore;
 
+/// What one [`dispatch`](AppCore::dispatch) produced, beyond the scene mutation itself.
+///
+/// The two id channels are deliberately SEPARATE (ADR 0032): `minted_node` patches the
+/// add-family's [`Inverse::RemoveAdded`] placeholder, while `selection_steer` says where
+/// the workspace selection should land. They disagree for `RemoveNode` (a fallback
+/// survivor, nothing minted) and `GroupNode` (a Group minted, selection unmoved), so one
+/// channel serving both would silently mis-steer.
+#[derive(Default)]
+struct DispatchOutcome {
+    effect: IntentEffect,
+    /// The single node this intent minted, for the inverse to remove. `None` for every
+    /// non-add intent and for an add that no-opped on a stale target.
+    minted_node: Option<NodeId>,
+    /// Where selection should land after this edit. `None` leaves it untouched.
+    selection_steer: Option<SelectionSteer>,
+}
+
+/// How an edit steers the workspace selection (ADR 0032: the document no longer owns it).
+#[derive(Clone, Copy)]
+enum SelectionSteer {
+    /// Land on this node — a freshly-added node, or a post-removal fallback survivor.
+    SelectNode(NodeId),
+    /// The scene emptied: nothing left to select.
+    ClearNodes,
+}
+
+impl DispatchOutcome {
+    /// A no-op dispatch: nothing changed, nothing minted, selection untouched.
+    fn none() -> Self {
+        Self::default()
+    }
+
+    /// An effect-only outcome (a field write): no mint, no selection steer.
+    fn effect(effect: IntentEffect) -> Self {
+        Self { effect, ..Self::none() }
+    }
+
+    /// An add-family outcome: the minted node both patches the inverse AND becomes the
+    /// selection (a freshly-created node arrives selected).
+    fn minted(effect: IntentEffect, id: NodeId) -> Self {
+        Self {
+            effect,
+            minted_node: Some(id),
+            selection_steer: Some(SelectionSteer::SelectNode(id)),
+        }
+    }
+
+    /// A steer-only outcome: selection moves, nothing was minted.
+    fn steered(effect: IntentEffect, steer: SelectionSteer) -> Self {
+        Self { effect, minted_node: None, selection_steer: Some(steer) }
+    }
+}
+
 /// Dispatch helper for a per-node field write: apply `write` to the addressed node
 /// (returning whether it landed), reporting `full_effect` on success and
 /// [`IntentEffect::none`] on a missing id / kind-mismatch. Collapses the identical
@@ -22,9 +75,9 @@ fn node_write(
     target: NodeId,
     full_effect: IntentEffect,
     write: impl FnOnce(&mut Node) -> bool,
-) -> (IntentEffect, Option<NodeId>) {
+) -> DispatchOutcome {
     let applied = scene.node_by_id_mut(target).map(write).unwrap_or(false);
-    (if applied { full_effect } else { IntentEffect::none() }, None)
+    DispatchOutcome::effect(if applied { full_effect } else { IntentEffect::none() })
 }
 
 /// Dispatch helper for a per-point field write — the `scene.points` sibling of
@@ -34,9 +87,9 @@ fn point_write(
     index: usize,
     full_effect: IntentEffect,
     write: impl FnOnce(&mut Point) -> bool,
-) -> (IntentEffect, Option<NodeId>) {
+) -> DispatchOutcome {
     let applied = scene.points.get_mut(index).map(write).unwrap_or(false);
-    (if applied { full_effect } else { IntentEffect::none() }, None)
+    DispatchOutcome::effect(if applied { full_effect } else { IntentEffect::none() })
 }
 
 /// Capture helper: read the addressed node's prior value via `prior` (which returns
@@ -93,8 +146,7 @@ impl AppCore {
         // Selection-only intents are a view concern, not an undoable document step
         // (consistent with C1): dispatch + report, push NOTHING.
         if matches!(intent, Intent::SelectNode { .. } | Intent::SelectPoint { .. }) {
-            let (effect, _minted) = self.dispatch(scene, intent);
-            return effect;
+            return self.dispatch(scene, intent).effect;
         }
 
         // Authoring-time coordinate wall: an edit that would push a node past the
@@ -122,6 +174,18 @@ impl AppCore {
         effect
     }
 
+    /// Land a dispatch's [`SelectionSteer`] on the scene. Slice 2 of ADR 0032 keeps the
+    /// destination as `Scene::active`; slice 4 dual-writes the workspace `Selection` here
+    /// and slice 5 drops the document field. Centralising the write is the point — no
+    /// edit op writes selection any more.
+    fn apply_selection_steer(scene: &mut Scene, steer: Option<SelectionSteer>) {
+        match steer {
+            Some(SelectionSteer::SelectNode(id)) => scene.active = Some(id),
+            Some(SelectionSteer::ClearNodes) => scene.active = None,
+            None => {}
+        }
+    }
+
     /// Snapshot the pre-state (selection + the id counter — the COUNTER RULE in command.rs),
     /// capture the inverse by reading the scene BEFORE the mutation, dispatch (which may mint
     /// ids the inverse needs), then assemble the [`Command`] with the add-family minted-id
@@ -133,13 +197,15 @@ impl AppCore {
         let point_selection_before = scene.active_point;
         let counter_before = scene.next_node_id;
         let inverse = self.capture_inverse(scene, &intent, counter_before);
-        let (effect, minted) = self.dispatch(scene, intent.clone());
+        let outcome = self.dispatch(scene, intent.clone());
+        Self::apply_selection_steer(scene, outcome.selection_steer);
         // The add family mints exactly one node; its inverse needs that id (the placeholder
         // captured above is patched with the real minted id here).
-        let inverse = match (inverse, minted) {
+        let inverse = match (inverse, outcome.minted_node) {
             (Inverse::RemoveAdded { .. }, Some(id)) => Inverse::RemoveAdded { id },
             (other, _) => other,
         };
+        let effect = outcome.effect;
         (
             Command {
                 intent,
@@ -423,6 +489,7 @@ impl AppCore {
     fn reverse_command(&mut self, scene: &mut Scene, command: &document::command::Command) -> IntentEffect {
         match &command.inverse {
             Inverse::Field(prior) => {
+                // A field write never steers selection; the restore below is authoritative.
                 self.dispatch(scene, prior.clone());
             }
             structural => structural.apply(scene),
@@ -438,7 +505,10 @@ impl AppCore {
     /// [`redo`](Self::redo) and the in-session redo of an open sketch group; touches neither
     /// stack.
     fn replay_command(&mut self, scene: &mut Scene, command: &document::command::Command) -> IntentEffect {
-        self.dispatch(scene, command.intent.clone());
+        let outcome = self.dispatch(scene, command.intent.clone());
+        // Redo re-lands the forward edit's selection steer (a re-minted node arrives
+        // selected again), matching what the original apply did.
+        Self::apply_selection_steer(scene, outcome.selection_steer);
         Self::effect_of(&command.intent).merged_with(IntentEffect::selection())
     }
 
@@ -589,16 +659,14 @@ impl AppCore {
     /// AddInstance), the minted node id the inverse needs (`None` for the field /
     /// structural / selection / point intents and for an add that no-ops on a stale
     /// target).
-    fn dispatch(&self, scene: &mut Scene, intent: Intent) -> (IntentEffect, Option<NodeId>) {
+    fn dispatch(&self, scene: &mut Scene, intent: Intent) -> DispatchOutcome {
         let full_effect = Self::effect_of(&intent);
         // The downgraded effect for a mutation that could not land.
         let none = IntentEffect::none();
         match intent {
             // --- Structural ---
             Intent::AddNode { content } => {
-                let index = scene.add_node(content.into_node());
-                let minted = scene.roots.get(index).copied();
-                (full_effect, minted)
+                DispatchOutcome::minted(full_effect, scene.add_node(content.into_node()))
             }
             Intent::PlaceNode { content, offset_voxels, offset_local, rotation_quaternion } => {
                 // Build the node exactly as AddNode, then override its identity transform with
@@ -613,41 +681,41 @@ impl AppCore {
                     transform = transform.with_rotation(glam::Quat::from_array(quaternion));
                 }
                 node.transform = transform;
-                let index = scene.add_node(node);
-                let minted = scene.roots.get(index).copied();
-                (full_effect, minted)
+                DispatchOutcome::minted(full_effect, scene.add_node(node))
             }
             Intent::AddChild { group, content } => {
-                let added = scene.add_child_to_group(group, content.into_node());
-                // `add_child_to_group` selects the new child, so `active` is its id.
-                let minted = if added { scene.active } else { None };
-                (if added { full_effect } else { none }, minted)
+                match scene.add_child_to_group(group, content.into_node()) {
+                    Some(id) => DispatchOutcome::minted(full_effect, id),
+                    None => DispatchOutcome::none(),
+                }
             }
             Intent::GroupNode { target } => {
-                // The op is id-addressed; the selection steer stays here at the
-                // dispatcher (ADR 0032), mirroring the panel: select, then Group.
-                scene.active = Some(target);
+                // The wrapped node keeps its id, so selection lands back on it —
+                // mirroring the panel gesture: select the node, then Group.
                 scene.wrap_node_in_group(target);
-                (full_effect, None)
+                DispatchOutcome::steered(full_effect, SelectionSteer::SelectNode(target))
             }
             Intent::MakeDefinition { target, name } => {
-                scene.active = Some(target);
+                // The node keeps its id while only its content becomes an Instance.
                 scene.make_definition_from_node(target, name);
-                (full_effect, None)
+                DispatchOutcome::steered(full_effect, SelectionSteer::SelectNode(target))
             }
-            Intent::AddInstance { def } => {
-                let minted = scene.add_instance(def);
-                (if minted.is_some() { full_effect } else { none }, minted)
-            }
+            Intent::AddInstance { def } => match scene.add_instance(def) {
+                Some(id) => DispatchOutcome::minted(full_effect, id),
+                None => DispatchOutcome::none(),
+            },
             Intent::RemoveNode { target } => {
-                scene.remove_node(target);
-                (full_effect, None)
+                let steer = match scene.remove_node(target) {
+                    Some(survivor) => SelectionSteer::SelectNode(survivor),
+                    None => SelectionSteer::ClearNodes,
+                };
+                DispatchOutcome::steered(full_effect, steer)
             }
 
             // --- Node field writes ---
             Intent::SetEnabled { target, enabled } => {
                 let applied = scene.set_node_enabled(target, enabled);
-                (if applied { full_effect } else { none }, None)
+                DispatchOutcome::effect(if applied { full_effect } else { none })
             }
             Intent::SetShape { target, shape } => {
                 node_write(scene, target, full_effect, |node| match &mut node.content {
@@ -698,7 +766,7 @@ impl AppCore {
                 // scope path, which this flip changes for every expanded leaf, so
                 // the store re-classifies each instance's chunks.
                 let applied = scene.set_definition_fixture(def, fixture);
-                (if applied { full_effect } else { none }, None)
+                DispatchOutcome::effect(if applied { full_effect } else { none })
             }
             Intent::SetOffset { target, offset_measurements } => {
                 // The intent carries the per-axis authored measurement (ADR 0003
@@ -801,7 +869,7 @@ impl AppCore {
                     }
                 }
                 scene.voxels_per_block = voxels_per_block;
-                (full_effect, None)
+                DispatchOutcome::effect(full_effect)
             }
             Intent::SetGridMasters { voxel, lattice, floor } => {
                 // The masters are read live by the per-frame line batch, so no
@@ -809,17 +877,17 @@ impl AppCore {
                 scene.master_voxel_grid = voxel;
                 scene.master_block_lattice = lattice;
                 scene.master_floor_grid = floor;
-                (full_effect, None)
+                DispatchOutcome::effect(full_effect)
             }
 
             // --- Selection ---
             Intent::SelectNode { target } => {
                 scene.active = target;
-                (full_effect, None)
+                DispatchOutcome::effect(full_effect)
             }
             Intent::SelectPoint { target } => {
                 scene.active_point = target;
-                (full_effect, None)
+                DispatchOutcome::effect(full_effect)
             }
 
             // --- Points ---
@@ -830,11 +898,11 @@ impl AppCore {
                     ..document::scene::Point::default()
                 };
                 scene.add_point(point);
-                (full_effect, None)
+                DispatchOutcome::effect(full_effect)
             }
             Intent::RemovePoint { index } => {
                 scene.remove_point(index);
-                (full_effect, None)
+                DispatchOutcome::effect(full_effect)
             }
             Intent::SetPointHidden { index, hidden } => {
                 point_write(scene, index, full_effect, |point| {

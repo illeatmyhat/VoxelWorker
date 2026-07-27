@@ -64,6 +64,9 @@
     /// clone — the core `apply_intent ≡ direct op` invariant. Both sides start from
     /// the SAME scene state (so id-minting counters match), so the scenes compare
     /// equal (Scene derives PartialEq).
+    ///
+    /// ADR 0032: the edit ops no longer steer selection — `dispatch` does — so a
+    /// `direct` oracle for a selection-steering intent must land the same steer itself.
     fn assert_dispatch_matches(scene: &Scene, intent: Intent, direct: impl FnOnce(&mut Scene)) {
         let mut core = test_core();
         let mut applied = scene.clone();
@@ -86,7 +89,7 @@
             &scene,
             Intent::AddNode { content: spec.clone() },
             |s| {
-                s.add_node(spec.into_node());
+                s.active = Some(s.add_node(spec.into_node()));
             },
         );
     }
@@ -98,7 +101,7 @@
             &scene,
             Intent::AddNode { content: NodeSpec::CloudsPart },
             |s| {
-                s.add_node(NodeSpec::CloudsPart.into_node());
+                s.active = Some(s.add_node(NodeSpec::CloudsPart.into_node()));
             },
         );
     }
@@ -114,7 +117,7 @@
             &scene,
             Intent::AddNode { content: spec.clone() },
             |s| {
-                s.add_node(spec.into_node());
+                s.active = Some(s.add_node(spec.into_node()));
             },
         );
     }
@@ -136,7 +139,7 @@
             &scene,
             Intent::AddChild { group: group_id, content: spec.clone() },
             |s| {
-                s.add_child_to_group(group_id, spec.into_node());
+                s.active = s.add_child_to_group(group_id, spec.into_node());
             },
         );
     }
@@ -174,7 +177,7 @@
             .make_definition_from_node(target, "Body")
             .expect("definition made");
         assert_dispatch_matches(&scene, Intent::AddInstance { def: def_id }, |s| {
-            s.add_instance(def_id);
+            s.active = s.add_instance(def_id);
         });
     }
 

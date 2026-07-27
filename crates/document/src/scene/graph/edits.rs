@@ -46,38 +46,32 @@ impl Scene {
         }
     }
 
-    /// Append `node` to the TOP-LEVEL list and make it the active selection.
-    /// Returns its top-level index.
+    /// Append `node` to the TOP-LEVEL list, returning its freshly-minted [`NodeId`].
     ///
-    /// ADR 0003 Phase B3: selection is keyed by [`NodeId`], so the appended node is
-    /// minted a stable id here ([`mint_node_id`](Self::mint_node_id)) before
-    /// `active` is pointed at it — a freshly-added node is selectable by identity
-    /// immediately, surviving any later reorder.
-    pub fn add_node(&mut self, node: Node) -> usize {
+    /// The id is minted here ([`mint_node_id`](Self::mint_node_id)) so the caller can
+    /// steer selection onto the new node by identity, surviving any later reorder
+    /// (ADR 0032: the op reports, the shell selects).
+    pub fn add_node(&mut self, node: Node) -> NodeId {
         // The arena insert (mint id, stamp it, store) is exactly `insert_subtree`.
         let id = self.insert_subtree(node);
         self.roots.push(id);
-        let index = self.roots.len() - 1;
-        self.active = Some(id);
-        index
+        id
     }
 
-    /// Append `node` as a child of the Group identified by `group_id` and select
-    /// it. Returns `true` if the target was a Group and the node was added. A no-op
-    /// (returns `false`) when the id does not resolve to a Group.
-    pub fn add_child_to_group(&mut self, group_id: NodeId, mut node: Node) -> bool {
+    /// Append `node` as a child of the Group identified by `group_id`, returning its
+    /// freshly-minted [`NodeId`]. `None` (a no-op) when the id does not resolve to a
+    /// Group.
+    pub fn add_child_to_group(&mut self, group_id: NodeId, mut node: Node) -> Option<NodeId> {
         // ADR 0003 Phase B4: the op targets a NodeId; resolve it to the positional
         // path the internal storage still needs (the positional bridge survives
         // until B5). A stale id → no-op (mirrors the old out-of-range path bail).
-        let Some(group_path) = self.path_of(group_id) else {
-            return false;
-        };
+        let group_path = self.path_of(group_id)?;
         let group_path = &group_path;
         // Bail before minting if the target is not a Group, so a no-op neither adds
         // a node nor burns a counter value.
         match self.node_at_path(group_path).map(|node| &node.content) {
             Some(NodeContent::Group(_)) => {}
-            _ => return false,
+            _ => return None,
         }
         // Mint the child's stable id (ADR 0003 Phase B3) so selection can point at
         // it by identity; minting BEFORE the mutable group borrow releases the
@@ -91,24 +85,18 @@ impl Scene {
         let Some(group_node) = self.node_at_path_mut(group_path) else {
             // Unreachable (we checked it is a Group above), but keep the arena clean.
             self.arena.remove(&id);
-            return false;
+            return None;
         };
         let NodeContent::Group(children) = &mut group_node.content else {
             self.arena.remove(&id);
-            return false;
+            return None;
         };
         children.push(id);
-        self.active = Some(id);
-        true
+        Some(id)
     }
 
-    /// Remove the node identified by `target_id` (top-level or a Group child),
-    /// keeping the `active` selection sensible: after a removal the selection falls
-    /// back to the removed node's parent (so a Group's last child deletion selects
-    /// the Group), or to a surviving top-level node, or `None` when the scene
-    /// empties. A stale id (no longer in the tree) is ignored.
-    /// Detach `id` from its parent spine and purge its WHOLE subtree from the arena,
-    /// WITHOUT touching `active` (ADR 0003 Phase B4/B5). Resolves the id to its
+    /// Detach `id` from its parent spine and purge its WHOLE subtree from the arena
+    /// (ADR 0003 Phase B4/B5). Resolves the id to its
     /// positional path, splices it out of its parent spine (top-level `roots` or a
     /// Group's `Vec<NodeId>`), then drops the removed node + every descendant (a
     /// shared-borrow DFS into a `Vec` so no arena borrow is held during removal —
@@ -131,17 +119,18 @@ impl Scene {
         Some((parent_indices.to_vec(), last_index))
     }
 
-    pub fn remove_node(&mut self, target_id: NodeId) {
-        let Some((parent_indices, last_index)) = self.detach_and_purge_subtree(target_id) else {
-            return;
-        };
-        // Re-derive a valid selection. Prefer the sibling now occupying the removed
-        // slot (a Group, or the scene root → a surviving top-level node); fall back
-        // to the parent Group, then None when empty. ADR 0003 Phase B3: the fallback
-        // yields a NodePath, which we resolve to the surviving node's stable id.
-        self.active = self
-            .fallback_selection_after_remove(&parent_indices, last_index)
-            .and_then(|path| self.id_at_path(&path));
+    /// Remove the node identified by `target_id` (top-level or a Group child),
+    /// returning the node a selection should FALL BACK to: the sibling now occupying
+    /// the removed slot (so a Group's last child deletion yields the Group), else a
+    /// surviving top-level node, else `None` when the scene empties. A stale id (no
+    /// longer in the tree) is ignored and yields `None`.
+    pub fn remove_node(&mut self, target_id: NodeId) -> Option<NodeId> {
+        let (parent_indices, last_index) = self.detach_and_purge_subtree(target_id)?;
+        // Prefer the sibling now occupying the removed slot (a Group, or the scene
+        // root → a surviving top-level node); fall back to the parent Group, then None
+        // when empty. The fallback yields a NodePath, resolved here to a stable id.
+        self.fallback_selection_after_remove(&parent_indices, last_index)
+            .and_then(|path| self.id_at_path(&path))
     }
 
     /// Clone the detached subtree rooted at `root_id` (the node + every descendant
@@ -382,11 +371,7 @@ impl Scene {
         // Block-granular auto-spacing → canonical voxels at the document density.
         let spacing_blocks = (existing as i64 + 1) * DEFAULT_INSTANCE_SPACING_BLOCKS as i64;
         node.transform = NodeTransform::from_blocks([spacing_blocks, 0, 0], self.voxels_per_block);
-        let index = self.add_node(node);
-        // ADR 0003 Phase B4: return the appended node's stable id rather than its
-        // positional path. `add_node` minted its id and pointed `active` at it, and
-        // `id_at_path` reads it back from the slot it now occupies.
-        self.id_at_path(&NodePath::root_index(index))
+        Some(self.add_node(node))
     }
 
     /// Build the one-node Tool scene that reproduces today's single-shape
