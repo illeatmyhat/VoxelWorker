@@ -149,19 +149,10 @@ impl AppCore {
         (0.5 * diagonal * 1.15).max(1.0)
     }
 
-    /// Where the transform gizmo (issue #29 S2) should sit: the SELECTED node's
-    /// recentred pivot + its extent (in voxels), or `None` when nothing is selected
-    /// (or the selection has no extent). An associated function for now (it borrows
-    /// the scene; A2d ownership boundary) — becomes `&self` once `AppCore` owns the
-    /// scene in Phase B/C.
-    pub fn gizmo_placement(scene: &Scene, density: u32) -> Option<([f32; 3], [f32; 3])> {
-        scene.active_gizmo_placement(density)
-    }
-
-    /// The recentred `(pivot_voxels, extent_voxels)` for an ARBITRARY node id (not
-    /// the active selection) — the camera "Focus" view action frames that node. A
-    /// thin wrapper over [`Scene::gizmo_placement_for_id`]; `None` when the id no
-    /// longer resolves or the node has no extent (Focus is then a no-op).
+    /// The recentred `(pivot_voxels, extent_voxels)` for a node id — where the
+    /// transform gizmo sits (issue #29 S2), and what the camera "Focus" view action
+    /// frames. A thin wrapper over [`Scene::gizmo_placement_for_id`]; `None` when the
+    /// id no longer resolves or the node has no extent (Focus is then a no-op).
     pub fn gizmo_placement_for_id(
         scene: &Scene,
         node_id: NodeId,
@@ -184,6 +175,7 @@ impl AppCore {
     /// part gives the whole-scene region (the pre-0018 behaviour recovered).
     pub fn mesh_clip(
         scene: &Scene,
+        selection: Option<NodeId>,
         density: u32,
         view_mode: ViewMode,
         layer_range: LayerRange,
@@ -201,7 +193,9 @@ impl AppCore {
         }
         // Onion-fog needs a selected object to scope the clip to. No selection / hidden /
         // empty subtree ⇒ finished (no implicit whole-scene clip — ADR 0018 Decision 2/5).
-        let Some((rmin, rmax)) = scene.selected_region_extent_recentred_voxels(density) else {
+        let Some((rmin, rmax)) = selection
+            .and_then(|target| scene.selected_region_extent_recentred_voxels(target, density))
+        else {
             return finished;
         };
         // The mesher maps a recentred voxel-Z `v` to absolute layer `v + floor(dim_z/2)`.

@@ -16,7 +16,7 @@
 
 use display::mesh::SelectedOperandGhostBody;
 use display::renderer::OperandGhostStyle;
-use document::scene::{CombineOp, Scene};
+use document::scene::{CombineOp, NodeId, Scene};
 use evaluation::two_layer_store::TwoLayerStore;
 use voxel_core::voxel::RecentreVoxels;
 
@@ -58,16 +58,20 @@ fn operand_ghost_style_for(operation: CombineOp) -> OperandGhostStyle {
 }
 
 impl AppCore {
-    /// Derive the boolean-operand ghost for the active selection's subtree (ADR 0018
-    /// Decision 6 — "Show booleans" mode), or `None` when nothing is selected / the
-    /// selection covers no boolean with geometry.
+    /// Derive the boolean-operand ghost for `target`'s subtree (ADR 0018 Decision 6 —
+    /// "Show booleans" mode), or `None` when the subtree covers no boolean with
+    /// geometry.
     ///
     /// Cost bound: each operand slice is evaluated over ITS OWN covering chunk range
     /// (the operand body's extent) via the stateless two-layer evaluator — a selection
     /// change never re-resolves the whole scene, and no dense whole-region grid is ever
     /// assembled (the user law).
-    pub fn boolean_operand_ghost(scene: &Scene, density: u32) -> Option<SelectedOperandGhost> {
-        evaluate_operand_ghost_slices(scene, scene.boolean_operand_body_slices(), density)
+    pub fn boolean_operand_ghost(
+        scene: &Scene,
+        target: NodeId,
+        density: u32,
+    ) -> Option<SelectedOperandGhost> {
+        evaluate_operand_ghost_slices(scene, scene.boolean_operand_body_slices(target), density)
     }
 }
 
@@ -144,27 +148,25 @@ mod tests {
         scene
     }
 
-    /// No ghost with an empty selection.
+    /// No ghost for a stale target.
     #[test]
-    fn empty_selection_derives_no_ghost() {
-        let mut scene = host_and_cutter_scene();
-        scene.active = None;
-        assert!(AppCore::boolean_operand_ghost(&scene, DENSITY).is_none());
+    fn stale_target_derives_no_ghost() {
+        let scene = host_and_cutter_scene();
+        assert!(AppCore::boolean_operand_ghost(&scene, NodeId(9999), DENSITY).is_none());
     }
 
     /// A boolean operand ghosts in its operation style; a Union selection has no boolean
     /// operand in its (leaf) subtree, so it ghosts nothing (never a Union tint).
     #[test]
     fn styles_follow_the_selected_operation() {
-        let mut scene = host_and_cutter_scene();
-        scene.active = Some(scene.roots[1]);
-        let ghost = AppCore::boolean_operand_ghost(&scene, DENSITY).expect("cutter ghosts");
+        let scene = host_and_cutter_scene();
+        let ghost = AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY)
+            .expect("cutter ghosts");
         assert_eq!(ghost.bodies.len(), 1);
         assert_eq!(ghost.bodies[0].style, OperandGhostStyle::Subtract);
 
         // The Union host is a non-boolean leaf: nothing to reveal.
-        scene.active = Some(scene.roots[0]);
-        assert!(AppCore::boolean_operand_ghost(&scene, DENSITY).is_none());
+        assert!(AppCore::boolean_operand_ghost(&scene, scene.roots[0], DENSITY).is_none());
     }
 
     /// Re-derivation on selection change resolves ONLY the selected operand's covering
@@ -178,9 +180,9 @@ mod tests {
         ]);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        scene.active = Some(scene.roots[1]);
 
-        let ghost = AppCore::boolean_operand_ghost(&scene, DENSITY).expect("cutter ghosts");
+        let ghost = AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY)
+            .expect("cutter ghosts");
         assert_eq!(
             ghost.bodies[0].chunks.len(),
             1,
@@ -199,9 +201,9 @@ mod tests {
     /// carry its geometry even though the composed scene swallows it entirely).
     #[test]
     fn buried_cutter_still_derives_its_body() {
-        let mut scene = host_and_cutter_scene();
-        scene.active = Some(scene.roots[1]);
-        let ghost = AppCore::boolean_operand_ghost(&scene, DENSITY).expect("cutter ghosts");
+        let scene = host_and_cutter_scene();
+        let ghost = AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY)
+            .expect("cutter ghosts");
         let stored: u64 = ghost.bodies[0]
             .chunks
             .iter()
@@ -222,8 +224,8 @@ mod tests {
         ]);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        scene.active = Some(ROOT_NODE_ID);
-        let ghost = AppCore::boolean_operand_ghost(&scene, DENSITY).expect("both cutters ghost");
+        let ghost = AppCore::boolean_operand_ghost(&scene, ROOT_NODE_ID, DENSITY)
+            .expect("both cutters ghost");
         assert_eq!(ghost.bodies.len(), 2);
         assert!(ghost.bodies.iter().all(|b| b.style == OperandGhostStyle::Subtract));
     }

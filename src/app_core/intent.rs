@@ -624,15 +624,15 @@ impl AppCore {
                 (if added { full_effect } else { none }, minted)
             }
             Intent::GroupNode { target } => {
-                // group_active keys off `active`; point it at the target first
-                // (mirroring the panel: select the node, then click Group).
+                // The op is id-addressed; the selection steer stays here at the
+                // dispatcher (ADR 0032), mirroring the panel: select, then Group.
                 scene.active = Some(target);
-                scene.group_active();
+                scene.wrap_node_in_group(target);
                 (full_effect, None)
             }
             Intent::MakeDefinition { target, name } => {
                 scene.active = Some(target);
-                scene.make_definition_from_active(name);
+                scene.make_definition_from_node(target, name);
                 (full_effect, None)
             }
             Intent::AddInstance { def } => {

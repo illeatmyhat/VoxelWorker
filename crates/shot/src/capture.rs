@@ -746,10 +746,13 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let mut selected_operand_ghost_renderer =
         SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     if options.view_mode == ViewMode::ShowBooleans {
-        if let Some(ghost) = AppCore::boolean_operand_ghost(
-            &panel_state.scene,
-            options.geometry.voxels_per_block,
-        ) {
+        if let Some(ghost) = panel_state.scene.active.and_then(|target| {
+            AppCore::boolean_operand_ghost(
+                &panel_state.scene,
+                target,
+                options.geometry.voxels_per_block,
+            )
+        }) {
             selected_operand_ghost_renderer.rebuild(
                 &gpu.device,
                 &ghost.bodies,
@@ -766,7 +769,13 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // matrix below. `None` (no selection / no extent) keeps `--gizmo` a no-op, and the
     // goldens (which never pass `--gizmo`) are unaffected.
     let gizmo_placement = if options.show_origin_gizmo {
-        AppCore::gizmo_placement(&panel_state.scene, options.geometry.voxels_per_block)
+        panel_state.scene.active.and_then(|target| {
+            AppCore::gizmo_placement_for_id(
+                &panel_state.scene,
+                target,
+                options.geometry.voxels_per_block,
+            )
+        })
     } else {
         None
     };
@@ -806,6 +815,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // the cuboid mesh path (geometry) and the brick raymarch (per-frame uniforms, #85).
     let clip = AppCore::mesh_clip(
         &panel_state.scene,
+        panel_state.scene.active,
         density,
         options.view_mode,
         layer_range,

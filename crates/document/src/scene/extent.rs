@@ -700,21 +700,21 @@ impl Scene {
     /// inside it the selected object clips to the band (ghost outside the band),
     /// everything outside renders finished. Selecting the **root part**
     /// ([`ROOT_NODE_ID`]) returns the WHOLE scene's extent (the scene-wide clip,
-    /// i.e. the pre-ADR-0018 behaviour). `None` when nothing is selected, the
-    /// selection is hidden, or its subtree has no intrinsic extent (a lone
-    /// VoxelBody) — the caller then applies no region clip.
+    /// i.e. the pre-ADR-0018 behaviour). `None` when `target` is stale or hidden, or
+    /// its subtree has no intrinsic extent (a lone VoxelBody) — the caller then
+    /// applies no region clip.
     pub fn selected_region_extent_recentred_voxels(
         &self,
+        target: NodeId,
         voxels_per_block: u32,
     ) -> Option<([i64; 3], [i64; 3])> {
-        let active = self.active?;
-        let (min_abs, max_abs) = if active == ROOT_NODE_ID {
+        let (min_abs, max_abs) = if target == ROOT_NODE_ID {
             // The root part IS the whole scene (its subtree is every top-level node),
             // and it is not addressable in the `roots` spine, so use the scene-wide
             // producer-true extent directly.
             self.placed_extent_voxels(voxels_per_block)?
         } else {
-            let path = self.path_of(active)?;
+            let path = self.path_of(target)?;
             self.node_subtree_extent_voxels(&path, voxels_per_block)?
         };
         // Rebase the absolute producer-true corners into the recentred frame (ADR

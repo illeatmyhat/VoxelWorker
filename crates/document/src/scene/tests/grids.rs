@@ -502,11 +502,11 @@ use crate::voxel::SdfShape;
         assert_eq!(scene.active_point, None);
     }
 
-    /// Issue #29 S2: the transform gizmo's pivot is the SELECTED node's block-AABB
+    /// Issue #29 S2: the transform gizmo's pivot is the target node's block-AABB
     /// centre in the recentred render frame — `block_aabb_centre·d − recentre` —
-    /// `None` when nothing is selected, across densities.
+    /// `None` for a stale id, across densities.
     #[test]
-    fn active_gizmo_placement_follows_selected_node() {
+    fn gizmo_placement_follows_its_node() {
         for vpb in [1u32, 15, 16] {
             // Bake each node's whole-block offset at the resolve density `vpb` so the
             // stored voxel offset divides back to the same block offset under this
@@ -527,13 +527,12 @@ use crate::voxel::SdfShape;
                 make_tool(ShapeKind::Box, [4, 4, 4], [8, 0, 0]),
                 make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 6]),
             ]);
-            scene.active = None;
-            // ADR 0003 Phase B3: mint ids so selecting a node by id resolves.
+            // ADR 0003 Phase B3: mint ids so addressing a node by id resolves.
             scene.ensure_node_ids();
 
-            // Nothing selected → no gizmo.
+            // A stale id → no gizmo.
             assert_eq!(
-                scene.active_gizmo_placement(vpb),
+                scene.gizmo_placement_for_id(NodeId(9999), vpb),
                 None,
                 "no selection hides the gizmo (vpb={vpb})"
             );
@@ -554,9 +553,12 @@ use crate::voxel::SdfShape;
 
             // Select each node in turn; the gizmo pivot tracks it.
             for (index, centre) in [([0, 0, 0]), ([8, 0, 0]), ([0, 0, 6])].into_iter().enumerate() {
-                scene.active = scene.id_at_path(&NodePath::root_index(index));
-                let (pivot, extent) =
-                    scene.active_gizmo_placement(vpb).expect("selection shows the gizmo");
+                let node_id = scene
+                    .id_at_path(&NodePath::root_index(index))
+                    .expect("top-level node resolves");
+                let (pivot, extent) = scene
+                    .gizmo_placement_for_id(node_id, vpb)
+                    .expect("the node shows the gizmo");
                 assert_eq!(
                     pivot,
                     expected_pivot(centre),
@@ -584,7 +586,9 @@ use crate::voxel::SdfShape;
                 Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
             node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
             let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
-            let (pivot, _) = scene.active_gizmo_placement(vpb).expect("gizmo shown");
+            let (pivot, _) = scene
+                .gizmo_placement_for_id(scene.roots[0], vpb)
+                .expect("gizmo shown");
             assert_eq!(
                 pivot,
                 [0.0, 0.0, 0.0],
@@ -611,7 +615,9 @@ use crate::voxel::SdfShape;
                 Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
             node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
             let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
-            let (pivot, _) = scene.active_gizmo_placement(vpb).expect("gizmo shown");
+            let (pivot, _) = scene
+                .gizmo_placement_for_id(scene.roots[0], vpb)
+                .expect("gizmo shown");
             for (axis, &component) in pivot.iter().enumerate() {
                 assert!(
                     component.abs() <= 0.5,

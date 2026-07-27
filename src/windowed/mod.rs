@@ -709,6 +709,7 @@ impl WindowedState {
     fn current_mesh_clip(&self, scene_grid_z: u32) -> crate::MeshClip {
         AppCore::mesh_clip(
             &self.panel_state.scene,
+            self.panel_state.scene.active,
             self.panel_state.geometry.voxels_per_block,
             self.panel_state.view_mode,
             self.panel_state.layer_range,

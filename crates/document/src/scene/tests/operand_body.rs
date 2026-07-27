@@ -44,23 +44,21 @@ use crate::voxel::SdfShape;
     }
 
     #[test]
-    fn no_selection_yields_no_slices() {
-        let mut scene = host_and_cutter_scene();
-        scene.active = None;
-        assert!(scene.boolean_operand_body_slices().is_empty());
+    fn stale_target_yields_no_slices() {
+        let scene = host_and_cutter_scene();
+        assert!(scene.boolean_operand_body_slices(NodeId(9999)).is_empty());
     }
 
     #[test]
-    fn hidden_selection_yields_no_slices() {
+    fn hidden_target_yields_no_slices() {
         let mut scene = host_and_cutter_scene();
         let cutter_id = scene.roots[1];
-        scene.active = Some(cutter_id);
         scene
             .node_by_id_mut(cutter_id)
             .expect("cutter resolves")
             .enabled = false;
         assert!(
-            scene.boolean_operand_body_slices().is_empty(),
+            scene.boolean_operand_body_slices(cutter_id).is_empty(),
             "a disabled node contributes no body — no ghost"
         );
     }
@@ -70,10 +68,9 @@ use crate::voxel::SdfShape;
     /// own body (not the carved remainder, and not nothing) at its absolute placement.
     #[test]
     fn selected_subtract_cutter_resolves_its_full_body_in_place() {
-        let mut scene = host_and_cutter_scene();
-        scene.active = Some(scene.roots[1]);
+        let scene = host_and_cutter_scene();
 
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(scene.roots[1]);
         assert_eq!(slices.len(), 1);
         let (operation, slice) = &slices[0];
         assert_eq!(*operation, CombineOp::Subtract, "the ghost styles by the node's own role");
@@ -102,9 +99,8 @@ use crate::voxel::SdfShape;
     /// host scopes the walk to that ingredient — nothing to reveal.
     #[test]
     fn selected_union_leaf_yields_no_slices() {
-        let mut scene = host_and_cutter_scene();
-        scene.active = Some(scene.roots[0]);
-        assert!(scene.boolean_operand_body_slices().is_empty());
+        let scene = host_and_cutter_scene();
+        assert!(scene.boolean_operand_body_slices(scene.roots[0]).is_empty());
     }
 
     /// The derivation bound: a slice's covering chunk range is the SELECTED operand's
@@ -120,9 +116,7 @@ use crate::voxel::SdfShape;
         ]);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        scene.active = Some(scene.roots[1]);
-
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(scene.roots[1]);
         let (_, slice) = &slices[0];
         let (slice_min, slice_max) = slice
             .covering_chunk_range(DENSITY)
@@ -152,10 +146,12 @@ use crate::voxel::SdfShape;
         )]);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        // Select the nested child (path [0, 0]).
-        scene.active = scene.id_at_path(&NodePath::from_indices(vec![0, 0]));
+        // The nested child (path [0, 0]).
+        let child_id = scene
+            .id_at_path(&NodePath::from_indices(vec![0, 0]))
+            .expect("nested child resolves");
 
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(child_id);
         assert_eq!(slices.len(), 1);
         let (_, slice) = &slices[0];
         let root = slice
@@ -187,9 +183,7 @@ use crate::voxel::SdfShape;
         )]);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        scene.active = Some(scene.roots[0]);
-
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(scene.roots[0]);
         let operations: Vec<CombineOp> = slices.iter().map(|(op, _)| *op).collect();
         assert_eq!(
             operations,
@@ -210,10 +204,9 @@ use crate::voxel::SdfShape;
     /// that node's own body.
     #[test]
     fn selected_boolean_leaf_ghosts_itself() {
-        let mut scene = host_and_cutter_scene();
+        let scene = host_and_cutter_scene();
         let cutter_id = scene.roots[1];
-        scene.active = Some(cutter_id);
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(cutter_id);
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].0, CombineOp::Subtract);
     }
@@ -230,9 +223,7 @@ use crate::voxel::SdfShape;
         ]);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        scene.active = Some(ROOT_NODE_ID);
-
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(ROOT_NODE_ID);
         let operations: Vec<CombineOp> = slices.iter().map(|(op, _)| *op).collect();
         assert_eq!(
             operations,
@@ -259,8 +250,7 @@ use crate::voxel::SdfShape;
             .id_at_path(&NodePath::from_indices(vec![0, 1]))
             .expect("cutter resolves");
         scene.node_by_id_mut(cutter_id).expect("cutter resolves").enabled = false;
-        scene.active = Some(scene.roots[0]);
-        assert!(scene.boolean_operand_body_slices().is_empty());
+        assert!(scene.boolean_operand_body_slices(scene.roots[0]).is_empty());
     }
 
     /// A FIXTURE instance (inert own operation, issue #77) selected: its definition
@@ -283,9 +273,7 @@ use crate::voxel::SdfShape;
         scene.set_definition_fixture(window_def, true);
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        scene.active = Some(scene.roots[0]);
-
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(scene.roots[0]);
         assert_eq!(slices.len(), 1, "the Opening joins; the Union Frame does not");
         let (operation, slice) = &slices[0];
         assert_eq!(*operation, CombineOp::Subtract);
@@ -316,9 +304,7 @@ use crate::voxel::SdfShape;
         );
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
-        scene.active = Some(scene.roots[0]);
-
-        let slices = scene.boolean_operand_body_slices();
+        let slices = scene.boolean_operand_body_slices(scene.roots[0]);
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].0, CombineOp::Subtract);
     }

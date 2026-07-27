@@ -372,14 +372,18 @@ impl WindowedState {
             self.selected_ghost_dirty = false;
             self.selected_ghost_selection = self.panel_state.scene.active;
             self.selected_ghost_view_mode = self.panel_state.view_mode;
-            let ghost = (self.panel_state.view_mode == crate::ViewMode::ShowBooleans)
-                .then(|| {
+            let ghost = self
+                .panel_state
+                .scene
+                .active
+                .filter(|_| self.panel_state.view_mode == crate::ViewMode::ShowBooleans)
+                .and_then(|target| {
                     AppCore::boolean_operand_ghost(
                         &self.panel_state.scene,
+                        target,
                         self.panel_state.geometry.voxels_per_block,
                     )
-                })
-                .flatten();
+                });
             match ghost {
                 Some(ghost) => self.selected_operand_ghost_renderer.rebuild(
                     &self.gpu.device,
@@ -502,10 +506,13 @@ impl WindowedState {
         // selected, or selection has no extent) hides it. Its camera upload rides the shared
         // overlay-uniforms call below; here we only resolve WHETHER it is placed (the phase
         // assembly gates its draw on this).
-        let gizmo_placement = AppCore::gizmo_placement(
-            &self.panel_state.scene,
-            self.panel_state.geometry.voxels_per_block,
-        );
+        let gizmo_placement = self.panel_state.scene.active.and_then(|target| {
+            AppCore::gizmo_placement_for_id(
+                &self.panel_state.scene,
+                target,
+                self.panel_state.geometry.voxels_per_block,
+            )
+        });
         // Per-object block lattice + floor grid (issue #29 S3): rebuild this frame's
         // line batch from the scene — for every node whose grids are enabled (the
         // scene master ANDed with the node's own toggle), its enclosing-block lattice

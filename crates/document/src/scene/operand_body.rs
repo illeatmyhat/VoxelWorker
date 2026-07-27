@@ -35,12 +35,12 @@ impl Scene {
     /// is the boolean role the body folds under (Subtract/Intersect — picking the ghost
     /// style) and `slice` is a scene whose sole root is that body, placed absolutely.
     ///
-    /// The walk is rooted at the selection and unconditional within its subtree:
+    /// The walk is rooted at `target` and unconditional within its subtree:
     ///
-    /// * **Root part** (`active == ROOT_NODE_ID`) — every boolean operand in the WHOLE
+    /// * **Root part** (`target == ROOT_NODE_ID`) — every boolean operand in the WHOLE
     ///   scene (the scene-wide master).
     /// * **A regular node** — every boolean operand inside that node's subtree, the node
-    ///   itself included when it is a boolean. A non-boolean leaf selection is degenerate
+    ///   itself included when it is a boolean. A non-boolean leaf target is degenerate
     ///   but consistent (it scopes the walk to that ingredient — nothing to reveal).
     /// * **Covered boolean Group** — emits its sealed composed (internally-carved) body
     ///   AND the walk descends (its internal cutters are subtree operands too).
@@ -49,27 +49,24 @@ impl Scene {
     /// * **Fixture Instance** (inert own operation, issue #77) — its definition children
     ///   splice into the host fold, so the walk descends into them under the instance's
     ///   transform.
-    /// * **No / hidden / stale selection** — empty (no ghost). A hidden node stamps
-    ///   nothing into the composition, so there is no invisible-by-success body to reveal.
+    /// * **Hidden / stale target** — empty (no ghost). A hidden node stamps nothing into
+    ///   the composition, so there is no invisible-by-success body to reveal.
     ///
     /// Each node is visited once per placement path (no body is ever emitted twice — a
     /// body drawn twice would read as doubled ghost alpha). The slice keeps the
     /// document's `definitions` (an Instance root still expands) and density.
-    pub fn boolean_operand_body_slices(&self) -> Vec<(CombineOp, Scene)> {
-        let Some(active) = self.active else {
-            return Vec::new();
-        };
+    pub fn boolean_operand_body_slices(&self, target: NodeId) -> Vec<(CombineOp, Scene)> {
         let mut slices = Vec::new();
-        if active == ROOT_NODE_ID {
+        if target == ROOT_NODE_ID {
             // The root part: every boolean operand in the whole scene.
             self.collect_boolean_operands(&self.roots, [0i64; 3], &mut slices);
             return slices;
         }
 
-        // A regular node: descend the id-spine to the selection, accumulating the
+        // A regular node: descend the id-spine to the target, accumulating the
         // ANCESTOR world voxel offset (the same descent `node_subtree_extent_voxels`
         // performs), then walk that node's subtree rooted at it.
-        let Some(path) = self.active_path() else {
+        let Some(path) = self.path_of(target) else {
             return Vec::new();
         };
         let mut siblings: &[NodeId] = &self.roots;

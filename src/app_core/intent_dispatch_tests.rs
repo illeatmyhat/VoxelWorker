@@ -147,7 +147,7 @@
         let target = root_id(&scene, 1);
         assert_dispatch_matches(&scene, Intent::GroupNode { target }, |s| {
             s.active = Some(target);
-            s.group_active();
+            s.wrap_node_in_group(target);
         });
     }
 
@@ -160,7 +160,7 @@
             Intent::MakeDefinition { target, name: "House".to_string() },
             |s| {
                 s.active = Some(target);
-                s.make_definition_from_active("House".to_string());
+                s.make_definition_from_node(target, "House".to_string());
             },
         );
     }
@@ -170,8 +170,9 @@
         // Build a scene that already has a definition to instance.
         let mut scene = two_tool_scene();
         let target = root_id(&scene, 0);
-        scene.active = Some(target);
-        let def_id = scene.make_definition_from_active("Body").expect("definition made");
+        let def_id = scene
+            .make_definition_from_node(target, "Body")
+            .expect("definition made");
         assert_dispatch_matches(&scene, Intent::AddInstance { def: def_id }, |s| {
             s.add_instance(def_id);
         });
@@ -317,8 +318,9 @@
         // composed body folds under the GROUP's own operation, so SetOperation on a
         // Group target must apply (it was a no-op in the #73 sibling-level slice).
         let mut scene = two_tool_scene();
-        scene.active = Some(root_id(&scene, 0));
-        let group = scene.group_active().expect("grouping the active node succeeds");
+        let group = scene
+            .wrap_node_in_group(root_id(&scene, 0))
+            .expect("grouping succeeds");
         assert_dispatch_matches(
             &scene,
             Intent::SetOperation {
@@ -340,9 +342,8 @@
         // with Subtract is the reusable cutter — so SetOperation on an Instance
         // target must apply (it was a deliberate no-op until this slice).
         let mut scene = two_tool_scene();
-        scene.active = Some(root_id(&scene, 0));
         scene
-            .make_definition_from_active("Part def")
+            .make_definition_from_node(root_id(&scene, 0), "Part def")
             .expect("definition from the active node succeeds");
         let instance = root_id(&scene, 0); // the active node became the Instance.
         assert_dispatch_matches(
@@ -365,9 +366,8 @@
         // write — the flag lives on the AssemblyDef (being a fixture is what the
         // part IS), so the dispatch mutates the definition, not any node.
         let mut scene = two_tool_scene();
-        scene.active = Some(root_id(&scene, 0));
         let def = scene
-            .make_definition_from_active("Window")
+            .make_definition_from_node(root_id(&scene, 0), "Window")
             .expect("definition from the active node succeeds");
         assert_dispatch_matches(
             &scene,

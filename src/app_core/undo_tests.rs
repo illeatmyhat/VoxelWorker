@@ -207,8 +207,7 @@
     fn add_instance_round_trips() {
         let mut scene = two_tool_scene();
         let target = scene.roots[0];
-        scene.active = Some(target);
-        let def = scene.make_definition_from_active("Body").expect("def made");
+        let def = scene.make_definition_from_node(target, "Body").expect("def made");
         assert_round_trips(&mut scene, Intent::AddInstance { def });
     }
 
@@ -292,8 +291,7 @@
         // body folds under it), so the flip must capture the same field inverse —
         // undo restores the group's prior Union, redo re-applies the Subtract.
         let mut scene = two_tool_scene();
-        scene.active = Some(scene.roots[0]);
-        let group = scene.group_active().expect("grouping the active node succeeds");
+        let group = scene.wrap_node_in_group(scene.roots[0]).expect("grouping succeeds");
         assert_round_trips(
             &mut scene,
             Intent::SetOperation { target: group, operation: document::scene::CombineOp::Subtract },
@@ -306,8 +304,7 @@
         // definition's finished body folds under it — the reusable cutter), so the
         // flip captures the same field inverse as leaves and Groups.
         let mut scene = two_tool_scene();
-        scene.active = Some(scene.roots[0]);
-        scene.make_definition_from_active("Body").expect("def made");
+        scene.make_definition_from_node(scene.roots[0], "Body").expect("def made");
         let instance = scene.roots[0]; // the active node became the Instance.
         assert_round_trips(
             &mut scene,
@@ -324,8 +321,9 @@
         // so the flip captures a definition-targeted field inverse — undo restores
         // the sealed default, redo re-applies the splice.
         let mut scene = two_tool_scene();
-        scene.active = Some(scene.roots[0]);
-        let def = scene.make_definition_from_active("Window").expect("def made");
+        let def = scene
+            .make_definition_from_node(scene.roots[0], "Window")
+            .expect("def made");
         assert_round_trips(&mut scene, Intent::SetDefinitionFixture { def, fixture: true });
     }
 
@@ -336,8 +334,9 @@
         // restore the pre-placement scene byte-for-byte (both hosts intact, the
         // instance gone), and two redos re-apply the carve placement.
         let mut scene = two_tool_scene();
-        scene.active = Some(scene.roots[0]);
-        let def = scene.make_definition_from_active("Cutter body").expect("def made");
+        let def = scene
+            .make_definition_from_node(scene.roots[0], "Cutter body")
+            .expect("def made");
         let mut core = test_core();
         let before = scene.clone();
 
@@ -378,8 +377,7 @@
             Intent::SetOperation { target, operation: document::scene::CombineOp::Intersect },
         );
         let mut scene = two_tool_scene();
-        scene.active = Some(scene.roots[0]);
-        let group = scene.group_active().expect("grouping the active node succeeds");
+        let group = scene.wrap_node_in_group(scene.roots[0]).expect("grouping succeeds");
         assert_round_trips(
             &mut scene,
             Intent::SetOperation { target: group, operation: document::scene::CombineOp::Intersect },

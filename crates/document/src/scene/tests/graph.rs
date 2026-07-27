@@ -917,7 +917,7 @@ use crate::voxel::VoxelProducer;
 
     /// A small flat scene of two box Tools, the first selected — the fixture the
     /// tree-mutation UI helper tests build on. ADR 0003 Phase B3: ids are minted so
-    /// the selection (and the `group_active` it drives) resolves by identity.
+    /// the selection (and the `wrap_node_in_group` it drives) resolves by identity.
     fn two_box_scene(voxels_per_block: u32) -> Scene {
         let mut scene = scene_with_top_level_selected(
             Scene::from_nodes(vec![
@@ -936,20 +936,20 @@ use crate::voxel::VoxelProducer;
         scene
     }
 
-    /// ADR 0001 step 4 (UI helper): `group_active` wraps the active node in a new
-    /// Group, so the active node becomes a CHILD of that Group. After grouping, the
+    /// ADR 0001 step 4 (UI helper): `wrap_node_in_group` wraps the target in a new
+    /// Group, so the target becomes a CHILD of that Group. After grouping, the
     /// top-level node at the old slot is a `Group` whose sole child is the original
-    /// node, and the active selection points at that child (path `[0, 0]`).
+    /// node, still addressable by its own id at path `[0, 0]`.
     #[test]
-    fn group_active_nests_node_under_new_group() {
+    fn wrap_node_in_group_nests_node_under_new_group() {
         let mut scene = two_box_scene(8);
         // Node "A" (top-level 0) is the active selection; remember its stable id so
         // we can confirm the wrap keeps that SAME node selected by identity.
         let node_a_id = scene.id_at_path(&NodePath::root_index(0)).expect("A has an id");
         assert_eq!(scene.active, Some(node_a_id));
 
-        let group_id = scene.group_active().expect("there is an active node to group");
-        // B4: `group_active` now returns the new Group's stable id; it resolves to
+        let group_id = scene.wrap_node_in_group(node_a_id).expect("A resolves");
+        // B4: `wrap_node_in_group` returns the new Group's stable id; it resolves to
         // the old top-level slot the Group took (path [0]).
         assert_eq!(
             scene.path_of(group_id),
@@ -981,7 +981,7 @@ use crate::voxel::VoxelProducer;
         assert!(matches!(scene.root_node(1).content, NodeContent::Tool { .. }));
     }
 
-    /// ADR 0001 step 4 (UI helper): `make_definition_from_active` creates an
+    /// ADR 0001 step 4 (UI helper): `make_definition_from_node` creates an
     /// `AssemblyDef` in `scene.definitions` and replaces the active node with an
     /// `Instance` of it. The resolved occupancy is unchanged (one stored body
     /// resolved via one instance == the original single node).
@@ -998,8 +998,8 @@ use crate::voxel::VoxelProducer;
         assert!(before > 0);
 
         let def_id = scene
-            .make_definition_from_active("House")
-            .expect("there is an active node to define");
+            .make_definition_from_node(scene.roots[0], "House")
+            .expect("node 0 resolves");
 
         // A definition now exists, named, with the node's body as its children.
         assert_eq!(scene.definitions.len(), 1, "a definition appears in scene.definitions");
@@ -1022,7 +1022,7 @@ use crate::voxel::VoxelProducer;
         assert_eq!(after, before, "an instance of the def equals the original node");
     }
 
-    /// ADR 0001 step 4 (UI helper, the village): after `make_definition_from_active`,
+    /// ADR 0001 step 4 (UI helper, the village): after `make_definition_from_node`,
     /// `add_instance` appends another `Instance` node referencing the SAME def, and
     /// the scene resolves with the EXPECTED MULTIPLIED occupancy — two disjoint
     /// instances of a one-box def give 2× the box's voxel count.
@@ -1035,7 +1035,9 @@ use crate::voxel::VoxelProducer;
             "House",
             NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         ));
-        let def_id = scene.make_definition_from_active("House").expect("active node");
+        let def_id = scene
+            .make_definition_from_node(scene.roots[0], "House")
+            .expect("the lone node resolves");
         assert_eq!(scene.definitions.len(), 1);
         assert_eq!(scene.roots.len(), 1, "the original node became one instance");
 
@@ -1075,7 +1077,7 @@ use crate::voxel::VoxelProducer;
         //   [0, 1]         child          depth 1
         //   [1]          B                depth 0
         // Node 0 ("A") is already the active selection (the fixture selects it).
-        let group_id = scene.group_active().expect("active node");
+        let group_id = scene.wrap_node_in_group(scene.roots[0]).expect("A resolves");
         let added = scene.add_child_to_group(
             group_id,
             Node::new("child", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 })),
@@ -1108,7 +1110,7 @@ use crate::voxel::VoxelProducer;
     fn node_at_path_reaches_group_child() {
         // Node 0 ("A") is already the active selection (the fixture selects it).
         let mut scene = two_box_scene(8);
-        scene.group_active();
+        scene.wrap_node_in_group(scene.roots[0]);
         // The active selection now resolves to the wrapped child at path [0, 0].
         let active_path = scene
             .active_path()

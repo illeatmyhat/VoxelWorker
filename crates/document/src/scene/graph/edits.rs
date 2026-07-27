@@ -247,19 +247,18 @@ impl Scene {
     }
 
     /// Wrap the active node in a new [`NodeContent::Group`] in place (ADR 0001
-    /// step 4 authoring): the active node becomes the sole child of a fresh Group
-    /// that takes its slot among its siblings. The Group inherits an identity
-    /// transform (the child keeps its own offset, so the composite is unchanged),
-    /// and the wrapped child becomes the new active selection. Returns the new
-    /// Group's [`NodeId`] on success; `None` when there is no active node.
+    /// step 4 authoring): `target` becomes the sole child of a fresh Group that takes
+    /// its slot among its siblings. The Group inherits an identity transform (the
+    /// child keeps its own offset, so the composite is unchanged). Returns the new
+    /// Group's [`NodeId`] on success; `None` when `target` no longer resolves.
     ///
     /// Grouping a node that is itself a Group simply nests it one level deeper —
     /// the recursion handles arbitrary depth.
-    pub fn group_active(&mut self) -> Option<NodeId> {
-        // ADR 0003 Phase B3: selection is a NodeId; resolve it to the child's
-        // current position to do the positional wrap. The child keeps its id (and
-        // thus stays selected by identity); only the new Group needs a fresh id.
-        let path = self.active_path()?;
+    pub fn wrap_node_in_group(&mut self, target: NodeId) -> Option<NodeId> {
+        // Resolve the target to its current position to do the positional wrap. The
+        // child keeps its id, so a selection pointing at it stays valid; only the new
+        // Group needs a fresh id.
+        let path = self.path_of(target)?;
         let (&index, parent_indices) = path.indices.split_last()?;
         let group_id = self.mint_node_id();
         let parent_path = NodePath::from_indices(parent_indices.to_vec());
@@ -298,28 +297,28 @@ impl Scene {
         DefId(max + 1)
     }
 
-    /// Turn the active node into a reusable [`AssemblyDef`] and REPLACE it with an
+    /// Turn `target` into a reusable [`AssemblyDef`] and REPLACE it with an
     /// [`NodeContent::Instance`] of that definition (ADR 0001 step 4: "make
-    /// definition from this Group/node"). The active node's content moves into the
-    /// new definition's children (a Group's children become the def body; a single
-    /// leaf becomes a one-node def); the active node keeps its transform but its
-    /// content becomes an `Instance(new_def_id)`. Returns the new [`DefId`] on
-    /// success; `None` when there is no active node.
+    /// definition from this Group/node"). Its content moves into the new
+    /// definition's children (a Group's children become the def body; a single leaf
+    /// becomes a one-node def); the node keeps its transform but its content becomes
+    /// an `Instance(new_def_id)`. Returns the new [`DefId`] on success; `None` when
+    /// `target` is the root part or no longer resolves.
     ///
-    /// After this, the active selection stays on the (now-instance) node, and the
-    /// definition can be placed again via [`add_instance`](Self::add_instance) —
+    /// The node keeps its id throughout, so a selection pointing at it stays valid.
+    /// The definition can be placed again via [`add_instance`](Self::add_instance) —
     /// the village workflow: one stored body, many placements.
-    pub fn make_definition_from_active(&mut self, name: impl Into<String>) -> Option<DefId> {
+    pub fn make_definition_from_node(
+        &mut self,
+        target: NodeId,
+        name: impl Into<String>,
+    ) -> Option<DefId> {
         // ADR 0018 Decision 2: the root part is never a definition target (a definition
         // of the whole scene is out of scope) — reject it before touching anything.
-        if self.active == Some(ROOT_NODE_ID) {
+        if target == ROOT_NODE_ID {
             return None;
         }
         let def_id = self.next_def_id();
-        // ADR 0003 Phase B3: resolve the selected NodeId to its current position.
-        // The node keeps its id while only its content becomes an Instance, so the
-        // selection stays valid (still the same node by identity) with no re-point.
-        let active_id = self.active?;
         // The edit is by id (B5); the `node_by_id_mut` lookup below already bails
         // (`?`) on a stale selection, so no separate presence guard is needed.
         // The definition body, as a spine of arena ids:
@@ -339,7 +338,7 @@ impl Scene {
             Leaf(Box<Node>),
         }
         let body = {
-            let node = self.node_by_id_mut(active_id)?;
+            let node = self.node_by_id_mut(target)?;
             let body = match &mut node.content {
                 NodeContent::Group(children) => Body::Donated(std::mem::take(children)),
                 other => Body::Leaf(Box::new(Node::new("Body", other.clone()))),
