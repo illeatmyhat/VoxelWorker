@@ -5,12 +5,13 @@
 //! between its two Vecs; `dispatch` is the single owner of every [`Scene`] field-write
 //! / edit op; [`AppCore::effect_of`] classifies the resolve cost of an intent kind.
 
-use document::command::{Command, Inverse, SketchGroup};
+use document::command::{Command, Inverse};
 use document::intent::{Intent, IntentEffect};
 use document::scene::{Node, NodeContent, NodeId, NodeTransform, Point, VoxelBody, Scene};
 use document::voxel::SdfShape;
 
 use super::AppCore;
+use super::command_stack::{RecordedCommand, SketchGroup};
 
 /// What one [`dispatch`](AppCore::dispatch) produced, beyond the scene mutation itself.
 ///
@@ -188,11 +189,11 @@ impl AppCore {
 
     /// Snapshot the pre-state (selection + the id counter — the COUNTER RULE in command.rs),
     /// capture the inverse by reading the scene BEFORE the mutation, dispatch (which may mint
-    /// ids the inverse needs), then assemble the [`Command`] with the add-family minted-id
-    /// patch — the shared record protocol BOTH the main-stack apply and the in-session
-    /// sketch-group apply go through, so the two can never diverge on capture ordering. Touches
-    /// no stack; the caller decides where the command lands.
-    fn record(&mut self, scene: &mut Scene, intent: Intent) -> (Command, IntentEffect) {
+    /// ids the inverse needs), then assemble the [`RecordedCommand`] with the add-family
+    /// minted-id patch — the shared record protocol BOTH the main-stack apply and the
+    /// in-session sketch-group apply go through, so the two can never diverge on capture
+    /// ordering. Touches no stack; the caller decides where the command lands.
+    fn record(&mut self, scene: &mut Scene, intent: Intent) -> (RecordedCommand, IntentEffect) {
         let selection_before = scene.active;
         let point_selection_before = scene.active_point;
         let counter_before = scene.next_node_id;
@@ -207,12 +208,10 @@ impl AppCore {
         };
         let effect = outcome.effect;
         (
-            Command {
-                intent,
-                inverse,
+            RecordedCommand {
+                command: Command { intent, inverse, counter_before },
                 selection_before,
                 point_selection_before,
-                counter_before,
             },
             effect,
         )
@@ -486,7 +485,8 @@ impl AppCore {
     /// stack, so the caller owns the pop/push. A [`Inverse::Field`] is routed back through
     /// [`dispatch`](Self::dispatch) (the single owner of the field-write mutations); only the
     /// structural arms live in [`Inverse::apply`].
-    fn reverse_command(&mut self, scene: &mut Scene, command: &document::command::Command) -> IntentEffect {
+    fn reverse_command(&mut self, scene: &mut Scene, recorded: &RecordedCommand) -> IntentEffect {
+        let command = &recorded.command;
         match &command.inverse {
             Inverse::Field(prior) => {
                 // A field write never steers selection; the restore below is authoritative.
@@ -494,8 +494,8 @@ impl AppCore {
             }
             structural => structural.apply(scene),
         }
-        scene.active = command.selection_before;
-        scene.active_point = command.point_selection_before;
+        scene.active = recorded.selection_before;
+        scene.active_point = recorded.point_selection_before;
         scene.next_node_id = command.counter_before;
         Self::effect_of(&command.intent).merged_with(IntentEffect::selection())
     }
@@ -504,12 +504,13 @@ impl AppCore {
     /// [`effect_of`](Self::effect_of) (selection forced on). Shared by the main-stack
     /// [`redo`](Self::redo) and the in-session redo of an open sketch group; touches neither
     /// stack.
-    fn replay_command(&mut self, scene: &mut Scene, command: &document::command::Command) -> IntentEffect {
-        let outcome = self.dispatch(scene, command.intent.clone());
+    fn replay_command(&mut self, scene: &mut Scene, recorded: &RecordedCommand) -> IntentEffect {
+        let intent = &recorded.command.intent;
+        let outcome = self.dispatch(scene, intent.clone());
         // Redo re-lands the forward edit's selection steer (a re-minted node arrives
         // selected again), matching what the original apply did.
         Self::apply_selection_steer(scene, outcome.selection_steer);
-        Self::effect_of(&command.intent).merged_with(IntentEffect::selection())
+        Self::effect_of(intent).merged_with(IntentEffect::selection())
     }
 
     /// Re-apply the top `redo` command's forward `intent` to `scene` (ADR 0003 Phase C
@@ -570,7 +571,7 @@ impl AppCore {
     }
 
     /// FINISH the open sketch group (ADR 0028 §4): move the whole session onto the MAIN undo
-    /// stack as ONE [`Transaction`](document::command::Transaction), so a single undo past the
+    /// stack as ONE [`Transaction`](super::command_stack::Transaction), so a single undo past the
     /// sketch reverses all of it. The scene already sits at the session's final state (every
     /// edit was live), so this only re-files the history — it mutates nothing. A net-zero
     /// session (no edits, or edited then in-mode-undone back to enter) files NOTHING, leaving

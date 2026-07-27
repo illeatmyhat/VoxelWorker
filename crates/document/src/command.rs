@@ -16,10 +16,10 @@
 //! between), rewinding the counter is safe and makes `redo` re-mint byte-identical
 //! ids by replaying the forward intent.
 //!
-//! **C2 is additive.** `AppCore` gains a [`CommandStack`] field and the
-//! `apply_intent`/`undo`/`redo` plumbing, but no live caller drives undo yet
-//! (main.rs/shot.rs still rebuild the default frame), so the goldens stay
-//! byte-identical.
+//! **The stacks live in the shell.** This module owns only the pair that needs `Scene`
+//! internals — [`Command`] and [`Inverse`]. Which stack a command sits on, how
+//! transactions batch, and the selection to restore on undo are runtime workspace state
+//! owned by `AppCore` (ADR 0032).
 
 use crate::intent::Intent;
 use crate::scene::{DefId, Node, NodeContent, NodeId, Point};
@@ -171,77 +171,18 @@ impl Inverse {
     }
 }
 
-/// One applied document mutation paired with its [`Inverse`] and the selection +
-/// counter state to restore on undo (ADR 0003 Phase C C2). A `redo` re-`dispatch`es
-/// the forward `intent`; an `undo` applies `inverse` then restores the captured
-/// selection + counter.
+/// One applied document mutation paired with its [`Inverse`] and the counter state to
+/// restore on undo (ADR 0003 Phase C C2). A `redo` re-`dispatch`es the forward `intent`;
+/// an `undo` applies `inverse` then restores the captured counter.
+///
+/// The SELECTION to restore alongside it is workspace state (ADR 0032), captured by the
+/// shell's `RecordedCommand` wrapper — the document neither owns nor reverses it.
 pub struct Command {
     /// The forward intent (re-dispatched on redo).
     pub intent: Intent,
     /// The captured reverse of `intent`.
     pub inverse: Inverse,
-    /// The active node selection BEFORE the forward op (restored on undo).
-    pub selection_before: Option<NodeId>,
-    /// The active point selection BEFORE the forward op (restored on undo).
-    pub point_selection_before: Option<usize>,
     /// `scene.next_node_id` BEFORE the forward op — restored on undo so a minting op's
     /// id is freed, and a later redo re-mints byte-identical ids (the counter rule).
     pub counter_before: u64,
-}
-
-/// The linear undo/redo command stack (ADR 0003 Phase C C2): two Vecs, no branching.
-/// A new apply pushes to `undo` and CLEARS `redo`; `undo` moves the top command from
-/// `undo` to `redo` (after applying its inverse); `redo` moves it back (after
-/// re-dispatching its intent).
-/// One atomic undo step on the main stack — a **transaction** of one or more [`Command`]s
-/// applied together and reversed together (ADR 0028 §4). A normal edit is a singleton
-/// transaction; a finished sketch session is the whole batch of its edits as ONE step, so a
-/// single undo past the sketch reverses all of it. `undo` reverses the commands in REVERSE
-/// order (each restores its own captured selection/counter, so the batch lands on the
-/// pre-transaction state); `redo` replays them in forward order.
-pub type Transaction = Vec<Command>;
-
-#[derive(Default)]
-pub struct CommandStack {
-    /// Applied transactions, newest last — the next `undo` pops the back.
-    pub undo: Vec<Transaction>,
-    /// Undone transactions, newest last — the next `redo` pops the back. CLEARED on a new
-    /// apply (the linear-stack rule: a fresh edit invalidates the redo future).
-    pub redo: Vec<Transaction>,
-    /// The OPEN sketch-editing group (ADR 0028 §4), or `None` outside sketch mode.
-    ///
-    /// While a group is open, EVERY undoable edit routes into its own [`session_undo`] /
-    /// [`session_redo`] instead of the main `undo`/`redo` — giving fine-grained IN-MODE
-    /// undo/redo (reverse the last vertex move without leaving the mode) with the SAME apply
-    /// door, so apply and undo can never disagree about which stack an in-mode edit lives on.
-    /// **Finish** moves the whole session onto `undo` as ONE [`Transaction`]; **Cancel**
-    /// reverses the session (each command by its own inverse, restoring the enter producer,
-    /// selection AND counter) and discards it. This is the ADR's "one concept, one stack, no
-    /// parallel history": the session is a scoped detour on the same machinery.
-    ///
-    /// [`session_undo`]: SketchGroup::session_undo
-    /// [`session_redo`]: SketchGroup::session_redo
-    pub open_group: Option<SketchGroup>,
-}
-
-/// The transient history of ONE sketch-editing session (ADR 0028 §4) — non-document, like all
-/// undo history. Opened on enter, closed by Finish (commit) / Cancel (discard). A general
-/// batch of full [`Command`]s (not a producer-only collapse), so a material edit, an operation
-/// switch and a vertex move mid-session are all captured and reversed uniformly. See
-/// [`CommandStack::open_group`].
-#[derive(Default)]
-pub struct SketchGroup {
-    /// The session's applied edits, oldest first — in-mode `undo` pops the back; on Finish the
-    /// whole `Vec` becomes one main-stack [`Transaction`].
-    pub session_undo: Vec<Command>,
-    /// The session's in-mode-undone edits — in-mode `redo` pops the back; cleared on a fresh
-    /// edit, and discarded on Finish/Cancel.
-    pub session_redo: Vec<Command>,
-}
-
-impl CommandStack {
-    /// An empty stack.
-    pub fn new() -> Self {
-        Self::default()
-    }
 }

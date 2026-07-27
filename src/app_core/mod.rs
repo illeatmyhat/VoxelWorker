@@ -19,11 +19,12 @@
 use std::sync::Arc;
 
 use camera::OrbitCamera;
-use document::command::CommandStack;
 use voxel_core::spatial_index::LeafSpatialIndex;
 use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use voxel_core::voxel::RecentreVoxels;
 
+mod command_stack;
+use command_stack::CommandStack;
 mod intent;
 mod picking;
 pub use picking::{PickFrame, VoxelPick};
@@ -76,8 +77,9 @@ pub struct AppCore {
     /// `None` before the first rebuild.
     previous_density: Option<u32>,
     /// The linear inverse-command stack behind undo/redo (ADR 0003 Phase C C2). Every
-    /// non-selection-only `apply_intent` pushes a [`Command`] here; `undo`/`redo`
-    /// shuttle commands between its two Vecs. Empty until the first undoable edit.
+    /// non-selection-only `apply_intent` pushes a [`RecordedCommand`](command_stack::RecordedCommand)
+    /// here; `undo`/`redo` shuttle commands between its two Vecs. Empty until the first
+    /// undoable edit.
     command_stack: CommandStack,
 }
 
