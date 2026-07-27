@@ -46,6 +46,11 @@
 //! * [`units`] — the parametric blocks/voxels [`units::Measurement`] core with its
 //!   strict parser and formatter over an exact [`units::ExactRational`].
 
+// A public item's doc may link to a private helper to explain how the two relate; that
+// cross-reference stays a navigable link under `--document-private-items`. The CI doc
+// gate denies broken and redundant links but permits these.
+#![allow(rustdoc::private_intra_doc_links)]
+
 pub mod core_geom;
 pub mod spatial_index;
 pub mod units;

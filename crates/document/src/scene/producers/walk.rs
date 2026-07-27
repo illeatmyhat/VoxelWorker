@@ -74,7 +74,8 @@ impl Scene {
 
 
     /// Collect every enabled leaf as a [`LeafProducer`] (ADR 0010 E2): its world voxel
-    /// offset, a boxed [`VoxelProducer`], and its single-material override id. This is the
+    /// offset, a boxed [`VoxelProducer`](crate::voxel::VoxelProducer), and its single-material
+    /// override id. This is the
     /// op-stack the two-layer classifier / boundary-resolve evaluate over — the SAME
     /// leaves [`resolve_chunk_rebased`](Self::resolve_chunk_rebased) stamps, in the SAME
     /// document (walk) order, so the two-layer round-trip composes identically (later-wins

@@ -216,9 +216,11 @@ pub fn cpu_march_exact_occupancy(
         band_voxel_sv: frame.band_voxel_sv,
         voxel_bias: frame.voxel_bias,
     };
-    raycast::march_exact_occupancy(substrate::spatial::Ray::new(origin, direction), &params, |absolute| {
-        occupied(absolute)
-    })
+    raycast::march_exact_occupancy(
+        substrate::spatial::Ray::new(origin, direction),
+        &params,
+        occupied,
+    )
     .map(|hit| CpuMarchHit {
         absolute_voxel: hit.absolute_voxel,
         face_normal: hit.face_normal,

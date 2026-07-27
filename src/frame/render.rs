@@ -95,7 +95,7 @@ pub struct FramePhases<'a> {
 /// `scene_matrices` bundles the scene matrix, its camera-relative companion (the infinite
 /// grid unprojects per fragment and melts on the full matrix at wide-baseline coordinates),
 /// and the eye; `overlay_view_projection` is the depth-off axes matrix (all from the shared
-/// [`AppCore`](crate::AppCore) getters). The scene grid always uploads.
+/// [`AppCore`] getters). The scene grid always uploads.
 /// `show_points` gates the Points + infinite grid (the shell always draws them; `shot` only under
 /// `--points`). `axes_through` ("axes on top") skips the depth-tested Points instance, leaving
 /// only the depth-off overlay instance.
