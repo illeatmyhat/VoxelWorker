@@ -13,7 +13,13 @@
 //!
 //! Run: `cargo test --release --test edit_cost_probe -- --ignored --nocapture`
 
-use ui::panel::Selection;
+use ui::panel::{Selection, SelectionTarget};
+
+/// The workspace selection a fixture arrives with: its first top-level node picked
+/// (ADR 0032 — selection is workspace state, so a probe seeds it explicitly).
+fn selection_of_first_root(scene: &document::scene::Scene) -> Selection {
+    Selection::from_targets(scene.roots.first().copied().map(SelectionTarget::Node))
+}
 use std::time::Instant;
 
 use camera::OrbitCamera;
@@ -88,7 +94,7 @@ fn one_edit_rebuild_cost_by_scene_size() {
                 Measurement::from_voxels(0),
                 Measurement::from_voxels(0),
             ];
-            let mut selection = Selection::mirroring_scene(&scene);
+            let mut selection = selection_of_first_root(&scene);
             app_core.apply_intent(&mut scene, &mut selection,
                 Intent::SetOffset {
                     target,
@@ -127,10 +133,10 @@ fn one_edit_rebuild_cost_by_scene_size() {
 const DRAGGED_BLOCKS: [u32; 3] = [2, 2, 2];
 
 /// Add a small Tool node to `scene` through the same intent the add-flow will emit, and
-/// return its minted id (`add_node` selects what it adds, so `scene.active` names it).
+/// return its minted id (the AddNode dispatch steers the workspace selection onto it).
 fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
     let shape = SdfShape::from_blocks(ShapeKind::Box, DRAGGED_BLOCKS, 1, DENSITY);
-    let mut selection = Selection::mirroring_scene(scene);
+    let mut selection = selection_of_first_root(scene);
     app_core.apply_intent(scene, &mut selection,
         Intent::AddNode {
             content: NodeSpec::Tool {
@@ -139,7 +145,9 @@ fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
             },
         },
     );
-    scene.active.expect("add_node selects the node it mints")
+    selection
+        .primary_node_id()
+        .expect("AddNode steers the selection onto the node it mints")
 }
 
 /// Time one `SetOffset` + rebuild, reporting the milliseconds and the rebuild's
@@ -153,7 +161,7 @@ fn timed_offset(
     target: NodeId,
     offset_voxels: [i64; 3],
 ) -> (f64, Option<usize>) {
-    let mut selection = Selection::mirroring_scene(scene);
+    let mut selection = selection_of_first_root(scene);
     app_core.apply_intent(scene, &mut selection,
         Intent::SetOffset {
             target,

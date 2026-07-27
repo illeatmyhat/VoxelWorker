@@ -68,7 +68,7 @@ pub(super) fn build_node_list_section(
     let rows = state.scene.tree_rows();
     // Selection is keyed by NodeId; compare each row's id against the active id so
     // the highlight tracks the selected node by identity.
-    let active_id = state.scene.active;
+    let active_id = state.selection.primary_node_id();
     for (_path, id, depth) in &rows {
         let is_active = active_id == Some(*id);
         // ADR 0018 Decision 2: the root part is the top row — selectable like any node,
@@ -148,19 +148,21 @@ pub(super) fn build_node_list_section(
     build_node_actions(ui, state, response);
     build_definitions_section(ui, state, response);
 
-    // Apply the deferred selection / delete after the walk. ADR 0003 Phase C C4a:
-    // both are now intents (`RemoveNode` / `SelectNode`) the loop applies — the panel
-    // no longer touches `scene.active` or calls `remove_node`/`sync_mirror_from_active`
-    // here (the loop re-syncs the inspector mirror on the returned effect).
+    // Apply the deferred selection / delete after the walk. Delete is an intent
+    // (`RemoveNode`); selection is a VIEW action on `PanelResponse::select` (ADR 0032),
+    // so the panel never mutates either the scene or the workspace selection here — the
+    // shell applies both and re-syncs the inspector mirror on the returned effect.
     if let Some(id) = delete {
         response.emit_and_frame(Intent::RemoveNode { target: id });
     } else if let Some(clicked_id) = select {
         // ADR 0003 Phase B4: a clicked row reports its node's stable NodeId; select
         // THAT, so the highlight and inspector follow the node through later
         // structural edits. Only emit when it actually changes the selection (the old
-        // guard) — a `SelectNode` is selection-only (no re-resolve, no auto-frame).
-        if state.scene.active != Some(clicked_id) {
-            response.emit(Intent::SelectNode { target: Some(clicked_id) });
+        // guard) — a selection click is selection-only (no re-resolve, no auto-frame).
+        if state.selection.primary_node_id() != Some(clicked_id) {
+            response.select = Some(crate::panel::SelectionRequest::Only(
+                crate::panel::SelectionTarget::Node(clicked_id),
+            ));
         }
     }
 
@@ -218,17 +220,17 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
     // container but NOT a "+ Add child" / Group / Make-definition target — its children
     // are added via the top-level "+ Add", and it can neither be wrapped nor turned
     // into a definition.
-    let root_active = state.scene.active == Some(ROOT_NODE_ID);
+    let root_active = state.selection.primary_node_id() == Some(ROOT_NODE_ID);
     // Whether the active node is a Group (gates "+ Add child") — the root part is
     // excluded (adding into it means a top-level "+ Add", and `add_child_to_group`
     // does not resolve the root's reserved id).
     let active_is_group = !root_active
         && matches!(
-            state.scene.active_node().map(|node| &node.content),
+            state.selected_node().map(|node| &node.content),
             Some(NodeContent::Group(_))
         );
     // Group / Make-definition act on a concrete, non-root node.
-    let has_active_non_root = state.scene.active.is_some() && !root_active;
+    let has_active_non_root = state.selection.primary_node_id().is_some() && !root_active;
 
     ui.horizontal_wrapped(|ui| {
         // + Add — a top-level Tool or Clouds VoxelBody. ADR 0003 Phase C C4a: described as
@@ -265,7 +267,7 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
         if active_is_group {
             // ADR 0003 Phase B4: `AddChild` targets a NodeId; this block only shows
             // when a Group is active, so the active selection IS the group's id.
-            let group_id = state.scene.active;
+            let group_id = state.selection.primary_node_id();
             ui.menu_button("+ Add child", |ui| {
                 for (kind, label) in SHAPE_CHIPS {
                     if ui.button(*label).clicked() {
@@ -308,7 +310,7 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
             .on_hover_text("Wrap the selected node in a new Part")
             .clicked()
         {
-            if let Some(target) = state.scene.active {
+            if let Some(target) = state.selection.primary_node_id() {
                 response.emit_and_frame(Intent::GroupNode { target });
             }
         }
@@ -321,10 +323,9 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
             .on_hover_text("Turn the selected Part/node into a reusable definition, placed by an Instance")
             .clicked()
         {
-            if let Some(target) = state.scene.active {
+            if let Some(target) = state.selection.primary_node_id() {
                 let def_name = state
-                    .scene
-                    .active_node()
+                    .selected_node()
                     .map(|node| {
                         if node.name.is_empty() {
                             "Definition".to_string()

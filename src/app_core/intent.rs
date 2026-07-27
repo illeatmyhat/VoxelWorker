@@ -139,28 +139,16 @@ impl AppCore {
     /// write to a missing id (or a kind-mismatched node — a `SetShape` on a non-Tool,
     /// a `SetCloudSeed` on a non-Clouds) is a no-op returning [`IntentEffect::none`].
     ///
-    /// **The active-keyed ops.** [`group_active`](Scene::group_active) /
-    /// [`make_definition_from_active`](Scene::make_definition_from_active) operate on
-    /// the scene's `active` selection (the panel reaches them via the selected node),
-    /// so the matching intents (`GroupNode` / `MakeDefinition`) point `scene.active`
-    /// at their `target` first, then call the op — exactly how the panel arrives there
-    /// (a clicked row sets `active`, then the action button fires). The intents carry
-    /// the target explicitly so the value is self-contained / replayable.
+    /// **The selection-keyed ops.** `GroupNode` / `MakeDefinition` used to read the
+    /// document's `active` selection; ADR 0032 deleted it, so they take their `target`
+    /// explicitly and steer the workspace selection to the result. The intents carry the
+    /// target so the value is self-contained / replayable.
     pub fn apply_intent(
         &mut self,
         scene: &mut Scene,
         selection: &mut Selection,
         intent: Intent,
     ) -> IntentEffect {
-        Self::assert_selection_mirrors(scene, selection);
-        // Selection-only intents are a view concern, not an undoable document step
-        // (consistent with C1): dispatch + report, push NOTHING.
-        if matches!(intent, Intent::SelectNode { .. } | Intent::SelectPoint { .. }) {
-            let outcome = self.dispatch(scene, intent);
-            Self::apply_selection_steer(scene, selection, outcome.selection_steer);
-            return outcome.effect;
-        }
-
         // Authoring-time coordinate wall: an edit that would push a node past the
         // ±COORDINATE_LIMIT_BLOCKS display envelope is rejected here — the scene is not
         // mutated and no command is recorded (so undo has nothing to reverse). The shell
@@ -186,45 +174,14 @@ impl AppCore {
         effect
     }
 
-    /// Land a dispatch's [`SelectionSteer`] on the workspace selection. The SINGLE write
-    /// point — no edit op writes selection any more.
-    ///
-    /// Slice 4 of ADR 0032 writes BOTH the new `Selection` and the document's outgoing
-    /// `Scene::active` / `active_point`, so every reader keeps working while they are
-    /// flipped over one at a time; slice 5 drops the document fields and the mirror with
-    /// them.
-    fn apply_selection_steer(
-        scene: &mut Scene,
-        selection: &mut Selection,
-        steer: Option<SelectionSteer>,
-    ) {
+    /// Land a dispatch's [`SelectionSteer`] on the workspace selection (ADR 0032). The
+    /// SINGLE write point for an edit's selection effect — no edit op writes selection.
+    fn apply_selection_steer(selection: &mut Selection, steer: Option<SelectionSteer>) {
         match steer {
-            Some(SelectionSteer::Node(node)) => {
-                selection.set_primary_node(node);
-                scene.active = node;
-            }
-            Some(SelectionSteer::Point(index)) => {
-                selection.set_primary_point_index(index);
-                scene.active_point = index;
-            }
+            Some(SelectionSteer::Node(node)) => selection.set_primary_node(node),
+            Some(SelectionSteer::Point(index)) => selection.set_primary_point_index(index),
             None => {}
         }
-    }
-
-    /// The slice-4 dual-write safety net: the workspace [`Selection`] and the document's
-    /// outgoing fields must agree at every door. Fires only in debug; deleted with the
-    /// document fields in slice 5.
-    fn assert_selection_mirrors(scene: &Scene, selection: &Selection) {
-        debug_assert_eq!(
-            selection.primary_node_id(),
-            scene.active,
-            "workspace selection and Scene::active disagree"
-        );
-        debug_assert_eq!(
-            selection.primary_point_index(),
-            scene.active_point,
-            "workspace selection and Scene::active_point disagree"
-        );
     }
 
     /// Snapshot the pre-state (selection + the id counter — the COUNTER RULE in command.rs),
@@ -244,7 +201,7 @@ impl AppCore {
         let counter_before = scene.next_node_id;
         let inverse = self.capture_inverse(scene, &intent, counter_before);
         let outcome = self.dispatch(scene, intent.clone());
-        Self::apply_selection_steer(scene, selection, outcome.selection_steer);
+        Self::apply_selection_steer(selection, outcome.selection_steer);
         // The add family mints exactly one node; its inverse needs that id (the placeholder
         // captured above is patched with the real minted id here).
         let inverse = match (inverse, outcome.minted_node) {
@@ -300,9 +257,9 @@ impl AppCore {
                 }
             }
             Intent::GroupNode { target } => {
-                // group_active wraps `target` (the intent points `active` at it) in a
-                // fresh Group minted as the next id. The Group takes the target's slot;
-                // the inverse puts `target` back and drops the Group.
+                // wrap_node_in_group wraps `target` in a fresh Group minted as the next
+                // id. The Group takes the target's slot; the inverse puts `target` back
+                // and drops the Group.
                 if scene.node_by_id(*target).is_some() {
                     Inverse::UngroupNode {
                         target: *target,
@@ -467,8 +424,6 @@ impl AppCore {
                 Intent::SetPointPosition { index: *index, position_blocks: point.position_blocks }
             }),
 
-            // Selection-only intents never reach here (handled + returned above).
-            Intent::SelectNode { .. } | Intent::SelectPoint { .. } => Inverse::NoOp,
         }
     }
 
@@ -486,7 +441,6 @@ impl AppCore {
     /// mutations — no parallel copy to drift), so only the structural arms live in
     /// [`Inverse::apply`].
     pub fn undo(&mut self, scene: &mut Scene, selection: &mut Selection) -> IntentEffect {
-        Self::assert_selection_mirrors(scene, selection);
         // ADR 0028 §4: in an OPEN sketch group, undo is FINE-GRAINED within the session —
         // reverse the last coalesced vertex edit without leaving the mode — routed through the
         // group's own `session_undo`/`session_redo`, never the main stack.
@@ -547,8 +501,6 @@ impl AppCore {
         }
         selection.set_primary_node(recorded.selection_before);
         selection.set_primary_point_index(recorded.point_selection_before);
-        scene.active = recorded.selection_before;
-        scene.active_point = recorded.point_selection_before;
         scene.next_node_id = command.counter_before;
         Self::effect_of(&command.intent).merged_with(IntentEffect::selection())
     }
@@ -567,7 +519,7 @@ impl AppCore {
         let outcome = self.dispatch(scene, intent.clone());
         // Redo re-lands the forward edit's selection steer (a re-minted node arrives
         // selected again), matching what the original apply did.
-        Self::apply_selection_steer(scene, selection, outcome.selection_steer);
+        Self::apply_selection_steer(selection, outcome.selection_steer);
         Self::effect_of(intent).merged_with(IntentEffect::selection())
     }
 
@@ -578,7 +530,6 @@ impl AppCore {
     /// the post-forward selection the caller must re-sync); [`IntentEffect::none`] when
     /// the redo stack is empty.
     pub fn redo(&mut self, scene: &mut Scene, selection: &mut Selection) -> IntentEffect {
-        Self::assert_selection_mirrors(scene, selection);
         // ADR 0028 §4: in an OPEN sketch group, redo re-applies the last in-mode-undone edit
         // through the group's own session stacks, never the main stack.
         if self.command_stack.open_group.is_some() {
@@ -698,8 +649,6 @@ impl AppCore {
             | Intent::SetDensity { .. } => IntentEffect::scene(),
             // The grid masters are read live by the per-frame line batch — no re-resolve.
             Intent::SetGridMasters { .. } => IntentEffect::none(),
-            // Selection is a view concern (re-sync the inspector mirror only).
-            Intent::SelectNode { .. } | Intent::SelectPoint { .. } => IntentEffect::selection(),
             // Points are pure overlay (no voxel re-resolve).
             Intent::AddPoint { .. }
             | Intent::RemovePoint { .. }
@@ -937,13 +886,6 @@ impl AppCore {
                 DispatchOutcome::effect(full_effect)
             }
 
-            // --- Selection ---
-            Intent::SelectNode { target } => {
-                DispatchOutcome::steered(full_effect, SelectionSteer::Node(target))
-            }
-            Intent::SelectPoint { target } => {
-                DispatchOutcome::steered(full_effect, SelectionSteer::Point(target))
-            }
 
             // --- Points ---
             Intent::AddPoint { position_blocks, name } => {
@@ -953,11 +895,18 @@ impl AppCore {
                     ..document::scene::Point::default()
                 };
                 scene.add_point(point);
-                DispatchOutcome::effect(full_effect)
+                // A freshly-added Point arrives selected, like a freshly-added node.
+                let added = scene.points.len().saturating_sub(1);
+                DispatchOutcome::steered(full_effect, SelectionSteer::Point(Some(added)))
             }
             Intent::RemovePoint { index } => {
                 scene.remove_point(index);
-                DispatchOutcome::effect(full_effect)
+                // Selection lands on the survivor at the removed slot, or the new last when
+                // the removed Point was it — the post-removal fallback the panel used to
+                // predict against a list it had not shrunk yet.
+                let remaining = scene.points.len();
+                let survivor = (remaining > 0).then(|| index.min(remaining - 1));
+                DispatchOutcome::steered(full_effect, SelectionSteer::Point(survivor))
             }
             Intent::SetPointHidden { index, hidden } => {
                 point_write(scene, index, full_effect, |point| {

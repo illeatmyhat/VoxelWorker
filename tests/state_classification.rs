@@ -129,11 +129,6 @@ fn the_pan_target_that_started_this_is_classified() {
 /// nothing distinguishes a defensible omission from the pan-target kind.
 const CARRIED_AS_A_SUBSET: &[(&str, &[&str])] = &[
     ("geometry", &["voxels_per_block"]),
-    // ADR 0032 slice 4: the workspace selection persists as the scene's own outgoing
-    // `active` / `active_point`, which `to_panel_state` mirrors back on load. Slice 5
-    // deletes those fields and gives the selection a config field of its own — at which
-    // point this entry goes away.
-    ("selection", &["scene"]),
     (
         "layer_range",
         &["snap_to_blocks", "onion_skin", "onion_depth"],
@@ -238,7 +233,11 @@ fn the_session_is_the_workspace_and_nothing_else() {
             // ADR 0028: the sketch under edit, and the tool armed in it, re-enter on a
             // mid-edit relaunch (the same "how the workspace was left" the ghost is).
             "sketch_mode",
-            "sketch_tool"
+            "sketch_tool",
+            // ADR 0032: the workspace selection. It left the DOCUMENT — where undo used to
+            // restore it and a shared file used to carry it — and joined the session on the
+            // sketch selection's law: selecting is not an edit.
+            "selection"
         ],
         "the session set changed: a field joining it now survives relaunch, and a field \
          leaving it stops surviving one"

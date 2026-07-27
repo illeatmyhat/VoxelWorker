@@ -6,16 +6,14 @@
 use super::*;
 
 impl Scene {
-    /// A scene with a single node — the shape every one-node call site builds. The
-    /// lone node is the active selection.
+    /// A scene with a single node — the shape every one-node call site builds.
     ///
-    /// ADR 0003 Phase B3: selection is keyed by [`NodeId`], so the lone node is
-    /// minted a stable id here ([`ensure_node_ids`](Self::ensure_node_ids)) and
-    /// `active` is set to that id — the scene is born already-normalised, so the
-    /// selection resolves immediately without a separate load-path mint.
+    /// ADR 0003 Phase B3: the lone node is minted a stable id here
+    /// ([`ensure_node_ids`](Self::ensure_node_ids)) so the scene is born
+    /// already-normalised and a workspace selection can name it by id.
     pub fn single_node(node: Node) -> Self {
         let mut scene = Self::from_nodes(vec![node]);
-        scene.active = scene.roots.first().copied();
+        scene.ensure_node_ids();
         scene
     }
 
@@ -24,8 +22,8 @@ impl Scene {
     /// freshly-minted [`NodeId`] and recording the top-level ids as the
     /// [`roots`](Self::roots) spine in order. The terse constructor the demo builders
     /// and test fixtures use so they keep building `Node` trees by value while the
-    /// storage underneath is the id-keyed arena. `active` is left `None` (callers set
-    /// it). Equivalent in effect to the old `Scene { nodes, .. }` + `ensure_node_ids`.
+    /// storage underneath is the id-keyed arena. Equivalent in effect to the old
+    /// `Scene { nodes, .. }` + `ensure_node_ids`.
     pub fn from_nodes<I, B>(nodes: I) -> Self
     where
         I: IntoIterator<Item = B>,

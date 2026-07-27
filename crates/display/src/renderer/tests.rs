@@ -211,7 +211,6 @@ fn scene_grid_boxes_gated_by_master_and_per_object() {
             box_node("B", [8, 0, 0], density),
         ]);
         scene.voxels_per_block = density;
-        scene.active = None;
         scene.master_block_lattice = true;
         scene.master_floor_grid = true;
 
@@ -269,7 +268,6 @@ fn origin_point_scene_axes(
         is_origin: true,
         ..Point::default()
     });
-    scene.active_point = Some(0);
     scene
 }
 

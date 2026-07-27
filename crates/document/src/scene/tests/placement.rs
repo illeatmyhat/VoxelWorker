@@ -166,14 +166,13 @@ use crate::voxel::SdfShape;
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
         leaf.transform = NodeTransform::from_blocks([leaf_offset, 0, 0], voxels_per_block);
-        let scene = scene_with_top_level_selected(
+        let scene = with_minted_ids(
             Scene::from_nodes(vec![NodeBuilder::group_at(
                 "Group",
                 [group_offset, 0, 0],
                 voxels_per_block,
                 vec![leaf.into()],
             )]),
-            0,
         );
 
         // CORNER-ANCHORING: the producer-true voxel AABB (pure i64) is `[off·d,
@@ -373,7 +372,7 @@ use crate::voxel::SdfShape;
         );
         tool.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let voxel_body = Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 1 }));
-        let scene_a = scene_with_top_level_selected(Scene::from_nodes(vec![tool.clone(), voxel_body]), 0);
+        let scene_a = with_minted_ids(Scene::from_nodes(vec![tool.clone(), voxel_body]));
         let index_a = scene_a.build_leaf_spatial_index(voxels_per_block);
         assert!(index_a.has_region_spanning_leaf);
 
@@ -592,12 +591,11 @@ use crate::voxel::SdfShape;
     #[test]
     fn odd_extent_at_odd_density_lands_on_voxel_lattice() {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 1, 3], 1, 1);
-        let scene = scene_with_top_level_selected(
+        let scene = with_minted_ids(
             Scene::from_nodes(vec![Node::new(
                 "Box",
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
             )]),
-            0,
         );
         let density = 1u32;
         let region = scene.full_extent_blocks(density);
@@ -658,7 +656,7 @@ use crate::voxel::SdfShape;
         let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, density);
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform = NodeTransform::from_blocks(offset_blocks, density);
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![node]));
         let index = scene.build_leaf_spatial_index(density);
         assert_eq!(index.entries.len(), 1, "one Tool leaf → one index entry");
         index.entries[0].world_aabb
@@ -799,7 +797,7 @@ use crate::voxel::SdfShape;
                 let mut node =
                     Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
                 node.transform = NodeTransform::from_blocks(offset, density);
-                let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
+                let scene = with_minted_ids(Scene::from_nodes(vec![node]));
                 scene.recentre_voxels_for_resolve(density).voxels()
             };
             // Pivot in the recentred frame = offset·d − recentre.

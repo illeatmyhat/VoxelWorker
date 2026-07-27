@@ -50,7 +50,7 @@ pub enum Inverse {
         /// The minted node's id.
         id: NodeId,
     },
-    /// Reverse `GroupNode`: [`group_active`](crate::scene::Scene::group_active) wrapped
+    /// Reverse `GroupNode`: [`wrap_node_in_group`](crate::scene::Scene::wrap_node_in_group) wrapped
     /// `target` in a fresh Group `group` that took `target`'s slot. The inverse drops
     /// the Group node from the arena and puts `target`'s id back in the Group's spine
     /// slot.
@@ -61,7 +61,7 @@ pub enum Inverse {
         group: NodeId,
     },
     /// Reverse `MakeDefinition`:
-    /// [`make_definition_from_active`](crate::scene::Scene::make_definition_from_active)
+    /// [`make_definition_from_node`](crate::scene::Scene::make_definition_from_node)
     /// overwrote the node's content with `Instance(def)` and pushed an `AssemblyDef`.
     /// The inverse restores the node's captured `prior_content`, pops the def, and (for
     /// the leaf case, where the op minted a fresh "Body" node) drops that body node.

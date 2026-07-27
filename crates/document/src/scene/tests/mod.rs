@@ -14,16 +14,11 @@ mod cutter_definitions;
 mod fixture_definitions;
 mod operand_body;
 
-/// Mint stable [`NodeId`]s for a freshly-built test scene and select the
-/// top-level node at `index` by id (ADR 0003 Phase B3: selection is keyed by
-/// [`NodeId`], so a fixture built with positional intent must resolve "select
-/// node `index`" to that node's id after minting). Returns the scene with its
-/// ids minted and the chosen node active — the id-era equivalent of the old
-/// `active: Some(NodePath::root_index(index))` struct-literal fixtures.
-pub(super) fn scene_with_top_level_selected(mut scene: Scene, index: usize) -> Scene {
+/// Mint stable [`NodeId`]s for a freshly-built test scene (ADR 0003 Phase B3), so a
+/// fixture can name its nodes by id. ADR 0032 dropped the selection this used to set:
+/// the document has none, and no document op reads one.
+pub(super) fn with_minted_ids(mut scene: Scene) -> Scene {
     scene.ensure_node_ids();
-    scene.active = scene
-        .id_at_path(&NodePath::root_index(index));
     scene
 }
 
@@ -110,13 +105,12 @@ pub(super) fn demo_three_tool_scene(voxels_per_block: u32) -> Scene {
         node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
-    let mut scene = scene_with_top_level_selected(
+    let mut scene = with_minted_ids(
         Scene::from_nodes(vec![
             make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
             make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
             make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
         ]),
-        0,
     );
     scene.voxels_per_block = voxels_per_block;
     scene
@@ -153,5 +147,5 @@ pub(super) fn demo_village_scene(voxels_per_block: u32) -> Scene {
         ],
     );
     scene.voxels_per_block = voxels_per_block;
-    scene_with_top_level_selected(scene, 0)
+    with_minted_ids(scene)
 }

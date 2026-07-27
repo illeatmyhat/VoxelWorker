@@ -70,8 +70,8 @@ fn default_master_grid() -> bool {
 
 /// The scene (assembly): a list of placed nodes resolved into the shared
 /// `VoxelGrid` truth. ADR 0001's full model carries reusable `definitions` too;
-/// step 2 added the flat node list plus the `active` selection that drives the
-/// inspector. `definitions` is wired up so a [`NodeContent::Instance`]
+/// step 2 added the flat node list. (Selection left the document in ADR 0032 — it is
+/// workspace state now.) `definitions` is wired up so a [`NodeContent::Instance`]
 /// resolves the referenced [`AssemblyDef`] under its transform (reuse by
 /// reference: a village of identical houses is one definition placed by N
 /// instances).
@@ -95,10 +95,10 @@ pub struct Scene {
     /// never mingles with user ids and every arena scan is unchanged; its own `Group`
     /// payload is left empty (the real children are `roots`). Undeletable, and never a
     /// `MakeDefinition`/`GroupNode` target (a definition of the whole scene is out of
-    /// scope — see [`make_definition_from_active`](Self::make_definition_from_active)).
+    /// scope — see [`make_definition_from_node`](Self::make_definition_from_node)).
     ///
     /// [`for_each_leaf`]: Self::for_each_leaf
-    /// [`make_definition_from_active`]: Self::make_definition_from_active
+    /// [`make_definition_from_node`]: Self::make_definition_from_node
     #[serde(default = "default_root_part")]
     pub root: Node,
     /// The id-keyed node storage (ADR 0003 Phase B5). A [`BTreeMap`] (not `HashMap`)
@@ -116,22 +116,6 @@ pub struct Scene {
     /// [`def_by_id`]: Self::def_by_id
     #[serde(default)]
     pub definitions: Vec<AssemblyDef>,
-    /// The [`NodeId`] of the active/selected node — the one the inspector edits
-    /// (ADR 0001 step 4: selection reaches any depth, so a
-    /// [`Group`](NodeContent::Group) child is selectable, not just a top-level
-    /// node). `None` when nothing is selected.
-    ///
-    /// **ADR 0003 Phase B3:** selection is keyed by the process-stable [`NodeId`],
-    /// not the positional [`NodePath`] it was before. The active node is resolved
-    /// on demand via [`node_by_id`](Self::node_by_id) / [`path_of`](Self::path_of),
-    /// so a structural edit (add / delete / group / reorder) that shuffles indices
-    /// no longer invalidates the selection: it still points at the SAME node by
-    /// identity. The edit ops re-point `active` to the [`NodeId`] of their target.
-    /// No old-save migration (the user does not keep pre-alpha saves) — a loaded
-    /// scene's `active` is read back as a raw id, and any stale id simply resolves
-    /// to `None`.
-    #[serde(default)]
-    pub active: Option<NodeId>,
     /// World-anchored reference Points (issue #29). Always contains exactly one
     /// Origin Point after [`ensure_origin_point`](Self::ensure_origin_point) runs
     /// on load. An older config without this field deserialises to an empty list,
@@ -157,9 +141,6 @@ pub struct Scene {
     /// `AppConfig.show_floor_grid` mirror was deleted in #31).
     #[serde(default = "default_master_grid")]
     pub master_floor_grid: bool,
-    /// The active/selected Point (index into [`points`](Self::points)), or `None`.
-    #[serde(default)]
-    pub active_point: Option<usize>,
     /// Document-owned monotonic counter for minting [`NodeId`]s (ADR 0003 Phase B).
     /// `0` is never minted (it is the unassigned sentinel); the first real id is `1`.
     /// [`ensure_node_ids`](Self::ensure_node_ids) advances it past any ids already
@@ -207,12 +188,10 @@ impl Default for Scene {
             root: default_root_part(),
             arena: BTreeMap::new(),
             definitions: Vec::new(),
-            active: None,
             points: Vec::new(),
             master_block_lattice: true,
             master_voxel_grid: true,
             master_floor_grid: true,
-            active_point: None,
             // Real node ids start at 2; `1` is reserved for the root part
             // ([`ROOT_NODE_ID`]), so a minted user id never collides with it.
             next_node_id: 2,

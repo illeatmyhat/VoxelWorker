@@ -10,7 +10,7 @@
 //! over a box and a Point returns both. Which kinds may enter is a property of the editing
 //! mode (an admission filter), never a second data structure.
 
-use document::scene::{NodeId, Scene};
+use document::scene::NodeId;
 
 /// One picked thing. ADR 0032 keeps these in ONE set: mode exclusivity is an admission
 /// filter, not a reason for parallel structures. Sketch entities join as further variants
@@ -24,6 +24,18 @@ pub enum SelectionTarget {
     ReferencePoint(usize),
 }
 
+/// How a click asked the selection to change (ADR 0032). A VIEW action, not an
+/// [`Intent`](document::intent::Intent): selecting is not an edit, so it rides on
+/// [`PanelResponse`](super::PanelResponse) and the shell applies it — the same route
+/// `focus_node` and `armed_tool` take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionRequest {
+    /// A plain click: replace the whole selection with this target.
+    Only(SelectionTarget),
+    /// A click on empty space, or a deselect: drop everything.
+    Clear,
+}
+
 /// The set of picked [`SelectionTarget`]s, in pick order (newest last).
 ///
 /// Ordered rather than sorted so "the primary" — what the inspector mirrors and what an
@@ -35,6 +47,12 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// Rebuild a selection from its targets in pick order — the restore half of the
+    /// session round-trip (the capture half is [`targets`](Self::targets)).
+    pub fn from_targets(targets: impl IntoIterator<Item = SelectionTarget>) -> Self {
+        Self { targets: targets.into_iter().collect() }
+    }
+
     /// Nothing is picked.
     pub fn is_empty(&self) -> bool {
         self.targets.is_empty()
@@ -78,6 +96,15 @@ impl Selection {
         })
     }
 
+    /// Land a click's [`SelectionRequest`] — the shell's single door for a view-action
+    /// selection change.
+    pub fn apply_request(&mut self, request: SelectionRequest) {
+        match request {
+            SelectionRequest::Only(target) => self.select_only(target),
+            SelectionRequest::Clear => self.clear(),
+        }
+    }
+
     /// Replace the whole selection with one target (a plain click).
     pub fn select_only(&mut self, target: SelectionTarget) {
         self.targets.clear();
@@ -112,16 +139,6 @@ impl Selection {
         if let Some(index) = index {
             self.targets.push(SelectionTarget::ReferencePoint(index));
         }
-    }
-
-    /// Seed from a scene's legacy `active` / `active_point` fields — the slice-4 bridge that
-    /// keeps the dual-write mirror agreeing at the seams where a scene arrives from outside
-    /// (config load, a fixture built by `Scene::single_node`). Deleted with those fields.
-    pub fn mirroring_scene(scene: &Scene) -> Self {
-        let mut selection = Self::default();
-        selection.set_primary_node(scene.active);
-        selection.set_primary_point_index(scene.active_point);
-        selection
     }
 }
 

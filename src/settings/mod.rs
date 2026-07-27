@@ -22,7 +22,8 @@ use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 use ui::panel::{
-    LayerRange, PanelState, PlacementGhost, PlacementSnap, SignalStackState, SketchTool, ViewMode,
+    LayerRange, PanelState, PlacementGhost, PlacementSnap, Selection, SelectionTarget,
+    SignalStackState, SketchTool, ViewMode,
 };
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
@@ -51,6 +52,57 @@ pub struct PlacementGhostConfig {
 /// Default wall thickness for a partial config missing the key (mirrors `SdfShape`'s).
 fn default_wall_blocks() -> u32 {
     1
+}
+
+/// The serde-able mirror of one [`SelectionTarget`]. Kept in step with the `ui` enum by
+/// the exhaustive matches in [`SelectionConfig`]'s two conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SelectionTargetConfig {
+    /// A scene-graph node, by its stable id.
+    Node(NodeId),
+    /// A reference Point, by its index in `Scene::points`.
+    ReferencePoint(usize),
+}
+
+/// The serde-able mirror of the workspace [`Selection`] (ADR 0032), carried in the session
+/// dump so a repro replays with the same things picked.
+///
+/// [`Selection`] lives in the `ui` crate, which links no serde (ADR 0016's crate law), so —
+/// like [`ViewMode`] and the placement ghost — it is persisted from out here. Pick ORDER is
+/// preserved, because the per-kind primary (what the inspector mirrors) is the newest target
+/// of its kind, not the lowest id.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SelectionConfig {
+    /// The picked targets, in pick order (newest last).
+    #[serde(default)]
+    pub targets: Vec<SelectionTargetConfig>,
+}
+
+impl SelectionConfig {
+    /// Capture the config mirror from the live [`Selection`].
+    pub fn from_selection(selection: &Selection) -> Self {
+        Self {
+            targets: selection
+                .targets()
+                .map(|target| match target {
+                    SelectionTarget::Node(id) => SelectionTargetConfig::Node(id),
+                    SelectionTarget::ReferencePoint(index) => {
+                        SelectionTargetConfig::ReferencePoint(index)
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Rebuild the runtime [`Selection`] this config describes.
+    pub fn to_selection(&self) -> Selection {
+        Selection::from_targets(self.targets.iter().map(|target| match target {
+            SelectionTargetConfig::Node(id) => SelectionTarget::Node(*id),
+            SelectionTargetConfig::ReferencePoint(index) => {
+                SelectionTarget::ReferencePoint(*index)
+            }
+        }))
+    }
 }
 
 impl PlacementGhostConfig {
@@ -268,6 +320,14 @@ pub struct AppConfig {
     /// match the [`PanelState`] field it routes to.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
+
+    /// The workspace selection (ADR 0032) — the picked nodes and reference Points. Session
+    /// state alongside [`sketch_mode`](Self::sketch_mode): what was picked is how the
+    /// workspace was left, so a dump replays with the same things selected. It never
+    /// travels in a shared document, which is what ADR 0032 repealed. `Selection` lives in
+    /// the serde-free `ui` crate, so it persists through the [`SelectionConfig`] mirror.
+    #[snapshot(session)]
+    pub selection: SelectionConfig,
 }
 
 impl Default for AppConfig {
@@ -299,6 +359,7 @@ impl Default for AppConfig {
             placement_ghost: None,
             sketch_mode: None,
             sketch_tool: SketchTool::default(),
+            selection: SelectionConfig::default(),
         }
     }
 }
@@ -350,6 +411,7 @@ impl AppConfig {
             // mid-gesture dump replays the pending drop.
             placement_ghost: panel.placement_ghost.as_ref().map(PlacementGhostConfig::from_ghost),
             sketch_tool: panel.sketch_tool,
+            selection: SelectionConfig::from_selection(&panel.selection),
             // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
             sketch_mode: panel.sketch_mode,
         }
@@ -504,10 +566,9 @@ impl AppConfig {
                 state.sketch_mode = None;
             }
         }
-        // ADR 0032: the workspace selection is seeded from the loaded scene's outgoing
-        // `active` fields, so the mirror agrees from frame one. Slice 5 deletes those fields
-        // and the selection becomes a session field of its own on the config.
-        state.selection = ui::panel::Selection::mirroring_scene(&state.scene);
+        // ADR 0032: the workspace selection is session state of its own, restored from the
+        // config rather than dug out of the document.
+        state.selection = self.selection.to_selection();
         state
     }
 

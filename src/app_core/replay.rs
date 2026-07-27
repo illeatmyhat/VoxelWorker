@@ -33,7 +33,7 @@ pub fn default_replay_seed_scene() -> Scene {
 pub fn replay_intent_script(script: &str) -> Result<Scene, String> {
     let mut scene = default_replay_seed_scene();
     let mut app_core = AppCore::new(OrbitCamera::default());
-    let mut selection = ui::panel::Selection::mirroring_scene(&scene);
+    let mut selection = ui::panel::Selection::default();
     for (line_index, raw_line) in script.lines().enumerate() {
         let line_number = line_index + 1;
         let trimmed = raw_line.trim();

@@ -8,7 +8,7 @@ use super::*;
 
 /// A reusable identifier for a [`Tool`-or-`VoxelBody`](NodeContent) definition that an
 /// [`NodeContent::Instance`] points at (ADR 0001: reuse by reference). Definitions and
-/// instances are fully live: `Scene::add_definition` / `Scene::make_definition_from_active`
+/// instances are fully live: `Scene::add_definition` / `Scene::make_definition_from_node`
 /// mint them and `Scene::add_instance` places references to them (the
 /// village-of-reused-houses case).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -22,7 +22,7 @@ pub struct DefId(pub u32);
 /// real id on the load/normalization path; real ids start at `1`.
 ///
 /// **Phase B1 was scaffolding only; B2–B5 landed on top of it.** The id is now the
-/// identity of record: selection (`Scene::active`), the structural edit ops, and
+/// identity of record: the workspace selection (ADR 0032), the structural edit ops, and
 /// the `Intent`/`Command` boundary all key on it, while `NodePath` has been
 /// demoted to an ephemeral render/UI projection derived on demand (see its own
 /// doc below).
@@ -339,7 +339,7 @@ impl From<Node> for NodeBuilder {
 
 /// A reusable sub-assembly (e.g. "house") placed by [`NodeContent::Instance`]
 /// (ADR 0001). Definitions are fully live: `Scene::add_definition` /
-/// `Scene::make_definition_from_active` mint one and `Scene::add_instance` places a
+/// `Scene::make_definition_from_node` mint one and `Scene::add_instance` places a
 /// reference to it, so the same definition placed by N instances is visited N times
 /// at resolve (the village-of-reused-houses case).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

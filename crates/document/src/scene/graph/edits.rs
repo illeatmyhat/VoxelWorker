@@ -148,22 +148,22 @@ impl Scene {
     }
 
     /// Remove the node `id` (and its whole subtree) from the arena + splice its id out
-    /// of its parent spine, WITHOUT re-deriving the `active` selection (ADR 0003 Phase
-    /// C C2). The undo path restores selection itself from the command's captured
-    /// `selection_before`, so unlike [`remove_node`](Self::remove_node) this must not
-    /// touch `active`. Used to reverse a single-node mint (`Inverse::RemoveAdded`). A
-    /// stale id is a no-op.
+    /// of its parent spine, WITHOUT suggesting a fallback selection (ADR 0003 Phase C
+    /// C2). The undo path restores the workspace selection itself from the command's
+    /// captured `selection_before`, so unlike [`remove_node`](Self::remove_node) this
+    /// reports nothing to steer to. Used to reverse a single-node mint
+    /// (`Inverse::RemoveAdded`). A stale id is a no-op.
     pub fn remove_node_exact(&mut self, id: NodeId) {
         // Same detach + purge as `remove_node`, but drop the returned slot — the undo
         // path restores selection from the command's captured `selection_before`.
         self.detach_and_purge_subtree(id);
     }
 
-    /// Reverse [`group_active`](Self::group_active) (ADR 0003 Phase C C2): the fresh
+    /// Reverse [`wrap_node_in_group`](Self::wrap_node_in_group) (ADR 0003 Phase C C2): the fresh
     /// `group` node took `target`'s spine slot and adopted `target` as its sole child.
     /// Put `target`'s id back in the slot `group` occupies and drop `group` from the
-    /// arena. Does NOT touch `active` (the undo path restores it). A no-op if `group`
-    /// no longer resolves.
+    /// arena. Touches no selection — the document has none (ADR 0032); the undo path
+    /// restores the workspace selection. A no-op if `group` no longer resolves.
     pub fn ungroup_node(&mut self, group: NodeId, target: NodeId) {
         let Some(path) = self.path_of(group) else {
             return;
@@ -184,7 +184,7 @@ impl Scene {
     /// (ADR 0003 Phase C C2): store every `Node` back in the arena under its ORIGINAL
     /// id (safe — the monotonic counter never reuses an id), then splice the root id
     /// (`nodes[0]`) into `parent`'s spine (`None` = top-level `roots`) at `index`.
-    /// Reverses a [`remove_node`](Self::remove_node). Does NOT touch `active`.
+    /// Reverses a [`remove_node`](Self::remove_node). Suggests no selection.
     pub fn reinsert_subtree(&mut self, parent: Option<NodeId>, index: usize, nodes: &[Node]) {
         let Some(root) = nodes.first() else {
             return;
@@ -254,7 +254,7 @@ impl Scene {
         // B5: the spine carries child IDS. Swap the child's id at `index` for the new
         // Group's id (capturing the child id), so the child `Node` never leaves the
         // arena (only its id moves down one level into the Group's spine) — it keeps
-        // its stable identity and stays the active selection.
+        // its stable identity, so a workspace selection holding its id follows it down.
         let child_id = {
             let siblings = self.siblings_mut(&parent_path)?;
             if index >= siblings.len() {

@@ -36,7 +36,8 @@
 //! mutates the scene, and never edits "the active node": it takes the target
 //! [`NodeId`](document::scene::NodeId) explicitly, because an edit that resolves its own
 //! target through the selection silently retargets when the selection moves. (That is why
-//! `Scene::active_node_mut` was deleted; see its tombstone in `document`'s `scene::graph`.)
+//! `Scene::active_node_mut` was deleted, and ADR 0032 took the rest of the document's
+//! selection with it; see the tombstone in `document`'s `scene::graph`.)
 //!
 //! Viewer state — which mode, what is folded, where the insert cursor sits — is view state
 //! and stays on `PanelState`: never serialized, never in undo history.

@@ -12,13 +12,14 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color,
     AppCore, CuboidMeshRenderer, GpuContext,
     InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
-    OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, Selection, VoxelBody, Point,
+    OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, VoxelBody, Point,
     PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape, SelectedOperandGhostRenderer,
     TransformGizmoRenderer, ViewCubeRenderer, ViewMode, VoxExport, VoxelGrid,
     COLOR_TARGET_FORMAT, PLACEMENT_GHOST_TINT,
 };
 
 use crate::demos::{
+    DemoScene,
     build_demo_groups, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
     build_demo_sketch_box, build_demo_sketch_extrude, build_demo_sketch_revolve,
     build_demo_buried_cutter, build_demo_child_booleans,
@@ -174,19 +175,29 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.placement_ghost = restored.placement_ghost;
     }
 
-    let mut scene = if from_config.is_some() {
-        // The scene was already adopted into `panel_state.scene` from the loaded config above.
-        panel_state.scene.clone()
+    // ADR 0032: a demo carries its own arriving selection alongside the scene, since the
+    // document no longer has an `active` field to smuggle it on. `None` means "this path
+    // picked nothing", which leaves whatever the config restored in place.
+    let DemoScene {
+        mut scene,
+        selection: demo_selection,
+    } = if from_config.is_some() {
+        // The scene was already adopted into `panel_state.scene` from the loaded config above,
+        // together with its restored selection.
+        DemoScene::selecting(panel_state.scene.clone(), None)
     } else if let Some(replay_path) = &options.replay_path {
         match build_scene_from_replay(replay_path) {
-            Ok(replayed_scene) => replayed_scene,
+            Ok(replayed_scene) => DemoScene::selecting(replayed_scene, None),
             Err(message) => {
                 eprintln!("{message}");
                 std::process::exit(1);
             }
         }
     } else if options.far_offset || options.far_offset_near {
-        build_far_offset_scene(options.geometry.voxels_per_block, options.far_offset)
+        DemoScene::first_node(build_far_offset_scene(
+            options.geometry.voxels_per_block,
+            options.far_offset,
+        ))
     } else if options.demo_groups {
         build_demo_groups(options.geometry.voxels_per_block)
     } else if let Some(edge_voxels) = options.demo_sketch_box {
@@ -222,12 +233,15 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     } else if options.demo_scene {
         build_demo_scene(options.geometry.voxels_per_block)
     } else if options.debug_clouds {
-        Scene::single_node(Node::new(
+        DemoScene::first_node(Scene::single_node(Node::new(
             "Clouds",
             NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }),
-        ))
+        )))
     } else {
-        Scene::from_geometry(options.geometry.clone(), options.material)
+        DemoScene::first_node(Scene::from_geometry(
+            options.geometry.clone(),
+            options.material,
+        ))
     };
     // Issue #29 S5: Points are SUPPRESSED unless `--points`. The headless scenes do
     // NOT synthesize an Origin Point (that runs on the windowed load/seed path), so by
@@ -258,26 +272,27 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // Issue #29 S2: `--select-node N` overrides the active selection so a headless
     // capture can place the transform gizmo on a chosen (non-origin) node and prove
     // it follows the selection. An out-of-range index clears the selection.
+    if let Some(demo_node) = demo_selection {
+        panel_state.selection.set_primary_node(Some(demo_node));
+    }
     if let Some(index) = options.select_node {
         // ADR 0003 Phase B3: selection is keyed by NodeId. Parse the same top-level
         // index as before, then resolve it to that node's stable id (ids were minted
         // by `ensure_node_ids` above), so the SAME `--select-node N` argument selects
         // the SAME node. An out-of-range index resolves to None → clears selection.
-        panel_state.scene.active = panel_state
+        let picked = panel_state
             .scene
             .id_at_path(&NodePath::root_index(index));
+        panel_state.selection.set_primary_node(picked);
     }
     // ADR 0018 Decision 2: `--select-root` selects the ROOT PART, so a headless capture
     // can prove a view mode applies scene-wide (Show-booleans x-rays every boolean).
     // Takes precedence over `--select-node`.
     if options.select_root {
-        panel_state.scene.active = Some(voxel_worker::ROOT_NODE_ID);
+        panel_state
+            .selection
+            .set_primary_node(Some(voxel_worker::ROOT_NODE_ID));
     }
-    // ADR 0032 slice 4: mirror the workspace selection off the scene's outgoing `active`
-    // field once every seeding path above (a demo scene, `--select-node`, `--select-root`)
-    // has had its say. Slice 5 deletes the field and these writers target `selection`
-    // directly.
-    panel_state.selection = Selection::mirroring_scene(&panel_state.scene);
     // Issue #29 S3: the per-object block lattice + floor grid are now gated by a
     // scene master ANDed with each NODE's own toggle (default OFF), so a headless
     // capture must enable them explicitly. `--lattice`/`--floor` set the matching
@@ -751,7 +766,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let mut selected_operand_ghost_renderer =
         SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     if options.view_mode == ViewMode::ShowBooleans {
-        if let Some(ghost) = panel_state.scene.active.and_then(|target| {
+        if let Some(ghost) = panel_state.selection.primary_node_id().and_then(|target| {
             AppCore::boolean_operand_ghost(
                 &panel_state.scene,
                 target,
@@ -774,7 +789,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // matrix below. `None` (no selection / no extent) keeps `--gizmo` a no-op, and the
     // goldens (which never pass `--gizmo`) are unaffected.
     let gizmo_placement = if options.show_origin_gizmo {
-        panel_state.scene.active.and_then(|target| {
+        panel_state.selection.primary_node_id().and_then(|target| {
             AppCore::gizmo_placement_for_id(
                 &panel_state.scene,
                 target,
@@ -820,7 +835,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // the cuboid mesh path (geometry) and the brick raymarch (per-frame uniforms, #85).
     let clip = AppCore::mesh_clip(
         &panel_state.scene,
-        panel_state.scene.active,
+        panel_state.selection.primary_node_id(),
         density,
         options.view_mode,
         layer_range,

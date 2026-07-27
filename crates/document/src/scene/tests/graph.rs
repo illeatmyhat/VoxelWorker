@@ -262,9 +262,8 @@ use crate::voxel::VoxelProducer;
         );
         tool.transform = NodeTransform::from_blocks([0, 0, 0], vpb);
         let cloud = Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 3 }));
-        let scene = scene_with_top_level_selected(
+        let scene = with_minted_ids(
             Scene::from_nodes(vec![tool, cloud]),
-            0,
         );
 
         // The Tool gives the scene a chunkable extent; the region is its voxel span.
@@ -350,7 +349,7 @@ use crate::voxel::VoxelProducer;
             Scene::single_node(cube.clone()).resolve_region(region, voxels_per_block, 0);
 
         // Both nodes composited.
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![sphere, cube]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![sphere, cube]));
         let union = scene.resolve_region(region, voxels_per_block, 0);
 
         // The expected set-union of the two single-node occupied sets, keyed by
@@ -414,7 +413,7 @@ use crate::voxel::VoxelProducer;
         stone.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let mut wood = Node::new("Wood", NodeContent::Tool { shape: base, material: MaterialChoice::Wood });
         wood.transform = NodeTransform::from_blocks([5, 0, 0], voxels_per_block);
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![stone, wood]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![stone, wood]));
         let region = scene.full_extent_blocks(voxels_per_block);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
 
@@ -502,7 +501,7 @@ use crate::voxel::VoxelProducer;
         );
         let mut wood = wood;
         wood.transform = NodeTransform::from_blocks([5, 0, 0], voxels_per_block);
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![stone, wood]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![stone, wood]));
         let region = scene.full_extent_blocks(voxels_per_block);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
 
@@ -586,7 +585,7 @@ use crate::voxel::VoxelProducer;
         let mut at_n = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
         at_n.transform = NodeTransform::from_blocks([n, 0, 0], voxels_per_block);
 
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![at_zero, at_n]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![at_zero, at_n]));
         let grid = scene.resolve_region(region, voxels_per_block, 0);
 
         // Key each voxel by its EXACT world position (the producers emit voxel-
@@ -651,7 +650,7 @@ use crate::voxel::VoxelProducer;
         let mut b = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
         b.transform = NodeTransform::from_blocks([5, 0, 0], voxels_per_block);
 
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![a, b]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![a, b]));
         // Region spans the full composite (offset 0..5, each 1 block) → 6 blocks X.
         let region = scene.full_extent_blocks(voxels_per_block);
         assert_eq!(region.size_blocks, [6, 1, 1], "composite extent encompasses both offsets");
@@ -694,7 +693,7 @@ use crate::voxel::VoxelProducer;
         let mut offset_box =
             Node::new("Offset", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
         offset_box.transform = NodeTransform::from_blocks([4, 0, 0], voxels_per_block);
-        let two = scene_with_top_level_selected(Scene::from_nodes(vec![origin_box, offset_box]), 0);
+        let two = with_minted_ids(Scene::from_nodes(vec![origin_box, offset_box]));
         let extent = two.full_extent_blocks(voxels_per_block);
         assert_eq!(
             extent.size_blocks,
@@ -743,9 +742,8 @@ use crate::voxel::VoxelProducer;
             NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         );
         leaf.transform = NodeTransform::from_blocks([b, 0, 0], voxels_per_block);
-        let grouped = scene_with_top_level_selected(
+        let grouped = with_minted_ids(
             Scene::from_nodes(vec![NodeBuilder::group_at("Group", [a, 0, 0], voxels_per_block, vec![leaf.into()])]),
-            0,
         );
         let grouped_grid = grouped.resolve_region(region, voxels_per_block, 0);
 
@@ -787,7 +785,7 @@ use crate::voxel::VoxelProducer;
                 NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Wood },
             )],
         );
-        let instanced = scene_with_top_level_selected(instanced_scene, 0);
+        let instanced = with_minted_ids(instanced_scene);
         let instanced_grid = instanced.resolve_region(region, voxels_per_block, 0);
 
         // Direct: the same box placed directly at T.
@@ -826,7 +824,7 @@ use crate::voxel::VoxelProducer;
         let mut def_only_scene =
             Scene::from_nodes(vec![Node::new("I", NodeContent::Instance(def_id))]);
         def_only_scene.add_definition(def_id, "House".to_string(), house_body());
-        let def_only = scene_with_top_level_selected(def_only_scene, 0);
+        let def_only = with_minted_ids(def_only_scene);
         let def_count = def_only
             .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
             .occupied_count();
@@ -839,7 +837,7 @@ use crate::voxel::VoxelProducer;
         house_b.transform = NodeTransform::from_blocks([6, 0, 0], voxels_per_block);
         let mut village_scene = Scene::from_nodes(vec![house_a, house_b]);
         village_scene.add_definition(def_id, "House".to_string(), house_body());
-        let village = scene_with_top_level_selected(village_scene, 0);
+        let village = with_minted_ids(village_scene);
         let region = village.full_extent_blocks(voxels_per_block);
         let grid = village.resolve_region(region, voxels_per_block, 0);
 
@@ -896,7 +894,7 @@ use crate::voxel::VoxelProducer;
                 Node::new("Self", NodeContent::Instance(def_id)),
             ],
         );
-        let scene = scene_with_top_level_selected(scene_build, 0);
+        let scene = with_minted_ids(scene_build);
 
         // Resolves (no overflow) and contributes the single box ONCE — the self-
         // instance is skipped, so the count is finite and equals one box's voxels.
@@ -919,7 +917,7 @@ use crate::voxel::VoxelProducer;
     /// tree-mutation UI helper tests build on. ADR 0003 Phase B3: ids are minted so
     /// the selection (and the `wrap_node_in_group` it drives) resolves by identity.
     fn two_box_scene(voxels_per_block: u32) -> Scene {
-        let mut scene = scene_with_top_level_selected(
+        let mut scene = with_minted_ids(
             Scene::from_nodes(vec![
                 Node::new(
                     "A",
@@ -930,7 +928,6 @@ use crate::voxel::VoxelProducer;
                     NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Wood },
                 ),
             ]),
-            0,
         );
         scene.voxels_per_block = voxels_per_block;
         scene
@@ -943,10 +940,9 @@ use crate::voxel::VoxelProducer;
     #[test]
     fn wrap_node_in_group_nests_node_under_new_group() {
         let mut scene = two_box_scene(8);
-        // Node "A" (top-level 0) is the active selection; remember its stable id so
-        // we can confirm the wrap keeps that SAME node selected by identity.
+        // Remember node "A"'s stable id so we can confirm the wrap keeps the SAME node
+        // (by identity), only moving it under the new Group.
         let node_a_id = scene.id_at_path(&NodePath::root_index(0)).expect("A has an id");
-        assert_eq!(scene.active, Some(node_a_id));
 
         let group_id = scene.wrap_node_in_group(node_a_id).expect("A resolves");
         // B4: `wrap_node_in_group` returns the new Group's stable id; it resolves to
@@ -968,13 +964,13 @@ use crate::voxel::VoxelProducer;
             }
             other => panic!("expected a Group at slot 0, got {other:?}"),
         }
-        // The wrapped child is still the active selection — by identity it is the
-        // SAME node "A", now living at path [0, 0] inside the new Group.
-        assert_eq!(scene.active, Some(node_a_id), "the wrapped node stays selected by id");
+        // The wrapped child is the SAME node "A" by identity, now living at path
+        // [0, 0] inside the new Group — so a workspace selection holding its id follows
+        // it across the wrap without being rewritten (ADR 0032).
         assert_eq!(
-            scene.active_path(),
+            scene.path_of(node_a_id),
             Some(NodePath::from_indices(vec![0, 0])),
-            "the selection now resolves to the child slot inside the Group"
+            "the wrapped node resolves to the child slot inside the Group"
         );
         // The second node is untouched.
         assert_eq!(scene.roots.len(), 2);
@@ -1015,7 +1011,6 @@ use crate::voxel::VoxelProducer;
         let mut after_scene = scene.clone();
         let kept_root = after_scene.roots[0];
         after_scene.roots = vec![kept_root];
-        after_scene.active = Some(kept_root);
         let after = after_scene
             .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
             .occupied_count();
@@ -1076,7 +1071,6 @@ use crate::voxel::VoxelProducer;
         //   [0, 0]         A (wrapped)    depth 1
         //   [0, 1]         child          depth 1
         //   [1]          B                depth 0
-        // Node 0 ("A") is already the active selection (the fixture selects it).
         let group_id = scene.wrap_node_in_group(scene.roots[0]).expect("A resolves");
         let added = scene.add_child_to_group(
             group_id,
@@ -1104,19 +1098,17 @@ use crate::voxel::VoxelProducer;
         assert_eq!(rows[0].1, crate::scene::ROOT_NODE_ID, "row 0 is the root part");
     }
 
-    /// Selecting a node by path reaches a Group child (not just top-level nodes) —
+    /// Addressing a node by path reaches a Group child (not just top-level nodes) —
     /// the inspector can therefore edit a node at any depth.
     #[test]
     fn node_at_path_reaches_group_child() {
-        // Node 0 ("A") is already the active selection (the fixture selects it).
         let mut scene = two_box_scene(8);
-        scene.wrap_node_in_group(scene.roots[0]);
-        // The active selection now resolves to the wrapped child at path [0, 0].
-        let active_path = scene
-            .active_path()
-            .expect("a child is selected after grouping");
-        assert_eq!(active_path, NodePath::from_indices(vec![0, 0]));
-        let node = scene.node_at_path(&active_path).expect("the child resolves by path");
+        let node_a_id = scene.roots[0];
+        scene.wrap_node_in_group(node_a_id);
+        // Node "A" now resolves to the wrapped child at path [0, 0].
+        let child_path = scene.path_of(node_a_id).expect("A resolves after grouping");
+        assert_eq!(child_path, NodePath::from_indices(vec![0, 0]));
+        let node = scene.node_at_path(&child_path).expect("the child resolves by path");
         assert_eq!(node.name, "A", "the path reaches the wrapped child node");
     }
 

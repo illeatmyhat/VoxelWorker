@@ -14,16 +14,15 @@ pub use crate::store::{ChunkCacheKey, ChunkResolveCache, Store};
 mod scene_cache_equivalence_tests {
     use crate::store::ChunkResolveCache;
     use document::scene::{
-        DefId, Node, NodeContent, NodePath, NodeTransform, Scene,
+        DefId, Node, NodeContent, NodeTransform, Scene,
     };
     use document::voxel::{GeometryParams, SdfShape};
     use voxel_core::core_geom::MaterialChoice;
     use voxel_core::voxel::{ShapeKind, VoxelGrid};
 
-    /// Select the top-level node at `index` (mirrors the document-crate test helper).
-    fn scene_with_top_level_selected(mut scene: Scene, index: usize) -> Scene {
+    /// Mint stable ids (mirrors the document-crate test helper).
+    fn with_minted_ids(mut scene: Scene) -> Scene {
         scene.ensure_node_ids();
-        scene.active = scene.id_at_path(&NodePath::root_index(index));
         scene
     }
 
@@ -47,7 +46,7 @@ mod scene_cache_equivalence_tests {
             },
         );
         node_b.transform = NodeTransform::from_blocks([1, 0, 0], vpb);
-        scene_with_top_level_selected(Scene::from_nodes(vec![node_a, node_b]), 0)
+        with_minted_ids(Scene::from_nodes(vec![node_a, node_b]))
     }
 
     /// **Issue #20 S6c-1 equivalence proof.** `placed_region_dimensions(density)`
@@ -113,11 +112,11 @@ mod scene_cache_equivalence_tests {
             node.transform = NodeTransform::from_blocks(offset, 16);
             node
         };
-        let demo_scene = scene_with_top_level_selected(Scene::from_nodes(vec![
+        let demo_scene = with_minted_ids(Scene::from_nodes(vec![
             make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
             make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
             make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-        ]), 0);
+        ]));
         assert_equal(&demo_scene, 16, "demo-scene");
 
         // An instanced village (one house definition placed by four instances).
@@ -147,7 +146,7 @@ mod scene_cache_equivalence_tests {
                 tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
         );
-        let village = scene_with_top_level_selected(village, 0);
+        let village = with_minted_ids(village);
         assert_equal(&village, 16, "demo-village");
     }
 

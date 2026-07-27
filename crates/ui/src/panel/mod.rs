@@ -40,7 +40,7 @@ mod signal_stack;
 mod state;
 
 pub use add_shape_dialog::build_add_shape_dialog;
-pub use selection::{Selection, SelectionTarget};
+pub use selection::{Selection, SelectionRequest, SelectionTarget};
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use state::{
     AngleSnap, ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost,

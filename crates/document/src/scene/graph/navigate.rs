@@ -146,7 +146,7 @@ impl Scene {
         }
         // ADR 0018 Decision 2: the root part lives on `self.root` (a field, not the
         // arena), so resolve its reserved id there — this is what makes it selectable
-        // (`active_node`) and inspectable like any other node.
+        // and inspectable like any other node.
         if id == ROOT_NODE_ID {
             return Some(&self.root);
         }
@@ -239,27 +239,11 @@ impl Scene {
         rows
     }
 
-    /// The active node, if any. ADR 0003 Phase B3: resolves the selected
-    /// [`NodeId`] via [`node_by_id`](Self::node_by_id) (a stale id → `None`).
-    pub fn active_node(&self) -> Option<&Node> {
-        self.active.and_then(|id| self.node_by_id(id))
-    }
-
-    // `active_node_mut` was DELETED 2026-07-18 with zero callers. Its doc claimed "the
-    // inspector edits through this", which was never true in this form: an inspector edit is
-    // an Intent carrying its TARGET id, applied via `node_by_id_mut(target)` (see
-    // `app_core::intent`), so the edit path never consults `active`. Reading the active node
-    // is still a real need (`active_node`); mutating THROUGH the selection is not, and would
-    // in fact be the wrong shape — it would let an edit silently retarget when the selection
-    // moves. Do not reintroduce it; take the id.
-
-    /// The [`NodePath`] currently addressing the active node, or `None` when nothing
-    /// is selected (or the selected [`NodeId`] no longer resolves). ADR 0003 Phase
-    /// B3: a positional bridge for the few call sites + tests that still reason in
-    /// paths, now that [`active`](Self::active) stores an id.
-    pub fn active_path(&self) -> Option<NodePath> {
-        self.active.and_then(|id| self.path_of(id))
-    }
+    // `active_node_mut` was DELETED 2026-07-18 with zero callers; `active` / `active_node` /
+    // `active_path` followed it in ADR 0032. An inspector edit is an Intent carrying its
+    // TARGET id, applied via `node_by_id_mut(target)` (see `app_core::intent`), so no edit
+    // path ever consults a selection. Selection now lives in the workspace
+    // (`ui::panel::Selection`) and the document has none — do not reintroduce one here.
 
     /// Mint the next fresh [`NodeId`] from the document counter (ADR 0003 Phase B3),
     /// advancing it past the value handed out. Matches the
@@ -310,8 +294,9 @@ impl Scene {
         }
     }
 
-    /// Choose a valid `active` path after removing the child at `removed_index`
-    /// from the sibling list at `parent_indices`.
+    /// Choose the path a selection should FALL BACK to after removing the child at
+    /// `removed_index` from the sibling list at `parent_indices`. A suggestion the
+    /// dispatcher steers the workspace selection with — the document stores none.
     pub(super) fn fallback_selection_after_remove(
         &self,
         parent_indices: &[usize],

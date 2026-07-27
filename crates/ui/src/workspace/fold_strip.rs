@@ -15,7 +15,6 @@
 //! strip currently shows the fold and its selection only. Adding a cursor silently here would
 //! be deciding an architecture question inside a widget.
 
-use document::intent::Intent;
 use document::scene::{NodeId, Scene};
 
 use super::{hairline, region_frame, Edge, FOLD_STRIP_HEIGHT};
@@ -55,7 +54,7 @@ pub(super) fn build_fold_strip(
                         ui.spacing_mut().item_spacing = egui::vec2(CARD_GAP, 0.0);
                         ui.add_space(11.0);
                         for (index, id) in roots.iter().enumerate() {
-                            card(ui, &state.scene, *id, index, response);
+                            card(ui, &state.scene, *id, index, state.selection.primary_node_id(), response);
                         }
                     });
                 });
@@ -95,12 +94,13 @@ fn card(
     scene: &Scene,
     id: NodeId,
     index: usize,
+    selected_id: Option<NodeId>,
     response: &mut PanelResponse,
 ) {
     let Some(node) = scene.node_by_id(id) else {
         return;
     };
-    let selected = scene.active == Some(id);
+    let selected = selected_id == Some(id);
     let (rect, hit) = ui.allocate_exact_size(
         egui::vec2(CARD_WIDTH, CARD_HEIGHT),
         egui::Sense::click(),
@@ -143,7 +143,9 @@ fn card(
         .galley(egui::pos2(rect.left() + 10.0, rect.top() + 30.0), name, ink);
 
     if hit.clicked() && !selected {
-        response.emit(Intent::SelectNode { target: Some(id) });
+        response.select = Some(crate::panel::SelectionRequest::Only(
+            crate::panel::SelectionTarget::Node(id),
+        ));
     }
 }
 

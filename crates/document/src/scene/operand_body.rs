@@ -169,7 +169,6 @@ impl Scene {
     fn operand_body_slice(&self, root_id: NodeId, ancestor_offset_voxels: [i64; 3]) -> Scene {
         let mut slice = self.clone();
         slice.roots = vec![root_id];
-        slice.active = None;
         if let Some(root) = slice.arena.get_mut(&root_id) {
             for (offset, ancestor) in root
                 .transform

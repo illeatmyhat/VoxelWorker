@@ -37,7 +37,7 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
             } else {
                 point.name.clone()
             };
-            (name, point.hidden, state.scene.active_point == Some(index))
+            (name, point.hidden, state.selection.primary_point_index() == Some(index))
         };
         ui.horizontal(|ui| {
             // Visibility is `!hidden`; toggling it flips the Point's `hidden` flag.
@@ -61,9 +61,9 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
 
     // + Add Point — a fresh Point at the camera target (whole blocks), else the
     // origin. ADR 0003 Phase C C4a: described as an `AddPoint` intent; the panel
-    // names it after the soon-to-be index (matching the old `format!`), and emits a
-    // trailing `SelectPoint` so the new Point becomes active (the old
-    // `active_point = len - 1`, which `add_point` itself does not set).
+    // names it after the soon-to-be index (matching the old `format!`). The dispatch
+    // steers the selection onto the new Point (ADR 0032), so the panel no longer has to
+    // predict an index for a Point that does not exist yet.
     if ui
         .button("+ Add Point")
         .on_hover_text("Add a reference Point at the camera target")
@@ -74,7 +74,6 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
             position_blocks: state.point_add_position_blocks,
             name: format!("Point {new_index}"),
         });
-        response.emit(Intent::SelectPoint { target: Some(new_index) });
     }
 
     // The selected Point's editor: plane/axis toggles, position (hidden for Origin),
@@ -82,7 +81,7 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
     // binds to a LOCAL copy of the Point's fields (egui needs the `&mut`); a change
     // emits the matching `SetPoint*` intent instead of mutating the Point. The buffer
     // is read fresh from the scene each frame, so it always reflects the live value.
-    if let Some(active) = state.scene.active_point {
+    if let Some(active) = state.selection.primary_point_index() {
         if let Some(point) = state.scene.points.get(active) {
             let point = point.clone();
             ui.add_space(4.0);
@@ -171,25 +170,16 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
     }
     if let Some(index) = delete {
         // `RemovePoint` is a no-op on the Origin (the UI already hides its delete
-        // affordances). To preserve the old `active_point` fix-up (which `remove_point`
-        // does not do), emit a trailing `SelectPoint` re-deriving the selection.
+        // affordances). The dispatch steers the selection onto the survivor (ADR 0032),
+        // so the panel no longer re-derives an index against a list it has not yet shrunk.
         let was_origin = state.scene.points.get(index).map(|p| p.is_origin).unwrap_or(false);
         if !was_origin {
             response.emit(Intent::RemovePoint { index });
-            // After removing index, the list shrinks by one: re-derive the selection
-            // exactly as the old code did (clamp to the new last, or clear if empty).
-            let remaining = state.scene.points.len().saturating_sub(1);
-            let next = if remaining == 0 {
-                None
-            } else {
-                Some(index.min(remaining - 1))
-            };
-            response.emit(Intent::SelectPoint { target: next });
         }
     } else if let Some(index) = select {
-        if state.scene.active_point != Some(index) {
-            response.emit(Intent::SelectPoint { target: Some(index) });
-        }
+        response.select = Some(crate::panel::SelectionRequest::Only(
+            crate::panel::SelectionTarget::ReferencePoint(index),
+        ));
     }
 
     ui.separator();

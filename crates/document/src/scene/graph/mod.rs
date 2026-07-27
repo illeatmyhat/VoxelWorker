@@ -1,7 +1,7 @@
-//! Node-graph model and selection (ADR 0001 assembly graph, ADR 0003 Phase B
-//! stable ids): the id-keyed arena and root spine, node paths & ids, structural
-//! edits (add / remove / group / ungroup / definition / instance), reference
-//! Points, and the active selection.
+//! Node-graph model (ADR 0001 assembly graph, ADR 0003 Phase B stable ids): the
+//! id-keyed arena and root spine, node paths & ids, structural edits (add / remove /
+//! group / ungroup / definition / instance), and reference Points. Selection is NOT
+//! here — ADR 0032 made it workspace state (`ui::panel::Selection`).
 
 use super::*;
 

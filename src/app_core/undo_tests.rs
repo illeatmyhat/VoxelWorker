@@ -1,4 +1,4 @@
-    use ui::panel::Selection;
+    use super::selection_of_first_root;
     use super::*;
     use camera::OrbitCamera;
     use voxel_core::core_geom::MaterialChoice;
@@ -57,8 +57,8 @@
         Node::new(format!("{:?}", shape.kind), NodeContent::Tool { shape, material })
     }
 
-    /// A normalized two-Tool scene with stable ids minted + an Origin point, the first
-    /// node active.
+    /// A normalized two-Tool scene with stable ids minted + an Origin point. The workspace
+    /// selection a test pairs with it comes from `selection_of_first_root` (ADR 0032).
     fn two_tool_scene() -> Scene {
         let mut scene = Scene::from_nodes(vec![
             tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone),
@@ -66,7 +66,6 @@
         ]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        scene.active = scene.roots.first().copied();
         scene
     }
 
@@ -75,7 +74,7 @@
     /// post-apply `after`. Returns the core so the caller can inspect the stacks.
     fn assert_round_trips(scene: &mut Scene, intent: Intent) {
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(scene);
+        let mut selection = selection_of_first_root(scene);
         let before = scene.clone();
         core.apply_intent(scene, &mut selection, intent);
         let after = scene.clone();
@@ -240,7 +239,6 @@
         ]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        scene.active = scene.roots.first().copied();
         let group = scene.roots[1];
         assert_round_trips(&mut scene, Intent::RemoveNode { target: group });
     }
@@ -342,9 +340,11 @@
         let mut core = test_core();
         let before = scene.clone();
 
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::AddInstance { def });
-        let minted = scene.active.expect("AddInstance selects the minted instance");
+        let minted = selection
+            .primary_node_id()
+            .expect("AddInstance steers the selection onto the minted instance");
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetOperation {
                 target: minted,
@@ -395,7 +395,6 @@
         ]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        scene.active = scene.roots.first().copied();
         scene
     }
 
@@ -463,7 +462,7 @@
         scene.voxels_per_block = 16;
         let target = scene.roots[1];
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: expression },
         );
@@ -502,7 +501,7 @@
             Measurement::from_voxels(0),
             Measurement::from_voxels(0),
         ];
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: first },
         );
@@ -539,7 +538,6 @@
         let mut scene = Scene::from_nodes(vec![NodeSpec::CloudsPart.into_node()]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        scene.active = scene.roots.first().copied();
         let target = scene.roots[0];
         assert_round_trips(&mut scene, Intent::SetCloudSeed { target, seed: 42 });
     }
@@ -585,7 +583,6 @@
         scene.ensure_node_ids();
         scene.ensure_origin_point();
         scene.voxels_per_block = 5;
-        scene.active = scene.roots.first().copied();
         assert_round_trips(&mut scene, Intent::SetDensity { voxels_per_block: 20 });
     }
 
@@ -603,7 +600,7 @@
         let node_id = scene.roots[0];
 
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 16 });
 
         let after = scene.node_by_id(node_id).expect("node survives");
@@ -630,7 +627,7 @@
         let node_id = scene.roots[0];
 
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 16 });
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target: node_id, offset_measurements: whole_block_offset([3, 0, 0]) },
@@ -665,7 +662,7 @@
             Measurement::from_voxels(0),
             Measurement::from_voxels(0),
         ];
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: expression },
         );
@@ -700,7 +697,7 @@
         let node_id = scene.roots[0];
 
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 32 });
         let transform = &scene.node_by_id(node_id).unwrap().transform;
         assert_eq!(
@@ -782,28 +779,10 @@
         );
     }
 
-    // === Selection intents push NOTHING ===
-
-    #[test]
-    fn select_node_pushes_no_command() {
-        let mut scene = two_tool_scene();
-        let mut core = test_core();
-        let target = scene.roots[1];
-        let mut selection = Selection::mirroring_scene(&scene);
-        core.apply_intent(&mut scene, &mut selection, Intent::SelectNode { target: Some(target) });
-        assert_eq!(core.undo_depth(), 0, "selection is not an undoable step");
-        assert_eq!(scene.active, Some(target));
-    }
-
-    #[test]
-    fn select_point_pushes_no_command() {
-        let mut scene = two_tool_scene();
-        let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
-        core.apply_intent(&mut scene, &mut selection, Intent::SelectPoint { target: Some(0) });
-        assert_eq!(core.undo_depth(), 0, "point selection is not an undoable step");
-        assert_eq!(scene.active_point, Some(0));
-    }
+    // ADR 0032 deleted `Intent::SelectNode` / `SelectPoint` (and the two tests that pinned
+    // "a selection intent pushes no command"). Selecting is a VIEW action carried on
+    // `PanelResponse::select` and applied by the shell — it never reaches the undo stack
+    // because it never reaches `apply_intent` at all.
 
     // === No-op forward → no-op inverse (still pushes a command, undo restores nothing) ===
 
@@ -812,7 +791,7 @@
         let mut scene = two_tool_scene();
         let before = scene.clone();
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetName { target: document::scene::NodeId(9999), name: "ghost".to_string() },
         );
@@ -830,7 +809,7 @@
         let mut core = test_core();
 
         // A realistic authoring sequence.
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::AddNode {
                 content: NodeSpec::Tool {
@@ -839,16 +818,18 @@
                 },
             },
         );
-        let added = scene.active.expect("added node selected");
+        let added = selection.primary_node_id().expect("AddNode steers onto the new node");
         core.apply_intent(&mut scene, &mut selection, Intent::GroupNode { target: added });
-        // The wrapped child is now active; group IT into a definition.
-        let active = scene.active.expect("active after group");
+        // The wrapped child is now the primary selection; group IT into a definition.
+        let active = selection.primary_node_id().expect("GroupNode steers onto the child");
         core.apply_intent(&mut scene, &mut selection,
             Intent::MakeDefinition { target: active, name: "Kit".to_string() },
         );
         let def = scene.definitions.last().expect("def made").id;
         core.apply_intent(&mut scene, &mut selection, Intent::AddInstance { def });
-        let instance = scene.active.expect("instance selected");
+        let instance = selection
+            .primary_node_id()
+            .expect("AddInstance steers onto the instance");
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target: instance, offset_measurements: whole_block_offset([7, 0, 0]) },
         );
@@ -875,7 +856,7 @@
         let mut scene = two_tool_scene();
         let mut core = test_core();
         let target = scene.roots[0];
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::SetName { target, name: "First".to_string() });
         core.undo(&mut scene, &mut selection);
         assert_eq!(core.redo_depth(), 1, "undo populated redo");
@@ -893,7 +874,7 @@
         let mut scene = two_tool_scene();
         let mut core = test_core();
         let target = scene.roots[0];
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::SetName { target, name: "Renamed".to_string() });
         let undo_effect = core.undo(&mut scene, &mut selection);
         assert!(undo_effect.scene_changed, "rename re-resolves the scene");
@@ -920,7 +901,7 @@
         let mut scene = two_tool_scene();
         let mut core = test_core();
         let target = scene.roots[0];
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::SetShape { target, shape: box_shape([9, 9, 9]) });
         let undo_effect = core.undo(&mut scene, &mut selection);
         assert!(undo_effect.scene_changed);
@@ -931,7 +912,7 @@
     fn undo_of_point_edit_reports_points_not_scene() {
         let mut scene = two_tool_scene();
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection, Intent::SetPointHidden { index: 0, hidden: true });
         let undo_effect = core.undo(&mut scene, &mut selection);
         assert!(undo_effect.points_changed, "a point edit is overlay-only");
@@ -945,7 +926,7 @@
         // must match — claiming scene_changed would wrongly force a re-resolve.
         let mut scene = two_tool_scene();
         let mut core = test_core();
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetGridMasters { voxel: false, lattice: true, floor: false },
         );
@@ -1012,7 +993,7 @@
         // Move a node so the composite extent (hence its recentre) shifts.
         let recentre_before = scene.recentre_voxels_for_resolve(density).voxels();
         let target = scene.roots[0];
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([10, -4, 6]) },
         );
@@ -1102,7 +1083,6 @@
         scene.ensure_node_ids();
         scene.ensure_origin_point();
         scene.voxels_per_block = density;
-        scene.active = scene.roots.first().copied();
         let mut core = test_core();
         let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
             panic!("density {density} unexpectedly rejected");
@@ -1205,7 +1185,6 @@
         let mut scene = Scene::from_nodes(vec![tool_node(box_shape([3, 3, 3]), MaterialChoice::Stone)]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        scene.active = scene.roots.first().copied();
         let target = scene.roots[0];
         let density = 8;
 
@@ -1218,7 +1197,7 @@
         assert_eq!(before, 0, "with the flag OFF no voxel may carry the grid_overlay marker");
 
         // Flip ONLY voxel_grid_on_faces ON via the intent door (no other edit).
-        let mut selection = Selection::mirroring_scene(&scene);
+        let mut selection = selection_of_first_root(&scene);
         core.apply_intent(&mut scene, &mut selection,
             Intent::SetNodeGrids {
                 target,

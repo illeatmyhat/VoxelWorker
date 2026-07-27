@@ -55,6 +55,12 @@
             sketch_mode: Some(document::scene::NodeId(9)),
             // Non-default (not Select) so the round-trip exercises the armed sketch tool (#95).
             sketch_tool: ui::panel::SketchTool::AddPoint,
+            selection: SelectionConfig {
+                targets: vec![
+                    SelectionTargetConfig::Node(NodeId(3)),
+                    SelectionTargetConfig::ReferencePoint(1),
+                ],
+            },
         };
 
         let restored = save_and_reload(&config);
@@ -162,14 +168,15 @@
             NodeContent::Tool { shape: unit_box(ShapeKind::Box), material: MaterialChoice::Wood },
         );
         wood.transform = document::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
-        // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
-        // the second node (top-level index 1) by its stable id.
-        let mut scene = Scene::from_nodes(vec![stone, wood]);
-        scene.active = scene.id_at_path(&NodePath::root_index(1));
+        let scene = Scene::from_nodes(vec![stone, wood]);
 
         let mut panel = PanelState::with_view_cube_default();
         panel.geometry.voxels_per_block = voxels_per_block;
         panel.scene = scene.clone();
+        // ADR 0032: the selection is WORKSPACE state on the panel, keyed by NodeId — it
+        // rides the config's own `selection` field, not the document.
+        let selected = scene.id_at_path(&NodePath::root_index(1)).expect("node 1 has an id");
+        panel.selection.set_primary_node(Some(selected));
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
         assert!(config.scene.is_some(), "capture persists the scene");
@@ -178,7 +185,11 @@
         let restored_panel = restored.to_panel_state();
 
         assert_eq!(restored_panel.scene.roots.len(), 2, "both nodes survive the reload");
-        assert_eq!(restored_panel.scene.active, scene.active, "the active selection survives");
+        assert_eq!(
+            restored_panel.selection.primary_node_id(),
+            Some(selected),
+            "the workspace selection survives"
+        );
         assert_eq!(
             restored_panel.scene.root_node(1).transform.blocks(voxels_per_block),
             [3, 0, 0]
@@ -274,7 +285,8 @@
         // Density DID carry over from the config and now lives on the document
         // (ADR 0003 §3f(0)), not the shape.
         assert_eq!(panel.scene.voxels_per_block, 20);
-        match panel.scene.active_node().map(|node| &node.content) {
+        let seed_node = panel.scene.roots.first().and_then(|id| panel.scene.node_by_id(*id));
+        match seed_node.map(|node| &node.content) {
             Some(document::scene::NodeContent::Tool { shape, material }) => {
                 // The default seed geometry, NOT the persisted flat params.
                 assert_eq!(shape.kind, ShapeKind::Cylinder);
@@ -379,12 +391,15 @@
                 },
             )],
         );
-        scene.active = scene.id_at_path(&NodePath::from_indices(vec![2, 0]));
-
         // Build a panel carrying this scene and capture → JSON → restore.
         let mut panel = PanelState::with_view_cube_default();
         panel.geometry.voxels_per_block = voxels_per_block;
         panel.scene = scene.clone();
+        // ADR 0032: the workspace selection rides the config alongside the scene.
+        let selected = scene
+            .id_at_path(&NodePath::from_indices(vec![2, 0]))
+            .expect("the Group child has an id");
+        panel.selection.set_primary_node(Some(selected));
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
         assert!(config.scene.is_some(), "capture persists the full scene");
@@ -392,7 +407,7 @@
         let restored = save_and_reload(&config);
         let restored_panel = restored.to_panel_state();
 
-        // Structural equality: same node tree, definitions, and active selection.
+        // Structural equality: same node tree, definitions, and workspace selection.
         assert_eq!(
             restored_panel.scene.roots.len(),
             scene.roots.len(),
@@ -400,9 +415,9 @@
         );
         assert_eq!(restored_panel.scene.definitions.len(), 1, "the def survives");
         assert_eq!(
-            restored_panel.scene.active,
-            scene.active,
-            "the active selection survives"
+            restored_panel.selection.primary_node_id(),
+            Some(selected),
+            "the workspace selection survives"
         );
         // The Group's child and the def's body survive with their offsets/materials.
         match &restored_panel.scene.root_node(2).content {
@@ -571,6 +586,8 @@
         let mut panel = PanelState::with_view_cube_default();
         panel.geometry.voxels_per_block = 8;
         panel.scene = scene.clone();
+        let selected = scene.roots[0];
+        panel.selection.set_primary_node(Some(selected));
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
 
@@ -587,14 +604,12 @@
             [far_offset, -far_offset, far_offset / 2],
             "a >i32-range i64 offset must round-trip byte-exact through save/load"
         );
-        // ADR 0003 Phase B3: selection is keyed by NodeId; `single_node` minted the
-        // lone node an id and selected it, and that id round-trips intact.
+        // ADR 0032: the workspace selection is keyed by NodeId and round-trips intact.
         assert_eq!(
-            restored_panel.scene.active,
-            scene.active,
-            "the active selection survives"
+            restored_panel.selection.primary_node_id(),
+            Some(selected),
+            "the workspace selection survives"
         );
-        assert!(scene.active.is_some(), "the lone node is selected by id");
     }
 
     /// issue #31: the grid masters are the single source of truth on `scene.master_*`
@@ -661,7 +676,7 @@
     /// not via any legacy `show_*` mirror. The Origin is not duplicated.
     #[test]
     fn modern_scene_keeps_its_masters_and_single_origin() {
-        use document::scene::{Node, NodeContent, NodePath, Point, Scene};
+        use document::scene::{Node, NodeContent, Point, Scene};
         use document::voxel::SdfShape;
 
         let node = Node::new(
@@ -675,8 +690,6 @@
         scene.master_block_lattice = false;
         scene.master_voxel_grid = true;
         scene.master_floor_grid = false;
-        // ADR 0003 Phase B3: select the lone node by its stable id (from_nodes minted it).
-        scene.active = scene.id_at_path(&NodePath::root_index(0));
         scene.ensure_origin_point();
         scene.add_point(Point { name: "Marker".to_string(), ..Point::default() });
 

@@ -10,7 +10,7 @@
 //!
 //! [`apply_intent`]: super::AppCore::apply_intent
 
-use ui::panel::Selection;
+use super::selection_of_first_root;
 use super::AppCore;
 use camera::OrbitCamera;
 use document::intent::Intent;
@@ -42,7 +42,6 @@ fn single_sketch_scene() -> (Scene, NodeId) {
     )]);
     scene.ensure_node_ids();
     scene.ensure_origin_point();
-    scene.active = scene.roots.first().copied();
     let target = scene.roots[0];
     (scene, target)
 }
@@ -66,7 +65,7 @@ fn material_of(scene: &Scene, id: NodeId) -> MaterialChoice {
 /// Apply an in-mode sketch edit through the SINGLE apply door — while a group is open this
 /// routes into the session (exactly what the live inspector / vertex drag do).
 fn edit(core: &mut AppCore, scene: &mut Scene, target: NodeId, producer: SketchSolid) {
-    let mut selection = Selection::mirroring_scene(scene);
+    let mut selection = selection_of_first_root(scene);
     core.apply_intent(scene, &mut selection, Intent::SetSketch { target, producer });
 }
 
@@ -100,7 +99,7 @@ fn finish_commits_the_session_as_one_main_entry() {
     );
 
     // A SINGLE main-stack undo reverses the ENTIRE session back to the enter-state.
-    let mut selection = Selection::mirroring_scene(&scene);
+    let mut selection = selection_of_first_root(&scene);
     core.undo(&mut scene, &mut selection);
     assert_eq!(
         producer_of(&scene, target),
@@ -121,7 +120,7 @@ fn cancel_rolls_the_session_back_to_enter() {
     core.begin_sketch_group();
     edit(&mut core, &mut scene, target, box_sketch(48, 32, 32));
     edit(&mut core, &mut scene, target, box_sketch(64, 64, 64));
-    let mut selection = Selection::mirroring_scene(&scene);
+    let mut selection = selection_of_first_root(&scene);
     core.cancel_sketch_group(&mut scene, &mut selection);
 
     assert!(!core.in_sketch_group(), "Cancel closes the group");
@@ -140,17 +139,21 @@ fn cancel_restores_the_enter_selection() {
     // because each reversed command restores its own captured `selection_before`.
     let mut core = test_core();
     let (mut scene, target) = single_sketch_scene();
-    // A second node so selection can move to something other than the sketch during the session.
-    scene.active = Some(target);
+    // The workspace arrives with the sketch node picked.
+    let mut selection = selection_of_first_root(&scene);
+    assert_eq!(selection.primary_node_id(), Some(target));
 
     core.begin_sketch_group();
-    edit(&mut core, &mut scene, target, box_sketch(48, 48, 48));
+    core.apply_intent(
+        &mut scene,
+        &mut selection,
+        Intent::SetSketch { target, producer: box_sketch(48, 48, 48) },
+    );
     // The shell moves the selection mid-session (e.g. a sub-element pick), then the user Cancels.
-    scene.active = None;
-    let mut selection = Selection::mirroring_scene(&scene);
+    selection.clear();
     core.cancel_sketch_group(&mut scene, &mut selection);
     assert_eq!(
-        scene.active,
+        selection.primary_node_id(),
         Some(target),
         "Cancel restores the selection captured before the first in-mode edit"
     );
@@ -166,7 +169,7 @@ fn a_non_producer_edit_mid_session_is_captured() {
     assert_eq!(material_of(&scene, target), MaterialChoice::Stone);
 
     core.begin_sketch_group();
-    let mut selection = Selection::mirroring_scene(&scene);
+    let mut selection = selection_of_first_root(&scene);
     core.apply_intent(&mut scene, &mut selection, Intent::SetMaterial { target, material: MaterialChoice::Wood });
     assert_eq!(material_of(&scene, target), MaterialChoice::Wood, "live during the session");
     assert_eq!(core.undo_depth(), 0, "the material edit stays in the session");
@@ -192,7 +195,7 @@ fn in_mode_undo_redo_is_fine_grained() {
     edit(&mut core, &mut scene, target, b.clone());
 
     // In-mode undo reverses ONE edit, staying in the mode and never touching the main stack.
-    let mut selection = Selection::mirroring_scene(&scene);
+    let mut selection = selection_of_first_root(&scene);
     core.undo(&mut scene, &mut selection);
     assert_eq!(
         producer_of(&scene, target),
@@ -226,7 +229,7 @@ fn a_net_zero_session_commits_nothing() {
     let (mut scene, target) = single_sketch_scene();
     core.begin_sketch_group();
     edit(&mut core, &mut scene, target, box_sketch(48, 48, 48));
-    let mut selection = Selection::mirroring_scene(&scene);
+    let mut selection = selection_of_first_root(&scene);
     core.undo(&mut scene, &mut selection); // back to enter (the edit sits on session_redo)
     core.finish_sketch_group();
     assert_eq!(
@@ -247,7 +250,7 @@ fn edits_outside_a_group_stay_singleton_main_transactions() {
     edit(&mut core, &mut scene, target, a.clone());
     edit(&mut core, &mut scene, target, box_sketch(64, 64, 64));
     assert_eq!(core.undo_depth(), 2, "two ordinary edits = two transactions");
-    let mut selection = Selection::mirroring_scene(&scene);
+    let mut selection = selection_of_first_root(&scene);
     core.undo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), a, "one undo reverses one ordinary edit");
     core.undo(&mut scene, &mut selection);
@@ -273,7 +276,7 @@ fn a_fresh_in_mode_edit_clears_the_in_mode_redo() {
     let (mut scene, target) = single_sketch_scene();
     core.begin_sketch_group();
     edit(&mut core, &mut scene, target, box_sketch(48, 32, 32));
-    let mut selection = Selection::mirroring_scene(&scene);
+    let mut selection = selection_of_first_root(&scene);
     core.undo(&mut scene, &mut selection); // to enter; the undone edit sits on session_redo
     let c = box_sketch(64, 64, 64);
     edit(&mut core, &mut scene, target, c.clone()); // a fresh edit clears the redo

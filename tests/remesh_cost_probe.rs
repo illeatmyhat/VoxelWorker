@@ -47,7 +47,13 @@
 //!
 //! Run: `cargo test --release --test remesh_cost_probe -- --ignored --nocapture --test-threads=1`
 
-use ui::panel::Selection;
+use ui::panel::{Selection, SelectionTarget};
+
+/// The workspace selection a fixture arrives with: its first top-level node picked
+/// (ADR 0032 — selection is workspace state, so a probe seeds it explicitly).
+fn selection_of_first_root(scene: &document::scene::Scene) -> Selection {
+    Selection::from_targets(scene.roots.first().copied().map(SelectionTarget::Node))
+}
 use std::time::Instant;
 
 use camera::OrbitCamera;
@@ -94,10 +100,10 @@ fn median(mut samples: Vec<f64>) -> f64 {
 }
 
 /// Add the small dragged Tool node through the same intent the add-flow emits, and return its
-/// minted id (`add_node` selects what it adds, so `scene.active` names it).
+/// minted id (the AddNode dispatch steers the workspace selection onto it).
 fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
     let shape = SdfShape::from_blocks(ShapeKind::Box, DRAGGED_BLOCKS, 1, DENSITY);
-    let mut selection = Selection::mirroring_scene(scene);
+    let mut selection = selection_of_first_root(scene);
     app_core.apply_intent(scene, &mut selection,
         Intent::AddNode {
             content: NodeSpec::Tool {
@@ -106,7 +112,9 @@ fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
             },
         },
     );
-    scene.active.expect("add_node selects the node it mints")
+    selection
+        .primary_node_id()
+        .expect("AddNode steers the selection onto the node it mints")
 }
 
 /// Park the dragged node at `offset_voxels` — the intent half of a drag step, untimed.
@@ -116,7 +124,7 @@ fn move_dragged_node(
     target: NodeId,
     offset_voxels: [i64; 3],
 ) {
-    let mut selection = Selection::mirroring_scene(scene);
+    let mut selection = selection_of_first_root(scene);
     app_core.apply_intent(scene, &mut selection,
         Intent::SetOffset {
             target,

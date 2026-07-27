@@ -161,15 +161,14 @@ pub enum Intent {
         content: NodeSpec,
     },
     /// Wrap the node `target` in a new Group
-    /// ([`Scene::group_active`](crate::scene::Scene::group_active), reached by
-    /// pointing `active` at `target`).
+    /// ([`Scene::wrap_node_in_group`](crate::scene::Scene::wrap_node_in_group)).
     GroupNode {
         /// The node to wrap.
         target: NodeId,
     },
     /// Turn `target` into a reusable definition named `name` + replace it with an
     /// Instance of it
-    /// ([`Scene::make_definition_from_active`](crate::scene::Scene::make_definition_from_active)).
+    /// ([`Scene::make_definition_from_node`](crate::scene::Scene::make_definition_from_node)).
     MakeDefinition {
         /// The node to lift into a definition.
         target: NodeId,
@@ -309,17 +308,10 @@ pub enum Intent {
         floor: bool,
     },
 
-    // --- Selection (view state, but a valid mutation intent) ---
-    /// Set (or clear) the active node selection.
-    SelectNode {
-        /// The node to select, or `None` to clear.
-        target: Option<NodeId>,
-    },
-    /// Set (or clear) the active point selection.
-    SelectPoint {
-        /// The point index to select, or `None` to clear.
-        target: Option<usize>,
-    },
+    // ADR 0032: `SelectNode` / `SelectPoint` were DELETED here. Selecting is not an edit —
+    // it is a VIEW action carried by `PanelResponse::select` and applied by the shell to the
+    // workspace `Selection`. Edits still steer selection, but as a dispatch EFFECT, never as
+    // an intent of their own.
 
     // --- Points (reference elements) ---
     /// Add a reference [`Point`](crate::scene::Point) at `position_blocks` named

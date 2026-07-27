@@ -368,7 +368,7 @@ use crate::voxel::SdfShape;
         cutter.outset = voxel_core::units::Measurement::from_voxels(2);
         cutter.transform = NodeTransform::from_blocks([1, 0, 0], voxels_per_block);
 
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![solid, cutter]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![solid, cutter]));
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "outset-union-and-subtract");
     }
 
@@ -564,7 +564,7 @@ use crate::voxel::SdfShape;
             .node_at_path_mut(&path)
             .expect("the Part resolves at path [0]")
             .outset = voxel_core::units::Measurement::from_voxels(3);
-        let scene = scene_with_top_level_selected(scene, 0);
+        let scene = with_minted_ids(scene);
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "outset-part");
     }
 

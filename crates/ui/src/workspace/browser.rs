@@ -5,11 +5,11 @@
 //! indent, unlike the strip, where a part is one opaque card and depth is navigated rather
 //! than drawn.
 //!
-//! Selecting a row emits `SelectNode`. Selection is view state — it re-resolves nothing and
-//! its inverse is a no-op — but it still travels as an intent, because there is one door for
-//! change and no second way to edit.
+//! Selecting a row asks for a [`SelectionRequest`](crate::panel::SelectionRequest) on the
+//! [`PanelResponse`](crate::panel::PanelResponse). ADR 0032: selection is WORKSPACE state,
+//! not a document edit — it re-resolves nothing and never enters undo history — so it takes
+//! the view-action channel, not the intent door.
 
-use document::intent::Intent;
 use document::scene::{NodeContent, NodeId, Scene};
 
 use super::{hairline, region_frame, Edge, BROWSER_WIDTH};
@@ -48,7 +48,15 @@ pub(super) fn build_browser(
                     // the root is a concrete node, so whole-scene actions are expressed by
                     // selecting a thing rather than by the absence of a selection.
                     for (_, id, depth) in state.scene.tree_rows() {
-                        node_row(ui, &state.scene, id, depth, state.sketch_mode, response);
+                        node_row(
+                            ui,
+                            &state.scene,
+                            id,
+                            depth,
+                            state.selection.primary_node_id(),
+                            state.sketch_mode,
+                            response,
+                        );
                     }
                 });
         });
@@ -75,13 +83,14 @@ fn node_row(
     scene: &Scene,
     id: NodeId,
     depth: usize,
+    selected_id: Option<NodeId>,
     sketch_mode: Option<NodeId>,
     response: &mut PanelResponse,
 ) {
     let Some(node) = scene.node_by_id(id) else {
         return;
     };
-    let selected = scene.active == Some(id);
+    let selected = selected_id == Some(id);
     let editing = sketch_mode == Some(id);
     let (rect, row) = ui.allocate_exact_size(
         egui::vec2(BROWSER_WIDTH, ROW_HEIGHT),
@@ -133,7 +142,9 @@ fn node_row(
     }
 
     if row.clicked() && !selected {
-        response.emit(Intent::SelectNode { target: Some(id) });
+        response.select = Some(crate::panel::SelectionRequest::Only(
+            crate::panel::SelectionTarget::Node(id),
+        ));
     }
 }
 

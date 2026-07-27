@@ -256,9 +256,9 @@ impl WindowedState {
         //   * `scene_changed`     → re-resolve the grid (the old `geometry_changed` /
         //                           `scene_changed` rebuild).
         //   * `selection_changed` → re-sync the inspector mirror (the gizmo + node
-        //                           highlight are recomputed every frame below from
-        //                           `scene.active`, so they already track selection —
-        //                           a pure `SelectNode` must NOT force a re-resolve).
+        //                           highlight are recomputed every frame below from the
+        //                           workspace `Selection`, so they already track it —
+        //                           a pure selection click must NOT force a re-resolve).
         //   * `points_changed`    → the Points overlay is rebuilt every frame anyway
         //                           (camera-relative), so no extra work is needed.
         // Camera UX change: edits NO LONGER auto-frame the camera. The camera orbits
@@ -273,6 +273,17 @@ impl WindowedState {
         if let Some(spec) = prepared.panel_response.armed_tool.take() {
             self.armed_tool = Some(spec);
         }
+        // ADR 0032: a clicked row's selection change — a VIEW action on the response, like
+        // `armed_tool`. The shell is the single place a click lands on the workspace
+        // selection; the effect below re-syncs the inspector mirror and the operand ghost
+        // exactly as a selection-only Intent used to.
+        let selection_effect = match prepared.panel_response.select.take() {
+            Some(request) => {
+                self.panel_state.selection.apply_request(request);
+                crate::IntentEffect::selection()
+            }
+            None => crate::IntentEffect::none(),
+        };
         // ADR 0028: enter / leave sketch mode — a VIEW action on the response (entering a mode
         // mutates no document state), like `armed_tool`. Entering scopes the mode to the
         // requested node, disarms any placement tool (non-sketch ops withdraw in the mode), and
@@ -324,7 +335,7 @@ impl WindowedState {
         // SAME door as the panel's edits (taken BEFORE the borrow of `prepared` ends), so
         // a placement re-resolves + rebuilds identically to a panel-driven add.
         intents.extend(std::mem::take(&mut self.viewport_intents));
-        let mut merged_effect = sketch_effect.merged_with(drag_effect);
+        let mut merged_effect = sketch_effect.merged_with(drag_effect).merged_with(selection_effect);
         for intent in intents {
             let effect = self
                 .app_core
@@ -347,12 +358,12 @@ impl WindowedState {
             // `sync_mirror_from_active` after EVERY structural action (add / group /
             // make-definition / add-instance / delete — each of which changes the
             // active node) AND on a row select; we reproduce that by syncing on a
-            // `selection_changed` (a pure `SelectNode`) OR a `scene_changed` (a
+            // `selection_changed` (a pure selection click) OR a `scene_changed` (a
             // structural edit may have moved the active selection to a freshly-added /
             // re-derived node). Syncing after an inspector `SetShape`/`SetDensity` is a
             // harmless no-op (the node now equals the buffer it was written from). The
-            // transform gizmo + row highlight read `scene.active` live each frame, so a
-            // pure `SelectNode` updates them WITHOUT a re-resolve (the efficiency win).
+            // transform gizmo + row highlight read the workspace `Selection` live each
+            // frame, so a pure selection click updates them WITHOUT a re-resolve.
             self.panel_state.sync_mirror_from_active();
         }
         if merged_effect.scene_changed {
@@ -363,26 +374,26 @@ impl WindowedState {
             self.rebuild_geometry();
         }
         // ADR 0018 Decision 6: re-derive the boolean-operand ghost on selection /
-        // geometry / MODE change ONLY (never per frame). A `SelectNode` marks it dirty
+        // geometry / MODE change ONLY (never per frame). A selection click marks it dirty
         // without a scene re-resolve; the derivation is bounded by the ghosted operands'
         // covering chunks (`AppCore::boolean_operand_ghost`), so this stays cheap even in
-        // a huge scene. The `active` / mode comparisons are belt-and-braces for any
+        // a huge scene. The selection / mode comparisons are belt-and-braces for any
         // selection or mode writer that bypassed the Intent effects. The ghost is
         // populated only in Show-booleans mode; Normal / Onion-fog derive nothing.
         if merged_effect.selection_changed || merged_effect.scene_changed {
             self.selected_ghost_dirty = true;
         }
         if self.selected_ghost_dirty
-            || self.selected_ghost_selection != self.panel_state.scene.active
+            || self.selected_ghost_selection != self.panel_state.selection.primary_node_id()
             || self.selected_ghost_view_mode != self.panel_state.view_mode
         {
             self.selected_ghost_dirty = false;
-            self.selected_ghost_selection = self.panel_state.scene.active;
+            self.selected_ghost_selection = self.panel_state.selection.primary_node_id();
             self.selected_ghost_view_mode = self.panel_state.view_mode;
             let ghost = self
                 .panel_state
-                .scene
-                .active
+                .selection
+                .primary_node_id()
                 .filter(|_| self.panel_state.view_mode == crate::ViewMode::ShowBooleans)
                 .and_then(|target| {
                     AppCore::boolean_operand_ghost(
@@ -513,7 +524,7 @@ impl WindowedState {
         // selected, or selection has no extent) hides it. Its camera upload rides the shared
         // overlay-uniforms call below; here we only resolve WHETHER it is placed (the phase
         // assembly gates its draw on this).
-        let gizmo_placement = self.panel_state.scene.active.and_then(|target| {
+        let gizmo_placement = self.panel_state.selection.primary_node_id().and_then(|target| {
             AppCore::gizmo_placement_for_id(
                 &self.panel_state.scene,
                 target,

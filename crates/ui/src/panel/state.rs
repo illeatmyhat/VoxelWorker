@@ -672,6 +672,22 @@ impl PanelState {
         self.scene.ensure_origin_point();
         // ADR 0003 Phase B: mint a stable NodeId for every node (idempotent).
         self.scene.ensure_node_ids();
+        // ADR 0032: the workspace arrives with the seed node picked, so the inspector has
+        // something to mirror on a fresh launch. Only when nothing is picked yet — a
+        // config-restored selection wins.
+        if self.selection.is_empty() {
+            self.selection
+                .set_primary_node(self.scene.roots.first().copied());
+        }
+    }
+
+    /// The primary selected node (ADR 0032) — the successor of `Scene::active_node()`, now
+    /// resolved against the workspace [`selection`](Self::selection) rather than a document
+    /// field. `None` when no node is picked, or when the picked id has left the scene.
+    pub fn selected_node(&self) -> Option<&document::scene::Node> {
+        self.selection
+            .primary_node_id()
+            .and_then(|id| self.scene.node_by_id(id))
     }
 
     /// Copy the active node's parameters into the inspector mirror
@@ -680,7 +696,8 @@ impl PanelState {
     /// active node changes (selection or delete). A VoxelBody active node leaves the
     /// mirror untouched (its editor shows name + seed instead).
     pub fn sync_mirror_from_active(&mut self) {
-        if let Some(node) = self.scene.active_node() {
+        let selected_id = self.selection.primary_node_id();
+        if let Some(node) = selected_id.and_then(|id| self.scene.node_by_id(id)) {
             // A sketch node shares the single `material` field; mirror it so the
             // inspector's Material selector reflects the selected sketch's material
             // (its producer is read straight from the node, not from the geometry
@@ -770,15 +787,22 @@ pub struct PanelResponse {
     pub enter_sketch: Option<NodeId>,
     /// The user chose **Delete** from the general viewport context menu while in sketch mode this
     /// frame (ADR 0030) → the shell deletes the current sketch selection (points cascade their
-    /// segments) as one edit and clears it. A VIEW action routed through the response (the selection
-    /// + the commit path live on the shell, not the panel), like [`focus_node`](Self::focus_node).
-    /// `false` when no sketch delete was requested.
+    /// segments) as one edit and clears it. A VIEW action routed through the response (both the
+    /// selection and the commit path live on the shell, not the panel), like
+    /// [`focus_node`](Self::focus_node). `false` when no sketch delete was requested.
     pub delete_sketch_selection: bool,
     /// How the user asked to **leave sketch mode** this frame (ADR 0028), via the floating
     /// `CANCEL | FINISH SKETCH` control — `Finish` commits, `Cancel` discards. A VIEW action:
     /// the shell clears [`PanelState::sketch_mode`](PanelState::sketch_mode) (and, from #94,
     /// closes/rolls-back the undo group). `None` when no exit was requested.
     pub exit_sketch: Option<SketchExit>,
+    /// How the user asked the **workspace selection** to change this frame (ADR 0032) — a
+    /// clicked browser/tree/points row, or a deselect. A VIEW action, NOT a document
+    /// `Intent`: selecting is not an edit and reverses nothing, so it rides on the response
+    /// like [`focus_node`](Self::focus_node) and the shell lands it on
+    /// [`PanelState::selection`](PanelState::selection). `None` when the selection was not
+    /// touched this frame.
+    pub select: Option<super::SelectionRequest>,
 }
 
 impl PanelResponse {

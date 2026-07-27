@@ -90,14 +90,37 @@ fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Mint stable [`NodeId`](document::scene::NodeId)s for a freshly-built demo scene and select its first
-/// top-level node by id (ADR 0003 Phase B3: selection is keyed by [`NodeId`](document::scene::NodeId), so a
-/// demo built with positional intent ("select node 0") must resolve that to an id
-/// after minting). The later `ensure_node_ids` on the load path is idempotent.
-fn selecting_first_node(mut scene: Scene) -> Scene {
+/// Mint stable [`NodeId`](document::scene::NodeId)s for a freshly-built demo scene, so the
+/// fixture can name its arriving selection by id (ADR 0003 Phase B3: selection is keyed by
+/// [`NodeId`](document::scene::NodeId), so a demo built with positional intent — "select node
+/// 0" — resolves that to an id here). The later `ensure_node_ids` on the load path is
+/// idempotent.
+fn with_node_ids(mut scene: Scene) -> Scene {
     scene.ensure_node_ids();
-    scene.active = scene.roots.first().copied();
     scene
+}
+
+/// A demo fixture: the scene AND how the workspace arrives — which node is selected. ADR 0032
+/// moved selection out of the document, so a demo can no longer smuggle it on the scene.
+pub(crate) struct DemoScene {
+    /// The built scene.
+    pub scene: Scene,
+    /// The node the capture arrives with selected, `None` for nothing picked.
+    pub selection: Option<document::scene::NodeId>,
+}
+
+impl DemoScene {
+    /// The usual demo: its first top-level node arrives selected.
+    pub(crate) fn first_node(scene: Scene) -> Self {
+        let scene = with_node_ids(scene);
+        let selection = scene.roots.first().copied();
+        Self { scene, selection }
+    }
+
+    /// A demo (or a non-demo capture path) that names its own arriving selection.
+    pub(crate) fn selecting(scene: Scene, selection: Option<document::scene::NodeId>) -> Self {
+        Self { scene, selection }
+    }
 }
 
 /// Build the `--demo-scene` (ADR 0001 step 3): a hardcoded multi-node PLACED
@@ -114,7 +137,7 @@ fn selecting_first_node(mut scene: Scene) -> Scene {
 /// solid that makes the disjoint placement unambiguous in the PNG. VoxelBody placement
 /// itself is covered by the scene.rs unit tests (a VoxelBody stamps under its offset),
 /// and the in-app inspector offsets both Tools and Parts.
-pub(crate) fn build_demo_scene(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_scene(voxels_per_block: u32) -> DemoScene {
     let make_tool = |kind, offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
         let mut node = Node::new(
@@ -124,14 +147,14 @@ pub(crate) fn build_demo_scene(voxels_per_block: u32) -> Scene {
         node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+    let mut scene = with_node_ids(Scene::from_nodes(vec![
         make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
         make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
         make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
     ]));
     // Density is document-level (ADR 0003 §3f(0)).
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-overlap` (ADR 0010 E3 / #50): two solid boxes of DIFFERENT materials
@@ -140,19 +163,19 @@ pub(crate) fn build_demo_scene(voxels_per_block: u32) -> Scene {
 /// so it wins where they overlap), and the golden pins that the dense and two-layer paths
 /// render this IDENTICALLY. The boxes are 4 blocks each, offset 2 blocks in X+Y so a corner
 /// volume overlaps; their union is a recognizable two-tone L-ish solid.
-pub(crate) fn build_demo_overlap(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_overlap(voxels_per_block: u32) -> DemoScene {
     let make = |kind, offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, [4, 4, 4], 1, voxels_per_block);
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
         node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+    let mut scene = with_node_ids(Scene::from_nodes(vec![
         make(ShapeKind::Box, [0, 0, 0], MaterialChoice::Stone),
         make(ShapeKind::Box, [2, 2, 0], MaterialChoice::Wood),
     ]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-subtract` (ADR 0017 / #73): a solid Stone box CARVED by a smaller
@@ -164,7 +187,7 @@ pub(crate) fn build_demo_overlap(voxels_per_block: u32) -> Scene {
 /// surviving cells keep their material.
 ///
 /// [`CombineOp::Subtract`]: voxel_worker::CombineOp
-pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> DemoScene {
     let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
@@ -172,14 +195,14 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> Scene {
         node.operation = operation;
         node
     };
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+    let mut scene = with_node_ids(Scene::from_nodes(vec![
         make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body"),
         // Placed AFTER the body ⇒ it carves it (document-order fold). Spans blocks
         // [2, 4)³ inside the body plus empty space beyond — the corner octant notch.
         make([2, 2, 2], [2, 2, 2], MaterialChoice::Wood, CombineOp::Subtract, "Cutter"),
     ]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-buried-cutter` (issue #78): a solid 4³-block Stone host carrying a
@@ -192,7 +215,7 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> Scene {
 /// an occupancy-only mask).
 ///
 /// [`CombineOp::Subtract`]: voxel_worker::CombineOp
-pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> DemoScene {
     let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
@@ -207,10 +230,10 @@ pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> Scene {
         make([2, 2, 2], [1, 1, 1], MaterialChoice::Wood, CombineOp::Subtract, "Buried cutter"),
     ]);
     scene.ensure_node_ids();
-    // Select the CUTTER (the demo's whole point): the selected-operand ghost x-rays it.
-    scene.active = scene.roots.get(1).copied();
     scene.voxels_per_block = voxels_per_block;
-    scene
+    // Arrive with the CUTTER selected (the demo's whole point): the operand ghost x-rays it.
+    let cutter = scene.roots.get(1).copied();
+    DemoScene::selecting(scene, cutter)
 }
 
 /// Build the `--demo-child-booleans` scene (ADR 0018 Decision 6): a Group whose 4³-block
@@ -220,7 +243,7 @@ pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> Scene {
 /// (no selection, no mode baked in): the golden pins the two viewer modes by flag —
 /// `--select-root --view-mode booleans` x-rays both cutters, `--view-mode normal` shows
 /// the finished carved look with zero ghosts.
-pub(crate) fn build_demo_child_booleans(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_child_booleans(voxels_per_block: u32) -> DemoScene {
     let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
@@ -243,9 +266,10 @@ pub(crate) fn build_demo_child_booleans(voxels_per_block: u32) -> Scene {
         ],
     )]);
     scene.ensure_node_ids();
-    scene.active = None;
     scene.voxels_per_block = voxels_per_block;
-    scene
+    // Arrives with NOTHING selected: the golden proves the child booleans render without
+    // any selection-driven ghost.
+    DemoScene::selecting(scene, None)
 }
 
 /// Build the `--demo-intersect` (ADR 0017 / #75): a solid Stone body box INTERSECTED by an
@@ -256,7 +280,7 @@ pub(crate) fn build_demo_child_booleans(voxels_per_block: u32) -> Scene {
 /// must render STONE — visible proof that surviving cells keep their ACCUMULATED material.
 ///
 /// [`CombineOp::Intersect`]: voxel_worker::CombineOp
-pub(crate) fn build_demo_intersect(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_intersect(voxels_per_block: u32) -> DemoScene {
     let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
@@ -264,14 +288,14 @@ pub(crate) fn build_demo_intersect(voxels_per_block: u32) -> Scene {
         node.operation = operation;
         node
     };
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+    let mut scene = with_node_ids(Scene::from_nodes(vec![
         make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body"),
         // Placed AFTER the body ⇒ it masks it (document-order fold). Spans blocks
         // [2, 6)³, overlapping the body's top corner octant [2, 4)³ — the survivor.
         make([4, 4, 4], [2, 2, 2], MaterialChoice::Wood, CombineOp::Intersect, "Mask"),
     ]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-group-subtract` (ADR 0017 Decision 3 / #74): the SEALED-SCOPE golden.
@@ -285,7 +309,7 @@ pub(crate) fn build_demo_intersect(voxels_per_block: u32) -> Scene {
 /// stamps — the notch faces render Stone).
 ///
 /// [`CombineOp::Subtract`]: voxel_worker::CombineOp
-pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> DemoScene {
     let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
@@ -293,7 +317,7 @@ pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> Scene {
         node.operation = operation;
         node
     };
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+    let mut scene = with_node_ids(Scene::from_nodes(vec![
         // The bystander spans blocks [3,5)³ — its lower corner octant [3,4)³ lies INSIDE
         // the cutter's box. Placed BEFORE the group, so only the scope seal protects it.
         NodeBuilder::Leaf(make(
@@ -315,7 +339,7 @@ pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> Scene {
         ),
     ]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-cutter-def` (ADR 0017 / #76): the REUSABLE CUTTER golden. ONE
@@ -328,7 +352,7 @@ pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> Scene {
 /// mask, so every notch face renders STONE.
 ///
 /// [`CombineOp::Subtract`]: voxel_worker::CombineOp
-pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> DemoScene {
     let cutter_def_id = DefId(1);
     let host = |offset: [i64; 3], name: &str| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
@@ -366,7 +390,7 @@ pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> Scene {
         }],
     );
     scene.voxels_per_block = voxels_per_block;
-    selecting_first_node(scene)
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-window-fixture` (ADR 0017 Decision 4 / #77): THE WINDOW golden.
@@ -381,7 +405,7 @@ pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> Scene {
 /// appears nowhere (a Subtract never stamps), and the instance's own operation is
 /// left at the default (it is INERT on a fixture instance — the spliced children fold
 /// under their own operations).
-pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> DemoScene {
     let window_def_id = DefId(1);
     let wall = {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [8, 1, 6], 1, voxels_per_block);
@@ -422,7 +446,7 @@ pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> Scene {
     );
     scene.set_definition_fixture(window_def_id, true);
     scene.voxels_per_block = voxels_per_block;
-    selecting_first_node(scene)
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials
@@ -431,19 +455,19 @@ pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> Scene {
 /// (per-record material ids shade each block from its own record); the golden locks its
 /// brick render == its mesh render. The 4-block boxes sit 8 blocks apart in X (`CHUNK_
 /// BLOCKS` is 4, so they land in disjoint chunks with an empty chunk between).
-pub(crate) fn build_demo_two_material(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_two_material(voxels_per_block: u32) -> DemoScene {
     let make = |offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
         let mut node = Node::new(format!("{material:?}"), NodeContent::Tool { shape, material });
         node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+    let mut scene = with_node_ids(Scene::from_nodes(vec![
         make([0, 0, 0], MaterialChoice::Stone),
         make([8, 0, 0], MaterialChoice::Wood),
     ]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-mixed-material` (material atlas / ADR 0013): two solid boxes of DISTINCT
@@ -454,7 +478,7 @@ pub(crate) fn build_demo_two_material(voxels_per_block: u32) -> Scene {
 /// Wood box the overlap voxels; the Stone voxels the offset leaves uncovered stay Stone in the
 /// same block). The golden pins its brick render == its mesh render — the proof the mixed-material
 /// mesh cliff is closed. The 2-voxel X offset lands mid-block for any `voxels_per_block >= 3`.
-pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> DemoScene {
     use voxel_core::units::Measurement;
     let stone = {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
@@ -476,9 +500,9 @@ pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> Scene {
         );
         node
     };
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![stone, wood]));
+    let mut scene = with_node_ids(Scene::from_nodes(vec![stone, wood]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-village` (ADR 0001 step 4): an **instanced** scene that
@@ -489,7 +513,7 @@ pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> Scene {
 /// locations from a single definition — the village-of-reused-houses case. The
 /// headless capture confirms the repeated assembly shows up at multiple disjoint
 /// locations.
-pub(crate) fn build_demo_village(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_village(voxels_per_block: u32) -> DemoScene {
     // The default village sits at the origin; the far-scene golden (ADR 0010 D0)
     // reuses the SAME builder with a far base offset.
     build_demo_village_at(voxels_per_block, [0, 0, 0])
@@ -504,7 +528,7 @@ pub(crate) fn build_demo_village(voxels_per_block: u32) -> Scene {
 /// crisp today because the resolve rebases to the composite floating-origin in i64
 /// before the f32 downcast (S4b); this golden is the baseline the §3a chunk-local
 /// payload move (#48) must preserve.
-pub(crate) fn build_demo_village_far(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_village_far(voxels_per_block: u32) -> DemoScene {
     build_demo_village_at(voxels_per_block, FAR_SCENE_BASE_BLOCKS)
 }
 
@@ -513,7 +537,7 @@ pub(crate) fn build_demo_village_far(voxels_per_block: u32) -> Scene {
 /// placement, shifting the WHOLE composite without changing its internal layout or
 /// span. With `[0, 0, 0]` the output is byte-identical to the historical
 /// `--demo-village`.
-fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) -> Scene {
+fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) -> DemoScene {
     let house_def_id = DefId(1);
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
@@ -562,7 +586,7 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
         ],
     );
     scene.voxels_per_block = voxels_per_block;
-    selecting_first_node(scene)
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-sketch-extrude` (ADR 0003 §3i Slice 2a): a single
@@ -581,7 +605,7 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
 /// two-layer / brick display + per-chunk fog at large scale (e.g. an 800³ cube) at a
 /// fixed density. Profile coords are absolute voxels, so the cube's block size is
 /// `edge_voxels / voxels_per_block`.
-pub(crate) fn build_demo_sketch_box(edge_voxels: i64, voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_sketch_box(edge_voxels: i64, voxels_per_block: u32) -> DemoScene {
     let edge = edge_voxels.max(1);
     let profile = vec![
         SketchPoint::new(0, 0),
@@ -597,12 +621,12 @@ pub(crate) fn build_demo_sketch_box(edge_voxels: i64, voxels_per_block: u32) -> 
             material: MaterialChoice::Stone,
         },
     );
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![node]));
+    let mut scene = with_node_ids(Scene::from_nodes(vec![node]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
-pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> DemoScene {
     let density = voxels_per_block.max(1) as i64;
     let two = 2 * density;
     let four = 4 * density;
@@ -625,9 +649,9 @@ pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
             material: MaterialChoice::Wood,
         },
     );
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![node]));
+    let mut scene = with_node_ids(Scene::from_nodes(vec![node]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-sketch-revolve` (ADR 0003 §3i): a single **sketch → revolve →
@@ -643,7 +667,7 @@ pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
 /// `(radius, height)` in voxels. The silhouette: a wide foot, a pinched waist, and a
 /// flared lip — a stepped vase. All extents are whole blocks so the body sits cleanly
 /// on the lattice in the recentred render frame.
-pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
     let block = voxels_per_block.max(1) as i64;
     // Radial profile (radius, height) in voxels, walked up one side of the silhouette
     // from the bottom of the axis, then back DOWN the axis (radius 0) to close — a
@@ -669,9 +693,9 @@ pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> Scene {
             material: MaterialChoice::Stone,
         },
     );
-    let mut scene = selecting_first_node(Scene::from_nodes(vec![node]));
+    let mut scene = with_node_ids(Scene::from_nodes(vec![node]));
     scene.voxels_per_block = voxels_per_block;
-    scene
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
@@ -681,7 +705,7 @@ pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> Scene {
 /// beyond. So the captured panel node list shows: the Group with its two children
 /// nested+indented under it, a top-level Tool, and an Instance row, plus the
 /// Definitions list — the whole authoring surface this step adds.
-pub(crate) fn build_demo_groups(voxels_per_block: u32) -> Scene {
+pub(crate) fn build_demo_groups(voxels_per_block: u32) -> DemoScene {
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material, name: &str| {
         let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
@@ -718,7 +742,7 @@ pub(crate) fn build_demo_groups(voxels_per_block: u32) -> Scene {
         vec![tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Plain, "Ball")],
     );
     scene.voxels_per_block = voxels_per_block;
-    selecting_first_node(scene)
+    DemoScene::first_node(scene)
 }
 
 /// Build the `--demo-far-offset` / `--demo-far-offset-near` scene (ADR 0002

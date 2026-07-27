@@ -73,7 +73,7 @@ use document::scene::Scene;
 use ui::panel::{SignalStackState, SketchTool, ViewMode};
 use voxel_core::core_geom::MaterialChoice;
 
-use crate::settings::{AppConfig, PlacementGhostConfig};
+use crate::settings::{AppConfig, PlacementGhostConfig, SelectionConfig};
 
 /// serde remote-derive shim for the `camera` crate's [`ProjectionMode`], which carries no
 /// serde dependency of its own (the graphics-crate boundary law keeps it to glam +
@@ -287,6 +287,12 @@ pub struct SessionArtifact {
     /// `Select`.
     #[serde(default, with = "SketchToolConfig")]
     pub sketch_tool: SketchTool,
+    /// The workspace selection (ADR 0032) — the picked nodes and reference Points. A dump
+    /// replays with the same things selected; `SelectionConfig` derives its own serde (it
+    /// lives out here, not in the serde-free `ui` crate), so no remote shim is needed. The
+    /// `serde(default)` degrades a pre-field dump to nothing picked.
+    #[serde(default)]
+    pub selection: SelectionConfig,
 }
 
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
@@ -355,6 +361,7 @@ impl DocumentArtifact {
             sketch_mode: _,
             // Declined — session state. Which sketch tool was armed is where they stopped too.
             sketch_tool: _,
+            selection: _,
             // Declined — session/settings. One person's snap preference must not ride into a
             // shared document.
             placement_snap: _,
@@ -414,6 +421,7 @@ impl Dump {
             placement_snap,
             sketch_mode,
             sketch_tool,
+            selection,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -449,6 +457,7 @@ impl Dump {
                 placement_snap: *placement_snap,
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
+                selection: selection.clone(),
             },
         }
     }
@@ -495,6 +504,7 @@ impl Dump {
             placement_snap: session.placement_snap,
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
+            selection: session.selection,
         }
     }
 
@@ -664,6 +674,14 @@ mod tests {
             sketch_mode: Some(document::scene::NodeId(9)),
             // Off its default (Delete, not Select) for the same reason (ADR 0028, #95).
             sketch_tool: SketchTool::Delete,
+            // Off its default (two targets of different kinds, in pick order) so a capture
+            // that dropped the selection fails the round-trip.
+            selection: SelectionConfig {
+                targets: vec![
+                    crate::settings::SelectionTargetConfig::ReferencePoint(2),
+                    crate::settings::SelectionTargetConfig::Node(document::scene::NodeId(7)),
+                ],
+            },
         }
     }
 

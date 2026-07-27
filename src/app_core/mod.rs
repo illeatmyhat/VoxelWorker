@@ -48,6 +48,15 @@ mod sketch_group_tests;
 #[cfg(test)]
 mod intent_dispatch_tests;
 
+/// The workspace [`Selection`](ui::panel::Selection) a test fixture arrives with: its first
+/// top-level node picked. ADR 0032 made selection workspace state, so a test seeds it
+/// explicitly instead of reading it back off the scene.
+#[cfg(test)]
+pub(crate) fn selection_of_first_root(scene: &document::scene::Scene) -> ui::panel::Selection {
+    use ui::panel::{Selection, SelectionTarget};
+    Selection::from_targets(scene.roots.first().copied().map(SelectionTarget::Node))
+}
+
 /// The headless orchestrator: owns the per-chunk resolve `Store` and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
 pub struct AppCore {

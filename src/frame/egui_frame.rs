@@ -272,7 +272,7 @@ pub fn run_egui_frame(
             let delete_enabled = if in_sketch {
                 !panel_state.sketch_selection.is_empty()
             } else {
-                panel_state.scene.active_node().is_some()
+                panel_state.selected_node().is_some()
             };
             let mut close = false;
             let area = egui::Area::new(egui::Id::new("viewport_context_menu"))
@@ -319,7 +319,7 @@ pub fn run_egui_frame(
                                 // The shell owns the selection + the sketch commit path.
                                 panel_response.delete_sketch_selection = true;
                             } else if let Some(id) =
-                                panel_state.scene.active_node().map(|node| node.id)
+                                panel_state.selected_node().map(|node| node.id)
                             {
                                 panel_response.frame_after_apply = true;
                                 panel_response
@@ -424,8 +424,7 @@ pub fn run_egui_frame(
             let density = panel_state.scene.voxels_per_block;
             let dims = panel_state.scene.placed_region_dimensions(density);
             let selection = panel_state
-                .scene
-                .active_node()
+                .selected_node()
                 .map(|node| node.name.as_str())
                 .filter(|name| !name.is_empty());
             ui::chrome::status_line(

@@ -4,6 +4,7 @@
     use display::renderer::LayerBand;
     use document::scene::Scene;
     use ui::panel::Selection;
+    use crate::app_core::selection_of_first_root;
     use document::voxel::{GeometryParams, SdfShape};
     use evaluation::two_layer_store::TwoLayerChunk;
     use voxel_core::core_geom::{MaterialChoice, CHUNK_BLOCKS};
@@ -121,7 +122,7 @@
         };
         Fixture {
             app_core,
-            selection: Selection::mirroring_scene(&scene),
+            selection: selection_of_first_root(&scene),
             scene,
             region_dimensions: output.region_dimensions,
             recentre_voxels: output.recentre_voxels.voxels(),

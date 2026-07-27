@@ -15,7 +15,7 @@ use crate::voxel::SdfShape;
         let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, density);
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform = NodeTransform::from_blocks(offset_blocks, density);
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
+        let scene = with_minted_ids(Scene::from_nodes(vec![node]));
         scene
             .node_block_lattice_box_recentred(&NodePath::root_index(0), density)
             .expect("a sized Box node has a lattice box")
@@ -92,7 +92,7 @@ use crate::voxel::SdfShape;
                 // dominate the composite AABB, fixing the recentre) it must be offset to
                 // `[−100, 100)` blocks, not corner-anchored at the origin.
                 anchor.transform = NodeTransform::from_blocks([-100, -100, -100], density);
-                scene_with_top_level_selected(Scene::from_nodes(vec![moving, anchor]), 0)
+                with_minted_ids(Scene::from_nodes(vec![moving, anchor]))
             };
             let box_of = |offset: [i64; 3]| {
                 make_scene(offset)
@@ -168,7 +168,6 @@ use crate::voxel::SdfShape;
         assert!(scene.master_voxel_grid, "voxel grid master defaults ON");
         assert!(scene.master_floor_grid, "floor grid master defaults ON");
         assert!(scene.points.is_empty(), "no Points until ensure_origin_point");
-        assert_eq!(scene.active_point, None);
     }
 
     /// `ensure_origin_point` is idempotent and creates EXACTLY one Origin at index 0
@@ -427,8 +426,7 @@ use crate::voxel::SdfShape;
         built.master_block_lattice = false;
         built.master_voxel_grid = true;
         built.master_floor_grid = true;
-        built.active_point = Some(1);
-        let mut scene = scene_with_top_level_selected(built, 0);
+        let mut scene = with_minted_ids(built);
         scene.ensure_origin_point();
         // Push directly (not via `add_point`, which overrides plane/axis flags to the
         // new-point default) so the round-trip exercises non-default per-axis flags.
@@ -465,7 +463,7 @@ use crate::voxel::SdfShape;
     fn old_scene_json_loads_with_grid_defaults() {
         // Build a one-Box scene, serialize it, then STRIP the optional fields that an
         // old document would not carry (the per-node `grids`, the scene-wide masters,
-        // `points`, `active_point`). Deserializing the trimmed JSON must fill every
+        // `points`). Deserializing the trimmed JSON must fill every
         // missing field with its struct default.
         let node = Node::new(
             "Box",
@@ -482,7 +480,6 @@ use crate::voxel::SdfShape;
         object.remove("master_voxel_grid");
         object.remove("master_floor_grid");
         object.remove("points");
-        object.remove("active_point");
         // Strip every node's `grids` so the per-node default (#29 all-off) is exercised.
         if let Some(arena) = object.get_mut("arena").and_then(|a| a.as_object_mut()) {
             for stored in arena.values_mut() {
@@ -499,7 +496,6 @@ use crate::voxel::SdfShape;
         assert!(scene.master_block_lattice, "lattice master default on");
         assert!(scene.master_voxel_grid && scene.master_floor_grid, "all masters default on");
         assert!(scene.points.is_empty(), "no points in the old document");
-        assert_eq!(scene.active_point, None);
     }
 
     /// Issue #29 S2: the transform gizmo's pivot is the target node's block-AABB
@@ -585,7 +581,7 @@ use crate::voxel::SdfShape;
             let mut node =
                 Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
             node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
-            let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
+            let scene = with_minted_ids(Scene::from_nodes(vec![node]));
             let (pivot, _) = scene
                 .gizmo_placement_for_id(scene.roots[0], vpb)
                 .expect("gizmo shown");
@@ -614,7 +610,7 @@ use crate::voxel::SdfShape;
             let mut node =
                 Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
             node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
-            let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
+            let scene = with_minted_ids(Scene::from_nodes(vec![node]));
             let (pivot, _) = scene
                 .gizmo_placement_for_id(scene.roots[0], vpb)
                 .expect("gizmo shown");

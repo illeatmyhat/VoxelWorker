@@ -36,10 +36,10 @@ pub(super) fn build_inspector_section(
         RootPart,
         None,
     }
-    let kind = if state.scene.active == Some(ROOT_NODE_ID) {
+    let kind = if state.selection.primary_node_id() == Some(ROOT_NODE_ID) {
         ActiveKind::RootPart
     } else {
-        match state.scene.active_node().map(|node| &node.content) {
+        match state.selected_node().map(|node| &node.content) {
         Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
         // ADR 0003 §3i: a sketch node shows the rectangle-profile editor
         // (Plane / Width / Depth / Height) — or, for a hand-built non-rectangular
@@ -67,7 +67,7 @@ pub(super) fn build_inspector_section(
             // shape-chip switch (no auto-frame, guard #1) and a size/wall edit
             // (auto-frame). Density is GLOBAL → `SetDensity` (rewrites every Tool);
             // material → `SetMaterial`. The mirror is now ONLY the widget buffer.
-            let active = state.scene.active;
+            let active = state.selection.primary_node_id();
             let shape_changed = build_shape_section(ui, state);
             let size_changed = build_size_section(ui, state);
             let density_changed = build_density_section(ui, state);
@@ -139,8 +139,7 @@ pub(super) fn build_inspector_section(
             // spliced children fold under their own operations): the selector is
             // HIDDEN there — no dead control.
             let operation_inert = state
-                .scene
-                .active_node()
+                .selected_node()
                 .is_some_and(|node| state.scene.node_operation_is_inert(node));
             if !operation_inert {
                 build_operation_section(ui, state, response);
@@ -176,7 +175,7 @@ fn build_group_inspector_section(
     ui.add_space(8.0);
     theme::section_heading(ui, heading);
     // Capture the def label (immutable borrow) before taking the active node.
-    let def_label = match state.scene.active_node().map(|n| &n.content) {
+    let def_label = match state.selected_node().map(|n| &n.content) {
         Some(NodeContent::Instance(def_id)) => state
             .scene
             .def_by_id(*def_id)
@@ -190,7 +189,7 @@ fn build_group_inspector_section(
             .or_else(|| Some(format!("Def {} (missing)", def_id.0))),
         _ => None,
     };
-    if let (Some(target), Some(node)) = (state.scene.active, state.scene.active_node()) {
+    if let (Some(target), Some(node)) = (state.selection.primary_node_id(), state.selected_node()) {
         let mut name = node.name.clone();
         ui.horizontal(|ui| {
             ui.label("Name");
@@ -225,10 +224,10 @@ fn build_voxel_body_inspector_section(
 ) {
     ui.add_space(8.0);
     theme::section_heading(ui, "Clouds (Body)");
-    let Some(target) = state.scene.active else {
+    let Some(target) = state.selection.primary_node_id() else {
         return;
     };
-    let Some(node) = state.scene.active_node() else {
+    let Some(node) = state.selected_node() else {
         return;
     };
     let mut name = node.name.clone();
@@ -294,12 +293,12 @@ fn build_sketch_inspector_section(
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
-    let Some(target) = state.scene.active else {
+    let Some(target) = state.selection.primary_node_id() else {
         return;
     };
     // Read the active node's producer (clone so the borrow of the scene ends before
     // the material section, which takes `&mut state`).
-    let Some(producer) = state.scene.active_node().and_then(|node| match &node.content {
+    let Some(producer) = state.selected_node().and_then(|node| match &node.content {
         NodeContent::SketchTool { producer, .. } => Some(producer.clone()),
         _ => None,
     }) else {
@@ -550,10 +549,10 @@ fn build_operation_section(
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
-    let Some(target) = state.scene.active else {
+    let Some(target) = state.selection.primary_node_id() else {
         return;
     };
-    let Some(node) = state.scene.active_node() else {
+    let Some(node) = state.selected_node() else {
         return;
     };
     let current = node.operation;
@@ -600,10 +599,10 @@ fn build_operation_section(
 /// producer. A committed edit re-resolves + re-frames the composite (a node moving
 /// changes the composite extent), so it auto-frames the whole composited extent.
 fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
-    let Some(target) = state.scene.active else {
+    let Some(target) = state.selection.primary_node_id() else {
         return;
     };
-    let Some(node) = state.scene.active_node() else {
+    let Some(node) = state.selected_node() else {
         return;
     };
     let density = state.scene.voxels_per_block;
@@ -649,10 +648,10 @@ fn build_node_grids_section(
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
-    let Some(target) = state.scene.active else {
+    let Some(target) = state.selection.primary_node_id() else {
         return;
     };
-    let Some(node) = state.scene.active_node() else {
+    let Some(node) = state.selected_node() else {
         return;
     };
     ui.add_space(8.0);
@@ -736,7 +735,7 @@ fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     };
     // A stable per-active-node key prefix so each selection gets its own buffers
     // (a re-selection re-seeds, like the offset section keys on `target`).
-    let key = state.scene.active;
+    let key = state.selection.primary_node_id();
 
     for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
         let id_base = egui::Id::new(("size_axis", key, axis_index));

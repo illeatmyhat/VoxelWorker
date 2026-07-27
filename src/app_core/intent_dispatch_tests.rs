@@ -1,4 +1,4 @@
-    use ui::panel::Selection;
+    use super::selection_of_first_root;
     use crate::app_core::AppCore;
     use voxel_core::core_geom::MaterialChoice;
     use camera::OrbitCamera;
@@ -44,7 +44,8 @@
         Node::new(format!("{:?}", shape.kind), NodeContent::Tool { shape, material })
     }
 
-    /// A normalized two-Tool scene with stable ids minted, the first node active.
+    /// A normalized two-Tool scene with stable ids minted. The workspace selection a test
+    /// pairs with it comes from `selection_of_first_root` (ADR 0032).
     fn two_tool_scene() -> Scene {
         let mut scene = Scene::from_nodes(vec![
             tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone),
@@ -52,7 +53,6 @@
         ]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        scene.active = scene.roots.first().copied();
         scene
     }
 
@@ -71,7 +71,7 @@
     fn assert_dispatch_matches(scene: &Scene, intent: Intent, direct: impl FnOnce(&mut Scene)) {
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         core.apply_intent(&mut applied, &mut selection, intent);
         let mut expected = scene.clone();
         direct(&mut expected);
@@ -91,7 +91,7 @@
             &scene,
             Intent::AddNode { content: spec.clone() },
             |s| {
-                s.active = Some(s.add_node(spec.into_node()));
+                s.add_node(spec.into_node());
             },
         );
     }
@@ -103,7 +103,7 @@
             &scene,
             Intent::AddNode { content: NodeSpec::CloudsPart },
             |s| {
-                s.active = Some(s.add_node(NodeSpec::CloudsPart.into_node()));
+                s.add_node(NodeSpec::CloudsPart.into_node());
             },
         );
     }
@@ -119,7 +119,7 @@
             &scene,
             Intent::AddNode { content: spec.clone() },
             |s| {
-                s.active = Some(s.add_node(spec.into_node()));
+                s.add_node(spec.into_node());
             },
         );
     }
@@ -141,7 +141,7 @@
             &scene,
             Intent::AddChild { group: group_id, content: spec.clone() },
             |s| {
-                s.active = s.add_child_to_group(group_id, spec.into_node());
+                s.add_child_to_group(group_id, spec.into_node());
             },
         );
     }
@@ -151,7 +151,6 @@
         let scene = two_tool_scene();
         let target = root_id(&scene, 1);
         assert_dispatch_matches(&scene, Intent::GroupNode { target }, |s| {
-            s.active = Some(target);
             s.wrap_node_in_group(target);
         });
     }
@@ -164,7 +163,6 @@
             &scene,
             Intent::MakeDefinition { target, name: "House".to_string() },
             |s| {
-                s.active = Some(target);
                 s.make_definition_from_node(target, "House".to_string());
             },
         );
@@ -179,7 +177,7 @@
             .make_definition_from_node(target, "Body")
             .expect("definition made");
         assert_dispatch_matches(&scene, Intent::AddInstance { def: def_id }, |s| {
-            s.active = s.add_instance(def_id);
+            s.add_instance(def_id);
         });
     }
 
@@ -230,7 +228,6 @@
         ]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        scene.active = scene.roots.first().copied();
         let target = root_id(&scene, 0);
         let producer = box_sketch([7, 5, 3]);
         assert_dispatch_matches(
@@ -253,7 +250,7 @@
         let target = root_id(&scene, 0);
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetSketch { target, producer: box_sketch([2, 2, 2]) },
         );
@@ -413,7 +410,7 @@
         let inside = COORDINATE_LIMIT_BLOCKS - 2; // far corner = inside + 2 == the wall
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([inside, 0, 0]) },
         );
@@ -435,7 +432,7 @@
         let beyond = COORDINATE_LIMIT_BLOCKS + 1;
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([beyond, 0, 0]) },
         );
@@ -452,7 +449,7 @@
         let roots_before = scene.roots.len();
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::PlaceNode {
                 content: NodeSpec::Tool { shape: box_shape([2, 2, 2]), material: MaterialChoice::Stone },
@@ -476,7 +473,7 @@
         let target = root_id(&scene, 0);
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         let rejected = core.apply_intent(&mut applied, &mut selection,
             Intent::SetOffset {
                 target,
@@ -541,7 +538,7 @@
         let scene = two_tool_scene();
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetName { target: NodeId(9999), name: "ghost".to_string() },
         );
@@ -556,7 +553,7 @@
         let target = root_id(&scene, 0);
         let mut core = test_core();
         let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
+        let mut selection = selection_of_first_root(&applied);
         let effect = core.apply_intent(
             &mut applied,
             &mut selection,
@@ -620,34 +617,9 @@
         );
     }
 
-    // === Selection ===
-
-    #[test]
-    fn select_node_dispatches() {
-        let scene = two_tool_scene();
-        let target = root_id(&scene, 1);
-        let mut core = test_core();
-        let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
-        let effect = core.apply_intent(&mut applied, &mut selection, Intent::SelectNode { target: Some(target) });
-        let mut expected = scene.clone();
-        expected.active = Some(target);
-        assert_eq!(applied, expected);
-        assert_eq!(effect, IntentEffect::selection());
-    }
-
-    #[test]
-    fn select_point_dispatches() {
-        let scene = two_tool_scene();
-        let mut core = test_core();
-        let mut applied = scene.clone();
-        let mut selection = Selection::mirroring_scene(&applied);
-        let effect = core.apply_intent(&mut applied, &mut selection, Intent::SelectPoint { target: Some(0) });
-        let mut expected = scene.clone();
-        expected.active_point = Some(0);
-        assert_eq!(applied, expected);
-        assert_eq!(effect, IntentEffect::selection());
-    }
+    // ADR 0032 deleted `Intent::SelectNode` / `SelectPoint`. Selecting is a VIEW action on
+    // `PanelResponse::select`, applied by the shell to the workspace `Selection` — it never
+    // reaches the dispatcher, so there is no dispatch arm left to pin here.
 
     // === Points ===
 
@@ -777,10 +749,6 @@
             Intent::SetNodeGrids { target: NodeId(1), grids },
             Intent::SetDensity { voxels_per_block: 16 },
             Intent::SetGridMasters { voxel: true, lattice: false, floor: true },
-            Intent::SelectNode { target: Some(NodeId(4)) },
-            Intent::SelectNode { target: None },
-            Intent::SelectPoint { target: Some(2) },
-            Intent::SelectPoint { target: None },
             Intent::AddPoint { position_blocks: [1, 2, 3], name: "P".to_string() },
             Intent::RemovePoint { index: 1 },
             Intent::SetPointHidden { index: 0, hidden: true },
@@ -887,18 +855,5 @@
             occupancy_set(&box_shape, density),
             "a default rectangle sketch must resolve to exactly the matching Box"
         );
-    }
-    /// The ADR 0032 slice-4 dual-write net is ARMED: an apply whose workspace selection
-    /// disagrees with the document's outgoing `active` panics rather than silently letting
-    /// the two histories diverge while readers are flipped over one at a time. Retired with
-    /// the document fields in slice 5.
-    #[test]
-    #[should_panic(expected = "workspace selection and Scene::active disagree")]
-    fn the_dual_write_net_catches_a_desync() {
-        let mut scene = two_tool_scene();
-        scene.active = scene.roots.first().copied();
-        let mut selection = Selection::default();
-        let mut core = test_core();
-        core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 8 });
     }
 

@@ -87,7 +87,7 @@ struct WindowedState {
     selected_operand_ghost_renderer: crate::SelectedOperandGhostRenderer,
     /// Forces a boolean-operand ghost re-derivation on the next frame. Set at startup and
     /// whenever an applied Intent reports `selection_changed` / `scene_changed`; the
-    /// render seam also re-derives when `scene.active` or the view mode differs from what
+    /// render seam also re-derives when the primary selection or the view mode differs from what
     /// the ghost was last derived for.
     selected_ghost_dirty: bool,
     /// The selection the ghost meshes were last derived for.
@@ -709,7 +709,7 @@ impl WindowedState {
     fn current_mesh_clip(&self, scene_grid_z: u32) -> crate::MeshClip {
         AppCore::mesh_clip(
             &self.panel_state.scene,
-            self.panel_state.scene.active,
+            self.panel_state.selection.primary_node_id(),
             self.panel_state.geometry.voxels_per_block,
             self.panel_state.view_mode,
             self.panel_state.layer_range,

@@ -237,7 +237,7 @@ fn shape_cell(
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
-    let target = state.scene.active;
+    let target = state.selection.primary_node_id();
     let reserved = kind.is_none() || target.is_none();
     let active = kind.is_some_and(|k| k == state.geometry.shape) && !reserved;
 
