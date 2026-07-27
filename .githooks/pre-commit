@@ -1,0 +1,24 @@
+#!/bin/sh
+# Formatting gate, mirroring CI's `cargo fmt --all --check` step.
+#
+# Enabled by `git config core.hooksPath .githooks` (run once per clone; the
+# setting is local, so this file being versioned is not enough on its own).
+#
+# Check-only, deliberately: rewriting files mid-commit would silently pull
+# unstaged formatting of OTHER files into the commit when a file is only
+# partially staged. A whole-workspace check costs about a second.
+#
+# Bypass for a genuine emergency with `git commit --no-verify`.
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-commit: cargo not on PATH, skipping the formatting check" >&2
+    exit 0
+fi
+
+if ! cargo fmt --all --check >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt would change these files:" >&2
+    cargo fmt --all --check 2>&1 | grep '^Diff in ' | sed 's/^Diff in /  /' | sort -u >&2
+    echo >&2
+    echo "Fix with:  cargo fmt --all" >&2
+    exit 1
+fi

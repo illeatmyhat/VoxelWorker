@@ -143,6 +143,22 @@ impl winit::application::ApplicationHandler for App {
 // main: let el = EventLoop::new()?; el.run_app(&mut App::default())?;
 ```
 
+## Local setup: the formatting hook (one command per clone)
+
+```
+git config core.hooksPath .githooks
+```
+
+`core.hooksPath` is a LOCAL setting, so versioning `.githooks/pre-commit` is not enough on
+its own — every clone runs this once. The hook runs `cargo fmt --all --check` (about a
+second, no build) and refuses the commit if rustfmt would change anything, mirroring CI's
+`Format` step exactly. `rustfmt` is pinned by `rust-toolchain.toml`'s `components`, so the
+hook and CI can never disagree about what "formatted" means. Bypass with `--no-verify`.
+
+The workspace was first formatted in `5157b26`; that commit is listed in
+`.git-blame-ignore-revs`, which GitHub honours automatically and git honours after
+`git config blame.ignoreRevsFile .git-blame-ignore-revs`.
+
 ## Golden-image regression tests (issue #24 — E0 safety net for ADR 0002)
 
 `tests/golden.rs` is an integration test that is ALWAYS compiled; each case skips loudly at
