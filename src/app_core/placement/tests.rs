@@ -3,6 +3,7 @@
     use camera::{OrbitCamera, ProjectionMode};
     use display::renderer::LayerBand;
     use document::scene::Scene;
+    use ui::panel::Selection;
     use document::voxel::{GeometryParams, SdfShape};
     use evaluation::two_layer_store::TwoLayerChunk;
     use voxel_core::core_geom::{MaterialChoice, CHUNK_BLOCKS};
@@ -67,6 +68,7 @@
     struct Fixture {
         app_core: AppCore,
         scene: Scene,
+        selection: Selection,
         region_dimensions: [u32; 3],
         recentre_voxels: [i64; 3],
         chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
@@ -86,7 +88,7 @@
         /// Apply an intent to the scene and rebuild, refreshing the resident chunks —
         /// the pipeline a live placement drives (`apply_intent` → `rebuild`).
         fn apply_and_rebuild(&mut self, intent: Intent) {
-            self.app_core.apply_intent(&mut self.scene, intent);
+            self.app_core.apply_intent(&mut self.scene, &mut self.selection, intent);
             let RebuildOutcome::Built(output) = self.app_core.rebuild(&self.scene, DENSITY) else {
                 panic!("the rebuilt density is in bounds");
             };
@@ -119,6 +121,7 @@
         };
         Fixture {
             app_core,
+            selection: Selection::mirroring_scene(&scene),
             scene,
             region_dimensions: output.region_dimensions,
             recentre_voxels: output.recentre_voxels.voxels(),

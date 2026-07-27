@@ -635,6 +635,15 @@ pub struct PanelState {
     /// dump, the justified use of the escape hatch (ADR 0022/0024).
     #[snapshot(transient)]
     pub sketch_selection: SketchSelection,
+    /// The workspace **selection** — the picked scene nodes and reference Points (ADR 0032).
+    /// The successor of the document's `Scene::active` / `Scene::active_point`: edits steer it
+    /// as an effect, but it is never document truth and undo never restores it as such.
+    ///
+    /// **Session** state alongside [`sketch_mode`](Self::sketch_mode): what you had picked is
+    /// where you left the workspace, never travels in a shared file, and rides the dump so a
+    /// repro re-enters with the same thing selected.
+    #[snapshot(session)]
+    pub selection: super::Selection,
 }
 
 impl PanelState {

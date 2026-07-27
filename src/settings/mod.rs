@@ -453,6 +453,9 @@ impl AppConfig {
             // ADR 0030: the sketch selection is transient in-mode state; a fresh load starts with
             // nothing picked (the config does not persist it — re-entering a sketch clears it anyway).
             sketch_selection: ui::panel::SketchSelection::default(),
+            // Mirrored from the restored scene's outgoing `active` fields just below, once
+            // the scene is in place (ADR 0032 slice 4).
+            selection: ui::panel::Selection::default(),
         };
         // step 8: restore the persisted full scene when present and non-empty;
         // otherwise (a scene-less old config, or a `Some(scene)` with no nodes — a
@@ -501,6 +504,10 @@ impl AppConfig {
                 state.sketch_mode = None;
             }
         }
+        // ADR 0032: the workspace selection is seeded from the loaded scene's outgoing
+        // `active` fields, so the mirror agrees from frame one. Slice 5 deletes those fields
+        // and the selection becomes a session field of its own on the config.
+        state.selection = ui::panel::Selection::mirroring_scene(&state.scene);
         state
     }
 

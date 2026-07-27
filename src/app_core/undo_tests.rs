@@ -1,3 +1,4 @@
+    use ui::panel::Selection;
     use super::*;
     use camera::OrbitCamera;
     use voxel_core::core_geom::MaterialChoice;
@@ -74,18 +75,19 @@
     /// post-apply `after`. Returns the core so the caller can inspect the stacks.
     fn assert_round_trips(scene: &mut Scene, intent: Intent) {
         let mut core = test_core();
+        let mut selection = Selection::mirroring_scene(scene);
         let before = scene.clone();
-        core.apply_intent(scene, intent);
+        core.apply_intent(scene, &mut selection, intent);
         let after = scene.clone();
         assert_ne!(*scene, before, "the forward op must change the scene");
         assert_eq!(core.undo_depth(), 1, "one command pushed");
 
-        core.undo(scene);
+        core.undo(scene, &mut selection);
         assert_eq!(*scene, before, "undo must restore the scene byte-for-byte");
         assert_eq!(core.undo_depth(), 0);
         assert_eq!(core.redo_depth(), 1);
 
-        core.redo(scene);
+        core.redo(scene, &mut selection);
         assert_eq!(*scene, after, "redo must restore the post-apply scene byte-for-byte");
         assert_eq!(core.undo_depth(), 1);
         assert_eq!(core.redo_depth(), 0);
@@ -340,10 +342,10 @@
         let mut core = test_core();
         let before = scene.clone();
 
-        core.apply_intent(&mut scene, Intent::AddInstance { def });
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::AddInstance { def });
         let minted = scene.active.expect("AddInstance selects the minted instance");
-        core.apply_intent(
-            &mut scene,
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOperation {
                 target: minted,
                 operation: document::scene::CombineOp::Subtract,
@@ -353,15 +355,15 @@
         assert_ne!(scene, before, "the placement must change the scene");
         assert_eq!(core.undo_depth(), 2, "two commands pushed");
 
-        core.undo(&mut scene);
-        core.undo(&mut scene);
+        core.undo(&mut scene, &mut selection);
+        core.undo(&mut scene, &mut selection);
         assert_eq!(
             scene, before,
             "undoing the Subtract-instance placement must restore the hosts intact"
         );
 
-        core.redo(&mut scene);
-        core.redo(&mut scene);
+        core.redo(&mut scene, &mut selection);
+        core.redo(&mut scene, &mut selection);
         assert_eq!(scene, after, "redo must re-apply the carve placement byte-for-byte");
     }
 
@@ -461,8 +463,8 @@
         scene.voxels_per_block = 16;
         let target = scene.roots[1];
         let mut core = test_core();
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: expression },
         );
         assert_eq!(
@@ -474,8 +476,7 @@
         let mut dense = two_tool_scene();
         dense.voxels_per_block = 32;
         let dense_target = dense.roots[1];
-        core.apply_intent(
-            &mut dense,
+        core.apply_intent(&mut dense, &mut selection,
             Intent::SetOffset { target: dense_target, offset_measurements: expression },
         );
         assert_eq!(
@@ -501,21 +502,20 @@
             Measurement::from_voxels(0),
             Measurement::from_voxels(0),
         ];
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: first },
         );
         assert_eq!(scene.node_by_id(target).unwrap().transform.offset_voxels[0], 40);
 
         // A second SetOffset, then undo it → the FIRST expression is restored.
         let second = whole_block_offset([5, 0, 0]);
-        core.apply_intent(
-            &mut scene,
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: second },
         );
         assert_eq!(scene.node_by_id(target).unwrap().transform.offset_voxels[0], 80);
 
-        core.undo(&mut scene);
+        core.undo(&mut scene, &mut selection);
         let restored = scene.node_by_id(target).unwrap().transform.offset_measurements();
         assert_eq!(
             restored, first,
@@ -603,14 +603,15 @@
         let node_id = scene.roots[0];
 
         let mut core = test_core();
-        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 16 });
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 16 });
 
         let after = scene.node_by_id(node_id).expect("node survives");
         assert_eq!(after.transform.blocks(16), [5, 0, 0], "block 5 preserved across d 8→16");
         assert_eq!(after.transform.offset_voxels, [80, 0, 0], "5 blocks @ d=16 = 80 voxels");
         assert!(after.transform.block_aligned(16), "still on the mating lattice");
 
-        core.undo(&mut scene);
+        core.undo(&mut scene, &mut selection);
         let restored = scene.node_by_id(node_id).expect("node survives undo");
         assert_eq!(restored.transform.blocks(8), [5, 0, 0], "block 5 preserved on undo");
         assert_eq!(restored.transform.offset_voxels, [40, 0, 0], "back to 40 voxels @ d=8");
@@ -629,9 +630,9 @@
         let node_id = scene.roots[0];
 
         let mut core = test_core();
-        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 16 });
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 16 });
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target: node_id, offset_measurements: whole_block_offset([3, 0, 0]) },
         );
         assert_eq!(
@@ -641,7 +642,7 @@
         );
 
         // Undo only the SetOffset → back to the pre-offset block placement (block 5).
-        core.undo(&mut scene);
+        core.undo(&mut scene, &mut selection);
         assert_eq!(
             scene.node_by_id(node_id).unwrap().transform.blocks(16),
             [5, 0, 0],
@@ -664,13 +665,13 @@
             Measurement::from_voxels(0),
             Measurement::from_voxels(0),
         ];
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: expression },
         );
         assert_eq!(scene.node_by_id(target).unwrap().transform.offset_voxels[0], 56);
 
-        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 32 });
+        core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 32 });
         let transform = &scene.node_by_id(target).unwrap().transform;
         assert_eq!(
             transform.offset_voxels[0], 104,
@@ -699,7 +700,8 @@
         let node_id = scene.roots[0];
 
         let mut core = test_core();
-        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 32 });
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 32 });
         let transform = &scene.node_by_id(node_id).unwrap().transform;
         assert_eq!(
             transform.offset_voxels[0], 80,
@@ -787,7 +789,8 @@
         let mut scene = two_tool_scene();
         let mut core = test_core();
         let target = scene.roots[1];
-        core.apply_intent(&mut scene, Intent::SelectNode { target: Some(target) });
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SelectNode { target: Some(target) });
         assert_eq!(core.undo_depth(), 0, "selection is not an undoable step");
         assert_eq!(scene.active, Some(target));
     }
@@ -796,7 +799,8 @@
     fn select_point_pushes_no_command() {
         let mut scene = two_tool_scene();
         let mut core = test_core();
-        core.apply_intent(&mut scene, Intent::SelectPoint { target: Some(0) });
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SelectPoint { target: Some(0) });
         assert_eq!(core.undo_depth(), 0, "point selection is not an undoable step");
         assert_eq!(scene.active_point, Some(0));
     }
@@ -808,12 +812,12 @@
         let mut scene = two_tool_scene();
         let before = scene.clone();
         let mut core = test_core();
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetName { target: document::scene::NodeId(9999), name: "ghost".to_string() },
         );
         assert_eq!(scene, before, "a no-op forward changes nothing");
-        core.undo(&mut scene);
+        core.undo(&mut scene, &mut selection);
         assert_eq!(scene, before, "undo of a no-op restores nothing");
     }
 
@@ -826,8 +830,8 @@
         let mut core = test_core();
 
         // A realistic authoring sequence.
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::AddNode {
                 content: NodeSpec::Tool {
                     shape: box_shape([2, 2, 2]),
@@ -836,34 +840,32 @@
             },
         );
         let added = scene.active.expect("added node selected");
-        core.apply_intent(&mut scene, Intent::GroupNode { target: added });
+        core.apply_intent(&mut scene, &mut selection, Intent::GroupNode { target: added });
         // The wrapped child is now active; group IT into a definition.
         let active = scene.active.expect("active after group");
-        core.apply_intent(
-            &mut scene,
+        core.apply_intent(&mut scene, &mut selection,
             Intent::MakeDefinition { target: active, name: "Kit".to_string() },
         );
         let def = scene.definitions.last().expect("def made").id;
-        core.apply_intent(&mut scene, Intent::AddInstance { def });
+        core.apply_intent(&mut scene, &mut selection, Intent::AddInstance { def });
         let instance = scene.active.expect("instance selected");
-        core.apply_intent(
-            &mut scene,
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target: instance, offset_measurements: whole_block_offset([7, 0, 0]) },
         );
-        core.apply_intent(&mut scene, Intent::RemoveNode { target: instance });
+        core.apply_intent(&mut scene, &mut selection, Intent::RemoveNode { target: instance });
 
         let final_scene = scene.clone();
         assert_eq!(core.undo_depth(), 6, "six undoable steps");
 
         // Undo all the way back to the seed.
         for _ in 0..6 {
-            core.undo(&mut scene);
+            core.undo(&mut scene, &mut selection);
         }
         assert_eq!(scene, seed, "undo all the way restores the seed byte-for-byte");
 
         // Redo all the way back to the final scene.
         for _ in 0..6 {
-            core.redo(&mut scene);
+            core.redo(&mut scene, &mut selection);
         }
         assert_eq!(scene, final_scene, "redo all the way restores the final scene");
     }
@@ -873,11 +875,12 @@
         let mut scene = two_tool_scene();
         let mut core = test_core();
         let target = scene.roots[0];
-        core.apply_intent(&mut scene, Intent::SetName { target, name: "First".to_string() });
-        core.undo(&mut scene);
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SetName { target, name: "First".to_string() });
+        core.undo(&mut scene, &mut selection);
         assert_eq!(core.redo_depth(), 1, "undo populated redo");
         // A new, different apply must clear the redo future.
-        core.apply_intent(&mut scene, Intent::SetName { target, name: "Second".to_string() });
+        core.apply_intent(&mut scene, &mut selection, Intent::SetName { target, name: "Second".to_string() });
         assert_eq!(core.redo_depth(), 0, "a fresh edit clears the redo stack");
     }
 
@@ -890,8 +893,9 @@
         let mut scene = two_tool_scene();
         let mut core = test_core();
         let target = scene.roots[0];
-        core.apply_intent(&mut scene, Intent::SetName { target, name: "Renamed".to_string() });
-        let undo_effect = core.undo(&mut scene);
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SetName { target, name: "Renamed".to_string() });
+        let undo_effect = core.undo(&mut scene, &mut selection);
         assert!(undo_effect.scene_changed, "rename re-resolves the scene");
         assert!(!undo_effect.points_changed, "rename does not touch the points overlay");
         assert!(undo_effect.selection_changed, "undo always re-syncs the selection mirror");
@@ -906,7 +910,7 @@
             },
             "undo no longer returns blanket-true",
         );
-        let redo_effect = core.redo(&mut scene);
+        let redo_effect = core.redo(&mut scene, &mut selection);
         assert!(redo_effect.scene_changed);
         assert!(!redo_effect.points_changed, "redo of a rename does not touch points");
     }
@@ -916,8 +920,9 @@
         let mut scene = two_tool_scene();
         let mut core = test_core();
         let target = scene.roots[0];
-        core.apply_intent(&mut scene, Intent::SetShape { target, shape: box_shape([9, 9, 9]) });
-        let undo_effect = core.undo(&mut scene);
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SetShape { target, shape: box_shape([9, 9, 9]) });
+        let undo_effect = core.undo(&mut scene, &mut selection);
         assert!(undo_effect.scene_changed);
         assert!(!undo_effect.points_changed);
     }
@@ -926,8 +931,9 @@
     fn undo_of_point_edit_reports_points_not_scene() {
         let mut scene = two_tool_scene();
         let mut core = test_core();
-        core.apply_intent(&mut scene, Intent::SetPointHidden { index: 0, hidden: true });
-        let undo_effect = core.undo(&mut scene);
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection, Intent::SetPointHidden { index: 0, hidden: true });
+        let undo_effect = core.undo(&mut scene, &mut selection);
         assert!(undo_effect.points_changed, "a point edit is overlay-only");
         assert!(!undo_effect.scene_changed, "a point edit triggers no voxel re-resolve");
         assert!(undo_effect.selection_changed);
@@ -939,16 +945,16 @@
         // must match — claiming scene_changed would wrongly force a re-resolve.
         let mut scene = two_tool_scene();
         let mut core = test_core();
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetGridMasters { voxel: false, lattice: true, floor: false },
         );
-        let undo_effect = core.undo(&mut scene);
+        let undo_effect = core.undo(&mut scene, &mut selection);
         assert!(!undo_effect.scene_changed, "grid masters need no re-resolve");
         assert!(!undo_effect.points_changed, "grid masters do not touch points");
         // Selection is still re-synced (undo restores selection_before).
         assert!(undo_effect.selection_changed);
-        let redo_effect = core.redo(&mut scene);
+        let redo_effect = core.redo(&mut scene, &mut selection);
         assert!(!redo_effect.scene_changed, "redo of grid masters needs no re-resolve");
     }
 
@@ -1006,8 +1012,8 @@
         // Move a node so the composite extent (hence its recentre) shifts.
         let recentre_before = scene.recentre_voxels_for_resolve(density).voxels();
         let target = scene.roots[0];
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([10, -4, 6]) },
         );
         let recentre_after = scene.recentre_voxels_for_resolve(density).voxels();
@@ -1212,8 +1218,8 @@
         assert_eq!(before, 0, "with the flag OFF no voxel may carry the grid_overlay marker");
 
         // Flip ONLY voxel_grid_on_faces ON via the intent door (no other edit).
-        core.apply_intent(
-            &mut scene,
+        let mut selection = Selection::mirroring_scene(&scene);
+        core.apply_intent(&mut scene, &mut selection,
             Intent::SetNodeGrids {
                 target,
                 grids: NodeGrids { voxel_grid_on_faces: true, ..NodeGrids::default() },

@@ -1,3 +1,4 @@
+    use ui::panel::Selection;
     use crate::app_core::AppCore;
     use voxel_core::core_geom::MaterialChoice;
     use camera::OrbitCamera;
@@ -70,7 +71,8 @@
     fn assert_dispatch_matches(scene: &Scene, intent: Intent, direct: impl FnOnce(&mut Scene)) {
         let mut core = test_core();
         let mut applied = scene.clone();
-        core.apply_intent(&mut applied, intent);
+        let mut selection = Selection::mirroring_scene(&applied);
+        core.apply_intent(&mut applied, &mut selection, intent);
         let mut expected = scene.clone();
         direct(&mut expected);
         assert_eq!(applied, expected);
@@ -251,8 +253,8 @@
         let target = root_id(&scene, 0);
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect = core.apply_intent(
-            &mut applied,
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetSketch { target, producer: box_sketch([2, 2, 2]) },
         );
         assert_eq!(applied, scene);
@@ -411,8 +413,8 @@
         let inside = COORDINATE_LIMIT_BLOCKS - 2; // far corner = inside + 2 == the wall
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect = core.apply_intent(
-            &mut applied,
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([inside, 0, 0]) },
         );
         assert!(effect.scene_changed, "an in-bounds offset applies");
@@ -433,8 +435,8 @@
         let beyond = COORDINATE_LIMIT_BLOCKS + 1;
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect = core.apply_intent(
-            &mut applied,
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([beyond, 0, 0]) },
         );
         assert_eq!(applied, scene, "a rejected edit leaves the scene untouched");
@@ -450,8 +452,8 @@
         let roots_before = scene.roots.len();
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect = core.apply_intent(
-            &mut applied,
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::PlaceNode {
                 content: NodeSpec::Tool { shape: box_shape([2, 2, 2]), material: MaterialChoice::Stone },
                 offset_voxels: [(COORDINATE_LIMIT_BLOCKS + 10) * 16, 0, 0],
@@ -474,16 +476,15 @@
         let target = root_id(&scene, 0);
         let mut core = test_core();
         let mut applied = scene.clone();
-        let rejected = core.apply_intent(
-            &mut applied,
+        let mut selection = Selection::mirroring_scene(&applied);
+        let rejected = core.apply_intent(&mut applied, &mut selection,
             Intent::SetOffset {
                 target,
                 offset_measurements: whole_block_offset([COORDINATE_LIMIT_BLOCKS + 50, 0, 0]),
             },
         );
         assert!(rejected.coordinate_limit_rejected);
-        let accepted = core.apply_intent(
-            &mut applied,
+        let accepted = core.apply_intent(&mut applied, &mut selection,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([1, 0, 0]) },
         );
         assert!(!accepted.coordinate_limit_rejected);
@@ -540,8 +541,8 @@
         let scene = two_tool_scene();
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect = core.apply_intent(
-            &mut applied,
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(&mut applied, &mut selection,
             Intent::SetName { target: NodeId(9999), name: "ghost".to_string() },
         );
         assert_eq!(applied, scene);
@@ -555,8 +556,12 @@
         let target = root_id(&scene, 0);
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect =
-            core.apply_intent(&mut applied, Intent::SetShape { target, shape: box_shape([2, 2, 2]) });
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(
+            &mut applied,
+            &mut selection,
+            Intent::SetShape { target, shape: box_shape([2, 2, 2]) },
+        );
         assert_eq!(applied, scene);
         assert_eq!(effect, IntentEffect::none());
     }
@@ -623,7 +628,8 @@
         let target = root_id(&scene, 1);
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect = core.apply_intent(&mut applied, Intent::SelectNode { target: Some(target) });
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(&mut applied, &mut selection, Intent::SelectNode { target: Some(target) });
         let mut expected = scene.clone();
         expected.active = Some(target);
         assert_eq!(applied, expected);
@@ -635,7 +641,8 @@
         let scene = two_tool_scene();
         let mut core = test_core();
         let mut applied = scene.clone();
-        let effect = core.apply_intent(&mut applied, Intent::SelectPoint { target: Some(0) });
+        let mut selection = Selection::mirroring_scene(&applied);
+        let effect = core.apply_intent(&mut applied, &mut selection, Intent::SelectPoint { target: Some(0) });
         let mut expected = scene.clone();
         expected.active_point = Some(0);
         assert_eq!(applied, expected);
@@ -881,3 +888,17 @@
             "a default rectangle sketch must resolve to exactly the matching Box"
         );
     }
+    /// The ADR 0032 slice-4 dual-write net is ARMED: an apply whose workspace selection
+    /// disagrees with the document's outgoing `active` panics rather than silently letting
+    /// the two histories diverge while readers are flipped over one at a time. Retired with
+    /// the document fields in slice 5.
+    #[test]
+    #[should_panic(expected = "workspace selection and Scene::active disagree")]
+    fn the_dual_write_net_catches_a_desync() {
+        let mut scene = two_tool_scene();
+        scene.active = scene.roots.first().copied();
+        let mut selection = Selection::default();
+        let mut core = test_core();
+        core.apply_intent(&mut scene, &mut selection, Intent::SetDensity { voxels_per_block: 8 });
+    }
+

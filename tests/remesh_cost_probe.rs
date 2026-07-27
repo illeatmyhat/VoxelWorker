@@ -47,6 +47,7 @@
 //!
 //! Run: `cargo test --release --test remesh_cost_probe -- --ignored --nocapture --test-threads=1`
 
+use ui::panel::Selection;
 use std::time::Instant;
 
 use camera::OrbitCamera;
@@ -96,8 +97,8 @@ fn median(mut samples: Vec<f64>) -> f64 {
 /// minted id (`add_node` selects what it adds, so `scene.active` names it).
 fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
     let shape = SdfShape::from_blocks(ShapeKind::Box, DRAGGED_BLOCKS, 1, DENSITY);
-    app_core.apply_intent(
-        scene,
+    let mut selection = Selection::mirroring_scene(scene);
+    app_core.apply_intent(scene, &mut selection,
         Intent::AddNode {
             content: NodeSpec::Tool {
                 shape,
@@ -115,8 +116,8 @@ fn move_dragged_node(
     target: NodeId,
     offset_voxels: [i64; 3],
 ) {
-    app_core.apply_intent(
-        scene,
+    let mut selection = Selection::mirroring_scene(scene);
+    app_core.apply_intent(scene, &mut selection,
         Intent::SetOffset {
             target,
             offset_measurements: offset_voxels.map(Measurement::from_voxels),

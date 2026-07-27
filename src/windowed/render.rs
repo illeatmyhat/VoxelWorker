@@ -290,7 +290,10 @@ impl WindowedState {
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => {
-                    self.app_core.cancel_sketch_group(&mut self.panel_state.scene)
+                    self.app_core.cancel_sketch_group(
+                        &mut self.panel_state.scene,
+                        &mut self.panel_state.selection,
+                    )
                 }
             };
             self.panel_state.sketch_mode = None;
@@ -325,7 +328,11 @@ impl WindowedState {
         for intent in intents {
             let effect = self
                 .app_core
-                .apply_intent(&mut self.panel_state.scene, intent);
+                .apply_intent(
+                    &mut self.panel_state.scene,
+                    &mut self.panel_state.selection,
+                    intent,
+                );
             merged_effect = merged_effect.merged_with(effect);
         }
         // Coordinate-limit warning (authoring-time only): latch a rejected edit into the

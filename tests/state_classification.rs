@@ -88,6 +88,10 @@ fn the_escape_hatches_are_exactly_these() {
         [
             // A function of the scene and its density, recomputed at every rebuild.
             ("voxel_cap_warning_millions", StateCategory::Derived),
+            // A function of the last edit's outcome, re-latched at every apply. Added by
+            // `443e789` (the ±1M-block coordinate envelope) without reaching this list, so
+            // this test failed from that commit until ADR 0032 slice 4 ran it again.
+            ("coordinate_limit_warning", StateCategory::Derived),
             // The camera target, rounded to whole blocks, refreshed each frame.
             ("point_add_position_blocks", StateCategory::Derived),
             // ADR 0030: the sketch selection — momentary in-mode editing state, cleared on
@@ -125,6 +129,11 @@ fn the_pan_target_that_started_this_is_classified() {
 /// nothing distinguishes a defensible omission from the pan-target kind.
 const CARRIED_AS_A_SUBSET: &[(&str, &[&str])] = &[
     ("geometry", &["voxels_per_block"]),
+    // ADR 0032 slice 4: the workspace selection persists as the scene's own outgoing
+    // `active` / `active_point`, which `to_panel_state` mirrors back on load. Slice 5
+    // deletes those fields and gives the selection a config field of its own — at which
+    // point this entry goes away.
+    ("selection", &["scene"]),
     (
         "layer_range",
         &["snap_to_blocks", "onion_skin", "onion_depth"],

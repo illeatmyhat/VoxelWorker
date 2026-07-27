@@ -116,8 +116,8 @@ pub use document::intent::{Intent, IntentEffect, NodeSpec};
 pub use voxel_core::core_geom::MaterialChoice;
 pub use ui::panel::{
     build_add_shape_dialog, build_panel, build_signal_stack, cube_right_inset_points,
-    ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost, SignalStackState,
-    ViewMode,
+    ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost, Selection,
+    SelectionTarget, SignalStackState, ViewMode,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{

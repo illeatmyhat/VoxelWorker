@@ -13,6 +13,7 @@
 //!
 //! Run: `cargo test --release --test edit_cost_probe -- --ignored --nocapture`
 
+use ui::panel::Selection;
 use std::time::Instant;
 
 use camera::OrbitCamera;
@@ -87,8 +88,8 @@ fn one_edit_rebuild_cost_by_scene_size() {
                 Measurement::from_voxels(0),
                 Measurement::from_voxels(0),
             ];
-            app_core.apply_intent(
-                &mut scene,
+            let mut selection = Selection::mirroring_scene(&scene);
+            app_core.apply_intent(&mut scene, &mut selection,
                 Intent::SetOffset {
                     target,
                     offset_measurements: offset,
@@ -129,8 +130,8 @@ const DRAGGED_BLOCKS: [u32; 3] = [2, 2, 2];
 /// return its minted id (`add_node` selects what it adds, so `scene.active` names it).
 fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
     let shape = SdfShape::from_blocks(ShapeKind::Box, DRAGGED_BLOCKS, 1, DENSITY);
-    app_core.apply_intent(
-        scene,
+    let mut selection = Selection::mirroring_scene(scene);
+    app_core.apply_intent(scene, &mut selection,
         Intent::AddNode {
             content: NodeSpec::Tool {
                 shape,
@@ -152,8 +153,8 @@ fn timed_offset(
     target: NodeId,
     offset_voxels: [i64; 3],
 ) -> (f64, Option<usize>) {
-    app_core.apply_intent(
-        scene,
+    let mut selection = Selection::mirroring_scene(scene);
+    app_core.apply_intent(scene, &mut selection,
         Intent::SetOffset {
             target,
             offset_measurements: offset_voxels.map(Measurement::from_voxels),

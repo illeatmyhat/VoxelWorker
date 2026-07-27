@@ -10,6 +10,7 @@
 //!
 //! [`apply_intent`]: super::AppCore::apply_intent
 
+use ui::panel::Selection;
 use super::AppCore;
 use camera::OrbitCamera;
 use document::intent::Intent;
@@ -65,7 +66,8 @@ fn material_of(scene: &Scene, id: NodeId) -> MaterialChoice {
 /// Apply an in-mode sketch edit through the SINGLE apply door — while a group is open this
 /// routes into the session (exactly what the live inspector / vertex drag do).
 fn edit(core: &mut AppCore, scene: &mut Scene, target: NodeId, producer: SketchSolid) {
-    core.apply_intent(scene, Intent::SetSketch { target, producer });
+    let mut selection = Selection::mirroring_scene(scene);
+    core.apply_intent(scene, &mut selection, Intent::SetSketch { target, producer });
 }
 
 #[test]
@@ -98,14 +100,15 @@ fn finish_commits_the_session_as_one_main_entry() {
     );
 
     // A SINGLE main-stack undo reverses the ENTIRE session back to the enter-state.
-    core.undo(&mut scene);
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.undo(&mut scene, &mut selection);
     assert_eq!(
         producer_of(&scene, target),
         enter,
         "one undo past the sketch reverses all of it"
     );
     // And a single redo re-applies the whole session.
-    core.redo(&mut scene);
+    core.redo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), final_producer);
 }
 
@@ -118,7 +121,8 @@ fn cancel_rolls_the_session_back_to_enter() {
     core.begin_sketch_group();
     edit(&mut core, &mut scene, target, box_sketch(48, 32, 32));
     edit(&mut core, &mut scene, target, box_sketch(64, 64, 64));
-    core.cancel_sketch_group(&mut scene);
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.cancel_sketch_group(&mut scene, &mut selection);
 
     assert!(!core.in_sketch_group(), "Cancel closes the group");
     assert_eq!(
@@ -143,7 +147,8 @@ fn cancel_restores_the_enter_selection() {
     edit(&mut core, &mut scene, target, box_sketch(48, 48, 48));
     // The shell moves the selection mid-session (e.g. a sub-element pick), then the user Cancels.
     scene.active = None;
-    core.cancel_sketch_group(&mut scene);
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.cancel_sketch_group(&mut scene, &mut selection);
     assert_eq!(
         scene.active,
         Some(target),
@@ -161,11 +166,12 @@ fn a_non_producer_edit_mid_session_is_captured() {
     assert_eq!(material_of(&scene, target), MaterialChoice::Stone);
 
     core.begin_sketch_group();
-    core.apply_intent(&mut scene, Intent::SetMaterial { target, material: MaterialChoice::Wood });
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.apply_intent(&mut scene, &mut selection, Intent::SetMaterial { target, material: MaterialChoice::Wood });
     assert_eq!(material_of(&scene, target), MaterialChoice::Wood, "live during the session");
     assert_eq!(core.undo_depth(), 0, "the material edit stays in the session");
 
-    core.cancel_sketch_group(&mut scene);
+    core.cancel_sketch_group(&mut scene, &mut selection);
     assert_eq!(
         material_of(&scene, target),
         MaterialChoice::Stone,
@@ -186,7 +192,8 @@ fn in_mode_undo_redo_is_fine_grained() {
     edit(&mut core, &mut scene, target, b.clone());
 
     // In-mode undo reverses ONE edit, staying in the mode and never touching the main stack.
-    core.undo(&mut scene);
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.undo(&mut scene, &mut selection);
     assert_eq!(
         producer_of(&scene, target),
         a,
@@ -195,20 +202,20 @@ fn in_mode_undo_redo_is_fine_grained() {
     assert!(core.in_sketch_group(), "in-mode undo stays in the mode");
     assert_eq!(core.undo_depth(), 0, "in-mode undo never touches the main stack");
 
-    core.undo(&mut scene);
+    core.undo(&mut scene, &mut selection);
     assert_eq!(
         producer_of(&scene, target),
         enter,
         "a second in-mode undo reaches the enter-state"
     );
     // Undo past the enter-state is a no-op — the enter is not itself an edit.
-    core.undo(&mut scene);
+    core.undo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), enter, "undo past enter is a no-op");
 
     // In-mode redo re-applies each edit in turn.
-    core.redo(&mut scene);
+    core.redo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), a);
-    core.redo(&mut scene);
+    core.redo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), b);
 }
 
@@ -219,7 +226,8 @@ fn a_net_zero_session_commits_nothing() {
     let (mut scene, target) = single_sketch_scene();
     core.begin_sketch_group();
     edit(&mut core, &mut scene, target, box_sketch(48, 48, 48));
-    core.undo(&mut scene); // back to enter (the edit sits on session_redo)
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.undo(&mut scene, &mut selection); // back to enter (the edit sits on session_redo)
     core.finish_sketch_group();
     assert_eq!(
         core.undo_depth(),
@@ -239,9 +247,10 @@ fn edits_outside_a_group_stay_singleton_main_transactions() {
     edit(&mut core, &mut scene, target, a.clone());
     edit(&mut core, &mut scene, target, box_sketch(64, 64, 64));
     assert_eq!(core.undo_depth(), 2, "two ordinary edits = two transactions");
-    core.undo(&mut scene);
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.undo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), a, "one undo reverses one ordinary edit");
-    core.undo(&mut scene);
+    core.undo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), enter);
 }
 
@@ -264,10 +273,11 @@ fn a_fresh_in_mode_edit_clears_the_in_mode_redo() {
     let (mut scene, target) = single_sketch_scene();
     core.begin_sketch_group();
     edit(&mut core, &mut scene, target, box_sketch(48, 32, 32));
-    core.undo(&mut scene); // to enter; the undone edit sits on session_redo
+    let mut selection = Selection::mirroring_scene(&scene);
+    core.undo(&mut scene, &mut selection); // to enter; the undone edit sits on session_redo
     let c = box_sketch(64, 64, 64);
     edit(&mut core, &mut scene, target, c.clone()); // a fresh edit clears the redo
-    core.redo(&mut scene); // no-op — the redo future was invalidated
+    core.redo(&mut scene, &mut selection); // no-op — the redo future was invalidated
     assert_eq!(
         producer_of(&scene, target),
         c,

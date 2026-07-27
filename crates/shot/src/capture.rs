@@ -12,7 +12,7 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color,
     AppCore, CuboidMeshRenderer, GpuContext,
     InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
-    OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, VoxelBody, Point,
+    OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, Selection, VoxelBody, Point,
     PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape, SelectedOperandGhostRenderer,
     TransformGizmoRenderer, ViewCubeRenderer, ViewMode, VoxExport, VoxelGrid,
     COLOR_TARGET_FORMAT, PLACEMENT_GHOST_TINT,
@@ -273,6 +273,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     if options.select_root {
         panel_state.scene.active = Some(voxel_worker::ROOT_NODE_ID);
     }
+    // ADR 0032 slice 4: mirror the workspace selection off the scene's outgoing `active`
+    // field once every seeding path above (a demo scene, `--select-node`, `--select-root`)
+    // has had its say. Slice 5 deletes the field and these writers target `selection`
+    // directly.
+    panel_state.selection = Selection::mirroring_scene(&panel_state.scene);
     // Issue #29 S3: the per-object block lattice + floor grid are now gated by a
     // scene master ANDed with each NODE's own toggle (default OFF), so a headless
     // capture must enable them explicitly. `--lattice`/`--floor` set the matching
