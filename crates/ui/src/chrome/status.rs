@@ -34,13 +34,18 @@ pub fn status_line(
     job.append("SEL ", 0.0, faint.clone());
     job.append(selection.unwrap_or("—"), 0.0, accent);
     job.append("  ·  ", 0.0, dot.clone());
-    job.append(&format!("{}×{}×{}", dims[0], dims[1], dims[2]), 0.0, faint.clone());
+    job.append(
+        &format!("{}×{}×{}", dims[0], dims[1], dims[2]),
+        0.0,
+        faint.clone(),
+    );
     job.append("  ·  ", 0.0, dot);
     job.append(&format!("{density} vx/blk"), 0.0, faint);
 
-    let painter = ui
-        .ctx()
-        .layer_painter(LayerId::new(Order::Foreground, Id::new("signal_status_line")));
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("signal_status_line"),
+    ));
     let galley = painter.layout_job(job);
     let pos = Pos2::new(
         viewport_rect.left() + 10.0,

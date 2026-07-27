@@ -18,8 +18,7 @@ impl WindowedState {
                 return;
             }
             // Transient conditions: skip this frame, try again next redraw.
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded => {
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return;
             }
             other => {
@@ -72,7 +71,10 @@ impl WindowedState {
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
         )[2];
-        let current_band = (self.panel_state.layer_range.lower, self.panel_state.layer_range.upper);
+        let current_band = (
+            self.panel_state.layer_range.lower,
+            self.panel_state.layer_range.upper,
+        );
         if current_band != self.measured_band {
             // ADR 0010 E5 follow-up: re-measure the diameter ASYNCHRONOUSLY. The streamed
             // cacheless query (a coarse block contributes its run block-granular, boundary
@@ -147,15 +149,15 @@ impl WindowedState {
             profiling::scope!("egui_frame");
             run_egui_frame(
                 &mut self.egui_bridge,
-            &self.gpu.device,
-            &self.gpu.queue,
-            &mut self.panel_state,
-            layer_track_len,
-            self.measured_diameter,
-            export_panel,
-            &self.palette.ui,
-            raw_input,
-            [self.surface_config.width, self.surface_config.height],
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut self.panel_state,
+                layer_track_len,
+                self.measured_diameter,
+                export_panel,
+                &self.palette.ui,
+                raw_input,
+                [self.surface_config.width, self.surface_config.height],
                 pixels_per_point,
                 &mut self.context_menu_open_at,
                 // The general viewport right-click menu (mode-dispatched Delete).
@@ -222,10 +224,8 @@ impl WindowedState {
                 focus_id,
                 self.panel_state.geometry.voxels_per_block,
             ) {
-                let (target, distance) = OrbitCamera::focus_target_and_distance(
-                    glam::Vec3::from_array(pivot),
-                    extent,
-                );
+                let (target, distance) =
+                    OrbitCamera::focus_target_and_distance(glam::Vec3::from_array(pivot), extent);
                 self.app_core.camera.target = target;
                 self.app_core.camera.orbit_distance = distance;
             }
@@ -313,12 +313,10 @@ impl WindowedState {
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
-                ui::panel::SketchExit::Cancel => {
-                    self.app_core.cancel_sketch_group(
-                        &mut self.panel_state.scene,
-                        &mut self.panel_state.selection,
-                    )
-                }
+                ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
+                    &mut self.panel_state.scene,
+                    &mut self.panel_state.selection,
+                ),
             };
             self.panel_state.sketch_mode = None;
             self.panel_state.selection.clear_sketch_entities();
@@ -348,15 +346,15 @@ impl WindowedState {
         // SAME door as the panel's edits (taken BEFORE the borrow of `prepared` ends), so
         // a placement re-resolves + rebuilds identically to a panel-driven add.
         intents.extend(std::mem::take(&mut self.viewport_intents));
-        let mut merged_effect = sketch_effect.merged_with(drag_effect).merged_with(selection_effect);
+        let mut merged_effect = sketch_effect
+            .merged_with(drag_effect)
+            .merged_with(selection_effect);
         for intent in intents {
-            let effect = self
-                .app_core
-                .apply_intent(
-                    &mut self.panel_state.scene,
-                    &mut self.panel_state.selection,
-                    intent,
-                );
+            let effect = self.app_core.apply_intent(
+                &mut self.panel_state.scene,
+                &mut self.panel_state.selection,
+                intent,
+            );
             merged_effect = merged_effect.merged_with(effect);
         }
         // Coordinate-limit warning (authoring-time only): latch a rejected edit into the
@@ -537,13 +535,17 @@ impl WindowedState {
         // selected, or selection has no extent) hides it. Its camera upload rides the shared
         // overlay-uniforms call below; here we only resolve WHETHER it is placed (the phase
         // assembly gates its draw on this).
-        let gizmo_placement = self.panel_state.selection.primary_node_id().and_then(|target| {
-            AppCore::gizmo_placement_for_id(
-                &self.panel_state.scene,
-                target,
-                self.panel_state.geometry.voxels_per_block,
-            )
-        });
+        let gizmo_placement = self
+            .panel_state
+            .selection
+            .primary_node_id()
+            .and_then(|target| {
+                AppCore::gizmo_placement_for_id(
+                    &self.panel_state.scene,
+                    target,
+                    self.panel_state.geometry.voxels_per_block,
+                )
+            });
         // Per-object block lattice + floor grid (issue #29 S3): rebuild this frame's
         // line batch from the scene — for every node whose grids are enabled (the
         // scene master ANDed with the node's own toggle), its enclosing-block lattice
@@ -597,18 +599,16 @@ impl WindowedState {
                     chunks: &self.resident_chunks,
                     band: self.last_pick_band,
                 };
-                let outcome =
-                    self.app_core
-                        .place_primitive(
-                            cursor,
-                            viewport,
-                            &frame,
-                            &self.panel_state.scene,
-                            shape.clone(),
-                            material,
-                            self.panel_state.scene.master_floor_grid,
-                            self.panel_state.placement_snap,
-                        );
+                let outcome = self.app_core.place_primitive(
+                    cursor,
+                    viewport,
+                    &frame,
+                    &self.panel_state.scene,
+                    shape.clone(),
+                    material,
+                    self.panel_state.scene.master_floor_grid,
+                    self.panel_state.placement_snap,
+                );
                 self.pending_placement = outcome.intent.clone();
                 self.panel_state.placement_ghost = match &outcome.intent {
                     Some(crate::Intent::PlaceNode {
@@ -831,12 +831,19 @@ impl WindowedState {
 
         // Cursor → the continuous profile coordinate under it, then grid-snap (round to the
         // nearest voxel). The ray/plane math is shared with the add-point insert.
-        let Some(profile_coord) =
-            self.cursor_to_profile_coord(cursor_x, cursor_y, ray_unprojection, viewport_px, &handles)
-        else {
+        let Some(profile_coord) = self.cursor_to_profile_coord(
+            cursor_x,
+            cursor_y,
+            ray_unprojection,
+            viewport_px,
+            &handles,
+        ) else {
             return IntentEffect::none();
         };
-        let snapped = [profile_coord[0].round() as i64, profile_coord[1].round() as i64];
+        let snapped = [
+            profile_coord[0].round() as i64,
+            profile_coord[1].round() as i64,
+        ];
 
         // Build the preview from the pre-drag producer with ONLY the dragged vertex moved, then
         // compensate the offset by the bbox-min shift so the rest of the profile holds still.
@@ -920,7 +927,9 @@ impl WindowedState {
         let Some(node) = self.panel_state.scene.node_by_id(target) else {
             return false;
         };
-        let document::scene::NodeContent::SketchTool { producer: current, .. } = &node.content
+        let document::scene::NodeContent::SketchTool {
+            producer: current, ..
+        } = &node.content
         else {
             return false;
         };
@@ -1013,8 +1022,7 @@ impl WindowedState {
     /// cache, so it shares the exact projection the overlay drew. Used by the vertex-drag grab
     /// (#94) and the delete hit-test (#95).
     fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
-        let grab_px = (ui::chrome::SKETCH_HANDLE_HALF
-            + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
+        let grab_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
             * self.window.scale_factor() as f32;
         let mut nearest: Option<(usize, f32)> = None;
         for (index, center) in self.sketch_vertex_px.iter().enumerate() {
@@ -1040,13 +1048,18 @@ impl WindowedState {
         let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
         let mut nearest: Option<(document::sketch::EntityId, egui::Pos2, egui::Pos2, f32)> = None;
         for &(seg_id, a_idx, b_idx) in &self.sketch_segments {
-            let (Some(&Some(a)), Some(&Some(b))) =
-                (self.sketch_vertex_px.get(a_idx), self.sketch_vertex_px.get(b_idx))
-            else {
+            let (Some(&Some(a)), Some(&Some(b))) = (
+                self.sketch_vertex_px.get(a_idx),
+                self.sketch_vertex_px.get(b_idx),
+            ) else {
                 continue;
             };
             let distance = point_to_segment_distance(cursor, a, b);
-            if distance <= pad_px && nearest.map(|(_, _, _, best)| distance < best).unwrap_or(true) {
+            if distance <= pad_px
+                && nearest
+                    .map(|(_, _, _, best)| distance < best)
+                    .unwrap_or(true)
+            {
                 nearest = Some((seg_id, a, b, distance));
             }
         }
@@ -1055,8 +1068,13 @@ impl WindowedState {
 
     /// The id of the sketch SEGMENT under the cursor (physical px), for add-point — the click
     /// splits the named segment (ADR 0030). `None` when no edge is close enough.
-    fn sketch_segment_at(&self, cursor_x: f64, cursor_y: f64) -> Option<document::sketch::EntityId> {
-        self.nearest_sketch_segment(cursor_x, cursor_y).map(|(seg_id, _, _)| seg_id)
+    fn sketch_segment_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<document::sketch::EntityId> {
+        self.nearest_sketch_segment(cursor_x, cursor_y)
+            .map(|(seg_id, _, _)| seg_id)
     }
 
     /// ADR 0028 (#95): the add-point producer for a click at the cursor (physical px) — the
@@ -1084,7 +1102,8 @@ impl WindowedState {
         )?;
         let (producer, _) = self.sketch_node_state(target)?;
         // Split the segment under the cursor with a grid-snapped point (ADR 0030).
-        let point = document::sketch::SketchPoint::new(coord[0].round() as i64, coord[1].round() as i64);
+        let point =
+            document::sketch::SketchPoint::new(coord[0].round() as i64, coord[1].round() as i64);
         Some(producer.with_point_on_segment(seg_id, point))
     }
 
@@ -1244,7 +1263,11 @@ impl WindowedState {
     /// current producer snapshotted so the whole gesture coalesces to one command. `None` when
     /// no handle is under the cursor (the press falls through to the normal camera/placement
     /// path). Called from the `events` press handler, only under the Select tool.
-    pub(super) fn begin_sketch_vertex_drag(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchVertexDrag> {
+    pub(super) fn begin_sketch_vertex_drag(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<SketchVertexDrag> {
         let target = self.panel_state.sketch_mode?;
         let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
         let point_id = *self.sketch_point_ids.get(index)?;
@@ -1295,9 +1318,8 @@ impl WindowedState {
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
         let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
-        let hover_radius_px =
-            (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
-                * pixels_per_point;
+        let hover_radius_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
+            * pixels_per_point;
         for (index, vertex) in handles.vertices.iter().enumerate() {
             let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
             if clip.w <= 0.0 {
@@ -1313,14 +1335,15 @@ impl WindowedState {
 
             let hovered = self
                 .last_cursor_position
-                .map(|(cx, cy)| {
-                    (cx as f32 - px).hypot(cy as f32 - py) <= hover_radius_px
-                })
+                .map(|(cx, cy)| (cx as f32 - px).hypot(cy as f32 - py) <= hover_radius_px)
                 .unwrap_or(false);
             let point_id = handles.point_ids.get(index).copied();
             let selected = point_id
                 .map(|entity| {
-                    let picked = ui::panel::SelectionTarget::SketchPoint { sketch: target, entity };
+                    let picked = ui::panel::SelectionTarget::SketchPoint {
+                        sketch: target,
+                        entity,
+                    };
                     self.panel_state.selection.contains(picked)
                 })
                 .unwrap_or(false);
@@ -1388,8 +1411,10 @@ impl WindowedState {
                 // Precedence: delete-hover (Marked ✕) > Selected > plain Hover > Idle. A selected
                 // edge stays bold even under the cursor (Select hover never shrinks it); only the
                 // destructive delete-hover overrides it.
-                let picked =
-                    ui::panel::SelectionTarget::SketchSegment { sketch: target, entity: seg_id };
+                let picked = ui::panel::SelectionTarget::SketchSegment {
+                    sketch: target,
+                    entity: seg_id,
+                };
                 let selected = self.panel_state.selection.contains(picked);
                 let state = match hovered_segment {
                     Some((id, ui::gizmos::HandleState::Marked)) if id == seg_id => {
@@ -1410,8 +1435,10 @@ impl WindowedState {
                 if let Some((_, a, b)) = self.nearest_sketch_segment(cursor_x, cursor_y) {
                     let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
                     let foot = closest_point_on_segment(cursor, a, b);
-                    self.sketch_insert_preview =
-                        Some(egui::Pos2::new(foot.x / pixels_per_point, foot.y / pixels_per_point));
+                    self.sketch_insert_preview = Some(egui::Pos2::new(
+                        foot.x / pixels_per_point,
+                        foot.y / pixels_per_point,
+                    ));
                 }
             }
         }
@@ -1447,7 +1474,10 @@ mod tests {
         let a = pos2(0.0, 0.0);
         let b = pos2(10.0, 0.0);
         let foot = closest_point_on_segment(pos2(4.0, 3.0), a, b);
-        assert!((foot.x - 4.0).abs() < 1e-4 && foot.y.abs() < 1e-4, "foot at (4, 0), got {foot:?}");
+        assert!(
+            (foot.x - 4.0).abs() < 1e-4 && foot.y.abs() < 1e-4,
+            "foot at (4, 0), got {foot:?}"
+        );
         assert!((point_to_segment_distance(pos2(4.0, 3.0), a, b) - 3.0).abs() < 1e-4);
     }
 
@@ -1457,7 +1487,11 @@ mod tests {
         // NOT to the infinite line, so a click off the end of an edge does not falsely hit it.
         let a = pos2(0.0, 0.0);
         let b = pos2(10.0, 0.0);
-        assert_eq!(closest_point_on_segment(pos2(-5.0, 0.0), a, b), a, "clamps to the start");
+        assert_eq!(
+            closest_point_on_segment(pos2(-5.0, 0.0), a, b),
+            a,
+            "clamps to the start"
+        );
         assert!(
             (point_to_segment_distance(pos2(15.0, 0.0), a, b) - 5.0).abs() < 1e-4,
             "distance is to the end vertex (5), not 0 on the extended line"

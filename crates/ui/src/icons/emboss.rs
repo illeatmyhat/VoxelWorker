@@ -10,7 +10,14 @@ use super::{Ink, Mark};
 pub(super) const DRAW: &[Mark] = &[
     // The accumulated surface, lifted where the footprint covers it.
     Mark::Line {
-        points: &[(1.5, 12.0), (6.0, 12.0), (6.0, 7.0), (12.0, 7.0), (12.0, 12.0), (16.5, 12.0)],
+        points: &[
+            (1.5, 12.0),
+            (6.0, 12.0),
+            (6.0, 7.0),
+            (12.0, 7.0),
+            (12.0, 12.0),
+            (16.5, 12.0),
+        ],
         ink: Ink::SOLID,
     },
     // The footprint walls — the cutter's extent, not a body.

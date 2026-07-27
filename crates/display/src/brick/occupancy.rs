@@ -15,9 +15,9 @@ use substrate::occupancy::bitmask_map::{set_mask_bit, SortedKeyBitmaskMap};
 /// interior-occupancy cell is one `u32[16]` bitmask.
 pub const BLOCK_OCCUPANCY_CELL_BLOCKS: u32 = CLIPMAP_LEVEL_1_BLOCKS_PER_CELL;
 /// Blocks per [`BlockOccupancyMasks`] cell (`8³ = 512`) — the bitmask's bit count.
-pub(crate) const BLOCK_OCCUPANCY_BITS_PER_CELL: usize =
-    (BLOCK_OCCUPANCY_CELL_BLOCKS * BLOCK_OCCUPANCY_CELL_BLOCKS * BLOCK_OCCUPANCY_CELL_BLOCKS)
-        as usize;
+pub(crate) const BLOCK_OCCUPANCY_BITS_PER_CELL: usize = (BLOCK_OCCUPANCY_CELL_BLOCKS
+    * BLOCK_OCCUPANCY_CELL_BLOCKS
+    * BLOCK_OCCUPANCY_CELL_BLOCKS) as usize;
 /// `u32` words in one cell's occupancy bitmask (`512 / 32 = 16`).
 pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32;
 
@@ -134,10 +134,8 @@ impl BlockOccupancyMasks {
     /// per-block hashing (the interior-elision cost discipline). Partial/boundary chunks set one
     /// bit per occupied block. Cell keys are the same 8-block keys the pyramid's L1 carries.
     pub fn from_chunks(chunks: &[([i32; 3], Arc<TwoLayerChunk>)]) -> Self {
-        let mut cells: std::collections::BTreeMap<
-            u64,
-            ([u32; BLOCK_OCCUPANCY_MASK_WORDS], u32),
-        > = std::collections::BTreeMap::new();
+        let mut cells: std::collections::BTreeMap<u64, ([u32; BLOCK_OCCUPANCY_MASK_WORDS], u32)> =
+            std::collections::BTreeMap::new();
         let chunk_blocks = CHUNK_BLOCKS as i64;
         for (chunk_coord, chunk) in chunks {
             let base = [

@@ -49,7 +49,10 @@ impl OutsetProducer {
         if outset_voxels == 0 || inner.as_field().is_none() {
             return inner;
         }
-        Box::new(Self { inner, outset_voxels })
+        Box::new(Self {
+            inner,
+            outset_voxels,
+        })
     }
 
     /// How far the wrapper's frame origin sits BELOW the inner producer's, per axis.
@@ -99,8 +102,9 @@ impl VoxelProducer for OutsetProducer {
         // Clamp the window to `[0, full_dim)` per axis, so an oversized window is harmless
         // and a full-window call reproduces the whole body exactly (the `resolve_into`
         // contract).
-        let low: [i64; 3] =
-            std::array::from_fn(|axis| window_local_voxels.min[axis].clamp(0, dimensions[axis] as i64));
+        let low: [i64; 3] = std::array::from_fn(|axis| {
+            window_local_voxels.min[axis].clamp(0, dimensions[axis] as i64)
+        });
         let high: [i64; 3] = std::array::from_fn(|axis| {
             window_local_voxels.max[axis].clamp(low[axis], dimensions[axis] as i64)
         });
@@ -113,8 +117,7 @@ impl VoxelProducer for OutsetProducer {
                     // inner producer's frame.
                     let centre =
                         self.to_inner_point([i as f32 + 0.5, j as f32 + 0.5, k as f32 + 0.5]);
-                    if field.signed_distance(centre, voxels_per_block) - outset
-                        <= SURFACE_ISOLEVEL
+                    if field.signed_distance(centre, voxels_per_block) - outset <= SURFACE_ISOLEVEL
                     {
                         occupied.push(Voxel {
                             local_index: [i as i32, j as i32, k as i32],
@@ -170,9 +173,11 @@ impl VoxelProducer for OutsetProducer {
         if cell_local_voxels.is_empty() {
             return None;
         }
-        Some(super::metric_cell_bracket(cell_local_voxels, self.metric(), |centre| {
-            self.signed_distance(centre, voxels_per_block)
-        }))
+        Some(super::metric_cell_bracket(
+            cell_local_voxels,
+            self.metric(),
+            |centre| self.signed_distance(centre, voxels_per_block),
+        ))
     }
 
     /// Delegated at the corresponding inner point, so a dilated Part's materials line up
@@ -194,9 +199,7 @@ impl VoxelProducer for OutsetProducer {
     /// inset deeper than the body's own half-extent erodes it away entirely.
     fn full_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         let inner = self.inner.full_dimensions(voxels_per_block);
-        std::array::from_fn(|axis| {
-            (inner[axis] as i64 + 2 * self.outset_voxels).max(0) as u32
-        })
+        std::array::from_fn(|axis| (inner[axis] as i64 + 2 * self.outset_voxels).max(0) as u32)
     }
 }
 

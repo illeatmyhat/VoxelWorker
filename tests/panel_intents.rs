@@ -13,7 +13,7 @@
 //!     STARTED with is byte-identical to the one it ENDS with (the loop, not the
 //!     panel, applies the emitted intents).
 
-use egui::{Context, RawInput, Rect, pos2, vec2};
+use egui::{pos2, vec2, Context, RawInput, Rect};
 
 use voxel_worker::block_palette::BlockPalette;
 use voxel_worker::{build_panel, PanelState};

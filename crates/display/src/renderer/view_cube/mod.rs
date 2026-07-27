@@ -151,7 +151,11 @@ pub struct ViewCubeRenderer {
 
 impl ViewCubeRenderer {
     /// Create the view-cube renderer for a colour target format.
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, color_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
         let (vertices, indices) = view_cube_geometry();
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("view cube vertices"),
@@ -273,17 +277,36 @@ impl ViewCubeRenderer {
         });
         let face_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("view cube face pipeline layout"),
-            bind_group_layouts: &[Some(&uniform_bind_group_layout), Some(&label_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(&uniform_bind_group_layout),
+                Some(&label_bind_group_layout),
+            ],
             immediate_size: 0,
         });
         let cube_vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<CubeLabelVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-                wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
-                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Uint32 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Uint32,
+                },
             ],
         };
         // The view cube renders at 1 sample into the resolved target (after the
@@ -331,7 +354,11 @@ impl ViewCubeRenderer {
             // Issue #91 (item 3): the cube renders into its own 4× MSAA offscreen target
             // (resolved + composited in `draw`) so the face silhouettes + linework are
             // coverage-anti-aliased, not just the SDF/thick-line feathering.
-            multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, mask: !0, alpha_to_coverage_enabled: false },
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -366,11 +393,8 @@ impl ViewCubeRenderer {
                 resource: line_uniform_buffer.as_entire_binding(),
             }],
         });
-        let line_pipeline = build_cube_line_pipeline(
-            device,
-            color_format,
-            &line_uniform_bind_group_layout,
-        );
+        let line_pipeline =
+            build_cube_line_pipeline(device, color_format, &line_uniform_bind_group_layout);
 
         // --- #13 Step 2: screen-space chrome overlay pipeline + glyph textures ---
         let (chrome_pipeline, chrome_bind_group) =
@@ -457,7 +481,11 @@ impl ViewCubeRenderer {
             half_width_px: CUBE_LINE_HALF_WIDTH_PX,
             feather_px: CUBE_LINE_FEATHER_PX,
         };
-        queue.write_buffer(&self.line_uniform_buffer, 0, bytemuck::bytes_of(&line_uniforms));
+        queue.write_buffer(
+            &self.line_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&line_uniforms),
+        );
     }
 
     /// Draw the cube into a scissored corner of `target_view` (its own render pass,
@@ -525,7 +553,11 @@ impl ViewCubeRenderer {
         let msaa_depth = create_depth_view(device, size, size);
         let resolve_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("view cube resolve texture"),
-            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -614,14 +646,24 @@ impl ViewCubeRenderer {
                 view: target_view,
                 resolve_target: None,
                 depth_slice: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        composite_pass.set_viewport(corner_x as f32, corner_y as f32, size as f32, size as f32, 0.0, 1.0);
+        composite_pass.set_viewport(
+            corner_x as f32,
+            corner_y as f32,
+            size as f32,
+            size as f32,
+            0.0,
+            1.0,
+        );
         composite_pass.set_scissor_rect(corner_x, corner_y, size, size);
         composite_pass.set_pipeline(&self.composite_pipeline);
         composite_pass.set_bind_group(0, &composite_bind_group, &[]);
@@ -681,10 +723,26 @@ fn build_cube_line_pipeline(
         array_stride: std::mem::size_of::<ThickLineVertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &[
-            wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
-            wgpu::VertexAttribute { offset: 40, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
+            wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+            wgpu::VertexAttribute {
+                offset: 12,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+            wgpu::VertexAttribute {
+                offset: 24,
+                shader_location: 2,
+                format: wgpu::VertexFormat::Float32x4,
+            },
+            wgpu::VertexAttribute {
+                offset: 40,
+                shader_location: 3,
+                format: wgpu::VertexFormat::Float32x2,
+            },
         ],
     };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -724,7 +782,11 @@ fn build_cube_line_pipeline(
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, mask: !0, alpha_to_coverage_enabled: false },
+        multisample: wgpu::MultisampleState {
+            count: MSAA_SAMPLE_COUNT,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     })
@@ -739,7 +801,9 @@ fn build_cube_composite_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("view cube composite shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/viewcube_composite.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../shaders/viewcube_composite.wgsl").into(),
+        ),
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("view cube composite pipeline layout"),
@@ -787,7 +851,11 @@ fn build_cube_composite_pipeline(
             conservative: false,
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     })

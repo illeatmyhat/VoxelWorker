@@ -63,8 +63,10 @@ impl Scene {
                 enabled,
                 children,
             } => {
-                let child_ids: Vec<NodeId> =
-                    children.into_iter().map(|child| self.insert_builder(child)).collect();
+                let child_ids: Vec<NodeId> = children
+                    .into_iter()
+                    .map(|child| self.insert_builder(child))
+                    .collect();
                 let mut group = Node::new(name, NodeContent::Group(child_ids));
                 group.transform = transform;
                 group.enabled = enabled;

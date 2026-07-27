@@ -45,7 +45,10 @@ pub(crate) fn pad_lines(mut vertices: Vec<LineVertex>, capacity: u32) -> Vec<Lin
     if (vertices.len() as u32) < capacity {
         vertices.resize(
             capacity as usize,
-            LineVertex { position: [0.0; 3], color: [0.0; 4] },
+            LineVertex {
+                position: [0.0; 3],
+                color: [0.0; 4],
+            },
         );
     }
     vertices

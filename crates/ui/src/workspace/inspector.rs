@@ -32,8 +32,7 @@ pub(super) fn build_inspector(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(9.0);
-                    let title =
-                        theme::letter_spaced(ui, "Inspector", theme::TEXT_MUTED, 9.0, 2.0);
+                    let title = theme::letter_spaced(ui, "Inspector", theme::TEXT_MUTED, 9.0, 2.0);
                     let (rect, _) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), title.size().y + 7.0),
                         egui::Sense::hover(),

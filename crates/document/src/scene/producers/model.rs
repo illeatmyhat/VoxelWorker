@@ -7,10 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use voxel_core::core_geom::MaterialChoice;
 use crate::debug_clouds::DebugCloudField;
 use crate::sketch::SketchSolid;
 use crate::voxel::{SdfShape, VoxelProducer};
+use voxel_core::core_geom::MaterialChoice;
 
 use crate::scene::*;
 
@@ -172,34 +172,49 @@ impl LeafBody<'_> {
         region_dimensions: [u32; 3],
         voxels_per_block: u32,
         outset_voxels: i64,
-    ) -> Option<(Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>)> {
+    ) -> Option<(
+        Option<voxel_core::core_geom::BlockId>,
+        Box<dyn VoxelProducer>,
+    )> {
         let _ = voxels_per_block;
-        let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
-            match self {
-                LeafBody::Content(NodeContent::Tool { shape, material }) => {
-                    (material_id_for(*material), Box::new(shape.clone()))
-                }
-                LeafBody::Content(NodeContent::SketchTool { producer, material }) => {
-                    (material_id_for(*material), Box::new(producer.clone()))
-                }
-                LeafBody::Content(NodeContent::VoxelBody(VoxelBody::DebugClouds { seed })) => (
-                    // A VoxelBody brings its own per-voxel materials; today the cloud field
-                    // emits material 0, so the stamp keeps that.
-                    None,
-                    Box::new(DebugCloudField { dimensions: region_dimensions, seed: *seed }),
-                ),
-                LeafBody::Content(NodeContent::Group(_) | NodeContent::Instance(_)) => return None,
-                // A composed scope's materials vary across its body, so it stamps per-voxel
-                // rather than through a single override.
-                LeafBody::Composed { producer, .. } => (None, Box::new(producer)),
-            };
+        let (material, producer): (
+            Option<voxel_core::core_geom::BlockId>,
+            Box<dyn VoxelProducer>,
+        ) = match self {
+            LeafBody::Content(NodeContent::Tool { shape, material }) => {
+                (material_id_for(*material), Box::new(shape.clone()))
+            }
+            LeafBody::Content(NodeContent::SketchTool { producer, material }) => {
+                (material_id_for(*material), Box::new(producer.clone()))
+            }
+            LeafBody::Content(NodeContent::VoxelBody(VoxelBody::DebugClouds { seed })) => (
+                // A VoxelBody brings its own per-voxel materials; today the cloud field
+                // emits material 0, so the stamp keeps that.
+                None,
+                Box::new(DebugCloudField {
+                    dimensions: region_dimensions,
+                    seed: *seed,
+                }),
+            ),
+            LeafBody::Content(NodeContent::Group(_) | NodeContent::Instance(_)) => return None,
+            // A composed scope's materials vary across its body, so it stamps per-voxel
+            // rather than through a single override.
+            LeafBody::Composed { producer, .. } => (None, Box::new(producer)),
+        };
         // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds.
-        Some((material, crate::voxel::OutsetProducer::wrap(producer, outset_voxels)))
+        Some((
+            material,
+            crate::voxel::OutsetProducer::wrap(producer, outset_voxels),
+        ))
     }
 
     /// The leaf's emitted grid extent in voxels, grown by its outset — `None` for a body with
     /// no localisable extent.
-    pub(crate) fn grid_voxels(&self, voxels_per_block: u32, outset_voxels: i64) -> Option<[i64; 3]> {
+    pub(crate) fn grid_voxels(
+        &self,
+        voxels_per_block: u32,
+        outset_voxels: i64,
+    ) -> Option<[i64; 3]> {
         let dimensions = match self {
             LeafBody::Content(content) => {
                 return leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels)
@@ -277,7 +292,11 @@ pub(crate) fn leaf_content_fingerprint(
             if depth > 0 {
                 token.push(',');
             }
-            token.push_str(&format!("{}:{}", frame.scope_node.0, op_token(frame.operation)));
+            token.push_str(&format!(
+                "{}:{}",
+                frame.scope_node.0,
+                op_token(frame.operation)
+            ));
         }
         token.push(']');
         token
@@ -297,9 +316,13 @@ pub(crate) fn leaf_content_fingerprint(
             format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}{op}{scopes}")
         }
         NodeContent::SketchTool { producer, material } => {
-            format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}{op}{scopes}")
+            format!(
+                "SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}{op}{scopes}"
+            )
         }
-        NodeContent::VoxelBody(voxel_body) => format!("VoxelBody@{world_offset_voxels:?}:{voxel_body:?}{grid}{op}{scopes}"),
+        NodeContent::VoxelBody(voxel_body) => {
+            format!("VoxelBody@{world_offset_voxels:?}:{voxel_body:?}{grid}{op}{scopes}")
+        }
         // for_each_leaf only ever yields leaf content (Tool / SketchTool / VoxelBody);
         // Group / Instance are interior and never reach a visitor. Fingerprint
         // defensively anyway.

@@ -1,9 +1,9 @@
 use crate::brick::*;
-use voxel_core::core_geom::MaterialChoice;
 use document::scene::Scene;
+use document::voxel::GeometryParams;
 use evaluation::two_layer_store::TwoLayerStore;
+use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::{ShapeKind, Voxel};
-use document::voxel::{GeometryParams};
 
 // The bit-packed occupancy tile IS substrate's `BitCube`; its expand↔pack byte-parity and
 // full-word run-set-mask oracles moved with it (see `crates/substrate/src/occupancy/bit_cube.rs`,
@@ -92,7 +92,10 @@ fn brick_records_map_two_layer_partition_one_to_one() {
             }
         }
     }
-    assert_eq!(build.brick_records.len(), expected_coarse + expected_sculpted);
+    assert_eq!(
+        build.brick_records.len(),
+        expected_coarse + expected_sculpted
+    );
     assert_eq!(build.sculpted_brick_count(), expected_sculpted);
     // Slots are dense 0..count — the atlas holds exactly the sculpted bricks.
     assert_eq!(
@@ -100,8 +103,14 @@ fn brick_records_map_two_layer_partition_one_to_one() {
         (0..expected_sculpted as u32).collect::<Vec<_>>()
     );
     // The scene must actually exercise both kinds, else the mapping is untested.
-    assert!(expected_coarse > 0, "fixture must contain coarse-solid blocks");
-    assert!(expected_sculpted > 0, "fixture must contain boundary blocks");
+    assert!(
+        expected_coarse > 0,
+        "fixture must contain coarse-solid blocks"
+    );
+    assert!(
+        expected_sculpted > 0,
+        "fixture must contain boundary blocks"
+    );
 }
 
 /// **The surface-only record contract (ADR 0011 interior elision, fused into the
@@ -120,7 +129,11 @@ fn build_emits_only_surface_records_of_a_solid_box() {
     let scene = Scene::from_geometry(
         GeometryParams {
             shape: ShapeKind::Box,
-            size_voxels: [6 * voxels_per_block, 6 * voxels_per_block, 6 * voxels_per_block],
+            size_voxels: [
+                6 * voxels_per_block,
+                6 * voxels_per_block,
+                6 * voxels_per_block,
+            ],
             size_measurements: None,
             voxels_per_block,
             wall_blocks: 1,
@@ -131,7 +144,10 @@ fn build_emits_only_surface_records_of_a_solid_box() {
         TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
     let full_build = build_brick_field_all_blocks(&two_layer_chunks, voxels_per_block);
     let surface_build = build_brick_field(&two_layer_chunks, voxels_per_block);
-    assert!(!full_build.brick_records.is_empty(), "fixture must build records");
+    assert!(
+        !full_build.brick_records.is_empty(),
+        "fixture must build records"
+    );
     // Every block of a solid box is coarse-solid (all faces solid).
     assert!(
         full_build
@@ -156,7 +172,12 @@ fn build_emits_only_surface_records_of_a_solid_box() {
         .filter(|&key| {
             let block = unpack_world_block_key(key);
             let all_neighbours_present = [
-                [1i64, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+                [1i64, 0, 0],
+                [-1, 0, 0],
+                [0, 1, 0],
+                [0, -1, 0],
+                [0, 0, 1],
+                [0, 0, -1],
             ]
             .iter()
             .all(|d| {
@@ -181,9 +202,15 @@ fn build_emits_only_surface_records_of_a_solid_box() {
         surface_build.brick_records.len() < full_build.brick_records.len(),
         "a solid box must have fully-occluded interior blocks to omit"
     );
-    assert!(!surface_build.brick_records.is_empty(), "the surface blocks must be kept");
+    assert!(
+        !surface_build.brick_records.is_empty(),
+        "the surface blocks must be kept"
+    );
     // Both builds pack the identical sculpted atlas (the sculpted set is never elided).
-    assert_eq!(surface_build.sculpted_atlas_bytes, full_build.sculpted_atlas_bytes);
+    assert_eq!(
+        surface_build.sculpted_atlas_bytes,
+        full_build.sculpted_atlas_bytes
+    );
     assert_eq!(surface_build.bricks_per_axis, full_build.bricks_per_axis);
 }
 
@@ -297,11 +324,18 @@ fn clipmap_from_chunks_equals_from_full_records() {
         // (b) A scattered scene: many partial chunks → exercises the per-block path.
         let mut nodes = Vec::new();
         for i in 0..8i64 {
-            let shape =
-                document::voxel::SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, voxels_per_block);
+            let shape = document::voxel::SdfShape::from_blocks(
+                ShapeKind::Sphere,
+                [3, 3, 3],
+                1,
+                voxels_per_block,
+            );
             let mut node = Node::new(
                 format!("s{i}"),
-                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                NodeContent::Tool {
+                    shape,
+                    material: MaterialChoice::Stone,
+                },
             );
             node.transform = NodeTransform::from_blocks(
                 [(i % 3) * 14, (i / 3) * 14, (i % 2) * 18],
@@ -363,10 +397,15 @@ fn block_occupancy_masks_mark_exactly_the_full_record_blocks() {
             );
             let mut node = Node::new(
                 format!("s{i}"),
-                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                NodeContent::Tool {
+                    shape,
+                    material: MaterialChoice::Stone,
+                },
             );
-            node.transform =
-                NodeTransform::from_blocks([(i % 3) * 14, (i / 3) * 14, (i % 2) * 18], voxels_per_block);
+            node.transform = NodeTransform::from_blocks(
+                [(i % 3) * 14, (i / 3) * 14, (i % 2) * 18],
+                voxels_per_block,
+            );
             nodes.push(node);
         }
         let scattered_scene = Scene::from_nodes(nodes);
@@ -391,15 +430,18 @@ fn block_occupancy_masks_mark_exactly_the_full_record_blocks() {
                     world_block[1].rem_euclid(cell_size) as usize,
                     world_block[2].rem_euclid(cell_size) as usize,
                 ];
-                let bit = (local[2] * cell_size as usize + local[1]) * cell_size as usize
-                    + local[0];
+                let bit =
+                    (local[2] * cell_size as usize + local[1]) * cell_size as usize + local[0];
                 masks.contains_bit(pack_world_block_key(cell), bit)
             };
             let mut expected_set: std::collections::BTreeSet<[i64; 3]> =
                 std::collections::BTreeSet::new();
             for record in &full_build.brick_records {
                 let block = unpack_world_block_key(record.packed_world_block_key);
-                assert!(bit_set(block), "full-record block {block:?} missing from the mask");
+                assert!(
+                    bit_set(block),
+                    "full-record block {block:?} missing from the mask"
+                );
                 expected_set.insert(block);
             }
             // And no bit is set beyond the full-record set (the mask is not a superset).
@@ -449,8 +491,7 @@ fn sculpted_brick_bytes_match_expanded_occupancy_at_non_16_density() {
         let mut chunk_occupancy = vec![0u8; chunk_extent.pow(3)];
         for voxel in &expanded {
             let [x, y, z] = voxel.local_index;
-            chunk_occupancy
-                [(z as usize * chunk_extent + y as usize) * chunk_extent + x as usize] =
+            chunk_occupancy[(z as usize * chunk_extent + y as usize) * chunk_extent + x as usize] =
                 SCULPTED_BRICK_OCCUPIED;
         }
 
@@ -474,10 +515,8 @@ fn sculpted_brick_bytes_match_expanded_occupancy_at_non_16_density() {
                             block[1] as usize * edge + local_y,
                             block[2] as usize * edge + local_z,
                         ];
-                        expected[(local_z * edge + local_y) * edge + local_x] =
-                            chunk_occupancy[(chunk_voxel[2] * chunk_extent
-                                + chunk_voxel[1])
-                                * chunk_extent
+                        expected[(local_z * edge + local_y) * edge + local_x] = chunk_occupancy
+                            [(chunk_voxel[2] * chunk_extent + chunk_voxel[1]) * chunk_extent
                                 + chunk_voxel[0]];
                     }
                 }

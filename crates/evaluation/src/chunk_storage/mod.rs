@@ -137,7 +137,9 @@ impl CompressedChunk {
     pub fn occupied_count(&self) -> usize {
         match &self.occupancy {
             Occupancy::Sparse(cells) => cells.len(),
-            Occupancy::Dense { block_local_coords, .. } => block_local_coords.len(),
+            Occupancy::Dense {
+                block_local_coords, ..
+            } => block_local_coords.len(),
         }
     }
 }
@@ -331,12 +333,19 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
     // `world_position()` reconstructs the `index + 0.5` centre at consumption). The
     // stored `centre_fraction` is the constant 0.5 and is asserted, not used to rebuild.
     debug_assert!(
-        compressed.centre_fraction.iter().all(|&fraction| fraction == 0.5)
+        compressed
+            .centre_fraction
+            .iter()
+            .all(|&fraction| fraction == 0.5)
             || compressed.occupied_count() == 0,
         "a non-empty resolved chunk's voxel centres share the 0.5 fraction"
     );
     let index_of = |linear: u64| -> [i32; 3] {
-        let local_x = if span_x == 0 { 0 } else { linear % span_x as u64 };
+        let local_x = if span_x == 0 {
+            0
+        } else {
+            linear % span_x as u64
+        };
         let local_y = if span_y == 0 {
             0
         } else {

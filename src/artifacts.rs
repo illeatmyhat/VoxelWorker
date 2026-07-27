@@ -708,7 +708,12 @@ mod tests {
             .expect("serialise");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let object = value.as_object().expect("a JSON object");
-        for key in ["orbit_target", "window_size", "voxels_per_block", "material"] {
+        for key in [
+            "orbit_target",
+            "window_size",
+            "voxels_per_block",
+            "material",
+        ] {
             assert!(
                 object.contains_key(key),
                 "`{key}` must sit at the top level, not inside a nested part: {json}"

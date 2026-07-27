@@ -187,8 +187,10 @@ impl Rational {
         let magnitude = scaled_numerator.unsigned_abs();
         let whole_part = (magnitude / scale as u128) as i128;
         let fraction_part = (magnitude % scale as u128) as i128;
-        let mut fraction_text =
-            format!("{fraction_part:0width$}", width = fractional_digits as usize);
+        let mut fraction_text = format!(
+            "{fraction_part:0width$}",
+            width = fractional_digits as usize
+        );
         while fraction_text.ends_with('0') {
             fraction_text.pop();
         }
@@ -402,7 +404,10 @@ mod tests {
         assert_eq!(dec(3, 4), Some("0.75".to_string()));
         assert_eq!(dec(-7, 20), Some("-0.35".to_string())); // sign carried
         assert_eq!(dec(5, 1), Some("5".to_string())); // integer
-        assert_eq!(Rational::from_integer(42).to_terminating_decimal(), Some("42".to_string()));
+        assert_eq!(
+            Rational::from_integer(42).to_terminating_decimal(),
+            Some("42".to_string())
+        );
         // Non-2/5-smooth denominators do not terminate.
         assert_eq!(dec(1, 3), None);
         assert_eq!(dec(2, 7), None);
@@ -442,7 +447,10 @@ mod tests {
         let (bn, bd) = (b.numerator(), b.denominator());
 
         assert_eq!(a.times(b), Rational::new(an * bn, ad * bd).unwrap());
-        assert_eq!(a.plus(b), Rational::new(an * bd + bn * ad, ad * bd).unwrap());
+        assert_eq!(
+            a.plus(b),
+            Rational::new(an * bd + bn * ad, ad * bd).unwrap()
+        );
     }
 
     /// The asymmetric two's-complement boundary. `|i128::MIN|` is `2^127`, one past `i128::MAX`, so
@@ -452,11 +460,22 @@ mod tests {
     #[test]
     fn new_handles_i128_min_without_overflowing() {
         // No canonical i128 form ⇒ None (rather than a panic).
-        assert_eq!(Rational::new(1, i128::MIN), None, "-1/2^127: denominator unrepresentable");
-        assert_eq!(Rational::new(i128::MIN, -1), None, "+2^127: numerator unrepresentable");
+        assert_eq!(
+            Rational::new(1, i128::MIN),
+            None,
+            "-1/2^127: denominator unrepresentable"
+        );
+        assert_eq!(
+            Rational::new(i128::MIN, -1),
+            None,
+            "+2^127: numerator unrepresentable"
+        );
         // The mirror cases DO have a form, and keep it.
         let most_negative = Rational::new(i128::MIN, 1).expect("i128::MIN / 1 is representable");
-        assert_eq!((most_negative.numerator(), most_negative.denominator()), (i128::MIN, 1));
+        assert_eq!(
+            (most_negative.numerator(), most_negative.denominator()),
+            (i128::MIN, 1)
+        );
         // Reduces to 1/1 — and exercises a gcd of 2^127, which the old `as i128` cast wrapped
         // negative.
         let unity = Rational::new(i128::MIN, i128::MIN).expect("MIN/MIN is 1");

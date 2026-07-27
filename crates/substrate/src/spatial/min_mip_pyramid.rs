@@ -96,7 +96,9 @@ impl MinMipLevel {
         let cell_edge = cell_edge.max(1);
         let cell_keys = keys
             .into_iter()
-            .map(|key| pack_lattice_key(fold_coordinate_to_cell(unpack_lattice_key(key), cell_edge)))
+            .map(|key| {
+                pack_lattice_key(fold_coordinate_to_cell(unpack_lattice_key(key), cell_edge))
+            })
             .collect();
         Self::from_folded_cell_keys(cell_keys, cell_edge)
     }
@@ -164,7 +166,10 @@ impl SparseMinMipPyramid {
     /// An all-empty pyramid — one empty level per edge.
     pub fn empty(cell_edges: &[u32]) -> Self {
         SparseMinMipPyramid {
-            levels: cell_edges.iter().map(|&edge| MinMipLevel::empty(edge)).collect(),
+            levels: cell_edges
+                .iter()
+                .map(|&edge| MinMipLevel::empty(edge))
+                .collect(),
         }
     }
 }
@@ -272,12 +277,12 @@ mod tests {
         // Distinct lattice points, several inside the same 8-cell, some negative (Euclidean fold).
         let coordinates = [
             [0i64, 0, 0],
-            [7, 7, 7],   // same cell as origin
-            [8, 0, 0],   // neighbouring cell on x
-            [-1, -1, -1],// cell (-1,-1,-1)
-            [-8, 0, 0],  // cell (-1,0,0)
+            [7, 7, 7],    // same cell as origin
+            [8, 0, 0],    // neighbouring cell on x
+            [-1, -1, -1], // cell (-1,-1,-1)
+            [-8, 0, 0],   // cell (-1,0,0)
             [100, 3, 50],
-            [103, 1, 49],// same cell as the previous
+            [103, 1, 49], // same cell as the previous
         ];
         let keys: Vec<u64> = coordinates.iter().map(|&c| key(c)).collect();
         let level = MinMipLevel::from_keys(&keys, edge);
@@ -312,9 +317,7 @@ mod tests {
     /// than a finer one over the same keys (min-mip monotonicity).
     #[test]
     fn coarser_edge_never_grows_the_cell_count() {
-        let coordinates: Vec<[i64; 3]> = (0..64)
-            .map(|i| [i % 10, (i / 10) % 7, i % 5])
-            .collect();
+        let coordinates: Vec<[i64; 3]> = (0..64).map(|i| [i % 10, (i / 10) % 7, i % 5]).collect();
         let keys: Vec<u64> = coordinates.iter().map(|&c| key(c)).collect();
         let pyramid = SparseMinMipPyramid::from_keys(&keys, &[1, 8, 64, 512]);
 
@@ -347,14 +350,11 @@ mod tests {
             key([0, 0, 0]), // duplicate
         ];
         let level = MinMipLevel::from_folded_cell_keys(raw, 8);
-        assert_eq!(
-            level.cell_keys,
-            {
-                let mut expected = vec![key([2, 0, 0]), key([0, 0, 0]), key([-1, 5, 3])];
-                expected.sort_unstable();
-                expected
-            }
-        );
+        assert_eq!(level.cell_keys, {
+            let mut expected = vec![key([2, 0, 0]), key([0, 0, 0]), key([-1, 5, 3])];
+            expected.sort_unstable();
+            expected
+        });
         assert!(level.contains_cell(key([0, 0, 0])));
         assert!(!level.contains_cell(key([9, 9, 9])));
     }

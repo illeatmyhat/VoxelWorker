@@ -89,7 +89,11 @@ fn delete_removes_the_point_and_cascades_only_its_segments() {
     let before = bracket();
     let victim = point_id_at(&before, [6, 5]);
     let after = before.with_point_deleted(victim);
-    assert_eq!(after.sketch.points().len(), 3, "exactly one point is removed");
+    assert_eq!(
+        after.sketch.points().len(),
+        3,
+        "exactly one point is removed"
+    );
     assert!(
         !after
             .sketch
@@ -127,7 +131,10 @@ fn deleting_every_point_leaves_an_empty_sketch() {
         .with_point_deleted(b)
         .with_point_deleted(c);
     assert_eq!(after.sketch.points().len(), 0, "every point is gone");
-    assert!(after.sketch.segments().is_empty(), "no dangling segment remains");
+    assert!(
+        after.sketch.segments().is_empty(),
+        "no dangling segment remains"
+    );
     assert!(after.sketch.flattened_loop().is_empty(), "no loop remains");
     let _ = after.profile_bbox_min(); // well-defined on an empty sketch (no panic)
 }
@@ -138,8 +145,16 @@ fn deleting_a_segment_removes_only_the_line() {
     let before = bracket();
     let seg = segment_id_between(&before, [6, 2], [6, 5]);
     let after = before.with_segment_deleted(seg);
-    assert_eq!(after.sketch.points().len(), 4, "all four points survive as free points");
-    assert_eq!(after.sketch.segments().len(), 3, "only the one line is removed");
+    assert_eq!(
+        after.sketch.points().len(),
+        4,
+        "all four points survive as free points"
+    );
+    assert_eq!(
+        after.sketch.segments().len(),
+        3,
+        "only the one line is removed"
+    );
     assert!(
         after.sketch.flattened_loop().is_empty(),
         "the loop is open ⇒ resolves to nothing"
@@ -147,7 +162,11 @@ fn deleting_a_segment_removes_only_the_line() {
 }
 
 fn before_triangle() -> SketchSolid {
-    let profile = vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0), SketchPoint::new(0, 4)];
+    let profile = vec![
+        SketchPoint::new(0, 0),
+        SketchPoint::new(4, 0),
+        SketchPoint::new(0, 4),
+    ];
     SketchSolid::extrude(Sketch::new(PlaneAxis::Z, profile), 3)
 }
 
@@ -155,7 +174,7 @@ fn before_triangle() -> SketchSolid {
 fn repair_erases_dangling_and_self_segments() {
     use crate::sketch::{EntityRole, Segment};
     let mut solid = bracket(); // 4 points, 4 valid segments
-    // A segment to a non-existent point, and a degenerate self-loop.
+                               // A segment to a non-existent point, and a degenerate self-loop.
     solid.sketch.segments_mut_for_test().push(Segment {
         id: 100,
         from: 0,
@@ -171,9 +190,20 @@ fn repair_erases_dangling_and_self_segments() {
         role: EntityRole::Real,
     });
     let dropped = solid.sketch.repair();
-    assert_eq!(dropped, 2, "both the dangling reference and the self-loop are erased");
-    assert_eq!(solid.sketch.segments().len(), 4, "the four valid segments remain");
-    assert_eq!(solid.sketch.flattened_loop().len(), 4, "the loop still closes");
+    assert_eq!(
+        dropped, 2,
+        "both the dangling reference and the self-loop are erased"
+    );
+    assert_eq!(
+        solid.sketch.segments().len(),
+        4,
+        "the four valid segments remain"
+    );
+    assert_eq!(
+        solid.sketch.flattened_loop().len(),
+        4,
+        "the loop still closes"
+    );
 }
 
 #[test]

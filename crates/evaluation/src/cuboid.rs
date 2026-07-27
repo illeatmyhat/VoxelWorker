@@ -106,7 +106,12 @@ fn region_from_voxel_grid(
         {
             continue;
         }
-        region.set(lx as u32, ly as u32, lz as u32, Some(voxel.cell_key().raw()));
+        region.set(
+            lx as u32,
+            ly as u32,
+            lz as u32,
+            Some(voxel.cell_key().raw()),
+        );
     }
     region
 }
@@ -170,7 +175,10 @@ mod tests {
         let base = 1u16; // Wood
         let flagged = make_voxel(base, true).cell_key().raw();
         let plain = make_voxel(base, false).cell_key().raw();
-        assert_ne!(flagged, plain, "the overlay marker must change the mesher's cell key");
+        assert_ne!(
+            flagged, plain,
+            "the overlay marker must change the mesher's cell key"
+        );
         // A 4×1×1 row: x<2 flagged, x>=2 plain — same base block, differing overlay.
         let extent = [4, 1, 1];
         let mut region = VoxelRegion::new_empty(extent);
@@ -207,8 +215,8 @@ mod tests {
         // Resolve real SDF primitives (sphere, cylinder, box, torus, tube) into a
         // VoxelGrid, densify with the adapter, and verify the adapter drops no voxel
         // and the decomposition covers exactly the resolved solid set.
-        use voxel_core::voxel::{ShapeKind};
         use document::voxel::{SdfShape, VoxelProducer};
+        use voxel_core::voxel::ShapeKind;
 
         for &kind in &[
             ShapeKind::Sphere,
@@ -248,7 +256,11 @@ mod tests {
                         }
                     }
                 }
-                assert_eq!(covered.len(), region_solid, "{kind:?} {size:?}: cover count mismatch");
+                assert_eq!(
+                    covered.len(),
+                    region_solid,
+                    "{kind:?} {size:?}: cover count mismatch"
+                );
                 assert!(boxes.len() as u64 <= region_solid as u64);
             }
         }

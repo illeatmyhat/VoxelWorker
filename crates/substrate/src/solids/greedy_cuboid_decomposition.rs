@@ -155,8 +155,9 @@ impl GreedyCuboidDecomposition {
         let mut cuboids = Vec::new();
 
         // Local index helper over the consumed bitmap, sharing the grid's flat layout.
-        let idx =
-            |x: u32, y: u32, z: u32| (z as usize * h as usize + y as usize) * w as usize + x as usize;
+        let idx = |x: u32, y: u32, z: u32| {
+            (z as usize * h as usize + y as usize) * w as usize + x as usize
+        };
 
         for z in 0..d {
             for y in 0..h {
@@ -252,7 +253,9 @@ mod tests {
         let [w, h, d] = grid.extent;
         // Per-cell coverage count.
         let mut cover_count = vec![0u32; grid.cells.len()];
-        let idx = |x: u32, y: u32, z: u32| (z as usize * h as usize + y as usize) * w as usize + x as usize;
+        let idx = |x: u32, y: u32, z: u32| {
+            (z as usize * h as usize + y as usize) * w as usize + x as usize
+        };
 
         for c in cuboids {
             // Cuboid stays inside the grid.
@@ -306,7 +309,13 @@ mod tests {
 
     #[test]
     fn single_cell_one_cuboid() {
-        let grid = grid_from_fn([3, 3, 3], |x, y, z| if [x, y, z] == [1, 1, 1] { Some(7) } else { None });
+        let grid = grid_from_fn([3, 3, 3], |x, y, z| {
+            if [x, y, z] == [1, 1, 1] {
+                Some(7)
+            } else {
+                None
+            }
+        });
         let cuboids = GreedyCuboidDecomposition::decompose(&grid);
         assert_eq!(cuboids.len(), 1);
         assert_eq!(
@@ -331,7 +340,10 @@ mod tests {
         assert_eq!(cuboids[0].min, [0, 0, 0]);
         assert_eq!(cuboids[0].max, [3, 2, 4]);
         assert_eq!(cuboids[0].label, 2);
-        assert_eq!(cuboids[0].cell_count(), (extent[0] * extent[1] * extent[2]) as u64);
+        assert_eq!(
+            cuboids[0].cell_count(),
+            (extent[0] * extent[1] * extent[2]) as u64
+        );
         assert_invariants(&grid, &cuboids);
     }
 
@@ -357,7 +369,10 @@ mod tests {
         //   y=1: X . .
         //   y=0: X X X
         let extent = [3, 3, 2];
-        let grid = grid_from_fn(extent, |x, y, _z| if y == 0 || x == 0 { Some(4) } else { None });
+        let grid = grid_from_fn(
+            extent,
+            |x, y, _z| if y == 0 || x == 0 { Some(4) } else { None },
+        );
         let cuboids = GreedyCuboidDecomposition::decompose(&grid);
         // No cuboid may cover the concave empty cells; invariants enforce it.
         let count = assert_invariants(&grid, &cuboids);
@@ -385,7 +400,10 @@ mod tests {
                 for y in 1..=3 {
                     let inside_x = c.min[0] <= x && x <= c.max[0];
                     let inside_y = c.min[1] <= y && y <= c.max[1];
-                    assert!(!(inside_x && inside_y), "cuboid {c:?} covers hole cell ({x},{y})");
+                    assert!(
+                        !(inside_x && inside_y),
+                        "cuboid {c:?} covers hole cell ({x},{y})"
+                    );
                 }
             }
         }
@@ -429,7 +447,10 @@ mod tests {
     impl Lcg {
         fn next_u32(&mut self) -> u32 {
             // Numerical Recipes LCG constants.
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (self.0 >> 33) as u32
         }
     }
@@ -472,7 +493,9 @@ mod tests {
     /// Expand a decomposition back into the SET of `(x, y, z)` cells it covers,
     /// paired with the covering cuboid's label. The structural round-trip tests
     /// compare this against the grid's own labeled cells.
-    fn expand_cuboids_to_cells(cuboids: &[Cuboid<u16>]) -> std::collections::HashMap<[u32; 3], u16> {
+    fn expand_cuboids_to_cells(
+        cuboids: &[Cuboid<u16>],
+    ) -> std::collections::HashMap<[u32; 3], u16> {
         let mut cells = std::collections::HashMap::new();
         for cuboid in cuboids {
             for z in cuboid.min[2]..=cuboid.max[2] {
@@ -526,7 +549,13 @@ mod tests {
 
     #[test]
     fn round_trip_single_cell() {
-        let grid = grid_from_fn([3, 3, 3], |x, y, z| if [x, y, z] == [1, 1, 1] { Some(7) } else { None });
+        let grid = grid_from_fn([3, 3, 3], |x, y, z| {
+            if [x, y, z] == [1, 1, 1] {
+                Some(7)
+            } else {
+                None
+            }
+        });
         assert_eq!(assert_round_trip_exact(&grid), 1);
     }
 
@@ -536,7 +565,11 @@ mod tests {
         assert_eq!(assert_round_trip_exact(&empty), 0);
 
         let full = grid_from_fn([4, 3, 5], |_x, _y, _z| Some(2));
-        assert_eq!(assert_round_trip_exact(&full), 1, "solid block → one cuboid");
+        assert_eq!(
+            assert_round_trip_exact(&full),
+            1,
+            "solid block → one cuboid"
+        );
     }
 
     #[test]
@@ -555,9 +588,14 @@ mod tests {
             Some(label)
         });
         let count = assert_round_trip_exact(&grid);
-        assert!(count >= 4, "four labels must yield at least four cuboids, got {count}");
-        let labels: std::collections::HashSet<u16> =
-            GreedyCuboidDecomposition::decompose(&grid).iter().map(|c| c.label).collect();
+        assert!(
+            count >= 4,
+            "four labels must yield at least four cuboids, got {count}"
+        );
+        let labels: std::collections::HashSet<u16> = GreedyCuboidDecomposition::decompose(&grid)
+            .iter()
+            .map(|c| c.label)
+            .collect();
         assert_eq!(
             labels,
             [11, 22, 33, 44].into_iter().collect(),
@@ -570,7 +608,10 @@ mod tests {
         // Irregular/concave outlines whose holes and notches no cuboid may cover.
 
         // (1) L-shape across depth 2.
-        let l_shape = grid_from_fn([3, 3, 2], |x, y, _z| if y == 0 || x == 0 { Some(4) } else { None });
+        let l_shape = grid_from_fn(
+            [3, 3, 2],
+            |x, y, _z| if y == 0 || x == 0 { Some(4) } else { None },
+        );
         assert_round_trip_exact(&l_shape);
 
         // (2) 5×5 ring (hollow centre) over depth 1.

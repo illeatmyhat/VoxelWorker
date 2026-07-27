@@ -90,7 +90,13 @@ fn box_clearance(
 /// and does NOT cross the `0/360` seam, so the four corner angles bound the whole span; the
 /// MAX corner angle must sit at least `ANGLE_EPS` inside `turn` so the resolve's f32 `atan2`
 /// rounding can never push a boundary sample past `turn` after a coarse claim.
-pub(super) fn revolve_box_within_sweep_arc(a_lo: f64, a_hi: f64, b_lo: f64, b_hi: f64, turn_degrees: u32) -> bool {
+pub(super) fn revolve_box_within_sweep_arc(
+    a_lo: f64,
+    a_hi: f64,
+    b_lo: f64,
+    b_hi: f64,
+    turn_degrees: u32,
+) -> bool {
     // Unboundable: the box contains/touches the axis, or straddles the theta=0 ray.
     //
     // The seam of the normalised angle is the `+radial_a` axis alone (`b = 0, a > 0`):

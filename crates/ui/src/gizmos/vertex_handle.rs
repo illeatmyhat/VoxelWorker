@@ -43,7 +43,12 @@ pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleSt
     };
     let rect = Rect::from_center_size(center, Vec2::splat(half * 2.0));
     painter.rect_filled(rect, 0.0, fill);
-    painter.rect_stroke(rect, 0.0, Stroke::new(STROKE_HANDLE, border), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(STROKE_HANDLE, border),
+        StrokeKind::Inside,
+    );
     if state == HandleState::Snapped {
         snap_ticks(painter, center, half + 2.5, half + 7.0, HANDLE_ACCENT);
     }

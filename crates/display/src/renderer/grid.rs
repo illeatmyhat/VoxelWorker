@@ -184,7 +184,10 @@ impl SceneGridRenderer {
     /// coincident depth against the model's base face without a geometric drop.
     pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
         let view_projection = view_projection.to_cols_array_2d();
-        let lattice = LineUniforms { view_projection, depth_bias: [0.0; 4] };
+        let lattice = LineUniforms {
+            view_projection,
+            depth_bias: [0.0; 4],
+        };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&lattice));
         let floor = LineUniforms {
             view_projection,
@@ -303,15 +306,26 @@ pub(crate) fn voxel_boundaries(lo: f32, hi: f32, step: u32) -> Vec<(f32, bool)> 
 /// Append a 3D block lattice for the box `[min, max]` (voxels) — grid lines at every
 /// BLOCK boundary (spacing = `step`) — into `vertices` (issue #29 S3, per-object).
 /// Port of the prototype `buildGrids` lattice loop, now spanning an arbitrary box.
-pub(crate) fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
+pub(crate) fn lattice_vertices_into(
+    vertices: &mut Vec<LineVertex>,
+    min: [f32; 3],
+    max: [f32; 3],
+    step: u32,
+) {
     let color = with_alpha(srgb_hex_to_linear(LATTICE_COLOR_HEX), LATTICE_ALPHA);
     let xs = block_boundaries(min[0], max[0], step);
     let ys = block_boundaries(min[1], max[1], step);
     let zs = block_boundaries(min[2], max[2], step);
 
     let mut add = |from: [f32; 3], to: [f32; 3]| {
-        vertices.push(LineVertex { position: from, color });
-        vertices.push(LineVertex { position: to, color });
+        vertices.push(LineVertex {
+            position: from,
+            color,
+        });
+        vertices.push(LineVertex {
+            position: to,
+            color,
+        });
     };
 
     // The full 3D block lattice draws line families along all three axes. Z-up: the
@@ -356,7 +370,12 @@ pub(crate) fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3
 /// against the model's coincident bottom face is avoided by the floor's own
 /// depth-biased uniform buffer (the SAME line pipeline as the lattice draw, not a
 /// separate one) rather than a geometric drop.
-pub(crate) fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
+pub(crate) fn floor_vertices_into(
+    vertices: &mut Vec<LineVertex>,
+    min: [f32; 3],
+    max: [f32; 3],
+    step: u32,
+) {
     let voxel_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_VOXEL_ALPHA);
     let block_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
     // Z-up: the floor is an XY grid at the node's bottom (`z = min[2]`).
@@ -365,8 +384,14 @@ pub(crate) fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3],
     let ys = voxel_boundaries(min[1], max[1], step);
 
     let mut add = |from: [f32; 3], to: [f32; 3], color: [f32; 4]| {
-        vertices.push(LineVertex { position: from, color });
-        vertices.push(LineVertex { position: to, color });
+        vertices.push(LineVertex {
+            position: from,
+            color,
+        });
+        vertices.push(LineVertex {
+            position: to,
+            color,
+        });
     };
 
     // Minor pass: fine voxel lines (one per voxel boundary), subtle.

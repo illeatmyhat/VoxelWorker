@@ -8,9 +8,9 @@ use voxel_core::voxel::Voxel;
 #[test]
 #[ignore = "perf probe — run in release with --nocapture"]
 fn mesh_pipeline_scaling_probe() {
-    use voxel_core::core_geom::MaterialChoice;
     use document::scene::{Node, NodeContent, Scene};
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
+    use voxel_core::core_geom::MaterialChoice;
     let density = 16u32;
     for blocks in [50i64, 125, 250, 500] {
         let edge = blocks * density as i64;
@@ -18,12 +18,13 @@ fn mesh_pipeline_scaling_probe() {
             SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
         let scene = Scene::from_nodes(vec![Node::new(
             "Box",
-            NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
+            NodeContent::SketchTool {
+                producer: extrude,
+                material: MaterialChoice::Stone,
+            },
         )]);
-        let chunks =
-            evaluation::two_layer_store::TwoLayerStore::enabled().build_covering_chunks(
-                &scene, density, 0,
-            );
+        let chunks = evaluation::two_layer_store::TwoLayerStore::enabled()
+            .build_covering_chunks(&scene, density, 0);
         let dims = scene.placed_region_dimensions(density);
         let recentre = scene.recentre_voxels_for_resolve(density);
         let start = std::time::Instant::now();
@@ -168,9 +169,17 @@ fn face_normal_to_layer_matches_instanced() {
         let m = [normal[0].abs(), normal[1].abs(), normal[2].abs()];
         if m[2] > 0.5 {
             // Vertical (Z-up): +Z = up (2), -Z = down (3).
-            if normal[2] > 0.0 { 2 } else { 3 }
+            if normal[2] > 0.0 {
+                2
+            } else {
+                3
+            }
         } else if m[0] > 0.5 {
-            if normal[0] > 0.0 { 0 } else { 1 }
+            if normal[0] > 0.0 {
+                0
+            } else {
+                1
+            }
         } else if normal[1] < 0.0 {
             // -Y = south/front.
             4
@@ -195,8 +204,8 @@ fn face_normal_to_layer_matches_instanced() {
 /// shape off-centre). A wedge means lost coverage; this asserts none is lost.
 #[test]
 fn cuboid_covers_every_voxel_for_all_shapes() {
-    use voxel_core::voxel::{ShapeKind};
     use document::voxel::{SdfShape, VoxelProducer};
+    use voxel_core::voxel::ShapeKind;
 
     for &kind in &[
         ShapeKind::Cylinder,
@@ -226,8 +235,7 @@ fn cuboid_covers_every_voxel_for_all_shapes() {
                 }
 
                 let (region, _world_offset) = region_from_voxel_cloud(&shifted);
-                let region_solid =
-                    region.cells.iter().filter(|c| c.is_some()).count();
+                let region_solid = region.cells.iter().filter(|c| c.is_some()).count();
                 let boxes = decompose_into_boxes(&region);
                 let covered: u64 = boxes.iter().map(|b| b.cell_count()).sum();
 
@@ -356,8 +364,7 @@ fn vertex_positions_match_box_voxel_extents() {
         assert!(!boxes.is_empty(), "test shape must decompose to ≥1 box");
 
         // The set of valid corner planes per axis = {min} ∪ {max+1} over boxes.
-        let mut valid_plane: [HashSet<i64>; 3] =
-            [HashSet::new(), HashSet::new(), HashSet::new()];
+        let mut valid_plane: [HashSet<i64>; 3] = [HashSet::new(), HashSet::new(), HashSet::new()];
         for voxel_box in &boxes {
             for (axis, planes) in valid_plane.iter_mut().enumerate() {
                 planes.insert(voxel_box.min[axis] as i64);
@@ -371,8 +378,7 @@ fn vertex_positions_match_box_voxel_extents() {
                 let local_plane = (vertex.position[axis] - world_offset[axis]).round() as i64;
                 // The round must be exact (planes are integers in local space).
                 assert!(
-                    (vertex.position[axis] - world_offset[axis] - local_plane as f32).abs()
-                        < 1e-4,
+                    (vertex.position[axis] - world_offset[axis] - local_plane as f32).abs() < 1e-4,
                     "vertex {:?} axis {axis} not on an integer local plane",
                     vertex.position
                 );
@@ -430,4 +436,3 @@ fn empty_grid_has_no_mesh() {
     assert_eq!(mesh.face_count(), 0);
     assert_eq!(mesh.index_count(), 0);
 }
-

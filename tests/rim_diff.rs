@@ -15,8 +15,8 @@ use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::voxel::ShapeKind;
 use voxel_worker::{
     build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records, AppCore,
-    BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MaterialChoice, OrbitCamera,
-    ProjectionMode, Scene, TwoLayerStore, COLOR_TARGET_FORMAT,
+    BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MaterialChoice, OrbitCamera, ProjectionMode,
+    Scene, TwoLayerStore, COLOR_TARGET_FORMAT,
 };
 
 fn exact_occupancy_set(
@@ -72,7 +72,10 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
 
     let recentre = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
-    eprintln!("grid_dimensions = {grid_dimensions:?}, records = {}", build.brick_records.len());
+    eprintln!(
+        "grid_dimensions = {grid_dimensions:?}, records = {}",
+        build.brick_records.len()
+    );
 
     let occupied = exact_occupancy_set(&two_layer_chunks, vpb);
     let occupied_fn = |absolute: [i64; 3]| occupied.contains(&absolute);
@@ -126,7 +129,11 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
             let pixel_index = (y * width + x) as usize;
             let gpu_pixel = gpu_image[pixel_index];
             let gpu_hit = gpu_pixel[0] == 1;
-            let gpu_voxel = [gpu_pixel[1] as i32, gpu_pixel[2] as i32, gpu_pixel[3] as i32];
+            let gpu_voxel = [
+                gpu_pixel[1] as i32,
+                gpu_pixel[2] as i32,
+                gpu_pixel[3] as i32,
+            ];
             if gpu_hit {
                 gpu_hits += 1;
             }
@@ -175,7 +182,10 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
         "gpu_hits={gpu_hits}  gpu!=exact={gpu_vs_exact_disagree} (algo={algo_bug} shader={shader_bug})  cpu_brick!=exact={brick_vs_exact_disagree}"
     );
 
-    assert!(gpu_hits > 0, "zero brick hits — the grazing camera missed the tube");
+    assert!(
+        gpu_hits > 0,
+        "zero brick hits — the grazing camera missed the tube"
+    );
     // The regression: at this grazing view the brick raymarch — CPU mirror AND GPU shader —
     // must match the exact evaluator on EVERY pixel. Before the `seed_in_box` fix (2026-07-17)
     // this diverged on ~1800 rim pixels (the +Z tread staircase); the head-on parity case in

@@ -24,10 +24,8 @@ use voxel_core::core_geom::MaterialChoice;
 #[test]
 #[ignore = "perf probe — run in release with --nocapture"]
 fn brick_pipeline_scaling_probe() {
-    use crate::brick::{
-        build_brick_field, BrickRecord, ClipmapPyramid, IncrementalBrickField,
-    };
     use crate::brick::pack_gpu_records;
+    use crate::brick::{build_brick_field, BrickRecord, ClipmapPyramid, IncrementalBrickField};
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     let density = 16u32;
     let mut block_spans = vec![50i64, 125, 250];
@@ -40,7 +38,10 @@ fn brick_pipeline_scaling_probe() {
             SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
         let scene = Scene::from_nodes(vec![Node::new(
             "Box",
-            NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
+            NodeContent::SketchTool {
+                producer: extrude,
+                material: MaterialChoice::Stone,
+            },
         )]);
         let stage_start = std::time::Instant::now();
         let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
@@ -49,8 +50,7 @@ fn brick_pipeline_scaling_probe() {
         let build = build_brick_field(&chunks, density);
         let field_elapsed = stage_start.elapsed();
         let record_count = build.brick_records.len();
-        let record_megabytes =
-            (record_count * std::mem::size_of::<BrickRecord>()) as f64 / 1.0e6;
+        let record_megabytes = (record_count * std::mem::size_of::<BrickRecord>()) as f64 / 1.0e6;
         let stage_start = std::time::Instant::now();
         let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
         let pack_elapsed = stage_start.elapsed();

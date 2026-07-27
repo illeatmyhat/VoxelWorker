@@ -51,11 +51,11 @@ use bytemuck::{Pod, Zeroable};
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
-use voxel_core::core_geom::{BlockId, CellKey, MaterialChoice, CHUNK_BLOCKS};
-use voxel_core::voxel::RecentreVoxels;
+use crate::renderer::{LayerBand, RegionClip, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use evaluation::cuboid::VoxelBoxMaterial;
 use evaluation::two_layer_store::{SeamSolidity, TwoLayerChunk};
-use crate::renderer::{LayerBand, RegionClip, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
+use voxel_core::core_geom::{BlockId, CellKey, MaterialChoice, CHUNK_BLOCKS};
+use voxel_core::voxel::RecentreVoxels;
 
 // The brick-record key codec IS substrate's `lattice_key`: an absolute world-block
 // coordinate packed into one sortable `u64` in z-major lexicographic (z, y, x) order,
@@ -70,35 +70,35 @@ pub use substrate::spatial::lattice_key::{
 // the sculpted-atlas scatter reuses substrate's `CubeTilePacking` (linear slot → cubic tile
 // grid) and the per-slot store is a `SlotFreeList` (stable-index free-list). See
 // docs/architecture/03-display.md (the brick-field atlas).
-use substrate::occupancy::{CubeTilePacking, SlotFreeList};
 pub use substrate::occupancy::BitCube as BrickOccupancyTile;
+use substrate::occupancy::{CubeTilePacking, SlotFreeList};
 
 // A MIXED block's per-voxel cell-key tile IS substrate's `ValueCube<u16>` — the payload
 // sibling of the occupancy `BitCube`, one `u16` per voxel; the occupancy tile gates it
 // cell-for-cell and ONE rasterizing walk fills both. See docs/architecture/03-display.md.
 pub use substrate::occupancy::ValueCube as ValueTile;
 
-mod clipmap;
-mod occupancy;
-mod record;
-mod build;
-mod incremental;
 mod atlas;
-mod gpu_record;
-mod raymarch;
+mod build;
+mod clipmap;
 mod cpu_march;
+mod gpu_record;
+mod incremental;
+mod occupancy;
+mod raymarch;
+mod record;
 #[cfg(test)]
 mod tests;
 
 // The brick path's items, re-exported into `display::brick::*`. Public items surface as the
 // crate's public API; the `pub(crate)` helpers stay crate-internal but resolve at this path.
 // Sibling submodules reach each other through `use super::*` + these globs (ADR 0016 carve).
-pub use clipmap::*;
-pub use occupancy::*;
-pub use record::*;
-pub use build::*;
-pub use incremental::*;
 pub use atlas::*;
-pub use gpu_record::*;
-pub use raymarch::*;
+pub use build::*;
+pub use clipmap::*;
 pub use cpu_march::*;
+pub use gpu_record::*;
+pub use incremental::*;
+pub use occupancy::*;
+pub use raymarch::*;
+pub use record::*;

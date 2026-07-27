@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use voxel_core::units::{ExactRational, Measurement};
 
-use crate::intent::{Intent, NodeSpec};
 use super::producers::{outset_voxels_at, LeafBody};
 use super::*;
+use crate::intent::{Intent, NodeSpec};
 use voxel_core::voxel::RecentreVoxels;
 
 /// The display path's hard coordinate envelope, in whole blocks (±this on any axis).
@@ -166,7 +166,11 @@ impl NodeTransform {
         // Clamp density to ≥1 like every resolve site, so a 0-density doc can't
         // multiply placement to zero / mis-scale.
         let density = voxels_per_block.max(1) as i64;
-        let offset_voxels = [blocks[0] * density, blocks[1] * density, blocks[2] * density];
+        let offset_voxels = [
+            blocks[0] * density,
+            blocks[1] * density,
+            blocks[2] * density,
+        ];
         // Retain a whole-BLOCK measurement per axis (no voxel remainder), so a later
         // density re-target scales the block count losslessly — but normalise the
         // all-zero case to `None` so a zero placement matches a fresh identity.
@@ -216,8 +220,7 @@ impl NodeTransform {
     /// canonical (old-document-identical) form so apply→undo→apply is byte-stable.
     pub fn with_rotation(mut self, rotation: Quat) -> Self {
         let rotation = rotation.normalize();
-        self.rotation_quaternion =
-            (!is_identity_rotation(rotation)).then(|| rotation.to_array());
+        self.rotation_quaternion = (!is_identity_rotation(rotation)).then(|| rotation.to_array());
         self
     }
 
@@ -258,7 +261,10 @@ impl NodeTransform {
                 Err(voxel_core::units::MeasurementError::BlockTermNotWholeVoxels {
                     nearest_floor_voxels,
                     ..
-                }) => (nearest_floor_voxels, Measurement::from_voxels(nearest_floor_voxels)),
+                }) => (
+                    nearest_floor_voxels,
+                    Measurement::from_voxels(nearest_floor_voxels),
+                ),
                 Err(voxel_core::units::MeasurementError::ZeroDensity) => {
                     let voxels = measurement.voxel_term();
                     (voxels, Measurement::from_voxels(voxels))
@@ -290,9 +296,8 @@ impl NodeTransform {
         measurements: [Measurement; 3],
         offset_voxels: [i64; 3],
     ) -> Option<Box<[Measurement; 3]>> {
-        let is_synthesisable = (0..3).all(|axis| {
-            measurements[axis] == Measurement::from_voxels(offset_voxels[axis])
-        });
+        let is_synthesisable =
+            (0..3).all(|axis| measurements[axis] == Measurement::from_voxels(offset_voxels[axis]));
         if is_synthesisable {
             None
         } else {
@@ -346,7 +351,9 @@ impl NodeTransform {
     pub fn block_aligned(&self, voxels_per_block: u32) -> bool {
         // Clamp density to ≥1 so a 0-density doc can't panic on `% 0`.
         let density = voxels_per_block.max(1) as i64;
-        self.offset_voxels.iter().all(|&v| v.rem_euclid(density) == 0)
+        self.offset_voxels
+            .iter()
+            .all(|&v| v.rem_euclid(density) == 0)
     }
 }
 
@@ -387,7 +394,11 @@ fn world_block_corner_floor(world_offset_voxels: [i64; 3], voxels_per_block: u32
 /// (bit-exact with the pre-0027 `turn_extent`); a genuine rotation ceils to conservatively enclose
 /// (ADR 0027 §4).
 pub(super) fn rotated_grid_extent_voxels(rotation: Quat, grid_voxels: [i64; 3]) -> [i64; 3] {
-    let full = Vec3::new(grid_voxels[0] as f32, grid_voxels[1] as f32, grid_voxels[2] as f32);
+    let full = Vec3::new(
+        grid_voxels[0] as f32,
+        grid_voxels[1] as f32,
+        grid_voxels[2] as f32,
+    );
     substrate::spatial::LeafPlacement::new(
         rotation,
         full,
@@ -400,7 +411,11 @@ pub(super) fn rotated_grid_extent_voxels(rotation: Quat, grid_voxels: [i64; 3]) 
 /// The world-axis **block** extent, the block-frame twin of [`rotated_grid_extent_voxels`] for the
 /// whole-block size readouts — the same substrate placement, cast to block units.
 pub(super) fn rotated_grid_extent_blocks(rotation: Quat, size_blocks: [u32; 3]) -> [u32; 3] {
-    let full = Vec3::new(size_blocks[0] as f32, size_blocks[1] as f32, size_blocks[2] as f32);
+    let full = Vec3::new(
+        size_blocks[0] as f32,
+        size_blocks[1] as f32,
+        size_blocks[2] as f32,
+    );
     let max = substrate::spatial::LeafPlacement::new(
         rotation,
         full,
@@ -503,7 +518,8 @@ pub(super) fn leaf_placed_block_box(
 /// size-less leaf. The two implementations are [`leaf_placed_voxel_box`] (exact voxel span)
 /// and [`leaf_placed_block_box`] (that span expanded to enclosing whole blocks); a caller
 /// picks one to choose its granularity.
-type PerLeafBox = fn([i64; 3], Quat, &LeafBody<'_>, Measurement, u32) -> Option<([i64; 3], [i64; 3])>;
+type PerLeafBox =
+    fn([i64; 3], Quat, &LeafBody<'_>, Measurement, u32) -> Option<([i64; 3], [i64; 3])>;
 
 /// The subset of the full leaf signature the extent derivations actually read — a leaf's
 /// world voxel offset, continuous rotation, body and outset. The reduced sink both
@@ -529,9 +545,13 @@ pub(super) fn fold_leaf_boxes(
     let mut max_corner = [i64::MIN; 3];
     let mut any = false;
     run_walk(&mut |world_offset_voxels, rotation, body, outset| {
-        if let Some((low_corner, high_corner)) =
-            per_leaf_box(world_offset_voxels, rotation, body, outset, voxels_per_block)
-        {
+        if let Some((low_corner, high_corner)) = per_leaf_box(
+            world_offset_voxels,
+            rotation,
+            body,
+            outset,
+            voxels_per_block,
+        ) {
             any = true;
             for axis in 0..3 {
                 min_corner[axis] = min_corner[axis].min(low_corner[axis]);
@@ -656,7 +676,14 @@ impl Scene {
             [0.0, 0.0, 0.0],
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, _offset_local_voxels, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels,
+                  _offset_local_voxels,
+                  rotation,
+                  body,
+                  _grid_on_faces,
+                  _operation,
+                  outset,
+                  _scope_path| {
                 visit(world_offset_voxels, rotation, &body, outset);
             },
         );
@@ -667,7 +694,14 @@ impl Scene {
     /// [`walk_subtree_leaves`](Self::walk_subtree_leaves). Keeps the full-visitor-to-subset
     /// shim in ONE place so both scene-wide extents differ only in the per-leaf box.
     pub(super) fn walk_scene_leaves(&self, visit: &mut ReducedLeafVisitor<'_>) {
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels,
+                                 _offset_local_voxels,
+                                 rotation,
+                                 body,
+                                 _grid_on_faces,
+                                 _operation,
+                                 outset,
+                                 _scope_path| {
             visit(world_offset_voxels, rotation, &body, outset);
         });
     }
@@ -871,7 +905,6 @@ impl Scene {
             None => [0, 0, 0],
         }
     }
-
 }
 
 impl Scene {
@@ -883,15 +916,26 @@ impl Scene {
     /// voxel extent shifted by the offset delta), enclosed to blocks — no scene resolve.
     pub fn intent_exceeds_coordinate_limit(&self, intent: &Intent, voxels_per_block: u32) -> bool {
         let would_be_voxel_box = match intent {
-            Intent::PlaceNode { content, offset_voxels, rotation_quaternion, .. } => {
-                place_node_voxel_box(content, *offset_voxels, *rotation_quaternion, voxels_per_block)
-            }
-            Intent::SetOffset { target, offset_measurements } => {
-                self.set_offset_voxel_box(*target, offset_measurements, voxels_per_block)
-            }
+            Intent::PlaceNode {
+                content,
+                offset_voxels,
+                rotation_quaternion,
+                ..
+            } => place_node_voxel_box(
+                content,
+                *offset_voxels,
+                *rotation_quaternion,
+                voxels_per_block,
+            ),
+            Intent::SetOffset {
+                target,
+                offset_measurements,
+            } => self.set_offset_voxel_box(*target, offset_measurements, voxels_per_block),
             Intent::SetShape { target, shape } => {
                 self.set_body_voxel_box(*target, voxels_per_block, |content| match content {
-                    NodeContent::Tool { shape: node_shape, .. } => {
+                    NodeContent::Tool {
+                        shape: node_shape, ..
+                    } => {
                         *node_shape = shape.clone();
                         true
                     }
@@ -900,7 +944,10 @@ impl Scene {
             }
             Intent::SetSketch { target, producer } => {
                 self.set_body_voxel_box(*target, voxels_per_block, |content| match content {
-                    NodeContent::SketchTool { producer: node_producer, .. } => {
+                    NodeContent::SketchTool {
+                        producer: node_producer,
+                        ..
+                    } => {
                         *node_producer = producer.clone();
                         true
                     }
@@ -985,7 +1032,9 @@ fn place_node_voxel_box(
     voxels_per_block: u32,
 ) -> Option<([i64; 3], [i64; 3])> {
     let node = content.clone().into_node();
-    let rotation = rotation_quaternion.map(Quat::from_array).unwrap_or(Quat::IDENTITY);
+    let rotation = rotation_quaternion
+        .map(Quat::from_array)
+        .unwrap_or(Quat::IDENTITY);
     leaf_placed_voxel_box(
         offset_voxels,
         rotation,
@@ -1020,9 +1069,7 @@ fn leaf_size_blocks(
     };
     // Grown by `N` on both sides of every axis, in VOXELS, before the round up to whole
     // blocks — rounding first would lose a sub-block outset entirely.
-    let grow = |voxels: u32| {
-        (voxels as i64 + 2 * outset_voxels).max(0) as u32
-    };
+    let grow = |voxels: u32| (voxels as i64 + 2 * outset_voxels).max(0) as u32;
     match content {
         // A Tool's size is now voxel-granular (ADR 0003 §3f(0)). The composite region
         // SIZING reports whole blocks, so round the exact voxel span UP to whole
@@ -1099,13 +1146,15 @@ mod continuity_schema_tests {
     #[test]
     fn a_rotated_placement_survives_json_round_trip() {
         let turn = Quat::from_rotation_z(std::f32::consts::FRAC_PI_3); // 60° about +Z
-        let transform = NodeTransform::from_offset_voxels([1, 0, 0])
-            .with_rotation(turn);
+        let transform = NodeTransform::from_offset_voxels([1, 0, 0]).with_rotation(turn);
         assert!(transform.rotation_quaternion.is_some());
         let json = serde_json::to_string(&transform).unwrap();
         let restored: NodeTransform = serde_json::from_str(&json).unwrap();
         // Quaternions compare up to sign; the restored rotation is the same turn.
-        assert!(restored.rotation().abs_diff_eq(turn, 1e-5) || restored.rotation().abs_diff_eq(-turn, 1e-5));
+        assert!(
+            restored.rotation().abs_diff_eq(turn, 1e-5)
+                || restored.rotation().abs_diff_eq(-turn, 1e-5)
+        );
     }
 
     #[test]

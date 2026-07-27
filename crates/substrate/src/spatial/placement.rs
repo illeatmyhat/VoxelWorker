@@ -78,8 +78,11 @@ pub fn is_axis_aligned(rotation: Quat) -> bool {
             .iter()
             .filter(|component| (component.abs() - 1.0).abs() <= TOLERANCE)
             .count();
-        let near_zero =
-            image.to_array().iter().filter(|component| component.abs() <= TOLERANCE).count();
+        let near_zero = image
+            .to_array()
+            .iter()
+            .filter(|component| component.abs() <= TOLERANCE)
+            .count();
         near_unit == 1 && near_zero == 2
     })
 }
@@ -208,7 +211,9 @@ impl LeafPlacement {
     /// re-added through `f32`); the precision-critical integer twin is
     /// [`world_cell_of_local_centre`](Self::world_cell_of_local_centre).
     pub fn world_of(&self, local: ProducerLocalVoxelPoint) -> TrueWorldVoxelPoint {
-        TrueWorldVoxelPoint::from_voxels(self.forward_local_relative(local.voxels()) + self.origin_vec3())
+        TrueWorldVoxelPoint::from_voxels(
+            self.forward_local_relative(local.voxels()) + self.origin_vec3(),
+        )
     }
 
     /// The inverse: a [`TrueWorldVoxelPoint`] mapped back to the producer-LOCAL frame.
@@ -217,7 +222,9 @@ impl LeafPlacement {
     /// convenience; the precision-critical twin is
     /// [`local_of_abs_cell_centre`](Self::local_of_abs_cell_centre).
     pub fn local_of(&self, world: TrueWorldVoxelPoint) -> ProducerLocalVoxelPoint {
-        ProducerLocalVoxelPoint::from_voxels(self.local_of_relative(world.voxels() - self.origin_vec3()))
+        ProducerLocalVoxelPoint::from_voxels(
+            self.local_of_relative(world.voxels() - self.origin_vec3()),
+        )
     }
 
     /// The absolute voxel cell a producer-LOCAL cell's CENTRE lands in — `world_of(index + 0.5)`
@@ -298,7 +305,13 @@ impl LeafPlacement {
         // The 8 integer corners of `[abs_min, abs_max]`, rebased against the origin in i64 (exact)
         // then rotated into the local frame — the same enclosing floor/ceil as `world_aabb`.
         let corners: [Vec3; 8] = std::array::from_fn(|i| {
-            let pick = |axis: usize| if (i >> axis) & 1 == 0 { abs_min[axis] } else { abs_max[axis] };
+            let pick = |axis: usize| {
+                if (i >> axis) & 1 == 0 {
+                    abs_min[axis]
+                } else {
+                    abs_max[axis]
+                }
+            };
             self.local_of_relative(Vec3::new(
                 (pick(0) - self.origin_voxels[0]) as f32,
                 (pick(1) - self.origin_voxels[1]) as f32,
@@ -345,8 +358,16 @@ fn enclosing_box(
         conservative_box(low, high)
     } else {
         (
-            [low.x.floor() as i64, low.y.floor() as i64, low.z.floor() as i64],
-            [high.x.ceil() as i64, high.y.ceil() as i64, high.z.ceil() as i64],
+            [
+                low.x.floor() as i64,
+                low.y.floor() as i64,
+                low.z.floor() as i64,
+            ],
+            [
+                high.x.ceil() as i64,
+                high.y.ceil() as i64,
+                high.z.ceil() as i64,
+            ],
         )
     }
 }
@@ -379,7 +400,8 @@ mod tests {
         let offset_local = [0.25, 0.5, 0.75];
 
         let near = LeafPlacement::from_origin_and_local(rotation, full, [0, 0, 0], offset_local);
-        let far = LeafPlacement::from_origin_and_local(rotation, full, [FAR, -FAR, FAR], offset_local);
+        let far =
+            LeafPlacement::from_origin_and_local(rotation, full, [FAR, -FAR, FAR], offset_local);
 
         // The same cell, expressed relative to each leaf's own origin, must map to the SAME local
         // point (the affine only ever sees the small residual).
@@ -404,7 +426,8 @@ mod tests {
         let offset_local = [0.3, 0.1, 0.0];
 
         let near = LeafPlacement::from_origin_and_local(rotation, full, [0, 0, 0], offset_local);
-        let far = LeafPlacement::from_origin_and_local(rotation, full, [FAR, FAR, -FAR], offset_local);
+        let far =
+            LeafPlacement::from_origin_and_local(rotation, full, [FAR, FAR, -FAR], offset_local);
 
         for idx in [[0, 0, 0], [2, 1, 3], [3, 3, 3]] {
             let near_cell = near.world_cell_of_local_centre(idx);
@@ -418,8 +441,14 @@ mod tests {
         }
         let (near_min, near_max) = near.world_aabb();
         let (far_min, far_max) = far.world_aabb();
-        assert_eq!(far_min, [near_min[0] + FAR, near_min[1] + FAR, near_min[2] - FAR]);
-        assert_eq!(far_max, [near_max[0] + FAR, near_max[1] + FAR, near_max[2] - FAR]);
+        assert_eq!(
+            far_min,
+            [near_min[0] + FAR, near_min[1] + FAR, near_min[2] - FAR]
+        );
+        assert_eq!(
+            far_max,
+            [near_max[0] + FAR, near_max[1] + FAR, near_max[2] - FAR]
+        );
     }
 
     /// The split constructor and the combined-`f32` [`LeafPlacement::new`] agree bit-for-bit at a
@@ -437,7 +466,8 @@ mod tests {
             origin[1] as f32 + offset_local[1],
             origin[2] as f32 + offset_local[2],
         );
-        let via_new = LeafPlacement::new(rotation, full, TrueWorldVoxelPoint::from_voxels(combined));
+        let via_new =
+            LeafPlacement::new(rotation, full, TrueWorldVoxelPoint::from_voxels(combined));
 
         assert_eq!(split.world_aabb(), via_new.world_aabb());
         for idx in [[0, 0, 0], [3, 1, 2]] {

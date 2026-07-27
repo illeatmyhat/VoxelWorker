@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use voxel_core::core_geom::CHUNK_BLOCKS;
 use document::scene::{LeafProducer, Scene};
+use voxel_core::core_geom::CHUNK_BLOCKS;
 use voxel_core::spatial_index::{EditBroadphaseBvh, VoxelAabb};
 
 #[allow(unused_imports)]
@@ -101,12 +101,14 @@ impl TwoLayerStore {
     }
 }
 
-
 /// Enumerate every covering chunk coord in the inclusive `[min_chunk, max_chunk]` range,
 /// in the SAME z,y,x order (X fastest, then Y, then Z) the dense store assembles them. This
 /// materialises the coords into a `Vec` so the wholesale build (#57) can `into_par_iter()`
 /// them and `.collect()` back into an identically-ordered result.
-pub(crate) fn enumerate_covering_chunk_coords(min_chunk: [i32; 3], max_chunk: [i32; 3]) -> Vec<[i32; 3]> {
+pub(crate) fn enumerate_covering_chunk_coords(
+    min_chunk: [i32; 3],
+    max_chunk: [i32; 3],
+) -> Vec<[i32; 3]> {
     let mut coords = Vec::new();
     for chunk_z in min_chunk[2]..=max_chunk[2] {
         for chunk_y in min_chunk[1]..=max_chunk[1] {
@@ -160,7 +162,10 @@ pub(crate) fn leaf_world_aabb(leaf: &LeafProducer, voxels_per_block: u32) -> Vox
 /// stateless per-build [`EditBroadphaseBvh`] over every leaf's world AABB, indexed by the
 /// leaf's position in `leaves` (document order). Rebuilt from scratch on every wholesale
 /// build / edit — never persisted across edits (no invalidation obligation, the C1 lesson).
-pub(crate) fn leaf_edit_broadphase(leaves: &[LeafProducer], voxels_per_block: u32) -> EditBroadphaseBvh {
+pub(crate) fn leaf_edit_broadphase(
+    leaves: &[LeafProducer],
+    voxels_per_block: u32,
+) -> EditBroadphaseBvh {
     let leaf_aabbs: Vec<VoxelAabb> = leaves
         .iter()
         .map(|leaf| leaf_world_aabb(leaf, voxels_per_block))
@@ -361,4 +366,3 @@ pub(crate) fn build_two_layer_chunk_per_block(
 
     chunk
 }
-

@@ -54,7 +54,9 @@ impl ApplicationHandler for App {
             // F9: dump the current scene + LIVE camera to the repro file (`shot --from-config`).
             // Lets an exact live-view bug reproduce headlessly. Ignored while egui has focus so it
             // never fires from a text field.
-            WindowEvent::KeyboardInput { event: key_event, .. } if !egui_consumed => {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if !egui_consumed => {
                 if key_event.state == ElementState::Pressed
                     && key_event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F9)
@@ -151,24 +153,19 @@ impl ApplicationHandler for App {
                                 // (it sets `view_cube_drag_active`, gated above), so
                                 // orbiting still wins over a click.
                                 let rect = state.cube_rect();
-                                let zone = classify_cube_point(
-                                    rect,
-                                    up_x as f32,
-                                    up_y as f32,
-                                    || state.pick_view_cube_element(up_x, up_y),
-                                );
+                                let zone =
+                                    classify_cube_point(rect, up_x as f32, up_y as f32, || {
+                                        state.pick_view_cube_element(up_x, up_y)
+                                    });
                                 // #13 Step 6.6: a rotate-arrow click only acts when the
                                 // view is face-constrained (the arrows are hidden
                                 // otherwise, so a stray gutter click is a no-op).
-                                let rotate_disabled = matches!(
-                                    zone,
-                                    Some(CubeChromeZone::RotateArrow(_))
-                                ) && !state.app_core.camera.is_face_constrained();
+                                let rotate_disabled =
+                                    matches!(zone, Some(CubeChromeZone::RotateArrow(_)))
+                                        && !state.app_core.camera.is_face_constrained();
                                 if let (Some(zone), false) = (zone, rotate_disabled) {
-                                    let action = chrome_zone_left_click_action(
-                                        zone,
-                                        &state.app_core.camera,
-                                    );
+                                    let action =
+                                        chrome_zone_left_click_action(zone, &state.app_core.camera);
                                     state.run_chrome_action(action);
                                 }
                             }
@@ -204,7 +201,8 @@ impl ApplicationHandler for App {
                             let stationary = (up_x - down_x).abs()
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
-                            if let (true, Some(target)) = (stationary, state.panel_state.sketch_mode)
+                            if let (true, Some(target)) =
+                                (stationary, state.panel_state.sketch_mode)
                             {
                                 let edit = match state.panel_state.sketch_tool {
                                     ui::panel::SketchTool::AddPoint => {
@@ -230,7 +228,8 @@ impl ApplicationHandler for App {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
                             (state.press_position, state.last_cursor_position)
                         {
-                            let stationary = (up_x - down_x).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary {
                                 state.resolve_sketch_selection_click(up_x, up_y);

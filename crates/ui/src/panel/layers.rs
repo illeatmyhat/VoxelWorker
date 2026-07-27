@@ -76,12 +76,7 @@ pub(super) fn build_onion_body(
 /// `ui.interact` + the pointer: the nearer handle to the press grabs, then follows
 /// the pointer (snapped to block boundaries when `snap_to_blocks` is on). Keeps
 /// `lower <= upper` by swapping when the handles cross. Edits `range` in place.
-fn layer_scrubber(
-    ui: &mut egui::Ui,
-    range: &mut LayerRange,
-    grid_z: u32,
-    voxels_per_block: u32,
-) {
+fn layer_scrubber(ui: &mut egui::Ui, range: &mut LayerRange, grid_z: u32, voxels_per_block: u32) {
     let grid_z = grid_z.max(1);
     let track_height = 26.0;
     let handle_half_width = 5.0;
@@ -100,9 +95,8 @@ fn layer_scrubber(
     );
 
     // Map a layer index <-> an x pixel on the track.
-    let layer_to_x = |layer: u32| -> f32 {
-        track_left + (layer as f32 / grid_z as f32) * track_width
-    };
+    let layer_to_x =
+        |layer: u32| -> f32 { track_left + (layer as f32 / grid_z as f32) * track_width };
     let x_to_layer = |x: f32| -> u32 {
         let t = ((x - track_left) / track_width).clamp(0.0, 1.0);
         (t * grid_z as f32).round() as u32
@@ -161,9 +155,7 @@ fn layer_scrubber(
         if let Some(pos) = response.interact_pointer_pos() {
             let active_upper = ui
                 .memory(|m| m.data.get_temp::<bool>(response.id))
-                .unwrap_or_else(|| {
-                    (pos.x - upper_x).abs() < (pos.x - lower_x).abs()
-                });
+                .unwrap_or_else(|| (pos.x - upper_x).abs() < (pos.x - lower_x).abs());
             let mut value = x_to_layer(pos.x);
             if range.snap_to_blocks {
                 value = LayerRange::snap_value(value, voxels_per_block, grid_z);

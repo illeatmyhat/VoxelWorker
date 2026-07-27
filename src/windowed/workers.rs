@@ -37,10 +37,16 @@ impl WindowedState {
         if let Some(handle) = self.scan_handle.as_ref() {
             for message in handle.drain() {
                 match message {
-                    ScanMessage::Group { group, thumbnail_rgba } => {
+                    ScanMessage::Group {
+                        group,
+                        thumbnail_rgba,
+                    } => {
                         self.pending_groups.push_back((group, thumbnail_rgba));
                     }
-                    ScanMessage::Done { group_count, source_name } => {
+                    ScanMessage::Done {
+                        group_count,
+                        source_name,
+                    } => {
                         self.scan_total = Some(group_count);
                         self.scan_source_name = source_name;
                         self.scan_handle = None;

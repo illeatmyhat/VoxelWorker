@@ -3,13 +3,13 @@
 //! 0010) the two-layer store calls, plus its per-leaf chunk-clipped stamp / mask
 //! helpers ([`stamp_producer_into_chunk`] / [`mask_producer_in_chunk`]).
 
+use crate::voxel::VoxelProducer;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::VoxelGrid;
-use crate::voxel::VoxelProducer;
 
-use super::*;
 use super::gather::{dense_leaf_placement, gather_placed_field_into_grid, leaf_is_out_of_phase};
 use super::scope_fold::sync_grid_scope_stack;
+use super::*;
 use crate::scene::*;
 
 impl Scene {
@@ -87,7 +87,8 @@ impl Scene {
 
         // Chunk extent fits i64 trivially; the chunk's absolute-voxel corners can be
         // large (a far-placed chunk), so they are computed in i64 (S4a).
-        let chunk_extent_voxels = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let chunk_extent_voxels =
+            (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         // The chunk's half-open absolute-voxel box `[min, max)` per axis.
         let chunk_min_voxels = [
@@ -137,7 +138,14 @@ impl Scene {
         // the shared inverse-gather ([`gather_placed_field_into_grid`]) AND its chunk-skip AABB is
         // taken from the ROTATED world box (the placement affine), so a tilted body is neither
         // truncated by the upright skip nor stamped upright.
-        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels,
+                                 offset_local_voxels,
+                                 rotation,
+                                 body,
+                                 grid_on_faces,
+                                 operation,
+                                 outset,
+                                 scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // An outset body grows on every side, so its low corner moves DOWN by the
             // outset — and the skip AABB below must use the DILATED span, or a cutter whose
@@ -221,7 +229,8 @@ impl Scene {
             // positions (floating origin `[0,0,0]` for the bare `resolve_chunk`, the recentre for
             // the rebased render path), so `oi` denotes absolute cell `oi + floating_origin_voxels`,
             // and the chunk membership clip keeps only cells in `[chunk_min, chunk_max)`.
-            if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some() {
+            if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some()
+            {
                 let placement = dense_leaf_placement(
                     rotation,
                     offset_local_voxels,

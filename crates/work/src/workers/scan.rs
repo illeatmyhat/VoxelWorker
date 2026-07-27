@@ -88,7 +88,9 @@ where
 /// send [`ScanMessage::Done`]. Used by both the windowed worker and the
 /// synchronous CLI path (`--scan-vs`) via [`run_scan_collect`].
 fn run_scan(sources: Vec<Box<dyn BlockSource>>, sender: &Sender<ScanMessage>) {
-    let source_name = sources.first().map(|source| source.display_name().to_string());
+    let source_name = sources
+        .first()
+        .map(|source| source.display_name().to_string());
     let mut group_count = 0usize;
     for source in &sources {
         for group in source.scan() {
@@ -101,14 +103,20 @@ fn run_scan(sources: Vec<Box<dyn BlockSource>>, sender: &Sender<ScanMessage>) {
             group_count += 1;
             // If the receiver is gone (window closed), stop early.
             if sender
-                .send(ScanMessage::Group { group, thumbnail_rgba })
+                .send(ScanMessage::Group {
+                    group,
+                    thumbnail_rgba,
+                })
                 .is_err()
             {
                 return;
             }
         }
     }
-    let _ = sender.send(ScanMessage::Done { group_count, source_name });
+    let _ = sender.send(ScanMessage::Done {
+        group_count,
+        source_name,
+    });
 }
 
 /// Run the same detect+scan+decode **synchronously** and return all groups with
@@ -116,7 +124,9 @@ fn run_scan(sources: Vec<Box<dyn BlockSource>>, sender: &Sender<ScanMessage>) {
 /// name too (for logging).
 pub fn run_auto_scan_blocking() -> (Vec<(BlockGroup, DecodedRgba)>, Option<String>) {
     let sources = detect_all_sources();
-    let source_name = sources.first().map(|source| source.display_name().to_string());
+    let source_name = sources
+        .first()
+        .map(|source| source.display_name().to_string());
     let mut results = Vec::new();
     for source in &sources {
         for group in source.scan() {

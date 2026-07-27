@@ -1,7 +1,7 @@
-use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
-use rayon::prelude::*;
-use super::*;
 use super::produce::{revolve_box_within_sweep_arc, to_profile_points, to_profile_points_measured};
+use super::*;
+use rayon::prelude::*;
+use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 
 /// The revolve field, with every per-solid constant hoisted out of the per-voxel loop.
 ///
@@ -368,8 +368,13 @@ impl SketchSolid {
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
         // Reinterpret the in-plane axes as (axial, radial) per `RevolveAxis` (shared).
-        let (axial_world_axis, axial_min, radial_a, radial_b) =
-            revolve_axes(axis, in_plane_0, in_plane_1, normal, [profile_min[0], profile_min[1]]);
+        let (axial_world_axis, axial_min, radial_a, radial_b) = revolve_axes(
+            axis,
+            in_plane_0,
+            in_plane_1,
+            normal,
+            [profile_min[0], profile_min[1]],
+        );
 
         let radial_profile_coord = match axis {
             RevolveAxis::InPlane0 => 1,
@@ -652,8 +657,11 @@ impl SketchSolid {
             RevolveAxis::InPlane1 => (r_lo, r_hi, axial_lo, axial_hi),
         };
         let profile_points = to_profile_points(&self.sketch.flattened_loop());
-        if !substrate::geom2d::rectangle_inside_polygon(&profile_points, [c0_lo, c1_lo], [c0_hi, c1_hi])
-        {
+        if !substrate::geom2d::rectangle_inside_polygon(
+            &profile_points,
+            [c0_lo, c1_lo],
+            [c0_hi, c1_hi],
+        ) {
             return false;
         }
         // Condition 1 (radial/axial) holds. A full turn needs nothing more (the sweep gate

@@ -273,7 +273,10 @@ mod tests {
             sender.send(queued).unwrap();
         }
         let latest = drain_to_latest(1, &receiver);
-        assert_eq!(latest, 5, "the burst collapses to the newest queued request");
+        assert_eq!(
+            latest, 5,
+            "the burst collapses to the newest queued request"
+        );
         assert!(
             receiver.try_recv().is_err(),
             "every intervening request is consumed — no backlog is left"
@@ -307,7 +310,10 @@ mod tests {
         let second = tracker.next_generation();
         assert_eq!(second, 2, "generations strictly increase");
         // Now the FIRST (in-flight) result is stale and must be discarded…
-        assert!(!tracker.accepts(first), "superseded generation is discarded");
+        assert!(
+            !tracker.accepts(first),
+            "superseded generation is discarded"
+        );
         // …and only the newest is accepted.
         assert!(tracker.accepts(second));
     }

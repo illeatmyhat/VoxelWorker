@@ -17,7 +17,12 @@ pub fn label_chip(painter: &Painter, at: Pos2, text: &str, accent: Color32) -> R
     let pad = Vec2::new(6.0, 3.5);
     let rect = Rect::from_min_size(at, galley.size() + pad * 2.0);
     painter.rect_filled(rect, 0.0, color_palette::BG);
-    painter.rect_stroke(rect, 0.0, Stroke::new(STROKE_GUIDE, accent), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(STROKE_GUIDE, accent),
+        StrokeKind::Inside,
+    );
     painter.galley(at + pad, galley, accent);
     rect
 }

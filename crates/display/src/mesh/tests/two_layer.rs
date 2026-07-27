@@ -2,11 +2,11 @@ use super::*;
 
 // ---- ADR 0010 E3 — two-layer mesher exposed-face parity (#50) ----
 
-use voxel_core::core_geom::MaterialChoice as MC;
 use document::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
+use document::voxel::SdfShape as TwoLayerSdf;
 use evaluation::two_layer_store::TwoLayerStore;
-use voxel_core::voxel::{ShapeKind as TwoLayerShape};
-use document::voxel::{SdfShape as TwoLayerSdf};
+use voxel_core::core_geom::MaterialChoice as MC;
+use voxel_core::voxel::ShapeKind as TwoLayerShape;
 
 /// Every unit face a mesh EMITS that ACTUALLY RENDERS — i.e. whose cell on the NORMAL
 /// (front) side is AIR per the dense occupancy. A face buried in solid (front solid) is
@@ -54,8 +54,14 @@ fn two_layer_renderable_faces(
 ) -> std::collections::HashSet<UnitFace> {
     let store = TwoLayerStore::enabled();
     let chunks = store.build_covering_chunks(scene, density, 0);
-    let meshes =
-        build_two_layer_chunk_meshes(&chunks, grid_dimensions, recentre, density, LayerBand::FULL, None);
+    let meshes = build_two_layer_chunk_meshes(
+        &chunks,
+        grid_dimensions,
+        recentre,
+        density,
+        LayerBand::FULL,
+        None,
+    );
     let mut renderable = std::collections::HashSet::new();
     for mesh in &meshes {
         renderable.extend(renderable_unit_faces(
@@ -118,7 +124,8 @@ fn assert_two_layer_face_parity(scene: &Scene, density: u32, label: &str) {
         &occupancy,
     );
     assert_eq!(
-        two_layer_renderable, genuine,
+        two_layer_renderable,
+        genuine,
         "[{label}] two-layer mesher RENDERABLE faces != ground truth ({} renderable vs {} \
          genuine) — a hole (missing surface) or a spurious rendered seam face (over-draw)",
         two_layer_renderable.len(),
@@ -171,9 +178,21 @@ fn two_layer_mesher_exposed_face_set_equals_dense() {
 
     // Demo scene: three disjoint Tools (the shot --demo-scene shape set).
     let demo = Scene::from_nodes(vec![
-        two_layer_tool(TwoLayerShape::Sphere, [5, 5, 5], [0, 0, 0], MC::Stone, density),
+        two_layer_tool(
+            TwoLayerShape::Sphere,
+            [5, 5, 5],
+            [0, 0, 0],
+            MC::Stone,
+            density,
+        ),
         two_layer_tool(TwoLayerShape::Box, [5, 5, 5], [8, 0, 0], MC::Wood, density),
-        two_layer_tool(TwoLayerShape::Torus, [5, 5, 5], [0, 0, 6], MC::Plain, density),
+        two_layer_tool(
+            TwoLayerShape::Torus,
+            [5, 5, 5],
+            [0, 0, 6],
+            MC::Plain,
+            density,
+        ),
     ]);
     assert_two_layer_face_parity(&demo, density, "demo-scene");
 
@@ -191,7 +210,13 @@ fn two_layer_mesher_exposed_face_set_equals_dense() {
             "House".to_string(),
             vec![
                 two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [0, 0, 0], MC::Stone, density),
-                two_layer_tool(TwoLayerShape::Cylinder, [1, 2, 1], [0, 2, 0], MC::Wood, density),
+                two_layer_tool(
+                    TwoLayerShape::Cylinder,
+                    [1, 2, 1],
+                    [0, 2, 0],
+                    MC::Wood,
+                    density,
+                ),
             ],
         );
         assert_two_layer_face_parity(&village, density, "demo-village");
@@ -227,8 +252,11 @@ fn two_layer_mesher_exposed_face_set_equals_dense() {
             SketchPoint::new(r(3), h(8)),
             SketchPoint::new(0, h(8)),
         ];
-        let producer =
-            SketchSolid::revolve(Sketch::new(PlaneAxis::X, profile), RevolveAxis::InPlane1, 360);
+        let producer = SketchSolid::revolve(
+            Sketch::new(PlaneAxis::X, profile),
+            RevolveAxis::InPlane1,
+            360,
+        );
         let revolve = Scene::from_nodes(vec![Node::new(
             "Vase",
             NodeContent::SketchTool {
@@ -261,8 +289,14 @@ fn two_layer_chunk_set_renderable_faces(
     grid_dimensions: [u32; 3],
     occupied: &std::collections::HashSet<[i64; 3]>,
 ) -> std::collections::HashSet<UnitFace> {
-    let meshes =
-        build_two_layer_chunk_meshes(chunks, grid_dimensions, recentre, density, LayerBand::FULL, None);
+    let meshes = build_two_layer_chunk_meshes(
+        chunks,
+        grid_dimensions,
+        recentre,
+        density,
+        LayerBand::FULL,
+        None,
+    );
     let mut renderable = std::collections::HashSet::new();
     for mesh in &meshes {
         renderable.extend(renderable_unit_faces(
@@ -299,7 +333,13 @@ fn incremental_two_layer_edit_meshes_identically_to_full_rebuild() {
     // A base scene with a wide sphere (many chunks) plus an interior subject box, so an
     // edit touches a strict subset while much of the chunk set stays resident.
     let scene_a = Scene::from_nodes(vec![
-        two_layer_tool(TwoLayerShape::Sphere, [6, 6, 6], [0, 0, 0], MC::Stone, density),
+        two_layer_tool(
+            TwoLayerShape::Sphere,
+            [6, 6, 6],
+            [0, 0, 0],
+            MC::Stone,
+            density,
+        ),
         two_layer_tool(TwoLayerShape::Box, [3, 3, 3], [10, 0, 0], MC::Wood, density),
     ]);
 
@@ -452,14 +492,32 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
     // far from the anchors so an edit dirties a strict subset while most chunks stay resident.
     let anchors = || {
         vec![
-            two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [-14, 0, 0], MC::Stone, density),
-            two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [14, 8, 6], MC::Stone, density),
+            two_layer_tool(
+                TwoLayerShape::Box,
+                [2, 2, 2],
+                [-14, 0, 0],
+                MC::Stone,
+                density,
+            ),
+            two_layer_tool(
+                TwoLayerShape::Box,
+                [2, 2, 2],
+                [14, 8, 6],
+                MC::Stone,
+                density,
+            ),
         ]
     };
     // scene_a: anchors + subject box (index 2) at a fixed offset well inside the bounds.
     let scene_a = {
         let mut nodes = anchors();
-        nodes.push(two_layer_tool(TwoLayerShape::Box, [3, 3, 3], [4, 2, 2], MC::Wood, density));
+        nodes.push(two_layer_tool(
+            TwoLayerShape::Box,
+            [3, 3, 3],
+            [4, 2, 2],
+            MC::Wood,
+            density,
+        ));
         Scene::from_nodes(nodes)
     };
     let subject = 2usize;
@@ -503,14 +561,8 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
         let dims = scene_a.placed_region_dimensions(density);
         let recentre = scene_a.recentre_voxels_for_resolve(density);
         // The renderer's initial (wholesale) buffer set for A.
-        let wholesale_a = build_two_layer_chunk_meshes(
-            &chunks_a,
-            dims,
-            recentre,
-            density,
-            LayerBand::FULL,
-            None,
-        );
+        let wholesale_a =
+            build_two_layer_chunk_meshes(&chunks_a, dims, recentre, density, LayerBand::FULL, None);
 
         // The edit: invalidate the dirty AABB (or clear), then re-derive the resident set.
         let index_a = scene_a.build_leaf_spatial_index(density);
@@ -654,12 +706,7 @@ fn banded_occupancy_indices(
 /// identical to `build_cuboid_mesh_banded` on the dense path. Because `renderable_unit_faces`
 /// tests the front cell against the BAND-MASKED occupancy, a cut-plane cap face (front cell
 /// out of band ⇒ air) MUST be emitted, and a spurious over-emit or a hole both fail.
-fn assert_two_layer_banded_face_parity(
-    scene: &Scene,
-    density: u32,
-    band: LayerBand,
-    label: &str,
-) {
+fn assert_two_layer_banded_face_parity(scene: &Scene, density: u32, band: LayerBand, label: &str) {
     let dense = scene.resolve_region(scene.full_extent_blocks(density), density, 0);
     assert!(!dense.occupied.is_empty(), "[{label}] scene resolved empty");
     let banded = banded_occupancy_indices(&dense, band);
@@ -710,7 +757,8 @@ fn assert_two_layer_banded_face_parity(
         ));
     }
     assert_eq!(
-        renderable, genuine,
+        renderable,
+        genuine,
         "[{label}] two-layer BANDED renderable faces != band-masked ground truth ({} vs {}) \
          — a hole, a spurious cut-plane over-emit, or a missing cap face",
         renderable.len(),

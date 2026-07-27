@@ -39,9 +39,7 @@ impl Scene {
     /// operation as usual.
     pub fn node_operation_is_inert(&self, node: &Node) -> bool {
         match &node.content {
-            NodeContent::Instance(def_id) => {
-                self.def_by_id(*def_id).is_some_and(|def| def.fixture)
-            }
+            NodeContent::Instance(def_id) => self.def_by_id(*def_id).is_some_and(|def| def.fixture),
             _ => false,
         }
     }

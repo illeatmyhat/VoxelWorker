@@ -19,14 +19,14 @@
 //! yield `None`, and the caller uses its built-in defaults.
 
 use camera::{HomeView, OrbitCamera, ProjectionMode};
-use voxel_core::core_geom::MaterialChoice;
-use voxel_core::voxel::ShapeKind;
+use document::scene::{NodeContent, NodeId, Scene};
+use document::voxel::{GeometryParams, SdfShape};
 use ui::panel::{
     LayerRange, PanelState, PlacementGhost, PlacementSnap, Selection, SelectionTarget,
     SignalStackState, SketchTool, ViewMode,
 };
-use document::scene::{NodeContent, NodeId, Scene};
-use document::voxel::{GeometryParams, SdfShape};
+use voxel_core::core_geom::MaterialChoice;
+use voxel_core::voxel::ShapeKind;
 
 /// The serde-able mirror of the armed-tool [`PlacementGhost`] (ADR 0022), carried in the
 /// session dump so a repro taken mid-gesture replays the pending drop.
@@ -96,8 +96,9 @@ impl SelectionConfig {
                     SelectionTarget::ReferencePoint(index) => {
                         Some(SelectionTargetConfig::ReferencePoint(index))
                     }
-                    SelectionTarget::SketchPoint { .. }
-                    | SelectionTarget::SketchSegment { .. } => None,
+                    SelectionTarget::SketchPoint { .. } | SelectionTarget::SketchSegment { .. } => {
+                        None
+                    }
                 })
                 .collect(),
         }
@@ -107,9 +108,7 @@ impl SelectionConfig {
     pub fn to_selection(&self) -> Selection {
         Selection::from_targets(self.targets.iter().map(|target| match target {
             SelectionTargetConfig::Node(id) => SelectionTarget::Node(*id),
-            SelectionTargetConfig::ReferencePoint(index) => {
-                SelectionTarget::ReferencePoint(*index)
-            }
+            SelectionTargetConfig::ReferencePoint(index) => SelectionTarget::ReferencePoint(*index),
         }))
     }
 }
@@ -418,7 +417,10 @@ impl AppConfig {
             debug_brick_faces: panel.debug_brick_faces,
             // ADR 0022: the armed placement ghost, captured as its serde-able mirror so a
             // mid-gesture dump replays the pending drop.
-            placement_ghost: panel.placement_ghost.as_ref().map(PlacementGhostConfig::from_ghost),
+            placement_ghost: panel
+                .placement_ghost
+                .as_ref()
+                .map(PlacementGhostConfig::from_ghost),
             sketch_tool: panel.sketch_tool,
             selection: SelectionConfig::from_selection(&panel.selection),
             // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
@@ -513,7 +515,10 @@ impl AppConfig {
             point_add_position_blocks: [0, 0, 0],
             // ADR 0022: restore the armed placement ghost (session state), so a mid-gesture
             // repro replays the pending drop rather than resetting to no armed tool.
-            placement_ghost: self.placement_ghost.as_ref().map(PlacementGhostConfig::to_ghost),
+            placement_ghost: self
+                .placement_ghost
+                .as_ref()
+                .map(PlacementGhostConfig::to_ghost),
             // ADR 0028: re-enter sketch mode on the same node a mid-edit dump was taken in.
             // Cleared to `None` below if the id no longer resolves in the restored scene, so a
             // stale sketch node can never trap the mode.
@@ -597,7 +602,8 @@ impl AppConfig {
             std::env::var_os("XDG_CONFIG_HOME")
                 .map(std::path::PathBuf::from)
                 .or_else(|| {
-                    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+                    std::env::var_os("HOME")
+                        .map(|home| std::path::PathBuf::from(home).join(".config"))
                 })
         }?;
         Some(base.join("VoxelWorker").join("config.json"))
@@ -625,8 +631,7 @@ impl AppConfig {
     pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        Self::from_dump_json(&text)
-            .map_err(|e| format!("invalid config {}: {e}", path.display()))
+        Self::from_dump_json(&text).map_err(|e| format!("invalid config {}: {e}", path.display()))
     }
 
     /// Restore the state a dump's JSON describes.

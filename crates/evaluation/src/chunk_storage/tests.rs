@@ -1,8 +1,8 @@
 use super::*;
-use voxel_core::core_geom::MaterialChoice;
-use document::scene::{DefId, Node, NodeContent, VoxelBody, Scene};
-use voxel_core::voxel::{ShapeKind, Voxel, VoxelGrid};
+use document::scene::{DefId, Node, NodeContent, Scene, VoxelBody};
 use document::voxel::{GeometryParams, SdfShape, VoxelProducer};
+use voxel_core::core_geom::MaterialChoice;
+use voxel_core::voxel::{ShapeKind, Voxel, VoxelGrid};
 
 /// The binary on-disk byte size of a whole [`CompressedChunk`] (header + palette +
 /// occupancy), used by the ratio report.
@@ -187,7 +187,11 @@ fn round_trip_real_resolved_chunks_across_shapes() {
         let scene = Scene::from_geometry(
             GeometryParams {
                 shape: kind,
-                size_voxels: [5 * voxels_per_block, 5 * voxels_per_block, 5 * voxels_per_block],
+                size_voxels: [
+                    5 * voxels_per_block,
+                    5 * voxels_per_block,
+                    5 * voxels_per_block,
+                ],
                 size_measurements: None,
                 voxels_per_block,
                 wall_blocks: 1,
@@ -200,11 +204,8 @@ fn round_trip_real_resolved_chunks_across_shapes() {
         for chunk_z in min_chunk[2]..=max_chunk[2] {
             for chunk_y in min_chunk[1]..=max_chunk[1] {
                 for chunk_x in min_chunk[0]..=max_chunk[0] {
-                    let chunk = scene.resolve_chunk(
-                        [chunk_x, chunk_y, chunk_z],
-                        voxels_per_block,
-                        0,
-                    );
+                    let chunk =
+                        scene.resolve_chunk([chunk_x, chunk_y, chunk_z], voxels_per_block, 0);
                     assert_lossless_round_trip(
                         &chunk,
                         &format!("{kind:?} chunk {chunk_x},{chunk_y},{chunk_z}"),
@@ -256,7 +257,12 @@ fn round_trip_demo_scene_and_village_chunks() {
         "House".to_string(),
         vec![
             tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-            tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            tool(
+                ShapeKind::Cylinder,
+                [1, 2, 1],
+                [0, 2, 0],
+                MaterialChoice::Wood,
+            ),
         ],
     );
 
@@ -267,11 +273,8 @@ fn round_trip_demo_scene_and_village_chunks() {
         for chunk_z in min_chunk[2]..=max_chunk[2] {
             for chunk_y in min_chunk[1]..=max_chunk[1] {
                 for chunk_x in min_chunk[0]..=max_chunk[0] {
-                    let chunk = scene.resolve_chunk(
-                        [chunk_x, chunk_y, chunk_z],
-                        voxels_per_block,
-                        0,
-                    );
+                    let chunk =
+                        scene.resolve_chunk([chunk_x, chunk_y, chunk_z], voxels_per_block, 0);
                     assert_lossless_round_trip(
                         &chunk,
                         &format!("{label} chunk {chunk_x},{chunk_y},{chunk_z}"),
@@ -291,11 +294,7 @@ fn round_trip_part_only_debug_clouds_grid() {
         NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 1 }),
     ));
     // Resolve over an explicit region (a VoxelBody-only scene has no chunk range).
-    let grid = scene.resolve_region(
-        document::scene::RegionBlocks::new([4, 4, 4]),
-        16,
-        0,
-    );
+    let grid = scene.resolve_region(document::scene::RegionBlocks::new([4, 4, 4]), 16, 0);
     if grid.occupied.is_empty() {
         return; // nothing to assert if the field produced no voxels.
     }
@@ -376,9 +375,20 @@ fn palette_has_no_duplicates_and_covers_every_material() {
     let compressed = compress(&grid);
     let unique: std::collections::HashSet<u16> =
         compressed.material_palette.iter().copied().collect();
-    assert_eq!(unique.len(), compressed.material_palette.len(), "no dup palette entries");
-    assert_eq!(unique, [100, 200, 300].into_iter().collect(), "distinct materials only");
-    assert_eq!(occupied_multiset(&decompress(&compressed)), occupied_multiset(&grid));
+    assert_eq!(
+        unique.len(),
+        compressed.material_palette.len(),
+        "no dup palette entries"
+    );
+    assert_eq!(
+        unique,
+        [100, 200, 300].into_iter().collect(),
+        "distinct materials only"
+    );
+    assert_eq!(
+        occupied_multiset(&decompress(&compressed)),
+        occupied_multiset(&grid)
+    );
 }
 
 #[test]
@@ -386,13 +396,19 @@ fn serde_round_trip_through_json_equals_original_grid() {
     // serialize → deserialize → decompress equals the original grid, proving the
     // CompressedChunk is serde-serialisable for the later disk store.
     let grid = shape_grid(ShapeKind::Sphere, [4, 4, 4], 8);
-    assert!(!grid.occupied.is_empty(), "the sphere must resolve to voxels");
+    assert!(
+        !grid.occupied.is_empty(),
+        "the sphere must resolve to voxels"
+    );
     let compressed = compress(&grid);
 
     let json = serde_json::to_string(&compressed).expect("CompressedChunk serialises");
     let restored: CompressedChunk =
         serde_json::from_str(&json).expect("CompressedChunk deserialises");
-    assert_eq!(restored, compressed, "serde must round-trip the CompressedChunk exactly");
+    assert_eq!(
+        restored, compressed,
+        "serde must round-trip the CompressedChunk exactly"
+    );
 
     let restored_grid = decompress(&restored);
     assert_eq!(
@@ -456,14 +472,20 @@ fn report_compression_ratios_on_real_chunks() {
         let scene = Scene::from_geometry(
             GeometryParams {
                 shape: kind,
-                size_voxels: [size[0] * voxels_per_block, size[1] * voxels_per_block, size[2] * voxels_per_block],
+                size_voxels: [
+                    size[0] * voxels_per_block,
+                    size[1] * voxels_per_block,
+                    size[2] * voxels_per_block,
+                ],
                 size_measurements: None,
                 voxels_per_block,
                 wall_blocks: 1,
             },
             MaterialChoice::Stone,
         );
-        let (lo, hi) = scene.covering_chunk_range(voxels_per_block).expect("placed");
+        let (lo, hi) = scene
+            .covering_chunk_range(voxels_per_block)
+            .expect("placed");
         let mut total_raw = 0usize;
         let mut total_compressed = 0usize;
         let mut best_ratio = 0.0f64;
@@ -545,15 +567,15 @@ fn report_compression_ratios_on_real_chunks() {
         make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
         make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
     ]);
-    let (min_chunk, max_chunk) =
-        village.covering_chunk_range(voxels_per_block).expect("placed");
+    let (min_chunk, max_chunk) = village
+        .covering_chunk_range(voxels_per_block)
+        .expect("placed");
     let mut total_raw = 0usize;
     let mut total_compressed = 0usize;
     for chunk_z in min_chunk[2]..=max_chunk[2] {
         for chunk_y in min_chunk[1]..=max_chunk[1] {
             for chunk_x in min_chunk[0]..=max_chunk[0] {
-                let chunk =
-                    village.resolve_chunk([chunk_x, chunk_y, chunk_z], voxels_per_block, 0);
+                let chunk = village.resolve_chunk([chunk_x, chunk_y, chunk_z], voxels_per_block, 0);
                 if chunk.occupied.is_empty() {
                     continue;
                 }

@@ -430,7 +430,9 @@ impl ChunkOcclusionContext<'_> {
 /// disagree — the **uniform vs MIXED** classification, made at emission (the one place that
 /// decides whether a block owns a cell-key tile). An empty block (no cuboids) is trivially
 /// uniform at the fallback key `0`.
-pub(crate) fn uniform_cell_key(geometry: &evaluation::two_layer_store::MicroblockGeometry) -> Option<u16> {
+pub(crate) fn uniform_cell_key(
+    geometry: &evaluation::two_layer_store::MicroblockGeometry,
+) -> Option<u16> {
     let mut cuboids = geometry.cuboids.iter();
     let first = match cuboids.next() {
         Some(cuboid) => cuboid.material_id(),
@@ -457,8 +459,8 @@ pub(crate) fn rasterize_brick_tiles(
     mixed: bool,
 ) -> (BrickOccupancyTile, Option<BrickCellKeyTile>) {
     let mut occupancy = BrickOccupancyTile::empty(brick_edge_voxels);
-    let mut cell_keys = mixed
-        .then(|| BrickCellKeyTile::new_filled(brick_edge_voxels, AIR_CELL_KEY_DONT_CARE));
+    let mut cell_keys =
+        mixed.then(|| BrickCellKeyTile::new_filled(brick_edge_voxels, AIR_CELL_KEY_DONT_CARE));
     for cuboid in &geometry.cuboids {
         let cell_key = cuboid.material_id();
         for voxel_z in cuboid.min[2]..=cuboid.max[2] {

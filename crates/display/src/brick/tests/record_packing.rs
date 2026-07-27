@@ -3,8 +3,8 @@
 //! material mask, the overlay bit, the field order) shows up only as wrong pixels.
 use crate::brick::*;
 use crate::brick::{pack_world_block_key, BrickPayload, BrickRecord};
-use voxel_core::core_geom::BlockId;
 use evaluation::two_layer_store::SeamSolidity;
+use voxel_core::core_geom::BlockId;
 
 fn record(material_id: u16, overlay: bool, payload: BrickPayload) -> BrickRecord {
     BrickRecord {
@@ -25,7 +25,13 @@ fn record(material_id: u16, overlay: bool, payload: BrickPayload) -> BrickRecord
 #[test]
 fn the_packed_kind_word_splits_into_discriminant_material_and_overlay() {
     let records = [
-        record(3, false, BrickPayload::CoarseSolid { block_id: BlockId(3) }),
+        record(
+            3,
+            false,
+            BrickPayload::CoarseSolid {
+                block_id: BlockId(3),
+            },
+        ),
         record(5, true, BrickPayload::Sculpted { atlas_slot: 7 }),
         record(
             9,

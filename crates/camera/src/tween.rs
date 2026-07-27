@@ -226,29 +226,54 @@ mod tests {
         let camera = OrbitCamera::default();
         let cw = SnapTween::roll(&camera, RollDir::Cw);
         assert!(approx(cw.roll_to, -FRAC_PI_2), "Cw roll_to {}", cw.roll_to);
-        assert!(approx(cw.theta_to, camera.orbit_theta), "Cw must hold theta");
+        assert!(
+            approx(cw.theta_to, camera.orbit_theta),
+            "Cw must hold theta"
+        );
         assert!(approx(cw.phi_to, camera.orbit_phi), "Cw must hold phi");
         let ccw = SnapTween::roll(&camera, RollDir::Ccw);
-        assert!(approx(ccw.roll_to, FRAC_PI_2), "Ccw roll_to {}", ccw.roll_to);
+        assert!(
+            approx(ccw.roll_to, FRAC_PI_2),
+            "Ccw roll_to {}",
+            ccw.roll_to
+        );
 
         // Advancing a Cw roll tween lands roll exactly on −π/2.
         let mut camera = OrbitCamera::default();
         let mut tween = SnapTween::roll(&camera, RollDir::Cw);
         assert!(tween.advance(&mut camera, 1.0));
-        assert!(approx(camera.roll, -FRAC_PI_2), "settled roll {}", camera.roll);
+        assert!(
+            approx(camera.roll, -FRAC_PI_2),
+            "settled roll {}",
+            camera.roll
+        );
     }
 
     /// A face snap tweens roll back to 0 (re-uprights), regardless of the start roll.
     #[test]
     fn face_snap_resets_roll_to_zero() {
-        let mut camera = OrbitCamera { roll: FRAC_PI_2, ..OrbitCamera::default() };
+        let mut camera = OrbitCamera {
+            roll: FRAC_PI_2,
+            ..OrbitCamera::default()
+        };
         let mut tween = SnapTween::to_face(&camera, CubeFace::Front);
-        assert!(approx(tween.roll_to, 0.0), "face snap roll_to {}", tween.roll_to);
+        assert!(
+            approx(tween.roll_to, 0.0),
+            "face snap roll_to {}",
+            tween.roll_to
+        );
         assert!(tween.advance(&mut camera, 1.0));
-        assert!(approx(camera.roll, 0.0), "roll after face snap {}", camera.roll);
+        assert!(
+            approx(camera.roll, 0.0),
+            "roll after face snap {}",
+            camera.roll
+        );
 
         // An element (edge) snap also re-uprights.
-        let mut camera = OrbitCamera { roll: -0.9, ..OrbitCamera::default() };
+        let mut camera = OrbitCamera {
+            roll: -0.9,
+            ..OrbitCamera::default()
+        };
         let element = ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top);
         let mut tween = SnapTween::to_element(&camera, element);
         assert!(approx(tween.roll_to, 0.0));
@@ -273,7 +298,10 @@ mod tests {
         // Result is always within (−π, π].
         for &r in &[5.0f32, -5.0, 10.0, -10.0, 100.0] {
             let n = normalize_roll(r);
-            assert!(n > -PI - 1e-4 && n <= PI + 1e-4, "normalize_roll({r}) = {n} out of range");
+            assert!(
+                n > -PI - 1e-4 && n <= PI + 1e-4,
+                "normalize_roll({r}) = {n} out of range"
+            );
         }
 
         // Four Ccw quarter-turns: settled roll wraps back near 0, magnitude ≤ π.
@@ -281,8 +309,16 @@ mod tests {
         for _ in 0..4 {
             let mut tween = SnapTween::roll(&camera, RollDir::Ccw);
             assert!(tween.advance(&mut camera, 1.0));
-            assert!(camera.roll.abs() <= PI + 1e-4, "roll grew unbounded: {}", camera.roll);
+            assert!(
+                camera.roll.abs() <= PI + 1e-4,
+                "roll grew unbounded: {}",
+                camera.roll
+            );
         }
-        assert!(approx(camera.roll, 0.0), "four quarter-turns should net ~0, got {}", camera.roll);
+        assert!(
+            approx(camera.roll, 0.0),
+            "four quarter-turns should net ~0, got {}",
+            camera.roll
+        );
     }
 }

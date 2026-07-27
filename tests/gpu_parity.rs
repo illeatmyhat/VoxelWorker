@@ -13,11 +13,11 @@
 
 mod common;
 
-use voxel_core::voxel::{ShapeKind};
 use document::voxel::{GeometryParams, SdfShape};
+use voxel_core::voxel::ShapeKind;
 use voxel_worker::{
-    MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch,
-    SketchPoint, SketchSolid,
+    MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch, SketchPoint,
+    SketchSolid,
 };
 
 // ===========================================================================
@@ -26,8 +26,13 @@ use voxel_worker::{
 
 /// How the sketch case builds its producer; the test wraps it in a one-node scene.
 enum SketchKind {
-    Extrude { height_blocks: i64 },
-    Revolve { axis: RevolveAxis, turn_degrees: u32 },
+    Extrude {
+        height_blocks: i64,
+    },
+    Revolve {
+        axis: RevolveAxis,
+        turn_degrees: u32,
+    },
 }
 
 struct SketchCase {
@@ -42,21 +47,93 @@ struct SketchCase {
 
 const SKETCH_CASES: &[SketchCase] = &[
     // Rectangle extrude == box (exact reference for the extrude path).
-    SketchCase { name: "extrude-rect-4x2x3-d4", plane: PlaneAxis::Z, profile_blocks: &[[0, 0], [4, 0], [4, 2], [0, 2]], kind: SketchKind::Extrude { height_blocks: 3 }, voxels_per_block: 4 },
+    SketchCase {
+        name: "extrude-rect-4x2x3-d4",
+        plane: PlaneAxis::Z,
+        profile_blocks: &[[0, 0], [4, 0], [4, 2], [0, 2]],
+        kind: SketchKind::Extrude { height_blocks: 3 },
+        voxels_per_block: 4,
+    },
     // The demo L (concave, reflex vertex) extruded up, multi-chunk at d8.
-    SketchCase { name: "extrude-L-d8", plane: PlaneAxis::Z, profile_blocks: &[[0, 0], [4, 0], [4, 2], [2, 2], [2, 4], [0, 4]], kind: SketchKind::Extrude { height_blocks: 3 }, voxels_per_block: 8 },
+    SketchCase {
+        name: "extrude-L-d8",
+        plane: PlaneAxis::Z,
+        profile_blocks: &[[0, 0], [4, 0], [4, 2], [2, 2], [2, 4], [0, 4]],
+        kind: SketchKind::Extrude { height_blocks: 3 },
+        voxels_per_block: 8,
+    },
     // A triangle (odd, non-axis-aligned edges) extruded — slanted crossings.
-    SketchCase { name: "extrude-tri-d4", plane: PlaneAxis::Y, profile_blocks: &[[0, 0], [7, 1], [3, 6]], kind: SketchKind::Extrude { height_blocks: 2 }, voxels_per_block: 4 },
+    SketchCase {
+        name: "extrude-tri-d4",
+        plane: PlaneAxis::Y,
+        profile_blocks: &[[0, 0], [7, 1], [3, 6]],
+        kind: SketchKind::Extrude { height_blocks: 2 },
+        voxels_per_block: 4,
+    },
     // Rectangle revolve == cylinder, full turn (one-sided radial).
-    SketchCase { name: "revolve-rect-cyl-d4", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [5, 0], [5, 4], [0, 4]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 4 },
+    SketchCase {
+        name: "revolve-rect-cyl-d4",
+        plane: PlaneAxis::X,
+        profile_blocks: &[[0, 0], [5, 0], [5, 4], [0, 4]],
+        kind: SketchKind::Revolve {
+            axis: RevolveAxis::InPlane1,
+            turn_degrees: 360,
+        },
+        voxels_per_block: 4,
+    },
     // The demo vase (stepped silhouette) revolved 360° — the headline revolve shape.
-    SketchCase { name: "revolve-vase-d4", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [4, 0], [4, 1], [2, 3], [2, 5], [4, 6], [3, 8], [0, 8]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 4 },
+    SketchCase {
+        name: "revolve-vase-d4",
+        plane: PlaneAxis::X,
+        profile_blocks: &[
+            [0, 0],
+            [4, 0],
+            [4, 1],
+            [2, 3],
+            [2, 5],
+            [4, 6],
+            [3, 8],
+            [0, 8],
+        ],
+        kind: SketchKind::Revolve {
+            axis: RevolveAxis::InPlane1,
+            turn_degrees: 360,
+        },
+        voxels_per_block: 4,
+    },
     // A half-disc-ish profile revolved → rounded body (curved radial boundary).
-    SketchCase { name: "revolve-bowl-d8", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [6, 0], [6, 1], [1, 6], [0, 6]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 8 },
+    SketchCase {
+        name: "revolve-bowl-d8",
+        plane: PlaneAxis::X,
+        profile_blocks: &[[0, 0], [6, 0], [6, 1], [1, 6], [0, 6]],
+        kind: SketchKind::Revolve {
+            axis: RevolveAxis::InPlane1,
+            turn_degrees: 360,
+        },
+        voxels_per_block: 8,
+    },
     // Partial turn (180°) — exercises the atan2 theta gate (transcendental divergence).
-    SketchCase { name: "revolve-rect-half-d4", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [5, 0], [5, 4], [0, 4]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 180 }, voxels_per_block: 4 },
+    SketchCase {
+        name: "revolve-rect-half-d4",
+        plane: PlaneAxis::X,
+        profile_blocks: &[[0, 0], [5, 0], [5, 4], [0, 4]],
+        kind: SketchKind::Revolve {
+            axis: RevolveAxis::InPlane1,
+            turn_degrees: 180,
+        },
+        voxels_per_block: 4,
+    },
     // Straddling profile (radial coords cross 0) — exercises the +radius/−radius fold.
-    SketchCase { name: "revolve-straddle-d4", plane: PlaneAxis::X, profile_blocks: &[[-3, 0], [3, 0], [3, 4], [-3, 4]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 4 },
+    SketchCase {
+        name: "revolve-straddle-d4",
+        plane: PlaneAxis::X,
+        profile_blocks: &[[-3, 0], [3, 0], [3, 4], [-3, 4]],
+        kind: SketchKind::Revolve {
+            axis: RevolveAxis::InPlane1,
+            turn_degrees: 360,
+        },
+        voxels_per_block: 4,
+    },
 ];
 
 impl SketchCase {
@@ -102,8 +179,7 @@ fn brick_slot_bytes(
     for local_z in 0..edge {
         for local_y in 0..edge {
             for local_x in 0..edge {
-                let source = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
-                    * atlas_dim
+                let source = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y) * atlas_dim
                     + origin[0]
                     + local_x;
                 brick_bytes[(local_z * edge + local_y) * edge + local_x] = atlas_bytes[source];
@@ -168,7 +244,10 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
     let vase_producer = vase.build();
     let mut vase_scene = Scene::single_node(Node::new(
         "Sketch",
-        NodeContent::SketchTool { producer: vase_producer, material: MaterialChoice::default() },
+        NodeContent::SketchTool {
+            producer: vase_producer,
+            material: MaterialChoice::default(),
+        },
     ));
     vase_scene.voxels_per_block = vase.voxels_per_block;
     let cases = [
@@ -223,13 +302,20 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
     let mut failures: Vec<String> = Vec::new();
     for case in &cases {
         let vpb = case.voxels_per_block;
-        let two_layer_chunks =
-            TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
-        assert!(!two_layer_chunks.is_empty(), "{}: empty two-layer build", case.name);
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+        assert!(
+            !two_layer_chunks.is_empty(),
+            "{}: empty two-layer build",
+            case.name
+        );
         let build = build_brick_field_all_blocks(&two_layer_chunks, vpb);
 
         // The granule ruling: the brick edge is the document density, nothing else.
-        assert_eq!(build.brick_edge_voxels, vpb, "{}: brick edge must be one BLOCK", case.name);
+        assert_eq!(
+            build.brick_edge_voxels, vpb,
+            "{}: brick edge must be one BLOCK",
+            case.name
+        );
         assert!(
             build
                 .brick_records
@@ -281,8 +367,9 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
                         let record = build.find_record(world_block);
                         if let Some(block_id) = chunk.coarse_block(block) {
                             coarse_blocks += 1;
-                            let record =
-                                record.unwrap_or_else(|| panic!("{}: missing coarse record at {world_block:?}", case.name));
+                            let record = record.unwrap_or_else(|| {
+                                panic!("{}: missing coarse record at {world_block:?}", case.name)
+                            });
                             assert_eq!(
                                 record.payload,
                                 BrickPayload::CoarseSolid { block_id },
@@ -291,10 +378,14 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
                             );
                         } else if let Some(geometry) = chunk.microblocks.get(&block) {
                             sculpted_blocks += 1;
-                            let record =
-                                record.unwrap_or_else(|| panic!("{}: missing sculpted record at {world_block:?}", case.name));
+                            let record = record.unwrap_or_else(|| {
+                                panic!("{}: missing sculpted record at {world_block:?}", case.name)
+                            });
                             let BrickPayload::Sculpted { atlas_slot } = record.payload else {
-                                panic!("{}: boundary block at {world_block:?} must be kind 1", case.name);
+                                panic!(
+                                    "{}: boundary block at {world_block:?} must be kind 1",
+                                    case.name
+                                );
                             };
                             assert_eq!(
                                 record.seam_solidity, geometry.seam_solidity,
@@ -358,18 +449,32 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
             "{}: record count must equal the non-air block count",
             case.name
         );
-        assert_eq!(build.sculpted_brick_count(), sculpted_blocks, "{}", case.name);
+        assert_eq!(
+            build.sculpted_brick_count(),
+            sculpted_blocks,
+            "{}",
+            case.name
+        );
         let total_slots = build.bricks_per_axis.pow(3);
         for padding_slot in sculpted_blocks as u32..total_slots {
-            let padding_bytes =
-                brick_slot_bytes(&readback, atlas_dim, build.bricks_per_axis, edge, padding_slot);
+            let padding_bytes = brick_slot_bytes(
+                &readback,
+                atlas_dim,
+                build.bricks_per_axis,
+                edge,
+                padding_slot,
+            );
             assert!(
                 padding_bytes.iter().all(|&byte| byte == 0),
                 "{}: unused atlas slot {padding_slot} must read back zero",
                 case.name
             );
         }
-        assert!(sculpted_blocks > 0, "{}: fixture must contain boundary blocks", case.name);
+        assert!(
+            sculpted_blocks > 0,
+            "{}: fixture must contain boundary blocks",
+            case.name
+        );
         if case.require_coarse {
             assert!(
                 coarse_blocks > 0,
@@ -489,7 +594,10 @@ fn worker_build_matches_sync_build_for_large_scene() {
         "worker vs sync: decomposed box count must match"
     );
     // Sanity: a solid box actually produced geometry (the net isn't trivially comparing 0==0).
-    assert!(sync.face_count() > 0, "the fixture box must mesh to a non-empty face set");
+    assert!(
+        sync.face_count() > 0,
+        "the fixture box must mesh to a non-empty face set"
+    );
 }
 
 // ===========================================================================
@@ -653,9 +761,8 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
     }
     use voxel_worker::{
         build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records,
-        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
-        OrbitCamera,
-        TwoLayerStore, COLOR_TARGET_FORMAT,
+        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
+        COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -677,9 +784,17 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         }
         let vpb = case.voxels_per_block;
         let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
-        assert!(!two_layer_chunks.is_empty(), "{}: empty two-layer build", case.name);
+        assert!(
+            !two_layer_chunks.is_empty(),
+            "{}: empty two-layer build",
+            case.name
+        );
         let build = build_brick_field(&two_layer_chunks, vpb);
-        assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
+        assert!(
+            !build.brick_records.is_empty(),
+            "{}: empty brick field",
+            case.name
+        );
         // The hit-identity image is occupancy-only, so material never enters the hit set;
         // a distinct-material union is brick-representable at G2 (each block single-material)
         // and still exercises the traversal. `unwrap_or(false)` keeps the overlay off.
@@ -768,7 +883,10 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         }
 
         if gpu_hits == 0 {
-            failures.push(format!("{}: the gated view produced ZERO brick hits", case.name));
+            failures.push(format!(
+                "{}: the gated view produced ZERO brick hits",
+                case.name
+            ));
             continue;
         }
         if mismatches > 0 {
@@ -808,18 +926,25 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, cpu_march_brick_field, pack_gpu_records,
-        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
-        COLOR_TARGET_FORMAT,
+        build_brick_field, cpu_march_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer,
+        ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
     // Mirror the shader's `face_layer` (cuboid_loaded.wgsl:73-84) EXACTLY — the property
     // under test is that the GPU sampled THIS layer for the hit face's normal.
     fn face_layer(normal: [i32; 3]) -> usize {
         if normal[2] != 0 {
-            if normal[2] > 0 { 2 } else { 3 }
+            if normal[2] > 0 {
+                2
+            } else {
+                3
+            }
         } else if normal[0] != 0 {
-            if normal[0] > 0 { 0 } else { 1 }
+            if normal[0] > 0 {
+                0
+            } else {
+                1
+            }
         } else if normal[1] < 0 {
             4
         } else {
@@ -936,8 +1061,13 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         false,
         None,
     );
-    let color_image =
-        renderer.render_color_image(&gpu.device, &gpu.queue, width, height, Some(&loaded.bind_group));
+    let color_image = renderer.render_color_image(
+        &gpu.device,
+        &gpu.queue,
+        width,
+        height,
+        Some(&loaded.bind_group),
+    );
 
     let mut compared = 0usize;
     let mut texel_mismatches = 0usize;
@@ -977,7 +1107,10 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         }
     }
 
-    assert!(compared > 200, "too few interior hit pixels compared ({compared})");
+    assert!(
+        compared > 200,
+        "too few interior hit pixels compared ({compared})"
+    );
     assert_eq!(
         texel_mismatches,
         0,
@@ -1014,9 +1147,9 @@ fn brick_surface_elision_hit_set_unchanged() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, build_brick_field_all_blocks,
-        pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
-        OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
+        build_brick_field, build_brick_field_all_blocks, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
+        COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -1089,7 +1222,10 @@ fn brick_surface_elision_hit_set_unchanged() {
 
         let hits = full_image.iter().filter(|pixel| pixel[0] == 1).count();
         if hits == 0 {
-            failures.push(format!("{}: the gated view produced ZERO brick hits", case.name));
+            failures.push(format!(
+                "{}: the gated view produced ZERO brick hits",
+                case.name
+            ));
             continue;
         }
         let mismatches = full_image
@@ -1135,9 +1271,9 @@ fn brick_surface_elision_band_clip_renders_interior() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, build_brick_field_all_blocks,
-        pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera,
-        TwoLayerStore, COLOR_TARGET_FORMAT,
+        build_brick_field, build_brick_field_all_blocks, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
+        COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -1259,10 +1395,9 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, pack_gpu_records, AppCore,
-        BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
-        NodeTransform, OrbitCamera, Scene, SdfShape, ShapeKind, TwoLayerResidentCache,
-        COLOR_TARGET_FORMAT,
+        build_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid,
+        IncrementalBrickField, LayerBand, Node, NodeContent, NodeTransform, OrbitCamera, Scene,
+        SdfShape, ShapeKind, TwoLayerResidentCache, COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -1408,15 +1543,22 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     let wholesale_image =
         wholesale_renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height);
 
-    let hits = incremental_image.iter().filter(|pixel| pixel[0] == 1).count();
-    assert!(hits > 0, "the gated view must produce brick hits (else the test is vacuous)");
+    let hits = incremental_image
+        .iter()
+        .filter(|pixel| pixel[0] == 1)
+        .count();
+    assert!(
+        hits > 0,
+        "the gated view must produce brick hits (else the test is vacuous)"
+    );
     let mismatches = incremental_image
         .iter()
         .zip(&wholesale_image)
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(
-        mismatches, 0,
+        mismatches,
+        0,
         "incremental patch render must be pixel-identical to a wholesale install of the same \
          scene ({mismatches}/{} pixels differ; {hits} hit pixels)",
         width * height
@@ -1440,10 +1582,9 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     }
     use voxel_core::core_geom::CHUNK_BLOCKS;
     use voxel_worker::{
-        build_brick_field, pack_gpu_records, AppCore,
-        BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
-        NodeTransform, OrbitCamera, PlaneAxis, Scene, Sketch, SketchSolid,
-        TwoLayerResidentCache, COLOR_TARGET_FORMAT,
+        build_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid,
+        IncrementalBrickField, LayerBand, Node, NodeContent, NodeTransform, OrbitCamera, PlaneAxis,
+        Scene, Sketch, SketchSolid, TwoLayerResidentCache, COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -1464,7 +1605,10 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         );
         let mut node = Node::new(
             format!("box@{offset_blocks:?}"),
-            NodeContent::SketchTool { producer, material: MaterialChoice::Stone },
+            NodeContent::SketchTool {
+                producer,
+                material: MaterialChoice::Stone,
+            },
         );
         node.transform = NodeTransform::from_blocks(offset_blocks, vpb);
         node
@@ -1526,8 +1670,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
             .brick_records
             .iter()
             .filter(|record| {
-                let block =
-                    voxel_worker::unpack_world_block_key(record.packed_world_block_key);
+                let block = voxel_worker::unpack_world_block_key(record.packed_world_block_key);
                 let chunk = [
                     block[0].div_euclid(CHUNK_BLOCKS as i64) as i32,
                     block[1].div_euclid(CHUNK_BLOCKS as i64) as i32,
@@ -1542,8 +1685,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         "the carve must EXPOSE records in a non-dirty chunk (the fixture must be real)"
     );
 
-    let recentre_carved =
-        scene_carved.recentre_voxels_for_resolve(vpb);
+    let recentre_carved = scene_carved.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene_carved.placed_region_dimensions(vpb);
 
     let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1605,15 +1747,22 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     );
     let wholesale_image = render(&mut wholesale_renderer);
 
-    let hits = incremental_image.iter().filter(|pixel| pixel[0] == 1).count();
-    assert!(hits > 0, "the carved scene must produce brick hits (else the test is vacuous)");
+    let hits = incremental_image
+        .iter()
+        .filter(|pixel| pixel[0] == 1)
+        .count();
+    assert!(
+        hits > 0,
+        "the carved scene must produce brick hits (else the test is vacuous)"
+    );
     let mismatches = incremental_image
         .iter()
         .zip(&wholesale_image)
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(
-        mismatches, 0,
+        mismatches,
+        0,
         "carve-patched render must be pixel-identical to a wholesale install of the carved \
          scene ({mismatches}/{} pixels differ; {hits} hit pixels)",
         width * height
@@ -1633,9 +1782,8 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, pack_gpu_records, AppCore,
-        BrickRaymarchRenderer,
-        ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
+        build_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid,
+        LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -1722,7 +1870,10 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         }
 
         if resident_hits == 0 {
-            failures.push(format!("{}: no resident hits to check the contract against", case.name));
+            failures.push(format!(
+                "{}: no resident hits to check the contract against",
+                case.name
+            ));
             continue;
         }
         if dropped > 0 {
@@ -1773,9 +1924,8 @@ fn brick_raymarch_pyramid_on_equals_off() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, pack_gpu_records, AppCore,
-        BrickRaymarchRenderer,
-        ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
+        build_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid,
+        LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -1787,7 +1937,11 @@ fn brick_raymarch_pyramid_on_equals_off() {
         let vpb = case.voxels_per_block;
         let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
         let build = build_brick_field(&two_layer_chunks, vpb);
-        assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
+        assert!(
+            !build.brick_records.is_empty(),
+            "{}: empty brick field",
+            case.name
+        );
         // The LIVE pyramid constructor (chunk-derived, interiors included) — this A/B is
         // the rendering-equivalence proof for the chunk-sourced pyramid (ADR 0011).
         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
@@ -1858,7 +2012,10 @@ fn brick_raymarch_pyramid_on_equals_off() {
             }
         }
         if on_hits == 0 {
-            failures.push(format!("{}: the gated view produced ZERO brick hits", case.name));
+            failures.push(format!(
+                "{}: the gated view produced ZERO brick hits",
+                case.name
+            ));
             continue;
         }
         if differing > 0 {
@@ -1911,9 +2068,9 @@ fn clipmap_scattered_scene_skips_empty_space() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, cpu_march_levels_counted, pack_gpu_records,
-        AppCore, BrickRaymarchRenderer, ClipmapLevel, ClipmapPyramid, LayerBand, NodeTransform,
-        OrbitCamera, TwoLayerStore, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+        build_brick_field, cpu_march_levels_counted, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer, ClipmapLevel, ClipmapPyramid, LayerBand, NodeTransform, OrbitCamera,
+        TwoLayerStore, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
         CLIPMAP_LEVEL_3_BLOCKS_PER_CELL, COLOR_TARGET_FORMAT,
     };
 
@@ -1942,7 +2099,10 @@ fn clipmap_scattered_scene_skips_empty_space() {
         let shape = SdfShape::from_blocks(ShapeKind::Sphere, [13, 13, 13], 1, vpb);
         let mut node = Node::new(
             format!("s{index}"),
-            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Stone,
+            },
         );
         node.transform = NodeTransform::from_blocks(
             [
@@ -2030,8 +2190,16 @@ fn clipmap_scattered_scene_skips_empty_space() {
             }
         }
     }
-    assert!(hitting_rays > 0, "the scattered probe view produced no hits");
-    let span_blocks = grid_dimensions.map(|d| d / vpb).iter().max().copied().unwrap_or(0);
+    assert!(
+        hitting_rays > 0,
+        "the scattered probe view produced no hits"
+    );
+    let span_blocks = grid_dimensions
+        .map(|d| d / vpb)
+        .iter()
+        .max()
+        .copied()
+        .unwrap_or(0);
     let mean = |index: usize| sums[index] as f64 / hitting_rays as f64;
     eprintln!(
         "clip-map WIDE-scatter probe ({}-block span, {} sculpted bricks, {} hitting rays)\n  \
@@ -2056,17 +2224,24 @@ fn clipmap_scattered_scene_skips_empty_space() {
     // Gate: each coarser level is a monotone win (never more steps), the two-level
     // pyramid beats flat, and G4's L3 strictly beats the L1+L2 baseline on this
     // empty-L3-cell scene (the acceptance criterion — a measured ceiling improvement).
-    assert!(sums[1] < sums[0], "L1+L2 must beat flat (on {} vs {})", sums[1], sums[0]);
+    assert!(
+        sums[1] < sums[0],
+        "L1+L2 must beat flat (on {} vs {})",
+        sums[1],
+        sums[0]
+    );
     assert!(
         sums[2] < sums[1],
         "G4 +L3 must strictly reduce block-steps vs the L1+L2 baseline on a wide scatter \
          with empty L3 cells (+L3 {} vs L1+L2 {})",
-        sums[2], sums[1]
+        sums[2],
+        sums[1]
     );
     assert!(
         sums[3] <= sums[2],
         "+L4 may only skip more empty space, never less (+L4 {} vs +L3 {})",
-        sums[3], sums[2]
+        sums[3],
+        sums[2]
     );
 }
 
@@ -2085,9 +2260,8 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         return;
     }
     use voxel_worker::{
-        build_brick_field, pack_gpu_records, AppCore,
-        BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
-        COLOR_TARGET_FORMAT,
+        build_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid,
+        LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -2103,7 +2277,10 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     let vpb = case.voxels_per_block;
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
     let build = build_brick_field(&two_layer_chunks, vpb);
-    assert!(!build.brick_records.is_empty(), "the sphere shell must produce records");
+    assert!(
+        !build.brick_records.is_empty(),
+        "the sphere shell must produce records"
+    );
     let records = pack_gpu_records(&build.brick_records, |_| false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
     let recentre = case.scene.recentre_voxels_for_resolve(vpb);
@@ -2172,9 +2349,18 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     let lower_zs = hit_zs(&renderer, lower_slab);
     let upper_zs = hit_zs(&renderer, upper_slab);
 
-    assert!(!band_zs.is_empty(), "the mid band must render some solid voxels");
-    assert!(!lower_zs.is_empty(), "the lower onion slab must ghost some voxels (tall solid)");
-    assert!(!upper_zs.is_empty(), "the upper onion slab must ghost some voxels (tall solid)");
+    assert!(
+        !band_zs.is_empty(),
+        "the mid band must render some solid voxels"
+    );
+    assert!(
+        !lower_zs.is_empty(),
+        "the lower onion slab must ghost some voxels (tall solid)"
+    );
+    assert!(
+        !upper_zs.is_empty(),
+        "the upper onion slab must ghost some voxels (tall solid)"
+    );
 
     let band_lo = *band_zs.iter().min().unwrap();
     let band_hi = *band_zs.iter().max().unwrap();
@@ -2192,7 +2378,14 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     // Uniform-only (ADR 0012): rebinding the ghost slabs for two different bands must NOT
     // touch the installed field — no re-mesh / atlas re-upload on a brick-path band scrub.
     let record_count_before = renderer.record_count();
-    renderer.update_ghost_uniforms(&gpu.queue, scene_matrices, viewport_px, grid_dimensions, band, None);
+    renderer.update_ghost_uniforms(
+        &gpu.queue,
+        scene_matrices,
+        viewport_px,
+        grid_dimensions,
+        band,
+        None,
+    );
     let scrubbed = LayerBand {
         band_min: band.band_min + 3,
         band_max: band.band_max + 3,
@@ -2267,7 +2460,10 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
     let vpb = case.voxels_per_block;
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
     let build = build_brick_field(&two_layer_chunks, vpb);
-    assert!(!build.brick_records.is_empty(), "the sphere shell must produce records");
+    assert!(
+        !build.brick_records.is_empty(),
+        "the sphere shell must produce records"
+    );
     let records = pack_gpu_records(&build.brick_records, |_| false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
     let recentre = case.scene.recentre_voxels_for_resolve(vpb);
@@ -2336,7 +2532,10 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
 
     // The absolute-Z span the SCENE-WIDE banded render occupies (the band, observed).
     let banded_zs: Vec<i32> = banded.iter().filter(|px| px[0] == 1).map(&abs_z).collect();
-    assert!(!banded_zs.is_empty(), "the mid band must render some solid voxels");
+    assert!(
+        !banded_zs.is_empty(),
+        "the mid band must render some solid voxels"
+    );
     let band_z_lo = *banded_zs.iter().min().unwrap();
     let band_z_hi = *banded_zs.iter().max().unwrap();
 
@@ -2371,7 +2570,10 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
             "an inside-AABB region hit at Z {z} fell outside the band span [{band_z_lo}, {band_z_hi}]"
         );
     }
-    assert!(inside_hits > 0, "the +X half must section to the band (some inside-AABB hits)");
+    assert!(
+        inside_hits > 0,
+        "the +X half must section to the band (some inside-AABB hits)"
+    );
 
     // Invariant 3 — the scoping is REAL: outside-AABB region hits exist BELOW/ABOVE the band
     // (geometry the scene-wide banded render hides but the region render shows finished).
@@ -2400,7 +2602,10 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
         scene_matrices,
         viewport_px,
         grid_dimensions,
-        LayerBand { onion_depth: 4, ..band },
+        LayerBand {
+            onion_depth: 4,
+            ..band
+        },
         Some(region),
     );
     assert_eq!(
@@ -2435,13 +2640,13 @@ fn brick_mixed_material_matches_cpu_reference() {
     if skip_without_gpu("brick_mixed_material_matches_cpu_reference") {
         return;
     }
+    use evaluation::cuboid::VoxelBox;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use voxel_core::core_geom::{CellKey, CHUNK_BLOCKS};
-    use evaluation::cuboid::VoxelBox;
     use voxel_worker::{
-        build_brick_field, cpu_brick_hit_material, cpu_march_brick_field, pack_gpu_records, AppCore,
-        BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MicroblockGeometry, OrbitCamera,
+        build_brick_field, cpu_brick_hit_material, cpu_march_brick_field, pack_gpu_records,
+        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MicroblockGeometry, OrbitCamera,
         RecentreVoxels, SeamSolidity, TwoLayerChunk, COLOR_TARGET_FORMAT,
     };
 
@@ -2458,10 +2663,20 @@ fn brick_mixed_material_matches_cpu_reference() {
     let half = edge / 2;
     let mixed_geometry = MicroblockGeometry {
         cuboids: vec![
-            VoxelBox { min: [0, 0, 0], max: [half - 1, edge - 1, edge - 1], label: left_key },
-            VoxelBox { min: [half, 0, 0], max: [edge - 1, edge - 1, edge - 1], label: right_key },
+            VoxelBox {
+                min: [0, 0, 0],
+                max: [half - 1, edge - 1, edge - 1],
+                label: left_key,
+            },
+            VoxelBox {
+                min: [half, 0, 0],
+                max: [edge - 1, edge - 1, edge - 1],
+                label: right_key,
+            },
         ],
-        seam_solidity: SeamSolidity { solid: [[true; 2]; 3] },
+        seam_solidity: SeamSolidity {
+            solid: [[true; 2]; 3],
+        },
     };
     let block_count = (CHUNK_BLOCKS * CHUNK_BLOCKS * CHUNK_BLOCKS) as usize;
     let mut microblocks: BTreeMap<[u32; 3], MicroblockGeometry> = BTreeMap::new();
@@ -2576,7 +2791,10 @@ fn brick_mixed_material_matches_cpu_reference() {
         }
     }
 
-    assert!(compared > 300, "too few interior hit pixels compared ({compared})");
+    assert!(
+        compared > 300,
+        "too few interior hit pixels compared ({compared})"
+    );
     assert!(
         distinct_materials.len() >= 2,
         "the compared pixels must show BOTH mixed materials ({} distinct) — else per-voxel \
@@ -2584,7 +2802,8 @@ fn brick_mixed_material_matches_cpu_reference() {
         distinct_materials.len()
     );
     assert_eq!(
-        mismatches, 0,
+        mismatches,
+        0,
         "shader per-voxel material != CPU-march reference for {mismatches}/{compared} interior \
          pixels (ADR 0013 shader == reference):\n{}",
         first_report.unwrap_or_default()

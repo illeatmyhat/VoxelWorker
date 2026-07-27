@@ -46,10 +46,7 @@ fn the_document_carries_the_scene_and_nothing_else() {
 fn the_dump_reaches_every_field_that_is_not_an_escape_hatch() {
     // The dump's law (ADR 0022 decision 1): a scene must be completely reproducible from
     // it. Concretely that means every field except the ones explicitly excused.
-    for state in [
-        AppConfig::CLASSIFIED_FIELDS,
-        PanelState::CLASSIFIED_FIELDS,
-    ] {
+    for state in [AppConfig::CLASSIFIED_FIELDS, PanelState::CLASSIFIED_FIELDS] {
         for field in state {
             let excused = matches!(
                 field.category,

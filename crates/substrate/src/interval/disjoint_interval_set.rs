@@ -205,7 +205,11 @@ mod tests {
     fn widest_span_saturates_instead_of_overflowing() {
         let mut set = DisjointIntervalSet::new();
         set.insert(i64::MIN, i64::MAX);
-        assert_eq!(set.widest_span(), i64::MAX, "saturates rather than panicking");
+        assert_eq!(
+            set.widest_span(),
+            i64::MAX,
+            "saturates rather than panicking"
+        );
 
         // One step in from the boundary still overflows a plain subtraction, and still saturates.
         let mut nearly = DisjointIntervalSet::new();

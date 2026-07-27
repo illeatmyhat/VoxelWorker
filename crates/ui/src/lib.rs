@@ -31,11 +31,11 @@
 // Colours live in `theme::color_palette`; a raw `Color32::from_*` elsewhere is an error (clippy.toml).
 #![deny(clippy::disallowed_methods)]
 
+pub mod chrome;
 pub mod gizmos;
 pub mod icons;
 pub mod palette;
 pub mod panel;
-pub mod chrome;
 pub mod theme;
 pub mod widgets;
 pub mod workspace;

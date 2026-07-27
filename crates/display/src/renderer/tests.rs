@@ -39,10 +39,10 @@ fn view_cube_is_ccw_outward() {
 
 // ---- issue #29 S3: per-object grid line geometry + gating ----
 
-use voxel_core::core_geom::MaterialChoice as Mc;
 use document::scene::{Node, NodeContent};
-use voxel_core::voxel::ShapeKind;
 use document::voxel::SdfShape;
+use voxel_core::core_geom::MaterialChoice as Mc;
+use voxel_core::voxel::ShapeKind;
 
 /// `block_boundaries` returns the closing plane at `hi` (the box is enclosed in
 /// whole blocks), so a `B`-block box yields `B + 1` planes — and EXPANDING the
@@ -55,15 +55,31 @@ fn block_boundaries_count_tracks_enclosing_blocks() {
         let s = step as f32;
         // A 3-block box [0, 3·step] → planes at 0, step, 2·step, 3·step = 4.
         let three = block_boundaries(0.0, 3.0 * s, step);
-        assert_eq!(three.len(), 4, "@step{step}: a 3-block box has 4 boundary planes");
+        assert_eq!(
+            three.len(),
+            4,
+            "@step{step}: a 3-block box has 4 boundary planes"
+        );
         assert_eq!(*three.first().unwrap(), 0.0);
-        assert_eq!(*three.last().unwrap(), 3.0 * s, "closing plane lands exactly on hi");
+        assert_eq!(
+            *three.last().unwrap(),
+            3.0 * s,
+            "closing plane lands exactly on hi"
+        );
         // ADD a whole block (expand by +step): exactly one more plane.
         let four = block_boundaries(0.0, 4.0 * s, step);
-        assert_eq!(four.len(), 5, "@step{step}: +1 enclosing block ⇒ +1 lattice plane");
+        assert_eq!(
+            four.len(),
+            5,
+            "@step{step}: +1 enclosing block ⇒ +1 lattice plane"
+        );
         // REMOVE a whole block (shrink by step): exactly one fewer plane.
         let two = block_boundaries(0.0, 2.0 * s, step);
-        assert_eq!(two.len(), 3, "@step{step}: -1 enclosing block ⇒ -1 lattice plane");
+        assert_eq!(
+            two.len(),
+            3,
+            "@step{step}: -1 enclosing block ⇒ -1 lattice plane"
+        );
     }
 }
 
@@ -85,8 +101,7 @@ fn voxel_boundaries_tag_block_lines_at_lattice_positions() {
             "@step{step}: a 3-block box has 3·step+1 voxel boundaries",
         );
         // The BLOCK-tagged lines are exactly the block-boundary planes.
-        let block_lines: Vec<f32> =
-            lines.iter().filter(|(_, b)| *b).map(|(c, _)| *c).collect();
+        let block_lines: Vec<f32> = lines.iter().filter(|(_, b)| *b).map(|(c, _)| *c).collect();
         assert_eq!(
             block_lines,
             block_boundaries(0.0, 3.0 * s, step),
@@ -94,7 +109,10 @@ fn voxel_boundaries_tag_block_lines_at_lattice_positions() {
         );
         // At density 1 EVERY voxel line is a block line (voxel == block).
         if step == 1 {
-            assert!(lines.iter().all(|(_, b)| *b), "@step1: every voxel line is a block line");
+            assert!(
+                lines.iter().all(|(_, b)| *b),
+                "@step1: every voxel line is a block line"
+            );
         } else {
             // Otherwise the voxel lines strictly outnumber the block lines.
             assert!(
@@ -137,8 +155,10 @@ fn floor_grid_is_two_tier_and_aligns_with_lattice() {
         // (2) Exactly two distinct alphas — the subtle voxel tier and the bold
         // block tier. At step 1 every line is both a voxel and a block line, so
         // it is drawn twice (subtle then bold) and BOTH alphas are still present.
-        let mut alphas: Vec<i64> =
-            floor.iter().map(|v| (v.color[3] * 1024.0).round() as i64).collect();
+        let mut alphas: Vec<i64> = floor
+            .iter()
+            .map(|v| (v.color[3] * 1024.0).round() as i64)
+            .collect();
         alphas.sort_unstable();
         alphas.dedup();
         assert_eq!(
@@ -177,24 +197,39 @@ fn lattice_and_floor_vertices_nonempty_per_box() {
         let (min, max) = ([0.0, 0.0, 0.0], [2.0 * s, s, 3.0 * s]);
         let mut lattice = Vec::new();
         lattice_vertices_into(&mut lattice, min, max, step);
-        assert!(!lattice.is_empty(), "@step{step}: a sized box has lattice lines");
+        assert!(
+            !lattice.is_empty(),
+            "@step{step}: a sized box has lattice lines"
+        );
         assert_eq!(lattice.len() % 2, 0, "lattice lines are whole segments");
         let mut floor = Vec::new();
         floor_vertices_into(&mut floor, min, max, step);
-        assert!(!floor.is_empty(), "@step{step}: a sized box has floor lines");
+        assert!(
+            !floor.is_empty(),
+            "@step{step}: a sized box has floor lines"
+        );
         // Z-up: the floor sits at the EXACT base plane `z = min[2]` (issue #29
         // fix: no geometric drop — the floor pipeline's depth bias avoids
         // z-fighting the model's coincident bottom face), flat in Z, uniform across
         // every vertex. This makes the floor's block lines meet the lattice's
         // bottom edges.
         let floor_z = min[2];
-        assert!(floor.iter().all(|v| v.position[2] == floor_z), "floor on exact base plane");
+        assert!(
+            floor.iter().all(|v| v.position[2] == floor_z),
+            "floor on exact base plane"
+        );
     }
 }
 
 fn box_node(name: &str, offset: [i64; 3], voxels_per_block: u32) -> Node {
     let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
-    let mut node = Node::new(name, NodeContent::Tool { shape, material: Mc::Stone });
+    let mut node = Node::new(
+        name,
+        NodeContent::Tool {
+            shape,
+            material: Mc::Stone,
+        },
+    );
     node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
     node
 }
@@ -216,18 +251,28 @@ fn scene_grid_boxes_gated_by_master_and_per_object() {
 
         // Both per-object toggles OFF → no boxes regardless of masters.
         let (lat, flr) = scene_grid_boxes(&scene, density);
-        assert!(lat.is_empty() && flr.is_empty(), "@d{density}: per-object OFF ⇒ no boxes");
+        assert!(
+            lat.is_empty() && flr.is_empty(),
+            "@d{density}: per-object OFF ⇒ no boxes"
+        );
 
         // Enable block lattice on node A ONLY.
         scene.root_node_mut(0).grids.block_lattice = true;
         let (lat, flr) = scene_grid_boxes(&scene, density);
-        assert_eq!(lat.len(), 1, "@d{density}: one node enabled ⇒ exactly one lattice box");
+        assert_eq!(
+            lat.len(),
+            1,
+            "@d{density}: one node enabled ⇒ exactly one lattice box"
+        );
         assert!(flr.is_empty(), "@d{density}: floor still off");
 
         // Master OFF cancels it even though the node's flag is on.
         scene.master_block_lattice = false;
         let (lat, _flr) = scene_grid_boxes(&scene, density);
-        assert!(lat.is_empty(), "@d{density}: master OFF ⇒ no lattice box (AND gating)");
+        assert!(
+            lat.is_empty(),
+            "@d{density}: master OFF ⇒ no lattice box (AND gating)"
+        );
 
         // Floor: node B's flag on + master on → one floor box, no lattice.
         scene.master_floor_grid = true;
@@ -282,16 +327,26 @@ fn points_visible_yields_batch_hidden_yields_none() {
         // Z-up: the ground plane is XY (the 2nd flag of `origin_point_scene`).
         let mut scene = origin_point_scene(false, true, false, true);
         let batch = points_line_batch(&scene, density, &cam);
-        assert!(!batch.is_empty(), "@d{density}: visible axes ⇒ non-empty batch");
+        assert!(
+            !batch.is_empty(),
+            "@d{density}: visible axes ⇒ non-empty batch"
+        );
         assert_eq!(batch.len() % 2, 0, "@d{density}: whole line segments");
 
         // The Origin's ground (XY, Z-up) plane is one analytic-grid instance.
         let planes = enabled_grid_planes(&scene, density);
-        assert_eq!(planes.len(), 1, "@d{density}: the Origin ground plane ⇒ one grid plane");
+        assert_eq!(
+            planes.len(),
+            1,
+            "@d{density}: the Origin ground plane ⇒ one grid plane"
+        );
 
         scene.points[0].hidden = true;
         let hidden = points_line_batch(&scene, density, &cam);
-        assert!(hidden.is_empty(), "@d{density}: a hidden Point renders no axes");
+        assert!(
+            hidden.is_empty(),
+            "@d{density}: a hidden Point renders no axes"
+        );
         assert!(
             enabled_grid_planes(&scene, density).is_empty(),
             "@d{density}: a hidden Point renders no grid plane",
@@ -308,7 +363,11 @@ fn points_plane_and_axis_toggles_gate() {
     let density = 16u32;
     let cam = camera::OrbitCamera::default();
     // Everything off → no axes, no planes.
-    let none = points_line_batch(&origin_point_scene(false, false, false, false), density, &cam);
+    let none = points_line_batch(
+        &origin_point_scene(false, false, false, false),
+        density,
+        &cam,
+    );
     assert!(none.is_empty(), "all axes off ⇒ empty axis batch");
     assert!(
         enabled_grid_planes(&origin_point_scene(false, false, false, false), density).is_empty(),
@@ -316,7 +375,11 @@ fn points_plane_and_axis_toggles_gate() {
     );
 
     // Axes only → exactly 3 segments = 6 vertices, through the origin; no planes.
-    let axes_only = points_line_batch(&origin_point_scene(false, false, false, true), density, &cam);
+    let axes_only = points_line_batch(
+        &origin_point_scene(false, false, false, true),
+        density,
+        &cam,
+    );
     assert_eq!(axes_only.len(), 6, "axes alone ⇒ three line segments");
     assert!(
         enabled_grid_planes(&origin_point_scene(false, false, false, true), density).is_empty(),
@@ -327,8 +390,16 @@ fn points_plane_and_axis_toggles_gate() {
     // count. Z-up: the ground plane is XY (2nd flag).
     let ground = enabled_grid_planes(&origin_point_scene(false, true, false, false), density);
     let ground_front = enabled_grid_planes(&origin_point_scene(true, true, false, false), density);
-    assert_eq!(ground.len(), 1, "the XY ground plane alone ⇒ one grid plane");
-    assert_eq!(ground_front.len(), 2, "adding the XZ front plane ⇒ two grid planes");
+    assert_eq!(
+        ground.len(),
+        1,
+        "the XY ground plane alone ⇒ one grid plane"
+    );
+    assert_eq!(
+        ground_front.len(),
+        2,
+        "adding the XZ front plane ⇒ two grid planes"
+    );
 }
 
 /// Per-axis gating (issue #29 fix): the X/Y/Z axes toggle independently. All three
@@ -348,7 +419,11 @@ fn points_axes_toggle_per_axis() {
             &cam,
         );
         assert_eq!(all.len(), 6, "@d{density}: three axes ⇒ three segments");
-        assert_eq!(all.iter().filter(|v| is_green(v)).count(), 2, "@d{density}: one green (Y) segment, two vertices");
+        assert_eq!(
+            all.iter().filter(|v| is_green(v)).count(),
+            2,
+            "@d{density}: one green (Y) segment, two vertices"
+        );
 
         // Turn Y off → 2 segments, NO green line.
         let no_y = points_line_batch(
@@ -357,7 +432,10 @@ fn points_axes_toggle_per_axis() {
             &cam,
         );
         assert_eq!(no_y.len(), 4, "@d{density}: Y off ⇒ two segments");
-        assert!(!no_y.iter().any(is_green), "@d{density}: no green (Y) line when Y is off");
+        assert!(
+            !no_y.iter().any(is_green),
+            "@d{density}: no green (Y) line when Y is off"
+        );
 
         // Only Y on → exactly one (green) segment.
         let only_y = points_line_batch(
@@ -366,7 +444,10 @@ fn points_axes_toggle_per_axis() {
             &cam,
         );
         assert_eq!(only_y.len(), 2, "@d{density}: only Y ⇒ one segment");
-        assert!(only_y.iter().all(is_green), "@d{density}: the only line is green (Y)");
+        assert!(
+            only_y.iter().all(is_green),
+            "@d{density}: the only line is green (Y)"
+        );
     }
 }
 
@@ -380,17 +461,50 @@ fn grid_planes_carry_correct_orientation() {
         // All three planes on at the Origin (recentre = 0 → origin at world 0).
         let scene = origin_point_scene(true, true, true, false);
         let planes = enabled_grid_planes(&scene, density);
-        assert_eq!(planes.len(), 3, "@d{density}: three planes enabled ⇒ three instances");
+        assert_eq!(
+            planes.len(),
+            3,
+            "@d{density}: three planes enabled ⇒ three instances"
+        );
         // Emission order is XZ (front), XY (ground), YZ (side).
-        assert_eq!(planes[0].normal, [0.0, 1.0, 0.0], "@d{density}: XZ front ⇒ +Y normal");
-        assert_eq!(planes[1].normal, [0.0, 0.0, 1.0], "@d{density}: XY ground ⇒ +Z normal");
-        assert_eq!(planes[2].normal, [1.0, 0.0, 0.0], "@d{density}: YZ side ⇒ +X normal");
+        assert_eq!(
+            planes[0].normal,
+            [0.0, 1.0, 0.0],
+            "@d{density}: XZ front ⇒ +Y normal"
+        );
+        assert_eq!(
+            planes[1].normal,
+            [0.0, 0.0, 1.0],
+            "@d{density}: XY ground ⇒ +Z normal"
+        );
+        assert_eq!(
+            planes[2].normal,
+            [1.0, 0.0, 0.0],
+            "@d{density}: YZ side ⇒ +X normal"
+        );
         for plane in &planes {
-            assert_eq!(plane.origin, [0.0, 0.0, 0.0], "@d{density}: Origin plane at world 0");
+            assert_eq!(
+                plane.origin,
+                [0.0, 0.0, 0.0],
+                "@d{density}: Origin plane at world 0"
+            );
             // In-plane axes are unit and perpendicular to the normal.
-            let dot_un = plane.u_axis.iter().zip(plane.normal).map(|(a, b)| a * b).sum::<f32>();
-            let dot_vn = plane.v_axis.iter().zip(plane.normal).map(|(a, b)| a * b).sum::<f32>();
-            assert!(dot_un.abs() < 1e-6 && dot_vn.abs() < 1e-6, "in-plane axes ⊥ normal");
+            let dot_un = plane
+                .u_axis
+                .iter()
+                .zip(plane.normal)
+                .map(|(a, b)| a * b)
+                .sum::<f32>();
+            let dot_vn = plane
+                .v_axis
+                .iter()
+                .zip(plane.normal)
+                .map(|(a, b)| a * b)
+                .sum::<f32>();
+            assert!(
+                dot_un.abs() < 1e-6 && dot_vn.abs() < 1e-6,
+                "in-plane axes ⊥ normal"
+            );
         }
     }
 }
@@ -415,7 +529,11 @@ fn points_offset_point_frame_sits_at_world_position() {
     });
     // The offset Point's ground plane sits at that world position.
     let planes = enabled_grid_planes(&scene, density as u32);
-    assert_eq!(planes.len(), 1, "the offset Point's XY ground plane ⇒ one grid plane");
+    assert_eq!(
+        planes.len(),
+        1,
+        "the offset Point's XY ground plane ⇒ one grid plane"
+    );
     assert_eq!(
         planes[0].origin,
         [(10 * density) as f32, 0.0, (-4 * density) as f32],
@@ -431,9 +549,15 @@ fn points_offset_point_frame_sits_at_world_position() {
         (batch[0].position[1] + batch[1].position[1]) / 2.0,
         (batch[0].position[2] + batch[1].position[2]) / 2.0,
     ];
-    assert!((centre[0] - (10 * density) as f32).abs() < 1e-3, "X frame at 10 blocks");
+    assert!(
+        (centre[0] - (10 * density) as f32).abs() < 1e-3,
+        "X frame at 10 blocks"
+    );
     assert!((centre[1]).abs() < 1e-3, "Y frame at 0");
-    assert!((centre[2] - (-4 * density) as f32).abs() < 1e-3, "Z frame at -4 blocks");
+    assert!(
+        (centre[2] - (-4 * density) as f32).abs() < 1e-3,
+        "Z frame at -4 blocks"
+    );
 }
 
 /// Block-line spacing is density-parametrized: the gap between adjacent ground

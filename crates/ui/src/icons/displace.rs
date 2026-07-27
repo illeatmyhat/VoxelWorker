@@ -7,7 +7,13 @@ use super::{Ink, Mark};
 
 pub(super) const DRAW: &[Mark] = &[
     Mark::Line {
-        points: &[(1.5, 10.0), (5.0, 6.5), (8.5, 10.0), (12.0, 6.5), (15.5, 10.0)],
+        points: &[
+            (1.5, 10.0),
+            (5.0, 6.5),
+            (8.5, 10.0),
+            (12.0, 6.5),
+            (15.5, 10.0),
+        ],
         ink: Ink::SOLID,
     },
     Mark::Line {

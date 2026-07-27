@@ -2,9 +2,8 @@
 
 use std::collections::BTreeMap;
 
-
-use voxel_core::core_geom::{BlockAttrs, BlockId, CellKey, CHUNK_BLOCKS};
 use crate::cuboid::{VoxelBox, VoxelBoxMaterial};
+use voxel_core::core_geom::{BlockAttrs, BlockId, CellKey, CHUNK_BLOCKS};
 use voxel_core::voxel::Voxel;
 
 #[allow(unused_imports)]
@@ -181,12 +180,11 @@ impl TwoLayerChunk {
         match self.microblocks.get(&block) {
             None => false,
             Some(geometry) => {
-                let block_local = [
-                    voxel[0] % density,
-                    voxel[1] % density,
-                    voxel[2] % density,
-                ];
-                geometry.cuboids.iter().any(|cuboid| cuboid.contains(block_local))
+                let block_local = [voxel[0] % density, voxel[1] % density, voxel[2] % density];
+                geometry
+                    .cuboids
+                    .iter()
+                    .any(|cuboid| cuboid.contains(block_local))
             }
         }
     }
@@ -364,4 +362,3 @@ pub(crate) fn stamped_voxel(
         grid_overlay,
     }
 }
-

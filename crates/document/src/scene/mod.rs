@@ -48,13 +48,13 @@ mod tests;
 pub use extent::{
     block_aabb_exceeds_coordinate_limit, NodeTransform, RegionBlocks, COORDINATE_LIMIT_BLOCKS,
 };
-pub use sketch_handles::SketchHandles;
 pub use graph::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point,
     ROOT_NODE_ID,
 };
-pub use producers::{NodeContent, VoxelBody};
 pub use producers::{operation_masks_beyond_bounds, quat_from_lattice, LeafProducer, ScopeFrame};
+pub use producers::{NodeContent, VoxelBody};
+pub use sketch_handles::SketchHandles;
 
 /// Default +X spacing (in blocks) between successive instances of the same
 /// definition added via [`Scene::add_instance`], so a freshly-placed village

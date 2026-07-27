@@ -151,7 +151,15 @@ pub const ALLOW_SUBSTRINGS: &[&str] = &[
 /// only non-stone/non-wood junk the scan otherwise pulls. (No leading slash:
 /// these are top-level segments of the path *relative to* `textures/block`.)
 pub const EXCLUDE_SUBSTRINGS: &[&str] = &[
-    "/ore", "gravel", "overlay", "/soil", "crack", "_n.png", "-n.png", "glow", "metal/",
+    "/ore",
+    "gravel",
+    "overlay",
+    "/soil",
+    "crack",
+    "_n.png",
+    "-n.png",
+    "glow",
+    "metal/",
     "painting/",
 ];
 
@@ -165,13 +173,18 @@ pub const EXCLUDE_SUBSTRINGS: &[&str] = &[
 /// always accepted, then the ALLOW list.
 pub fn is_chiselable(relative_path: &str) -> bool {
     let lowercased = relative_path.to_ascii_lowercase();
-    if EXCLUDE_SUBSTRINGS.iter().any(|token| lowercased.contains(token)) {
+    if EXCLUDE_SUBSTRINGS
+        .iter()
+        .any(|token| lowercased.contains(token))
+    {
         return false;
     }
     if lowercased.contains("/rock/") {
         return true;
     }
-    ALLOW_SUBSTRINGS.iter().any(|token| lowercased.contains(token))
+    ALLOW_SUBSTRINGS
+        .iter()
+        .any(|token| lowercased.contains(token))
 }
 
 /// Strip the `.png` extension and any trailing digits from a forward-slash
@@ -190,7 +203,13 @@ pub fn prettify_label(group_key: &str) -> String {
     let last_segment = group_key.rsplit('/').next().unwrap_or(group_key);
     let spaced: String = last_segment
         .chars()
-        .map(|character| if character == '-' || character == '_' { ' ' } else { character })
+        .map(|character| {
+            if character == '-' || character == '_' {
+                ' '
+            } else {
+                character
+            }
+        })
         .collect();
     // Title Case: upper-case the first letter of every whitespace-delimited word.
     let mut result = String::with_capacity(spaced.len());
@@ -249,7 +268,11 @@ pub fn group_block_textures(textures: Vec<ScannedTexture>) -> Vec<BlockGroup> {
         .map(|(key, mut variants)| {
             variants.sort();
             let label = prettify_label(&key);
-            BlockGroup { label, key, variants }
+            BlockGroup {
+                label,
+                key,
+                variants,
+            }
         })
         .collect()
 }
@@ -282,7 +305,10 @@ mod tests {
 
     #[test]
     fn group_key_strips_extension_and_trailing_digits() {
-        assert_eq!(group_key_for("stone/rock/granite12.png"), "stone/rock/granite");
+        assert_eq!(
+            group_key_for("stone/rock/granite12.png"),
+            "stone/rock/granite"
+        );
         assert_eq!(group_key_for("stone/rock/basalt.png"), "stone/rock/basalt");
     }
 
@@ -331,7 +357,8 @@ mod tests {
         // separate (numbered variants of one stem would correctly merge).
         let textures: Vec<ScannedTexture> = (0..200)
             .map(|i| {
-                let stem = format!("kind_{}", (b'a' + (i % 26) as u8) as char) + &i.to_string() + "x";
+                let stem =
+                    format!("kind_{}", (b'a' + (i % 26) as u8) as char) + &i.to_string() + "x";
                 ScannedTexture {
                     absolute_path: format!("/x/stone/rock/{stem}.png").into(),
                     relative_path: format!("stone/rock/{stem}.png"),

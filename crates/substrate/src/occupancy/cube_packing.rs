@@ -203,7 +203,11 @@ mod tests {
     #[test]
     fn tiles_per_axis_is_ceil_cube_root() {
         for (count, expected) in [(0, 0), (1, 1), (7, 2), (8, 2), (9, 3), (27, 3), (28, 4)] {
-            assert_eq!(CubeTilePacking::tiles_per_axis(count), expected, "count {count}");
+            assert_eq!(
+                CubeTilePacking::tiles_per_axis(count),
+                expected,
+                "count {count}"
+            );
         }
     }
 
@@ -289,9 +293,8 @@ mod tests {
             for z in 0..tile_edge as usize {
                 for y in 0..tile_edge as usize {
                     for x in 0..tile_edge as usize {
-                        let cell = ((origin[2] + z) * cube_dim + origin[1] + y) * cube_dim
-                            + origin[0]
-                            + x;
+                        let cell =
+                            ((origin[2] + z) * cube_dim + origin[1] + y) * cube_dim + origin[0] + x;
                         let value = value_at(slot, x as u32, y as u32, z as u32);
                         expected[cell * 2..cell * 2 + 2].copy_from_slice(&value.to_le_bytes());
                     }

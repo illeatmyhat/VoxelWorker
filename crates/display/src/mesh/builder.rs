@@ -148,7 +148,14 @@ pub fn build_cuboid_mesh_banded(
         } else {
             &mut indices
         };
-        emit_box_faces(voxel_box, &region, world_offset, &mut vertices, index_sink, &mut aabb);
+        emit_box_faces(
+            voxel_box,
+            &region,
+            world_offset,
+            &mut vertices,
+            index_sink,
+            &mut aabb,
+        );
     }
 
     CuboidMesh {
@@ -226,15 +233,16 @@ pub(crate) fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3
     let mut region = VoxelRegion::new_empty(extent);
     for voxel in &grid.occupied {
         let [lx, ly, lz] = region_index(voxel.world_position());
-        region.set(lx as u32, ly as u32, lz as u32, Some(voxel.cell_key().raw()));
+        region.set(
+            lx as u32,
+            ly as u32,
+            lz as u32,
+            Some(voxel.cell_key().raw()),
+        );
     }
 
     // World min-corner plane of region-local index 0 = its centre minus 0.5.
-    let world_offset = [
-        min_world[0] - 0.5,
-        min_world[1] - 0.5,
-        min_world[2] - 0.5,
-    ];
+    let world_offset = [min_world[0] - 0.5, min_world[1] - 0.5, min_world[2] - 0.5];
     (region, world_offset)
 }
 
@@ -298,7 +306,9 @@ pub(crate) struct GlobalOccupancy {
 /// S6c-2d). The anchor is the union cloud's minimum voxel centre, identical to the
 /// whole-region path's [`region_from_voxel_cloud`] anchor (the union of the chunk
 /// grids IS the assembled whole grid, voxel-for-voxel, by the S6c-2a seam).
-pub(crate) fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> GlobalOccupancy {
+pub(crate) fn global_occupancy_from_chunks(
+    chunk_grids: &[([i32; 3], &VoxelGrid)],
+) -> GlobalOccupancy {
     let mut min_world = [f32::INFINITY; 3];
     let mut max_world = [f32::NEG_INFINITY; 3];
     let mut any = false;
@@ -647,10 +657,10 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
                         if !voxel_shown([gx, gy, gz]) {
                             continue;
                         }
-                        let src = (gz as usize * gh as usize + gy as usize) * gw as usize
-                            + gx as usize;
-                        let dst = (lz as usize * ah as usize + ly as usize) * aw as usize
-                            + lx as usize;
+                        let src =
+                            (gz as usize * gh as usize + gy as usize) * gw as usize + gx as usize;
+                        let dst =
+                            (lz as usize * ah as usize + ly as usize) * aw as usize + lx as usize;
                         apron.cells[dst] = global.occupied[src];
                     }
                 }
@@ -679,7 +689,14 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
             } else {
                 &mut indices
             };
-            emit_box_faces(voxel_box, &apron, region_offset, &mut vertices, index_sink, &mut aabb);
+            emit_box_faces(
+                voxel_box,
+                &apron,
+                region_offset,
+                &mut vertices,
+                index_sink,
+                &mut aabb,
+            );
         }
         if indices.is_empty() && indices_overlay.is_empty() {
             continue;

@@ -131,7 +131,10 @@ mod tests {
         let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, DENSITY);
         let mut node = Node::new(
             name,
-            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Stone,
+            },
         );
         node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
         node.operation = operation;
@@ -160,8 +163,8 @@ mod tests {
     #[test]
     fn styles_follow_the_selected_operation() {
         let scene = host_and_cutter_scene();
-        let ghost = AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY)
-            .expect("cutter ghosts");
+        let ghost =
+            AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY).expect("cutter ghosts");
         assert_eq!(ghost.bodies.len(), 1);
         assert_eq!(ghost.bodies[0].style, OperandGhostStyle::Subtract);
 
@@ -181,8 +184,8 @@ mod tests {
         scene.voxels_per_block = DENSITY;
         scene.ensure_node_ids();
 
-        let ghost = AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY)
-            .expect("cutter ghosts");
+        let ghost =
+            AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY).expect("cutter ghosts");
         assert_eq!(
             ghost.bodies[0].chunks.len(),
             1,
@@ -190,7 +193,10 @@ mod tests {
         );
         // The frame handed to display is the COMPOSED scene's (ADR 0008), so the ghost
         // mesh lands in the same render frame as the solid.
-        assert_eq!(ghost.grid_dimensions, scene.placed_region_dimensions(DENSITY));
+        assert_eq!(
+            ghost.grid_dimensions,
+            scene.placed_region_dimensions(DENSITY)
+        );
         assert_eq!(
             ghost.recentre.voxels(),
             scene.recentre_voxels_for_resolve(DENSITY).voxels()
@@ -202,14 +208,17 @@ mod tests {
     #[test]
     fn buried_cutter_still_derives_its_body() {
         let scene = host_and_cutter_scene();
-        let ghost = AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY)
-            .expect("cutter ghosts");
+        let ghost =
+            AppCore::boolean_operand_ghost(&scene, scene.roots[1], DENSITY).expect("cutter ghosts");
         let stored: u64 = ghost.bodies[0]
             .chunks
             .iter()
             .map(|(_, chunk)| chunk.stored_voxel_count())
             .sum();
-        assert!(stored > 0, "the fully-buried cutter's own body must not be empty");
+        assert!(
+            stored > 0,
+            "the fully-buried cutter's own body must not be empty"
+        );
     }
 
     /// Selecting the ROOT PART x-rays every boolean in the whole scene (the scene-wide
@@ -227,6 +236,9 @@ mod tests {
         let ghost = AppCore::boolean_operand_ghost(&scene, ROOT_NODE_ID, DENSITY)
             .expect("both cutters ghost");
         assert_eq!(ghost.bodies.len(), 2);
-        assert!(ghost.bodies.iter().all(|b| b.style == OperandGhostStyle::Subtract));
+        assert!(ghost
+            .bodies
+            .iter()
+            .all(|b| b.style == OperandGhostStyle::Subtract));
     }
 }

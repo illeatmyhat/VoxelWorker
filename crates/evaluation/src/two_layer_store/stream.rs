@@ -1,19 +1,18 @@
 //! Whole-region + cacheless streaming over resident two-layer chunks (the dense oracle, the export/measure streams).
 
-
 use rayon::prelude::*;
 use substrate::interval::DisjointIntervalSet;
 
-use voxel_core::core_geom::CHUNK_BLOCKS;
 use document::scene::Scene;
+use voxel_core::core_geom::CHUNK_BLOCKS;
 use voxel_core::voxel::{RecentreVoxels, Voxel};
 // Used only by the compile-gated whole-region oracles (`resolve_region_two_layer` under
 // `oracle`, `expand_resident_chunks_into_grid` under `test-support`); gated so the plain
 // production build does not carry an unused import.
-#[cfg(any(test, feature = "oracle", feature = "test-support"))]
-use voxel_core::voxel::VoxelGrid;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
+#[cfg(any(test, feature = "oracle", feature = "test-support"))]
+use voxel_core::voxel::VoxelGrid;
 
 #[allow(unused_imports)]
 use super::*;
@@ -142,8 +141,7 @@ pub fn expand_resident_chunks_into_grid(
         // index `l` sits at absolute `chunk_min + l`, and the recentred frame subtracts
         // the recentre — the SAME `chunk_min − recentre` offset `resolve_region_two_layer`
         // applies (ADR 0008).
-        let index_offset =
-            chunk_index_offset(*chunk_coord, chunk_extent_voxels, recentre_voxels);
+        let index_offset = chunk_index_offset(*chunk_coord, chunk_extent_voxels, recentre_voxels);
         chunk.expand_occupancy_into(&mut output.occupied, index_offset);
     }
     output
@@ -361,8 +359,7 @@ pub fn streamed_widest_run_in_band(
             let to_global_x = chunk_x as i64 * chunk_extent_voxels - recentre_voxels[0] + half[0];
             for block_z in 0..CHUNK_BLOCKS {
                 for block_y in 0..CHUNK_BLOCKS {
-                    let block_row =
-                        block_z as usize * CHUNK_BLOCKS as usize + block_y as usize;
+                    let block_row = block_z as usize * CHUNK_BLOCKS as usize + block_y as usize;
                     for block_x in 0..CHUNK_BLOCKS {
                         let block = [block_x, block_y, block_z];
                         let block_low_x = block_x as i64 * density;
@@ -386,19 +383,16 @@ pub fn streamed_widest_run_in_band(
                                         continue;
                                     }
                                     for local_y in cuboid.min[1]..=cuboid.max[1] {
-                                        let gy =
-                                            y_base + block_y as i64 * density + local_y as i64;
+                                        let gy = y_base + block_y as i64 * density + local_y as i64;
                                         if gy < 0 || gy >= grid_y_i {
                                             continue;
                                         }
-                                        let x_lo = (to_global_x + block_low_x
-                                            + cuboid.min[0] as i64)
-                                            .max(0);
-                                        let x_hi = (to_global_x
-                                            + block_low_x
-                                            + cuboid.max[0] as i64
-                                            + 1)
-                                            .min(width as i64);
+                                        let x_lo =
+                                            (to_global_x + block_low_x + cuboid.min[0] as i64)
+                                                .max(0);
+                                        let x_hi =
+                                            (to_global_x + block_low_x + cuboid.max[0] as i64 + 1)
+                                                .min(width as i64);
                                         if x_lo >= x_hi {
                                             continue;
                                         }
@@ -456,4 +450,3 @@ pub fn streamed_widest_run_in_band(
     let widest = bands.into_par_iter().map(band_widest).max().unwrap_or(0);
     Some(widest)
 }
-

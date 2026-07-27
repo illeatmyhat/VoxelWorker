@@ -66,7 +66,11 @@ fn material_of(scene: &Scene, id: NodeId) -> MaterialChoice {
 /// routes into the session (exactly what the live inspector / vertex drag do).
 fn edit(core: &mut AppCore, scene: &mut Scene, target: NodeId, producer: SketchSolid) {
     let mut selection = selection_of_first_root(scene);
-    core.apply_intent(scene, &mut selection, Intent::SetSketch { target, producer });
+    core.apply_intent(
+        scene,
+        &mut selection,
+        Intent::SetSketch { target, producer },
+    );
 }
 
 #[test]
@@ -83,7 +87,11 @@ fn finish_commits_the_session_as_one_main_entry() {
     edit(&mut core, &mut scene, target, final_producer.clone());
     // In-mode edits route into the session, NEVER the main stack (the bug the review caught:
     // they must not reach `apply_intent`'s main-stack path while a group is open).
-    assert_eq!(core.undo_depth(), 0, "in-mode edits must not reach the main stack");
+    assert_eq!(
+        core.undo_depth(),
+        0,
+        "in-mode edits must not reach the main stack"
+    );
 
     core.finish_sketch_group();
     assert!(!core.in_sketch_group(), "Finish closes the group");
@@ -129,7 +137,11 @@ fn cancel_rolls_the_session_back_to_enter() {
         enter,
         "Cancel restores the enter-state"
     );
-    assert_eq!(core.undo_depth(), 0, "Cancel leaves nothing on the main stack");
+    assert_eq!(
+        core.undo_depth(),
+        0,
+        "Cancel leaves nothing on the main stack"
+    );
 }
 
 #[test]
@@ -147,7 +159,10 @@ fn cancel_restores_the_enter_selection() {
     core.apply_intent(
         &mut scene,
         &mut selection,
-        Intent::SetSketch { target, producer: box_sketch(48, 48, 48) },
+        Intent::SetSketch {
+            target,
+            producer: box_sketch(48, 48, 48),
+        },
     );
     // The shell moves the selection mid-session (e.g. a sub-element pick), then the user Cancels.
     selection.clear();
@@ -170,9 +185,24 @@ fn a_non_producer_edit_mid_session_is_captured() {
 
     core.begin_sketch_group();
     let mut selection = selection_of_first_root(&scene);
-    core.apply_intent(&mut scene, &mut selection, Intent::SetMaterial { target, material: MaterialChoice::Wood });
-    assert_eq!(material_of(&scene, target), MaterialChoice::Wood, "live during the session");
-    assert_eq!(core.undo_depth(), 0, "the material edit stays in the session");
+    core.apply_intent(
+        &mut scene,
+        &mut selection,
+        Intent::SetMaterial {
+            target,
+            material: MaterialChoice::Wood,
+        },
+    );
+    assert_eq!(
+        material_of(&scene, target),
+        MaterialChoice::Wood,
+        "live during the session"
+    );
+    assert_eq!(
+        core.undo_depth(),
+        0,
+        "the material edit stays in the session"
+    );
 
     core.cancel_sketch_group(&mut scene, &mut selection);
     assert_eq!(
@@ -203,7 +233,11 @@ fn in_mode_undo_redo_is_fine_grained() {
         "in-mode undo reverses the last edit only"
     );
     assert!(core.in_sketch_group(), "in-mode undo stays in the mode");
-    assert_eq!(core.undo_depth(), 0, "in-mode undo never touches the main stack");
+    assert_eq!(
+        core.undo_depth(),
+        0,
+        "in-mode undo never touches the main stack"
+    );
 
     core.undo(&mut scene, &mut selection);
     assert_eq!(
@@ -213,7 +247,11 @@ fn in_mode_undo_redo_is_fine_grained() {
     );
     // Undo past the enter-state is a no-op — the enter is not itself an edit.
     core.undo(&mut scene, &mut selection);
-    assert_eq!(producer_of(&scene, target), enter, "undo past enter is a no-op");
+    assert_eq!(
+        producer_of(&scene, target),
+        enter,
+        "undo past enter is a no-op"
+    );
 
     // In-mode redo re-applies each edit in turn.
     core.redo(&mut scene, &mut selection);
@@ -249,10 +287,18 @@ fn edits_outside_a_group_stay_singleton_main_transactions() {
     let a = box_sketch(48, 48, 48);
     edit(&mut core, &mut scene, target, a.clone());
     edit(&mut core, &mut scene, target, box_sketch(64, 64, 64));
-    assert_eq!(core.undo_depth(), 2, "two ordinary edits = two transactions");
+    assert_eq!(
+        core.undo_depth(),
+        2,
+        "two ordinary edits = two transactions"
+    );
     let mut selection = selection_of_first_root(&scene);
     core.undo(&mut scene, &mut selection);
-    assert_eq!(producer_of(&scene, target), a, "one undo reverses one ordinary edit");
+    assert_eq!(
+        producer_of(&scene, target),
+        a,
+        "one undo reverses one ordinary edit"
+    );
     core.undo(&mut scene, &mut selection);
     assert_eq!(producer_of(&scene, target), enter);
 }
@@ -264,7 +310,10 @@ fn begin_does_not_mutate_the_document() {
     let (scene, _target) = single_sketch_scene();
     let before = scene.clone();
     core.begin_sketch_group();
-    assert_eq!(scene, before, "opening a sketch group must not touch the document");
+    assert_eq!(
+        scene, before,
+        "opening a sketch group must not touch the document"
+    );
     assert!(core.in_sketch_group());
 }
 

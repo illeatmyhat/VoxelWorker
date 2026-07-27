@@ -1,7 +1,7 @@
 use super::*;
 use crate::voxel::{SdfShape, VoxelProducer};
-use voxel_core::voxel::{ShapeKind, VoxelGrid};
 use std::collections::BTreeSet;
+use voxel_core::voxel::{ShapeKind, VoxelGrid};
 
 /// LOAD-BEARING: a rectangle-profile extrude produces EXACTLY the same occupied
 /// voxel set (positions, block-local coords, materials) as the axis-aligned
@@ -127,7 +127,10 @@ fn l_shape_extrude_occupancy() {
     assert!(cells.contains(&(3, 0)), "(3,0) inside the L");
     assert!(cells.contains(&(0, 3)), "(0,3) inside the L left column");
     assert!(!cells.contains(&(3, 3)), "(3,3) is the removed quadrant");
-    assert!(!cells.contains(&(2, 2)), "(2,2) is outside the reflex corner");
+    assert!(
+        !cells.contains(&(2, 2)),
+        "(2,2) is outside the reflex corner"
+    );
 }
 
 /// EDGE CASE: degenerate profiles resolve to empty occupancy without panicking —
@@ -142,7 +145,10 @@ fn degenerate_profiles_are_empty() {
     };
     // < 3 points.
     empty(&SketchSolid::extrude(
-        Sketch::new(PlaneAxis::Y, vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)]),
+        Sketch::new(
+            PlaneAxis::Y,
+            vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)],
+        ),
         2,
     ));
     // Collinear (zero-area) — three points on one line.
@@ -158,7 +164,10 @@ fn degenerate_profiles_are_empty() {
         2,
     ));
     // Zero height.
-    empty(&SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Y, 4, 4), 0));
+    empty(&SketchSolid::extrude(
+        Sketch::rectangle(PlaneAxis::Y, 4, 4),
+        0,
+    ));
 }
 
 /// EDGE CASE: a sub-block-precise profile at d=16 (a vertex NOT on a block
@@ -182,7 +191,10 @@ fn sub_block_precise_profile_at_d16() {
         let cell_x = (voxel.world_position()[0] - 0.5).round() as i64;
         cell_x == 17 && voxel.block_local_coord[0] == 1
     });
-    assert!(has_local_one, "sub-block block_local_coord must wrap at d=16");
+    assert!(
+        has_local_one,
+        "sub-block block_local_coord must wrap at d=16"
+    );
 }
 
 /// The rectangle-detection helper the inspector uses to choose editable
@@ -211,8 +223,7 @@ fn rectangle_in_plane_spans_detection() {
         SketchPoint::new(0, 4),
     ];
     assert_eq!(
-        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile), 1)
-            .rectangle_in_plane_spans(),
+        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile), 1).rectangle_in_plane_spans(),
         None,
         "an L-shape is not a rectangle"
     );
@@ -225,8 +236,7 @@ fn rectangle_in_plane_spans_detection() {
         SketchPoint::new(0, 2),
     ];
     assert_eq!(
-        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, diamond), 1)
-            .rectangle_in_plane_spans(),
+        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, diamond), 1).rectangle_in_plane_spans(),
         None,
         "a diamond quad is not an axis-aligned rectangle"
     );
@@ -237,8 +247,7 @@ fn rectangle_in_plane_spans_detection() {
         SketchPoint::new(0, 4),
     ];
     assert_eq!(
-        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, triangle), 1)
-            .rectangle_in_plane_spans(),
+        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, triangle), 1).rectangle_in_plane_spans(),
         None,
         "a triangle is not a rectangle"
     );

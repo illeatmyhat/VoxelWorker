@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use voxel_core::core_geom::CHUNK_BLOCKS;
-use voxel_core::voxel::chunk_extent_exceeds_bound;
 use document::scene::Scene;
 use evaluation::two_layer_store::TwoLayerChunk;
+use voxel_core::core_geom::CHUNK_BLOCKS;
+use voxel_core::voxel::chunk_extent_exceeds_bound;
 
 use super::{AppCore, RebuildOutcome, RebuildOutput};
 
@@ -88,34 +88,32 @@ impl AppCore {
         // edit LOCALISED (an `invalidate_aabb` path) AND the resident buffers stayed in frame.
         // Any wholesale `clear()` — first build, region-spanning VoxelBody edit — and any reframing
         // (density change / recentre shift) yields `None`, so the shell re-meshes wholesale.
-        let incremental_dirty_chunks: Option<Vec<[i32; 3]>> = match self
-            .previous_leaf_index
-            .as_ref()
-        {
-            Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
-                Some(edit_aabb) => {
-                    profiling::scope!("invalidate_aabb");
-                    let evicted = self.two_layer_cache.invalidate_aabb(&edit_aabb, density);
-                    // `invalidate_aabb` clears everything on a density mismatch (returning all
-                    // resident coords); either way, a reframing forces a wholesale re-mesh.
-                    if buffers_reframed {
-                        None
-                    } else {
-                        Some(evicted)
+        let incremental_dirty_chunks: Option<Vec<[i32; 3]>> =
+            match self.previous_leaf_index.as_ref() {
+                Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
+                    Some(edit_aabb) => {
+                        profiling::scope!("invalidate_aabb");
+                        let evicted = self.two_layer_cache.invalidate_aabb(&edit_aabb, density);
+                        // `invalidate_aabb` clears everything on a density mismatch (returning all
+                        // resident coords); either way, a reframing forces a wholesale re-mesh.
+                        if buffers_reframed {
+                            None
+                        } else {
+                            Some(evicted)
+                        }
                     }
-                }
+                    None => {
+                        profiling::scope!("invalidate_clear");
+                        self.two_layer_cache.clear();
+                        None
+                    }
+                },
                 None => {
                     profiling::scope!("invalidate_clear");
                     self.two_layer_cache.clear();
                     None
                 }
-            },
-            None => {
-                profiling::scope!("invalidate_clear");
-                self.two_layer_cache.clear();
-                None
-            }
-        };
+            };
         self.previous_recentre_voxels = Some(new_recentre_voxels);
         self.previous_leaf_index = Some(new_leaf_index);
         self.previous_density = Some(density);
@@ -134,7 +132,8 @@ impl AppCore {
             // refcount bump per chunk — NOT the old O(all-blocks) deep clone). It already
             // outlives the `&mut self` cache borrow, so it becomes `RebuildOutput.
             // two_layer_chunks` directly, with no further copy.
-            self.two_layer_cache.resident_two_layer_chunks(scene, density, 0)
+            self.two_layer_cache
+                .resident_two_layer_chunks(scene, density, 0)
         };
         let region_dimensions = Self::region_dimensions_for(scene, density);
         RebuildOutcome::Built(RebuildOutput {

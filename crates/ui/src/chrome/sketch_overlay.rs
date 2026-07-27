@@ -26,9 +26,10 @@ pub fn sketch_exit_control(
     viewport_rect: Rect,
     chrome_rects: &mut Vec<Rect>,
 ) -> Option<SketchExit> {
-    let painter = ui
-        .ctx()
-        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_exit_control")));
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_exit_control"),
+    ));
     painter.rect_stroke(
         viewport_rect.shrink(1.0),
         0.0,
@@ -62,7 +63,14 @@ pub fn sketch_exit_control(
         painter.rect_stroke(
             rect,
             0.0,
-            Stroke::new(1.0_f32, if primary { theme::ACCENT } else { theme::BORDER }),
+            Stroke::new(
+                1.0_f32,
+                if primary {
+                    theme::ACCENT
+                } else {
+                    theme::BORDER
+                },
+            ),
             StrokeKind::Inside,
         );
         let ink = if primary {
@@ -86,18 +94,20 @@ pub fn sketch_exit_control(
 /// Draw the add-point insert-preview diamond at `center` (already-projected). Not chrome — a
 /// passive preview, so a click passes through to the shell's insert.
 pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
-    let painter = ui
-        .ctx()
-        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_insert_marker")));
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_insert_marker"),
+    ));
     gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
 }
 
 /// Draw the committed segment lines between their projected endpoints. Idle edges first, then the
 /// single hovered/marked one on top so its brighter line (or warn line + ✕) is never clipped.
 pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, gizmos::HandleState)]) {
-    let painter = ui
-        .ctx()
-        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_segment_lines")));
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_segment_lines"),
+    ));
     for &(a, b, state) in lines {
         if state == gizmos::HandleState::Idle {
             gizmos::styled_segment(&painter, a, b, state);
@@ -117,9 +127,10 @@ pub fn sketch_vertex_handles(
     handles: &[(Pos2, gizmos::HandleState)],
     chrome_rects: &mut Vec<Rect>,
 ) {
-    let painter = ui
-        .ctx()
-        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_vertex_handles")));
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_vertex_handles"),
+    ));
     let grab = SKETCH_HANDLE_HALF + SKETCH_HANDLE_GRAB_PAD;
     for (center, state) in handles {
         gizmos::vertex_handle(&painter, *center, SKETCH_HANDLE_HALF, *state);

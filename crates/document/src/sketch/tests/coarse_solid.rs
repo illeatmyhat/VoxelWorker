@@ -1,8 +1,8 @@
 use super::*;
 use crate::sketch::RevolveAxis;
 use crate::voxel::VoxelProducer;
-use voxel_core::voxel::VoxelGrid;
 use std::collections::BTreeSet;
+use voxel_core::voxel::VoxelGrid;
 
 /// The coarse-solid cell classifier must agree with the per-voxel resolve.
 ///
@@ -18,8 +18,10 @@ fn coarse_solid_cells_never_over_claim_against_a_per_voxel_sweep() {
     use voxel_core::spatial_index::VoxelAabb;
 
     let lathe = vec![
-        SketchPoint::new(0, 2), SketchPoint::new(9, 2),
-        SketchPoint::new(9, 7), SketchPoint::new(4, 5),
+        SketchPoint::new(0, 2),
+        SketchPoint::new(9, 2),
+        SketchPoint::new(9, 7),
+        SketchPoint::new(4, 5),
         SketchPoint::new(0, 7),
     ];
     let cases: Vec<(&str, SketchSolid)> = vec![
@@ -30,17 +32,26 @@ fn coarse_solid_cells_never_over_claim_against_a_per_voxel_sweep() {
         (
             "revolve full",
             SketchSolid::revolve(
-                Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 360),
+                Sketch::new(PlaneAxis::Z, lathe.clone()),
+                RevolveAxis::InPlane0,
+                360,
+            ),
         ),
         (
             "revolve 135",
             SketchSolid::revolve(
-                Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 135),
+                Sketch::new(PlaneAxis::Z, lathe.clone()),
+                RevolveAxis::InPlane0,
+                135,
+            ),
         ),
         (
             "revolve 200",
             SketchSolid::revolve(
-                Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane1, 200),
+                Sketch::new(PlaneAxis::Z, lathe.clone()),
+                RevolveAxis::InPlane1,
+                200,
+            ),
         ),
     ];
 
@@ -49,8 +60,11 @@ fn coarse_solid_cells_never_over_claim_against_a_per_voxel_sweep() {
         // The per-voxel truth: resolve the whole producer and index the occupied set.
         let mut grid = VoxelGrid::default();
         solid.resolve(&mut grid, 1);
-        let occupied: BTreeSet<[i32; 3]> =
-            grid.occupied.iter().map(|voxel| voxel.local_index).collect();
+        let occupied: BTreeSet<[i32; 3]> = grid
+            .occupied
+            .iter()
+            .map(|voxel| voxel.local_index)
+            .collect();
 
         // Sweep 2x2x2 cells across the extent and check every SOLID claim voxel by voxel.
         const CELL: i64 = 2;

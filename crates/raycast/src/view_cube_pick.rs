@@ -43,8 +43,7 @@ pub const VIEW_CUBE_CENTRE_PATCH_FRACTION: f32 = 0.68;
 /// [`VIEW_CUBE_CENTRE_PATCH_FRACTION`] so a retune moves both the pick and the drawn
 /// slices together: a centre patch covering fraction `f` of the full `2·half` face
 /// extends `±(f·half)` from the face centre.
-pub const VIEW_CUBE_ZONE_THRESHOLD: f32 =
-    VIEW_CUBE_HALF_EXTENT * VIEW_CUBE_CENTRE_PATCH_FRACTION;
+pub const VIEW_CUBE_ZONE_THRESHOLD: f32 = VIEW_CUBE_HALF_EXTENT * VIEW_CUBE_CENTRE_PATCH_FRACTION;
 
 /// The parallel-axis guard: a direction component below this magnitude is treated as
 /// parallel to that pair of slab planes (mirrors the picker's original `1e-6`).

@@ -118,11 +118,26 @@ pub fn apply_app_style(style: &mut Style) {
     // Monospace across the app (§Tokens). Each tier is the mono family at its size, so
     // `ui.label`/`.small()`/`ui.heading()` all render monospace.
     style.text_styles = [
-        (TextStyle::Small, FontId::new(SMALL_SIZE, FontFamily::Monospace)),
-        (TextStyle::Body, FontId::new(BODY_SIZE, FontFamily::Monospace)),
-        (TextStyle::Button, FontId::new(BODY_SIZE, FontFamily::Monospace)),
-        (TextStyle::Heading, FontId::new(HEADING_SIZE, FontFamily::Monospace)),
-        (TextStyle::Monospace, FontId::new(BODY_SIZE, FontFamily::Monospace)),
+        (
+            TextStyle::Small,
+            FontId::new(SMALL_SIZE, FontFamily::Monospace),
+        ),
+        (
+            TextStyle::Body,
+            FontId::new(BODY_SIZE, FontFamily::Monospace),
+        ),
+        (
+            TextStyle::Button,
+            FontId::new(BODY_SIZE, FontFamily::Monospace),
+        ),
+        (
+            TextStyle::Heading,
+            FontId::new(HEADING_SIZE, FontFamily::Monospace),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(BODY_SIZE, FontFamily::Monospace),
+        ),
     ]
     .into();
 
@@ -162,11 +177,26 @@ pub fn apply_stack_style(ui: &mut egui::Ui) {
     // reads at the same scale as the sidebar and the headers.
     let mut style = Style {
         text_styles: [
-            (TextStyle::Small, FontId::new(SMALL_SIZE, FontFamily::Monospace)),
-            (TextStyle::Body, FontId::new(STACK_BODY_SIZE, FontFamily::Monospace)),
-            (TextStyle::Button, FontId::new(STACK_BODY_SIZE, FontFamily::Monospace)),
-            (TextStyle::Heading, FontId::new(HEADING_SIZE, FontFamily::Monospace)),
-            (TextStyle::Monospace, FontId::new(STACK_BODY_SIZE, FontFamily::Monospace)),
+            (
+                TextStyle::Small,
+                FontId::new(SMALL_SIZE, FontFamily::Monospace),
+            ),
+            (
+                TextStyle::Body,
+                FontId::new(STACK_BODY_SIZE, FontFamily::Monospace),
+            ),
+            (
+                TextStyle::Button,
+                FontId::new(STACK_BODY_SIZE, FontFamily::Monospace),
+            ),
+            (
+                TextStyle::Heading,
+                FontId::new(HEADING_SIZE, FontFamily::Monospace),
+            ),
+            (
+                TextStyle::Monospace,
+                FontId::new(STACK_BODY_SIZE, FontFamily::Monospace),
+            ),
         ]
         .into(),
         ..Style::default()

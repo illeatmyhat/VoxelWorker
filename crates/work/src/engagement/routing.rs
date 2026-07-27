@@ -535,7 +535,10 @@ mod tests {
             MeshBuildRoute::Build(RebuildRoute::WholesaleAsync),
             "a stale mesh must rebuild wholesale when it becomes the display, never inline-patch"
         );
-        assert_ne!(route, MeshBuildRoute::Build(RebuildRoute::InlineIncremental));
+        assert_ne!(
+            route,
+            MeshBuildRoute::Build(RebuildRoute::InlineIncremental)
+        );
     }
 
     /// Interlock composition: staleness OR an outstanding async — either one forces wholesale.
@@ -667,15 +670,21 @@ mod tests {
     fn outstanding_forces_wholesale_never_patch() {
         for &incremental_edit in &[false, true] {
             for &mirror_resident in &[false, true] {
-                let large =
-                    route_brick_rebuild(true, incremental_edit, mirror_resident, THRESHOLD + 1, THRESHOLD);
+                let large = route_brick_rebuild(
+                    true,
+                    incremental_edit,
+                    mirror_resident,
+                    THRESHOLD + 1,
+                    THRESHOLD,
+                );
                 assert_eq!(
                     large,
                     BrickRebuildAction::WholesaleAsync,
                     "outstanding + a large covering set re-dispatches async"
                 );
                 assert_ne!(large, BrickRebuildAction::PatchInline);
-                let small = route_brick_rebuild(true, incremental_edit, mirror_resident, 1, THRESHOLD);
+                let small =
+                    route_brick_rebuild(true, incremental_edit, mirror_resident, 1, THRESHOLD);
                 assert_eq!(small, BrickRebuildAction::WholesaleInline);
             }
         }
@@ -806,7 +815,11 @@ mod tests {
             inline_install_supersedes_in_flight: false,
         };
         assert_eq!(
-            route_derived_artifact(mesh_shaped, EditShape::Wholesale { chunk_count: 1 }, THRESHOLD),
+            route_derived_artifact(
+                mesh_shaped,
+                EditShape::Wholesale { chunk_count: 1 },
+                THRESHOLD
+            ),
             RebuildRoute::WholesaleAsync,
             "no inline supersede seam → a mid-flight small wholesale re-dispatches"
         );
@@ -825,7 +838,11 @@ mod tests {
             inline_install_supersedes_in_flight: true,
         };
         assert_eq!(
-            route_derived_artifact(brick_shaped, EditShape::Wholesale { chunk_count: 1 }, THRESHOLD),
+            route_derived_artifact(
+                brick_shaped,
+                EditShape::Wholesale { chunk_count: 1 },
+                THRESHOLD
+            ),
             RebuildRoute::WholesaleInline,
             "an inline supersede seam makes a mid-flight small wholesale safe to build inline"
         );
@@ -849,7 +866,10 @@ mod tests {
                     edit,
                     THRESHOLD,
                 );
-                assert_eq!(route_geometry_rebuild(outstanding, edit, THRESHOLD), expected);
+                assert_eq!(
+                    route_geometry_rebuild(outstanding, edit, THRESHOLD),
+                    expected
+                );
             }
         }
     }
@@ -894,7 +914,11 @@ mod tests {
                 for &mirror in &[false, true] {
                     for &covering in &[1usize, THRESHOLD, THRESHOLD + 1] {
                         let got = route_brick_rebuild(
-                            outstanding, incremental, mirror, covering, THRESHOLD,
+                            outstanding,
+                            incremental,
+                            mirror,
+                            covering,
+                            THRESHOLD,
                         );
                         let edit = if incremental && mirror && !outstanding {
                             EditShape::Incremental

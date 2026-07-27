@@ -58,43 +58,70 @@ pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, MeshClip, PickFrame, RebuildOutcome,
     RebuildOutput, SelectedOperandGhost,
 };
-pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};
+pub use artifacts::{DocumentArtifact, Dump, SettingsArtifact, ViewArtifact};
+pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
+pub use camera::{
+    adjacent_face, chrome_zone_left_click_action, classify_cube_point, nearest_equivalent_theta,
+    ArrowDir, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect, HomeView, OrbitCamera,
+    ProjectionMode, RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
+};
 pub use display::brick::{
     build_brick_field, build_brick_field_all_blocks, build_brick_field_with_tiles,
-    pack_clipmap_level_keys, pack_world_block_key,
-    read_back_brick_atlas, unpack_world_block_key, upload_brick_atlas,
-    upload_brick_cell_key_atlas, BrickCellKeyTile, BrickFieldBuild,
+    pack_clipmap_level_keys, pack_world_block_key, read_back_brick_atlas, unpack_world_block_key,
+    upload_brick_atlas, upload_brick_cell_key_atlas, BrickCellKeyTile, BrickFieldBuild,
     BrickFieldUpdate, BrickPayload, BrickRecord, ClipmapLevel, ClipmapPyramid,
     IncrementalBrickField, SculptedAtlasGeometry, SculptedAtlasPayload,
-    SculptedCellKeyAtlasGeometry, SculptedCellKeyAtlasPayload,
-    CELL_KEY_TEXEL_BYTES, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+    SculptedCellKeyAtlasGeometry, SculptedCellKeyAtlasPayload, CELL_KEY_TEXEL_BYTES,
+    CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
     CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
 };
 pub use display::brick::{
     cpu_brick_hit_material, cpu_march_brick_field, cpu_march_brick_field_counted,
-    cpu_march_levels_counted, cpu_march_exact_occupancy,
-    pack_gpu_records, BrickGpuRecord,
+    cpu_march_exact_occupancy, cpu_march_levels_counted, pack_gpu_records, BrickGpuRecord,
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
-pub use work::workers::brick::{
-    build_brick_rebuild, spawn_brick_worker, BrickDisplayInstall, BrickRebuildOutcome,
-    BrickRebuildRequest, BrickRebuildResult, BrickWorker,
+pub use display::mesh::{
+    build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer, SelectedOperandGhostBody,
+    SelectedOperandGhostRenderer,
 };
+pub use display::renderer::procedural_material_average_color;
+pub use display::renderer::{
+    create_depth_view, create_msaa_color_view, view_cube_corner, InfiniteGridRenderer, LayerBand,
+    MaterialSource, OnionFogParams, PlacementGhostRenderer, PointsRenderer, RegionClip, RegionRole,
+    SceneGridRenderer, TransformGizmoRenderer, ViewCubeRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
+    PLACEMENT_GHOST_TINT, VIEW_CUBE_VIEWPORT_PIXELS,
+};
+pub use display::texture_atlas::{AtlasSubRect, MaterialAtlas};
+pub use document::debug_clouds::DebugCloudField;
+pub use document::intent::{Intent, IntentEffect, NodeSpec};
+pub use document::scene::{
+    AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
+    Point, RegionBlocks, Scene, VoxelBody, ROOT_NODE_ID,
+};
+pub use evaluation::chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
+pub use evaluation::disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
+pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};
+pub use evaluation::two_layer_store::{
+    stream_vox_occupancy, streamed_widest_run_in_band, BlockClassification, MicroblockGeometry,
+    SeamSolidity, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
+};
+pub use gpu::GpuContext;
+pub use settings::AppConfig;
+pub use ui::panel::{
+    build_add_shape_dialog, build_panel, build_signal_stack, cube_right_inset_points,
+    ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost, Selection,
+    SelectionTarget, SignalStackState, ViewMode,
+};
+pub use voxel_core::core_geom::MaterialChoice;
 pub use work::engagement::orchestrator::{DisplayOrchestrator, DisplayRefreshContext};
 pub use work::engagement::routing::{
     brick_display_handover, brick_patch_in_place, route_brick_rebuild, route_geometry_rebuild,
     route_mesh_build, BrickDisplayHandover, BrickRebuildAction, EditShape, GenerationTracker,
     MeshBuildRoute, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
-pub use evaluation::chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
-pub use evaluation::disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
-pub use display::mesh::{
-    build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer, SelectedOperandGhostBody,
-    SelectedOperandGhostRenderer,
-};
-pub use work::workers::geometry::{
-    build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
-    GeometryWorker,
+pub use work::workers::brick::{
+    build_brick_rebuild, spawn_brick_worker, BrickDisplayInstall, BrickRebuildOutcome,
+    BrickRebuildRequest, BrickRebuildResult, BrickWorker,
 };
 pub use work::workers::diameter::{
     spawn_diameter_worker, DiameterRequest, DiameterResult, DiameterWorker,
@@ -102,49 +129,19 @@ pub use work::workers::diameter::{
 pub use work::workers::export::{
     spawn_vox_export_worker, VoxExportRequest, VoxExportResult, VoxExportSummary, VoxExportWorker,
 };
+pub use work::workers::geometry::{
+    build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
+    GeometryWorker,
+};
 pub use work::workers::Worker;
-pub use display::texture_atlas::{AtlasSubRect, MaterialAtlas};
-pub use document::debug_clouds::DebugCloudField;
-pub use camera::{
-    adjacent_face, chrome_zone_left_click_action, classify_cube_point,
-    nearest_equivalent_theta, ArrowDir, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
-    HomeView, OrbitCamera, ProjectionMode,
-    RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
-};
-pub use gpu::GpuContext;
-pub use document::intent::{Intent, IntentEffect, NodeSpec};
-pub use voxel_core::core_geom::MaterialChoice;
-pub use ui::panel::{
-    build_add_shape_dialog, build_panel, build_signal_stack, cube_right_inset_points,
-    ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost, Selection,
-    SelectionTarget, SignalStackState, ViewMode,
-};
-pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
-pub use display::renderer::{
-    create_depth_view, create_msaa_color_view, view_cube_corner, InfiniteGridRenderer, LayerBand,
-    MaterialSource, OnionFogParams, PlacementGhostRenderer, PointsRenderer, RegionClip, RegionRole,
-    SceneGridRenderer, TransformGizmoRenderer, ViewCubeRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
-    PLACEMENT_GHOST_TINT, VIEW_CUBE_VIEWPORT_PIXELS,
-};
-pub use display::renderer::procedural_material_average_color;
-pub use document::scene::{
-    AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
-    VoxelBody, Point, RegionBlocks, Scene, ROOT_NODE_ID,
-};
-pub use artifacts::{DocumentArtifact, Dump, SettingsArtifact, ViewArtifact};
-pub use settings::AppConfig;
-pub use evaluation::two_layer_store::{
-    stream_vox_occupancy, streamed_widest_run_in_band, BlockClassification, MicroblockGeometry,
-    SeamSolidity, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
-};
 // The dense whole-region resolve oracle is compile-gated out of production builds
 // (see the proof chapter's "Oracles" section, `docs/architecture/05-proof.md`).
 // `cfg(test)` only: this crate has no `oracle` feature since `shot` became its own
 // package, and `shot` reaches the resolver through `evaluation` directly rather than
 // through this re-export. The dev-dependency on `evaluation` supplies the feature.
+pub use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 #[cfg(test)]
 pub use evaluation::two_layer_store::resolve_region_two_layer;
-pub use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 // The headless `.vox` export sink now lives in the `interchange` crate (ADR 0016 Phase 5);
 // re-exported flat so `voxel_worker::VoxExport` / `VoxExportBuilder` keep resolving.

@@ -165,20 +165,44 @@ mod tests {
         // Box A = [0,0,0]; box B = [1,0,0] abut across the +X / -X seam. With B modelled as
         // solid by the oracle, A's +X face is hidden and B's -X face is hidden; the other ten
         // faces (against air) stay exposed.
-        let a = Cuboid { min: [0, 0, 0], max: [0, 0, 0], label: 1u16 };
-        let b = Cuboid { min: [1, 0, 0], max: [1, 0, 0], label: 2u16 };
+        let a = Cuboid {
+            min: [0, 0, 0],
+            max: [0, 0, 0],
+            label: 1u16,
+        };
+        let b = Cuboid {
+            min: [1, 0, 0],
+            max: [1, 0, 0],
+            label: 2u16,
+        };
         let cell_is_in_b = |cell: [i64; 3]| cell == [1, 0, 0];
         let cell_is_in_a = |cell: [i64; 3]| cell == [0, 0, 0];
 
         // A's +X face is backed by B ⇒ culled; its other five faces are air ⇒ exposed.
-        assert!(!CulledBoxMeshing::face_is_exposed(&a, [1, 0, 0], cell_is_in_b));
+        assert!(!CulledBoxMeshing::face_is_exposed(
+            &a,
+            [1, 0, 0],
+            cell_is_in_b
+        ));
         for direction in FACE_DIRECTIONS.into_iter().filter(|d| *d != [1, 0, 0]) {
-            assert!(CulledBoxMeshing::face_is_exposed(&a, direction, cell_is_in_b));
+            assert!(CulledBoxMeshing::face_is_exposed(
+                &a,
+                direction,
+                cell_is_in_b
+            ));
         }
         // B's -X face is backed by A ⇒ culled; its other five faces are air ⇒ exposed.
-        assert!(!CulledBoxMeshing::face_is_exposed(&b, [-1, 0, 0], cell_is_in_a));
+        assert!(!CulledBoxMeshing::face_is_exposed(
+            &b,
+            [-1, 0, 0],
+            cell_is_in_a
+        ));
         for direction in FACE_DIRECTIONS.into_iter().filter(|d| *d != [-1, 0, 0]) {
-            assert!(CulledBoxMeshing::face_is_exposed(&b, direction, cell_is_in_a));
+            assert!(CulledBoxMeshing::face_is_exposed(
+                &b,
+                direction,
+                cell_is_in_a
+            ));
         }
     }
 
@@ -186,27 +210,51 @@ mod tests {
     fn oracle_solid_neighbour_culls_and_air_neighbour_exposes_the_same_face() {
         // The single boundary face at +X: a solid oracle culls it, an air oracle exposes it.
         let box_ = unit_box();
-        assert!(!CulledBoxMeshing::face_is_exposed(&box_, [1, 0, 0], |cell| cell == [2, 1, 1]));
-        assert!(CulledBoxMeshing::face_is_exposed(&box_, [1, 0, 0], |cell| cell != [2, 1, 1]));
+        assert!(!CulledBoxMeshing::face_is_exposed(
+            &box_,
+            [1, 0, 0],
+            |cell| cell == [2, 1, 1]
+        ));
+        assert!(CulledBoxMeshing::face_is_exposed(
+            &box_,
+            [1, 0, 0],
+            |cell| cell != [2, 1, 1]
+        ));
     }
 
     #[test]
     fn partially_backed_merged_face_is_reported_exposed() {
         // A merged face over a 3-wide slab: back only two of its three neighbour cells solid;
         // the one air cell must expose the WHOLE merged quad (the culled-merged over-draw rule).
-        let box_ = Cuboid { min: [0, 0, 0], max: [2, 0, 0], label: 5u16 };
+        let box_ = Cuboid {
+            min: [0, 0, 0],
+            max: [2, 0, 0],
+            label: 5u16,
+        };
         // +Y neighbour slab is the cells (0,1,0),(1,1,0),(2,1,0); leave (2,1,0) air.
         let all_but_one_solid = |cell: [i64; 3]| cell[1] == 1 && cell[0] < 2;
-        assert!(CulledBoxMeshing::face_is_exposed(&box_, [0, 1, 0], all_but_one_solid));
+        assert!(CulledBoxMeshing::face_is_exposed(
+            &box_,
+            [0, 1, 0],
+            all_but_one_solid
+        ));
         // Back all three ⇒ the merged face is fully hidden ⇒ culled.
         let full_slab_solid = |cell: [i64; 3]| cell[1] == 1;
-        assert!(!CulledBoxMeshing::face_is_exposed(&box_, [0, 1, 0], full_slab_solid));
+        assert!(!CulledBoxMeshing::face_is_exposed(
+            &box_,
+            [0, 1, 0],
+            full_slab_solid
+        ));
     }
 
     #[test]
     fn low_side_face_queries_negative_lattice_cell() {
         // A box at the domain origin: its -X face queries x = -1, which the oracle answers air.
-        let box_ = Cuboid { min: [0, 0, 0], max: [0, 0, 0], label: 3u16 };
+        let box_ = Cuboid {
+            min: [0, 0, 0],
+            max: [0, 0, 0],
+            label: 3u16,
+        };
         let queried_negative = std::cell::Cell::new(false);
         let exposed = CulledBoxMeshing::face_is_exposed(&box_, [-1, 0, 0], |cell| {
             if cell[0] < 0 {
@@ -215,6 +263,9 @@ mod tests {
             false
         });
         assert!(exposed);
-        assert!(queried_negative.get(), "the low face must probe the negative neighbour cell");
+        assert!(
+            queried_negative.get(),
+            "the low face must probe the negative neighbour cell"
+        );
     }
 }

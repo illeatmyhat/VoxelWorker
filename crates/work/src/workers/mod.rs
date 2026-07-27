@@ -32,5 +32,5 @@ pub mod scan;
 // The generic drain-to-latest/supersede worker is the substrate `supersede` protocol; the
 // domain keeps its `Worker` / `build_catching` vocabulary at this seam so the worker call
 // sites stay put. See docs/architecture/04-work.md (the work chapter).
-pub use substrate::CoalescingWorker as Worker;
 pub(crate) use substrate::catch_unwind_or_log as build_catching;
+pub use substrate::CoalescingWorker as Worker;

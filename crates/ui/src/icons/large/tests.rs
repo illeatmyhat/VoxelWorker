@@ -48,8 +48,19 @@ fn for_icon_and_rail_round_trip() {
 /// and falls back to its rail mark — that is the designed answer, not a gap.
 #[test]
 fn non_producers_have_no_tile_glyph() {
-    for icon in [Icon::Union, Icon::Subtract, Icon::Emboss, Icon::Search, Icon::Part] {
-        assert_eq!(LargeIcon::for_icon(icon), None, "{} is not a producer", icon.name());
+    for icon in [
+        Icon::Union,
+        Icon::Subtract,
+        Icon::Emboss,
+        Icon::Search,
+        Icon::Part,
+    ] {
+        assert_eq!(
+            LargeIcon::for_icon(icon),
+            None,
+            "{} is not a producer",
+            icon.name()
+        );
     }
 }
 

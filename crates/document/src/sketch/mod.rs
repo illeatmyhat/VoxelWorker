@@ -25,8 +25,8 @@
 //! The profile is a closed simple polygon (≥3 points); a degenerate profile
 //! (fewer than 3 points, or zero area) resolves to nothing rather than panicking.
 
-mod solid;
 mod produce;
+mod solid;
 #[cfg(test)]
 mod tests;
 
@@ -220,7 +220,12 @@ impl Sketch {
     /// (ADR 0030): it is a valid scene object that resolves to nothing, the start state a
     /// create-from-scratch sketch is authored into.
     pub fn empty(plane: PlaneAxis) -> Self {
-        Self { plane, points: Vec::new(), segments: Vec::new(), next_id: 0 }
+        Self {
+            plane,
+            points: Vec::new(),
+            segments: Vec::new(),
+            next_id: 0,
+        }
     }
 
     /// Read-only view of the point entities.
@@ -243,7 +248,11 @@ impl Sketch {
     /// Allocate a point entity at `at`, returning its fresh id.
     fn add_point(&mut self, at: SketchPoint) -> EntityId {
         let id = self.alloc_id();
-        self.points.push(Point { id, at, role: EntityRole::Real });
+        self.points.push(Point {
+            id,
+            at,
+            role: EntityRole::Real,
+        });
         id
     }
 
@@ -251,7 +260,13 @@ impl Sketch {
     /// lineage), returning its fresh id.
     fn add_segment(&mut self, from: EntityId, to: EntityId) -> EntityId {
         let id = self.alloc_id();
-        self.segments.push(Segment { id, from, to, origin: id, role: EntityRole::Real });
+        self.segments.push(Segment {
+            id,
+            from,
+            to,
+            origin: id,
+            role: EntityRole::Real,
+        });
         id
     }
 
@@ -314,7 +329,9 @@ impl Sketch {
         // to `start` is a closed region — an open graph yields NO loop (empty), so the resolve
         // produces nothing rather than an arbitrarily-closed phantom polygon.
         for _ in 0..self.points.len() {
-            let next = neighbours(current).into_iter().find(|&n| Some(n) != previous);
+            let next = neighbours(current)
+                .into_iter()
+                .find(|&n| Some(n) != previous);
             let Some(next) = next else { break }; // dead end ⇒ open path, no closed loop
             if next == start {
                 closed = true;
@@ -379,7 +396,13 @@ impl Sketch {
         let old_to = self.segments[index].to;
         self.segments[index].to = new_point;
         let id = self.alloc_id();
-        self.segments.push(Segment { id, from: new_point, to: old_to, origin, role: EntityRole::Real });
+        self.segments.push(Segment {
+            id,
+            from: new_point,
+            to: old_to,
+            origin,
+            role: EntityRole::Real,
+        });
     }
 
     /// The in-plane bbox-minimum over ALL point entities (per coordinate), `[0, 0]` when the
@@ -387,7 +410,11 @@ impl Sketch {
     /// bbox, which the resolve anchors — this covers every point (including free points and the
     /// vertices of an open graph), so the interactive overlay can place a handle on each.
     pub fn points_bbox_min(&self) -> [i64; 2] {
-        let mut min = self.points.first().map(|point| point.at.offset_voxels).unwrap_or([0, 0]);
+        let mut min = self
+            .points
+            .first()
+            .map(|point| point.at.offset_voxels)
+            .unwrap_or([0, 0]);
         for point in &self.points {
             min[0] = min[0].min(point.at.offset_voxels[0]);
             min[1] = min[1].min(point.at.offset_voxels[1]);

@@ -306,6 +306,9 @@ mod tests {
         let d = VoxelAabb::new([0, 0, 0], [65, 64, 64]);
         assert_eq!(d.covering_chunk_range(16), Some(([0, 0, 0], [1, 0, 0])));
         // Empty box → no range.
-        assert_eq!(VoxelAabb::new([0, 0, 0], [0, 0, 0]).covering_chunk_range(16), None);
+        assert_eq!(
+            VoxelAabb::new([0, 0, 0], [0, 0, 0]).covering_chunk_range(16),
+            None
+        );
     }
 }

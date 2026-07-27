@@ -55,7 +55,9 @@ impl WindowedState {
         self.loaded_material = Some(LoadedMaterial::from_faces(
             &self.gpu.device,
             &self.gpu.queue,
-            self.display.cuboid_mesh_renderer().material_bind_group_layout(),
+            self.display
+                .cuboid_mesh_renderer()
+                .material_bind_group_layout(),
             self.display.cuboid_mesh_renderer().material_sampler(),
             &faces,
             label.clone(),

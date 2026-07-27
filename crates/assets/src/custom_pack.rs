@@ -11,8 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{group_block_textures, BlockGroup, BlockSource};
 use super::vintage_story::scan_block_dir;
+use super::{group_block_textures, BlockGroup, BlockSource};
 
 /// A block source rooted at an arbitrary folder the user picked.
 pub struct CustomFolderSource {

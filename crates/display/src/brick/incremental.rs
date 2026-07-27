@@ -351,8 +351,11 @@ impl IncrementalBrickField {
             for offset_z in -1i32..=1 {
                 for offset_y in -1i32..=1 {
                     for offset_x in -1i32..=1 {
-                        let neighbour =
-                            [coord[0] + offset_x, coord[1] + offset_y, coord[2] + offset_z];
+                        let neighbour = [
+                            coord[0] + offset_x,
+                            coord[1] + offset_y,
+                            coord[2] + offset_z,
+                        ];
                         if !dirty.contains(&neighbour) {
                             ring.insert(neighbour);
                         }
@@ -398,7 +401,8 @@ impl IncrementalBrickField {
         // oracle compares atlas BYTES, not slot numbers — see `IncrementalBrickField`'s records
         // doc and `incremental_matches_wholesale`), so the reuse order never affects byte parity.
         self.slot_tiles.free(freed_slots.iter().copied());
-        self.cell_key_tiles.free(freed_cell_key_slots.iter().copied());
+        self.cell_key_tiles
+            .free(freed_cell_key_slots.iter().copied());
 
         // 2. Rebuild the dirty chunks' records fully — and the ring chunks' COARSE records —
         //    from the FRESH data, with occlusion verdicts from the fresh oracle (the same

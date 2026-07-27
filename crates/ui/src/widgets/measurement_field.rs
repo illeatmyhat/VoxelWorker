@@ -64,7 +64,14 @@ impl<'a> MeasurementField<'a> {
     /// the value being edited (typically the node and the axis), so re-selecting a node
     /// re-seeds rather than inheriting the previous node's half-typed text.
     pub fn new(id_base: egui::Id, label: &'a str, seed_voxels: i64, density: u32) -> Self {
-        Self { id_base, label, seed_voxels, density, min_voxels: None, min_error: "" }
+        Self {
+            id_base,
+            label,
+            seed_voxels,
+            density,
+            min_voxels: None,
+            min_error: "",
+        }
     }
 
     /// Reject anything below `minimum` voxels, reporting `message`.
@@ -119,11 +126,8 @@ impl<'a> MeasurementField<'a> {
                 Ok(committed) => {
                     ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
                     // Settle the field on the canonical form of the applied value.
-                    buffer = units::format(
-                        committed.voxels,
-                        self.density,
-                        DisplayUnit::BlocksAndVoxels,
-                    );
+                    buffer =
+                        units::format(committed.voxels, self.density, DisplayUnit::BlocksAndVoxels);
                     commit = Some(committed);
                 }
                 Err(message) => {
@@ -158,7 +162,10 @@ impl<'a> MeasurementField<'a> {
             .map_err(|error| measurement_error_text(&error))?;
         match self.min_voxels {
             Some(minimum) if voxels < minimum => Err(self.min_error.to_string()),
-            _ => Ok(MeasurementCommit { measurement, voxels }),
+            _ => Ok(MeasurementCommit {
+                measurement,
+                voxels,
+            }),
         }
     }
 }

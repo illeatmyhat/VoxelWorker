@@ -192,8 +192,7 @@ pub fn format(voxels: i64, density: u32, style: DisplayUnit) -> String {
             // Exact-rational blocks: voxels / density, reduced, rendered as a
             // terminating decimal when the reduced denominator is 2/5-smooth, else
             // fall back to whole blocks + voxels so we never emit a rounded float.
-            let blocks =
-                ExactRational::new(voxels as i128, density as i128).expect("density >= 1");
+            let blocks = ExactRational::new(voxels as i128, density as i128).expect("density >= 1");
             match blocks.to_terminating_decimal() {
                 Some(text) => format!("{text} {}", pluralise_rational(blocks, "block")),
                 None => {
@@ -423,7 +422,10 @@ pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
                     None => {
                         // Alphabetic but not a known unit → unknown unit; otherwise
                         // an unparseable number token.
-                        if token.chars().any(|character| character.is_ascii_alphabetic()) {
+                        if token
+                            .chars()
+                            .any(|character| character.is_ascii_alphabetic())
+                        {
                             return Err(MeasurementParseError::UnknownUnit { unit_text: token });
                         }
                         return Err(MeasurementParseError::InvalidNumber { number_text: token });
@@ -493,16 +495,20 @@ fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseEr
     if token.is_empty() {
         return Ok(None);
     }
-    if token.chars().any(|character| character.is_ascii_alphabetic()) {
+    if token
+        .chars()
+        .any(|character| character.is_ascii_alphabetic())
+    {
         return Ok(None);
     }
 
     if let Some((numerator_text, denominator_text)) = token.split_once('/') {
-        let numerator: i128 = numerator_text
-            .parse()
-            .map_err(|_| MeasurementParseError::InvalidNumber {
-                number_text: token.to_string(),
-            })?;
+        let numerator: i128 =
+            numerator_text
+                .parse()
+                .map_err(|_| MeasurementParseError::InvalidNumber {
+                    number_text: token.to_string(),
+                })?;
         let denominator: i128 =
             denominator_text
                 .parse()
@@ -526,8 +532,12 @@ fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseEr
         let negative = whole_text.starts_with('-');
         let whole_digits = whole_text.trim_start_matches('-');
         // Allow an empty whole part (`".5"`) but require numeric digits otherwise.
-        if !whole_digits.chars().all(|character| character.is_ascii_digit())
-            || !fraction_text.chars().all(|character| character.is_ascii_digit())
+        if !whole_digits
+            .chars()
+            .all(|character| character.is_ascii_digit())
+            || !fraction_text
+                .chars()
+                .all(|character| character.is_ascii_digit())
             || fraction_text.is_empty()
         {
             return Err(MeasurementParseError::InvalidNumber {
@@ -838,6 +848,9 @@ mod tests {
         let json = serde_json::to_string(&measurement).expect("serialises");
         let restored: Measurement = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(restored, measurement);
-        assert_eq!(restored.to_voxels(16).unwrap(), measurement.to_voxels(16).unwrap());
+        assert_eq!(
+            restored.to_voxels(16).unwrap(),
+            measurement.to_voxels(16).unwrap()
+        );
     }
 }

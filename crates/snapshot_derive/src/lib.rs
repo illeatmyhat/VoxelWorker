@@ -223,7 +223,10 @@ fn parse_category(attribute: &syn::Attribute) -> syn::Result<(&'static str, proc
         .ok_or_else(|| {
             syn::Error::new(
                 word.span(),
-                format!("`{spelling}` is not a state category. Valid: {}", category_list()),
+                format!(
+                    "`{spelling}` is not a state category. Valid: {}",
+                    category_list()
+                ),
             )
         })
 }

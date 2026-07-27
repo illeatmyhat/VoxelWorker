@@ -19,53 +19,52 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use voxel_core::core_geom::MaterialChoice;
 use document::scene::{Point, Scene};
+use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::RecentreVoxels;
 // The sRGB↔linear transfer function is textbook math with no domain content, so it
 // lives in substrate (see the material/colour handling in docs/architecture); the
 // call sites below keep their names via this import.
 use substrate::srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 
-mod materials;
 mod background;
-mod view_cube;
 mod chrome;
-mod targets;
-mod lines;
 mod gizmo;
 mod grid;
-mod points;
 mod infinite_grid;
+mod lines;
+mod materials;
 mod onion;
 mod operand_ghost;
 mod placement_ghost;
+mod points;
+mod targets;
 #[cfg(test)]
 mod tests;
+mod view_cube;
 
 // Public API of the shared render infrastructure (ADR 0016 Phase 4d carve). Every
 // `crate::renderer::…` / `display::renderer::…` path a consumer named before the
 // carve resolves through these re-exports unchanged.
+pub use background::BackgroundGradientRenderer;
+pub use gizmo::{TransformGizmoRenderer, GIZMO_SCREEN_FRACTION};
+pub use grid::SceneGridRenderer;
+pub use infinite_grid::InfiniteGridRenderer;
 pub use materials::{
     build_face_material_layout, grid_overlay_params, procedural_material_average_color,
     procedural_material_pixels, procedural_material_texture_size,
-    relative_material_base_colors_public, upload_face_material_texture,
-    FACE_MATERIAL_ARRAY_LAYERS, GridOverlayParams, LayerBand, MaterialSource, RegionClip,
-    RegionRole,
+    relative_material_base_colors_public, upload_face_material_texture, GridOverlayParams,
+    LayerBand, MaterialSource, RegionClip, RegionRole, FACE_MATERIAL_ARRAY_LAYERS,
 };
-pub use background::BackgroundGradientRenderer;
-pub use view_cube::{
-    view_cube_corner, ViewCubeRenderer, VIEW_CUBE_VIEWPORT_MARGIN, VIEW_CUBE_VIEWPORT_PIXELS,
-};
-pub use targets::{create_depth_view, create_msaa_color_view, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
-pub use gizmo::{TransformGizmoRenderer, GIZMO_SCREEN_FRACTION};
-pub use grid::SceneGridRenderer;
-pub use points::{enabled_grid_planes, GridPlaneInstance, PointsRenderer};
-pub use infinite_grid::InfiniteGridRenderer;
 pub use onion::{onion_ghost_tint, OnionFogParams};
 pub use operand_ghost::{operand_ghost_loud_tint, operand_ghost_quiet_tint, OperandGhostStyle};
 pub use placement_ghost::{
     placement_ghost_shape_discriminant, PlacementGhostRenderer, PLACEMENT_GHOST_TINT,
+};
+pub use points::{enabled_grid_planes, GridPlaneInstance, PointsRenderer};
+pub use targets::{create_depth_view, create_msaa_color_view, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
+pub use view_cube::{
+    view_cube_corner, ViewCubeRenderer, VIEW_CUBE_VIEWPORT_MARGIN, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 
 // Internal cross-submodule glue: each submodule reaches its siblings' non-`pub`

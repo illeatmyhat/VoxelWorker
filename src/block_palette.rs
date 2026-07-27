@@ -20,8 +20,8 @@
 //! scanned from `groups[i]`. Only [`PaletteHost::add_group`] (push) and
 //! [`PaletteHost::clear`] (truncate all three) mutate them, so the alignment holds.
 
-use assets::{BlockGroup, DecodedRgba};
 use crate::thumbnail::ThumbnailRenderer;
+use assets::{BlockGroup, DecodedRgba};
 pub use ui::palette::{BlockPalette, PaletteTile};
 
 /// The shell's GPU host for the palette: it owns the wgpu resources the UI-facing

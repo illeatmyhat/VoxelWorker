@@ -1,7 +1,7 @@
 use super::*;
 use crate::voxel::VoxelProducer;
-use voxel_core::voxel::VoxelGrid;
 use std::collections::BTreeSet;
+use voxel_core::voxel::VoxelGrid;
 
 mod coarse_solid;
 mod edits;
@@ -13,10 +13,7 @@ mod revolve;
 /// `(world_position_bits, block_local_coord, material_id)` so two producers can
 /// be compared for SET equality independent of emission order. World positions
 /// are integer + 0.5, so the f32 bit pattern is exact and hashable.
-fn occupancy_set(
-    producer: &dyn VoxelProducer,
-    density: u32,
-) -> BTreeSet<([i32; 3], [u8; 3], u16)> {
+fn occupancy_set(producer: &dyn VoxelProducer, density: u32) -> BTreeSet<([i32; 3], [u8; 3], u16)> {
     let mut grid = VoxelGrid::default();
     producer.resolve(&mut grid, density);
     grid.occupied

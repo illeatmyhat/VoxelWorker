@@ -1,30 +1,51 @@
 use super::*;
 use crate::sketch::RevolveAxis;
 use crate::voxel::VoxelProducer;
-use voxel_core::voxel::VoxelGrid;
 use std::collections::BTreeSet;
+use voxel_core::voxel::VoxelGrid;
 
 /// A set of extrude profiles worth stressing: a plain rectangle, a concave L, one with a
 /// reflex notch, and one that self-intersects. Each is paired with a plane so all three
 /// axis mappings get exercised.
 fn extrude_field_cases() -> Vec<(&'static str, SketchSolid)> {
     let l_shape = vec![
-        SketchPoint::new(0, 0), SketchPoint::new(6, 0), SketchPoint::new(6, 2),
-        SketchPoint::new(2, 2), SketchPoint::new(2, 5), SketchPoint::new(0, 5),
+        SketchPoint::new(0, 0),
+        SketchPoint::new(6, 0),
+        SketchPoint::new(6, 2),
+        SketchPoint::new(2, 2),
+        SketchPoint::new(2, 5),
+        SketchPoint::new(0, 5),
     ];
     let notched = vec![
-        SketchPoint::new(0, 0), SketchPoint::new(7, 0), SketchPoint::new(7, 6),
-        SketchPoint::new(4, 3), SketchPoint::new(0, 6),
+        SketchPoint::new(0, 0),
+        SketchPoint::new(7, 0),
+        SketchPoint::new(7, 6),
+        SketchPoint::new(4, 3),
+        SketchPoint::new(0, 6),
     ];
     let bowtie = vec![
-        SketchPoint::new(0, 0), SketchPoint::new(6, 6),
-        SketchPoint::new(0, 6), SketchPoint::new(6, 0),
+        SketchPoint::new(0, 0),
+        SketchPoint::new(6, 6),
+        SketchPoint::new(0, 6),
+        SketchPoint::new(6, 0),
     ];
     vec![
-        ("rectangle/Z", SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 5, 3), 4)),
-        ("L/X", SketchSolid::extrude(Sketch::new(PlaneAxis::X, l_shape), 3)),
-        ("notched/Y", SketchSolid::extrude(Sketch::new(PlaneAxis::Y, notched), 2)),
-        ("bowtie/Z", SketchSolid::extrude(Sketch::new(PlaneAxis::Z, bowtie), 3)),
+        (
+            "rectangle/Z",
+            SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 5, 3), 4),
+        ),
+        (
+            "L/X",
+            SketchSolid::extrude(Sketch::new(PlaneAxis::X, l_shape), 3),
+        ),
+        (
+            "notched/Y",
+            SketchSolid::extrude(Sketch::new(PlaneAxis::Y, notched), 2),
+        ),
+        (
+            "bowtie/Z",
+            SketchSolid::extrude(Sketch::new(PlaneAxis::Z, bowtie), 3),
+        ),
     ]
 }
 
@@ -42,8 +63,11 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
     for (label, solid) in extrude_field_cases() {
         let mut grid = VoxelGrid::default();
         solid.resolve(&mut grid, DENSITY);
-        let occupied: BTreeSet<[i32; 3]> =
-            grid.occupied.iter().map(|voxel| voxel.local_index).collect();
+        let occupied: BTreeSet<[i32; 3]> = grid
+            .occupied
+            .iter()
+            .map(|voxel| voxel.local_index)
+            .collect();
 
         let dimensions = solid.grid_dimensions();
         let mut checked = 0u32;
@@ -52,13 +76,10 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
         for x in 0..dimensions[0] {
             for y in 0..dimensions[1] {
                 for z in 0..dimensions[2] {
-                    let centre =
-                        [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
-                    let distance = solid
-                        .signed_distance(centre);
+                    let centre = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
+                    let distance = solid.signed_distance(centre);
                     let field_says_solid = distance.is_sign_negative();
-                    let resolve_says_solid =
-                        occupied.contains(&[x as i32, y as i32, z as i32]);
+                    let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                     assert_eq!(
                         field_says_solid, resolve_says_solid,
                         "{label} at {centre:?}: field distance {distance} says \
@@ -73,7 +94,10 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
             }
         }
         assert!(checked > 0, "{label}: empty grid, nothing verified");
-        assert!(inside > 0, "{label}: nothing solid, the case proves nothing");
+        assert!(
+            inside > 0,
+            "{label}: nothing solid, the case proves nothing"
+        );
         if label == "notched/Y" {
             assert!(
                 on_boundary > 0,
@@ -135,8 +159,11 @@ fn extrude_field_is_chebyshev_exact_on_a_prism() {
     let centre = solid.signed_distance([2.0, 2.0, 1.0]);
     assert!((centre + 1.0).abs() < 1e-4, "centre distance {centre}");
     // Revolve reports Euclidean instead — the lift decides the metric, not the profile.
-    let revolved =
-        SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Z, 4, 4), RevolveAxis::InPlane0, 360);
+    let revolved = SketchSolid::revolve(
+        Sketch::rectangle(PlaneAxis::Z, 4, 4),
+        RevolveAxis::InPlane0,
+        360,
+    );
     assert_eq!(revolved.field_metric(), Metric::Euclidean);
     // A degenerate producer is empty, so every point is outside it.
     let degenerate = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 0);
@@ -149,26 +176,62 @@ fn extrude_field_is_chebyshev_exact_on_a_prism() {
 /// actually matters.
 fn revolve_field_cases() -> Vec<(&'static str, SketchSolid)> {
     let lathe = vec![
-        SketchPoint::new(0, 2), SketchPoint::new(6, 2),
-        SketchPoint::new(6, 5), SketchPoint::new(0, 5),
+        SketchPoint::new(0, 2),
+        SketchPoint::new(6, 2),
+        SketchPoint::new(6, 5),
+        SketchPoint::new(0, 5),
     ];
     let straddling = vec![
-        SketchPoint::new(0, -4), SketchPoint::new(5, -4),
-        SketchPoint::new(5, 4), SketchPoint::new(0, 4),
+        SketchPoint::new(0, -4),
+        SketchPoint::new(5, -4),
+        SketchPoint::new(5, 4),
+        SketchPoint::new(0, 4),
     ];
     vec![
-        ("full/InPlane0", SketchSolid::revolve(
-            Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 360)),
-        ("full/InPlane1", SketchSolid::revolve(
-            Sketch::new(PlaneAxis::Y, lathe.clone()), RevolveAxis::InPlane1, 360)),
-        ("quarter", SketchSolid::revolve(
-            Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 90)),
-        ("half", SketchSolid::revolve(
-            Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 180)),
-        ("three-quarter", SketchSolid::revolve(
-            Sketch::new(PlaneAxis::Z, lathe), RevolveAxis::InPlane0, 270)),
-        ("straddling", SketchSolid::revolve(
-            Sketch::new(PlaneAxis::Z, straddling), RevolveAxis::InPlane0, 360)),
+        (
+            "full/InPlane0",
+            SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, lathe.clone()),
+                RevolveAxis::InPlane0,
+                360,
+            ),
+        ),
+        (
+            "full/InPlane1",
+            SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Y, lathe.clone()),
+                RevolveAxis::InPlane1,
+                360,
+            ),
+        ),
+        (
+            "quarter",
+            SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, lathe.clone()),
+                RevolveAxis::InPlane0,
+                90,
+            ),
+        ),
+        (
+            "half",
+            SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, lathe.clone()),
+                RevolveAxis::InPlane0,
+                180,
+            ),
+        ),
+        (
+            "three-quarter",
+            SketchSolid::revolve(Sketch::new(PlaneAxis::Z, lathe), RevolveAxis::InPlane0, 270),
+        ),
+        (
+            "straddling",
+            SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, straddling),
+                RevolveAxis::InPlane0,
+                360,
+            ),
+        ),
     ]
 }
 
@@ -180,8 +243,11 @@ fn revolve_signed_distance_agrees_with_the_resolve() {
     for (label, solid) in revolve_field_cases() {
         let mut grid = VoxelGrid::default();
         solid.resolve(&mut grid, DENSITY);
-        let occupied: BTreeSet<[i32; 3]> =
-            grid.occupied.iter().map(|voxel| voxel.local_index).collect();
+        let occupied: BTreeSet<[i32; 3]> = grid
+            .occupied
+            .iter()
+            .map(|voxel| voxel.local_index)
+            .collect();
         let dimensions = solid.grid_dimensions();
         let mut inside = 0u32;
         for x in 0..dimensions[0] {
@@ -190,8 +256,7 @@ fn revolve_signed_distance_agrees_with_the_resolve() {
                     let centre = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
                     let distance = solid.signed_distance(centre);
                     let field_says_solid = distance.is_sign_negative();
-                    let resolve_says_solid =
-                        occupied.contains(&[x as i32, y as i32, z as i32]);
+                    let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                     assert_eq!(
                         field_says_solid, resolve_says_solid,
                         "{label} at {centre:?}: field distance {distance} says \
@@ -201,7 +266,10 @@ fn revolve_signed_distance_agrees_with_the_resolve() {
                 }
             }
         }
-        assert!(inside > 0, "{label}: nothing solid, the case proves nothing");
+        assert!(
+            inside > 0,
+            "{label}: nothing solid, the case proves nothing"
+        );
     }
 }
 
@@ -265,8 +333,10 @@ fn revolve_signed_distance_is_one_lipschitz_in_euclidean() {
 fn revolve_closing_edge_is_inclusive_at_135_degrees() {
     // A lathe profile clear of the axis: axial 0..=6, radial 2..=8.
     let profile = vec![
-        SketchPoint::new(0, 2), SketchPoint::new(6, 2),
-        SketchPoint::new(6, 8), SketchPoint::new(0, 8),
+        SketchPoint::new(0, 2),
+        SketchPoint::new(6, 2),
+        SketchPoint::new(6, 8),
+        SketchPoint::new(0, 8),
     ];
     let solid = SketchSolid::revolve(
         Sketch::new(PlaneAxis::Z, profile),
@@ -308,5 +378,8 @@ fn revolve_closing_edge_is_inclusive_at_135_degrees() {
         );
         tested += 1;
     }
-    assert!(tested > 0, "the diagonal walk tested nothing - the fixture drifted");
+    assert!(
+        tested > 0,
+        "the diagonal walk tested nothing - the fixture drifted"
+    );
 }

@@ -86,11 +86,8 @@ fn paint_left(
 ) -> f32 {
     let galley = theme::letter_spaced(ui, text, color, size, spacing);
     let width = galley.size().x;
-    ui.painter().galley(
-        egui::pos2(x, middle - galley.size().y * 0.5),
-        galley,
-        color,
-    );
+    ui.painter()
+        .galley(egui::pos2(x, middle - galley.size().y * 0.5), galley, color);
     width
 }
 
@@ -105,7 +102,10 @@ fn viewer_segment(ui: &mut egui::Ui, state: &mut PanelState, x: f32, middle: f32
         .enumerate()
     {
         let rect = egui::Rect::from_min_size(
-            egui::pos2(x + index as f32 * SEGMENT_WIDTH, middle - SEGMENT_HEIGHT * 0.5),
+            egui::pos2(
+                x + index as f32 * SEGMENT_WIDTH,
+                middle - SEGMENT_HEIGHT * 0.5,
+            ),
             egui::vec2(SEGMENT_WIDTH, SEGMENT_HEIGHT),
         );
         let hit = ui.interact(
@@ -151,7 +151,10 @@ fn readouts(ui: &egui::Ui, state: &PanelState, band: egui::Rect, middle: f32) {
     let mut right = band.right() - EDGE_PAD;
     for (label, value) in [
         ("Nodes", format!("{}", state.scene.arena.len())),
-        ("Density", format!("{}³ / block", state.scene.voxels_per_block)),
+        (
+            "Density",
+            format!("{}³ / block", state.scene.voxels_per_block),
+        ),
     ] {
         let l = theme::letter_spaced(ui, label, theme::TEXT_HINT, 8.5, 1.4);
         let v = theme::letter_spaced(ui, &value, theme::TEXT_SECONDARY, 9.5, 0.8);

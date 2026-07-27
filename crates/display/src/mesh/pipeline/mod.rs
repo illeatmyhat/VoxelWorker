@@ -1,8 +1,8 @@
 use super::*;
 
-mod uniforms;
 mod bindings;
 mod chunk_upload;
+mod uniforms;
 
 // Re-export the carved-out helpers so every prior `pipeline::X` / `mesh::X` path still
 // resolves — including the `pub(crate)` bind-group/atlas helpers the brick raymarch
@@ -208,13 +208,7 @@ impl CuboidMeshRenderer {
         let buckets = bucket_grid_into_chunk_grids(grid, voxels_per_block);
         let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
             buckets.iter().map(|(coord, g)| (*coord, g)).collect();
-        Self::new_from_chunks(
-            device,
-            queue,
-            color_format,
-            &chunk_refs,
-            grid.dimensions,
-        )
+        Self::new_from_chunks(device, queue, color_format, &chunk_refs, grid.dimensions)
     }
 
     /// Build the cuboid renderer DIRECTLY from the resolve cache's per-chunk grids
@@ -438,7 +432,8 @@ impl CuboidMeshRenderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::with_shared_shading(include_str!("../../shaders/cuboid.wgsl")).into(),
+                crate::shaders::with_shared_shading(include_str!("../../shaders/cuboid.wgsl"))
+                    .into(),
             ),
         });
 
@@ -611,8 +606,10 @@ impl CuboidMeshRenderer {
         let loaded_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid loaded-block shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::with_shared_shading(include_str!("../../shaders/cuboid_loaded.wgsl"))
-                    .into(),
+                crate::shaders::with_shared_shading(include_str!(
+                    "../../shaders/cuboid_loaded.wgsl"
+                ))
+                .into(),
             ),
         });
         let loaded_pipeline_layout =
@@ -671,7 +668,8 @@ impl CuboidMeshRenderer {
                 cache: None,
             })
         };
-        let loaded_pipeline = build_loaded_pipeline("cuboid loaded pipeline", Some(wgpu::Face::Back));
+        let loaded_pipeline =
+            build_loaded_pipeline("cuboid loaded pipeline", Some(wgpu::Face::Back));
         let loaded_debug_pipeline = build_loaded_pipeline("cuboid loaded debug pipeline", None);
 
         // Every resident chunk visible until the next frustum cull in `update_uniforms`.
@@ -766,8 +764,10 @@ impl CuboidMeshRenderer {
         // rebuild coord that now meshes to EMPTY — e.g. fully occluded by new neighbour
         // occupancy — produces no buffer and must lose its stale one), then insert the
         // freshly built buffers. Net result == wholesale rebuild's buffer set.
-        let grids_by_coord: std::collections::HashMap<[i32; 3], &VoxelGrid> =
-            chunk_grids.iter().map(|(coord, grid)| (*coord, *grid)).collect();
+        let grids_by_coord: std::collections::HashMap<[i32; 3], &VoxelGrid> = chunk_grids
+            .iter()
+            .map(|(coord, grid)| (*coord, *grid))
+            .collect();
         for coord in &plan.evict {
             self.chunk_buffers.remove(coord);
         }
@@ -844,8 +844,11 @@ impl CuboidMeshRenderer {
         // The renderer's KNOWN set is its retained two-layer chunks' coords (includes
         // occupied-but-fully-occluded chunks that carry no buffer), so occluded chunks stay
         // stable instead of being treated as "new" and re-meshed every edit.
-        let resident: Vec<[i32; 3]> =
-            self.source_two_layer_chunks.iter().map(|(c, _)| *c).collect();
+        let resident: Vec<[i32; 3]> = self
+            .source_two_layer_chunks
+            .iter()
+            .map(|(c, _)| *c)
+            .collect();
         let occupied: Vec<[i32; 3]> = chunks
             .iter()
             .filter(|(_, chunk)| chunk.has_geometry())
@@ -884,8 +887,13 @@ impl CuboidMeshRenderer {
         // reclip re-meshes from it): drop evicted, upsert each rebuilt coord's chunk.
         // Untouched chunks are resident-cache hits → already correct. Rebuilding a chunk that
         // went all-air still upserts its (empty) chunk so the retained set matches `chunks`.
-        let chunks_by_coord: std::collections::HashMap<[i32; 3], &Arc<evaluation::two_layer_store::TwoLayerChunk>> =
-            chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+        let chunks_by_coord: std::collections::HashMap<
+            [i32; 3],
+            &Arc<evaluation::two_layer_store::TwoLayerChunk>,
+        > = chunks
+            .iter()
+            .map(|(coord, chunk)| (*coord, chunk))
+            .collect();
         let evict_set: std::collections::HashSet<[i32; 3]> = plan.evict.iter().copied().collect();
         self.source_two_layer_chunks
             .retain(|(coord, _)| !evict_set.contains(coord));
@@ -899,7 +907,9 @@ impl CuboidMeshRenderer {
                     .find(|(c, _)| c == coord)
                 {
                     Some(entry) => entry.1 = Arc::clone(chunk),
-                    None => self.source_two_layer_chunks.push((*coord, Arc::clone(chunk))),
+                    None => self
+                        .source_two_layer_chunks
+                        .push((*coord, Arc::clone(chunk))),
                 }
             }
         }
@@ -1152,7 +1162,8 @@ impl CuboidMeshRenderer {
         // `grid_half_extent` uniform AND the overlay's true-world offset below — ONE typed value
         // so the two can never diverge, and so `recentre − grid_half_extent` only compiles via the
         // audited `RecentreVoxels::render_absolute_to_true_world_offset` conversion.
-        let grid_half_extent = substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions);
+        let grid_half_extent =
+            substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions);
         let uniforms = CuboidUniforms {
             view_projection: view_projection.to_cols_array_2d(),
             // Corner-anchoring: the grid's low corner is `−floor(dim/2)`, so the GPU
@@ -1206,7 +1217,11 @@ impl CuboidMeshRenderer {
             ghost_tint: crate::renderer::onion_ghost_tint(),
             ..uniforms
         };
-        queue.write_buffer(&self.ghost_uniform_buffer, 0, bytemuck::bytes_of(&ghost_uniforms));
+        queue.write_buffer(
+            &self.ghost_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&ghost_uniforms),
+        );
 
         // Frustum-cull the per-chunk buffers by their world AABBs (sorted for a
         // deterministic draw order; cross-chunk order is pixel-irrelevant — opaque +
@@ -1286,10 +1301,13 @@ impl CuboidMeshRenderer {
                 render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
             if chunk.index_count_overlay > 0 {
-                render_pass.set_bind_group(2, &self.overlay_bind_group, &[self.overlay_dynamic_stride]);
+                render_pass.set_bind_group(
+                    2,
+                    &self.overlay_bind_group,
+                    &[self.overlay_dynamic_stride],
+                );
                 let start = chunk.index_count;
-                render_pass
-                    .draw_indexed(start..start + chunk.index_count_overlay, 0, 0..1);
+                render_pass.draw_indexed(start..start + chunk.index_count_overlay, 0, 0..1);
             }
         }
     }

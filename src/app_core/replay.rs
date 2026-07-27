@@ -6,7 +6,6 @@ use document::scene::Scene;
 
 use super::AppCore;
 
-
 /// The **default seed scene** the windowed app starts from (ADR 0003 Phase C, slice
 /// C3 — the base a `shot --replay` script is applied against). A single Tool node
 /// from the default geometry/material, the Origin Point synthesized, stable

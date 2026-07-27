@@ -3,8 +3,8 @@
 //! projection, hit-testing and interaction routing; these only draw and report clicks.
 
 mod rail;
-mod status;
 mod sketch_overlay;
+mod status;
 
 pub use rail::{icon_rail, rail_height, rail_rect, rail_top, RailClick};
 pub use sketch_overlay::{

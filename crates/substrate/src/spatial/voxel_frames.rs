@@ -54,7 +54,10 @@ impl RecentreVoxels {
     /// `recentre − grid_half_extent` subtraction happens — so no call site can treat
     /// `world_position + grid_half_extent` (a render-local index) as if it were the true-world
     /// coordinate, and a [`GridHalfExtent`] can never be swapped for a `RecentreVoxels` here.
-    pub fn render_absolute_to_true_world_offset(self, grid_half_extent: GridHalfExtent) -> [f32; 3] {
+    pub fn render_absolute_to_true_world_offset(
+        self,
+        grid_half_extent: GridHalfExtent,
+    ) -> [f32; 3] {
         std::array::from_fn(|axis| self.0[axis] as f32 - grid_half_extent.0[axis])
     }
 }
@@ -188,7 +191,10 @@ mod tests {
     #[test]
     fn grid_half_extent_floors_an_odd_dimension() {
         // floor(7/2) = 3, not 3.5 — the corner-anchoring the overlay relies on.
-        assert_eq!(GridHalfExtent::of_grid_dimensions([7, 8, 9]).voxels(), [3.0, 4.0, 4.0]);
+        assert_eq!(
+            GridHalfExtent::of_grid_dimensions([7, 8, 9]).voxels(),
+            [3.0, 4.0, 4.0]
+        );
     }
 
     #[test]

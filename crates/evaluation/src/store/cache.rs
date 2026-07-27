@@ -168,7 +168,13 @@ impl Store {
     /// resolving (the bound is a guard on the chunk's voxel *capacity*, evaluated
     /// from the chunk's voxel extent); this method itself does not re-check it (it
     /// resolves whatever the scene yields for that chunk).
-    pub fn chunk(&mut self, chunk_coord: [i32; 3], scene: &Scene, voxels_per_block: u32, lod: u32) -> &VoxelGrid {
+    pub fn chunk(
+        &mut self,
+        chunk_coord: [i32; 3],
+        scene: &Scene,
+        voxels_per_block: u32,
+        lod: u32,
+    ) -> &VoxelGrid {
         // The public entry binds the cache to the ABSOLUTE frame (floating origin
         // `[0, 0, 0]`) — the S0 contract a bare `chunk()` caller expects. The render
         // path goes through `resolve_region`, which binds the floating origin to the
@@ -223,10 +229,7 @@ impl Store {
 
         // Tier 2: spilled to disk? Reload + decompress. (Only possible when spilling.)
         if let Some(store) = self.disk_store.as_mut() {
-            if let Some(compressed) = store
-                .get(key)
-                .expect("disk store reload must not fail")
-            {
+            if let Some(compressed) = store.get(key).expect("disk store reload must not fail") {
                 let grid = decompress(&compressed);
                 self.disk_reload_count += 1;
                 self.insert_resident(key, grid);
@@ -484,12 +487,7 @@ impl Store {
     /// [`bound_region_occupied`](Self::bound_region_occupied)) are thin wrappers
     /// over. After this, [`covering_chunk_grids`](Self::covering_chunk_grids) yields
     /// the resident covering chunks (all cache HITs) in the recentred frame.
-    fn bind_region(
-        &mut self,
-        scene: &Scene,
-        voxels_per_block: u32,
-        lod: u32,
-    ) -> [u32; 3] {
+    fn bind_region(&mut self, scene: &Scene, voxels_per_block: u32, lod: u32) -> [u32; 3] {
         debug_assert_eq!(lod, 0, "S6d only operates at full resolution (lod 0)");
         let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
         self.rebind_if_changed(voxels_per_block, recentre_voxels);
@@ -549,7 +547,9 @@ impl Store {
         // resurface across a clear (issue #20 Step 3).
         self.last_used_tick.clear();
         if let Some(store) = self.disk_store.as_mut() {
-            store.clear().expect("clearing the disk store must not fail");
+            store
+                .clear()
+                .expect("clearing the disk store must not fail");
         }
     }
 
@@ -575,7 +575,8 @@ impl Store {
             .filter(|key| key.chunk_coord == chunk_coord)
             .collect();
         self.chunks.retain(|key, _| key.chunk_coord != chunk_coord);
-        self.last_used_tick.retain(|key, _| key.chunk_coord != chunk_coord);
+        self.last_used_tick
+            .retain(|key, _| key.chunk_coord != chunk_coord);
         if let Some(store) = self.disk_store.as_mut() {
             // The disk store may hold this coord at LODs not currently resident, so
             // purge the resident-derived keys AND defensively re-derive nothing extra:
@@ -617,12 +618,17 @@ impl Store {
     /// empty `Vec`.
     ///
     /// [`main`]: crate
-    pub fn invalidate_aabb(&mut self, edit_aabb: &VoxelAabb, voxels_per_block: u32) -> Vec<[i32; 3]> {
+    pub fn invalidate_aabb(
+        &mut self,
+        edit_aabb: &VoxelAabb,
+        voxels_per_block: u32,
+    ) -> Vec<[i32; 3]> {
         if let Some(bound) = self.bound_density {
             if bound != voxels_per_block {
                 // Density mismatch: everything is dropped, so the evicted set is
                 // every resident coord (gathered before the clear).
-                let evicted: Vec<[i32; 3]> = self.chunks.keys().map(|key| key.chunk_coord).collect();
+                let evicted: Vec<[i32; 3]> =
+                    self.chunks.keys().map(|key| key.chunk_coord).collect();
                 self.clear();
                 return evicted;
             }
@@ -634,7 +640,8 @@ impl Store {
         let mut evicted = Vec::new();
         self.chunks.retain(|key, _| {
             let coord = key.chunk_coord;
-            let inside = (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
+            let inside =
+                (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
             if inside {
                 evicted.push(coord);
             }
@@ -681,7 +688,9 @@ impl Store {
             self.chunks.clear();
             self.last_used_tick.clear();
             if let Some(store) = self.disk_store.as_mut() {
-                store.clear().expect("clearing the disk store must not fail");
+                store
+                    .clear()
+                    .expect("clearing the disk store must not fail");
             }
         }
         self.bound_density = Some(voxels_per_block);

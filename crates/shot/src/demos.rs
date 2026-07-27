@@ -140,10 +140,7 @@ impl DemoScene {
 pub(crate) fn build_demo_scene(voxels_per_block: u32) -> DemoScene {
     let make_tool = |kind, offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
-        let mut node = Node::new(
-            format!("{kind:?}"),
-            NodeContent::Tool { shape, material },
-        );
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
         node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
@@ -196,10 +193,22 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> DemoScene {
         node
     };
     let mut scene = with_node_ids(Scene::from_nodes(vec![
-        make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body"),
+        make(
+            [4, 4, 4],
+            [0, 0, 0],
+            MaterialChoice::Stone,
+            CombineOp::Union,
+            "Body",
+        ),
         // Placed AFTER the body ⇒ it carves it (document-order fold). Spans blocks
         // [2, 4)³ inside the body plus empty space beyond — the corner octant notch.
-        make([2, 2, 2], [2, 2, 2], MaterialChoice::Wood, CombineOp::Subtract, "Cutter"),
+        make(
+            [2, 2, 2],
+            [2, 2, 2],
+            MaterialChoice::Wood,
+            CombineOp::Subtract,
+            "Cutter",
+        ),
     ]));
     scene.voxels_per_block = voxels_per_block;
     DemoScene::first_node(scene)
@@ -224,10 +233,22 @@ pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> DemoScene {
         node
     };
     let mut scene = Scene::from_nodes(vec![
-        make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Host"),
+        make(
+            [4, 4, 4],
+            [0, 0, 0],
+            MaterialChoice::Stone,
+            CombineOp::Union,
+            "Host",
+        ),
         // Placed AFTER the host ⇒ it carves (document-order fold). Spans blocks [1,3)³
         // — strictly interior to the host's [0,4)³, so the void never reaches a face.
-        make([2, 2, 2], [1, 1, 1], MaterialChoice::Wood, CombineOp::Subtract, "Buried cutter"),
+        make(
+            [2, 2, 2],
+            [1, 1, 1],
+            MaterialChoice::Wood,
+            CombineOp::Subtract,
+            "Buried cutter",
+        ),
     ]);
     scene.ensure_node_ids();
     scene.voxels_per_block = voxels_per_block;
@@ -254,15 +275,34 @@ pub(crate) fn build_demo_child_booleans(voxels_per_block: u32) -> DemoScene {
     let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
         "Carved assembly",
         vec![
-            make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body").into(),
+            make(
+                [4, 4, 4],
+                [0, 0, 0],
+                MaterialChoice::Stone,
+                CombineOp::Union,
+                "Body",
+            )
+            .into(),
             // Spans blocks [2,4)³ — the body's top corner octant. Its carve faces are
             // exposed on the notch (quiet); the rest sits behind body walls (loud).
-            make([2, 2, 2], [2, 2, 2], MaterialChoice::Plain, CombineOp::Subtract, "Corner cutter")
-                .into(),
+            make(
+                [2, 2, 2],
+                [2, 2, 2],
+                MaterialChoice::Plain,
+                CombineOp::Subtract,
+                "Corner cutter",
+            )
+            .into(),
             // Spans blocks [1,2)³ — strictly interior: a void that never reaches a
             // face, so its ghost renders WHOLLY loud (the buried-portions-loud case).
-            make([1, 1, 1], [1, 1, 1], MaterialChoice::Wood, CombineOp::Subtract, "Buried cutter")
-                .into(),
+            make(
+                [1, 1, 1],
+                [1, 1, 1],
+                MaterialChoice::Wood,
+                CombineOp::Subtract,
+                "Buried cutter",
+            )
+            .into(),
         ],
     )]);
     scene.ensure_node_ids();
@@ -289,10 +329,22 @@ pub(crate) fn build_demo_intersect(voxels_per_block: u32) -> DemoScene {
         node
     };
     let mut scene = with_node_ids(Scene::from_nodes(vec![
-        make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body"),
+        make(
+            [4, 4, 4],
+            [0, 0, 0],
+            MaterialChoice::Stone,
+            CombineOp::Union,
+            "Body",
+        ),
         // Placed AFTER the body ⇒ it masks it (document-order fold). Spans blocks
         // [2, 6)³, overlapping the body's top corner octant [2, 4)³ — the survivor.
-        make([4, 4, 4], [2, 2, 2], MaterialChoice::Wood, CombineOp::Intersect, "Mask"),
+        make(
+            [4, 4, 4],
+            [2, 2, 2],
+            MaterialChoice::Wood,
+            CombineOp::Intersect,
+            "Mask",
+        ),
     ]));
     scene.voxels_per_block = voxels_per_block;
     DemoScene::first_node(scene)
@@ -330,11 +382,24 @@ pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> DemoScene {
         NodeBuilder::group(
             "Carved body",
             vec![
-                make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body").into(),
+                make(
+                    [4, 4, 4],
+                    [0, 0, 0],
+                    MaterialChoice::Stone,
+                    CombineOp::Union,
+                    "Body",
+                )
+                .into(),
                 // Spans blocks [2,4)³ — the body's top corner octant — placed AFTER the
                 // body inside the group, so it carves the body and nothing else.
-                make([2, 2, 2], [2, 2, 2], MaterialChoice::Plain, CombineOp::Subtract, "Cutter")
-                    .into(),
+                make(
+                    [2, 2, 2],
+                    [2, 2, 2],
+                    MaterialChoice::Plain,
+                    CombineOp::Subtract,
+                    "Cutter",
+                )
+                .into(),
             ],
         ),
     ]));
@@ -358,7 +423,10 @@ pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> DemoScene {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
         let mut node = Node::new(
             name,
-            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Stone,
+            },
         );
         node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
@@ -385,7 +453,10 @@ pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> DemoScene {
             let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
             Node::new(
                 "Cutter body",
-                NodeContent::Tool { shape, material: MaterialChoice::Wood },
+                NodeContent::Tool {
+                    shape,
+                    material: MaterialChoice::Wood,
+                },
             )
         }],
     );
@@ -409,7 +480,13 @@ pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> DemoScene {
     let window_def_id = DefId(1);
     let wall = {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [8, 1, 6], 1, voxels_per_block);
-        Node::new("Wall", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+        Node::new(
+            "Wall",
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Stone,
+            },
+        )
     };
     let window = {
         // Placed AFTER the wall ⇒ the spliced cutter carves it (document-order
@@ -426,11 +503,13 @@ pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> DemoScene {
             {
                 // The opening: cuts the full wall thickness. Its Plain material must
                 // never render (an occupancy-only mask).
-                let shape =
-                    SdfShape::from_blocks(ShapeKind::Box, [3, 1, 3], 1, voxels_per_block);
+                let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 1, 3], 1, voxels_per_block);
                 let mut node = Node::new(
                     "Opening",
-                    NodeContent::Tool { shape, material: MaterialChoice::Plain },
+                    NodeContent::Tool {
+                        shape,
+                        material: MaterialChoice::Plain,
+                    },
                 );
                 node.operation = CombineOp::Subtract;
                 node
@@ -438,9 +517,14 @@ pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> DemoScene {
             {
                 // The frame: a Wood bar refilling the opening's bottom row — the
                 // visible proof the SAME placement also ADDS geometry to the host.
-                let shape =
-                    SdfShape::from_blocks(ShapeKind::Box, [3, 1, 1], 1, voxels_per_block);
-                Node::new("Frame", NodeContent::Tool { shape, material: MaterialChoice::Wood })
+                let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 1, 1], 1, voxels_per_block);
+                Node::new(
+                    "Frame",
+                    NodeContent::Tool {
+                        shape,
+                        material: MaterialChoice::Wood,
+                    },
+                )
             },
         ],
     );
@@ -458,7 +542,10 @@ pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> DemoScene {
 pub(crate) fn build_demo_two_material(voxels_per_block: u32) -> DemoScene {
     let make = |offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
-        let mut node = Node::new(format!("{material:?}"), NodeContent::Tool { shape, material });
+        let mut node = Node::new(
+            format!("{material:?}"),
+            NodeContent::Tool { shape, material },
+        );
         node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
@@ -482,12 +569,23 @@ pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> DemoScene {
     use voxel_core::units::Measurement;
     let stone = {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
-        Node::new("Stone", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+        Node::new(
+            "Stone",
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Stone,
+            },
+        )
     };
     let wood = {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
-        let mut node =
-            Node::new("Wood", NodeContent::Tool { shape, material: MaterialChoice::Wood });
+        let mut node = Node::new(
+            "Wood",
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Wood,
+            },
+        );
         // A 2-VOXEL X offset (not a whole block), so the boundary cuts THROUGH a block —
         // that block's voxels are part Stone, part Wood: a mixed brick.
         node.transform = document::scene::NodeTransform::from_measurements(
@@ -582,7 +680,12 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
         "House",
         vec![
             tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-            tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            tool(
+                ShapeKind::Cylinder,
+                [1, 2, 1],
+                [0, 2, 0],
+                MaterialChoice::Wood,
+            ),
         ],
     );
     scene.voxels_per_block = voxels_per_block;
@@ -676,16 +779,20 @@ pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
     let radial = |blocks: i64| blocks * block;
     let axial = |blocks: i64| blocks * block;
     let profile = vec![
-        SketchPoint::new(0, axial(0)),          // bottom centre, on the axis
-        SketchPoint::new(radial(4), axial(0)),  // foot outer edge
-        SketchPoint::new(radial(4), axial(1)),  // foot top
-        SketchPoint::new(radial(2), axial(3)),  // pinch in to the waist
-        SketchPoint::new(radial(2), axial(5)),  // waist
-        SketchPoint::new(radial(4), axial(6)),  // flare out to the shoulder
-        SketchPoint::new(radial(3), axial(8)),  // lip
-        SketchPoint::new(0, axial(8)),          // top centre, back on the axis
+        SketchPoint::new(0, axial(0)),         // bottom centre, on the axis
+        SketchPoint::new(radial(4), axial(0)), // foot outer edge
+        SketchPoint::new(radial(4), axial(1)), // foot top
+        SketchPoint::new(radial(2), axial(3)), // pinch in to the waist
+        SketchPoint::new(radial(2), axial(5)), // waist
+        SketchPoint::new(radial(4), axial(6)), // flare out to the shoulder
+        SketchPoint::new(radial(3), axial(8)), // lip
+        SketchPoint::new(0, axial(8)),         // top centre, back on the axis
     ];
-    let producer = SketchSolid::revolve(Sketch::new(PlaneAxis::X, profile), RevolveAxis::InPlane1, 360);
+    let producer = SketchSolid::revolve(
+        Sketch::new(PlaneAxis::X, profile),
+        RevolveAxis::InPlane1,
+        360,
+    );
     let node = Node::new(
         "Sketch vase",
         NodeContent::SketchTool {
@@ -722,14 +829,35 @@ pub(crate) fn build_demo_groups(voxels_per_block: u32) -> DemoScene {
         [0, 0, 0],
         voxels_per_block,
         vec![
-            tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone, "Core").into(),
-            tool(ShapeKind::Box, [2, 2, 2], [3, 0, 0], MaterialChoice::Wood, "Shell").into(),
+            tool(
+                ShapeKind::Sphere,
+                [2, 2, 2],
+                [0, 0, 0],
+                MaterialChoice::Stone,
+                "Core",
+            )
+            .into(),
+            tool(
+                ShapeKind::Box,
+                [2, 2, 2],
+                [3, 0, 0],
+                MaterialChoice::Wood,
+                "Shell",
+            )
+            .into(),
         ],
     );
 
-    let lone = tool(ShapeKind::Box, [2, 2, 2], [8, 0, 0], MaterialChoice::Wood, "Lone");
+    let lone = tool(
+        ShapeKind::Box,
+        [2, 2, 2],
+        [8, 0, 0],
+        MaterialChoice::Wood,
+        "Lone",
+    );
     let mut widget_instance = Node::new("Widget instance", NodeContent::Instance(widget_def_id));
-    widget_instance.transform = document::scene::NodeTransform::from_blocks([12, 0, 0], voxels_per_block);
+    widget_instance.transform =
+        document::scene::NodeTransform::from_blocks([12, 0, 0], voxels_per_block);
 
     let mut scene = Scene::from_nodes(vec![
         cluster,
@@ -739,7 +867,13 @@ pub(crate) fn build_demo_groups(voxels_per_block: u32) -> DemoScene {
     scene.add_definition(
         widget_def_id,
         "Widget",
-        vec![tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Plain, "Ball")],
+        vec![tool(
+            ShapeKind::Sphere,
+            [2, 2, 2],
+            [0, 0, 0],
+            MaterialChoice::Plain,
+            "Ball",
+        )],
     );
     scene.voxels_per_block = voxels_per_block;
     DemoScene::first_node(scene)

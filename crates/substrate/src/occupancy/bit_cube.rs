@@ -213,16 +213,16 @@ mod tests {
     fn expand_is_byte_identical_to_a_dense_fill() {
         type Run = ([u32; 3], [u32; 3]);
         let fixtures: &[(u32, &[Run])] = &[
-            (1, &[([0, 0, 0], [0, 0, 0])]),                 // edge 1, single cell
-            (4, &[([1, 1, 1], [1, 1, 1])]),                 // single interior cell
-            (4, &[([0, 0, 0], [3, 3, 3])]),                 // full cube
-            (8, &[([0, 3, 2], [7, 3, 2])]),                 // full X-row
+            (1, &[([0, 0, 0], [0, 0, 0])]), // edge 1, single cell
+            (4, &[([1, 1, 1], [1, 1, 1])]), // single interior cell
+            (4, &[([0, 0, 0], [3, 3, 3])]), // full cube
+            (8, &[([0, 3, 2], [7, 3, 2])]), // full X-row
             (8, &[([0, 0, 0], [7, 2, 0]), ([0, 3, 3], [2, 7, 7])]), // L-shaped two runs
-            (16, &[([2, 5, 9], [13, 10, 12])]),             // arbitrary interior box
-            (32, &[([0, 0, 0], [31, 31, 31])]),             // full edge-32 cube
+            (16, &[([2, 5, 9], [13, 10, 12])]), // arbitrary interior box
+            (32, &[([0, 0, 0], [31, 31, 31])]), // full edge-32 cube
             (33, &[([0, 0, 0], [32, 0, 0]), ([32, 32, 32], [32, 32, 32])]), // spans bit 32
-            (64, &[([0, 0, 0], [63, 0, 0])]),               // full 64-bit X-row
-            (64, &[([0, 0, 0], [63, 63, 63])]),             // full edge-64 cube
+            (64, &[([0, 0, 0], [63, 0, 0])]), // full 64-bit X-row
+            (64, &[([0, 0, 0], [63, 63, 63])]), // full edge-64 cube
         ];
         for (edge, runs) in fixtures {
             let edge = *edge;
@@ -247,11 +247,16 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(cube.expand_to_bytes(SET_BYTE), reference, "edge {edge} expand mismatch");
+            assert_eq!(
+                cube.expand_to_bytes(SET_BYTE),
+                reference,
+                "edge {edge} expand mismatch"
+            );
             for z in 0..edge {
                 for y in 0..edge {
                     for x in 0..edge {
-                        let expected = reference[(z as usize * e + y as usize) * e + x as usize] != 0;
+                        let expected =
+                            reference[(z as usize * e + y as usize) * e + x as usize] != 0;
                         assert_eq!(
                             cube.is_set(x, y, z),
                             expected,

@@ -15,10 +15,10 @@
 //! These are the regression net for Commit 2, which switches the call site onto
 //! `resolve_into`. Commit 1 changes NO behaviour, so they pass against today's tree.
 
+use document::voxel::VoxelProducer;
+use std::collections::BTreeSet;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{Voxel, VoxelGrid};
-use document::voxel::{VoxelProducer};
-use std::collections::BTreeSet;
 
 /// An occupied voxel keyed for SET comparison independent of emission order. World
 /// positions are integer + 0.5, so doubling and rounding gives an EXACT integer key
@@ -164,7 +164,10 @@ fn assert_windowed_subset_contract(
         outside.occupied.is_empty(),
         "{label}: a window past the high X face must resolve to EMPTY"
     );
-    assert_eq!(outside.dimensions, full_dim, "{label}: empty window keeps full dims");
+    assert_eq!(
+        outside.dimensions, full_dim,
+        "{label}: empty window keeps full dims"
+    );
 
     // (f) the FULL window equals `resolve` EXACTLY (the clamp makes full-window ≡
     // the historical resolve).
@@ -233,11 +236,11 @@ fn assert_windowed_subset_contract(
 
 #[test]
 fn sdf_shape_windowed_subset_contract() {
-    use voxel_core::voxel::{ShapeKind};
-    use document::voxel::{SdfShape};
+    use document::voxel::SdfShape;
+    use voxel_core::voxel::ShapeKind;
     // EVEN, ODD, MIXED parity voxel sizes; spheres/cylinders to exercise the SDF.
     let cases: [(ShapeKind, [u32; 3], u32); 4] = [
-        (ShapeKind::Sphere, [16, 16, 16], 8),  // even
+        (ShapeKind::Sphere, [16, 16, 16], 8),   // even
         (ShapeKind::Cylinder, [15, 15, 15], 4), // odd
         (ShapeKind::Box, [14, 9, 12], 4),       // mixed
         (ShapeKind::Sphere, [11, 16, 13], 4),   // mixed
@@ -281,12 +284,20 @@ fn sketch_revolve_windowed_subset_contract() {
 
     // (1) Full 360° revolve of a one-sided rectangle (radial >= 0): exercises the
     //     non-straddling early-out branch. Even disc diameter.
-    let full_revolve = SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Z, 8, 6), RevolveAxis::InPlane0, 360);
+    let full_revolve = SketchSolid::revolve(
+        Sketch::rectangle(PlaneAxis::Z, 8, 6),
+        RevolveAxis::InPlane0,
+        360,
+    );
     let dim = full_revolve.grid_dimensions();
     assert_windowed_subset_contract(&full_revolve, 16, dim, "revolve-360-onesided");
 
     // (2) PARTIAL 180° turn: exercises the partial-turn theta gate under windowing.
-    let partial = SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Z, 9, 7), RevolveAxis::InPlane0, 180);
+    let partial = SketchSolid::revolve(
+        Sketch::rectangle(PlaneAxis::Z, 9, 7),
+        RevolveAxis::InPlane0,
+        180,
+    );
     let dim = partial.grid_dimensions();
     assert_windowed_subset_contract(&partial, 16, dim, "revolve-180");
 
@@ -308,8 +319,11 @@ fn sketch_revolve_windowed_subset_contract() {
     assert_windowed_subset_contract(&straddle, 16, dim, "revolve-straddle");
 
     // (4) Partial turn on a different plane/axis → mixed parity + InPlane1 mapping.
-    let partial_inplane1 =
-        SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Y, 11, 5), RevolveAxis::InPlane1, 270);
+    let partial_inplane1 = SketchSolid::revolve(
+        Sketch::rectangle(PlaneAxis::Y, 11, 5),
+        RevolveAxis::InPlane1,
+        270,
+    );
     let dim = partial_inplane1.grid_dimensions();
     assert_windowed_subset_contract(&partial_inplane1, 16, dim, "revolve-270-inplane1");
 }
@@ -330,7 +344,11 @@ fn large_revolve_resolves_windows_despite_full_grid_cap() {
 
     // A 200×200-VOXEL rectangle revolved 360° → a cylinder, full grid
     // 200×400×400 ≈ 32M voxels ≫ the 6M cap (rectangle spans are in voxels).
-    let big = SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Z, 200, 200), RevolveAxis::InPlane0, 360);
+    let big = SketchSolid::revolve(
+        Sketch::rectangle(PlaneAxis::Z, 200, 200),
+        RevolveAxis::InPlane0,
+        360,
+    );
     let [full_x, full_y, full_z] = big.grid_dimensions();
     assert!(
         big.grid_voxel_count() > MAX_GRID_VOXELS,

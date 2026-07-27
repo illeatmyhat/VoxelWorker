@@ -62,7 +62,12 @@ fn snap_offset(offset: [i64; 3], position: PositionSnap, density: u32) -> [i64; 
 /// choice is only *where that centroid goes*: [`PlacementPivot::Base`] pushes it half the local
 /// height out along the normal (the base rests on the contact), [`PlacementPivot::VolumetricCenter`]
 /// puts the centroid on the contact (the object straddles the surface).
-fn seated_world_offset(contact: Vec3, seat_normal: Vec3, full: Vec3, pivot: PlacementPivot) -> Vec3 {
+fn seated_world_offset(
+    contact: Vec3,
+    seat_normal: Vec3,
+    full: Vec3,
+    pivot: PlacementPivot,
+) -> Vec3 {
     let rotation = Quat::from_rotation_arc(Vec3::Z, seat_normal);
     let centre = match pivot {
         PlacementPivot::Base => contact + seat_normal * (full.z * 0.5),
@@ -262,8 +267,8 @@ impl AppCore {
     /// ([`NoSurface`](PlacementTarget::NoSurface) /
     /// [`TooFar`](PlacementTarget::TooFar)) carry no intent.
     #[allow(clippy::too_many_arguments)] // a cohesive placement entry point: cursor + viewport +
-    // frame + the armed tool (shape/material) + the two environment facts (ground visibility,
-    // snap). Bundling them would just relocate the list without clarifying it.
+                                         // frame + the armed tool (shape/material) + the two environment facts (ground visibility,
+                                         // snap). Bundling them would just relocate the list without clarifying it.
     pub fn place_primitive(
         &self,
         cursor: [f32; 2],
@@ -280,18 +285,19 @@ impl AppCore {
         // leaves it `None`. The whole tilt lives in the quaternion, which the classifier resolves
         // for any angle (a tube on a cylinder's curved side seats to the radial normal, not the
         // nearest of the 24 turns). Set per-tier.
-        let place_node =
-            |offset_voxels: [i64; 3], offset_local: [f32; 3], rotation_quaternion: Option<[f32; 4]>| {
-                Intent::PlaceNode {
-                    content: NodeSpec::Tool {
-                        shape: shape.clone(),
-                        material,
-                    },
-                    offset_voxels,
-                    offset_local,
-                    rotation_quaternion,
-                }
-            };
+        let place_node = |offset_voxels: [i64; 3],
+                          offset_local: [f32; 3],
+                          rotation_quaternion: Option<[f32; 4]>| {
+            Intent::PlaceNode {
+                content: NodeSpec::Tool {
+                    shape: shape.clone(),
+                    material,
+                },
+                offset_voxels,
+                offset_local,
+                rotation_quaternion,
+            }
+        };
 
         // Seat a node at `contact` with its local +Z turned to `surface_normal` — the ONE seating
         // definition, shared by the geometry tier and the world-plane tier (owner ruling
@@ -361,7 +367,8 @@ impl AppCore {
             // empty-space hover frame.
             let leaves = scene.leaf_producers(frame.density);
             let leaf_refs: Vec<&LeafProducer> = leaves.iter().collect();
-            let field = |probe: Vec3| evaluation::composed_field_at(&leaf_refs, probe, frame.density);
+            let field =
+                |probe: Vec3| evaluation::composed_field_at(&leaf_refs, probe, frame.density);
 
             // `pick_voxel`'s DDA answers WHICH surface is under the cursor — a definite face even at
             // a box edge/corner. It contributes only a graze-safe FALLBACK contact (the picked
@@ -384,7 +391,12 @@ impl AppCore {
                 .cursor_pick_ray(cursor, viewport, frame)
                 .and_then(|(render_ray, recentre_vec, unit_direction)| {
                     let origin = self.cursor_ray_origin_absolute(&render_ray, recentre_vec);
-                    raycast::raymarch(origin, unit_direction, field, &raycast::MarchParams::default())
+                    raycast::raymarch(
+                        origin,
+                        unit_direction,
+                        field,
+                        &raycast::MarchParams::default(),
+                    )
                 })
                 .map(|surface_hit| surface_hit.point)
                 .unwrap_or(stable_surface);
@@ -411,7 +423,10 @@ impl AppCore {
                         // axis (already a 15° multiple), so the drop is under the cursor, not snapped
                         // to the picked voxel's centre. This is the geometry side of the same
                         // continuous-position fix the ground plane already had.
-                        (continuous_contact, raycast::quantize_normal_to_15deg(normal))
+                        (
+                            continuous_contact,
+                            raycast::quantize_normal_to_15deg(normal),
+                        )
                     }
                 }
             };
@@ -440,7 +455,10 @@ impl AppCore {
         let Some((render_ray, recentre_vec, unit_direction)) =
             self.cursor_pick_ray(cursor, viewport, frame)
         else {
-            return PlacementOutcome { target: PlacementTarget::NoSurface, intent: None };
+            return PlacementOutcome {
+                target: PlacementTarget::NoSurface,
+                intent: None,
+            };
         };
         // A block spans `density` voxels in this frame, so the authorability limit is asked
         // in voxel units with the density as the block size.

@@ -50,9 +50,7 @@ pub(super) fn build_palette_dock(
                                     ))
                                     .sense(egui::Sense::click());
                                     let hit = ui.add(image).on_hover_text(&caption).clicked();
-                                    ui.label(
-                                        egui::RichText::new(caption).small().weak(),
-                                    );
+                                    ui.label(egui::RichText::new(caption).small().weak());
                                     hit
                                 })
                                 .inner;

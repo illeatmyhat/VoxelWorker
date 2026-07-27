@@ -48,7 +48,12 @@ impl Fixture {
         let chunks = common::box_covering_chunks(blocks, VPB, MaterialChoice::Stone);
         let region_dimensions = scene.placed_region_dimensions(VPB);
         let recentre_voxels = scene.recentre_voxels_for_resolve(VPB);
-        Self { scene, chunks, region_dimensions, recentre_voxels }
+        Self {
+            scene,
+            chunks,
+            region_dimensions,
+            recentre_voxels,
+        }
     }
 
     /// Build the orchestrator from this fixture's startup covering set.
@@ -234,7 +239,8 @@ fn rebuild_keeps_brick_engaged_and_skips_mesh() {
 /// outstanding — the seam rebuilds the stale fallback mesh INLINE (now non-empty).
 #[test]
 fn ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face() {
-    if skip_without_gpu("ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face") {
+    if skip_without_gpu("ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face")
+    {
         return;
     }
     let gpu = common::shared_gpu();

@@ -89,9 +89,9 @@ impl WindowedState {
     /// heuristic no longer covers this chrome, so the shell reserves it here.
     pub(super) fn position_in_signal_chrome(&self, x: f64, y: f64) -> bool {
         let (x, y) = (x as f32, y as f32);
-        self.last_chrome_rects_px.iter().any(|[rx, ry, rw, rh]| {
-            x >= *rx && x < rx + rw && y >= *ry && y < ry + rh
-        })
+        self.last_chrome_rects_px
+            .iter()
+            .any(|[rx, ry, rw, rh]| x >= *rx && x < rx + rw && y >= *ry && y < ry + rh)
     }
 
     /// The ViewCube's on-screen square in window pixels, so the chrome hit-math
@@ -106,7 +106,11 @@ impl WindowedState {
                 y: corner_y as f32,
                 size: VIEW_CUBE_VIEWPORT_PIXELS as f32,
             },
-            None => CubeRect { x: 0.0, y: 0.0, size: 0.0 },
+            None => CubeRect {
+                x: 0.0,
+                y: 0.0,
+                size: 0.0,
+            },
         }
     }
 
@@ -133,7 +137,8 @@ impl WindowedState {
     pub(super) fn pick_view_cube_element(&self, x: f64, y: f64) -> Option<ViewCubeElement> {
         // Signal (#86): the cube's corner is the top-right of the central viewport rect
         // (shared with the renderer via `view_cube_corner`).
-        let (corner_x, corner_y) = view_cube_corner(self.last_viewport_px, self.last_cube_right_inset)?;
+        let (corner_x, corner_y) =
+            view_cube_corner(self.last_viewport_px, self.last_cube_right_inset)?;
         let (corner_x, corner_y) = (corner_x as f32, corner_y as f32);
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
         // NDC inside the cube rect (y up).

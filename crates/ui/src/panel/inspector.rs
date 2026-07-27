@@ -40,16 +40,16 @@ pub(super) fn build_inspector_section(
         ActiveKind::RootPart
     } else {
         match state.selected_node().map(|node| &node.content) {
-        Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
-        // ADR 0003 §3i: a sketch node shows the rectangle-profile editor
-        // (Plane / Width / Depth / Height) — or, for a hand-built non-rectangular
-        // profile, a read-only note + Plane/Height — plus the shared material /
-        // placement / grids sections (see `build_sketch_inspector_section`).
-        Some(NodeContent::SketchTool { .. }) => ActiveKind::Sketch,
-        Some(NodeContent::VoxelBody(_)) => ActiveKind::VoxelBody,
-        Some(NodeContent::Group(_)) => ActiveKind::Group,
-        Some(NodeContent::Instance(_)) => ActiveKind::Instance,
-        None => ActiveKind::None,
+            Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
+            // ADR 0003 §3i: a sketch node shows the rectangle-profile editor
+            // (Plane / Width / Depth / Height) — or, for a hand-built non-rectangular
+            // profile, a read-only note + Plane/Height — plus the shared material /
+            // placement / grids sections (see `build_sketch_inspector_section`).
+            Some(NodeContent::SketchTool { .. }) => ActiveKind::Sketch,
+            Some(NodeContent::VoxelBody(_)) => ActiveKind::VoxelBody,
+            Some(NodeContent::Group(_)) => ActiveKind::Group,
+            Some(NodeContent::Instance(_)) => ActiveKind::Instance,
+            None => ActiveKind::None,
         }
     };
 
@@ -95,7 +95,10 @@ pub(super) fn build_inspector_section(
                 }
                 // A material pick updates the active Tool's material (no auto-frame).
                 if material_changed {
-                    response.emit(Intent::SetMaterial { target, material: state.material });
+                    response.emit(Intent::SetMaterial {
+                        target,
+                        material: state.material,
+                    });
                 }
             }
             // Placement (ADR 0001 step 3) is on the node's transform, common to all
@@ -198,7 +201,10 @@ fn build_group_inspector_section(
             // `scene_changed`, so the loop re-resolves (an identical grid — the name is
             // not geometry) but the camera stays put, matching the old visible result.
             if ui.text_edit_singleline(&mut name).changed() {
-                response.emit(Intent::SetName { target, name: name.clone() });
+                response.emit(Intent::SetName {
+                    target,
+                    name: name.clone(),
+                });
             }
         });
     }
@@ -238,7 +244,10 @@ fn build_voxel_body_inspector_section(
     ui.horizontal(|ui| {
         ui.label("Name");
         if ui.text_edit_singleline(&mut name).changed() {
-            response.emit(Intent::SetName { target, name: name.clone() });
+            response.emit(Intent::SetName {
+                target,
+                name: name.clone(),
+            });
         }
     });
     if let Some(seed) = current_seed {
@@ -247,7 +256,10 @@ fn build_voxel_body_inspector_section(
             .add(egui::Slider::new(&mut value, 0..=64).text("seed"))
             .changed()
         {
-            response.emit_and_frame(Intent::SetCloudSeed { target, seed: value });
+            response.emit_and_frame(Intent::SetCloudSeed {
+                target,
+                seed: value,
+            });
         }
     }
     ui.separator();
@@ -428,13 +440,21 @@ fn build_sketch_inspector_section(
         ui.horizontal(|ui| {
             ui.label("Width (vx)");
             changed |= ui
-                .add(egui::DragValue::new(&mut width_voxels).speed(1.0).range(1..=u32::MAX))
+                .add(
+                    egui::DragValue::new(&mut width_voxels)
+                        .speed(1.0)
+                        .range(1..=u32::MAX),
+                )
                 .changed();
         });
         ui.horizontal(|ui| {
             ui.label("Depth (vx)");
             changed |= ui
-                .add(egui::DragValue::new(&mut depth_voxels).speed(1.0).range(1..=u32::MAX))
+                .add(
+                    egui::DragValue::new(&mut depth_voxels)
+                        .speed(1.0)
+                        .range(1..=u32::MAX),
+                )
                 .changed();
         });
     } else {
@@ -456,7 +476,11 @@ fn build_sketch_inspector_section(
             ui.horizontal(|ui| {
                 ui.label("Height (vx)");
                 changed |= ui
-                    .add(egui::DragValue::new(&mut height_voxels).speed(1.0).range(1..=u32::MAX))
+                    .add(
+                        egui::DragValue::new(&mut height_voxels)
+                            .speed(1.0)
+                            .range(1..=u32::MAX),
+                    )
                     .changed();
             });
         }
@@ -480,7 +504,11 @@ fn build_sketch_inspector_section(
             ui.horizontal(|ui| {
                 ui.label("Turn (deg)");
                 changed |= ui
-                    .add(egui::DragValue::new(&mut turn_degrees).speed(1.0).range(1..=360))
+                    .add(
+                        egui::DragValue::new(&mut turn_degrees)
+                            .speed(1.0)
+                            .range(1..=360),
+                    )
                     .changed();
             });
         }
@@ -517,7 +545,10 @@ fn build_sketch_inspector_section(
             }
             OperationKind::Revolve => SketchSolid::revolve(sketch, revolve_axis, turn_degrees),
         };
-        response.emit_and_frame(Intent::SetSketch { target, producer: rebuilt });
+        response.emit_and_frame(Intent::SetSketch {
+            target,
+            producer: rebuilt,
+        });
     }
 
     ui.separator();
@@ -527,7 +558,10 @@ fn build_sketch_inspector_section(
     // material; a pick emits `SetMaterial` (which the dispatch applies to a sketch
     // node's shared material field).
     if build_material_section(ui, state, response) {
-        response.emit(Intent::SetMaterial { target, material: state.material });
+        response.emit(Intent::SetMaterial {
+            target,
+            material: state.material,
+        });
     }
 }
 
@@ -578,7 +612,10 @@ fn build_operation_section(
             }
         });
     if selected != current {
-        response.emit(Intent::SetOperation { target, operation: selected });
+        response.emit(Intent::SetOperation {
+            target,
+            operation: selected,
+        });
     }
     ui.separator();
 }
@@ -619,13 +656,15 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
         // Keyed on the node AND the axis, so re-selecting a node re-seeds rather than
         // inheriting the previous node's half-typed text.
         let id_base = egui::Id::new(("offset_axis", target, axis_index));
-        let field =
-            MeasurementField::new(id_base, axis_label, offset_voxels[axis_index], density);
+        let field = MeasurementField::new(id_base, axis_label, offset_voxels[axis_index], density);
         if let Some(commit) = field.show(ui) {
             // Replace only this axis; the other two keep their retained measurements.
             let mut next = retained_measurements;
             next[axis_index] = commit.measurement;
-            response.emit_and_frame(Intent::SetOffset { target, offset_measurements: next });
+            response.emit_and_frame(Intent::SetOffset {
+                target,
+                offset_measurements: next,
+            });
         }
     }
 
@@ -670,7 +709,9 @@ fn build_node_grids_section(
     voxel_grid_changed |= ui
         .checkbox(&mut grids.voxel_grid_on_faces, "Voxel grid on faces")
         .changed();
-    other_changed |= ui.checkbox(&mut grids.block_lattice, "Block lattice").changed();
+    other_changed |= ui
+        .checkbox(&mut grids.block_lattice, "Block lattice")
+        .changed();
     other_changed |= ui.checkbox(&mut grids.floor_grid, "Floor grid").changed();
     if voxel_grid_changed {
         response.emit_and_frame(Intent::SetNodeGrids { target, grids });
@@ -807,7 +848,10 @@ fn build_material_section(
             (MaterialChoice::Wood, "Wood"),
             (MaterialChoice::Plain, "Plain"),
         ] {
-            if ui.selectable_value(&mut state.material, choice, label).clicked() {
+            if ui
+                .selectable_value(&mut state.material, choice, label)
+                .clicked()
+            {
                 response.selected_procedural_material = true;
                 changed = true;
             }

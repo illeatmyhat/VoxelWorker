@@ -85,7 +85,9 @@ impl Selection {
     /// Rebuild a selection from its targets in pick order — the restore half of the
     /// session round-trip (the capture half is [`targets`](Self::targets)).
     pub fn from_targets(targets: impl IntoIterator<Item = SelectionTarget>) -> Self {
-        Self { targets: targets.into_iter().collect() }
+        Self {
+            targets: targets.into_iter().collect(),
+        }
     }
 
     /// Nothing is picked.
@@ -180,9 +182,10 @@ impl Selection {
     /// an unknown id (`Sketch::delete_point_cascade`), so pick order is as good as any.
     pub fn sketch_points(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
         self.targets.iter().filter_map(move |target| match *target {
-            SelectionTarget::SketchPoint { sketch: owner, entity } if owner == sketch => {
-                Some(entity)
-            }
+            SelectionTarget::SketchPoint {
+                sketch: owner,
+                entity,
+            } if owner == sketch => Some(entity),
             _ => None,
         })
     }
@@ -190,9 +193,10 @@ impl Selection {
     /// The picked EDGE ids of `sketch`, in pick order.
     pub fn sketch_segments(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
         self.targets.iter().filter_map(move |target| match *target {
-            SelectionTarget::SketchSegment { sketch: owner, entity } if owner == sketch => {
-                Some(entity)
-            }
+            SelectionTarget::SketchSegment {
+                sketch: owner,
+                entity,
+            } if owner == sketch => Some(entity),
             _ => None,
         })
     }
@@ -209,7 +213,8 @@ impl Selection {
     /// clears the sketch side of the selection WITHOUT disturbing what is picked outside it —
     /// which is why this is not [`clear`](Self::clear).
     pub fn clear_sketch_entities(&mut self) {
-        self.targets.retain(|target| target.owning_sketch().is_none());
+        self.targets
+            .retain(|target| target.owning_sketch().is_none());
     }
 }
 
@@ -226,12 +231,18 @@ mod tests {
 
     /// A vertex of the fixture sketch.
     fn vertex(entity: EntityId) -> SelectionTarget {
-        SelectionTarget::SketchPoint { sketch: SKETCH, entity }
+        SelectionTarget::SketchPoint {
+            sketch: SKETCH,
+            entity,
+        }
     }
 
     /// An edge of the fixture sketch.
     fn edge(entity: EntityId) -> SelectionTarget {
-        SelectionTarget::SketchSegment { sketch: SKETCH, entity }
+        SelectionTarget::SketchSegment {
+            sketch: SKETCH,
+            entity,
+        }
     }
 
     /// The primary is the most recently picked target OF ITS KIND, so a mixed selection
@@ -295,7 +306,10 @@ mod tests {
         let mut selection = Selection::default();
         selection.toggle(vertex(1));
         selection.toggle(vertex(2));
-        assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            selection.sketch_points(SKETCH).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         selection.toggle(vertex(1));
         assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![2]);
     }
@@ -310,7 +324,10 @@ mod tests {
         selection.toggle(edge(7));
         assert_eq!(selection.len(), 2);
         assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![7]);
-        assert_eq!(selection.sketch_segments(SKETCH).collect::<Vec<_>>(), vec![7]);
+        assert_eq!(
+            selection.sketch_segments(SKETCH).collect::<Vec<_>>(),
+            vec![7]
+        );
     }
 
     /// The whole point of tagging: the SAME entity id in two different sketches is two
@@ -319,10 +336,16 @@ mod tests {
     fn entity_ids_do_not_collide_across_sketches() {
         let mut selection = Selection::default();
         selection.toggle(vertex(3));
-        selection.toggle(SelectionTarget::SketchPoint { sketch: OTHER_SKETCH, entity: 3 });
+        selection.toggle(SelectionTarget::SketchPoint {
+            sketch: OTHER_SKETCH,
+            entity: 3,
+        });
         assert_eq!(selection.len(), 2);
         assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![3]);
-        assert_eq!(selection.sketch_points(OTHER_SKETCH).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(
+            selection.sketch_points(OTHER_SKETCH).collect::<Vec<_>>(),
+            vec![3]
+        );
         assert!(selection.holds_sketch_entities(OTHER_SKETCH));
     }
 

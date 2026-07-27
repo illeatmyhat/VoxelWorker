@@ -71,11 +71,23 @@ const TOOLS: &[(Icon, bool)] = &[
 /// Rectangle carry `None` — drawn RESERVED until slice 3, so the finished toolbelt is visible
 /// without pretending the verbs work (the rail's standing convention).
 const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
-    (Icon::SelectVertex, "Select / move vertex", Some(SketchTool::Select)),
-    (Icon::AddPoint, "Add point — split an edge", Some(SketchTool::AddPoint)),
+    (
+        Icon::SelectVertex,
+        "Select / move vertex",
+        Some(SketchTool::Select),
+    ),
+    (
+        Icon::AddPoint,
+        "Add point — split an edge",
+        Some(SketchTool::AddPoint),
+    ),
     (Icon::Polyline, "Line / polyline", None),
     (Icon::Rectangle, "Rectangle", None),
-    (Icon::DeleteVertex, "Delete vertex", Some(SketchTool::Delete)),
+    (
+        Icon::DeleteVertex,
+        "Delete vertex",
+        Some(SketchTool::Delete),
+    ),
 ];
 
 /// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
@@ -188,7 +200,10 @@ fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
         egui::Sense::hover(),
     );
     ui.painter().rect_filled(rect, 0.0, theme::ACCENT);
-    let at = egui::pos2(rect.center().x - galley.size().x * 0.5, rect.center().y - galley.size().y * 0.5);
+    let at = egui::pos2(
+        rect.center().x - galley.size().x * 0.5,
+        rect.center().y - galley.size().y * 0.5,
+    );
     ui.painter().galley(at, galley, theme::BG);
 }
 
@@ -196,8 +211,10 @@ fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
 /// when `active`. Returns `true` the frame it is clicked, so the caller arms the tool. The
 /// active bar / hover fill are the shared rail treatment ([`paint_cell`]).
 fn sketch_tool_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> bool {
-    let (rect, cell) =
-        ui.allocate_exact_size(egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT), egui::Sense::click());
+    let (rect, cell) = ui.allocate_exact_size(
+        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+        egui::Sense::click(),
+    );
     let hovered = cell.hovered();
     paint_cell(ui, rect, active, hovered);
     let color = cell_ink(active, hovered, false);
@@ -220,7 +237,11 @@ fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved:
     let color = cell_ink(active, hovered, reserved);
     let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TOOL_GLYPH));
     icon.draw(ui.painter(), glyph, color);
-    let tip = if reserved { format!("{tip} — reserved") } else { tip.to_string() };
+    let tip = if reserved {
+        format!("{tip} — reserved")
+    } else {
+        tip.to_string()
+    };
     cell.on_hover_text(tip);
 }
 

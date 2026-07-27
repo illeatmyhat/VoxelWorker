@@ -56,8 +56,6 @@ mod composed_part;
 mod cylinder;
 mod delete_vertex;
 mod density;
-mod torus;
-mod tube;
 mod displace;
 mod drawer;
 mod emboss;
@@ -100,6 +98,8 @@ mod snap_voxel;
 mod sphere;
 mod subtract;
 mod sweep;
+mod torus;
+mod tube;
 mod union;
 mod view_cube;
 mod zoom;
@@ -353,11 +353,8 @@ impl<'a> IconPainter<'a> {
     /// `sketch` can say "grabbable handle" with a filled endpoint and its rail twin cannot.
     pub fn filled_circle(&self, center: (f32, f32), radius: f32) {
         let scaled = (radius / self.grid) * self.rect.width();
-        self.painter.circle_filled(
-            self.at(center.0, center.1),
-            scaled,
-            self.stroke.color,
-        );
+        self.painter
+            .circle_filled(self.at(center.0, center.1), scaled, self.stroke.color);
     }
 
     /// Trace a cubic Bézier through its four control points, sampled as a polyline.
@@ -792,7 +789,12 @@ impl Icon {
     /// Which shelf the glyph sits on.
     pub fn group(self) -> Group {
         match self {
-            Icon::Home | Icon::Fit | Icon::Orbit | Icon::Pan | Icon::Zoom | Icon::AxesGizmo
+            Icon::Home
+            | Icon::Fit
+            | Icon::Orbit
+            | Icon::Pan
+            | Icon::Zoom
+            | Icon::AxesGizmo
             | Icon::ViewCube => Group::Navigation,
             Icon::ModeNormal | Icon::ModeOnion | Icon::ModeBooleans | Icon::OnionScrub => {
                 Group::ViewerModes
@@ -801,18 +803,44 @@ impl Icon {
                 Group::Combine
             }
             Icon::Outset | Icon::Inset | Icon::Displace | Icon::Array => Group::Fields,
-            Icon::Sketch | Icon::Extrude | Icon::Revolve | Icon::Sweep | Icon::BoxSolid
-            | Icon::Sphere | Icon::Cylinder | Icon::Tube | Icon::Torus | Icon::HalfSpace => {
-                Group::Producers
-            }
-            Icon::Part | Icon::ComposedPart | Icon::RootPart | Icon::FoldStack
-            | Icon::FoldCursor | Icon::Link => Group::Structure,
-            Icon::SculptAdd | Icon::Carve | Icon::Measure | Icon::Probe | Icon::Material
-            | Icon::Rotate | Icon::Flip | Icon::Density => Group::Tools,
-            Icon::SelectVertex | Icon::AddPoint | Icon::Polyline | Icon::Rectangle
-            | Icon::DeleteVertex | Icon::CloseLoop | Icon::SnapNone | Icon::SnapVoxel
+            Icon::Sketch
+            | Icon::Extrude
+            | Icon::Revolve
+            | Icon::Sweep
+            | Icon::BoxSolid
+            | Icon::Sphere
+            | Icon::Cylinder
+            | Icon::Tube
+            | Icon::Torus
+            | Icon::HalfSpace => Group::Producers,
+            Icon::Part
+            | Icon::ComposedPart
+            | Icon::RootPart
+            | Icon::FoldStack
+            | Icon::FoldCursor
+            | Icon::Link => Group::Structure,
+            Icon::SculptAdd
+            | Icon::Carve
+            | Icon::Measure
+            | Icon::Probe
+            | Icon::Material
+            | Icon::Rotate
+            | Icon::Flip
+            | Icon::Density => Group::Tools,
+            Icon::SelectVertex
+            | Icon::AddPoint
+            | Icon::Polyline
+            | Icon::Rectangle
+            | Icon::DeleteVertex
+            | Icon::CloseLoop
+            | Icon::SnapNone
+            | Icon::SnapVoxel
             | Icon::SnapBlock => Group::Sketch,
-            Icon::ChevronRight | Icon::ChevronDown | Icon::Commit | Icon::Cancel | Icon::Drawer
+            Icon::ChevronRight
+            | Icon::ChevronDown
+            | Icon::Commit
+            | Icon::Cancel
+            | Icon::Drawer
             | Icon::Search => Group::Chrome,
         }
     }

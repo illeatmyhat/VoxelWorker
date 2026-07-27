@@ -20,23 +20,21 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::block_palette::PaletteHost;
-use display::block_texture::LoadedMaterial;
-use work::workers::scan::{
-    spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
-};
 use crate::frame::{
     egui_frame::{run_egui_frame, EguiPaintBridge, ViewCubeMenuRequest},
     render::{render_frame, FramePhases},
 };
 use crate::{
     chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
-    procedural_material_average_color, AppConfig, AppCore, ChromeClickAction, CubeChromeZone,
-    CubeFace, CubeRect, RebuildOutcome, RebuildOutput, RecentreVoxels, TransformGizmoRenderer,
-    GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, PointsRenderer,
-    SceneGridRenderer,
-    HomeView, NodeSpec, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
-    ViewCubeRenderer, COLOR_TARGET_FORMAT,
-    view_cube_corner, VIEW_CUBE_VIEWPORT_PIXELS,
+    procedural_material_average_color, view_cube_corner, AppConfig, AppCore, ChromeClickAction,
+    CubeChromeZone, CubeFace, CubeRect, GpuContext, HomeView, InfiniteGridRenderer, LayerBand,
+    MaterialSource, NodeSpec, OrbitCamera, PanelState, PointsRenderer, RebuildOutcome,
+    RebuildOutput, RecentreVoxels, SceneGridRenderer, SdfShape, SnapTween, TransformGizmoRenderer,
+    ViewCubeElement, ViewCubeRenderer, COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
+};
+use display::block_texture::LoadedMaterial;
+use work::workers::scan::{
+    spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
 // The display-state machine (both renderers + both async workers + the install seams) now
 // lives in the `DisplayOrchestrator`; the shell holds one and calls it at its integration
@@ -448,10 +446,8 @@ impl WindowedState {
         // and the non-gpu binary streamed the same region — now neither materialises occupancy.
         // (The recentre half is recomputed below as `startup_recentre`, reused by the brick
         // install + mesh; discard the tuple's copy here.)
-        let (region_dimensions, _) = AppCore::startup_region(
-            &panel_state.scene,
-            panel_state.geometry.voxels_per_block,
-        );
+        let (region_dimensions, _) =
+            AppCore::startup_region(&panel_state.scene, panel_state.geometry.voxels_per_block);
         // Initialise the layer-range band to the full grid height (issue #12). Z-up:
         // layers are Z-slices, so the track spans the Z dimension (index 2).
         let grid_z = region_dimensions[2];
@@ -472,10 +468,7 @@ impl WindowedState {
         // ADR 0011 G5: no occupancy is ever resolved at startup (dims-only door).
         println!(
             "resolved region {:?} for {:?} {:?}@{} (no dense occupancy)",
-            region_dimensions,
-            shape.kind,
-            shape.size_voxels,
-            panel_state.geometry.voxels_per_block,
+            region_dimensions, shape.kind, shape.size_voxels, panel_state.geometry.voxels_per_block,
         );
         // ADR 0010 E5: the cuboid mesh renderer is the sole voxel render path AND it
         // meshes THROUGH the two-layer store (coarse one-box + microblock cuboids +
@@ -497,7 +490,9 @@ impl WindowedState {
             startup_density,
             0,
         );
-        let startup_recentre = panel_state.scene.recentre_voxels_for_resolve(startup_density);
+        let startup_recentre = panel_state
+            .scene
+            .recentre_voxels_for_resolve(startup_density);
         // Map item 2: the display-state machine builds itself from the startup covering set —
         // the brick engagement decision, both worker spawns, the (possibly skipped-empty)
         // cuboid mesh, and all display bookkeeping. Cloned wgpu handles keep the shell's
@@ -722,8 +717,12 @@ impl WindowedState {
     /// (M8). Called on window close / loop exit. Never panics on failure.
     fn save_config(&self) {
         let window_size = [self.surface_config.width, self.surface_config.height];
-        let config =
-            AppConfig::capture(&self.panel_state, &self.app_core.camera, self.home_view, window_size);
+        let config = AppConfig::capture(
+            &self.panel_state,
+            &self.app_core.camera,
+            self.home_view,
+            window_size,
+        );
         config.save();
     }
 
@@ -735,8 +734,12 @@ impl WindowedState {
     /// whole point — an artifact pose is never the last-saved pose.
     fn export_repro(&self) {
         let window_size = [self.surface_config.width, self.surface_config.height];
-        let config =
-            AppConfig::capture(&self.panel_state, &self.app_core.camera, self.home_view, window_size);
+        let config = AppConfig::capture(
+            &self.panel_state,
+            &self.app_core.camera,
+            self.home_view,
+            window_size,
+        );
         let path = std::env::temp_dir().join("voxelworker-repro.json");
         // The DUMP, explicitly (ADR 0022): the superset artifact, from which a scene must be
         // completely reproducible. The document projection would be the wrong choice here by

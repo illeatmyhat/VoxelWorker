@@ -82,9 +82,21 @@ impl Frustum {
             // The corner of the box farthest in the direction of the inward
             // normal (max where the normal is positive, min where negative).
             let positive_vertex = Vec3::new(
-                if normal.x >= 0.0 { aabb.max.x } else { aabb.min.x },
-                if normal.y >= 0.0 { aabb.max.y } else { aabb.min.y },
-                if normal.z >= 0.0 { aabb.max.z } else { aabb.min.z },
+                if normal.x >= 0.0 {
+                    aabb.max.x
+                } else {
+                    aabb.min.x
+                },
+                if normal.y >= 0.0 {
+                    aabb.max.y
+                } else {
+                    aabb.min.y
+                },
+                if normal.z >= 0.0 {
+                    aabb.max.z
+                } else {
+                    aabb.min.z
+                },
             );
             if normal.dot(positive_vertex) + plane.w < 0.0 {
                 return false;
@@ -102,8 +114,7 @@ mod tests {
     /// A simple perspective camera looking down −Z from `eye`.
     fn camera_at(eye: Vec3) -> Mat4 {
         let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-        let projection =
-            Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 1000.0);
+        let projection = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 1000.0);
         projection * view
     }
 

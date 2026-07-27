@@ -4,11 +4,11 @@
 //! of the SAME scene, after EVERY step, across explicit block-kind transitions
 //! (air↔sculpted↔coarse) and add / move / recolour / delete edits.
 use crate::brick::*;
-use voxel_core::core_geom::MaterialChoice;
 use document::scene::{Node, NodeContent, NodeTransform, Scene};
-use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
-use voxel_core::voxel::ShapeKind;
 use document::voxel::SdfShape;
+use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
+use voxel_core::core_geom::MaterialChoice;
+use voxel_core::voxel::ShapeKind;
 
 /// The owned covering set the shell feeds `apply_dirty_update` / `build_brick_field`
 /// (the resident cache borrows, so clone out — exactly as `AppCore::rebuild` does).
@@ -92,8 +92,12 @@ fn assert_incremental_matches_wholesale(
                 BrickPayload::CoarseSolid { block_id: b },
             ) => assert_eq!(a, b, "[{label}] coarse block id mismatch at {block:?}"),
             (
-                BrickPayload::Sculpted { atlas_slot: inc_slot },
-                BrickPayload::Sculpted { atlas_slot: whole_slot },
+                BrickPayload::Sculpted {
+                    atlas_slot: inc_slot,
+                },
+                BrickPayload::Sculpted {
+                    atlas_slot: whole_slot,
+                },
             ) => {
                 // Slot NUMBERS differ (free-list vs dense) — compare the bytes.
                 assert_eq!(
@@ -133,12 +137,52 @@ fn incremental_dirty_update_equals_wholesale_after_every_step() {
     // recolour (sculpted/coarse material change), shape-swap (occupancy change), delete.
     let scenes = [
         ("initial", scene_with(None)),
-        ("add-sphere", scene_with(Some(tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Wood, density)))),
-        ("recolour", scene_with(Some(tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Plain, density)))),
-        ("move", scene_with(Some(tool(ShapeKind::Sphere, [2, 1, 0], MaterialChoice::Plain, density)))),
-        ("shape-swap", scene_with(Some(tool(ShapeKind::Box, [2, 1, 0], MaterialChoice::Plain, density)))),
+        (
+            "add-sphere",
+            scene_with(Some(tool(
+                ShapeKind::Sphere,
+                [0, 0, 0],
+                MaterialChoice::Wood,
+                density,
+            ))),
+        ),
+        (
+            "recolour",
+            scene_with(Some(tool(
+                ShapeKind::Sphere,
+                [0, 0, 0],
+                MaterialChoice::Plain,
+                density,
+            ))),
+        ),
+        (
+            "move",
+            scene_with(Some(tool(
+                ShapeKind::Sphere,
+                [2, 1, 0],
+                MaterialChoice::Plain,
+                density,
+            ))),
+        ),
+        (
+            "shape-swap",
+            scene_with(Some(tool(
+                ShapeKind::Box,
+                [2, 1, 0],
+                MaterialChoice::Plain,
+                density,
+            ))),
+        ),
         ("delete", scene_with(None)),
-        ("re-add", scene_with(Some(tool(ShapeKind::Torus, [0, 0, 0], MaterialChoice::Wood, density)))),
+        (
+            "re-add",
+            scene_with(Some(tool(
+                ShapeKind::Torus,
+                [0, 0, 0],
+                MaterialChoice::Wood,
+                density,
+            ))),
+        ),
     ];
 
     let mut cache = TwoLayerResidentCache::enabled();
@@ -256,7 +300,11 @@ fn one_chunk_edit_writes_only_that_chunks_slots() {
     );
     // A pure recolour keeps occupancy, so freed == rewritten (slots recycled in place)
     // and the atlas does not grow.
-    assert_eq!(update.freed_slots.len(), expected_written, "recolour frees what it rewrites");
+    assert_eq!(
+        update.freed_slots.len(),
+        expected_written,
+        "recolour frees what it rewrites"
+    );
     assert!(!update.atlas_grew, "a recolour does not grow the atlas");
     // And the result is still byte-exact vs wholesale.
     let wholesale = build_brick_field(&fresh_b, density);
@@ -303,7 +351,10 @@ fn patched_slot_bytes_and_geometry_match_to_build_materialisation() {
     let fresh_b = covering_owned(&mut cache, &scene_b, density);
 
     let update = field.apply_dirty_update(&fresh_b, &dirty);
-    assert!(!update.written_slots.is_empty(), "the recolour must write some slots");
+    assert!(
+        !update.written_slots.is_empty(),
+        "the recolour must write some slots"
+    );
 
     // The materialisation the patch path used to build per edit — the witness.
     let materialised = field.to_build();
@@ -416,8 +467,7 @@ fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
 
     // The scenario must be REAL: some chunk OUTSIDE the dirty set changed its record
     // set (box A's face blocks un-occluded) — else the ring re-derivation is untested.
-    let dirty_set: std::collections::BTreeSet<[i32; 3]> =
-        carve_dirty.iter().copied().collect();
+    let dirty_set: std::collections::BTreeSet<[i32; 3]> = carve_dirty.iter().copied().collect();
     let records_by_chunk = |build: &BrickFieldBuild| {
         let mut by_chunk: std::collections::BTreeMap<[i32; 3], Vec<u64>> =
             std::collections::BTreeMap::new();
@@ -430,7 +480,10 @@ fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
                     block[2].div_euclid(CHUNK_BLOCKS as i64) as i32,
                 ]
             };
-            by_chunk.entry(chunk).or_default().push(record.packed_world_block_key);
+            by_chunk
+                .entry(chunk)
+                .or_default()
+                .push(record.packed_world_block_key);
         }
         by_chunk
     };
@@ -438,9 +491,7 @@ fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
     let after_by_chunk = records_by_chunk(&wholesale_without_b);
     let non_dirty_chunk_changed = before_by_chunk
         .iter()
-        .any(|(chunk, keys)| {
-            !dirty_set.contains(chunk) && after_by_chunk.get(chunk) != Some(keys)
-        });
+        .any(|(chunk, keys)| !dirty_set.contains(chunk) && after_by_chunk.get(chunk) != Some(keys));
     assert!(
         non_dirty_chunk_changed,
         "fixture must flip records in a NON-dirty chunk (the occlusion ring); \

@@ -19,6 +19,6 @@ pub use orientation::LatticeOrientation;
 pub use placement::{is_axis_aligned, is_in_phase, seat_centre_at, LeafPlacement};
 pub use ray::{guarded_direction, Ray, RayBoxIntersection, SLAB_ZERO_DIRECTION_GUARD};
 pub use voxel_frames::{
-    GridHalfExtent, ProducerLocalVoxelPoint, RecentredVoxelPoint, RecentreVoxels,
+    GridHalfExtent, ProducerLocalVoxelPoint, RecentreVoxels, RecentredVoxelPoint,
     TrueWorldVoxelPoint,
 };

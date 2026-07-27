@@ -109,17 +109,26 @@ pub struct ViewCubeElement {
 impl ViewCubeElement {
     /// A single-face element (centre zone of a face).
     pub fn from_face(face: CubeFace) -> Self {
-        Self { faces: [face, face, face], count: 1 }
+        Self {
+            faces: [face, face, face],
+            count: 1,
+        }
     }
 
     /// An edge element shared by two adjacent faces.
     pub fn from_edge(first: CubeFace, second: CubeFace) -> Self {
-        Self { faces: [first, second, second], count: 2 }
+        Self {
+            faces: [first, second, second],
+            count: 2,
+        }
     }
 
     /// A corner element shared by three mutually-adjacent faces.
     pub fn from_corner(first: CubeFace, second: CubeFace, third: CubeFace) -> Self {
-        Self { faces: [first, second, third], count: 3 }
+        Self {
+            faces: [first, second, third],
+            count: 3,
+        }
     }
 
     /// The faces composing this element (`&faces[..count]`).
@@ -534,17 +543,21 @@ mod tests {
     #[test]
     fn zone_readout_orders_vertical_depth_horizontal() {
         // Faces read vertical → depth → horizontal regardless of pick order.
-        let top_front = CubeChromeZone::Element(ViewCubeElement::from_edge(
-            CubeFace::Front,
-            CubeFace::Top,
-        ));
-        assert_eq!(view_cube_zone_readout(top_front).as_deref(), Some("TOP·FRONT"));
+        let top_front =
+            CubeChromeZone::Element(ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top));
+        assert_eq!(
+            view_cube_zone_readout(top_front).as_deref(),
+            Some("TOP·FRONT")
+        );
         let corner = CubeChromeZone::Element(ViewCubeElement::from_corner(
             CubeFace::Right,
             CubeFace::Front,
             CubeFace::Top,
         ));
-        assert_eq!(view_cube_zone_readout(corner).as_deref(), Some("TOP·FRONT·RIGHT"));
+        assert_eq!(
+            view_cube_zone_readout(corner).as_deref(),
+            Some("TOP·FRONT·RIGHT")
+        );
         let face = CubeChromeZone::Element(ViewCubeElement::from_face(CubeFace::Right));
         assert_eq!(view_cube_zone_readout(face).as_deref(), Some("RIGHT"));
         // Non-element chrome zones (arrows) have no zone readout.
@@ -629,7 +642,10 @@ mod tests {
         ];
         for (face, (theta, phi)) in expected {
             let (got_theta, got_phi) = face.snap_angles();
-            assert!(approx(got_theta, theta), "{face:?} theta {got_theta} != {theta}");
+            assert!(
+                approx(got_theta, theta),
+                "{face:?} theta {got_theta} != {theta}"
+            );
             assert!(approx(got_phi, phi), "{face:?} phi {got_phi} != {phi}");
         }
     }
@@ -642,7 +658,8 @@ mod tests {
         assert!(approx(phi, std::f32::consts::FRAC_PI_4), "phi = {phi}");
         assert!(approx(theta, -FRAC_PI_2), "theta = {theta}");
         // Order-independence: the same edge the other way round.
-        let (theta2, phi2) = ViewCubeElement::from_edge(CubeFace::Top, CubeFace::Front).snap_angles();
+        let (theta2, phi2) =
+            ViewCubeElement::from_edge(CubeFace::Top, CubeFace::Front).snap_angles();
         assert!(approx(theta, theta2) && approx(phi, phi2));
     }
 
@@ -650,8 +667,7 @@ mod tests {
     fn corner_snap_direction_front_top_right_is_isometric() {
         // Z-up: FRONT (−Y) + TOP (+Z) + RIGHT (+X) → dir (1,−1,1)/√3: an isometric
         // view (X+, Y−, Z+). phi = acos(1/√3) ≈ 0.9553.
-        let element =
-            ViewCubeElement::from_corner(CubeFace::Front, CubeFace::Top, CubeFace::Right);
+        let element = ViewCubeElement::from_corner(CubeFace::Front, CubeFace::Top, CubeFace::Right);
         let direction = element.snap_direction().normalize();
         assert!(direction.x > 0.0 && direction.y < 0.0 && direction.z > 0.0);
         let (theta, phi) = element.snap_angles();
@@ -672,7 +688,11 @@ mod tests {
 
     /// A square cube rect for the layout tests: top-left (100, 200), side 128px.
     fn test_cube_rect() -> CubeRect {
-        CubeRect { x: 100.0, y: 200.0, size: 128.0 }
+        CubeRect {
+            x: 100.0,
+            y: 200.0,
+            size: 128.0,
+        }
     }
 
     /// Window pixel at fractional `(u, v)` of the rect (matches the layout doc).
@@ -781,7 +801,12 @@ mod tests {
             .collect();
         assert_eq!(
             visited,
-            vec![CubeFace::Top, CubeFace::Back, CubeFace::Bottom, CubeFace::Front]
+            vec![
+                CubeFace::Top,
+                CubeFace::Back,
+                CubeFace::Bottom,
+                CubeFace::Front
+            ]
         );
     }
 
@@ -795,14 +820,25 @@ mod tests {
             CubeFace::Front,
             CubeFace::Back,
         ];
-        let dirs = [ArrowDir::Up, ArrowDir::Down, ArrowDir::Left, ArrowDir::Right];
+        let dirs = [
+            ArrowDir::Up,
+            ArrowDir::Down,
+            ArrowDir::Left,
+            ArrowDir::Right,
+        ];
         for face in faces {
             for dir in dirs {
-                assert_ne!(adjacent_face(face, dir), face, "{face:?} {dir:?} is a no-op");
+                assert_ne!(
+                    adjacent_face(face, dir),
+                    face,
+                    "{face:?} {dir:?} is a no-op"
+                );
             }
             // The four neighbours of a face are pairwise distinct.
-            let mut sorted: Vec<String> =
-                dirs.iter().map(|&d| format!("{:?}", adjacent_face(face, d))).collect();
+            let mut sorted: Vec<String> = dirs
+                .iter()
+                .map(|&d| format!("{:?}", adjacent_face(face, d)))
+                .collect();
             sorted.sort();
             sorted.dedup();
             assert_eq!(sorted.len(), 4, "{face:?} must have 4 distinct neighbours");
@@ -812,18 +848,44 @@ mod tests {
     #[test]
     fn adjacent_face_inverses_hold_on_each_great_circle() {
         // Up↔Down are mutual inverses on the VERTICAL circle (Front/Top/Back/Bottom).
-        for &face in &[CubeFace::Front, CubeFace::Top, CubeFace::Back, CubeFace::Bottom] {
+        for &face in &[
+            CubeFace::Front,
+            CubeFace::Top,
+            CubeFace::Back,
+            CubeFace::Bottom,
+        ] {
             let up = adjacent_face(face, ArrowDir::Up);
-            assert_eq!(adjacent_face(up, ArrowDir::Down), face, "Up/Down inverse at {face:?}");
+            assert_eq!(
+                adjacent_face(up, ArrowDir::Down),
+                face,
+                "Up/Down inverse at {face:?}"
+            );
             let down = adjacent_face(face, ArrowDir::Down);
-            assert_eq!(adjacent_face(down, ArrowDir::Up), face, "Down/Up inverse at {face:?}");
+            assert_eq!(
+                adjacent_face(down, ArrowDir::Up),
+                face,
+                "Down/Up inverse at {face:?}"
+            );
         }
         // Left↔Right are mutual inverses on the EQUATOR (Front/Right/Back/Left).
-        for &face in &[CubeFace::Front, CubeFace::Right, CubeFace::Back, CubeFace::Left] {
+        for &face in &[
+            CubeFace::Front,
+            CubeFace::Right,
+            CubeFace::Back,
+            CubeFace::Left,
+        ] {
             let right = adjacent_face(face, ArrowDir::Right);
-            assert_eq!(adjacent_face(right, ArrowDir::Left), face, "R/L inverse at {face:?}");
+            assert_eq!(
+                adjacent_face(right, ArrowDir::Left),
+                face,
+                "R/L inverse at {face:?}"
+            );
             let left = adjacent_face(face, ArrowDir::Left);
-            assert_eq!(adjacent_face(left, ArrowDir::Right), face, "L/R inverse at {face:?}");
+            assert_eq!(
+                adjacent_face(left, ArrowDir::Right),
+                face,
+                "L/R inverse at {face:?}"
+            );
         }
     }
 
@@ -839,7 +901,12 @@ mod tests {
             .collect();
         assert_eq!(
             visited,
-            vec![CubeFace::Left, CubeFace::Back, CubeFace::Right, CubeFace::Front]
+            vec![
+                CubeFace::Left,
+                CubeFace::Back,
+                CubeFace::Right,
+                CubeFace::Front
+            ]
         );
     }
 
@@ -856,15 +923,16 @@ mod tests {
             orbit_phi: phi,
             ..OrbitCamera::default()
         };
-        let action = chrome_zone_left_click_action(
-            CubeChromeZone::RotateArrow(ArrowDir::Right),
-            &camera,
-        );
+        let action =
+            chrome_zone_left_click_action(CubeChromeZone::RotateArrow(ArrowDir::Right), &camera);
         let ChromeClickAction::Snap(tween) = action else {
             panic!("expected Snap, got {action:?}");
         };
         let (left_theta, left_phi) = CubeFace::Left.snap_angles();
-        assert!(approx(tween.theta_to, nearest_equivalent_theta(theta, left_theta)));
+        assert!(approx(
+            tween.theta_to,
+            nearest_equivalent_theta(theta, left_theta)
+        ));
         assert!(approx(tween.phi_to, left_phi));
     }
 
@@ -873,8 +941,7 @@ mod tests {
     fn element_click_matches_element_snap() {
         let camera = OrbitCamera::default();
         let element = ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top);
-        let action =
-            chrome_zone_left_click_action(CubeChromeZone::Element(element), &camera);
+        let action = chrome_zone_left_click_action(CubeChromeZone::Element(element), &camera);
         let ChromeClickAction::Snap(tween) = action else {
             panic!("expected Snap, got {action:?}");
         };
@@ -890,13 +957,14 @@ mod tests {
     fn roll_zone_maps_to_roll_action() {
         let camera = OrbitCamera::default();
         // A roll arrow click is a Snap tween that targets ∓π/2 of roll.
-        let action = chrome_zone_left_click_action(
-            CubeChromeZone::RollArrow(RollDir::Cw),
-            &camera,
-        );
+        let action = chrome_zone_left_click_action(CubeChromeZone::RollArrow(RollDir::Cw), &camera);
         let ChromeClickAction::Snap(tween) = action else {
             panic!("expected Snap (roll tween), got {action:?}");
         };
-        assert!(approx(tween.roll_to, -FRAC_PI_2), "Cw should target -π/2, got {}", tween.roll_to);
+        assert!(
+            approx(tween.roll_to, -FRAC_PI_2),
+            "Cw should target -π/2, got {}",
+            tween.roll_to
+        );
     }
 }

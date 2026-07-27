@@ -63,9 +63,7 @@ use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::units::Measurement;
 use voxel_core::voxel::ShapeKind;
-use voxel_worker::{
-    AppCore, CuboidMeshRenderer, GpuContext, RebuildOutcome, COLOR_TARGET_FORMAT,
-};
+use voxel_worker::{AppCore, CuboidMeshRenderer, GpuContext, RebuildOutcome, COLOR_TARGET_FORMAT};
 
 /// Voxels per block — the document default, and the density the edit-cost probes use, so the
 /// two files' scene columns name the same scenes.
@@ -104,7 +102,9 @@ fn median(mut samples: Vec<f64>) -> f64 {
 fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
     let shape = SdfShape::from_blocks(ShapeKind::Box, DRAGGED_BLOCKS, 1, DENSITY);
     let mut selection = selection_of_first_root(scene);
-    app_core.apply_intent(scene, &mut selection,
+    app_core.apply_intent(
+        scene,
+        &mut selection,
         Intent::AddNode {
             content: NodeSpec::Tool {
                 shape,
@@ -125,7 +125,9 @@ fn move_dragged_node(
     offset_voxels: [i64; 3],
 ) {
     let mut selection = selection_of_first_root(scene);
-    app_core.apply_intent(scene, &mut selection,
+    app_core.apply_intent(
+        scene,
+        &mut selection,
         Intent::SetOffset {
             target,
             offset_measurements: offset_voxels.map(Measurement::from_voxels),

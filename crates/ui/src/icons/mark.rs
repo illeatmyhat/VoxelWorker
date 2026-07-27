@@ -158,7 +158,11 @@ impl Mark {
             // Circles and ellipses dash through `dashed_ellipse_with`, which samples more
             // finely (24..96) than the arc path (12..64). Keeping that split is deliberate:
             // it is what the imperative set already did, and parity is the point.
-            Mark::Circle { center, radius, ink } => {
+            Mark::Circle {
+                center,
+                radius,
+                ink,
+            } => {
                 if ink.dashed {
                     g.dashed_ellipse_with(center, radius, radius, ink.stroke(g));
                 } else {

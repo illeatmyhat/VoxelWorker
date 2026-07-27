@@ -104,8 +104,7 @@ impl OrbitCamera {
     ) -> Mat4 {
         // look_at_rh = [R | R·(−eye)]; zeroing the translation column leaves exactly
         // the rotation the full view matrix applies — same bits, no re-derivation.
-        let mut rotation_only_view =
-            Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
+        let mut rotation_only_view = Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
         rotation_only_view.w_axis = Vec4::W;
         self.projection_enclosing_sphere(aspect_ratio, scene_centre, scene_radius)
             * rotation_only_view
@@ -296,7 +295,10 @@ mod tests {
     #[test]
     fn view_matrices_finite_under_roll() {
         for &roll in &[0.0f32, FRAC_PI_2, PI, -FRAC_PI_2] {
-            let camera = OrbitCamera { roll, ..OrbitCamera::default() };
+            let camera = OrbitCamera {
+                roll,
+                ..OrbitCamera::default()
+            };
             let vp = camera.view_projection(1.0, Vec3::ZERO, 10.0);
             assert!(
                 vp.to_cols_array().iter().all(|v| v.is_finite()),

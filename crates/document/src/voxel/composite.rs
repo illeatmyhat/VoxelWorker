@@ -95,7 +95,11 @@ impl CompositeProducer {
     ///
     /// `Subtract` and `Intersect` members never contribute material: they are occupancy-only
     /// masks and surviving cells keep what they had (ADR 0017 Decision 1).
-    fn sample(&self, point_local_voxels: [f32; 3], voxels_per_block: u32) -> (f32, Option<BlockId>) {
+    fn sample(
+        &self,
+        point_local_voxels: [f32; 3],
+        voxels_per_block: u32,
+    ) -> (f32, Option<BlockId>) {
         // The empty accumulator is "infinitely far outside", which makes the fold-start rules
         // fall out: union takes the member, subtract and intersect stay empty.
         let mut distance = f32::INFINITY;
@@ -104,7 +108,8 @@ impl CompositeProducer {
         let mut nearest_distance = f32::INFINITY;
 
         for member in &self.members {
-            let Some(member_distance) = self.member_distance(member, point_local_voxels, voxels_per_block)
+            let Some(member_distance) =
+                self.member_distance(member, point_local_voxels, voxels_per_block)
             else {
                 continue;
             };
@@ -161,9 +166,14 @@ impl CompositeProducer {
     /// `A' = A ∪ (dilate(A, N) ∩ C) ⊆ A ∪ C`. So the member's own extent bounds it exactly
     /// and no `N`-sized margin is needed. (An inward emboss only removes, so including it is
     /// merely conservative.)
-    pub(super) fn extent_members(members: &[CompositeMember]) -> impl Iterator<Item = &CompositeMember> {
+    pub(super) fn extent_members(
+        members: &[CompositeMember],
+    ) -> impl Iterator<Item = &CompositeMember> {
         members.iter().filter(|member| {
-            matches!(member.operation, CombineOp::Union | CombineOp::Emboss { .. })
+            matches!(
+                member.operation,
+                CombineOp::Union | CombineOp::Emboss { .. }
+            )
         })
     }
 }
@@ -234,9 +244,11 @@ impl VoxelProducer for CompositeProducer {
         if cell_local_voxels.is_empty() || self.as_field().is_none() {
             return None;
         }
-        Some(super::metric_cell_bracket(cell_local_voxels, self.metric(), |centre| {
-            self.sample(centre, voxels_per_block).0
-        }))
+        Some(super::metric_cell_bracket(
+            cell_local_voxels,
+            self.metric(),
+            |centre| self.sample(centre, voxels_per_block).0,
+        ))
     }
 
     /// The composite has a field only if EVERY member does — one fieldless member leaves the
@@ -249,7 +261,11 @@ impl VoxelProducer for CompositeProducer {
     /// `radial + BILLOW·fbm` has the right zero set and the wrong magnitude away from it. The
     /// `Option` itself rests on freehand sculpt, which is occupancy-native (ADR 0021 §5).
     fn as_field(&self) -> Option<&dyn Field> {
-        if self.members.iter().all(|member| member.producer.as_field().is_some()) {
+        if self
+            .members
+            .iter()
+            .all(|member| member.producer.as_field().is_some())
+        {
             Some(self)
         } else {
             None

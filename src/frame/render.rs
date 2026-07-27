@@ -3,9 +3,8 @@
 //! then the view cube in its own corner pass. The egui pass is the sibling
 //! [`egui_frame`](super::egui_frame).
 
-use crate::*;
 use super::egui_frame::{EguiPaintBridge, PreparedEguiFrame};
-
+use crate::*;
 
 /// Render a complete frame into `target_view`.
 ///
@@ -235,7 +234,14 @@ pub fn upload_voxel_uniforms(
         bound,
     );
     // The two onion ghost slab uniforms (self-gates on `band.onion_depth == 0`).
-    brick.update_ghost_uniforms(queue, scene_matrices, viewport_px, grid_dimensions, band, region);
+    brick.update_ghost_uniforms(
+        queue,
+        scene_matrices,
+        viewport_px,
+        grid_dimensions,
+        band,
+        region,
+    );
     true
 }
 
@@ -426,7 +432,11 @@ pub fn render_frame(
         );
     }
 
-    queue.submit(egui_upload_commands.into_iter().chain(std::iter::once(encoder.finish())));
+    queue.submit(
+        egui_upload_commands
+            .into_iter()
+            .chain(std::iter::once(encoder.finish())),
+    );
 
     for texture_id in &prepared.textures_to_free {
         bridge.renderer.free_texture(texture_id);

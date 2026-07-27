@@ -61,7 +61,13 @@ fn placed_single_leaf(
     rotation: Quat,
 ) -> LeafProducer {
     let shape = SdfShape::from_blocks(kind, [size_blocks; 3], 1, density);
-    let node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material: FUZZ_MATERIAL });
+    let node = Node::new(
+        format!("{kind:?}"),
+        NodeContent::Tool {
+            shape,
+            material: FUZZ_MATERIAL,
+        },
+    );
     let scene = Scene::from_nodes(vec![node]);
     let mut leaf = scene
         .leaf_producers(density)
@@ -140,7 +146,11 @@ fn classify_elided_occupancy(
     for &block_min in blocks {
         let block_aabb = VoxelAabb::new(
             block_min,
-            [block_min[0] + block, block_min[1] + block, block_min[2] + block],
+            [
+                block_min[0] + block,
+                block_min[1] + block,
+                block_min[2] + block,
+            ],
         );
         match classify_chunk_block(leaves, block_aabb, density) {
             BlockClassification::Air => {}
@@ -224,20 +234,48 @@ fn classify_agrees_with_forced_per_voxel_resolve() {
         // block-aligned (`k·d`) with off-block (`-33`, `-31`, `d+5` — none a whole multiple
         // of 8 or 16), and the local slides mix zero with the ADR 0027 quarter/half seats.
         let placements: [(&str, [i64; 3], [f32; 3], Quat); 6] = [
-            ("block-aligned", [2 * block, 0, block], [0.0, 0.0, 0.0], Quat::IDENTITY),
-            ("off-block-integer", [-33, -31, block + 5], [0.0, 0.0, 0.0], Quat::IDENTITY),
-            ("block-aligned+fractional", [2 * block, 0, block], [0.5, 0.5, 0.0], Quat::IDENTITY),
-            ("off-block+fractional", [-33, -31, block + 5], [0.25, 0.0, 0.75], Quat::IDENTITY),
-            ("block-aligned+rotation", [2 * block, 0, block], [0.0, 0.0, 0.0], tilt),
-            ("off-block+fractional+rotation", [-33, -31, block + 5], [0.5, 0.5, 0.0], compound),
+            (
+                "block-aligned",
+                [2 * block, 0, block],
+                [0.0, 0.0, 0.0],
+                Quat::IDENTITY,
+            ),
+            (
+                "off-block-integer",
+                [-33, -31, block + 5],
+                [0.0, 0.0, 0.0],
+                Quat::IDENTITY,
+            ),
+            (
+                "block-aligned+fractional",
+                [2 * block, 0, block],
+                [0.5, 0.5, 0.0],
+                Quat::IDENTITY,
+            ),
+            (
+                "off-block+fractional",
+                [-33, -31, block + 5],
+                [0.25, 0.0, 0.75],
+                Quat::IDENTITY,
+            ),
+            (
+                "block-aligned+rotation",
+                [2 * block, 0, block],
+                [0.0, 0.0, 0.0],
+                tilt,
+            ),
+            (
+                "off-block+fractional+rotation",
+                [-33, -31, block + 5],
+                [0.5, 0.5, 0.0],
+                compound,
+            ),
         ];
         for kind in [ShapeKind::Box, ShapeKind::Cylinder, ShapeKind::Sphere] {
             for (variation, world_offset, local, rotation) in placements {
-                let leaf =
-                    placed_single_leaf(kind, 2, density, world_offset, local, rotation);
+                let leaf = placed_single_leaf(kind, 2, density, world_offset, local, rotation);
                 let label = format!("d{density} {kind:?} {variation}");
-                total_solid_cells +=
-                    assert_classify_matches_forced(&[&leaf], density, &label);
+                total_solid_cells += assert_classify_matches_forced(&[&leaf], density, &label);
                 total_cases += 1;
             }
         }
@@ -276,7 +314,13 @@ fn two_layer_matches_dense_for_integer_placements() {
         // 16). The recentre folds a single leaf onto the origin, so this mainly pins that the
         // covering-range / recentre stay exact for a non-block-aligned single leaf.
         let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [3, 3, 3], 1, density);
-        let mut node = Node::new("Cyl", NodeContent::Tool { shape, material: FUZZ_MATERIAL });
+        let mut node = Node::new(
+            "Cyl",
+            NodeContent::Tool {
+                shape,
+                material: FUZZ_MATERIAL,
+            },
+        );
         node.transform = NodeTransform::from_offset_voxels([-33, -31, 2 * block]);
         let scene = Scene::from_nodes(vec![node]);
         super::core::assert_two_layer_round_trip_matches_dense(
@@ -290,14 +334,25 @@ fn two_layer_matches_dense_for_integer_placements() {
         // fragments. Both dense and two-layer see the same integer offsets, so they agree.
         let base = {
             let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, density);
-            let mut node = Node::new("Base", NodeContent::Tool { shape, material: FUZZ_MATERIAL });
+            let mut node = Node::new(
+                "Base",
+                NodeContent::Tool {
+                    shape,
+                    material: FUZZ_MATERIAL,
+                },
+            );
             node.transform = NodeTransform::from_offset_voxels([0, 0, 0]);
             node
         };
         let offset_partner = {
             let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, density);
-            let mut node =
-                Node::new("Partner", NodeContent::Tool { shape, material: MaterialChoice::Wood });
+            let mut node = Node::new(
+                "Partner",
+                NodeContent::Tool {
+                    shape,
+                    material: MaterialChoice::Wood,
+                },
+            );
             // Off-block relative slide on X (block + 3 voxels), block-aligned on the rest.
             node.transform = NodeTransform::from_offset_voxels([block + 3, 0, 0]);
             node
@@ -326,7 +381,13 @@ fn two_layer_matches_dense_for_rotated_and_fractional_placements() {
     // (1) A fractional sub-voxel seat: the two-layer path resamples half a voxel over, the
     // dense oracle does not — so the occupied cell sets differ.
     let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, density);
-    let mut node = Node::new("Box", NodeContent::Tool { shape, material: FUZZ_MATERIAL });
+    let mut node = Node::new(
+        "Box",
+        NodeContent::Tool {
+            shape,
+            material: FUZZ_MATERIAL,
+        },
+    );
     node.transform.offset_local_voxels = [0.5, 0.5, 0.0];
     let scene = Scene::from_nodes(vec![node]);
     super::core::assert_two_layer_round_trip_matches_dense(&scene, density, "fractional-local");
@@ -334,7 +395,13 @@ fn two_layer_matches_dense_for_rotated_and_fractional_placements() {
     // (2) A genuine off-axis rotation: the two-layer path turns the cylinder, the dense
     // oracle leaves it upright — so the occupied cell sets differ.
     let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [2, 2, 4], 1, density);
-    let mut node = Node::new("Cyl", NodeContent::Tool { shape, material: FUZZ_MATERIAL });
+    let mut node = Node::new(
+        "Cyl",
+        NodeContent::Tool {
+            shape,
+            material: FUZZ_MATERIAL,
+        },
+    );
     node.transform = node.transform.with_rotation(Quat::from_rotation_x(0.7));
     let scene = Scene::from_nodes(vec![node]);
     super::core::assert_two_layer_round_trip_matches_dense(&scene, density, "rotated");

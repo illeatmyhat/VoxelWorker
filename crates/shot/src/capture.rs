@@ -3,33 +3,27 @@
 
 use display::block_texture::LoadedMaterial;
 use voxel_worker::block_palette::PaletteHost;
-use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::frame::{
     egui_frame::{run_egui_frame, EguiPaintBridge},
     render::{render_frame, FramePhases},
 };
 use voxel_worker::{
-    create_depth_view, create_msaa_color_view, procedural_material_average_color,
-    AppCore, CuboidMeshRenderer, GpuContext,
-    InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
-    OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, VoxelBody, Point,
-    PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape, SelectedOperandGhostRenderer,
-    TransformGizmoRenderer, ViewCubeRenderer, ViewMode, VoxExport, VoxelGrid,
-    COLOR_TARGET_FORMAT, PLACEMENT_GHOST_TINT,
+    create_depth_view, create_msaa_color_view, procedural_material_average_color, AppCore,
+    CuboidMeshRenderer, GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource,
+    Node, NodeContent, NodePath, OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer,
+    Point, PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape,
+    SelectedOperandGhostRenderer, TransformGizmoRenderer, ViewCubeRenderer, ViewMode, VoxExport,
+    VoxelBody, VoxelGrid, COLOR_TARGET_FORMAT, PLACEMENT_GHOST_TINT,
 };
+use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 
 use crate::demos::{
-    DemoScene,
-    build_demo_groups, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
-    build_demo_sketch_box, build_demo_sketch_extrude, build_demo_sketch_revolve,
-    build_demo_buried_cutter, build_demo_child_booleans,
-    build_demo_cutter_def, build_demo_group_subtract, build_demo_intersect, build_demo_subtract,
-    build_demo_window_fixture,
-    build_demo_two_material,
-    build_demo_village,
-    build_demo_village_far,
-    build_far_offset_scene, file_stem_of, resolve_demo_stem, FAR_OFFSET_BLOCKS,
-    FAR_SCENE_BASE_BLOCKS,
+    build_demo_buried_cutter, build_demo_child_booleans, build_demo_cutter_def,
+    build_demo_group_subtract, build_demo_groups, build_demo_intersect, build_demo_mixed_material,
+    build_demo_overlap, build_demo_scene, build_demo_sketch_box, build_demo_sketch_extrude,
+    build_demo_sketch_revolve, build_demo_subtract, build_demo_two_material, build_demo_village,
+    build_demo_village_far, build_demo_window_fixture, build_far_offset_scene, file_stem_of,
+    resolve_demo_stem, DemoScene, FAR_OFFSET_BLOCKS, FAR_SCENE_BASE_BLOCKS,
 };
 use crate::options::ShotOptions;
 
@@ -50,14 +44,20 @@ use crate::options::ShotOptions;
 /// prints it and exits non-zero (no panic).
 fn build_scene_from_replay(replay_path: &std::path::Path) -> Result<Scene, String> {
     let script = std::fs::read_to_string(replay_path).map_err(|error| {
-        format!("--replay: failed to read '{}': {error}", replay_path.display())
+        format!(
+            "--replay: failed to read '{}': {error}",
+            replay_path.display()
+        )
     })?;
     voxel_worker::replay_intent_script(&script)
         .map_err(|error| format!("--replay: '{}': {error}", replay_path.display()))
 }
 
 pub(crate) async fn run_capture(options: ShotOptions) {
-    assert!(options.width > 0 && options.height > 0, "capture size must be non-zero");
+    assert!(
+        options.width > 0 && options.height > 0,
+        "capture size must be non-zero"
+    );
 
     // Fully headless: no surface, no window.
     let gpu = GpuContext::new(None).await;
@@ -84,8 +84,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // multisampled colour texture and resolves into `capture_texture` (the single
     // -sample COPY_SRC target read back below).
     let depth_view = create_depth_view(&gpu.device, options.width, options.height);
-    let msaa_color_view =
-        create_msaa_color_view(&gpu.device, options.width, options.height, COLOR_TARGET_FORMAT);
+    let msaa_color_view = create_msaa_color_view(
+        &gpu.device,
+        options.width,
+        options.height,
+        COLOR_TARGET_FORMAT,
+    );
 
     // Resolve the requested geometry into the grid, then build the renderer's
     // instance buffer FROM the grid (the resolved-grid seam, `docs/adr/0006`). The voxel cap
@@ -280,9 +284,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // index as before, then resolve it to that node's stable id (ids were minted
         // by `ensure_node_ids` above), so the SAME `--select-node N` argument selects
         // the SAME node. An out-of-range index resolves to None → clears selection.
-        let picked = panel_state
-            .scene
-            .id_at_path(&NodePath::root_index(index));
+        let picked = panel_state.scene.id_at_path(&NodePath::root_index(index));
         panel_state.selection.set_primary_node(picked);
     }
     // ADR 0018 Decision 2: `--select-root` selects the ROOT PART, so a headless capture
@@ -508,7 +510,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
              the far box renders BYTE-IDENTICAL to the near box (no far-lands jitter)",
             grid.occupied_count(),
             if options.far_offset { "far" } else { "near" },
-            if options.far_offset { FAR_OFFSET_BLOCKS } else { [0, 0, 0] },
+            if options.far_offset {
+                FAR_OFFSET_BLOCKS
+            } else {
+                [0, 0, 0]
+            },
             region.size_blocks
         );
     } else if options.demo_groups {
@@ -570,7 +576,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // material grid exports each block in its own colour. The active material's slot
         // keeps its representative colour, so a single-material grid is unchanged.
         let representative = procedural_material_average_color(options.material);
-        let mut palette_colors = VoxExport::block_palette_from_active(options.material, representative);
+        let mut palette_colors =
+            VoxExport::block_palette_from_active(options.material, representative);
         for (slot, color) in palette_colors.iter_mut().enumerate() {
             *color = procedural_material_average_color(
                 voxel_core::core_geom::MaterialChoice::from_material_id(slot as u16),
@@ -1019,20 +1026,30 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     if options.synthetic_block {
         const FACE_SIZE: u32 = 16;
         let face_colors: [[u8; 4]; 6] = [
-            [220, 40, 40, 255],   // +X red
-            [40, 200, 40, 255],   // -X green
-            [40, 80, 220, 255],   // +Y blue
-            [230, 210, 40, 255],  // -Y yellow
-            [210, 40, 210, 255],  // +Z magenta
-            [40, 210, 210, 255],  // -Z cyan
+            [220, 40, 40, 255],  // +X red
+            [40, 200, 40, 255],  // -X green
+            [40, 80, 220, 255],  // +Y blue
+            [230, 210, 40, 255], // -Y yellow
+            [210, 40, 210, 255], // +Z magenta
+            [40, 210, 210, 255], // -Z cyan
         ];
         let layer_bufs: Vec<Vec<u8>> = face_colors
             .iter()
-            .map(|c| c.iter().copied().cycle().take((FACE_SIZE * FACE_SIZE * 4) as usize).collect())
+            .map(|c| {
+                c.iter()
+                    .copied()
+                    .cycle()
+                    .take((FACE_SIZE * FACE_SIZE * 4) as usize)
+                    .collect()
+            })
             .collect();
         let layers: [&[u8]; 6] = [
-            &layer_bufs[0], &layer_bufs[1], &layer_bufs[2],
-            &layer_bufs[3], &layer_bufs[4], &layer_bufs[5],
+            &layer_bufs[0],
+            &layer_bufs[1],
+            &layer_bufs[2],
+            &layer_bufs[3],
+            &layer_bufs[4],
+            &layer_bufs[5],
         ];
         let material = LoadedMaterial::from_face_layers(
             &gpu.device,
@@ -1051,7 +1068,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
 
     // The armed "Add <shape>" dialog shows when a ghost is armed; read the kind before the
     // call borrows `panel_state` mutably.
-    let armed_shape = panel_state.placement_ghost.as_ref().map(|ghost| ghost.shape.kind);
+    let armed_shape = panel_state
+        .placement_ghost
+        .as_ref()
+        .map(|ghost| ghost.shape.kind);
     let prepared = run_egui_frame(
         &mut egui_bridge,
         &gpu.device,
@@ -1294,8 +1314,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let bytes_per_pixel = 4u32;
     let unpadded_bytes_per_row = options.width * bytes_per_pixel;
     let row_alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded_bytes_per_row =
-        unpadded_bytes_per_row.div_ceil(row_alignment) * row_alignment;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(row_alignment) * row_alignment;
 
     let readback_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("headless readback buffer"),
@@ -1304,9 +1323,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         mapped_at_creation: false,
     });
 
-    let mut copy_encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("headless copy encoder"),
-    });
+    let mut copy_encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("headless copy encoder"),
+        });
     copy_encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &capture_texture,

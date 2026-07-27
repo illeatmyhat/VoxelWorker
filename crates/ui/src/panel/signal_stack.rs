@@ -138,7 +138,10 @@ fn build_expanded_stack(
             let painter = ui.painter_at(bar_rect);
             let title = theme::letter_spaced(ui, "DISPLAY", TEXT_SECONDARY, 10.5, 2.0);
             painter.galley(
-                Pos2::new(bar_rect.left() + 8.0, bar_rect.center().y - title.size().y * 0.5),
+                Pos2::new(
+                    bar_rect.left() + 8.0,
+                    bar_rect.center().y - title.size().y * 0.5,
+                ),
                 title,
                 TEXT_SECONDARY,
             );
@@ -154,7 +157,11 @@ fn build_expanded_stack(
             let fold_glyph = theme::letter_spaced(
                 ui,
                 "\u{00bb}",
-                if fold_resp.hovered() { TEXT_HOVER } else { TEXT_MUTED },
+                if fold_resp.hovered() {
+                    TEXT_HOVER
+                } else {
+                    TEXT_MUTED
+                },
                 14.0,
                 0.0,
             );
@@ -175,7 +182,12 @@ fn build_expanded_stack(
             if state.stack.viewport_open {
                 section_body(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("MODE").monospace().size(9.5).color(TEXT_MUTED));
+                        ui.label(
+                            egui::RichText::new("MODE")
+                                .monospace()
+                                .size(9.5)
+                                .color(TEXT_MUTED),
+                        );
                         ui.label(
                             egui::RichText::new(state.view_mode.status_label())
                                 .monospace()
@@ -215,14 +227,20 @@ fn build_expanded_stack(
 /// letter-spaced name (secondary, hover brightens), and the faint right-aligned
 /// control-count. Returns `true` when clicked (the caller toggles the section open).
 fn section_header(ui: &mut egui::Ui, name: &str, count: &str, open: bool) -> bool {
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(STACK_WIDTH, SECTION_HEADER_HEIGHT), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(STACK_WIDTH, SECTION_HEADER_HEIGHT),
+        Sense::click(),
+    );
     let hovered = resp.hovered();
     if hovered {
         ui.painter().rect_filled(rect, 0.0, HOVER_BG);
     }
     // Chevron.
-    chevron(ui.painter(), Pos2::new(rect.left() + 11.0, rect.center().y), open);
+    chevron(
+        ui.painter(),
+        Pos2::new(rect.left() + 11.0, rect.center().y),
+        open,
+    );
     // Name.
     let name_color = if hovered { TEXT_HOVER } else { TEXT_SECONDARY };
     let galley = theme::letter_spaced(ui, name, name_color, 10.0, 1.5);
@@ -234,7 +252,10 @@ fn section_header(ui: &mut egui::Ui, name: &str, count: &str, open: bool) -> boo
     // Count (faint, right-aligned).
     let count_galley = theme::letter_spaced(ui, count, TEXT_FAINT, 9.0, 0.0);
     ui.painter().galley(
-        Pos2::new(rect.right() - 10.0 - count_galley.size().x, rect.center().y - count_galley.size().y * 0.5),
+        Pos2::new(
+            rect.right() - 10.0 - count_galley.size().x,
+            rect.center().y - count_galley.size().y * 0.5,
+        ),
         count_galley,
         TEXT_FAINT,
     );
@@ -299,7 +320,8 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
 
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(TAB_WIDTH, height), Sense::click());
     let hovered = resp.hovered();
-    ui.painter().rect_filled(rect, 0.0, if hovered { HOVER_BG } else { BG });
+    ui.painter()
+        .rect_filled(rect, 0.0, if hovered { HOVER_BG } else { BG });
     ui.painter()
         .rect_stroke(rect, 0.0, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
 
@@ -310,8 +332,8 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
     // `pos`; for +90° the galley's rotated bbox centre lands at `pos + (h/2, -w/2)`, so we
     // offset `pos` by the inverse to centre the rotated caption exactly in the tab rect.
     let pos = rect.center() + Vec2::new(galley_height * 0.5, -galley_width * 0.5);
-    let text_shape = egui::epaint::TextShape::new(pos, galley, color)
-        .with_angle(std::f32::consts::FRAC_PI_2);
+    let text_shape =
+        egui::epaint::TextShape::new(pos, galley, color).with_angle(std::f32::consts::FRAC_PI_2);
     ui.painter().add(text_shape);
 
     let tip = if expander {
@@ -326,7 +348,10 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
 fn hairline(ui: &egui::Ui, y: f32) {
     let rect = ui.max_rect();
     ui.painter().line_segment(
-        [Pos2::new(rect.left(), y), Pos2::new(rect.left() + STACK_WIDTH, y)],
+        [
+            Pos2::new(rect.left(), y),
+            Pos2::new(rect.left() + STACK_WIDTH, y),
+        ],
         Stroke::new(1.0_f32, RULE),
     );
 }
@@ -379,16 +404,12 @@ mod tests {
             state.stack.folded = folded;
             let mut response = PanelResponse::default();
             let raw_input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(
-                    Pos2::ZERO,
-                    Vec2::new(1280.0, 800.0),
-                )),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0))),
                 ..Default::default()
             };
             let _ = context.run_ui(raw_input, |ui| {
                 let central = ui.available_rect_before_wrap();
-                let stack_rect =
-                    build_signal_stack(ui, &mut state, central, 800, 0, &mut response);
+                let stack_rect = build_signal_stack(ui, &mut state, central, 800, 0, &mut response);
                 assert_eq!(
                     central,
                     ui.available_rect_before_wrap(),

@@ -53,9 +53,8 @@ impl LoadedMaterial {
         label: String,
     ) -> Self {
         let average_color = average_rgba(layers[0]);
-        let texture = crate::renderer::upload_face_material_texture(
-            device, queue, width, height, layers,
-        );
+        let texture =
+            crate::renderer::upload_face_material_texture(device, queue, width, height, layers);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -108,12 +107,11 @@ impl LoadedMaterial {
             .collect();
 
         // Pick a representative decoded face to size the array + fill gaps.
-        let representative = decoded_faces
-            .iter()
-            .flatten()
-            .next()
-            .cloned()
-            .unwrap_or((1, 1, vec![0u8, 0u8, 0u8, 255u8]));
+        let representative = decoded_faces.iter().flatten().next().cloned().unwrap_or((
+            1,
+            1,
+            vec![0u8, 0u8, 0u8, 255u8],
+        ));
         let (target_width, target_height, _) = representative;
 
         // Normalise every layer to (target_width, target_height) so the array's

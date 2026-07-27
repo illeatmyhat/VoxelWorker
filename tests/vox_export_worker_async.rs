@@ -63,7 +63,9 @@ fn inline_export(scene: &Scene, density: u32, path: &std::path::Path) -> VoxExpo
     })
     .expect("the two-layer capability is enabled");
     let export = builder.finish();
-    let bytes = export.write(path).expect("inline export writes to a temp file");
+    let bytes = export
+        .write(path)
+        .expect("inline export writes to a temp file");
     VoxExportSummary {
         path: path.to_path_buf(),
         voxel_count: export.voxel_count(),
@@ -110,8 +112,14 @@ fn worker_export_bytes_match_inline_export() {
         .expect("the worker export of a valid scene succeeds");
 
     // Summary counts match the inline export.
-    assert_eq!(summary.voxel_count, inline.voxel_count, "voxel counts match");
-    assert_eq!(summary.model_count, inline.model_count, "model counts match");
+    assert_eq!(
+        summary.voxel_count, inline.voxel_count,
+        "voxel counts match"
+    );
+    assert_eq!(
+        summary.model_count, inline.model_count,
+        "model counts match"
+    );
     assert_eq!(summary.bytes, inline.bytes, "byte counts match");
 
     // The FILES are byte-identical.

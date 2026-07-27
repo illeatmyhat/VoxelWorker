@@ -102,7 +102,10 @@ pub enum FaceProvenance {
     /// Resolved from a blocktype's `textures` map.
     Textures { block_code: String },
     /// Resolved from a blocktype's `texturesByType` map (one variant picked).
-    TexturesByType { block_code: String, variant_key: String },
+    TexturesByType {
+        block_code: String,
+        variant_key: String,
+    },
 }
 
 impl FaceTextures {
@@ -443,7 +446,11 @@ fn resolve_face_map(
 
     // Any face still unresolved falls back to the group PNG.
     let fallback = group_png.to_path_buf();
-    CubeFaceSlot::ALL.map(|slot| slots[slot.layer()].clone().unwrap_or_else(|| fallback.clone()))
+    CubeFaceSlot::ALL.map(|slot| {
+        slots[slot.layer()]
+            .clone()
+            .unwrap_or_else(|| fallback.clone())
+    })
 }
 
 /// Resolve a single texture reference into an absolute PNG path.
@@ -533,7 +540,10 @@ pub fn resolve_block_faces(
         // to its most distinct variant; otherwise take the first.
         let matching: Vec<(&String, &TextureMap)> = by_type
             .iter()
-            .filter(|(_, map)| map.values().any(|e| base_matches_stem(&e.base, wanted_stem)))
+            .filter(|(_, map)| {
+                map.values()
+                    .any(|e| base_matches_stem(&e.base, wanted_stem))
+            })
             .collect();
         let pool: Vec<(&String, &TextureMap)> = if matching.is_empty() {
             by_type.iter().collect()
@@ -664,16 +674,30 @@ mod tests {
 
     #[test]
     fn base_matches_stem_on_directory() {
-        assert!(base_matches_stem("block/stone/rock/{rock}*", "stone/rock/granite"));
-        assert!(base_matches_stem("game:block/wood/bark/{wood}", "wood/bark/oak"));
-        assert!(!base_matches_stem("block/wood/bark/{wood}", "stone/rock/granite"));
+        assert!(base_matches_stem(
+            "block/stone/rock/{rock}*",
+            "stone/rock/granite"
+        ));
+        assert!(base_matches_stem(
+            "game:block/wood/bark/{wood}",
+            "wood/bark/oak"
+        ));
+        assert!(!base_matches_stem(
+            "block/wood/bark/{wood}",
+            "stone/rock/granite"
+        ));
     }
 
     #[test]
     fn uniform_all_yields_six_identical_faces() {
         let group_png = Path::new("/x/granite1.png");
         let mut map: TextureMap = BTreeMap::new();
-        map.insert("all".to_string(), TextureEntry { base: "block/stone/rock/{rock}*".to_string() });
+        map.insert(
+            "all".to_string(),
+            TextureEntry {
+                base: "block/stone/rock/{rock}*".to_string(),
+            },
+        );
         let paths = resolve_face_map(&map, group_png, &|_| None);
         assert!(paths.iter().all(|p| p == group_png));
     }
@@ -686,9 +710,24 @@ mod tests {
             Some(PathBuf::from(format!("/assets/{}.png", reference)))
         };
         let mut map: TextureMap = BTreeMap::new();
-        map.insert("all".to_string(), TextureEntry { base: "wood/bark/oak".to_string() });
-        map.insert("up".to_string(), TextureEntry { base: "wood/treetrunk/oak".to_string() });
-        map.insert("down".to_string(), TextureEntry { base: "wood/treetrunk/oak".to_string() });
+        map.insert(
+            "all".to_string(),
+            TextureEntry {
+                base: "wood/bark/oak".to_string(),
+            },
+        );
+        map.insert(
+            "up".to_string(),
+            TextureEntry {
+                base: "wood/treetrunk/oak".to_string(),
+            },
+        );
+        map.insert(
+            "down".to_string(),
+            TextureEntry {
+                base: "wood/treetrunk/oak".to_string(),
+            },
+        );
         let paths = resolve_face_map(&map, group_png, &resolve);
         let up = &paths[CubeFaceSlot::Up.layer()];
         let east = &paths[CubeFaceSlot::East.layer()];

@@ -98,7 +98,10 @@ fn revolve_negative_and_straddling_radial_fold() {
         "negative-side and positive-mirror tubes must share grid dims (radial_max folds by abs)"
     );
     let negative_cells = cell_set(&negative_side, density);
-    assert!(!negative_cells.is_empty(), "negative-side rectangle must NOT be empty");
+    assert!(
+        !negative_cells.is_empty(),
+        "negative-side rectangle must NOT be empty"
+    );
     assert_eq!(
         negative_cells,
         cell_set(&positive_mirror, density),
@@ -123,7 +126,10 @@ fn revolve_negative_and_straddling_radial_fold() {
         360,
     );
     let straddling_cells = cell_set(&straddling, density);
-    assert!(!straddling_cells.is_empty(), "straddling profile must NOT be empty");
+    assert!(
+        !straddling_cells.is_empty(),
+        "straddling profile must NOT be empty"
+    );
     // The folded region is the disc of radius max(|−15|, 25) = 25 — a solid disc,
     // because the profile spans through radial 0 (no inner hole). Compare against a
     // one-sided solid rectangle radial [0, 25]: same axial extent, same outer radius,
@@ -154,10 +160,10 @@ fn revolve_negative_and_straddling_radial_fold() {
 fn half_disc_revolve_approximates_sphere() {
     let density = 16u32;
     let radius = 40i64; // sphere radius in voxels ⇒ diameter 80
-    // Half-disc profile in (radial, axial) = (c0, c1): the radial extent is the
-    // sphere radius at each axial height. Axial runs 0..2R; radial(axial) =
-    // sqrt(R² − (axial − R)²). Many segments ⇒ a close polygon arc. The flat side
-    // (radial = 0) is the revolve axis, so revolving the half-disc gives a sphere.
+                        // Half-disc profile in (radial, axial) = (c0, c1): the radial extent is the
+                        // sphere radius at each axial height. Axial runs 0..2R; radial(axial) =
+                        // sqrt(R² − (axial − R)²). Many segments ⇒ a close polygon arc. The flat side
+                        // (radial = 0) is the revolve axis, so revolving the half-disc gives a sphere.
     let segments = 64;
     let mut profile = vec![SketchPoint::new(0, 0)]; // bottom pole on the axis
     for step in 0..=segments {
@@ -167,11 +173,18 @@ fn half_disc_revolve_approximates_sphere() {
         profile.push(SketchPoint::new(r.round() as i64, axial));
     }
     profile.push(SketchPoint::new(0, 2 * radius)); // top pole on the axis
-    let revolve =
-        SketchSolid::revolve(Sketch::new(PlaneAxis::X, profile), RevolveAxis::InPlane1, 360);
+    let revolve = SketchSolid::revolve(
+        Sketch::new(PlaneAxis::X, profile),
+        RevolveAxis::InPlane1,
+        360,
+    );
     let sphere = SdfShape::from_voxels(
         ShapeKind::Sphere,
-        [(2 * radius) as u32, (2 * radius) as u32, (2 * radius) as u32],
+        [
+            (2 * radius) as u32,
+            (2 * radius) as u32,
+            (2 * radius) as u32,
+        ],
         1,
     );
     assert_eq!(revolve.grid_dimensions(), sphere.grid_dimensions(density));
@@ -196,7 +209,10 @@ fn revolve_degenerate_profiles_are_empty() {
     };
     // < 3 points.
     empty(&SketchSolid::revolve(
-        Sketch::new(PlaneAxis::X, vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)]),
+        Sketch::new(
+            PlaneAxis::X,
+            vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)],
+        ),
         RevolveAxis::InPlane1,
         360,
     ));
@@ -241,7 +257,10 @@ fn revolve_parity_axis_placement() {
                 let dims = revolve.grid_dimensions();
                 let mut grid = VoxelGrid::default();
                 revolve.resolve(&mut grid, density);
-                assert!(!grid.occupied.is_empty(), "{plane:?}/{revolve_axis:?} empty");
+                assert!(
+                    !grid.occupied.is_empty(),
+                    "{plane:?}/{revolve_axis:?} empty"
+                );
 
                 // No straddle: every cell index is within [0, dim) per axis, and the
                 // occupancy touches 0 and dim-1 on the radial axes (the disc spans
@@ -324,7 +343,10 @@ fn partial_revolve_360_equals_full() {
         .symmetric_difference(&cell_set(&cylinder, density))
         .count();
     let total = cell_set(&cylinder, density).len();
-    assert!(diff * 100 <= total, "360 revolve diff from cylinder {diff} > 1%");
+    assert!(
+        diff * 100 <= total,
+        "360 revolve diff from cylinder {diff} > 1%"
+    );
 }
 
 /// PARTIAL turn 180° is roughly half a 360° revolve, and one angular half of the
@@ -362,5 +384,8 @@ fn partial_revolve_180_is_half() {
         // centred-Y = cell_y + 0.5 - dim_y/2 < 0
         (cell_y as f32 + 0.5 - dim_y as f32 / 2.0) < 0.0
     });
-    assert!(!any_in_lower_half, "180° revolve leaked into the theta>180 half");
+    assert!(
+        !any_in_lower_half,
+        "180° revolve leaked into the theta>180 half"
+    );
 }

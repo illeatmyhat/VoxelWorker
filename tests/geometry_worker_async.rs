@@ -267,7 +267,10 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
     };
     worker.dispatch(empty);
     let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "empty request");
-    assert_eq!(result.generation, 1, "the empty build carries its generation");
+    assert_eq!(
+        result.generation, 1,
+        "the empty build carries its generation"
+    );
     assert_eq!(
         result
             .renderer
@@ -435,7 +438,10 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
     // THE C1 ASSERTION: the finally-installed renderer is a FULL rebuild of the LATEST scene
     // (S2) — NOT a patch of the stale S0 (which would have a different face set). The old
     // inline-patch bug would have left an S0-derived Frankenstein here.
-    assert!(!async_outstanding, "installing the newest clears the outstanding flag");
+    assert!(
+        !async_outstanding,
+        "installing the newest clears the outstanding flag"
+    );
     assert_eq!(
         installed.face_count(),
         s2_truth,
@@ -488,12 +494,17 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
 
     // The shell's persistent brick state (starts == S0) + the C1 outstanding flag.
     let (mut field, _) = IncrementalBrickField::from_wholesale(s0.clone());
-    assert_eq!(field.to_build(), s0, "the field starts as the installed baseline S0");
+    assert_eq!(
+        field.to_build(),
+        s0,
+        "the field starts as the installed baseline S0"
+    );
     let mut async_outstanding = false;
 
     // The brick sink's decision, mirroring the shell exactly: patch in place ONLY when the
     // route is InlineIncremental and a field is resident.
-    let brick_patches_in_place = |route: RebuildRoute| matches!(route, RebuildRoute::InlineIncremental);
+    let brick_patches_in_place =
+        |route: RebuildRoute| matches!(route, RebuildRoute::InlineIncremental);
 
     // --- Edit 1: a LARGE wholesale edit → S1, dispatched async (the #60 case). ---
     let route1 = route_geometry_rebuild(

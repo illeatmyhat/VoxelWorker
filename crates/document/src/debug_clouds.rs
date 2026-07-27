@@ -19,11 +19,11 @@
 //! permutation, so the same parameters always resolve to the same field (good for
 //! a reproducible debug object and for golden-image tests later).
 
-use voxel_core::voxel::{Voxel, VoxelGrid};
-use crate::voxel::{VoxelProducer};
+use crate::voxel::VoxelProducer;
 use glam::Vec3;
 use rayon::prelude::*;
 use substrate::noise::{PerlinNoise, SmallRng};
+use voxel_core::voxel::{Voxel, VoxelGrid};
 
 /// How far past the radial edge the fBm displacement may push the surface, as a
 /// fraction of each cloud's radius. Keeps clouds bounded (so the gaps survive)
@@ -156,11 +156,7 @@ impl VoxelProducer for DebugCloudField {
                         );
                         if cloud_field_is_solid(sample, &clouds, &noise) {
                             local.push(Voxel {
-                                local_index: [
-                                    i as i32,
-                                    j as i32,
-                                    k as i32,
-                                ],
+                                local_index: [i as i32, j as i32, k as i32],
                                 block_local_coord: [
                                     (i % voxels_per_block) as u8,
                                     (j % voxels_per_block) as u8,

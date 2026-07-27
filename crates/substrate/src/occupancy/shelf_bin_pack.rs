@@ -302,7 +302,11 @@ mod tests {
     #[test]
     fn tiles_per_shelf_is_ceil_sqrt() {
         for (count, expected) in [(0, 1), (1, 1), (2, 2), (4, 2), (5, 3), (9, 3), (10, 4)] {
-            assert_eq!(ShelfBinPack::tiles_per_shelf(count), expected, "count {count}");
+            assert_eq!(
+                ShelfBinPack::tiles_per_shelf(count),
+                expected,
+                "count {count}"
+            );
         }
     }
 
@@ -311,9 +315,18 @@ mod tests {
     #[test]
     fn plans_one_placement_per_tile() {
         let sizes = [
-            TileSize { width: 4, height: 4 },
-            TileSize { width: 4, height: 4 },
-            TileSize { width: 4, height: 4 },
+            TileSize {
+                width: 4,
+                height: 4,
+            },
+            TileSize {
+                width: 4,
+                height: 4,
+            },
+            TileSize {
+                width: 4,
+                height: 4,
+            },
         ];
         let layout = ShelfBinPack::plan(&sizes, GUTTER);
         assert_eq!(layout.placements.len(), 3, "one placement per tile");
@@ -337,10 +350,22 @@ mod tests {
     #[test]
     fn rects_are_inside_unit_square_and_disjoint() {
         let sizes = [
-            TileSize { width: 8, height: 8 },
-            TileSize { width: 8, height: 8 },
-            TileSize { width: 8, height: 8 },
-            TileSize { width: 8, height: 8 },
+            TileSize {
+                width: 8,
+                height: 8,
+            },
+            TileSize {
+                width: 8,
+                height: 8,
+            },
+            TileSize {
+                width: 8,
+                height: 8,
+            },
+            TileSize {
+                width: 8,
+                height: 8,
+            },
         ];
         let layout = ShelfBinPack::plan(&sizes, GUTTER);
         let rects: Vec<NormalizedTileRect> = layout
@@ -387,7 +412,10 @@ mod tests {
             0, 0, 255, 255, // (0,1)
             255, 255, 255, 255, // (1,1)
         ];
-        let sizes = [TileSize { width: 2, height: 2 }];
+        let sizes = [TileSize {
+            width: 2,
+            height: 2,
+        }];
         let layout = ShelfBinPack::plan(&sizes, GUTTER);
         let mut sheet = vec![0u8; (layout.sheet_width * layout.sheet_height) as usize * RGBA];
         let placement = layout.placements[0];
@@ -414,8 +442,16 @@ mod tests {
                 sheet[index + 3],
             ]
         };
-        assert_eq!(texel(0, 0), [255, 0, 0, 255], "corner gutter = corner texel");
+        assert_eq!(
+            texel(0, 0),
+            [255, 0, 0, 255],
+            "corner gutter = corner texel"
+        );
         assert_eq!(texel(1, 0), [255, 0, 0, 255], "top gutter above (0,0)=red");
-        assert_eq!(texel(2, 0), [0, 255, 0, 255], "top gutter above (1,0)=green");
+        assert_eq!(
+            texel(2, 0),
+            [0, 255, 0, 255],
+            "top gutter above (1,0)=green"
+        );
     }
 }

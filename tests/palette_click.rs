@@ -45,7 +45,13 @@ fn build_palette(gpu: &GpuContext, bridge: &mut EguiPaintBridge, count: usize) -
             key: format!("test/tile{index}"),
             variants: vec![std::path::PathBuf::from(format!("tile{index}.png"))],
         };
-        palette.add_group(&gpu.device, &gpu.queue, &mut bridge.renderer, group, &decoded);
+        palette.add_group(
+            &gpu.device,
+            &gpu.queue,
+            &mut bridge.renderer,
+            group,
+            &decoded,
+        );
     }
     palette
 }
@@ -59,7 +65,11 @@ fn windowed_palette_tile_click_reaches_apply_path() {
     let mut bridge = EguiPaintBridge::new(&gpu.device, voxel_worker::COLOR_TARGET_FORMAT);
 
     let palette = build_palette(gpu, &mut bridge, 3);
-    assert_eq!(palette.ui.tiles.len(), 3, "three GPU tiles should be registered");
+    assert_eq!(
+        palette.ui.tiles.len(),
+        3,
+        "three GPU tiles should be registered"
+    );
 
     let mut panel_state = PanelState::with_view_cube_default();
     let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0));
@@ -121,7 +131,12 @@ fn windowed_palette_tile_click_reaches_apply_path() {
                 &palette,
                 &mut panel_state,
             );
-            let response = click_at(&mut run, pos2(x as f32, y as f32), &palette, &mut panel_state);
+            let response = click_at(
+                &mut run,
+                pos2(x as f32, y as f32),
+                &palette,
+                &mut panel_state,
+            );
             if let Some(index) = response.clicked_palette_tile {
                 hit = Some(index);
                 break 'sweep;

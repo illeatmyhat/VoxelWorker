@@ -190,7 +190,11 @@ mod tests {
         // Any None operand collapses the fold to None (cannot classify) — even alongside boundable,
         // provably-solid operands, since the unbounded operand could place the surface anywhere.
         let verdict = CellClassification::classify(
-            [union(-3.0, -1.0), CellContribution::union(None), union(-2.0, -1.0)],
+            [
+                union(-3.0, -1.0),
+                CellContribution::union(None),
+                union(-2.0, -1.0),
+            ],
             0.0,
         );
         assert_eq!(verdict, None);

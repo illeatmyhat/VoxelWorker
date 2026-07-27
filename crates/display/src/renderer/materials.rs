@@ -233,7 +233,10 @@ impl Lcg {
 
     fn next_unit(&mut self) -> f32 {
         // Numerical Recipes LCG constants.
-        self.state = self.state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.state = self
+            .state
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         (self.state >> 8) as f32 / (1u32 << 24) as f32
     }
 }
@@ -277,12 +280,17 @@ fn generate_stone_texture() -> Vec<u8> {
 /// Port of `makeWood` (chisel-bench-reference.html).
 fn generate_wood_texture() -> Vec<u8> {
     let mut rng = Lcg::new(0x00c0_ffee);
-    let mut pixels = Vec::with_capacity((MATERIAL_TEXTURE_SIZE * MATERIAL_TEXTURE_SIZE * 4) as usize);
+    let mut pixels =
+        Vec::with_capacity((MATERIAL_TEXTURE_SIZE * MATERIAL_TEXTURE_SIZE * 4) as usize);
     for row in 0..MATERIAL_TEXTURE_SIZE {
         let grain = (row as f32 * 0.9).sin() * 10.0 + (rng.next_unit() * 10.0 - 5.0);
         for _ in 0..MATERIAL_TEXTURE_SIZE {
             let red = 120.0 + grain + (rng.next_unit() * 8.0 - 4.0);
-            pixels.extend_from_slice(&rgba(red.floor(), (red * 0.62).floor(), (red * 0.34).floor()));
+            pixels.extend_from_slice(&rgba(
+                red.floor(),
+                (red * 0.62).floor(),
+                (red * 0.34).floor(),
+            ));
         }
     }
     pixels

@@ -49,7 +49,10 @@ impl Default for LatticeOrientation {
 impl LatticeOrientation {
     /// The identity turn — every axis maps to itself, unturned. A node with this orientation
     /// is world-aligned; the built-in world planes always place at identity (ADR 0026).
-    pub const IDENTITY: Self = Self { source: [0, 1, 2], sign: [1, 1, 1] };
+    pub const IDENTITY: Self = Self {
+        source: [0, 1, 2],
+        sign: [1, 1, 1],
+    };
 
     /// The gather form — `(source, sign)` where `apply(v)[o] = sign[o] · v[source[o]]`. This
     /// is the type's stable, self-describing codec: a caller that must persist an orientation
@@ -122,7 +125,11 @@ impl LatticeOrientation {
     pub fn turn_point_in_box(&self, local: [i64; 3], extent: [u32; 3]) -> [i64; 3] {
         std::array::from_fn(|o| {
             let s = self.source[o] as usize;
-            if self.sign[o] > 0 { local[s] } else { extent[s] as i64 - 1 - local[s] }
+            if self.sign[o] > 0 {
+                local[s]
+            } else {
+                extent[s] as i64 - 1 - local[s]
+            }
         })
     }
 
@@ -228,8 +235,14 @@ mod tests {
     /// All 24 proper cube rotations, built by filtering the 48 signed permutations down to
     /// determinant `+1`. The oracle the closure/inverse tests enumerate over.
     fn all_proper() -> Vec<LatticeOrientation> {
-        let permutations: [[u8; 3]; 6] =
-            [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        let permutations: [[u8; 3]; 6] = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
         let mut all = Vec::new();
         for source in permutations {
             for bits in 0..8u8 {
@@ -252,8 +265,14 @@ mod tests {
     /// vectors to the six unit axis vectors, bijectively (a permutation with signs).
     #[test]
     fn each_rotation_permutes_the_signed_axes() {
-        let axes: [[i64; 3]; 6] =
-            [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0], [0, -1, 0], [0, 0, -1]];
+        let axes: [[i64; 3]; 6] = [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [-1, 0, 0],
+            [0, -1, 0],
+            [0, 0, -1],
+        ];
         for orientation in all_proper() {
             let images: Vec<[i64; 3]> = axes.iter().map(|&a| orientation.apply(a)).collect();
             for axis in axes {
@@ -268,7 +287,11 @@ mod tests {
     fn inverse_undoes_apply() {
         let v = [3i64, -7, 11];
         for orientation in all_proper() {
-            assert_eq!(orientation.inverse().apply(orientation.apply(v)), v, "{orientation:?}");
+            assert_eq!(
+                orientation.inverse().apply(orientation.apply(v)),
+                v,
+                "{orientation:?}"
+            );
         }
     }
 
@@ -290,8 +313,14 @@ mod tests {
     #[test]
     fn identity_is_the_unit() {
         for orientation in all_proper() {
-            assert_eq!(orientation.compose(&LatticeOrientation::IDENTITY), orientation);
-            assert_eq!(LatticeOrientation::IDENTITY.compose(&orientation), orientation);
+            assert_eq!(
+                orientation.compose(&LatticeOrientation::IDENTITY),
+                orientation
+            );
+            assert_eq!(
+                LatticeOrientation::IDENTITY.compose(&orientation),
+                orientation
+            );
         }
     }
 
@@ -299,14 +328,25 @@ mod tests {
     /// normals, the turn carries local `+Z` onto that normal — the placement contract.
     #[test]
     fn from_face_normal_carries_z_onto_the_normal() {
-        for normal in [[0, 0, 1], [0, 0, -1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]] {
+        for normal in [
+            [0, 0, 1],
+            [0, 0, -1],
+            [1, 0, 0],
+            [-1, 0, 0],
+            [0, 1, 0],
+            [0, -1, 0],
+        ] {
             let orientation = LatticeOrientation::from_face_normal(normal);
             assert_eq!(
                 orientation.apply([0, 0, 1]),
                 normal.map(|c| c as i64),
                 "normal {normal:?}: +Z did not land on the face normal"
             );
-            assert_eq!(orientation.determinant(), 1, "normal {normal:?} produced a reflection");
+            assert_eq!(
+                orientation.determinant(),
+                1,
+                "normal {normal:?} produced a reflection"
+            );
         }
         // +Z is the identity (an on-top / ground placement stays upright).
         assert!(LatticeOrientation::from_face_normal([0, 0, 1]).is_identity());
@@ -369,9 +409,8 @@ mod tests {
         let v = [4i64, -6, 8];
         for orientation in all_proper() {
             let m = orientation.to_matrix();
-            let by_matrix: [i64; 3] = std::array::from_fn(|o| {
-                (0..3).map(|i| m[o][i] as i64 * v[i]).sum()
-            });
+            let by_matrix: [i64; 3] =
+                std::array::from_fn(|o| (0..3).map(|i| m[o][i] as i64 * v[i]).sum());
             assert_eq!(by_matrix, orientation.apply(v), "{orientation:?}");
         }
     }

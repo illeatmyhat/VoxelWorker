@@ -39,12 +39,60 @@ pub(crate) fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
     const HALF: f32 = 0.7; // side 1.4
     const UVS: [[f32; 2]; 4] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
     let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-        ([1.0, 0.0, 0.0], [[HALF, -HALF, HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [HALF, HALF, HALF]]),
-        ([-1.0, 0.0, 0.0], [[-HALF, -HALF, -HALF], [-HALF, -HALF, HALF], [-HALF, HALF, HALF], [-HALF, HALF, -HALF]]),
-        ([0.0, 1.0, 0.0], [[-HALF, HALF, HALF], [HALF, HALF, HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF]]),
-        ([0.0, -1.0, 0.0], [[-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, -HALF, HALF], [-HALF, -HALF, HALF]]),
-        ([0.0, 0.0, 1.0], [[-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF]]),
-        ([0.0, 0.0, -1.0], [[HALF, -HALF, -HALF], [-HALF, -HALF, -HALF], [-HALF, HALF, -HALF], [HALF, HALF, -HALF]]),
+        (
+            [1.0, 0.0, 0.0],
+            [
+                [HALF, -HALF, HALF],
+                [HALF, -HALF, -HALF],
+                [HALF, HALF, -HALF],
+                [HALF, HALF, HALF],
+            ],
+        ),
+        (
+            [-1.0, 0.0, 0.0],
+            [
+                [-HALF, -HALF, -HALF],
+                [-HALF, -HALF, HALF],
+                [-HALF, HALF, HALF],
+                [-HALF, HALF, -HALF],
+            ],
+        ),
+        (
+            [0.0, 1.0, 0.0],
+            [
+                [-HALF, HALF, HALF],
+                [HALF, HALF, HALF],
+                [HALF, HALF, -HALF],
+                [-HALF, HALF, -HALF],
+            ],
+        ),
+        (
+            [0.0, -1.0, 0.0],
+            [
+                [-HALF, -HALF, -HALF],
+                [HALF, -HALF, -HALF],
+                [HALF, -HALF, HALF],
+                [-HALF, -HALF, HALF],
+            ],
+        ),
+        (
+            [0.0, 0.0, 1.0],
+            [
+                [-HALF, -HALF, HALF],
+                [HALF, -HALF, HALF],
+                [HALF, HALF, HALF],
+                [-HALF, HALF, HALF],
+            ],
+        ),
+        (
+            [0.0, 0.0, -1.0],
+            [
+                [HALF, -HALF, -HALF],
+                [-HALF, -HALF, -HALF],
+                [-HALF, HALF, -HALF],
+                [HALF, HALF, -HALF],
+            ],
+        ),
     ];
     let mut vertices = Vec::with_capacity(24);
     let mut indices = Vec::with_capacity(36);
@@ -56,7 +104,11 @@ pub(crate) fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
         // lives in the unwrap, keeping the label textures themselves canonical.
         let uv_rotated = layer == 2 || layer == 5;
         for (corner_index, corner) in corners.iter().enumerate() {
-            let uv_index = if uv_rotated { (corner_index + 2) % 4 } else { corner_index };
+            let uv_index = if uv_rotated {
+                (corner_index + 2) % 4
+            } else {
+                corner_index
+            };
             vertices.push(CubeLabelVertex {
                 position: *corner,
                 normal: *normal,
@@ -93,13 +145,19 @@ pub(super) fn view_cube_edges() -> Vec<LineVertex> {
     let z_far = [HALF, -HALF, HALF]; //  up the front-right vertical (+Z)
 
     let corners = [
-        [-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF],
-        [-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF],
+        [-HALF, -HALF, -HALF],
+        [HALF, -HALF, -HALF],
+        [HALF, HALF, -HALF],
+        [-HALF, HALF, -HALF],
+        [-HALF, -HALF, HALF],
+        [HALF, -HALF, HALF],
+        [HALF, HALF, HALF],
+        [-HALF, HALF, HALF],
     ];
     // The 12 edges as index pairs; the three axis edges are tagged with their colour.
     let edges: [((usize, usize), [f32; 4]); 12] = [
-        ((0, 1), axis_x),       // bottom-front (varies X): the X axis edge
-        ((1, 2), axis_y),       // right-bottom (varies Y): the Y axis edge
+        ((0, 1), axis_x), // bottom-front (varies X): the X axis edge
+        ((1, 2), axis_y), // right-bottom (varies Y): the Y axis edge
         ((2, 3), silhouette),
         ((3, 0), silhouette),
         ((4, 5), silhouette),
@@ -107,14 +165,20 @@ pub(super) fn view_cube_edges() -> Vec<LineVertex> {
         ((6, 7), silhouette),
         ((7, 4), silhouette),
         ((0, 4), silhouette),
-        ((1, 5), axis_z),       // front-right vertical (varies Z): the Z axis edge
+        ((1, 5), axis_z), // front-right vertical (varies Z): the Z axis edge
         ((2, 6), silhouette),
         ((3, 7), silhouette),
     ];
     let mut vertices = Vec::with_capacity(edges.len() * 2 + 24);
     for ((a, b), color) in edges {
-        vertices.push(LineVertex { position: corners[a], color });
-        vertices.push(LineVertex { position: corners[b], color });
+        vertices.push(LineVertex {
+            position: corners[a],
+            color,
+        });
+        vertices.push(LineVertex {
+            position: corners[b],
+            color,
+        });
     }
 
     // Axis letter glyphs at the FAR ends (offset a touch outward from the corner so
@@ -122,8 +186,8 @@ pub(super) fn view_cube_edges() -> Vec<LineVertex> {
     // (right/up unit vectors) and projected with the cube.
     const GLYPH: f32 = 0.20; // glyph box side, cube units
     const OUT: f32 = 0.10; // outward nudge from the endpoint
-    // X: on the bottom-front edge; stand it in the XZ plane (right = +X, up = +Z),
-    // nudged down/forward so it sits just outside the front-bottom edge.
+                           // X: on the bottom-front edge; stand it in the XZ plane (right = +X, up = +Z),
+                           // nudged down/forward so it sits just outside the front-bottom edge.
     push_line_letter(
         &mut vertices,
         'X',
@@ -196,7 +260,13 @@ fn push_line_letter(
         ]
     };
     for ((u0, v0), (u1, v1)) in strokes {
-        vertices.push(LineVertex { position: map(*u0, *v0), color });
-        vertices.push(LineVertex { position: map(*u1, *v1), color });
+        vertices.push(LineVertex {
+            position: map(*u0, *v0),
+            color,
+        });
+        vertices.push(LineVertex {
+            position: map(*u1, *v1),
+            color,
+        });
     }
 }

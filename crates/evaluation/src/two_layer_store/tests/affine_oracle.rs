@@ -67,7 +67,11 @@ fn the_broadphase_box_equals_the_rotated_classifier_box() {
         classifier.max[1] - classifier.min[1],
         classifier.max[2] - classifier.min[2],
     ];
-    assert_ne!(extent, [16, 16, 48], "a genuine rotation must change the extent from the upright box");
+    assert_ne!(
+        extent,
+        [16, 16, 48],
+        "a genuine rotation must change the extent from the upright box"
+    );
 }
 
 /// The occupied block-local cells of a resolved region.
@@ -150,7 +154,10 @@ fn a_rotated_sphere_stays_the_same_sphere() {
     // The same sphere rotated by 0.6 rad about Z, resolved by the gather.
     let mut rotated = single_leaf(ShapeKind::Sphere, size);
     rotated.rotation = Quat::from_rotation_z(0.6);
-    assert!(!substrate::spatial::is_axis_aligned(rotated.rotation), "0.6 rad is genuinely off-axis");
+    assert!(
+        !substrate::spatial::is_axis_aligned(rotated.rotation),
+        "0.6 rad is genuinely off-axis"
+    );
     let mut rotated_region = VoxelRegion::new_empty([edge; 3]);
     gather_rotated_leaf_into_region(&mut rotated_region, &rotated, block_min, edge, DENSITY);
     let rotated_cells = occupied_cells(&rotated_region);

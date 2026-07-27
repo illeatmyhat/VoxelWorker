@@ -69,9 +69,15 @@ impl Scene {
             );
             return;
         }
-        self.walk_nodes(&self.roots, [0, 0, 0], [0.0, 0.0, 0.0], &mut def_path, &mut scope_path, visitor);
+        self.walk_nodes(
+            &self.roots,
+            [0, 0, 0],
+            [0.0, 0.0, 0.0],
+            &mut def_path,
+            &mut scope_path,
+            visitor,
+        );
     }
-
 
     /// Collect every enabled leaf as a [`LeafProducer`] (ADR 0010 E2): its world voxel
     /// offset, a boxed [`VoxelProducer`](crate::voxel::VoxelProducer), and its single-material
@@ -87,7 +93,14 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels,
+                                 offset_local_voxels,
+                                 rotation,
+                                 body,
+                                 grid_on_faces,
+                                 operation,
+                                 outset,
+                                 scope_path| {
             // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds. Wrapping the
             // producer (rather than teaching the fold a new arm) means the classifier's
             // `cell_field_interval` call below and the voxel-set fold both see one definition
@@ -222,8 +235,9 @@ impl Scene {
             if !node.enabled {
                 continue;
             }
-            let world_offset_voxels: [i64; 3] =
-                std::array::from_fn(|axis| parent_offset[axis] + node.transform.offset_voxels[axis]);
+            let world_offset_voxels: [i64; 3] = std::array::from_fn(|axis| {
+                parent_offset[axis] + node.transform.offset_voxels[axis]
+            });
             match &node.content {
                 // A fieldless / region-sized body cannot compose (see the caller).
                 NodeContent::VoxelBody(_) => return None,

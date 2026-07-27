@@ -280,10 +280,10 @@ where
                         BlockContents::CoarseSolid => {
                             let hit_position = origin + direction * (box_enter + ENTRY_NUDGE);
                             let block_min_voxel = block_dda.cell * edge_i;
-                            let voxel_cell = hit_position.floor().as_ivec3().clamp(
-                                block_min_voxel,
-                                block_min_voxel + IVec3::splat(edge_i - 1),
-                            );
+                            let voxel_cell = hit_position
+                                .floor()
+                                .as_ivec3()
+                                .clamp(block_min_voxel, block_min_voxel + IVec3::splat(edge_i - 1));
                             return (
                                 Some(MarchHit {
                                     absolute_voxel: [

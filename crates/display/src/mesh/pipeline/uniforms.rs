@@ -61,7 +61,9 @@ pub(crate) struct CuboidUniforms {
 /// indexes by `material_id`. Materials without a packed sub-rect (should not happen
 /// for the procedural set) fall back to the WHOLE atlas (`[0,0,1,1]`), so a missing
 /// id degrades to "sample the atlas" rather than panicking.
-pub(crate) fn atlas_rects_from(atlas: &MaterialAtlas) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
+pub(crate) fn atlas_rects_from(
+    atlas: &MaterialAtlas,
+) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
     let mut rects = [[0.0, 0.0, 1.0, 1.0]; MaterialChoice::MATERIAL_COUNT];
     for (slot, sub_rect) in rects.iter_mut().zip(atlas.sub_rects.iter()) {
         let [size_u, size_v] = sub_rect.inset_size();

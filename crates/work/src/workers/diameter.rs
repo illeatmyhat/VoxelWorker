@@ -23,9 +23,9 @@
 //! [`GenerationTracker`](crate::engagement::routing::GenerationTracker) on the shell side, like
 //! every other display worker.
 
+use crate::workers::Worker;
 use document::scene::Scene;
 use evaluation::two_layer_store::{streamed_widest_run_in_band, TwoLayerStore};
-use crate::workers::Worker;
 
 /// A request to measure the widest occupied run in a layer band (the diameter readout).
 /// Carries an OWNED scene clone + the frame scalars — all `Send` plain data.
@@ -62,18 +62,21 @@ pub type DiameterWorker = Worker<DiameterRequest, DiameterResult>;
 /// carries no `build_catching` — preserving the measure path's original (containment-free)
 /// behaviour.
 pub fn spawn_diameter_worker() -> DiameterWorker {
-    Worker::spawn("voxel-worker diameter measure", |request: DiameterRequest| {
-        let diameter = streamed_widest_run_in_band(
-            &TwoLayerStore::enabled(),
-            &request.scene,
-            request.density,
-            request.band.0,
-            request.band.1,
-        )
-        .unwrap_or(0);
-        DiameterResult {
-            generation: request.generation,
-            diameter,
-        }
-    })
+    Worker::spawn(
+        "voxel-worker diameter measure",
+        |request: DiameterRequest| {
+            let diameter = streamed_widest_run_in_band(
+                &TwoLayerStore::enabled(),
+                &request.scene,
+                request.density,
+                request.band.0,
+                request.band.1,
+            )
+            .unwrap_or(0);
+            DiameterResult {
+                generation: request.generation,
+                diameter,
+            }
+        },
+    )
 }

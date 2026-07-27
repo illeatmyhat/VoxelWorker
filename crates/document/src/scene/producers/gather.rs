@@ -4,9 +4,9 @@
 //! that writes a genuinely rotated / sub-voxel-seated field into a [`VoxelGrid`]
 //! ([`gather_placed_field_into_grid`]). Shared by both dense resolve paths.
 
+use crate::voxel::VoxelProducer;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::VoxelGrid;
-use crate::voxel::VoxelProducer;
 
 use crate::scene::*;
 
@@ -129,7 +129,10 @@ pub(super) fn gather_placed_field_into_grid(
                     output_index[1] + output_origin_abs[1],
                     output_index[2] + output_origin_abs[2],
                 ];
-                let local = placement.local_of_abs_cell_centre(abs_cell).voxels().to_array();
+                let local = placement
+                    .local_of_abs_cell_centre(abs_cell)
+                    .voxels()
+                    .to_array();
                 if field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL {
                     let block_id = material_override
                         .or_else(|| producer.material_at(local, voxels_per_block))
@@ -137,7 +140,11 @@ pub(super) fn gather_placed_field_into_grid(
                     // The recentred dense grid stores i32 indices (ADR 0008): the rebased output
                     // index fits i32 for every representable scene, as the stamp path assumes.
                     covered.push((
-                        [output_index[0] as i32, output_index[1] as i32, output_index[2] as i32],
+                        [
+                            output_index[0] as i32,
+                            output_index[1] as i32,
+                            output_index[2] as i32,
+                        ],
                         block_id,
                     ));
                 }
@@ -155,7 +162,8 @@ pub(super) fn gather_placed_field_into_grid(
                     local_index: output_index,
                     block_local_coord: std::array::from_fn(|axis| {
                         (output_index[axis] as i64 + output_origin_abs[axis])
-                            .rem_euclid(voxels_per_block.max(1) as i64) as u8
+                            .rem_euclid(voxels_per_block.max(1) as i64)
+                            as u8
                     }),
                     block_id,
                     attrs: BlockAttrs::DEFAULT,
@@ -168,12 +176,16 @@ pub(super) fn gather_placed_field_into_grid(
         CombineOp::Subtract => {
             let carved: std::collections::HashSet<[i32; 3]> =
                 covered.iter().map(|(index, _)| *index).collect();
-            output.occupied.retain(|voxel| !carved.contains(&voxel.local_index));
+            output
+                .occupied
+                .retain(|voxel| !carved.contains(&voxel.local_index));
         }
         CombineOp::Intersect => {
             let kept: std::collections::HashSet<[i32; 3]> =
                 covered.iter().map(|(index, _)| *index).collect();
-            output.occupied.retain(|voxel| kept.contains(&voxel.local_index));
+            output
+                .occupied
+                .retain(|voxel| kept.contains(&voxel.local_index));
         }
         // Unreachable: an Emboss scope is pre-composed into a CompositeProducer before it reaches
         // a visitor, and a composed root sits at identity rotation / integer offset (in phase), so

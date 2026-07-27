@@ -104,7 +104,8 @@ impl VoxExport {
         active: voxel_core::core_geom::MaterialChoice,
         representative_rgba: [u8; 4],
     ) -> BlockPaletteColors {
-        let mut palette = [[0x80, 0x80, 0x80, 0xff]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
+        let mut palette =
+            [[0x80, 0x80, 0x80, 0xff]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
         palette[active.material_id() as usize] = representative_rgba;
         palette
     }
@@ -389,7 +390,11 @@ impl VoxExportBuilder {
         // Corner-anchoring decode: FLOORED half (`dim/2` integer division), so
         // `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim
         // too (see voxel.rs::widest_run_in_band).
-        let half = [(grid_x / 2) as f32, (grid_y / 2) as f32, (grid_z / 2) as f32];
+        let half = [
+            (grid_x / 2) as f32,
+            (grid_y / 2) as f32,
+            (grid_z / 2) as f32,
+        ];
 
         // Number of tiles along each grid axis so every tile is ≤ 256.
         let tiles_x = grid_x.div_ceil(VOX_AXIS_MAX).max(1);

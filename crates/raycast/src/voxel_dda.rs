@@ -218,7 +218,13 @@ impl VoxelDda {
     /// `safe_direction` so it is the same operation `clamped_box_entry` and the slab
     /// entry perform — one arithmetic definition of "where does this ray cross that
     /// plane", not two that agree only by rounding luck.
-    fn anchored_t_max(origin: Vec3, inverse: Vec3, cell_edge: f32, cell: IVec3, step: IVec3) -> Vec3 {
+    fn anchored_t_max(
+        origin: Vec3,
+        inverse: Vec3,
+        cell_edge: f32,
+        cell: IVec3,
+        step: IVec3,
+    ) -> Vec3 {
         let axis = |cell_coord: i32, step_axis: i32, origin_axis: f32, inverse_axis: f32| -> f32 {
             let boundary = if step_axis > 0 {
                 (cell_coord + 1) as f32
@@ -258,8 +264,13 @@ impl VoxelDda {
             self.t_cell_enter = self.t_max.z;
             self.entry_axis = 2;
         }
-        self.t_max =
-            Self::anchored_t_max(self.origin, self.inverse, self.cell_edge, self.cell, self.step);
+        self.t_max = Self::anchored_t_max(
+            self.origin,
+            self.inverse,
+            self.cell_edge,
+            self.cell,
+            self.step,
+        );
     }
 }
 
@@ -321,17 +332,11 @@ mod kani_proofs {
         let dz = finite_f32(1e3);
         kani::assume(dz < -1e-6); // descending into the box through the top
         let safe = substrate::spatial::guarded_direction(Vec3::new(dx, dy, dz));
-        let dda = VoxelDda::seed_in_box(
-            entry,
-            safe,
-            entry,
-            0.0,
-            1.0,
-            2,
-            cell_min,
-            cell_max,
+        let dda = VoxelDda::seed_in_box(entry, safe, entry, 0.0, 1.0, 2, cell_min, cell_max);
+        assert!(
+            dda.cell.z == 3,
+            "max-face entry must land on the last in-box layer, not one past"
         );
-        assert!(dda.cell.z == 3, "max-face entry must land on the last in-box layer, not one past");
         assert!(dda.cell.x >= 0 && dda.cell.x <= 3);
         assert!(dda.cell.y >= 0 && dda.cell.y <= 3);
     }
@@ -502,8 +507,15 @@ mod tests {
                 for &origin_x in &origins {
                     for &cell_x in &cells {
                         let origin = Vec3::new(origin_x, 0.0, 0.0);
-                        let before =
-                            VoxelDda::at(origin, safe, IVec3::new(cell_x, 0, 0), step, edge, 0.0, 0);
+                        let before = VoxelDda::at(
+                            origin,
+                            safe,
+                            IVec3::new(cell_x, 0, 0),
+                            step,
+                            edge,
+                            0.0,
+                            0,
+                        );
                         let after = VoxelDda::at(
                             origin,
                             safe,
@@ -593,7 +605,10 @@ mod tests {
                 }
             }
         }
-        assert!(steps_checked >= 2000, "sweep unexpectedly small: {steps_checked}");
+        assert!(
+            steps_checked >= 2000,
+            "sweep unexpectedly small: {steps_checked}"
+        );
     }
 
     fn in_box(cell: IVec3, lo: IVec3, hi_inclusive: IVec3) -> bool {
@@ -648,8 +663,9 @@ mod tests {
                                     let safe = substrate::spatial::guarded_direction(dir);
 
                                     // Box-confined seed: MUST land inside the box.
-                                    let confined =
-                                        VoxelDda::seed_in_box(entry, safe, entry, 0.0, 1.0, axis, cell_min, cell_max);
+                                    let confined = VoxelDda::seed_in_box(
+                                        entry, safe, entry, 0.0, 1.0, axis, cell_min, cell_max,
+                                    );
                                     assert!(
                                         in_box(confined.cell, cell_min, cell_max),
                                         "seed_in_box left the box: cell={:?} entry={entry:?} dir={dir:?}",
@@ -657,7 +673,8 @@ mod tests {
                                     );
 
                                     // Reference: the unconfined flat DDA skipped forward to the box.
-                                    let mut flat = VoxelDda::seed(entry, safe, entry, 0.0, 1.0, axis);
+                                    let mut flat =
+                                        VoxelDda::seed(entry, safe, entry, 0.0, 1.0, axis);
                                     let mut steps = 0;
                                     while !in_box(flat.cell, cell_min, cell_max) && steps < 64 {
                                         flat.advance();

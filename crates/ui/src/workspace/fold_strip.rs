@@ -54,7 +54,14 @@ pub(super) fn build_fold_strip(
                         ui.spacing_mut().item_spacing = egui::vec2(CARD_GAP, 0.0);
                         ui.add_space(11.0);
                         for (index, id) in roots.iter().enumerate() {
-                            card(ui, &state.scene, *id, index, state.selection.primary_node_id(), response);
+                            card(
+                                ui,
+                                &state.scene,
+                                *id,
+                                index,
+                                state.selection.primary_node_id(),
+                                response,
+                            );
                         }
                     });
                 });
@@ -66,13 +73,7 @@ fn header(ui: &mut egui::Ui, state: &PanelState) {
     let count = state.scene.roots.len();
     ui.horizontal(|ui| {
         ui.add_space(11.0);
-        let title = theme::letter_spaced(
-            ui,
-            "Fold · root part",
-            theme::TEXT_MUTED,
-            9.0,
-            2.0,
-        );
+        let title = theme::letter_spaced(ui, "Fold · root part", theme::TEXT_MUTED, 9.0, 2.0);
         let (r, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
         ui.painter().galley(r.min, title, theme::TEXT_MUTED);
         ui.add_space(10.0);
@@ -101,10 +102,8 @@ fn card(
         return;
     };
     let selected = selected_id == Some(id);
-    let (rect, hit) = ui.allocate_exact_size(
-        egui::vec2(CARD_WIDTH, CARD_HEIGHT),
-        egui::Sense::click(),
-    );
+    let (rect, hit) =
+        ui.allocate_exact_size(egui::vec2(CARD_WIDTH, CARD_HEIGHT), egui::Sense::click());
     let painter = ui.painter();
 
     painter.rect_filled(rect, 0.0, theme::BG);
@@ -115,7 +114,12 @@ fn card(
     } else {
         theme::BORDER
     };
-    painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, edge), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0_f32, edge),
+        egui::StrokeKind::Inside,
+    );
 
     let ink = if selected {
         theme::TEXT_PRIMARY
@@ -127,7 +131,11 @@ fn card(
     let op = theme::letter_spaced(
         ui,
         &format!("#{}  {}", index + 1, node.operation_label()),
-        if selected { theme::ACCENT } else { theme::TEXT_MUTED },
+        if selected {
+            theme::ACCENT
+        } else {
+            theme::TEXT_MUTED
+        },
         8.5,
         1.4,
     );

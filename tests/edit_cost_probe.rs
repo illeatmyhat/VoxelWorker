@@ -95,7 +95,9 @@ fn one_edit_rebuild_cost_by_scene_size() {
                 Measurement::from_voxels(0),
             ];
             let mut selection = selection_of_first_root(&scene);
-            app_core.apply_intent(&mut scene, &mut selection,
+            app_core.apply_intent(
+                &mut scene,
+                &mut selection,
                 Intent::SetOffset {
                     target,
                     offset_measurements: offset,
@@ -117,9 +119,7 @@ fn one_edit_rebuild_cost_by_scene_size() {
         } else {
             "GHOST"
         };
-        println!(
-            "{label:<22} {voxels:>10} {first_ms:>12.1} {edit_ms:>12.1} {verdict:>10}"
-        );
+        println!("{label:<22} {voxels:>10} {first_ms:>12.1} {edit_ms:>12.1} {verdict:>10}");
     }
     println!(
         "\n'live ok' = a committed node can move under the cursor at 60fps.\n\
@@ -137,7 +137,9 @@ const DRAGGED_BLOCKS: [u32; 3] = [2, 2, 2];
 fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
     let shape = SdfShape::from_blocks(ShapeKind::Box, DRAGGED_BLOCKS, 1, DENSITY);
     let mut selection = selection_of_first_root(scene);
-    app_core.apply_intent(scene, &mut selection,
+    app_core.apply_intent(
+        scene,
+        &mut selection,
         Intent::AddNode {
             content: NodeSpec::Tool {
                 shape,
@@ -162,7 +164,9 @@ fn timed_offset(
     offset_voxels: [i64; 3],
 ) -> (f64, Option<usize>) {
     let mut selection = selection_of_first_root(scene);
-    app_core.apply_intent(scene, &mut selection,
+    app_core.apply_intent(
+        scene,
+        &mut selection,
         Intent::SetOffset {
             target,
             offset_measurements: offset_voxels.map(Measurement::from_voxels),
@@ -294,7 +298,13 @@ fn one_edit_rebuild_cost_by_edit_locality() {
 fn one_edit_rebuild_cost_by_extent_growth() {
     println!(
         "\n{:<22} {:>10} {:>12} {:>8} {:>12} {:>8} {:>12} {:>8}",
-        "backdrop", "voxels", "inside (ms)", "chunks", "grow= (ms)", "chunks", "grow+ (ms)",
+        "backdrop",
+        "voxels",
+        "inside (ms)",
+        "chunks",
+        "grow= (ms)",
+        "chunks",
+        "grow+ (ms)",
         "chunks"
     );
     println!("{}", "-".repeat(100));
@@ -319,7 +329,8 @@ fn one_edit_rebuild_cost_by_extent_growth() {
         let mut inside_chunks = None;
         for step in 1..=SAMPLES as i64 {
             let offset = [centre[0] + step, centre[1], centre[2]];
-            let (milliseconds, localised) = timed_offset(&mut scene, &mut app_core, dragged, offset);
+            let (milliseconds, localised) =
+                timed_offset(&mut scene, &mut app_core, dragged, offset);
             inside_samples.push(milliseconds);
             inside_chunks = localised;
             assert!(
@@ -347,7 +358,8 @@ fn one_edit_rebuild_cost_by_extent_growth() {
         let mut grow_shifted_chunks = None;
         for step in 1..=(SAMPLES as i64 * 2) {
             let offset = [outside_start + step, centre[1], centre[2]];
-            let (milliseconds, localised) = timed_offset(&mut scene, &mut app_core, dragged, offset);
+            let (milliseconds, localised) =
+                timed_offset(&mut scene, &mut app_core, dragged, offset);
             let recentre = scene.recentre_voxels_for_resolve(DENSITY).voxels();
             if recentre == previous_recentre {
                 grow_unshifted_samples.push(milliseconds);

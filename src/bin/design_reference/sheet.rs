@@ -4,7 +4,9 @@
 //! Layout rules are the design's own: zero corner radius, 1 px hairlines, flat fills, monospace
 //! throughout, UPPERCASE micro-labels at ~2 px letter-spacing, and exactly one accent.
 
-use egui::{Align, Color32, FontId, Layout, Painter, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{
+    Align, Color32, FontId, Layout, Painter, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
+};
 use ui::gizmos::{self, Axis, HandleState};
 use ui::icons::large::LargeIcon;
 use ui::icons::{Group, Icon};
@@ -141,7 +143,8 @@ impl Sheet {
                 Sense::hover(),
             );
             let painter = ui.painter_at(rect);
-            let cell = Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 4.0), Vec2::new(34.0, 14.0));
+            let cell =
+                Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 4.0), Vec2::new(34.0, 14.0));
             // A mid-grey backing under every swatch so a TRANSPARENT token (the sketch-plane
             // tints) shows its true weight rather than vanishing into the near-black page;
             // an opaque token covers it completely, so the backing is invisible there.
@@ -231,14 +234,22 @@ impl Sheet {
     /// Widget specimens, drawn through the shipping Style.
     fn widgets(&self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("button").font(FontId::monospace(10.0)).color(color_palette::TEXT_MUTED));
+            ui.label(
+                RichText::new("button")
+                    .font(FontId::monospace(10.0))
+                    .color(color_palette::TEXT_MUTED),
+            );
             ui.add_space(8.0);
             let _ = ui.button("ACCEPT");
             let _ = ui.button("CANCEL");
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("field").font(FontId::monospace(10.0)).color(color_palette::TEXT_MUTED));
+            ui.label(
+                RichText::new("field")
+                    .font(FontId::monospace(10.0))
+                    .color(color_palette::TEXT_MUTED),
+            );
             ui.add_space(8.0);
             let mut measurement = String::from("3 blocks 8 voxels");
             ui.add(egui::TextEdit::singleline(&mut measurement).desired_width(190.0));
@@ -250,14 +261,22 @@ impl Sheet {
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("slider").font(FontId::monospace(10.0)).color(color_palette::TEXT_MUTED));
+            ui.label(
+                RichText::new("slider")
+                    .font(FontId::monospace(10.0))
+                    .color(color_palette::TEXT_MUTED),
+            );
             ui.add_space(8.0);
             let mut layer = 56.0_f32;
             ui.add(egui::Slider::new(&mut layer, 0.0..=128.0).show_value(false));
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("selected row").font(FontId::monospace(10.0)).color(color_palette::TEXT_MUTED));
+            ui.label(
+                RichText::new("selected row")
+                    .font(FontId::monospace(10.0))
+                    .color(color_palette::TEXT_MUTED),
+            );
             ui.add_space(8.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(260.0, 22.0), Sense::hover());
             let painter = ui.painter_at(rect);
@@ -392,7 +411,11 @@ impl Sheet {
         if hovered {
             painter.rect_filled(rect, 0.0, color_palette::HOVER_BG);
         }
-        let color = if hovered { color_palette::TEXT_HOVER } else { color_palette::TEXT_MUTED };
+        let color = if hovered {
+            color_palette::TEXT_HOVER
+        } else {
+            color_palette::TEXT_MUTED
+        };
         // 30 pt — a shape cell.
         tile.draw(
             &painter,
@@ -424,7 +447,11 @@ impl Sheet {
             color_palette::TEXT_HINT,
             width - 158.0,
         );
-        painter.galley(rect.left_top() + Vec2::new(146.0, 25.0), note, color_palette::TEXT_HINT);
+        painter.galley(
+            rect.left_top() + Vec2::new(146.0, 25.0),
+            note,
+            color_palette::TEXT_HINT,
+        );
         painter.line_segment(
             [rect.left_bottom(), rect.right_bottom()],
             Stroke::new(1.0_f32, color_palette::RULE),
@@ -532,9 +559,19 @@ impl Sheet {
              (X warn · Y green) runs through it — axis-lock as a by-product of the lattice.",
             |p, s| {
                 let c = Pos2::new(s.center().x + 8.0, s.center().y);
-                gizmos::axis_guide(p, Pos2::new(s.left() + 16.0, c.y), Pos2::new(s.right() - 16.0, c.y), Axis::X);
+                gizmos::axis_guide(
+                    p,
+                    Pos2::new(s.left() + 16.0, c.y),
+                    Pos2::new(s.right() - 16.0, c.y),
+                    Axis::X,
+                );
                 gizmos::vertex_handle(p, c, 3.5, HandleState::Selected);
-                gizmos::label_chip(p, Pos2::new(c.x + 11.0, c.y - 24.0), "x-axis", Axis::X.color());
+                gizmos::label_chip(
+                    p,
+                    Pos2::new(c.x + 11.0, c.y - 24.0),
+                    "x-axis",
+                    Axis::X.color(),
+                );
             },
         );
     }
@@ -629,7 +666,10 @@ impl Sheet {
         let width = ui.available_width().min(CONTENT_WIDTH);
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 104.0), Sense::hover());
         let painter = ui.painter_at(rect);
-        let stage = Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 6.0), Vec2::new(206.0, 92.0));
+        let stage = Rect::from_min_size(
+            rect.left_top() + Vec2::new(0.0, 6.0),
+            Vec2::new(206.0, 92.0),
+        );
         plane_stage(&painter, stage);
         draw(&painter, stage);
         let text_x = 224.0;
@@ -646,7 +686,11 @@ impl Sheet {
             color_palette::TEXT_MUTED,
             width - text_x - 12.0,
         );
-        painter.galley(rect.left_top() + Vec2::new(text_x, 32.0), note_galley, color_palette::TEXT_MUTED);
+        painter.galley(
+            rect.left_top() + Vec2::new(text_x, 32.0),
+            note_galley,
+            color_palette::TEXT_MUTED,
+        );
         painter.line_segment(
             [rect.left_bottom(), rect.right_bottom()],
             Stroke::new(1.0_f32, color_palette::RULE),
@@ -694,7 +738,10 @@ fn section(ui: &mut Ui, title: &str, subtitle: &str) {
         );
     });
     ui.add_space(4.0);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(CONTENT_WIDTH), 1.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width().min(CONTENT_WIDTH), 1.0),
+        Sense::hover(),
+    );
     ui.painter_at(rect).line_segment(
         [rect.left_top(), rect.right_top()],
         Stroke::new(1.0_f32, color_palette::BORDER),
@@ -711,19 +758,38 @@ fn plane_stage(painter: &Painter, rect: Rect) {
     let step = 15.0;
     let (mut i, mut x) = (1, rect.left() + step);
     while x < rect.right() - 0.5 {
-        let color = if i % 3 == 0 { color_palette::SKETCH_PLANE_GRID_BLOCK } else { color_palette::SKETCH_PLANE_GRID };
-        painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, color));
+        let color = if i % 3 == 0 {
+            color_palette::SKETCH_PLANE_GRID_BLOCK
+        } else {
+            color_palette::SKETCH_PLANE_GRID
+        };
+        painter.line_segment(
+            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+            Stroke::new(1.0_f32, color),
+        );
         x += step;
         i += 1;
     }
     let (mut j, mut y) = (1, rect.top() + step);
     while y < rect.bottom() - 0.5 {
-        let color = if j % 3 == 0 { color_palette::SKETCH_PLANE_GRID_BLOCK } else { color_palette::SKETCH_PLANE_GRID };
-        painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], Stroke::new(1.0_f32, color));
+        let color = if j % 3 == 0 {
+            color_palette::SKETCH_PLANE_GRID_BLOCK
+        } else {
+            color_palette::SKETCH_PLANE_GRID
+        };
+        painter.line_segment(
+            [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+            Stroke::new(1.0_f32, color),
+        );
         y += step;
         j += 1;
     }
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, color_palette::BORDER), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0_f32, color_palette::BORDER),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// `#rrggbb` for a token — or `#rrggbbaa` when it carries alpha, so a transparent tint states the

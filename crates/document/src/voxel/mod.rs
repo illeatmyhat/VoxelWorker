@@ -166,7 +166,6 @@ pub trait VoxelProducer: Send + Sync {
     fn full_dimensions(&self, voxels_per_block: u32) -> [u32; 3];
 }
 
-
 /// Clamp a producer window to `[0, full_dim)` per axis and return the per-axis
 /// iteration bounds `[lo, hi)` as `u32` (already intersected with the grid). When the
 /// window lies fully outside the grid on any axis the returned range is EMPTY
@@ -212,7 +211,10 @@ pub(crate) fn metric_cell_bracket(
         centre[axis] = 0.5 * (low + high);
         half_extent[axis] = 0.5 * (high - low);
     }
-    FieldInterval::from_lipschitz_center(sample_centre(centre), metric.cell_circumradius(half_extent))
+    FieldInterval::from_lipschitz_center(
+        sample_centre(centre),
+        metric.cell_circumradius(half_extent),
+    )
 }
 
 mod composite;

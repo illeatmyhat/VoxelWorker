@@ -1,18 +1,18 @@
 use super::*;
+use crate::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::{ShapeKind, VoxelGrid};
-use crate::voxel::SdfShape;
 
-mod graph;
-mod resolve;
-mod placement;
-mod grids;
-mod subtract;
-mod sealed_scopes;
-mod intersect;
 mod cutter_definitions;
 mod fixture_definitions;
+mod graph;
+mod grids;
+mod intersect;
 mod operand_body;
+mod placement;
+mod resolve;
+mod sealed_scopes;
+mod subtract;
 
 /// Mint stable [`NodeId`]s for a freshly-built test scene (ADR 0003 Phase B3), so a
 /// fixture can name its nodes by id. ADR 0032 dropped the selection this used to set:
@@ -105,13 +105,11 @@ pub(super) fn demo_three_tool_scene(voxels_per_block: u32) -> Scene {
         node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
-    let mut scene = with_minted_ids(
-        Scene::from_nodes(vec![
-            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-        ]),
-    );
+    let mut scene = with_minted_ids(Scene::from_nodes(vec![
+        make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+        make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+        make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+    ]));
     scene.voxels_per_block = voxels_per_block;
     scene
 }
@@ -143,7 +141,12 @@ pub(super) fn demo_village_scene(voxels_per_block: u32) -> Scene {
         "House".to_string(),
         vec![
             tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-            tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            tool(
+                ShapeKind::Cylinder,
+                [1, 2, 1],
+                [0, 2, 0],
+                MaterialChoice::Wood,
+            ),
         ],
     );
     scene.voxels_per_block = voxels_per_block;

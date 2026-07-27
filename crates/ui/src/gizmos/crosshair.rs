@@ -9,8 +9,14 @@ use super::{dashed, STROKE_GUIDE};
 /// indicator's tick-cross on a locked lattice crossing, and the place-point cursor's aiming cross.
 pub fn crosshair(painter: &Painter, center: Pos2, reach: f32, color: Color32, dashed_stroke: bool) {
     let stroke = Stroke::new(STROKE_GUIDE, color);
-    let (v0, v1) = (Pos2::new(center.x, center.y - reach), Pos2::new(center.x, center.y + reach));
-    let (h0, h1) = (Pos2::new(center.x - reach, center.y), Pos2::new(center.x + reach, center.y));
+    let (v0, v1) = (
+        Pos2::new(center.x, center.y - reach),
+        Pos2::new(center.x, center.y + reach),
+    );
+    let (h0, h1) = (
+        Pos2::new(center.x - reach, center.y),
+        Pos2::new(center.x + reach, center.y),
+    );
     if dashed_stroke {
         dashed(painter, v0, v1, stroke);
         dashed(painter, h0, h1, stroke);

@@ -120,8 +120,14 @@ fn gizmo_vertices() -> Vec<LineVertex> {
 
     let mut vertices = Vec::new();
     let mut line = |from: [f32; 3], to: [f32; 3], color: [f32; 4]| {
-        vertices.push(LineVertex { position: from, color });
-        vertices.push(LineVertex { position: to, color });
+        vertices.push(LineVertex {
+            position: from,
+            color,
+        });
+        vertices.push(LineVertex {
+            position: to,
+            color,
+        });
     };
 
     // Three axes from the origin.
@@ -133,22 +139,46 @@ fn gizmo_vertices() -> Vec<LineVertex> {
     // Square line-loops (closed) in the XY, YZ and ZX planes (prototype `sq`).
     let loop_segments = |points: &[[f32; 3]], color: [f32; 4], out: &mut Vec<LineVertex>| {
         for pair in points.windows(2) {
-            out.push(LineVertex { position: pair[0], color });
-            out.push(LineVertex { position: pair[1], color });
+            out.push(LineVertex {
+                position: pair[0],
+                color,
+            });
+            out.push(LineVertex {
+                position: pair[1],
+                color,
+            });
         }
     };
     loop_segments(
-        &[[0.0, 0.0, 0.0], [s, 0.0, 0.0], [s, s, 0.0], [0.0, s, 0.0], [0.0, 0.0, 0.0]],
+        &[
+            [0.0, 0.0, 0.0],
+            [s, 0.0, 0.0],
+            [s, s, 0.0],
+            [0.0, s, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
         square_color,
         &mut vertices,
     );
     loop_segments(
-        &[[0.0, 0.0, 0.0], [0.0, s, 0.0], [0.0, s, s], [0.0, 0.0, s], [0.0, 0.0, 0.0]],
+        &[
+            [0.0, 0.0, 0.0],
+            [0.0, s, 0.0],
+            [0.0, s, s],
+            [0.0, 0.0, s],
+            [0.0, 0.0, 0.0],
+        ],
         square_color,
         &mut vertices,
     );
     loop_segments(
-        &[[0.0, 0.0, 0.0], [0.0, 0.0, s], [s, 0.0, s], [s, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        &[
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, s],
+            [s, 0.0, s],
+            [s, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
         square_color,
         &mut vertices,
     );

@@ -88,7 +88,9 @@ impl OrbitCamera {
     /// the two projections genuinely part company for this purpose.
     pub fn view_extent_at_depth(&self, depth: f32) -> f32 {
         match self.projection_mode {
-            ProjectionMode::Perspective => 2.0 * depth.max(0.0) * half_extent_factor(self.projection_mode),
+            ProjectionMode::Perspective => {
+                2.0 * depth.max(0.0) * half_extent_factor(self.projection_mode)
+            }
             ProjectionMode::Orthographic => {
                 2.0 * self.orbit_distance.max(0.0) * half_extent_factor(self.projection_mode)
             }
@@ -181,7 +183,11 @@ mod tests {
     const BLOCK: f32 = 16.0;
 
     fn camera(projection_mode: ProjectionMode, orbit_distance: f32) -> OrbitCamera {
-        OrbitCamera { orbit_distance, projection_mode, ..OrbitCamera::default() }
+        OrbitCamera {
+            orbit_distance,
+            projection_mode,
+            ..OrbitCamera::default()
+        }
     }
 
     /// **The bound is one number in both projections**, because the orthographic half-height
@@ -190,8 +196,10 @@ mod tests {
     /// agreement fails a test rather than silently making one mode place further than the other.
     #[test]
     fn the_limit_agrees_across_projections() {
-        let perspective = camera(ProjectionMode::Perspective, 100.0).authorable_distance_limit(BLOCK);
-        let orthographic = camera(ProjectionMode::Orthographic, 100.0).authorable_distance_limit(BLOCK);
+        let perspective =
+            camera(ProjectionMode::Perspective, 100.0).authorable_distance_limit(BLOCK);
+        let orthographic =
+            camera(ProjectionMode::Orthographic, 100.0).authorable_distance_limit(BLOCK);
         let relative_gap = (perspective - orthographic).abs() / perspective;
         assert!(
             relative_gap < 0.02,
@@ -227,8 +235,14 @@ mod tests {
     fn zooming_out_past_the_limit_disables_authoring() {
         for mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
             let limit = camera(mode, 1.0).authorable_distance_limit(BLOCK);
-            assert!(camera(mode, limit * 0.5).can_author_at_all(BLOCK), "{mode:?} inside the limit");
-            assert!(!camera(mode, limit * 2.0).can_author_at_all(BLOCK), "{mode:?} beyond it");
+            assert!(
+                camera(mode, limit * 0.5).can_author_at_all(BLOCK),
+                "{mode:?} inside the limit"
+            );
+            assert!(
+                !camera(mode, limit * 2.0).can_author_at_all(BLOCK),
+                "{mode:?} beyond it"
+            );
         }
     }
 
@@ -240,8 +254,14 @@ mod tests {
     fn depth_matters_under_perspective_and_not_under_orthographic() {
         let limit = camera(ProjectionMode::Perspective, 1.0).authorable_distance_limit(BLOCK);
         let perspective = camera(ProjectionMode::Perspective, limit * 0.5);
-        assert!(perspective.depth_is_authorable(limit * 0.5, BLOCK), "at the target");
-        assert!(!perspective.depth_is_authorable(limit * 4.0, BLOCK), "far beyond the target");
+        assert!(
+            perspective.depth_is_authorable(limit * 0.5, BLOCK),
+            "at the target"
+        );
+        assert!(
+            !perspective.depth_is_authorable(limit * 4.0, BLOCK),
+            "far beyond the target"
+        );
 
         let orthographic = camera(ProjectionMode::Orthographic, limit * 0.5);
         assert!(
@@ -257,8 +277,15 @@ mod tests {
         let probe = camera(ProjectionMode::Perspective, 1.0);
         let small = probe.authorable_distance_limit(BLOCK);
         let doubled = probe.authorable_distance_limit(BLOCK * 2.0);
-        assert!((doubled - small * 2.0).abs() < 1e-2, "{doubled} should be twice {small}");
-        assert_eq!(probe.authorable_distance_limit(0.0), 0.0, "a zero-size block is never authorable");
+        assert!(
+            (doubled - small * 2.0).abs() < 1e-2,
+            "{doubled} should be twice {small}"
+        );
+        assert_eq!(
+            probe.authorable_distance_limit(0.0),
+            0.0,
+            "a zero-size block is never authorable"
+        );
     }
 
     /// The whole point of a screen-stable gizmo: its apparent size (world size ÷ view extent at
@@ -302,10 +329,16 @@ mod tests {
             let axis_tip = anchor + glam::Vec3::Z * size;
             // The scene's own matrix, sized to a small (~5-block) model, clips the tip.
             let scene_vp = probe.view_projection(1.6, anchor, 45.0);
-            assert!(!within_depth(scene_vp, axis_tip), "{mode:?}: scene matrix should clip the tip");
+            assert!(
+                !within_depth(scene_vp, axis_tip),
+                "{mode:?}: scene matrix should clip the tip"
+            );
             // The overlay matrix brackets it with room to spare.
             let overlay_vp = probe.overlay_view_projection(1.6, anchor);
-            assert!(within_depth(overlay_vp, axis_tip), "{mode:?}: overlay matrix must keep the tip");
+            assert!(
+                within_depth(overlay_vp, axis_tip),
+                "{mode:?}: overlay matrix must keep the tip"
+            );
         }
     }
 }

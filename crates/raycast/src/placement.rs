@@ -267,11 +267,17 @@ mod tests {
         // Looking down fairly steeply but with a strong sideways component: |z| beats the
         // threshold though |x| is larger. Ground must still win.
         let direction = Vec3::new(0.8, 0.0, -0.4).normalize();
-        assert!(direction.x.abs() > direction.z.abs(), "set up so a vertical is better-faced");
+        assert!(
+            direction.x.abs() > direction.z.abs(),
+            "set up so a vertical is better-faced"
+        );
         assert_eq!(select_world_plane(direction, GRAZE), WorldPlane::Ground);
         // Now graze the ground (nearly horizontal): a vertical must take over.
         let grazing = Vec3::new(0.98, 0.1, -0.05).normalize();
-        assert_eq!(select_world_plane(grazing, GRAZE), WorldPlane::VerticalFacingX);
+        assert_eq!(
+            select_world_plane(grazing, GRAZE),
+            WorldPlane::VerticalFacingX
+        );
     }
 
     /// The ordinary empty-space case: looking down at the ground places on it, under the cursor,
@@ -283,7 +289,10 @@ mod tests {
         match resolve_placement(None, cursor, GRAZE, anywhere) {
             PlacementTarget::OnWorldPlane { point, plane } => {
                 assert_eq!(plane, WorldPlane::Ground);
-                assert!((point - Vec3::new(5.0, 7.0, 0.0)).length() < 1e-4, "landed at {point}");
+                assert!(
+                    (point - Vec3::new(5.0, 7.0, 0.0)).length() < 1e-4,
+                    "landed at {point}"
+                );
             }
             other => panic!("expected OnWorldPlane(Ground), got {other:?}"),
         }
@@ -310,7 +319,10 @@ mod tests {
     #[test]
     fn pointing_away_from_every_plane_is_no_surface() {
         let skyward = ray([0.0, 0.0, 10.0], [0.0, 0.0, 1.0]);
-        assert_eq!(resolve_placement(None, skyward, GRAZE, anywhere), PlacementTarget::NoSurface);
+        assert_eq!(
+            resolve_placement(None, skyward, GRAZE, anywhere),
+            PlacementTarget::NoSurface
+        );
     }
 
     /// A geometry hit is reported exactly, normal and all — the surface is where it is, and
@@ -321,7 +333,10 @@ mod tests {
         let hit = Vec3::new(0.0, 0.0, 2.0);
         assert_eq!(
             resolve_placement(Some((hit, [0, 0, 1])), cursor, GRAZE, anywhere),
-            PlacementTarget::OnSurface { point: hit, face_normal: [0, 0, 1] }
+            PlacementTarget::OnSurface {
+                point: hit,
+                face_normal: [0, 0, 1]
+            }
         );
     }
 
@@ -335,7 +350,10 @@ mod tests {
         let far = Vec3::new(0.0, 0.0, -900.0); // depth 910 from the eye
         assert_eq!(
             resolve_placement(Some((near, [0, 0, 1])), cursor, GRAZE, within_100),
-            PlacementTarget::OnSurface { point: near, face_normal: [0, 0, 1] }
+            PlacementTarget::OnSurface {
+                point: near,
+                face_normal: [0, 0, 1]
+            }
         );
         assert_eq!(
             resolve_placement(Some((far, [0, 0, 1])), cursor, GRAZE, within_100),
@@ -355,7 +373,10 @@ mod tests {
             PlacementTarget::OnWorldPlane { .. }
         ));
         let far = ray([0.0, 0.0, 4000.0], [0.0, 0.0, -1.0]);
-        assert_eq!(resolve_placement(None, far, GRAZE, within_100), PlacementTarget::TooFar);
+        assert_eq!(
+            resolve_placement(None, far, GRAZE, within_100),
+            PlacementTarget::TooFar
+        );
     }
 
     /// **The distinction the viewport hangs on.** `NoSurface` ("point toward the ground") and

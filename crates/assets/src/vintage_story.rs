@@ -72,7 +72,12 @@ fn candidate_assets_roots() -> Vec<PathBuf> {
         let home = Path::new(&home);
         // Linux config / data dirs.
         push_if_exists(home.join(".config").join("Vintagestory").join("assets"));
-        push_if_exists(home.join(".local").join("share").join("vintagestory").join("assets"));
+        push_if_exists(
+            home.join(".local")
+                .join("share")
+                .join("vintagestory")
+                .join("assets"),
+        );
         // Flatpak.
         push_if_exists(
             home.join(".var")
@@ -97,9 +102,7 @@ fn candidate_assets_roots() -> Vec<PathBuf> {
     push_if_exists(Path::new("/opt/vintagestory/assets").to_path_buf());
     push_if_exists(Path::new("/usr/share/vintagestory/assets").to_path_buf());
     // macOS system Applications.
-    push_if_exists(
-        Path::new("/Applications/Vintagestory.app/Contents/assets").to_path_buf(),
-    );
+    push_if_exists(Path::new("/Applications/Vintagestory.app/Contents/assets").to_path_buf());
 
     roots
 }
@@ -284,7 +287,10 @@ impl BlockTypeIndex {
             }
         }
 
-        Self { blocks, by_directory }
+        Self {
+            blocks,
+            by_directory,
+        }
     }
 
     /// Find the best blocktype that references the directory of `wanted_stem`.
@@ -364,7 +370,11 @@ fn directory_of_reference(reference: &str) -> Option<String> {
 pub(super) fn scan_block_dir(block_dir: &Path) -> Vec<ScannedTexture> {
     let mut textures = Vec::new();
     let mut walked = 0usize;
-    for entry in WalkDir::new(block_dir).follow_links(false).into_iter().flatten() {
+    for entry in WalkDir::new(block_dir)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
         if !entry.file_type().is_file() {
             continue;
         }

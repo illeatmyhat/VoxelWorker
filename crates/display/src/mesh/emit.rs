@@ -197,7 +197,11 @@ pub(crate) fn emit_boundary_block_cuboids(
 /// a region the band is either CONFINED to it (solid: outside renders finished) or the region
 /// HARD-CLIPS (ghost: only inside is meshed) — see [`RegionRole`].
 #[inline]
-pub(crate) fn voxel_meshed(v: [i64; 3], z_in_band: &dyn Fn(i64) -> bool, region: Option<RegionClip>) -> bool {
+pub(crate) fn voxel_meshed(
+    v: [i64; 3],
+    z_in_band: &dyn Fn(i64) -> bool,
+    region: Option<RegionClip>,
+) -> bool {
     match region {
         None => z_in_band(v[2]),
         Some(clip) => {
@@ -480,9 +484,6 @@ pub(crate) fn box_has_overlay(voxel_box: &VoxelBox) -> bool {
 /// hole). See [`CulledBoxMeshing::face_is_exposed`] and `docs/architecture/03-display.md`.
 pub(crate) fn face_is_exposed(voxel_box: &VoxelBox, region: &VoxelRegion, delta: [i32; 3]) -> bool {
     CulledBoxMeshing::face_is_exposed(voxel_box, delta, |[nx, ny, nz]| {
-        nx >= 0
-            && ny >= 0
-            && nz >= 0
-            && region.cell_at(nx as u32, ny as u32, nz as u32).is_some()
+        nx >= 0 && ny >= 0 && nz >= 0 && region.cell_at(nx as u32, ny as u32, nz as u32).is_some()
     })
 }

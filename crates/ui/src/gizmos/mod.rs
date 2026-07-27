@@ -113,7 +113,12 @@ pub(crate) fn dashed(painter: &Painter, a: Pos2, b: Pos2, stroke: Stroke) {
 /// Stroke a dashed rectangle — once per side, so each side begins on a full dash and the corners
 /// stay square (the icon set's own rule for dashed rects).
 pub(crate) fn dashed_rect(painter: &Painter, rect: Rect, stroke: Stroke) {
-    let corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ];
     for i in 0..4 {
         dashed(painter, corners[i], corners[(i + 1) % 4], stroke);
     }

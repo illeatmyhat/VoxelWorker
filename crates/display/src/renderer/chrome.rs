@@ -91,7 +91,7 @@ fn draw_triangle_arrow(pixels: &mut [u8], size: usize, facing: ArrowFacing) {
     let base = s * 0.74; // the flat base
     let near = s * 0.28; // base extent low
     let far = s * 0.72; // base extent high
-    // Three vertices depending on facing (apex first).
+                        // Three vertices depending on facing (apex first).
     let (ax, ay, bx, by, cx, cy) = match facing {
         ArrowFacing::Up => (s * 0.5, apex, near, base, far, base),
         ArrowFacing::Down => (s * 0.5, base, near, apex, far, apex),
@@ -180,7 +180,11 @@ fn draw_roll_arc(pixels: &mut [u8], size: usize, clockwise: bool) {
     let radius = s * 0.30;
     let thick = s * 0.09;
     // Stroke a 270° arc (leave a gap so the curl reads).
-    let start = if clockwise { 0.6 } else { std::f32::consts::PI - 0.6 };
+    let start = if clockwise {
+        0.6
+    } else {
+        std::f32::consts::PI - 0.6
+    };
     let sweep = std::f32::consts::TAU * 0.75;
     let steps = 96;
     for i in 0..=steps {
@@ -210,7 +214,11 @@ fn draw_roll_arc(pixels: &mut [u8], size: usize, clockwise: bool) {
         }
     }
     // Arrowhead at the arc's END.
-    let end_ang = if clockwise { start + sweep } else { start - sweep };
+    let end_ang = if clockwise {
+        start + sweep
+    } else {
+        start - sweep
+    };
     let hx = cx + end_ang.cos() * radius;
     let hy = cy + end_ang.sin() * radius;
     // Tangent direction at the end (perpendicular to radius, in sweep direction).
@@ -343,10 +351,26 @@ pub(crate) fn build_chrome_overlay(
         array_stride: std::mem::size_of::<ChromeVertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &[
-            wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
-            wgpu::VertexAttribute { offset: 8, shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
-            wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
-            wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Uint32 },
+            wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x2,
+            },
+            wgpu::VertexAttribute {
+                offset: 8,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Float32x2,
+            },
+            wgpu::VertexAttribute {
+                offset: 16,
+                shader_location: 2,
+                format: wgpu::VertexFormat::Float32x4,
+            },
+            wgpu::VertexAttribute {
+                offset: 32,
+                shader_location: 3,
+                format: wgpu::VertexFormat::Uint32,
+            },
         ],
     };
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -387,7 +411,11 @@ pub(crate) fn build_chrome_overlay(
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState { count: sample_count, mask: !0, alpha_to_coverage_enabled: false },
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
     });
@@ -439,7 +467,12 @@ pub(crate) fn build_chrome_vertices(
     // --- The 4 rotate arrows: drawn PERSISTENTLY whenever the view is face-
     // constrained (decoupled from hover); the hovered one is brightened. ---
     if rotate_arrows_visible {
-        for dir in [ArrowDir::Up, ArrowDir::Down, ArrowDir::Left, ArrowDir::Right] {
+        for dir in [
+            ArrowDir::Up,
+            ArrowDir::Down,
+            ArrowDir::Left,
+            ArrowDir::Right,
+        ] {
             let (glyph, cx, cy) = rotate_arrow_layout(dir);
             let hovered = hovered_zone == Some(CubeChromeZone::RotateArrow(dir));
             push_glyph_quad(&mut verts, glyph, cx, cy, 0.075, 0.075, tint(hovered));
@@ -481,7 +514,12 @@ fn push_glyph_quad(
     ];
     let v = |i: usize| {
         let (fx, fy, u, t) = corners[i];
-        ChromeVertex { position: to_ndc(fx, fy), uv: [u, t], color, layer }
+        ChromeVertex {
+            position: to_ndc(fx, fy),
+            uv: [u, t],
+            color,
+            layer,
+        }
     };
     // TL,TR,BR  +  TL,BR,BL
     verts.extend_from_slice(&[v(0), v(1), v(2), v(0), v(2), v(3)]);

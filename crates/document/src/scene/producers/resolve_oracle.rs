@@ -5,12 +5,12 @@
 //! plus their per-leaf stamp / mask helpers ([`stamp_producer`] / [`mask_producer`]).
 //! See the proof chapter's "Oracles" section (`docs/architecture/05-proof.md`).
 
-use voxel_core::voxel::VoxelGrid;
 use crate::voxel::VoxelProducer;
+use voxel_core::voxel::VoxelGrid;
 
-use super::*;
 use super::gather::{dense_leaf_placement, gather_placed_field_into_grid, leaf_is_out_of_phase};
 use super::scope_fold::sync_grid_scope_stack;
+use super::*;
 use crate::scene::*;
 
 impl Scene {

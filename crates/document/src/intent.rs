@@ -22,11 +22,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use voxel_core::core_geom::MaterialChoice;
 use crate::scene::{CombineOp, DefId, Node, NodeContent, NodeGrids, NodeId, VoxelBody};
 use crate::sketch::SketchSolid;
-use voxel_core::units::Measurement;
 use crate::voxel::SdfShape;
+use voxel_core::core_geom::MaterialChoice;
+use voxel_core::units::Measurement;
 
 /// A **by-value node payload** for the structural add intents (ADR 0003 Phase C).
 ///
@@ -88,9 +88,10 @@ impl NodeSpec {
             NodeSpec::Sketch { producer, material } => {
                 Node::new("Sketch", NodeContent::SketchTool { producer, material })
             }
-            NodeSpec::CloudsPart => {
-                Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }))
-            }
+            NodeSpec::CloudsPart => Node::new(
+                "Clouds",
+                NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }),
+            ),
         }
     }
 }

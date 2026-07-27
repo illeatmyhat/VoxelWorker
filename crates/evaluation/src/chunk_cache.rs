@@ -13,9 +13,7 @@ pub use crate::store::{ChunkCacheKey, ChunkResolveCache, Store};
 #[cfg(test)]
 mod scene_cache_equivalence_tests {
     use crate::store::ChunkResolveCache;
-    use document::scene::{
-        DefId, Node, NodeContent, NodeTransform, Scene,
-    };
+    use document::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
     use document::voxel::{GeometryParams, SdfShape};
     use voxel_core::core_geom::MaterialChoice;
     use voxel_core::voxel::{ShapeKind, VoxelGrid};
@@ -88,7 +86,13 @@ mod scene_cache_equivalence_tests {
             ShapeKind::Box,
         ] {
             let scene = Scene::from_geometry(
-                GeometryParams { shape: kind, size_voxels: [5 * 16, 5 * 16, 5 * 16], size_measurements: None, voxels_per_block: 16, wall_blocks: 1 },
+                GeometryParams {
+                    shape: kind,
+                    size_voxels: [5 * 16, 5 * 16, 5 * 16],
+                    size_measurements: None,
+                    voxels_per_block: 16,
+                    wall_blocks: 1,
+                },
                 MaterialChoice::Stone,
             );
             assert_equal(&scene, 16, &format!("{kind:?}"));
@@ -98,7 +102,13 @@ mod scene_cache_equivalence_tests {
         for vpb in [1u32, 8, 16] {
             for size in [[5u32, 1, 5], [3, 1, 3], [5, 3, 5], [1, 1, 1]] {
                 let scene = Scene::from_geometry(
-                    GeometryParams { shape: ShapeKind::Cylinder, size_voxels: [size[0] * vpb, size[1] * vpb, size[2] * vpb], size_measurements: None, voxels_per_block: vpb, wall_blocks: 1 },
+                    GeometryParams {
+                        shape: ShapeKind::Cylinder,
+                        size_voxels: [size[0] * vpb, size[1] * vpb, size[2] * vpb],
+                        size_measurements: None,
+                        voxels_per_block: vpb,
+                        wall_blocks: 1,
+                    },
                     MaterialChoice::Stone,
                 );
                 assert_equal(&scene, vpb, &format!("cylinder {size:?}@{vpb}"));
@@ -143,7 +153,12 @@ mod scene_cache_equivalence_tests {
             "House",
             vec![
                 tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+                tool(
+                    ShapeKind::Cylinder,
+                    [1, 2, 1],
+                    [0, 2, 0],
+                    MaterialChoice::Wood,
+                ),
             ],
         );
         let village = with_minted_ids(village);
@@ -201,49 +216,56 @@ mod scene_cache_equivalence_tests {
         };
 
         // Run the four-invariant battery on one scene, returning its decoded cell set.
-        let check = |scene: &Scene, vpb: u32, label: &str| -> std::collections::BTreeSet<[i64; 3]> {
-            let dims = scene.placed_region_dimensions(vpb);
-            let monolithic = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
-            let mut cache = ChunkResolveCache::new();
-            let assembled = cache.resolve_region(scene, vpb, 0);
+        let check =
+            |scene: &Scene, vpb: u32, label: &str| -> std::collections::BTreeSet<[i64; 3]> {
+                let dims = scene.placed_region_dimensions(vpb);
+                let monolithic = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+                let mut cache = ChunkResolveCache::new();
+                let assembled = cache.resolve_region(scene, vpb, 0);
 
-            assert_eq!(monolithic.dimensions, dims, "[{label}] monolithic dims voxel-framed");
-            assert_eq!(assembled.dimensions, dims, "[{label}] assembled dims voxel-framed");
+                assert_eq!(
+                    monolithic.dimensions, dims,
+                    "[{label}] monolithic dims voxel-framed"
+                );
+                assert_eq!(
+                    assembled.dimensions, dims,
+                    "[{label}] assembled dims voxel-framed"
+                );
 
-            // (a) every centre is a half-integer.
-            for voxel in &monolithic.occupied {
-                let position = voxel.world_position();
-                for axis in 0..3 {
-                    assert_eq!(
+                // (a) every centre is a half-integer.
+                for voxel in &monolithic.occupied {
+                    let position = voxel.world_position();
+                    for axis in 0..3 {
+                        assert_eq!(
                         position[axis].fract().abs(),
                         0.5,
                         "[{label}] centre {:?} axis {axis} must be a half-integer (on the lattice)",
                         position
                     );
+                    }
                 }
-            }
-            // (c) every decoded index is in [0, dim).
-            for voxel in &monolithic.occupied {
-                let position = voxel.world_position();
-                for (axis, &dim) in dims.iter().enumerate() {
-                    let half = (dim / 2) as f32;
-                    let index = (position[axis] + half - 0.5).round() as i64;
-                    assert!(
+                // (c) every decoded index is in [0, dim).
+                for voxel in &monolithic.occupied {
+                    let position = voxel.world_position();
+                    for (axis, &dim) in dims.iter().enumerate() {
+                        let half = (dim / 2) as f32;
+                        let index = (position[axis] + half - 0.5).round() as i64;
+                        assert!(
                         index >= 0 && index < dim as i64,
                         "[{label}] voxel {:?} axis {axis} decodes to {index} OUTSIDE [0, {dim})",
                         position
                     );
+                    }
                 }
-            }
-            // (d) the two paths emit the identical voxel set.
-            assert_eq!(
-                multiset(&monolithic),
-                multiset(&assembled),
-                "[{label}] monolithic and chunk paths must emit the identical voxel set"
-            );
-            assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty");
-            decode_cells(&monolithic)
-        };
+                // (d) the two paths emit the identical voxel set.
+                assert_eq!(
+                    multiset(&monolithic),
+                    multiset(&assembled),
+                    "[{label}] monolithic and chunk paths must emit the identical voxel set"
+                );
+                assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty");
+                decode_cells(&monolithic)
+            };
 
         for vpb in [1u32, 2, 5, 15, 16] {
             // --- single shape: a Box fully fills `size·d`³ cells, zero dropped (b). ---
@@ -268,7 +290,8 @@ mod scene_cache_equivalence_tests {
                 );
                 let monolithic = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
                 assert_eq!(
-                    monolithic.occupied_count(), expected,
+                    monolithic.occupied_count(),
+                    expected,
                     "[{label}] (b) occupied count must equal the filled-cell count"
                 );
             }

@@ -166,8 +166,14 @@ mod frame_envelope_tests {
         for density in [1u32, 4, 16, 32, 64] {
             let limit = max_supported_block_offset(density);
             let last = limit * density as i64;
-            assert!(local_voxel_index_fits(last), "density {density}: limit must fit");
-            assert_eq!(last as i32 as i64, last, "density {density}: cast must be lossless");
+            assert!(
+                local_voxel_index_fits(last),
+                "density {density}: limit must fit"
+            );
+            assert_eq!(
+                last as i32 as i64, last,
+                "density {density}: cast must be lossless"
+            );
             assert!(
                 !local_voxel_index_fits((limit + 1) * density as i64),
                 "density {density}: the bound must be TIGHT"

@@ -74,7 +74,13 @@ impl AppCore {
         viewport: [f32; 4],
         frame: &PickFrame<'_>,
     ) -> Option<VoxelPick> {
-        let PickFrame { region_dimensions, recentre_voxels, density, chunks, band } = *frame;
+        let PickFrame {
+            region_dimensions,
+            recentre_voxels,
+            density,
+            chunks,
+            band,
+        } = *frame;
         if chunks.is_empty() || viewport[2] <= 0.0 || viewport[3] <= 0.0 {
             return None;
         }
@@ -110,10 +116,8 @@ impl AppCore {
         // Into the shading-absolute frame: the same `+ grid_half_extent` the display's camera ray
         // applies, so a pick and a pixel agree about where the ray is.
         let half_extent = glam::Vec3::new(half[0] as f32, half[1] as f32, half[2] as f32);
-        let march_ray = substrate::spatial::Ray::new(
-            world_origin + half_extent,
-            eye_relative_ray.direction,
-        );
+        let march_ray =
+            substrate::spatial::Ray::new(world_origin + half_extent, eye_relative_ray.direction);
 
         // Index the resident set by chunk coord so the occupancy closure is a hash lookup per
         // step rather than a scan of the covering set — a ray crosses many chunks, and the huge
@@ -150,7 +154,8 @@ impl AppCore {
         // `lattice_shift`, which a pick does not have.) An earlier `− shading_to_absolute[2] +
         // half[2]` here added a spurious `half[2]` floor — for a centred scene it clipped every
         // voxel below the region mid-plane, making the LOWER HALF of any object unpickable.
-        let clamp_to_i32 = |value: i64| value.clamp(i32::MIN as i64 + 1, i32::MAX as i64 - 1) as i32;
+        let clamp_to_i32 =
+            |value: i64| value.clamp(i32::MIN as i64 + 1, i32::MAX as i64 - 1) as i32;
         let band_low = clamp_to_i32(band.band_min as i64);
         let band_high = clamp_to_i32(band.band_max as i64 + 1);
 
@@ -249,7 +254,12 @@ mod tests {
         let region_dimensions = output.region_dimensions;
         let recentre_voxels = output.recentre_voxels.voxels();
         let chunks = output.two_layer_chunks.clone();
-        Fixture { app_core, region_dimensions, recentre_voxels, chunks }
+        Fixture {
+            app_core,
+            region_dimensions,
+            recentre_voxels,
+            chunks,
+        }
     }
 
     /// **The invariant that catches a frame error.** Whatever the pick returns must be a
@@ -298,7 +308,9 @@ mod tests {
                     };
                     hits += 1;
 
-                    let coord = pick.absolute_voxel.map(|v| v.div_euclid(chunk_extent) as i32);
+                    let coord = pick
+                        .absolute_voxel
+                        .map(|v| v.div_euclid(chunk_extent) as i32);
                     let local = pick
                         .absolute_voxel
                         .map(|v| v.rem_euclid(chunk_extent) as u32);
@@ -334,8 +346,13 @@ mod tests {
     #[test]
     fn a_pick_against_nothing_misses() {
         let fixture = picking_fixture(ShapeKind::Sphere, [4, 4, 4]);
-        let empty = PickFrame { chunks: &[], ..fixture.frame(LayerBand::FULL) };
-        let pick = fixture.app_core.pick_voxel([640.0, 360.0], VIEWPORT, &empty);
+        let empty = PickFrame {
+            chunks: &[],
+            ..fixture.frame(LayerBand::FULL)
+        };
+        let pick = fixture
+            .app_core
+            .pick_voxel([640.0, 360.0], VIEWPORT, &empty);
         assert_eq!(pick, None, "an empty resident set has nothing to hit");
     }
 
@@ -344,14 +361,22 @@ mod tests {
     #[test]
     fn a_pick_outside_the_band_misses() {
         let fixture = picking_fixture(ShapeKind::Sphere, [6, 6, 6]);
-        let empty_band = LayerBand { band_min: 0, band_max: 0, onion_depth: 0 };
+        let empty_band = LayerBand {
+            band_min: 0,
+            band_max: 0,
+            onion_depth: 0,
+        };
         // Layer 0 alone: the sphere's equator is nowhere near it, so a centre pick must miss
         // even though the same ray hits under a full band.
         let full =
-            fixture.app_core.pick_voxel([640.0, 360.0], VIEWPORT, &fixture.frame(LayerBand::FULL));
+            fixture
+                .app_core
+                .pick_voxel([640.0, 360.0], VIEWPORT, &fixture.frame(LayerBand::FULL));
         assert!(full.is_some(), "the control ray must hit under a full band");
         let clipped =
-            fixture.app_core.pick_voxel([640.0, 360.0], VIEWPORT, &fixture.frame(empty_band));
+            fixture
+                .app_core
+                .pick_voxel([640.0, 360.0], VIEWPORT, &fixture.frame(empty_band));
         assert_ne!(
             clipped, full,
             "a one-layer band must not return the same hit as an unclipped march"
@@ -438,18 +463,23 @@ mod tests {
 
         const VPB: u32 = 16;
         const FAR_BLOCKS: i64 = 900_000;
-        let box_shape =
-            || SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, VPB);
+        let box_shape = || SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, VPB);
 
         // Near box at the origin; far box ~10,000 blocks out on +X. The composite spans both, so
         // the recentre — and thus the render-frame eye — is ~10^5 voxels (the wide baseline).
         let near = Node::new(
             "Near",
-            NodeContent::Tool { shape: box_shape(), material: MaterialChoice::Stone },
+            NodeContent::Tool {
+                shape: box_shape(),
+                material: MaterialChoice::Stone,
+            },
         );
         let mut far = Node::new(
             "Far",
-            NodeContent::Tool { shape: box_shape(), material: MaterialChoice::Stone },
+            NodeContent::Tool {
+                shape: box_shape(),
+                material: MaterialChoice::Stone,
+            },
         );
         far.transform = NodeTransform::from_blocks([FAR_BLOCKS, 0, 0], VPB);
         let mut scene = Scene::from_nodes(vec![near, far]);
@@ -489,8 +519,10 @@ mod tests {
         let recentre_voxels = output.recentre_voxels.voxels();
         let chunks = output.two_layer_chunks.clone();
         let chunk_extent = (CHUNK_BLOCKS * VPB) as i64;
-        let resident: HashMap<[i32; 3], &TwoLayerChunk> =
-            chunks.iter().map(|(coord, chunk)| (*coord, chunk.as_ref())).collect();
+        let resident: HashMap<[i32; 3], &TwoLayerChunk> = chunks
+            .iter()
+            .map(|(coord, chunk)| (*coord, chunk.as_ref()))
+            .collect();
         let frame = PickFrame {
             region_dimensions,
             recentre_voxels,
@@ -502,18 +534,25 @@ mod tests {
         let mut hits = 0;
         for row in 1..8 {
             for column in 1..8 {
-                let cursor =
-                    [VIEWPORT[2] * column as f32 / 8.0, VIEWPORT[3] * row as f32 / 8.0];
+                let cursor = [
+                    VIEWPORT[2] * column as f32 / 8.0,
+                    VIEWPORT[3] * row as f32 / 8.0,
+                ];
                 let Some(pick) = app_core.pick_voxel(cursor, VIEWPORT, &frame) else {
                     continue;
                 };
                 hits += 1;
 
                 // The hit must be a genuinely solid voxel (the melt names phantom air).
-                let coord = pick.absolute_voxel.map(|v| v.div_euclid(chunk_extent) as i32);
-                let local = pick.absolute_voxel.map(|v| v.rem_euclid(chunk_extent) as u32);
-                let solid =
-                    resident.get(&coord).is_some_and(|chunk| chunk.voxel_occupied(local));
+                let coord = pick
+                    .absolute_voxel
+                    .map(|v| v.div_euclid(chunk_extent) as i32);
+                let local = pick
+                    .absolute_voxel
+                    .map(|v| v.rem_euclid(chunk_extent) as u32);
+                let solid = resident
+                    .get(&coord)
+                    .is_some_and(|chunk| chunk.voxel_occupied(local));
                 assert!(
                     solid,
                     "wide-baseline pick at {cursor:?} named {:?}, which is not solid",

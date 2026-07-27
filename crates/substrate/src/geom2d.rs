@@ -331,8 +331,8 @@ pub fn distance_point_to_segment(a: [f32; 2], b: [f32; 2], point: [f32; 2], metr
             let mut best = at(0.0).min(at(1.0));
             // Slope changes of |gx|, |gy|, and of the max between them.
             let breakpoints = [
-                (offset[0], delta[0]),                     // gx = 0
-                (offset[1], delta[1]),                     // gy = 0
+                (offset[0], delta[0]),                        // gx = 0
+                (offset[1], delta[1]),                        // gy = 0
                 (offset[0] - offset[1], delta[0] - delta[1]), // gx = gy
                 (offset[0] + offset[1], delta[0] + delta[1]), // gx = -gy
             ];
@@ -466,13 +466,29 @@ mod tests {
     #[test]
     fn rectangle_inside_polygon_containment() {
         // Wholly inside.
-        assert!(rectangle_inside_polygon(&UNIT_SQUARE, [1.0, 1.0], [3.0, 3.0]));
+        assert!(rectangle_inside_polygon(
+            &UNIT_SQUARE,
+            [1.0, 1.0],
+            [3.0, 3.0]
+        ));
         // Pokes out the right edge.
-        assert!(!rectangle_inside_polygon(&UNIT_SQUARE, [1.0, 1.0], [5.0, 3.0]));
+        assert!(!rectangle_inside_polygon(
+            &UNIT_SQUARE,
+            [1.0, 1.0],
+            [5.0, 3.0]
+        ));
         // Degenerate (single point) inside.
-        assert!(rectangle_inside_polygon(&UNIT_SQUARE, [2.0, 2.0], [2.0, 2.0]));
+        assert!(rectangle_inside_polygon(
+            &UNIT_SQUARE,
+            [2.0, 2.0],
+            [2.0, 2.0]
+        ));
         // Inverted rectangle rejected.
-        assert!(!rectangle_inside_polygon(&UNIT_SQUARE, [3.0, 3.0], [1.0, 1.0]));
+        assert!(!rectangle_inside_polygon(
+            &UNIT_SQUARE,
+            [3.0, 3.0],
+            [1.0, 1.0]
+        ));
     }
 
     /// The Chebyshev segment distance is derived from a breakpoint argument rather than a
@@ -490,8 +506,14 @@ mod tests {
             ([2.0, 2.0], [2.0, 2.0]),   // degenerate
         ];
         let probes = [
-            [0.0, 0.0], [1.0, 1.0], [5.0, 5.0], [-2.0, 3.0],
-            [2.5, -1.5], [7.0, 0.5], [0.5, 7.0], [3.3, 3.7],
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [5.0, 5.0],
+            [-2.0, 3.0],
+            [2.5, -1.5],
+            [7.0, 0.5],
+            [0.5, 7.0],
+            [3.3, 3.7],
         ];
         for (a, b) in segments {
             for point in probes {
@@ -514,8 +536,8 @@ mod tests {
                 );
                 // And it must not be spuriously low: the sampler cannot miss the true minimum
                 // by more than one step's worth of travel, the field being 1-Lipschitz.
-                let step_travel = Metric::Chebyshev.length([b[0] - a[0], b[1] - a[1]])
-                    / STEPS as f32;
+                let step_travel =
+                    Metric::Chebyshev.length([b[0] - a[0], b[1] - a[1]]) / STEPS as f32;
                 assert!(
                     sampled - closed_form <= step_travel + 1e-6,
                     "segment {a:?}→{b:?} point {point:?}: closed form {closed_form} is below \
@@ -536,7 +558,10 @@ mod tests {
             assert!(edge.abs() < 1e-9, "{metric:?} edge = {edge}");
             // Straight out from an edge: 1 away in both metrics.
             let outside = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [5.0, 2.0], metric);
-            assert!((outside - 1.0).abs() < 1e-9, "{metric:?} outside = {outside}");
+            assert!(
+                (outside - 1.0).abs() < 1e-9,
+                "{metric:?} outside = {outside}"
+            );
             // Inside is negative, outside positive.
             assert!(signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [1.0, 1.0], metric) < 0.0);
             assert!(signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [9.0, 9.0], metric) > 0.0);
@@ -544,9 +569,14 @@ mod tests {
         // Diagonally off a corner is where the metrics part company: the corner (4,4) is
         // (3,3) away, so Euclidean reads 3√2 while Chebyshev reads 3.
         let corner = [7.0, 7.0];
-        let euclidean = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, corner, Metric::Euclidean);
-        let chebyshev = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, corner, Metric::Chebyshev);
-        assert!((euclidean - 18.0f32.sqrt()).abs() < 1e-9, "euclidean = {euclidean}");
+        let euclidean =
+            signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, corner, Metric::Euclidean);
+        let chebyshev =
+            signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, corner, Metric::Chebyshev);
+        assert!(
+            (euclidean - 18.0f32.sqrt()).abs() < 1e-9,
+            "euclidean = {euclidean}"
+        );
         assert!((chebyshev - 3.0).abs() < 1e-9, "chebyshev = {chebyshev}");
     }
 
@@ -557,8 +587,13 @@ mod tests {
     fn polygon_signed_distance_is_one_lipschitz_in_its_own_metric() {
         // A deliberately awkward profile: reflex corner, a spike, and a self-intersection.
         let profile: [[f32; 2]; 7] = [
-            [0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [3.0, 2.0],
-            [0.0, 6.0], [4.0, -1.0], [1.0, 4.0],
+            [0.0, 0.0],
+            [6.0, 0.0],
+            [6.0, 6.0],
+            [3.0, 2.0],
+            [0.0, 6.0],
+            [4.0, -1.0],
+            [1.0, 4.0],
         ];
         for metric in [Metric::Euclidean, Metric::Chebyshev] {
             let mut worst: f32 = 0.0;
@@ -596,10 +631,8 @@ mod tests {
         for xi in -10..=15i32 {
             for yi in -10..=15i32 {
                 let p = [xi as f32 * 0.5, yi as f32 * 0.5];
-                let chebyshev =
-                    signed_distance_to_polygon(&profile, p, Metric::Chebyshev).abs();
-                let euclidean =
-                    signed_distance_to_polygon(&profile, p, Metric::Euclidean).abs();
+                let chebyshev = signed_distance_to_polygon(&profile, p, Metric::Chebyshev).abs();
+                let euclidean = signed_distance_to_polygon(&profile, p, Metric::Euclidean).abs();
                 // `1e-5` is a few `f32` ulps at these magnitudes (distances run to ~10, and
                 // one ulp there is ~1e-6). The tight side is the upper bound, where the
                 // sqrt(2) factor is ATTAINED exactly on a 45° diagonal — at [-4.5, -4.5]

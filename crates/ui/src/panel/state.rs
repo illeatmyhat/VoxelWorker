@@ -64,10 +64,14 @@ impl PlacementGhost {
             self.offset_voxels[1] as f32 + self.offset_local[1],
             self.offset_voxels[2] as f32 + self.offset_local[2],
         );
-        let placement =
-            LeafPlacement::new(self.rotation, full, TrueWorldVoxelPoint::from_voxels(world_offset));
-        let centre_absolute =
-            placement.world_of(ProducerLocalVoxelPoint::from_voxels(full * 0.5)).voxels();
+        let placement = LeafPlacement::new(
+            self.rotation,
+            full,
+            TrueWorldVoxelPoint::from_voxels(world_offset),
+        );
+        let centre_absolute = placement
+            .world_of(ProducerLocalVoxelPoint::from_voxels(full * 0.5))
+            .voxels();
         let recentre = glam::Vec3::new(
             recentre_voxels[0] as f32,
             recentre_voxels[1] as f32,
@@ -765,10 +769,6 @@ mod tests {
     use document::voxel::SdfShape;
     use voxel_core::voxel::ShapeKind;
 
-
-
-
-
     /// **The ghost centre carries the sub-voxel `offset_local`** — a `NoSnap` drop's fractional
     /// remainder — so the translucent preview sits exactly where the committed node lands rather
     /// than snapping to the integer voxel (the off-by-a-few-voxels mismatch a user hit in `NoSnap`
@@ -786,7 +786,10 @@ mod tests {
             offset_local: [0.0, 0.0, 0.0],
             rotation: glam::Quat::IDENTITY,
         };
-        let shifted = PlacementGhost { offset_local: [0.25, -0.5, 0.75], ..base.clone() };
+        let shifted = PlacementGhost {
+            offset_local: [0.25, -0.5, 0.75],
+            ..base.clone()
+        };
         let base_centre = base.center_world(recentre, density);
         let shifted_centre = shifted.center_world(recentre, density);
         assert_eq!(

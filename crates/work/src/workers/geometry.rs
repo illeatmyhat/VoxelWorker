@@ -36,11 +36,11 @@
 
 use std::sync::Arc;
 
-use voxel_core::voxel::RecentreVoxels;
+use crate::workers::{build_catching, Worker};
 use display::mesh::CuboidMeshRenderer;
 use display::renderer::{LayerBand, RegionClip};
 use evaluation::two_layer_store::TwoLayerChunk;
-use crate::workers::{build_catching, Worker};
+use voxel_core::voxel::RecentreVoxels;
 
 /// A request to build a wholesale cuboid mesh on the worker (issue #60). Carries the
 /// OWNED two-layer chunks the resolve produced plus the frame parameters
@@ -114,15 +114,19 @@ pub fn spawn_geometry_worker(
     queue: wgpu::Queue,
     color_format: wgpu::TextureFormat,
 ) -> GeometryWorker {
-    Worker::spawn("voxel-worker geometry rebuild", move |request: GeometryRebuildRequest| {
-        let generation = request.generation;
-        let renderer =
-            build_catching(generation, || build_geometry(&device, &queue, color_format, &request));
-        GeometryRebuildResult {
-            generation,
-            renderer,
-        }
-    })
+    Worker::spawn(
+        "voxel-worker geometry rebuild",
+        move |request: GeometryRebuildRequest| {
+            let generation = request.generation;
+            let renderer = build_catching(generation, || {
+                build_geometry(&device, &queue, color_format, &request)
+            });
+            GeometryRebuildResult {
+                generation,
+                renderer,
+            }
+        },
+    )
 }
 
 /// Build the wholesale cuboid mesh for a request (issue #60) — the SAME call the

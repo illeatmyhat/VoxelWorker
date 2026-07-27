@@ -385,7 +385,11 @@ impl OrbitCamera {
     /// Zoom by a wheel step: `distance *= 1 ± 0.08`. Positive `scroll_lines`
     /// zooms in (closer).
     pub fn zoom_by_wheel(&mut self, scroll_lines: f32) {
-        let factor = if scroll_lines > 0.0 { 1.0 - 0.08 } else { 1.0 + 0.08 };
+        let factor = if scroll_lines > 0.0 {
+            1.0 - 0.08
+        } else {
+            1.0 + 0.08
+        };
         self.orbit_distance = (self.orbit_distance * factor).max(0.1);
     }
 }
@@ -437,8 +441,14 @@ mod tests {
         horizontal.pan_by_drag(10.0, 0.0, height);
         let moved = horizontal.target;
         assert!(moved.dot(right) < 0.0, "drag right slides the target left");
-        assert!(approx(moved.dot(screen_up), 0.0), "a horizontal drag has no vertical pan");
-        assert!(approx(moved.dot(forward), 0.0), "pan stays in the view plane");
+        assert!(
+            approx(moved.dot(screen_up), 0.0),
+            "a horizontal drag has no vertical pan"
+        );
+        assert!(
+            approx(moved.dot(forward), 0.0),
+            "pan stays in the view plane"
+        );
 
         // A pure vertical drag DOWN (winit screen-y is down-positive) pulls the
         // scene down, so the target slides UP — along SCREEN up, in the view plane,
@@ -447,9 +457,18 @@ mod tests {
         let mut vertical = OrbitCamera::default();
         vertical.pan_by_drag(0.0, 10.0, height);
         let moved = vertical.target;
-        assert!(moved.dot(screen_up) > 0.0, "drag down slides the target up-screen");
-        assert!(approx(moved.dot(right), 0.0), "a vertical drag has no horizontal pan");
-        assert!(approx(moved.dot(forward), 0.0), "pan stays in the view plane");
+        assert!(
+            moved.dot(screen_up) > 0.0,
+            "drag down slides the target up-screen"
+        );
+        assert!(
+            approx(moved.dot(right), 0.0),
+            "a vertical drag has no horizontal pan"
+        );
+        assert!(
+            approx(moved.dot(forward), 0.0),
+            "pan stays in the view plane"
+        );
         // The vertical pan is genuinely TILTED off world-Z (the bug was using raw up).
         assert!(
             moved.normalize().dot(Vec3::Z) < 0.999,
@@ -458,8 +477,14 @@ mod tests {
 
         // Pan scales with orbit_distance: the SAME drag at twice the distance moves
         // the target exactly twice as far (cursor-locked at any zoom).
-        let mut near = OrbitCamera { orbit_distance: 5.0, ..OrbitCamera::default() };
-        let mut far = OrbitCamera { orbit_distance: 10.0, ..OrbitCamera::default() };
+        let mut near = OrbitCamera {
+            orbit_distance: 5.0,
+            ..OrbitCamera::default()
+        };
+        let mut far = OrbitCamera {
+            orbit_distance: 10.0,
+            ..OrbitCamera::default()
+        };
         near.pan_by_drag(7.0, -3.0, height);
         far.pan_by_drag(7.0, -3.0, height);
         assert!(
@@ -500,7 +525,11 @@ mod tests {
             };
             let up = camera.up_vector();
             assert!(up.is_finite(), "up not finite at phi={phi}: {up:?}");
-            assert!(approx(up.length(), 1.0), "up not unit at phi={phi}: len {}", up.length());
+            assert!(
+                approx(up.length(), 1.0),
+                "up not unit at phi={phi}: len {}",
+                up.length()
+            );
             // View direction is -direction() (camera looks from eye toward target).
             let view_dir = -camera.direction();
             let parallelism = up.dot(view_dir).abs();
@@ -515,12 +544,14 @@ mod tests {
     /// the singular frame — no 1-frame flip.
     #[test]
     fn up_vector_is_continuous_across_pole_band() {
-        let make = |phi: f32| OrbitCamera {
-            orbit_theta: 0.7,
-            orbit_phi: phi,
-            ..OrbitCamera::default()
-        }
-        .up_vector();
+        let make = |phi: f32| {
+            OrbitCamera {
+                orbit_theta: 0.7,
+                orbit_phi: phi,
+                ..OrbitCamera::default()
+            }
+            .up_vector()
+        };
         // Straddle the band edge (UP_BLEND_BAND = 0.05): close, never a flip.
         let inside = make(0.04);
         let outside = make(0.06);
@@ -568,7 +599,10 @@ mod tests {
         }
         .up_vector();
         // (-cos(-π/2), -sin(-π/2), 0) = (0, 1, 0).
-        assert!(approx(top.x, 0.0) && approx(top.y, 1.0) && approx(top.z, 0.0), "{top:?}");
+        assert!(
+            approx(top.x, 0.0) && approx(top.y, 1.0) && approx(top.z, 0.0),
+            "{top:?}"
+        );
 
         let bottom = OrbitCamera {
             orbit_theta: -FRAC_PI_2,
@@ -613,14 +647,25 @@ mod tests {
     /// `roll = π/2` rotates the SCREEN up exactly 90° about the forward axis.
     #[test]
     fn up_vector_roll_quarter_is_perpendicular_to_unrolled() {
-        let camera0 = OrbitCamera { roll: 0.0, ..OrbitCamera::default() };
-        let rolled = OrbitCamera { roll: FRAC_PI_2, ..OrbitCamera::default() }.up_vector();
+        let camera0 = OrbitCamera {
+            roll: 0.0,
+            ..OrbitCamera::default()
+        };
+        let rolled = OrbitCamera {
+            roll: FRAC_PI_2,
+            ..OrbitCamera::default()
+        }
+        .up_vector();
         // The unrolled SCREEN up: base up projected ⊥ forward (what look_at uses).
         let forward = -camera0.direction().normalize();
         let base = camera0.up_vector_base();
         let screen_up0 = (base - forward * base.dot(forward)).normalize();
         assert!(rolled.is_finite(), "rolled up not finite: {rolled:?}");
-        assert!(approx(rolled.length(), 1.0), "rolled up not unit: {}", rolled.length());
+        assert!(
+            approx(rolled.length(), 1.0),
+            "rolled up not unit: {}",
+            rolled.length()
+        );
         // 90° apart → dot ≈ 0.
         assert!(
             screen_up0.dot(rolled).abs() < 1e-3,
@@ -633,7 +678,11 @@ mod tests {
     #[test]
     fn up_vector_roll_zero_equals_base() {
         for &phi in &[0.1f32, 0.5, 1.05, FRAC_PI_2, 2.5] {
-            let camera = OrbitCamera { orbit_phi: phi, roll: 0.0, ..OrbitCamera::default() };
+            let camera = OrbitCamera {
+                orbit_phi: phi,
+                roll: 0.0,
+                ..OrbitCamera::default()
+            };
             assert_eq!(camera.up_vector(), camera.up_vector_base(), "phi={phi}");
         }
     }
@@ -643,10 +692,17 @@ mod tests {
     #[test]
     fn up_vector_finite_unit_and_non_parallel_under_roll() {
         for &roll in &[0.0f32, FRAC_PI_2, PI, -FRAC_PI_2, 0.3] {
-            let camera = OrbitCamera { roll, ..OrbitCamera::default() };
+            let camera = OrbitCamera {
+                roll,
+                ..OrbitCamera::default()
+            };
             let up = camera.up_vector();
             assert!(up.is_finite(), "up not finite at roll={roll}: {up:?}");
-            assert!(approx(up.length(), 1.0), "up not unit at roll={roll}: {}", up.length());
+            assert!(
+                approx(up.length(), 1.0),
+                "up not unit at roll={roll}: {}",
+                up.length()
+            );
             // For any NONZERO roll the up is orthogonalised against forward (rolled
             // screen-up), so it is exactly ⊥ the view direction — `look_at_rh` never
             // degenerates. (roll=0 keeps the raw base up, which look_at re-orthogonalises
@@ -668,20 +724,40 @@ mod tests {
     fn is_face_constrained_only_at_upright_face_views() {
         for (face, _) in CUBE_FACES {
             let (theta, phi) = face.snap_angles();
-            let camera = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
-            assert!(camera.is_face_constrained(), "should be face-on at {face:?}");
+            let camera = OrbitCamera {
+                orbit_theta: theta,
+                orbit_phi: phi,
+                ..OrbitCamera::default()
+            };
+            assert!(
+                camera.is_face_constrained(),
+                "should be face-on at {face:?}"
+            );
         }
         // An edge view (front-top) is NOT face-constrained.
-        let (theta, phi) =
-            ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top).snap_angles();
-        let edge_camera = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
-        assert!(!edge_camera.is_face_constrained(), "edge view must not be face-on");
+        let (theta, phi) = ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top).snap_angles();
+        let edge_camera = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        };
+        assert!(
+            !edge_camera.is_face_constrained(),
+            "edge view must not be face-on"
+        );
         // A corner view is NOT face-constrained.
         let (theta, phi) =
             ViewCubeElement::from_corner(CubeFace::Front, CubeFace::Top, CubeFace::Right)
                 .snap_angles();
-        let corner_camera = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
-        assert!(!corner_camera.is_face_constrained(), "corner view must not be face-on");
+        let corner_camera = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        };
+        assert!(
+            !corner_camera.is_face_constrained(),
+            "corner view must not be face-on"
+        );
         // Face-on but ROLLED 90° is not constrained (the screen arrows wouldn't align).
         let (theta, phi) = CubeFace::Front.snap_angles();
         let rolled = OrbitCamera {
@@ -690,16 +766,25 @@ mod tests {
             roll: FRAC_PI_2,
             ..OrbitCamera::default()
         };
-        assert!(!rolled.is_face_constrained(), "rolled face view must not be face-on");
+        assert!(
+            !rolled.is_face_constrained(),
+            "rolled face view must not be face-on"
+        );
     }
 
     /// The default home is NOT explicitly set (so Home re-fits), while a home
     /// captured from the camera IS explicitly set (so Home uses its distance).
     #[test]
     fn home_view_explicit_flag_tracks_origin() {
-        assert!(!HomeView::default().explicitly_set, "default home is implicit");
+        assert!(
+            !HomeView::default().explicitly_set,
+            "default home is implicit"
+        );
         let camera = OrbitCamera::default();
-        assert!(HomeView::from_camera(&camera).explicitly_set, "captured home is explicit");
+        assert!(
+            HomeView::from_camera(&camera).explicitly_set,
+            "captured home is explicit"
+        );
     }
 
     #[test]
@@ -718,22 +803,40 @@ mod tests {
     #[test]
     fn z_up_convention_holds() {
         // (1) up_vector_base ≈ Vec3::Z at a normal (non-pole) tilt.
-        let camera = OrbitCamera { orbit_phi: 1.0, ..OrbitCamera::default() };
+        let camera = OrbitCamera {
+            orbit_phi: 1.0,
+            ..OrbitCamera::default()
+        };
         assert_eq!(camera.up_vector_base(), Vec3::Z, "base up must be +Z");
 
         // (2) A top-down view (snapped to TOP) has nearest face Top, normal +Z.
         let (theta, phi) = CubeFace::Top.snap_angles();
-        let top_down = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
-        assert_eq!(top_down.nearest_face(), CubeFace::Top, "top-down nearest face");
+        let top_down = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        };
+        assert_eq!(
+            top_down.nearest_face(),
+            CubeFace::Top,
+            "top-down nearest face"
+        );
         assert_eq!(CubeFace::Top.normal(), Vec3::Z, "TOP normal is +Z");
 
         // (3) FRONT normal = −Y (the front view looks along +Y); ground plane up +Z.
         assert_eq!(CubeFace::Front.normal(), Vec3::NEG_Y, "FRONT normal is −Y");
-        assert_eq!(CubeFace::Bottom.normal(), Vec3::NEG_Z, "BOTTOM normal is −Z");
+        assert_eq!(
+            CubeFace::Bottom.normal(),
+            Vec3::NEG_Z,
+            "BOTTOM normal is −Z"
+        );
 
         // (4) The default view looks DOWN at the XY ground (eye above, +Z), 3/4-ish.
         let eye_dir = OrbitCamera::default().direction();
-        assert!(eye_dir.z > 0.0, "default eye is above the ground (Z>0): {eye_dir:?}");
+        assert!(
+            eye_dir.z > 0.0,
+            "default eye is above the ground (Z>0): {eye_dir:?}"
+        );
     }
 
     #[test]
@@ -751,7 +854,15 @@ mod tests {
         // Snapping home must land back on the saved angles.
         let mut tween = home.snap_tween(&camera);
         assert!(tween.advance(&mut camera, 1.0));
-        assert!(approx(camera.orbit_theta, home.theta), "theta {}", camera.orbit_theta);
-        assert!(approx(camera.orbit_phi, home.phi), "phi {}", camera.orbit_phi);
+        assert!(
+            approx(camera.orbit_theta, home.theta),
+            "theta {}",
+            camera.orbit_theta
+        );
+        assert!(
+            approx(camera.orbit_phi, home.phi),
+            "phi {}",
+            camera.orbit_phi
+        );
     }
 }

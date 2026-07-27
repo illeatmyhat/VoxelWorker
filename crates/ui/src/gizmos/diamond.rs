@@ -13,5 +13,8 @@ pub fn diamond(painter: &Painter, center: Pos2, half: f32) {
         Pos2::new(center.x, center.y + half),
         Pos2::new(center.x - half, center.y),
     ];
-    painter.add(Shape::closed_line(points, Stroke::new(STROKE_HANDLE, HANDLE_ACCENT)));
+    painter.add(Shape::closed_line(
+        points,
+        Stroke::new(STROKE_HANDLE, HANDLE_ACCENT),
+    ));
 }

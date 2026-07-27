@@ -69,8 +69,11 @@ fn heading(ui: &mut egui::Ui, title: &str) {
         egui::vec2(BROWSER_WIDTH, galley.size().y + 7.0),
         egui::Sense::hover(),
     );
-    ui.painter()
-        .galley(egui::pos2(rect.left() + 11.0, rect.top()), galley, theme::TEXT_MUTED);
+    ui.painter().galley(
+        egui::pos2(rect.left() + 11.0, rect.top()),
+        galley,
+        theme::TEXT_MUTED,
+    );
     hairline(ui.painter(), rect, Edge::Bottom, theme::RULE);
 }
 
@@ -92,10 +95,8 @@ fn node_row(
     };
     let selected = selected_id == Some(id);
     let editing = sketch_mode == Some(id);
-    let (rect, row) = ui.allocate_exact_size(
-        egui::vec2(BROWSER_WIDTH, ROW_HEIGHT),
-        egui::Sense::click(),
-    );
+    let (rect, row) =
+        ui.allocate_exact_size(egui::vec2(BROWSER_WIDTH, ROW_HEIGHT), egui::Sense::click());
     let painter = ui.painter();
 
     if selected || editing {
@@ -122,10 +123,7 @@ fn node_row(
     node_icon(node.content_kind_icon()).draw(painter, glyph, ink);
 
     let label = theme::letter_spaced(ui, &node.name, ink, 10.0, 0.6);
-    let at = egui::pos2(
-        glyph.right() + 7.0,
-        rect.center().y - label.size().y * 0.5,
-    );
+    let at = egui::pos2(glyph.right() + 7.0, rect.center().y - label.size().y * 0.5);
     ui.painter().galley(at, label, ink);
 
     // The accent EDITING tag, right-aligned (C2 mock's `.tag`): dark text on the accent fill.

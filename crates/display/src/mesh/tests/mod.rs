@@ -1,8 +1,8 @@
 use super::*;
 use voxel_core::voxel::Voxel;
 
-mod cuboid;
 mod apron;
+mod cuboid;
 mod two_layer;
 
 /// Build a tiny grid from a set of occupied voxel indices, all one material, with
@@ -16,7 +16,11 @@ mod two_layer;
 /// centre fell on an INTEGER, which the integer payload — whose centres are always
 /// half-integers — cannot represent; the one odd-dim test below corner-anchors and
 /// reads the world planes directly, since the mesher is anchor-shift-invariant.)
-pub(super) fn grid_from_indices(dimensions: [u32; 3], cells: &[[u32; 3]], material: u16) -> VoxelGrid {
+pub(super) fn grid_from_indices(
+    dimensions: [u32; 3],
+    cells: &[[u32; 3]],
+    material: u16,
+) -> VoxelGrid {
     let half = [
         dimensions[0] as f32 / 2.0,
         dimensions[1] as f32 / 2.0,
@@ -250,7 +254,10 @@ pub(super) fn mesh_map(
         .map(|m| {
             (
                 m.coord,
-                (bytemuck::cast_slice::<_, u8>(&m.vertices).to_vec(), m.indices.clone()),
+                (
+                    bytemuck::cast_slice::<_, u8>(&m.vertices).to_vec(),
+                    m.indices.clone(),
+                ),
             )
         })
         .collect()

@@ -132,7 +132,10 @@ mod tests {
     fn fresh_allocations_are_dense_ascending() {
         let mut list: SlotFreeList<char> = SlotFreeList::new();
         assert!(list.is_empty());
-        let slots: Vec<u32> = ['a', 'b', 'c', 'd'].into_iter().map(|c| list.allocate(c)).collect();
+        let slots: Vec<u32> = ['a', 'b', 'c', 'd']
+            .into_iter()
+            .map(|c| list.allocate(c))
+            .collect();
         assert_eq!(slots, vec![0, 1, 2, 3]);
         assert_eq!(list.len(), 4);
         assert_eq!(list[2], 'c');

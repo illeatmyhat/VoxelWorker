@@ -19,8 +19,8 @@
 use std::sync::Arc;
 
 use camera::OrbitCamera;
-use voxel_core::spatial_index::LeafSpatialIndex;
 use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
+use voxel_core::spatial_index::LeafSpatialIndex;
 use voxel_core::voxel::RecentreVoxels;
 
 mod command_stack;
@@ -40,13 +40,13 @@ pub use replay::{default_replay_seed_scene, replay_intent_script};
 pub use selected_operand::SelectedOperandGhost;
 
 #[cfg(test)]
-mod replay_tests;
+mod intent_dispatch_tests;
 #[cfg(test)]
-mod undo_tests;
+mod replay_tests;
 #[cfg(test)]
 mod sketch_group_tests;
 #[cfg(test)]
-mod intent_dispatch_tests;
+mod undo_tests;
 
 /// The workspace [`Selection`](ui::panel::Selection) a test fixture arrives with: its first
 /// top-level node picked. ADR 0032 made selection workspace state, so a test seeds it

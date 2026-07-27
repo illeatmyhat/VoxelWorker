@@ -111,7 +111,9 @@ pub fn composed_field_at(
                 // never re-derived), then read the producer's signed distance there.
                 let affine = leaf_affine(leaf, voxels_per_block);
                 let local = affine
-                    .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(world_point))
+                    .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(
+                        world_point,
+                    ))
                     .voxels();
                 let value = field.signed_distance(local.to_array(), voxels_per_block);
                 let accumulator = accumulators
@@ -194,7 +196,8 @@ mod tests {
                     let field_says_inside = composed_field_at(leaves, centre, density) <= 0.0;
                     let occupied_here = occupied.contains(&[x, y, z]);
                     assert_eq!(
-                        field_says_inside, occupied_here,
+                        field_says_inside,
+                        occupied_here,
                         "[{label}] voxel {:?}: composed_field_at<=0 ({field_says_inside}) must \
                          agree with the resolved occupancy ({occupied_here})",
                         [x, y, z]
@@ -272,7 +275,10 @@ mod tests {
         let leaves: Vec<&LeafProducer> = leaves.iter().collect();
 
         let occupied = resolved_occupancy_abs(&scene, DENSITY);
-        assert!(!occupied.is_empty(), "the ellipsoid must occupy some voxels");
+        assert!(
+            !occupied.is_empty(),
+            "the ellipsoid must occupy some voxels"
+        );
         let (min, max) = occupancy_bounds(&occupied, 3);
         assert_field_sign_matches_occupancy(&leaves, &occupied, min, max, DENSITY, "ellipsoid");
     }
@@ -284,8 +290,20 @@ mod tests {
     fn union_of_two_boxes_is_the_min_field() {
         // Two 3-block boxes, separated so each has a private interior and they share a seam.
         let scene = Scene::from_nodes(vec![
-            tool(ShapeKind::Box, [3, 3, 3], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union),
-            tool(ShapeKind::Box, [3, 3, 3], [3, 0, 0], MaterialChoice::Wood, CombineOp::Union),
+            tool(
+                ShapeKind::Box,
+                [3, 3, 3],
+                [0, 0, 0],
+                MaterialChoice::Stone,
+                CombineOp::Union,
+            ),
+            tool(
+                ShapeKind::Box,
+                [3, 3, 3],
+                [3, 0, 0],
+                MaterialChoice::Wood,
+                CombineOp::Union,
+            ),
         ]);
         let leaves = scene.leaf_producers(DENSITY);
         let leaves: Vec<&LeafProducer> = leaves.iter().collect();
@@ -322,8 +340,20 @@ mod tests {
     fn subtract_carves_a_positive_region_inside_the_base() {
         // A 4-block Stone base with a 2-block Wood cutter wholly inside it (block [1,3)³).
         let scene = Scene::from_nodes(vec![
-            tool(ShapeKind::Box, [4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union),
-            tool(ShapeKind::Box, [2, 2, 2], [1, 1, 1], MaterialChoice::Wood, CombineOp::Subtract),
+            tool(
+                ShapeKind::Box,
+                [4, 4, 4],
+                [0, 0, 0],
+                MaterialChoice::Stone,
+                CombineOp::Union,
+            ),
+            tool(
+                ShapeKind::Box,
+                [2, 2, 2],
+                [1, 1, 1],
+                MaterialChoice::Wood,
+                CombineOp::Subtract,
+            ),
         ]);
         let leaves = scene.leaf_producers(DENSITY);
         let leaves: Vec<&LeafProducer> = leaves.iter().collect();

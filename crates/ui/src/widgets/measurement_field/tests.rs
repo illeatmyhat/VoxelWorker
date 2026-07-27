@@ -83,7 +83,9 @@ fn a_non_landing_block_term_names_both_neighbouring_voxels() {
 /// Unparseable text reports the parse error and commits nothing.
 #[test]
 fn unparseable_text_does_not_commit() {
-    assert!(signed_field(0, 16).parse_and_validate("not a measurement").is_err());
+    assert!(signed_field(0, 16)
+        .parse_and_validate("not a measurement")
+        .is_err());
 }
 
 /// A commit carries BOTH halves: the authored expression to retain, and the canonical

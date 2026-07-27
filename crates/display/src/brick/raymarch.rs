@@ -85,9 +85,7 @@ pub(crate) fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<Occupancy
             let [key_hi, key_lo] = substrate::spatial::lattice_key::split_key_hi_lo(key);
             // The fallback word packs the overlay bit above the material colour index (the map
             // stores one u32 per cell); split it into the pod's two fields the shader reads.
-            let overlay = u32::from(
-                fallback & crate::brick::OCCUPANCY_FALLBACK_OVERLAY_BIT != 0,
-            );
+            let overlay = u32::from(fallback & crate::brick::OCCUPANCY_FALLBACK_OVERLAY_BIT != 0);
             let material = fallback & (crate::brick::OCCUPANCY_FALLBACK_OVERLAY_BIT - 1);
             OccupancyCellPod {
                 key_hi,
@@ -348,9 +346,11 @@ impl BrickRaymarchRenderer {
                             // ADR 0012 (H1): dynamic offset selects the solid / ghost-lower /
                             // ghost-upper slot from the one 3-slot uniform buffer.
                             has_dynamic_offset: true,
-                            min_binding_size: std::num::NonZeroU64::new(
-                                std::mem::size_of::<BrickUniformsPod>() as u64,
-                            ),
+                            min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
+                                BrickUniformsPod,
+                            >(
+                            )
+                                as u64),
                         },
                         count: None,
                     },
@@ -482,8 +482,7 @@ impl BrickRaymarchRenderer {
         // the cuboid path builds, so both paths sample identical texels.
         let material_atlas = crate::texture_atlas::MaterialAtlas::from_procedural_materials();
         let material_bind_group_layout = crate::mesh::build_atlas_bind_group_layout(device);
-        let material_texture =
-            crate::mesh::upload_atlas_texture(device, queue, &material_atlas);
+        let material_texture = crate::mesh::upload_atlas_texture(device, queue, &material_atlas);
         let material_view = material_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("brick raymarch material sampler"),
@@ -618,49 +617,50 @@ impl BrickRaymarchRenderer {
         // order-independent. The solid (drawn first, depth written) still occludes each slab
         // via the haze's first-in-solid `frag_depth` — exact per slab, since z(t) is
         // monotonic so a slab's t-interval lies entirely on one side of any solid-band hit.
-        let ghost_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("brick raymarch onion ghost haze pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_ghost_haze"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLE_COUNT,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        let ghost_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("brick raymarch onion ghost haze pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fragment_ghost_haze"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: MSAA_SAMPLE_COUNT,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
 
         // The parity-harness pass: single sample, no depth, hit voxel identity into
         // an Rgba32Uint target (read back by tests/gpu_parity.rs only).
@@ -852,8 +852,7 @@ impl BrickRaymarchRenderer {
         // for a caller that holds no cell-key payload (a scene with no MIXED brick). A field WITH
         // mixed bricks installs through
         // [`install_brick_field_with_cell_keys`](Self::install_brick_field_with_cell_keys).
-        let empty_cell_keys =
-            SculptedCellKeyAtlasPayload::empty(atlas.geometry.brick_edge_voxels);
+        let empty_cell_keys = SculptedCellKeyAtlasPayload::empty(atlas.geometry.brick_edge_voxels);
         debug_assert!(
             gpu_records
                 .iter()
@@ -1036,8 +1035,16 @@ impl BrickRaymarchRenderer {
             absolute_block_bounds = Some(match absolute_block_bounds {
                 None => (block, block),
                 Some((lo, hi)) => (
-                    [lo[0].min(block[0]), lo[1].min(block[1]), lo[2].min(block[2])],
-                    [hi[0].max(block[0]), hi[1].max(block[1]), hi[2].max(block[2])],
+                    [
+                        lo[0].min(block[0]),
+                        lo[1].min(block[1]),
+                        lo[2].min(block[2]),
+                    ],
+                    [
+                        hi[0].max(block[0]),
+                        hi[1].max(block[1]),
+                        hi[2].max(block[2]),
+                    ],
                 ),
             });
         }
@@ -1125,7 +1132,7 @@ impl BrickRaymarchRenderer {
                         buffer: &self.uniform_buffer,
                         offset: 0,
                         size: std::num::NonZeroU64::new(
-                            std::mem::size_of::<BrickUniformsPod>() as u64,
+                            std::mem::size_of::<BrickUniformsPod>() as u64
                         ),
                     }),
                 },
@@ -1319,9 +1326,7 @@ impl BrickRaymarchRenderer {
 
         BrickMarchFrame {
             ray_view_projection: scene_matrices.ray_view_projection,
-            ray_inverse_unprojection: scene_matrices
-                .ray_unprojection
-                .inverse(),
+            ray_inverse_unprojection: scene_matrices.ray_unprojection.inverse(),
             eye_sv,
             viewport: [
                 viewport_px[0] as f32,
@@ -1367,8 +1372,14 @@ impl BrickRaymarchRenderer {
     ) -> BrickMarchFrame {
         // ADR 0018 Decision 5 (S5): the SOLID march confines the band to the region
         // (ConfineBand); outside the region it renders finished. `ghost_confine = false`.
-        let frame =
-            self.march_frame(scene_matrices, viewport_px, grid_dimensions, band, region, false);
+        let frame = self.march_frame(
+            scene_matrices,
+            viewport_px,
+            grid_dimensions,
+            band,
+            region,
+            false,
+        );
         // The bound procedural material drives modulation exactly as the cuboid
         // path: `Some` enables the relative base-colour array, `None` (a loaded VS
         // block — the brick path disengages for those, but mirror anyway) is neutral.
@@ -1415,12 +1426,8 @@ impl BrickRaymarchRenderer {
         let material_atlas = crate::texture_atlas::MaterialAtlas::from_procedural_materials();
         let overlay = crate::renderer::grid_overlay_params();
         BrickUniformsPod {
-            ray_view_projection: frame
-                .ray_view_projection
-                .to_cols_array_2d(),
-            ray_inverse_unprojection: frame
-                .ray_inverse_unprojection
-                .to_cols_array_2d(),
+            ray_view_projection: frame.ray_view_projection.to_cols_array_2d(),
+            ray_inverse_unprojection: frame.ray_inverse_unprojection.to_cols_array_2d(),
             eye_sv: [frame.eye_sv.x, frame.eye_sv.y, frame.eye_sv.z, 0.0],
             viewport: frame.viewport,
             grid_half_extent: frame.grid_half_extent.to_array(),
@@ -1542,8 +1549,14 @@ impl BrickRaymarchRenderer {
                 onion_depth: 0,
             };
             // ClipToRegion: the slab AND the region confine the traversal AABB (`ghost_confine`).
-            let frame =
-                self.march_frame(scene_matrices, viewport_px, grid_dimensions, slab, region, true);
+            let frame = self.march_frame(
+                scene_matrices,
+                viewport_px,
+                grid_dimensions,
+                slab,
+                region,
+                true,
+            );
             let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
             queue.write_buffer(
                 &self.uniform_buffer,
@@ -1560,8 +1573,14 @@ impl BrickRaymarchRenderer {
                 band_max: (band.band_max + depth).min(last_layer),
                 onion_depth: 0,
             };
-            let frame =
-                self.march_frame(scene_matrices, viewport_px, grid_dimensions, slab, region, true);
+            let frame = self.march_frame(
+                scene_matrices,
+                viewport_px,
+                grid_dimensions,
+                slab,
+                region,
+                true,
+            );
             let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
             queue.write_buffer(
                 &self.uniform_buffer,

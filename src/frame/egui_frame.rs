@@ -179,9 +179,7 @@ pub fn run_egui_frame(
     // light context styles so it holds regardless of theme; the floating DISPLAY stack
     // re-scopes its own variant, and the chrome painters (cube/rail/status) are
     // style-immune (explicit colours), so both stay byte-stable.
-    bridge
-        .context
-        .all_styles_mut(ui::theme::apply_app_style);
+    bridge.context.all_styles_mut(ui::theme::apply_app_style);
     let full_output = bridge.context.run_ui(raw_input, |ui| {
         panel_response = ui::workspace::build_workspace(ui, panel_state, export, palette);
         // After both panels have been shown inside the root ui, the remaining
@@ -318,8 +316,7 @@ pub fn run_egui_frame(
                             if in_sketch {
                                 // The shell owns the selection + the sketch commit path.
                                 panel_response.delete_sketch_selection = true;
-                            } else if let Some(id) =
-                                panel_state.selected_node().map(|node| node.id)
+                            } else if let Some(id) = panel_state.selected_node().map(|node| node.id)
                             {
                                 panel_response.frame_after_apply = true;
                                 panel_response
@@ -369,8 +366,7 @@ pub fn run_egui_frame(
         // central viewport while a primitive is armed. Same absolute-child idiom as the stack,
         // so it renders on the shot capture and counts as chrome (its clicks don't orbit).
         if let Some(kind) = armed_shape {
-            let dialog_rect =
-                build_add_shape_dialog(ui, panel_state, central_rect_points, kind);
+            let dialog_rect = build_add_shape_dialog(ui, panel_state, central_rect_points, kind);
             chrome_rects_points.push(dialog_rect);
         }
 
@@ -390,7 +386,8 @@ pub fn run_egui_frame(
         let cube_fits = central_rect_points.width() * pixels_per_point
             >= cube_right_inset_px as f32 + VIEW_CUBE_VIEWPORT_PIXELS as f32
             && central_rect_points.height() * pixels_per_point
-                >= (display::renderer::VIEW_CUBE_VIEWPORT_MARGIN + VIEW_CUBE_VIEWPORT_PIXELS) as f32;
+                >= (display::renderer::VIEW_CUBE_VIEWPORT_MARGIN + VIEW_CUBE_VIEWPORT_PIXELS)
+                    as f32;
 
         // Signal: the icon rail directly under the cube (Home / Fit / viewport-mode
         // cycle). Home/Fit reuse the shell's `ChromeClickAction`; a mode-cycle click
@@ -400,13 +397,9 @@ pub fn run_egui_frame(
         // surface and the `shot` capture.
         if cube_fits {
             chrome_rects_points.push(ui::chrome::rail_rect(cube_left, cube_bottom, cube_size));
-            if let Some(click) = ui::chrome::icon_rail(
-                ui,
-                cube_left,
-                cube_bottom,
-                cube_size,
-                panel_state.view_mode,
-            ) {
+            if let Some(click) =
+                ui::chrome::icon_rail(ui, cube_left, cube_bottom, cube_size, panel_state.view_mode)
+            {
                 match click {
                     ui::chrome::RailClick::Home => rail_action = Some(ChromeClickAction::Home),
                     ui::chrome::RailClick::Fit => rail_action = Some(ChromeClickAction::Fit),
@@ -443,11 +436,9 @@ pub fn run_egui_frame(
         // headless `shot` capture. A click routes onto the response as `exit_sketch`; the
         // button rects register as chrome so they never leak to the camera orbit.
         if panel_state.sketch_mode.is_some() {
-            if let Some(exit) = ui::chrome::sketch_exit_control(
-                ui,
-                central_rect_points,
-                &mut chrome_rects_points,
-            ) {
+            if let Some(exit) =
+                ui::chrome::sketch_exit_control(ui, central_rect_points, &mut chrome_rects_points)
+            {
                 panel_response.exit_sketch = Some(exit);
             }
             // ADR 0030: the committed segment lines, drawn FIRST so the vertex dots sit on top.

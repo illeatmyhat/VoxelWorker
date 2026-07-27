@@ -509,9 +509,8 @@ pub(crate) fn parse_options() -> ShotOptions {
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--out" => {
-                options.output_path = PathBuf::from(
-                    args.next().expect("--out requires a path argument"),
-                );
+                options.output_path =
+                    PathBuf::from(args.next().expect("--out requires a path argument"));
             }
             "--width" => {
                 options.width = args
@@ -598,8 +597,10 @@ pub(crate) fn parse_options() -> ShotOptions {
                 options.list_per_face = true;
             }
             "--force-demo-stem" => {
-                options.force_demo_stem =
-                    Some(args.next().expect("--force-demo-stem requires a texture stem"));
+                options.force_demo_stem = Some(
+                    args.next()
+                        .expect("--force-demo-stem requires a texture stem"),
+                );
             }
             "--gizmo" => {
                 options.show_origin_gizmo = true;
@@ -634,11 +635,20 @@ pub(crate) fn parse_options() -> ShotOptions {
             }
             "--point-at" => {
                 // Three BLOCK coordinates for an extra Point (XZ plane + axes on).
-                let x = args.next().expect("--point-at requires X Y Z").parse()
+                let x = args
+                    .next()
+                    .expect("--point-at requires X Y Z")
+                    .parse()
                     .expect("--point-at X must be an integer");
-                let y = args.next().expect("--point-at requires X Y Z").parse()
+                let y = args
+                    .next()
+                    .expect("--point-at requires X Y Z")
+                    .parse()
                     .expect("--point-at Y must be an integer");
-                let z = args.next().expect("--point-at requires X Y Z").parse()
+                let z = args
+                    .next()
+                    .expect("--point-at requires X Y Z")
+                    .parse()
                     .expect("--point-at Z must be an integer");
                 options.extra_point_blocks = Some([x, y, z]);
             }
@@ -736,20 +746,38 @@ pub(crate) fn parse_options() -> ShotOptions {
                 options.placement_ghost = true;
             }
             "--ghost-offset" => {
-                let x = args.next().expect("--ghost-offset requires X Y Z").parse()
+                let x = args
+                    .next()
+                    .expect("--ghost-offset requires X Y Z")
+                    .parse()
                     .expect("--ghost-offset X must be an integer");
-                let y = args.next().expect("--ghost-offset requires X Y Z").parse()
+                let y = args
+                    .next()
+                    .expect("--ghost-offset requires X Y Z")
+                    .parse()
                     .expect("--ghost-offset Y must be an integer");
-                let z = args.next().expect("--ghost-offset requires X Y Z").parse()
+                let z = args
+                    .next()
+                    .expect("--ghost-offset requires X Y Z")
+                    .parse()
                     .expect("--ghost-offset Z must be an integer");
                 options.ghost_offset = [x, y, z];
             }
             "--ghost-face" => {
-                let x = args.next().expect("--ghost-face requires X Y Z").parse()
+                let x = args
+                    .next()
+                    .expect("--ghost-face requires X Y Z")
+                    .parse()
                     .expect("--ghost-face X must be an integer");
-                let y = args.next().expect("--ghost-face requires X Y Z").parse()
+                let y = args
+                    .next()
+                    .expect("--ghost-face requires X Y Z")
+                    .parse()
                     .expect("--ghost-face Y must be an integer");
-                let z = args.next().expect("--ghost-face requires X Y Z").parse()
+                let z = args
+                    .next()
+                    .expect("--ghost-face requires X Y Z")
+                    .parse()
                     .expect("--ghost-face Z must be an integer");
                 options.ghost_face = Some([x, y, z]);
             }
@@ -791,8 +819,9 @@ pub(crate) fn parse_options() -> ShotOptions {
                 options.axes_on_top = false;
             }
             "--snap" => {
-                options.snap_element =
-                    Some(parse_snap_element(&args.next().expect("--snap requires a value")));
+                options.snap_element = Some(parse_snap_element(
+                    &args.next().expect("--snap requires a value"),
+                ));
             }
             "--cube-hover" => {
                 options.cube_hover = Some(parse_cube_hover(
@@ -915,8 +944,12 @@ pub(crate) fn parse_options() -> ShotOptions {
     }
     // Finalise the voxel-canonical size from the requested BLOCK counts at the final
     // density, retaining each axis as a whole-block measurement (ADR 0003 §3f(0)).
-    let built =
-        SdfShape::from_blocks(options.geometry.shape, size_blocks_cli, options.geometry.wall_blocks, options.geometry.voxels_per_block);
+    let built = SdfShape::from_blocks(
+        options.geometry.shape,
+        size_blocks_cli,
+        options.geometry.wall_blocks,
+        options.geometry.voxels_per_block,
+    );
     options.geometry.size_voxels = built.size_voxels;
     options.geometry.size_measurements = if built.has_retained_size_measurements() {
         Some(Box::new(built.size_measurements()))

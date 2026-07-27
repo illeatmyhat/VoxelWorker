@@ -37,16 +37,16 @@
 
 use std::sync::Arc;
 
+use crate::workers::{build_catching, Worker};
 #[cfg(test)]
 use display::brick::build_brick_field;
 use display::brick::{
     build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     SculptedCellKeyAtlasPayload,
 };
-use voxel_core::voxel::RecentreVoxels;
 use display::brick::{pack_gpu_records, BrickGpuRecord};
 use evaluation::two_layer_store::TwoLayerChunk;
-use crate::workers::{build_catching, Worker};
+use voxel_core::voxel::RecentreVoxels;
 
 /// A request to rebuild the brick pipeline WHOLESALE on the worker. Carries the
 /// resolve's covering chunks (`Arc`-shared, `Send`) plus the frame scalars — the same
@@ -179,26 +179,29 @@ pub type BrickWorker = Worker<BrickRebuildRequest, BrickRebuildResult>;
 /// geometry worker, the build runs under [`build_catching`] so a build panic is caught and
 /// surfaced as a `None` outcome the shell can react to, keeping the loop alive.
 pub fn spawn_brick_worker() -> BrickWorker {
-    Worker::spawn("voxel-worker brick rebuild", |request: BrickRebuildRequest| {
-        let generation = request.generation;
-        let recentre_voxels = request.recentre_voxels;
-        let outcome = build_catching(generation, || build_brick_rebuild(&request));
-        BrickRebuildResult {
-            generation,
-            recentre_voxels,
-            outcome,
-        }
-    })
+    Worker::spawn(
+        "voxel-worker brick rebuild",
+        |request: BrickRebuildRequest| {
+            let generation = request.generation;
+            let recentre_voxels = request.recentre_voxels;
+            let outcome = build_catching(generation, || build_brick_rebuild(&request));
+            BrickRebuildResult {
+                generation,
+                recentre_voxels,
+                outcome,
+            }
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voxel_core::core_geom::MaterialChoice;
     use document::scene::Scene;
+    use document::voxel::GeometryParams;
     use evaluation::two_layer_store::TwoLayerStore;
-    use voxel_core::voxel::{ShapeKind};
-    use document::voxel::{GeometryParams};
+    use voxel_core::core_geom::MaterialChoice;
+    use voxel_core::voxel::ShapeKind;
 
     // --- build_brick_rebuild: byte-equivalence with the synchronous path ---
 

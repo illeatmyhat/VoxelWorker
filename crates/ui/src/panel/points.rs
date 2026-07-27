@@ -12,7 +12,11 @@ use document::intent::Intent;
 /// Origin), and a **Delete** button (hidden for the Origin, which is undeletable).
 /// Mirrors the node list's deferred-mutation pattern: selection/delete are applied
 /// AFTER the read walk.
-pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+pub(super) fn build_points_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
     // A scene with NO Points (the headless `shot` path builds scenes WITHOUT the
     // synthesized Origin — `ensure_origin_point` runs only on the windowed load/seed
     // path) renders nothing here, so the section adds zero height and the existing
@@ -37,12 +41,20 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
             } else {
                 point.name.clone()
             };
-            (name, point.hidden, state.selection.primary_point_index() == Some(index))
+            (
+                name,
+                point.hidden,
+                state.selection.primary_point_index() == Some(index),
+            )
         };
         ui.horizontal(|ui| {
             // Visibility is `!hidden`; toggling it flips the Point's `hidden` flag.
             let mut visible = !hidden;
-            if ui.checkbox(&mut visible, "").on_hover_text("Visible").changed() {
+            if ui
+                .checkbox(&mut visible, "")
+                .on_hover_text("Visible")
+                .changed()
+            {
                 toggle_hidden = Some(index);
             }
             if ui.selectable_label(is_active, name).clicked() {
@@ -165,14 +177,22 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
         // current flag and emit the explicit `SetPointHidden` for the new value (the
         // intent path is explicit, unlike `toggle_point_hidden`'s flip).
         if let Some(point) = state.scene.points.get(index) {
-            response.emit(Intent::SetPointHidden { index, hidden: !point.hidden });
+            response.emit(Intent::SetPointHidden {
+                index,
+                hidden: !point.hidden,
+            });
         }
     }
     if let Some(index) = delete {
         // `RemovePoint` is a no-op on the Origin (the UI already hides its delete
         // affordances). The dispatch steers the selection onto the survivor (ADR 0032),
         // so the panel no longer re-derives an index against a list it has not yet shrunk.
-        let was_origin = state.scene.points.get(index).map(|p| p.is_origin).unwrap_or(false);
+        let was_origin = state
+            .scene
+            .points
+            .get(index)
+            .map(|p| p.is_origin)
+            .unwrap_or(false);
         if !was_origin {
             response.emit(Intent::RemovePoint { index });
         }

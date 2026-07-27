@@ -127,7 +127,11 @@ fn default_shape_wall() -> u32 {
 /// emitting; this is the constructor-side guard so a `from_*` caller can never
 /// build a degenerate shape (ADR 0003 Â§3f(0)).
 fn clamp_size_voxels(size_voxels: [u32; 3]) -> [u32; 3] {
-    [size_voxels[0].max(1), size_voxels[1].max(1), size_voxels[2].max(1)]
+    [
+        size_voxels[0].max(1),
+        size_voxels[1].max(1),
+        size_voxels[2].max(1),
+    ]
 }
 
 impl SdfShape {
@@ -162,9 +166,16 @@ impl SdfShape {
     ) -> Self {
         use voxel_core::units::{ExactRational, Measurement};
         let density = voxels_per_block.max(1);
-        let blocks = [size_blocks[0].max(1), size_blocks[1].max(1), size_blocks[2].max(1)];
-        let size_voxels =
-            clamp_size_voxels([blocks[0] * density, blocks[1] * density, blocks[2] * density]);
+        let blocks = [
+            size_blocks[0].max(1),
+            size_blocks[1].max(1),
+            size_blocks[2].max(1),
+        ];
+        let size_voxels = clamp_size_voxels([
+            blocks[0] * density,
+            blocks[1] * density,
+            blocks[2] * density,
+        ]);
         let measurements = [
             Measurement::new(ExactRational::from_integer(blocks[0] as i128), 0),
             Measurement::new(ExactRational::from_integer(blocks[1] as i128), 0),
@@ -213,9 +224,10 @@ impl SdfShape {
         let resolve_axis = |measurement: Measurement| -> (u32, Measurement) {
             let raw = match measurement.to_voxels(voxels_per_block) {
                 Ok(voxels) => (voxels, Some(measurement)),
-                Err(MeasurementError::BlockTermNotWholeVoxels { nearest_floor_voxels, .. }) => {
-                    (nearest_floor_voxels, None)
-                }
+                Err(MeasurementError::BlockTermNotWholeVoxels {
+                    nearest_floor_voxels,
+                    ..
+                }) => (nearest_floor_voxels, None),
                 Err(MeasurementError::ZeroDensity) => (measurement.voxel_term(), None),
             };
             // A size must be at least 1 voxel: clamp negatives / zero up to 1. If the
@@ -383,8 +395,7 @@ impl VoxelProducer for SdfShape {
                             k as f32 + 0.5 - half_z,
                         );
 
-                        if signed_distance(kind, sample, semi_axes, wall_voxels)
-                            <= SURFACE_ISOLEVEL
+                        if signed_distance(kind, sample, semi_axes, wall_voxels) <= SURFACE_ISOLEVEL
                         {
                             local.push(Voxel {
                                 local_index: [i as i32, j as i32, k as i32],
@@ -426,7 +437,11 @@ impl VoxelProducer for SdfShape {
             return None;
         }
         let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
-        let semi_axes = Vec3::new(grid_x as f32 / 2.0, grid_y as f32 / 2.0, grid_z as f32 / 2.0);
+        let semi_axes = Vec3::new(
+            grid_x as f32 / 2.0,
+            grid_y as f32 / 2.0,
+            grid_z as f32 / 2.0,
+        );
         let wall_voxels = (self.wall_blocks * voxels_per_block) as f32;
         let half = semi_axes;
 
@@ -566,12 +581,20 @@ mod sdf_size_units_tests {
     #[test]
     fn from_blocks_matches_legacy_block_size() {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [5, 1, 5], 1, 16);
-        assert_eq!(shape.size_voxels, [80, 16, 80], "blocks Â· d, identical to the old store");
+        assert_eq!(
+            shape.size_voxels,
+            [80, 16, 80],
+            "blocks Â· d, identical to the old store"
+        );
         // grid_dimensions returns the canonical voxels directly.
         assert_eq!(shape.grid_dimensions(16), [80, 16, 80]);
         // The retained expression re-evaluates losslessly at a denser document.
         let dense = SdfShape::from_measurements(ShapeKind::Box, shape.size_measurements(), 1, 32);
-        assert_eq!(dense.size_voxels, [160, 32, 160], "5 blocks Â· 32 = 160 (lossless block refine)");
+        assert_eq!(
+            dense.size_voxels,
+            [160, 32, 160],
+            "5 blocks Â· 32 = 160 (lossless block refine)"
+        );
     }
 
     /// `from_measurements` derives the canonical voxel size from a per-axis authored
@@ -586,7 +609,11 @@ mod sdf_size_units_tests {
         ];
         let shape = SdfShape::from_measurements(ShapeKind::Box, measurements, 1, 16);
         assert_eq!(shape.size_voxels, [56, 83, 40]);
-        assert_eq!(shape.size_measurements(), measurements, "expression retained verbatim");
+        assert_eq!(
+            shape.size_measurements(),
+            measurements,
+            "expression retained verbatim"
+        );
         assert!(shape.has_retained_size_measurements());
         // The SAME measurements refine at a denser document: 3.5Â·32 = 112; the
         // pure-voxel 83 stays 83; 2Â·32 + 8 = 72.
@@ -606,8 +633,15 @@ mod sdf_size_units_tests {
         let at16 = SdfShape::from_measurements(ShapeKind::Box, measurements, 1, 16);
         assert_eq!(at16.size_voxels[0], 40);
         let at32 = SdfShape::from_measurements(ShapeKind::Box, at16.size_measurements(), 1, 32);
-        assert_eq!(at32.size_voxels[0], 72, "2Â·32 + 8, NOT the integer rescale 80");
-        assert_eq!(at32.size_measurements()[0], measurements[0], "expression preserved");
+        assert_eq!(
+            at32.size_voxels[0], 72,
+            "2Â·32 + 8, NOT the integer rescale 80"
+        );
+        assert_eq!(
+            at32.size_measurements()[0],
+            measurements[0],
+            "expression preserved"
+        );
     }
 
     /// A `3.5 blocks` size re-evaluated at the NON-dividing d15 (3.5Â·15 = 52.5) must
@@ -621,7 +655,10 @@ mod sdf_size_units_tests {
             Measurement::from_voxels(16),
         ];
         let at15 = SdfShape::from_measurements(ShapeKind::Box, measurements, 1, 15);
-        assert_eq!(at15.size_voxels[0], 52, "3.5Â·15 = 52.5 floored to 52, no panic");
+        assert_eq!(
+            at15.size_voxels[0], 52,
+            "3.5Â·15 = 52.5 floored to 52, no panic"
+        );
         let retained = at15.size_measurements();
         assert_eq!(
             retained[0].to_voxels(15).unwrap(),
@@ -637,7 +674,11 @@ mod sdf_size_units_tests {
         // A `0 voxels` axis clamps to 1.
         let zero = SdfShape::from_measurements(
             ShapeKind::Box,
-            [Measurement::from_voxels(0), Measurement::from_voxels(5), Measurement::from_voxels(5)],
+            [
+                Measurement::from_voxels(0),
+                Measurement::from_voxels(5),
+                Measurement::from_voxels(5),
+            ],
             1,
             16,
         );
@@ -645,7 +686,10 @@ mod sdf_size_units_tests {
         assert_eq!(zero.size_measurements()[0], Measurement::from_voxels(1));
         // `from_blocks` with a 0-block axis clamps to 1 block.
         let zero_block = SdfShape::from_blocks(ShapeKind::Box, [0, 2, 2], 1, 16);
-        assert_eq!(zero_block.size_voxels[0], 16, "0 blocks clamps to 1 block = 16 voxels");
+        assert_eq!(
+            zero_block.size_voxels[0], 16,
+            "0 blocks clamps to 1 block = 16 voxels"
+        );
         // `from_voxels` clamps too.
         let pure = SdfShape::from_voxels(ShapeKind::Box, [0, 0, 0], 1);
         assert_eq!(pure.size_voxels, [1, 1, 1]);
@@ -658,11 +702,18 @@ mod sdf_size_units_tests {
     fn pure_voxel_size_retains_none() {
         let pure = SdfShape::from_measurements(
             ShapeKind::Box,
-            [Measurement::from_voxels(83), Measurement::from_voxels(17), Measurement::from_voxels(80)],
+            [
+                Measurement::from_voxels(83),
+                Measurement::from_voxels(17),
+                Measurement::from_voxels(80),
+            ],
             1,
             16,
         );
-        assert!(!pure.has_retained_size_measurements(), "pure-voxel size is synthesisable â†’ None");
+        assert!(
+            !pure.has_retained_size_measurements(),
+            "pure-voxel size is synthesisable â†’ None"
+        );
         // The accessor still synthesises the correct per-axis pure-voxel measurement.
         assert_eq!(pure.size_measurements()[0], Measurement::from_voxels(83));
     }
@@ -674,7 +725,11 @@ mod sdf_size_units_tests {
         for voxels in [1_i64, 16, 56, 80, 83, 257] {
             let text = voxel_core::units::format(voxels, 16, DisplayUnit::BlocksAndVoxels);
             let reparsed = voxel_core::units::parse(&text).expect("re-parses");
-            assert_eq!(reparsed.to_voxels(16).unwrap(), voxels, "round-trip via `{text}`");
+            assert_eq!(
+                reparsed.to_voxels(16).unwrap(),
+                voxels,
+                "round-trip via `{text}`"
+            );
         }
     }
 
@@ -691,7 +746,10 @@ mod sdf_size_units_tests {
         assert_eq!(restored.size_voxels, [83, 17, 80]);
         assert!(!restored.has_retained_size_measurements());
         for (axis, &voxels) in restored.size_voxels.iter().enumerate() {
-            assert_eq!(restored.size_measurements()[axis], Measurement::from_voxels(voxels as i64));
+            assert_eq!(
+                restored.size_measurements()[axis],
+                Measurement::from_voxels(voxels as i64)
+            );
         }
     }
 
@@ -740,18 +798,24 @@ mod sdf_size_units_tests {
     #[test]
     fn voxel_granular_box_fills_its_exact_extent_all_parities() {
         let cases: [[u32; 3]; 5] = [
-            [80, 16, 80],  // whole-block 5Ã—1Ã—5 @ d16 (all even)
-            [81, 17, 81],  // all odd
-            [83, 17, 80],  // mixed: odd, odd, even
-            [56, 1, 1],    // a flat axis (1 voxel) + even
-            [1, 1, 1],     // the minimal box
+            [80, 16, 80], // whole-block 5Ã—1Ã—5 @ d16 (all even)
+            [81, 17, 81], // all odd
+            [83, 17, 80], // mixed: odd, odd, even
+            [56, 1, 1],   // a flat axis (1 voxel) + even
+            [1, 1, 1],    // the minimal box
         ];
         for size in cases {
             let (min, max, count) = box_voxel_extent(size, 16);
             let expected = size[0] as usize * size[1] as usize * size[2] as usize;
-            assert_eq!(count, expected, "size {size:?}: a Box fills prod(size) voxels");
+            assert_eq!(
+                count, expected,
+                "size {size:?}: a Box fills prod(size) voxels"
+            );
             for axis in 0..3 {
-                assert_eq!(min[axis], 0, "size {size:?} axis {axis}: corner-anchored min is 0");
+                assert_eq!(
+                    min[axis], 0,
+                    "size {size:?} axis {axis}: corner-anchored min is 0"
+                );
                 assert_eq!(
                     max[axis], size[axis] as i64,
                     "size {size:?} axis {axis}: spans [0, size) exactly"
@@ -786,8 +850,11 @@ mod field_tests {
             let shape = SdfShape::from_blocks(kind, [2, 3, 2], 1, DENSITY);
             let mut grid = VoxelGrid::default();
             shape.resolve(&mut grid, DENSITY);
-            let occupied: std::collections::BTreeSet<[i32; 3]> =
-                grid.occupied.iter().map(|voxel| voxel.local_index).collect();
+            let occupied: std::collections::BTreeSet<[i32; 3]> = grid
+                .occupied
+                .iter()
+                .map(|voxel| voxel.local_index)
+                .collect();
 
             let dimensions = shape.grid_dimensions(DENSITY);
             let field = shape.as_field().expect("every SdfShape has a field");
@@ -798,8 +865,7 @@ mod field_tests {
                         let centre = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
                         let distance = field.signed_distance(centre, DENSITY);
                         let field_says_solid = distance <= SURFACE_ISOLEVEL;
-                        let resolve_says_solid =
-                            occupied.contains(&[x as i32, y as i32, z as i32]);
+                        let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                         assert_eq!(
                             field_says_solid, resolve_says_solid,
                             "{kind:?} at {centre:?}: field {distance} says \
@@ -809,7 +875,10 @@ mod field_tests {
                     }
                 }
             }
-            assert!(inside > 0, "{kind:?}: nothing solid, the case proves nothing");
+            assert!(
+                inside > 0,
+                "{kind:?}: nothing solid, the case proves nothing"
+            );
         }
     }
 
@@ -839,11 +908,20 @@ mod field_tests {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, 8);
         let field = shape.as_field().expect("has a field");
         let corner = field.signed_distance([20.0, 20.0, 20.0], 8);
-        assert!((corner - 4.0).abs() < 1e-4, "corner distance {corner}, expected 4");
+        assert!(
+            (corner - 4.0).abs() < 1e-4,
+            "corner distance {corner}, expected 4"
+        );
         let face = field.signed_distance([19.0, 8.0, 8.0], 8);
-        assert!((face - 3.0).abs() < 1e-4, "face distance {face}, expected 3");
+        assert!(
+            (face - 3.0).abs() < 1e-4,
+            "face distance {face}, expected 3"
+        );
         let centre = field.signed_distance([8.0, 8.0, 8.0], 8);
-        assert!((centre + 8.0).abs() < 1e-4, "centre distance {centre}, expected -8");
+        assert!(
+            (centre + 8.0).abs() < 1e-4,
+            "centre distance {centre}, expected -8"
+        );
     }
 
     /// `as_field` returning `None` is a real state, not a placeholder: the debug cloud
@@ -855,10 +933,16 @@ mod field_tests {
             dimensions: [16, 16, 16],
             seed: 3,
         };
-        assert!(cloud.as_field().is_none(), "the cloud has no pointwise distance field");
+        assert!(
+            cloud.as_field().is_none(),
+            "the cloud has no pointwise distance field"
+        );
         // ...while still bracketing cells, the capability it DOES have.
         let cell = voxel_core::spatial_index::VoxelAabb::new([0, 0, 0], [8, 8, 8]);
-        assert!(cloud.cell_field_interval(cell, 8).is_some(), "the cloud still brackets cells");
+        assert!(
+            cloud.cell_field_interval(cell, 8).is_some(),
+            "the cloud still brackets cells"
+        );
 
         let sketch = crate::sketch::SketchSolid::extrude(
             crate::sketch::Sketch::rectangle(crate::sketch::PlaneAxis::Z, 4, 4),

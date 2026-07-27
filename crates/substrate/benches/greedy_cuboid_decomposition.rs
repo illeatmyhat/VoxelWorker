@@ -36,13 +36,16 @@ fn bench_decompose(c: &mut Criterion) {
     let solid = grid_from_fn(EDGE, |_, _, _| Some(1));
     // Checkerboard: every labeled cell is isolated — greedy growth merges nothing,
     // so this emits one cuboid per set cell (the worst case).
-    let checkerboard = grid_from_fn(EDGE, |x, y, z| {
-        if (x + y + z) % 2 == 0 {
-            Some(1)
-        } else {
-            None
-        }
-    });
+    let checkerboard = grid_from_fn(
+        EDGE,
+        |x, y, z| {
+            if (x + y + z) % 2 == 0 {
+                Some(1)
+            } else {
+                None
+            }
+        },
+    );
     // Hollow shell: only the six faces are solid, the interior is air — the
     // realistic boundary block.
     let hollow_shell = grid_from_fn(EDGE, |x, y, z| {

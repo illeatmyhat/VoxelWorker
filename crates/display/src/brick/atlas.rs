@@ -135,7 +135,8 @@ pub fn read_back_brick_atlas(
     }
     // `copy_texture_to_buffer` rows must be 256-aligned (unlike `write_texture`).
     const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
-    let padded_row = atlas_dim.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_row =
+        atlas_dim.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded_bytes = padded_row as u64 * atlas_dim as u64 * atlas_dim as u64;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("brick-field atlas readback"),
@@ -143,7 +144,8 @@ pub fn read_back_brick_atlas(
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture,

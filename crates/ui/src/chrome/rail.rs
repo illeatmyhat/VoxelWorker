@@ -60,10 +60,17 @@ pub fn icon_rail(
     let mut click = None;
     for index in 0..3usize {
         let button_rect = Rect::from_min_size(
-            Pos2::new(rail_rect.left(), rail_rect.top() + index as f32 * BUTTON_HEIGHT),
+            Pos2::new(
+                rail_rect.left(),
+                rail_rect.top() + index as f32 * BUTTON_HEIGHT,
+            ),
             Vec2::new(RAIL_WIDTH, BUTTON_HEIGHT),
         );
-        let response = ui.interact(button_rect, Id::new(("signal_rail_button", index)), Sense::click());
+        let response = ui.interact(
+            button_rect,
+            Id::new(("signal_rail_button", index)),
+            Sense::click(),
+        );
         let hovered = response.hovered();
         // Only the viewport-mode button (index 2) lights, and only off-Normal.
         let lit = index == 2 && view_mode != ViewMode::Normal;
@@ -111,7 +118,12 @@ pub fn icon_rail(
         }
     }
 
-    painter.rect_stroke(rail_rect, 0.0, Stroke::new(1.0_f32, theme::BORDER), StrokeKind::Inside);
+    painter.rect_stroke(
+        rail_rect,
+        0.0,
+        Stroke::new(1.0_f32, theme::BORDER),
+        StrokeKind::Inside,
+    );
     click
 }
 
@@ -123,7 +135,13 @@ fn glyph_box(button_rect: Rect) -> Rect {
 
 /// Draw the glyph for rail button `index` (0 Home, 1 Fit, 2 viewport-mode) in `color`. The marks
 /// come from [`crate::icons`], the one authoring the `design_reference` gallery also paints.
-fn draw_glyph(painter: &egui::Painter, button_rect: Rect, index: usize, view_mode: ViewMode, color: Color32) {
+fn draw_glyph(
+    painter: &egui::Painter,
+    button_rect: Rect,
+    index: usize,
+    view_mode: ViewMode,
+    color: Color32,
+) {
     let icon = match index {
         0 => Icon::Home,
         1 => Icon::Fit,

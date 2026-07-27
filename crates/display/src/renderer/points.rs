@@ -60,8 +60,14 @@ fn point_axes_into(
         let mut to = origin_voxels;
         from[axis] = origin_voxels[axis] - half;
         to[axis] = origin_voxels[axis] + half;
-        vertices.push(LineVertex { position: from, color: colors[axis] });
-        vertices.push(LineVertex { position: to, color: colors[axis] });
+        vertices.push(LineVertex {
+            position: from,
+            color: colors[axis],
+        });
+        vertices.push(LineVertex {
+            position: to,
+            color: colors[axis],
+        });
     }
 }
 
@@ -162,7 +168,12 @@ pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlan
         let origin = point_origin_voxels(point, recentre, density);
         let mut push = |plane: ReferencePlane| {
             let (u_axis, v_axis, normal) = reference_plane_basis(plane);
-            planes.push(GridPlaneInstance { origin, u_axis, v_axis, normal });
+            planes.push(GridPlaneInstance {
+                origin,
+                u_axis,
+                v_axis,
+                normal,
+            });
         };
         if point.plane_xz {
             push(ReferencePlane::Xz);

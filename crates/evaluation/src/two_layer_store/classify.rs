@@ -1,16 +1,15 @@
 //! The interval-bound block classifier (air / coarse-solid / boundary) + boundary-block per-voxel resolve + seam-solidity computation.
 
-
+use crate::cuboid::{decompose_into_boxes, VoxelRegion};
+use document::scene::{CombineOp, LeafProducer, ScopeFrame};
+use document::voxel::FieldClassification;
+use glam::{Quat, Vec3};
 use substrate::solids::{
     CellCombineOp, CellContribution, ScopedCellClassification, ScopedCellEvent,
 };
-use glam::{Quat, Vec3};
 use voxel_core::core_geom::{BlockId, CellKey};
-use crate::cuboid::{decompose_into_boxes, VoxelRegion};
-use document::scene::{CombineOp, LeafProducer, ScopeFrame};
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{VoxelGrid, SURFACE_ISOLEVEL};
-use document::voxel::FieldClassification;
 
 #[allow(unused_imports)]
 use super::*;
@@ -67,7 +66,9 @@ pub(crate) fn scoped_leaf_steps<'leaf>(
         // Close the scopes the leaf is no longer inside, innermost first (each close
         // carries the SCOPE's own operation, ADR 0017 Decision 3).
         while open_frames.len() > common {
-            let frame = open_frames.pop().expect("len checked by the loop condition");
+            let frame = open_frames
+                .pop()
+                .expect("len checked by the loop condition");
             steps.push(ScopedLeafStep::CloseScope(frame.operation));
         }
         // Open the leaf's scopes beyond the common prefix, outermost first.
@@ -194,27 +195,29 @@ pub(crate) fn classify_chunk_block(
     // reconstruction ([`scoped_leaf_steps`]) and the local-frame map stay HERE
     // (domain); the fold algebra lives in substrate.
     let verdict = ScopedCellClassification::classify(
-        scoped_leaf_steps(&overlapping).into_iter().map(|step| match step {
-            ScopedLeafStep::OpenScope => ScopedCellEvent::OpenScope,
-            ScopedLeafStep::CloseScope(operation) => {
-                ScopedCellEvent::CloseScope(cell_combine_role(operation))
-            }
-            ScopedLeafStep::Leaf(leaf) => {
-                // Map the absolute block box into THIS leaf's producer-local voxel-index
-                // frame `[0, full)` via the inverse affine (ADR 0027) — the exact frame
-                // `cell_field_interval` expects (ADR 0008: the frame is carried, never
-                // re-derived). Exact for the axis-aligned leaves; a conservative enclosing
-                // box for a genuine rotation (the isometry keeps the interval bound sound).
-                let cell_local =
-                    abs_box_to_producer_local(leaf, block_abs_voxels, voxels_per_block);
-                ScopedCellEvent::Contribution(CellContribution {
-                    field_interval: leaf
-                        .producer
-                        .cell_field_interval(cell_local, voxels_per_block),
-                    combine: cell_combine_role(leaf.operation),
-                })
-            }
-        }),
+        scoped_leaf_steps(&overlapping)
+            .into_iter()
+            .map(|step| match step {
+                ScopedLeafStep::OpenScope => ScopedCellEvent::OpenScope,
+                ScopedLeafStep::CloseScope(operation) => {
+                    ScopedCellEvent::CloseScope(cell_combine_role(operation))
+                }
+                ScopedLeafStep::Leaf(leaf) => {
+                    // Map the absolute block box into THIS leaf's producer-local voxel-index
+                    // frame `[0, full)` via the inverse affine (ADR 0027) — the exact frame
+                    // `cell_field_interval` expects (ADR 0008: the frame is carried, never
+                    // re-derived). Exact for the axis-aligned leaves; a conservative enclosing
+                    // box for a genuine rotation (the isometry keeps the interval bound sound).
+                    let cell_local =
+                        abs_box_to_producer_local(leaf, block_abs_voxels, voxels_per_block);
+                    ScopedCellEvent::Contribution(CellContribution {
+                        field_interval: leaf
+                            .producer
+                            .cell_field_interval(cell_local, voxels_per_block),
+                        combine: cell_combine_role(leaf.operation),
+                    })
+                }
+            }),
         SURFACE_ISOLEVEL,
     );
 
@@ -524,7 +527,10 @@ pub(crate) fn classify_whole_chunk(
                 Some(leaf)
                     if leaf_world_box(leaf, voxels_per_block).contains_box(&chunk_abs_voxels) =>
                 {
-                    WholeChunkVerdict::AllCoarse { block_id, overlay: leaf.grid_overlay }
+                    WholeChunkVerdict::AllCoarse {
+                        block_id,
+                        overlay: leaf.grid_overlay,
+                    }
                 }
                 _ => WholeChunkVerdict::PerBlock,
             }
@@ -569,11 +575,9 @@ fn subtractive_leaves_contain_chunk(
         .filter(|leaf| !leaf_is_purely_additive(leaf))
         .map(|leaf| leaf_world_box(leaf, voxels_per_block))
         .all(|cutter_box| {
-            !cutter_box.intersects(&chunk_abs_voxels)
-                || cutter_box.contains_box(&chunk_abs_voxels)
+            !cutter_box.intersects(&chunk_abs_voxels) || cutter_box.contains_box(&chunk_abs_voxels)
         })
 }
-
 
 /// Resolve a boundary block per-voxel into a dense `density³` [`VoxelRegion`] (the
 /// material at each occupied voxel), decompose it to cuboids, and compute its per-face
@@ -629,7 +633,9 @@ pub(crate) fn resolve_boundary_block(
         match step {
             ScopedLeafStep::OpenScope => scope_stack.push(VoxelRegion::new_empty(extent)),
             ScopedLeafStep::CloseScope(operation) => {
-                let closed = scope_stack.pop().expect("scoped_leaf_steps emits balanced markers");
+                let closed = scope_stack
+                    .pop()
+                    .expect("scoped_leaf_steps emits balanced markers");
                 let parent = scope_stack.last_mut().unwrap_or(&mut region);
                 fold_closed_scope_into_region(parent, operation, &closed, extent);
             }
@@ -820,9 +826,15 @@ pub(crate) fn gather_rotated_leaf_into_region(
     let local_if_covered = |x: u32, y: u32, z: u32| -> Option<[f32; 3]> {
         // ADR 0027 §1 wandering origin: rebase the absolute cell against the leaf origin in i64
         // before the inverse rotation, so a far-out block keeps full sub-voxel precision.
-        let abs_cell =
-            [block_min_abs[0] + x as i64, block_min_abs[1] + y as i64, block_min_abs[2] + z as i64];
-        let local = affine.local_of_abs_cell_centre(abs_cell).voxels().to_array();
+        let abs_cell = [
+            block_min_abs[0] + x as i64,
+            block_min_abs[1] + y as i64,
+            block_min_abs[2] + z as i64,
+        ];
+        let local = affine
+            .local_of_abs_cell_centre(abs_cell)
+            .voxels()
+            .to_array();
         (field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL).then_some(local)
     };
 
@@ -831,8 +843,7 @@ pub(crate) fn gather_rotated_leaf_into_region(
     // path uses (surviving cells keep their render key; the mask never stamps). A body that
     // covers nothing clears the whole block — the block-local reading of `A ∩ ∅ = ∅`.
     if leaf.operation == CombineOp::Intersect {
-        let mut body_covers: std::collections::HashSet<[u32; 3]> =
-            std::collections::HashSet::new();
+        let mut body_covers: std::collections::HashSet<[u32; 3]> = std::collections::HashSet::new();
         for z in 0..density {
             for y in 0..density {
                 for x in 0..density {
@@ -960,4 +971,3 @@ pub(crate) fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
 
     SeamSolidity { solid }
 }
-

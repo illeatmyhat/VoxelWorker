@@ -131,7 +131,10 @@ pub(super) fn build_node_list_section(
     // as before (the old `scene_changed`) — the flag gates participation in the fold, so
     // a re-resolve is not optional polish, it is what makes the edit visible at all.
     if let Some((id, enabled)) = set_enabled {
-        response.emit_and_frame(Intent::SetEnabled { target: id, enabled });
+        response.emit_and_frame(Intent::SetEnabled {
+            target: id,
+            enabled,
+        });
     }
 
     // Carry a right-click Focus request to the loop (a view action; the loop sets the
@@ -142,7 +145,11 @@ pub(super) fn build_node_list_section(
     }
 
     if state.scene.roots.is_empty() {
-        ui.label(egui::RichText::new("(no nodes — add one below)").small().weak());
+        ui.label(
+            egui::RichText::new("(no nodes — add one below)")
+                .small()
+                .weak(),
+        );
     }
 
     build_node_actions(ui, state, response);
@@ -320,7 +327,9 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
         // Disabled for the root part (a definition of the whole scene is out of scope).
         if ui
             .add_enabled(has_active_non_root, egui::Button::new("Make definition"))
-            .on_hover_text("Turn the selected Part/node into a reusable definition, placed by an Instance")
+            .on_hover_text(
+                "Turn the selected Part/node into a reusable definition, placed by an Instance",
+            )
             .clicked()
         {
             if let Some(target) = state.selection.primary_node_id() {
@@ -334,7 +343,10 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                         }
                     })
                     .unwrap_or_else(|| "Definition".to_string());
-                response.emit_and_frame(Intent::MakeDefinition { target, name: def_name });
+                response.emit_and_frame(Intent::MakeDefinition {
+                    target,
+                    name: def_name,
+                });
             }
         }
     });

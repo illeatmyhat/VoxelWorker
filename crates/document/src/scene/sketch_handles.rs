@@ -100,11 +100,7 @@ impl Scene {
     /// Independent of the operation's degeneracy AND of whether a closed loop exists: an open
     /// or not-yet-extruded sketch STILL returns handles, so every vertex stays draggable and
     /// deletable while the sketch is authored (ADR 0030 — entities, not a loop, are the truth).
-    pub fn sketch_handles(
-        &self,
-        node_id: NodeId,
-        voxels_per_block: u32,
-    ) -> Option<SketchHandles> {
+    pub fn sketch_handles(&self, node_id: NodeId, voxels_per_block: u32) -> Option<SketchHandles> {
         let node = self.node_by_id(node_id)?;
         if !node.enabled {
             return None;
@@ -161,11 +157,7 @@ impl Scene {
         );
 
         let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
-        let recentre_vec = Vec3::new(
-            recentre[0] as f32,
-            recentre[1] as f32,
-            recentre[2] as f32,
-        );
+        let recentre_vec = Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
 
         let vertices: Vec<[f32; 3]> = points
             .iter()
@@ -175,7 +167,9 @@ impl Scene {
                 local[in1] = (point.at.offset_voxels[1] - min[1]) as f32;
                 // local[normal] stays 0.0 — the profile lives on the plane.
                 let world = placement
-                    .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(local)))
+                    .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(
+                        local,
+                    )))
                     .voxels();
                 (world - recentre_vec).to_array()
             })
@@ -224,7 +218,11 @@ mod tests {
     const DENSITY: u32 = 8;
 
     /// Build a single-node scene holding one extruded sketch and return the node id.
-    fn scene_with_sketch(sketch: Sketch, height_voxels: u32, offset_voxels: [i64; 3]) -> (Scene, NodeId) {
+    fn scene_with_sketch(
+        sketch: Sketch,
+        height_voxels: u32,
+        offset_voxels: [i64; 3],
+    ) -> (Scene, NodeId) {
         let mut node = Node::new(
             "Sketch",
             NodeContent::SketchTool {
@@ -283,9 +281,20 @@ mod tests {
                 hi[a] = hi[a].max(v[a]);
             }
         }
-        assert!((hi[0] - lo[0] - 4.0).abs() < 1e-3, "X span 4 voxels, got {}", hi[0] - lo[0]);
-        assert!((hi[1] - lo[1] - 6.0).abs() < 1e-3, "Y span 6 voxels, got {}", hi[1] - lo[1]);
-        assert!((hi[2] - lo[2]).abs() < 1e-3, "profile is flat on the plane (no Z span)");
+        assert!(
+            (hi[0] - lo[0] - 4.0).abs() < 1e-3,
+            "X span 4 voxels, got {}",
+            hi[0] - lo[0]
+        );
+        assert!(
+            (hi[1] - lo[1] - 6.0).abs() < 1e-3,
+            "Y span 6 voxels, got {}",
+            hi[1] - lo[1]
+        );
+        assert!(
+            (hi[2] - lo[2]).abs() < 1e-3,
+            "profile is flat on the plane (no Z span)"
+        );
     }
 
     #[test]
@@ -302,8 +311,14 @@ mod tests {
         hit[in0] += 0.4;
         hit[in1] -= 0.3;
         let profile = handles.render_hit_to_profile(hit);
-        assert!((profile[0].round() - 0.0).abs() < 1e-6, "rounds back to c0 = 0");
-        assert!((profile[1].round() - 0.0).abs() < 1e-6, "rounds back to c1 = 0");
+        assert!(
+            (profile[0].round() - 0.0).abs() < 1e-6,
+            "rounds back to c0 = 0"
+        );
+        assert!(
+            (profile[1].round() - 0.0).abs() < 1e-6,
+            "rounds back to c1 = 0"
+        );
         // And the fractional part is carried (sub-voxel NoSnap would keep it).
         assert!((profile[0] - 0.4).abs() < 1e-3, "carries the +0.4 fraction");
     }
@@ -313,13 +328,21 @@ mod tests {
         // No points ⇒ nothing to handle.
         let empty = Sketch::empty(PlaneAxis::Z);
         let (scene, id) = scene_with_sketch(empty, 3, [0, 0, 0]);
-        assert!(scene.sketch_handles(id, DENSITY).is_none(), "an empty sketch has no handles");
+        assert!(
+            scene.sketch_handles(id, DENSITY).is_none(),
+            "an empty sketch has no handles"
+        );
 
         // Two points do not form a closed loop, but every point is still a draggable / deletable
         // handle (ADR 0030 — entities, not a loop, drive the overlay).
-        let open = Sketch::new(PlaneAxis::Z, vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)]);
+        let open = Sketch::new(
+            PlaneAxis::Z,
+            vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)],
+        );
         let (scene, id) = scene_with_sketch(open, 3, [0, 0, 0]);
-        let handles = scene.sketch_handles(id, DENSITY).expect("two-point sketch shows handles");
+        let handles = scene
+            .sketch_handles(id, DENSITY)
+            .expect("two-point sketch shows handles");
         assert_eq!(handles.vertices.len(), 2, "one handle per point entity");
     }
 
@@ -367,9 +390,18 @@ mod tests {
                 centroid[axis] += vertex[axis] / handles.vertices.len() as f32;
             }
         }
-        assert!((centroid[0] - pivot[0]).abs() < 1e-4, "in-plane X centroid == gizmo pivot X");
-        assert!((centroid[1] - pivot[1]).abs() < 1e-4, "in-plane Y centroid == gizmo pivot Y");
-        assert!(pivot[0].abs() < 1e-4 && pivot[1].abs() < 1e-4, "lone node pivots on the origin");
+        assert!(
+            (centroid[0] - pivot[0]).abs() < 1e-4,
+            "in-plane X centroid == gizmo pivot X"
+        );
+        assert!(
+            (centroid[1] - pivot[1]).abs() < 1e-4,
+            "in-plane Y centroid == gizmo pivot Y"
+        );
+        assert!(
+            pivot[0].abs() < 1e-4 && pivot[1].abs() < 1e-4,
+            "lone node pivots on the origin"
+        );
     }
 
     #[test]
@@ -379,7 +411,10 @@ mod tests {
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 0, [0, 0, 0]);
         let handles = scene.sketch_handles(id, DENSITY);
-        assert!(handles.is_some(), "a zero-height sketch still shows draggable handles");
+        assert!(
+            handles.is_some(),
+            "a zero-height sketch still shows draggable handles"
+        );
         assert_eq!(handles.unwrap().vertices.len(), 4);
     }
 }

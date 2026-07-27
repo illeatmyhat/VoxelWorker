@@ -5,9 +5,7 @@
 use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
 use super::extent::{fold_leaf_boxes, leaf_placed_voxel_box, rotated_grid_extent_voxels};
-use super::producers::{
-    leaf_content_fingerprint, operation_masks_beyond_bounds, outset_voxels_at,
-};
+use super::producers::{leaf_content_fingerprint, operation_masks_beyond_bounds, outset_voxels_at};
 use super::*;
 
 impl Scene {
@@ -32,7 +30,10 @@ impl Scene {
     /// This is the **producer-true** frame the chunk ownership (`floor(position /
     /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`] (the
     /// whole-block size readout). `None` when no leaf has an intrinsic size.
-    pub(super) fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
+    pub(super) fn placed_extent_voxels(
+        &self,
+        voxels_per_block: u32,
+    ) -> Option<([i64; 3], [i64; 3])> {
         // The producer-true corner-anchored voxel box `[off, off + rotated_grid)` per leaf
         // (leaf_placed_voxel_box, shared with the subtree-scoped extent), folded into their
         // union by the shared fold_leaf_boxes over the scene-wide leaf walk.
@@ -57,7 +58,8 @@ impl Scene {
         // small; the block→chunk division therefore happens in i64 and the QUOTIENT
         // (the chunk coordinate) narrows to i32 safely — for offsets up to ±10⁹
         // blocks at density 16 a chunk coord is ≤ ±2.5×10⁸, well inside i32 (S4a).
-        let chunk_extent_voxels = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let chunk_extent_voxels =
+            (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
@@ -108,7 +110,14 @@ impl Scene {
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels,
+                                 _offset_local_voxels,
+                                 rotation,
+                                 body,
+                                 grid_on_faces,
+                                 operation,
+                                 outset,
+                                 scope_path| {
             // ADR 0020 Consequences: the edit-broadphase AABB must be the OUTSET bounds, not
             // the producer bounds — an outset cutter dirties a larger region than its own
             // extent, and invalidating only the undilated box leaves a stale rim behind.
@@ -144,12 +153,11 @@ impl Scene {
                     // body), so it carries the fingerprint kind whose presence in an
                     // edit diff forces a wholesale clear. The box itself stays real
                     // for overlap queries.
-                    let fingerprint =
-                        if operation_masks_beyond_bounds(operation, scope_path) {
-                            LeafFingerprint::MasksBeyondItsBox(payload)
-                        } else {
-                            LeafFingerprint::Bounded(payload)
-                        };
+                    let fingerprint = if operation_masks_beyond_bounds(operation, scope_path) {
+                        LeafFingerprint::MasksBeyondItsBox(payload)
+                    } else {
+                        LeafFingerprint::Bounded(payload)
+                    };
                     entries.push(LeafEntry {
                         world_aabb: VoxelAabb::new(min, max),
                         fingerprint,

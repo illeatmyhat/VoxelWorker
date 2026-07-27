@@ -84,7 +84,10 @@ impl Bvh {
         }
         Self {
             nodes,
-            entry_input_indices: entries.iter().map(|(input_index, _)| *input_index).collect(),
+            entry_input_indices: entries
+                .iter()
+                .map(|(input_index, _)| *input_index)
+                .collect(),
             entry_aabbs: entries.iter().map(|(_, aabb)| *aabb).collect(),
         }
     }
@@ -220,7 +223,10 @@ mod tests {
         boxes.push(LatticeAabb::new([-500, -500, -500], [500, 500, 500]));
         boxes.push(LatticeAabb::new([-10, -10, -10], [-5, -5, -5]));
         boxes.push(LatticeAabb::new([-9, -9, -9], [-6, -6, -6]));
-        boxes.push(LatticeAabb::new([16_000_000_000, 0, 0], [16_000_000_064, 64, 64]));
+        boxes.push(LatticeAabb::new(
+            [16_000_000_000, 0, 0],
+            [16_000_000_064, 64, 64],
+        ));
 
         let bvh = Bvh::build(&boxes);
         let queries = [
@@ -251,9 +257,7 @@ mod tests {
     #[test]
     fn bvh_handles_empty_populations() {
         let query = LatticeAabb::new([-100, -100, -100], [100, 100, 100]);
-        assert!(Bvh::build(&[])
-            .overlapping_input_indices(&query)
-            .is_empty());
+        assert!(Bvh::build(&[]).overlapping_input_indices(&query).is_empty());
         let all_empty = [
             LatticeAabb::new([0, 0, 0], [0, 0, 0]),
             LatticeAabb::new([5, 5, 5], [5, 9, 9]),

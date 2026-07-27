@@ -132,7 +132,8 @@ impl TwoLayerResidentCache {
         };
         let mut evicted = Vec::new();
         self.resident.retain(|coord, _| {
-            let inside = (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
+            let inside =
+                (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
             if inside {
                 evicted.push(*coord);
             }
@@ -195,11 +196,10 @@ impl TwoLayerResidentCache {
         // resident HITs are reused verbatim (the #54 dirty-set path is intact).
         let leaves = scene.leaf_producers(voxels_per_block);
         let broadphase = leaf_edit_broadphase(&leaves, voxels_per_block);
-        let missing_coords: Vec<[i32; 3]> =
-            enumerate_covering_chunk_coords(min_chunk, max_chunk)
-                .into_iter()
-                .filter(|coord| !self.resident.contains_key(coord))
-                .collect();
+        let missing_coords: Vec<[i32; 3]> = enumerate_covering_chunk_coords(min_chunk, max_chunk)
+            .into_iter()
+            .filter(|coord| !self.resident.contains_key(coord))
+            .collect();
         let freshly_built =
             build_chunks_parallel(missing_coords, &leaves, &broadphase, voxels_per_block);
         for (coord, chunk) in freshly_built {
@@ -223,4 +223,3 @@ impl TwoLayerResidentCache {
         chunks
     }
 }
-

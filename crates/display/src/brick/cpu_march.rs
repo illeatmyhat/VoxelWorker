@@ -13,13 +13,14 @@ pub struct CpuMarchHit {
 /// The pixel-centre camera ray in the shifted march frame — mirrors `camera_ray`:
 /// the CAMERA-RELATIVE unproject yields eye-relative points, and `eye_sv` (the
 /// pre-combined eye + half-extent + shift) carries the sv frame's one large term.
-pub(crate) fn cpu_camera_ray(frame: &BrickMarchFrame, pixel: glam::Vec2) -> (glam::Vec3, glam::Vec3) {
+pub(crate) fn cpu_camera_ray(
+    frame: &BrickMarchFrame,
+    pixel: glam::Vec2,
+) -> (glam::Vec3, glam::Vec3) {
     let ndc_x = (pixel.x - frame.viewport[0]) / frame.viewport[2] * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y - frame.viewport[1]) / frame.viewport[3] * 2.0;
-    let near_h =
-        frame.ray_inverse_unprojection * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-    let far_h =
-        frame.ray_inverse_unprojection * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+    let near_h = frame.ray_inverse_unprojection * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+    let far_h = frame.ray_inverse_unprojection * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
     let near_eye_relative = near_h.truncate() / near_h.w;
     let far_eye_relative = far_h.truncate() / far_h.w;
     let direction = (far_eye_relative - near_eye_relative).normalize();
@@ -49,7 +50,11 @@ pub(crate) fn cpu_sculpted_voxel_occupied(
 }
 
 /// Binary-search the packed GPU records for a split key — mirrors the shader.
-pub(crate) fn cpu_find_brick_record(records: &[BrickGpuRecord], key_hi: u32, key_lo: u32) -> Option<usize> {
+pub(crate) fn cpu_find_brick_record(
+    records: &[BrickGpuRecord],
+    key_hi: u32,
+    key_lo: u32,
+) -> Option<usize> {
     let key = ((key_hi as u64) << 32) | key_lo as u64;
     records
         .binary_search_by_key(&key, |record| {

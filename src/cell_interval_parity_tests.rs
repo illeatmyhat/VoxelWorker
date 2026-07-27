@@ -20,9 +20,9 @@
 //! tested where it now lives, in `substrate::interval::field_interval`; this file keeps only the
 //! producer-vs-brute-force exactness gate.
 
+use document::voxel::{FieldClassification, SdfShape, VoxelProducer};
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{ShapeKind, VoxelGrid, SURFACE_ISOLEVEL};
-use document::voxel::{FieldClassification, SdfShape, VoxelProducer};
 
 /// Count the voxels brute force actually fills inside `cell` (in the producer's local
 /// voxel-index frame) by resolving JUST that window. Returns `(occupied, total)` where
@@ -122,10 +122,7 @@ fn fuzz_cells(full_dimensions: [u32; 3], voxels_per_block: u32, seed: u64) -> Ve
         while y < dims[1] + block {
             let mut x = -block;
             while x < dims[0] + block {
-                cells.push(VoxelAabb::new(
-                    [x, y, z],
-                    [x + block, y + block, z + block],
-                ));
+                cells.push(VoxelAabb::new([x, y, z], [x + block, y + block, z + block]));
                 x += block;
             }
             y += block;
@@ -325,8 +322,7 @@ fn strongly_anisotropic_sdf_cells_stay_sound_where_lipschitz_is_underestimated()
                                 (cell.min[1] + cell.max[1]) as f32 / 2.0 - half.y,
                                 (cell.min[2] + cell.max[2]) as f32 / 2.0 - half.z,
                             );
-                            let field_at_centre =
-                                signed_distance(kind, centre, half, wall_voxels);
+                            let field_at_centre = signed_distance(kind, centre, half, wall_voxels);
                             // Recover the Lipschitz constant the PRODUCTION code actually
                             // used, rather than duplicating its formula here: the interval is
                             // `[f_c ± L·R]`, so `L = (max − min) / 2R`. Reading it back keeps
@@ -468,8 +464,14 @@ fn sketch_extrude_cell_interval_never_misclassifies() {
     // Interior elision must actually fire (a solid extrude interior is coarse), and the
     // concave L must still leave straddling blocks boundary.
     assert!(air > 0, "sketch-extrude fuzz never produced an AIR verdict");
-    assert!(solid > 0, "sketch-extrude fuzz never produced a SOLID verdict (elision dead)");
-    assert!(boundary > 0, "sketch-extrude fuzz never produced a BOUNDARY verdict");
+    assert!(
+        solid > 0,
+        "sketch-extrude fuzz never produced a SOLID verdict (elision dead)"
+    );
+    assert!(
+        boundary > 0,
+        "sketch-extrude fuzz never produced a BOUNDARY verdict"
+    );
     eprintln!(
         "Sketch-extrude parity: {cases} cells classified ({air} air, {solid} solid, {boundary} boundary)"
     );
@@ -539,13 +541,19 @@ fn sketch_revolve_cell_interval_never_misclassifies() {
     // Both the full turn AND at least one PARTIAL wedge must elide interior blocks to coarse
     // (proving the radius/axial rectangle test AND the new angular-containment test fire); the
     // fuzz must also exercise air + boundary.
-    assert!(solid > 0, "sketch-revolve fuzz never produced a SOLID verdict (elision dead)");
+    assert!(
+        solid > 0,
+        "sketch-revolve fuzz never produced a SOLID verdict (elision dead)"
+    );
     assert!(
         partial_solid > 0,
         "PARTIAL-turn revolve never produced a coarse-solid verdict (angular elision dead)"
     );
     assert!(air > 0, "sketch-revolve fuzz never produced an AIR verdict");
-    assert!(boundary > 0, "sketch-revolve fuzz never produced a BOUNDARY verdict");
+    assert!(
+        boundary > 0,
+        "sketch-revolve fuzz never produced a BOUNDARY verdict"
+    );
     eprintln!(
         "Sketch-revolve parity: {cases} cells classified ({air} air, {solid} solid \
          [{partial_solid} partial-turn], {boundary} boundary)"
@@ -589,12 +597,18 @@ fn debug_cloud_field_is_boundable_and_sound() {
         }
     }
 
-    assert_eq!(unbounded, 0, "DebugCloudField should now bracket every cell");
+    assert_eq!(
+        unbounded, 0,
+        "DebugCloudField should now bracket every cell"
+    );
     assert!(
         air > 0,
         "cloud fuzz produced no AIR verdict — the bound decides nothing and elides nothing"
     );
-    assert!(boundary > 0, "cloud fuzz never produced a BOUNDARY verdict; the fuzz misses puffs");
+    assert!(
+        boundary > 0,
+        "cloud fuzz never produced a BOUNDARY verdict; the fuzz misses puffs"
+    );
     eprintln!(
         "DebugCloudField parity: {cases} cells classified ({air} air, {solid} solid, \
          {boundary} boundary)"
@@ -647,7 +661,11 @@ fn sketch_cell_interval_brackets_the_true_distance() {
                 let point = std::array::from_fn(|axis| {
                     let lo = cell.min[axis] as f32 + 0.5;
                     let hi = (cell.max[axis] - 1) as f32 + 0.5;
-                    if corner >> axis & 1 == 0 { lo } else { hi }
+                    if corner >> axis & 1 == 0 {
+                        lo
+                    } else {
+                        hi
+                    }
                 });
                 let distance = Field::signed_distance(&producer, point, density);
                 assert!(
@@ -661,7 +679,10 @@ fn sketch_cell_interval_brackets_the_true_distance() {
             }
         }
     }
-    assert!(checked > 0, "no cell was probed — the bracket test is vacuous");
+    assert!(
+        checked > 0,
+        "no cell was probed — the bracket test is vacuous"
+    );
     eprintln!("Sketch metric bracket: {checked} probes, widest bracket {widest_slack}");
 }
 
@@ -700,11 +721,19 @@ fn outset_producer_cell_interval_never_misclassifies() {
             ),
             (
                 format!("sphere outset {outset}"),
-                Box::new(SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, density)),
+                Box::new(SdfShape::from_blocks(
+                    ShapeKind::Sphere,
+                    [3, 3, 3],
+                    1,
+                    density,
+                )),
             ),
             (
                 format!("extrude outset {outset}"),
-                Box::new(SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 20, 12), 12)),
+                Box::new(SketchSolid::extrude(
+                    Sketch::rectangle(PlaneAxis::Z, 20, 12),
+                    12,
+                )),
             ),
         ];
         for (label, inner) in producers {
@@ -713,8 +742,11 @@ fn outset_producer_cell_interval_never_misclassifies() {
             if dimensions.contains(&0) {
                 continue;
             }
-            for &cell in &fuzz_cells(dimensions, density, 0x01_75_E7u64.wrapping_add_signed(outset))
-            {
+            for &cell in &fuzz_cells(
+                dimensions,
+                density,
+                0x01_75_E7u64.wrapping_add_signed(outset),
+            ) {
                 assert_cell_bound_exact(producer.as_ref(), cell, density, &label);
                 if let Some(interval) = producer.cell_field_interval(cell, density) {
                     match interval.classify(SURFACE_ISOLEVEL) {
@@ -728,8 +760,14 @@ fn outset_producer_cell_interval_never_misclassifies() {
         }
     }
     assert!(air > 0, "outset fuzz never produced an AIR verdict");
-    assert!(solid > 0, "outset fuzz never produced a SOLID verdict (elision dead under outset)");
-    assert!(boundary > 0, "outset fuzz never produced a BOUNDARY verdict");
+    assert!(
+        solid > 0,
+        "outset fuzz never produced a SOLID verdict (elision dead under outset)"
+    );
+    assert!(
+        boundary > 0,
+        "outset fuzz never produced a BOUNDARY verdict"
+    );
     eprintln!(
         "Outset parity: {cases} cells classified ({air} air, {solid} solid, {boundary} boundary)"
     );

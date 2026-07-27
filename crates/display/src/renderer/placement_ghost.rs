@@ -104,9 +104,9 @@ impl PlacementGhostRenderer {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(
-                        std::mem::size_of::<PlacementGhostUniforms>() as u64,
-                    ),
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                        PlacementGhostUniforms,
+                    >() as u64),
                 },
                 count: None,
             }],

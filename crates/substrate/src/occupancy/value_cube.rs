@@ -223,10 +223,10 @@ mod tests {
     fn set_get_and_run_fill_round_trip() {
         type Run = ([u32; 3], [u32; 3], u16);
         let fixtures: &[(u32, &[Run])] = &[
-            (1, &[([0, 0, 0], [0, 0, 0], 7)]),        // edge 1 (lower bound)
-            (4, &[([1, 1, 1], [2, 3, 1], 42)]),       // interior box
+            (1, &[([0, 0, 0], [0, 0, 0], 7)]),  // edge 1 (lower bound)
+            (4, &[([1, 1, 1], [2, 3, 1], 42)]), // interior box
             (8, &[([0, 3, 2], [7, 3, 2], 5), ([2, 3, 2], [4, 3, 2], 9)]), // overlapping runs
-            (16, &[([2, 5, 9], [13, 10, 12], 300)]),  // arbitrary interior box
+            (16, &[([2, 5, 9], [13, 10, 12], 300)]), // arbitrary interior box
             (64, &[([0, 0, 0], [63, 63, 63], 65535)]), // edge 64 (upper bound), full cube
         ];
         const AIR: u16 = 0;
@@ -254,7 +254,11 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(cube.as_slice(), reference.as_slice(), "edge {edge} run-fill mismatch");
+            assert_eq!(
+                cube.as_slice(),
+                reference.as_slice(),
+                "edge {edge} run-fill mismatch"
+            );
             // Per-cell `get`, and the `set` path reproduces the same cube.
             let mut per_cell = ValueCube::new_filled(edge, AIR);
             for z in 0..edge {
@@ -267,7 +271,10 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(per_cell, cube, "edge {edge}: per-cell `set` must rebuild the cube");
+            assert_eq!(
+                per_cell, cube,
+                "edge {edge}: per-cell `set` must rebuild the cube"
+            );
             // `from_values` is the inverse of `as_slice`.
             assert_eq!(
                 ValueCube::from_values(edge, cube.as_slice().to_vec()),
@@ -283,7 +290,9 @@ mod tests {
     #[test]
     fn to_le_bytes_is_row_order_low_byte_first() {
         let edge = 3u32;
-        let values: Vec<u16> = (0..edge * edge * edge).map(|i| 0x0100 * i as u16 + 7).collect();
+        let values: Vec<u16> = (0..edge * edge * edge)
+            .map(|i| 0x0100 * i as u16 + 7)
+            .collect();
         let cube = ValueCube::from_values(edge, values.clone());
         let bytes = cube.to_le_bytes();
         assert_eq!(bytes.len(), 2 * (edge * edge * edge) as usize);
@@ -322,7 +331,11 @@ mod tests {
                     let row = values.row(row_index);
                     let mut copied = vec![AIR; edge as usize];
                     values.copy_row_into(row_index, &mut copied);
-                    assert_eq!(copied.as_slice(), row, "edge {edge}: copy_row_into must equal row");
+                    assert_eq!(
+                        copied.as_slice(),
+                        row,
+                        "edge {edge}: copy_row_into must equal row"
+                    );
                     for x in 0..edge {
                         assert_eq!(
                             row[x as usize] == SOLID,

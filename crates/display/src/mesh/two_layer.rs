@@ -206,8 +206,10 @@ pub(crate) fn build_two_layer_chunk_meshes_filtered(
 
     // A lookup of every covering chunk by coord so a block can consult its neighbour's
     // coarse / microblock face solidity across a block OR chunk seam.
-    let chunk_by_coord: std::collections::HashMap<[i32; 3], &TwoLayerChunk> =
-        chunks.iter().map(|(coord, chunk)| (*coord, chunk.as_ref())).collect();
+    let chunk_by_coord: std::collections::HashMap<[i32; 3], &TwoLayerChunk> = chunks
+        .iter()
+        .map(|(coord, chunk)| (*coord, chunk.as_ref()))
+        .collect();
 
     // The block-face solidity of the block at ABSOLUTE block coord `abs_block` (across all
     // chunks): resolve which chunk + chunk-local block it is, then read its layer.
@@ -292,147 +294,147 @@ pub(crate) fn build_two_layer_chunk_meshes_filtered(
     let meshes: Vec<CuboidChunkMesh> = chunks
         .par_iter()
         .filter_map(|(chunk_coord, chunk)| {
-        // Incremental subset (issue #55): skip chunks not in the rebuild set. Seam culling
-        // still consults every chunk (the `chunk_by_coord` lookup above is over the FULL set),
-        // so a skipped neighbour's face solidity correctly culls the meshed chunk's seam faces.
-        if let Some(only) = only {
-            if !only.contains(chunk_coord) {
-                return None;
+            // Incremental subset (issue #55): skip chunks not in the rebuild set. Seam culling
+            // still consults every chunk (the `chunk_by_coord` lookup above is over the FULL set),
+            // so a skipped neighbour's face solidity correctly culls the meshed chunk's seam faces.
+            if let Some(only) = only {
+                if !only.contains(chunk_coord) {
+                    return None;
+                }
             }
-        }
-        // The chunk's low voxel corner in the RECENTRED frame (ADR 0008): a chunk-local
-        // voxel index `lv` lands at world min-corner `chunk_min - recentre + lv`. Emitting
-        // box corners there matches the dense path's `global_index + (min_world - 0.5)`
-        // exactly (its cloud-min anchor cancels — see the parity test).
-        let chunk_min_recentred = [
-            chunk_coord[0] as i64 * chunk_extent_voxels - recentre_voxels[0],
-            chunk_coord[1] as i64 * chunk_extent_voxels - recentre_voxels[1],
-            chunk_coord[2] as i64 * chunk_extent_voxels - recentre_voxels[2],
-        ];
-        // Each block's absolute block coord low = chunk_coord * CHUNK_BLOCKS + local block.
-        let chunk_block_base = [
-            chunk_coord[0] as i64 * CHUNK_BLOCKS as i64,
-            chunk_coord[1] as i64 * CHUNK_BLOCKS as i64,
-            chunk_coord[2] as i64 * CHUNK_BLOCKS as i64,
-        ];
+            // The chunk's low voxel corner in the RECENTRED frame (ADR 0008): a chunk-local
+            // voxel index `lv` lands at world min-corner `chunk_min - recentre + lv`. Emitting
+            // box corners there matches the dense path's `global_index + (min_world - 0.5)`
+            // exactly (its cloud-min anchor cancels — see the parity test).
+            let chunk_min_recentred = [
+                chunk_coord[0] as i64 * chunk_extent_voxels - recentre_voxels[0],
+                chunk_coord[1] as i64 * chunk_extent_voxels - recentre_voxels[1],
+                chunk_coord[2] as i64 * chunk_extent_voxels - recentre_voxels[2],
+            ];
+            // Each block's absolute block coord low = chunk_coord * CHUNK_BLOCKS + local block.
+            let chunk_block_base = [
+                chunk_coord[0] as i64 * CHUNK_BLOCKS as i64,
+                chunk_coord[1] as i64 * CHUNK_BLOCKS as i64,
+                chunk_coord[2] as i64 * CHUNK_BLOCKS as i64,
+            ];
 
-        let mut vertices: Vec<CuboidVertex> = Vec::new();
-        let mut indices: Vec<u32> = Vec::new();
-        let mut indices_overlay: Vec<u32> = Vec::new();
-        let mut aabb = Aabb::empty();
-        let mut box_count = 0u32;
+            let mut vertices: Vec<CuboidVertex> = Vec::new();
+            let mut indices: Vec<u32> = Vec::new();
+            let mut indices_overlay: Vec<u32> = Vec::new();
+            let mut aabb = Aabb::empty();
+            let mut box_count = 0u32;
 
-        for block_z in 0..CHUNK_BLOCKS {
-            for block_y in 0..CHUNK_BLOCKS {
-                for block_x in 0..CHUNK_BLOCKS {
-                    let block = [block_x, block_y, block_z];
-                    let abs_block = [
-                        chunk_block_base[0] + block_x as i64,
-                        chunk_block_base[1] + block_y as i64,
-                        chunk_block_base[2] + block_z as i64,
-                    ];
-                    // The block's low voxel corner in the recentred frame.
-                    let block_low_recentred = [
-                        chunk_min_recentred[0] + block_x as i64 * block_extent,
-                        chunk_min_recentred[1] + block_y as i64 * block_extent,
-                        chunk_min_recentred[2] + block_z as i64 * block_extent,
-                    ];
+            for block_z in 0..CHUNK_BLOCKS {
+                for block_y in 0..CHUNK_BLOCKS {
+                    for block_x in 0..CHUNK_BLOCKS {
+                        let block = [block_x, block_y, block_z];
+                        let abs_block = [
+                            chunk_block_base[0] + block_x as i64,
+                            chunk_block_base[1] + block_y as i64,
+                            chunk_block_base[2] + block_z as i64,
+                        ];
+                        // The block's low voxel corner in the recentred frame.
+                        let block_low_recentred = [
+                            chunk_min_recentred[0] + block_x as i64 * block_extent,
+                            chunk_min_recentred[1] + block_y as i64 * block_extent,
+                            chunk_min_recentred[2] + block_z as i64 * block_extent,
+                        ];
 
-                    // ADR 0010 #53 / ADR 0018 Decision 5: decide this block's route. A
-                    // band-cut block (or a block the region clip straddles) goes through the
-                    // band-aware apron mesher `emit_block_banded` — it densifies only the
-                    // block (never the whole solid interior), masks out-of-band /
-                    // out-of-region voxels to air on BOTH interior and apron (so a cut
-                    // synthesises a real cap face), and skips blocks fully carved away. A
-                    // block wholly outside the region (SOLID pass) keeps the E3-proven FAST
-                    // paths below (rendered finished). FULL-band + no region ⇒ every block
-                    // takes the fast path byte-for-byte.
-                    let block_lo_z = block_low_recentred[2];
-                    let block_hi_z = block_lo_z + block_extent - 1;
-                    let fully_out_of_band_z =
-                        block_hi_z < band_lo_recentred || block_lo_z > band_hi_recentred;
-                    let block_hi = [
-                        block_low_recentred[0] + block_extent - 1,
-                        block_low_recentred[1] + block_extent - 1,
-                        block_hi_z,
-                    ];
-                    let route = decide_block_route(
-                        band_active,
-                        region,
-                        block_low_recentred,
-                        block_hi,
-                        block_extent,
-                        fully_out_of_band_z,
-                    );
-                    match route {
-                        BlockRoute::Skip => continue,
-                        BlockRoute::Banded => {
-                            box_count += emit_block_banded(
-                                density,
-                                block_low_recentred,
-                                abs_block,
-                                &chunk_by_coord,
-                                &z_in_band,
-                                region,
-                                &mut vertices,
-                                &mut indices,
-                                &mut indices_overlay,
-                                &mut aabb,
-                            );
-                        }
-                        BlockRoute::Fast => {
-                            if let Some(block_id) = chunk.coarse_block(block) {
-                                // COARSE-SOLID → ONE box spanning the block (no per-voxel decompose).
-                                let overlay = chunk.coarse_block_overlay(block);
-                                emit_coarse_block_box(
-                                    block_id,
-                                    overlay,
+                        // ADR 0010 #53 / ADR 0018 Decision 5: decide this block's route. A
+                        // band-cut block (or a block the region clip straddles) goes through the
+                        // band-aware apron mesher `emit_block_banded` — it densifies only the
+                        // block (never the whole solid interior), masks out-of-band /
+                        // out-of-region voxels to air on BOTH interior and apron (so a cut
+                        // synthesises a real cap face), and skips blocks fully carved away. A
+                        // block wholly outside the region (SOLID pass) keeps the E3-proven FAST
+                        // paths below (rendered finished). FULL-band + no region ⇒ every block
+                        // takes the fast path byte-for-byte.
+                        let block_lo_z = block_low_recentred[2];
+                        let block_hi_z = block_lo_z + block_extent - 1;
+                        let fully_out_of_band_z =
+                            block_hi_z < band_lo_recentred || block_lo_z > band_hi_recentred;
+                        let block_hi = [
+                            block_low_recentred[0] + block_extent - 1,
+                            block_low_recentred[1] + block_extent - 1,
+                            block_hi_z,
+                        ];
+                        let route = decide_block_route(
+                            band_active,
+                            region,
+                            block_low_recentred,
+                            block_hi,
+                            block_extent,
+                            fully_out_of_band_z,
+                        );
+                        match route {
+                            BlockRoute::Skip => continue,
+                            BlockRoute::Banded => {
+                                box_count += emit_block_banded(
                                     density,
                                     block_low_recentred,
                                     abs_block,
-                                    &face_solidity_at,
+                                    &chunk_by_coord,
+                                    &z_in_band,
+                                    region,
                                     &mut vertices,
                                     &mut indices,
                                     &mut indices_overlay,
                                     &mut aabb,
                                 );
-                                box_count += 1;
-                            } else if let Some(geometry) = chunk.microblocks.get(&block) {
-                                // BOUNDARY → its stored microblock cuboids, exposure tested against a
-                                // block-local apron filled PER CELL from the NEIGHBOUR blocks' face
-                                // occupancy (coarse → whole-face solid via the seam flag; boundary →
-                                // its own cuboids' face layer) — matching the dense apron exactly.
-                                emit_boundary_block_cuboids(
-                                    geometry,
-                                    density,
-                                    block_low_recentred,
-                                    abs_block,
-                                    &face_cells_at,
-                                    &mut vertices,
-                                    &mut indices,
-                                    &mut indices_overlay,
-                                    &mut aabb,
-                                );
-                                box_count += geometry.cuboids.len() as u32;
                             }
-                            // else: air block, nothing to emit.
+                            BlockRoute::Fast => {
+                                if let Some(block_id) = chunk.coarse_block(block) {
+                                    // COARSE-SOLID → ONE box spanning the block (no per-voxel decompose).
+                                    let overlay = chunk.coarse_block_overlay(block);
+                                    emit_coarse_block_box(
+                                        block_id,
+                                        overlay,
+                                        density,
+                                        block_low_recentred,
+                                        abs_block,
+                                        &face_solidity_at,
+                                        &mut vertices,
+                                        &mut indices,
+                                        &mut indices_overlay,
+                                        &mut aabb,
+                                    );
+                                    box_count += 1;
+                                } else if let Some(geometry) = chunk.microblocks.get(&block) {
+                                    // BOUNDARY → its stored microblock cuboids, exposure tested against a
+                                    // block-local apron filled PER CELL from the NEIGHBOUR blocks' face
+                                    // occupancy (coarse → whole-face solid via the seam flag; boundary →
+                                    // its own cuboids' face layer) — matching the dense apron exactly.
+                                    emit_boundary_block_cuboids(
+                                        geometry,
+                                        density,
+                                        block_low_recentred,
+                                        abs_block,
+                                        &face_cells_at,
+                                        &mut vertices,
+                                        &mut indices,
+                                        &mut indices_overlay,
+                                        &mut aabb,
+                                    );
+                                    box_count += geometry.cuboids.len() as u32;
+                                }
+                                // else: air block, nothing to emit.
+                            }
                         }
                     }
                 }
             }
-        }
 
-        if indices.is_empty() && indices_overlay.is_empty() {
-            return None;
-        }
-        Some(CuboidChunkMesh {
-            coord: *chunk_coord,
-            vertices,
-            indices,
-            indices_overlay,
-            aabb,
-            box_count,
-        })
+            if indices.is_empty() && indices_overlay.is_empty() {
+                return None;
+            }
+            Some(CuboidChunkMesh {
+                coord: *chunk_coord,
+                vertices,
+                indices,
+                indices_overlay,
+                aabb,
+                box_count,
+            })
         })
         .collect();
     meshes

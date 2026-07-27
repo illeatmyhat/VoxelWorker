@@ -24,10 +24,7 @@ pub enum BrickPayload {
     /// occupancy in `atlas_slot` exactly as [`Sculpted`](Self::Sculpted), PLUS a per-voxel
     /// cell-key tile in `cell_key_slot` of the material side atlas (an independent pool with
     /// its own free-list — a cell-key slot number is unrelated to an occupancy slot number).
-    SculptedMixed {
-        atlas_slot: u32,
-        cell_key_slot: u32,
-    },
+    SculptedMixed { atlas_slot: u32, cell_key_slot: u32 },
 }
 
 impl BrickPayload {

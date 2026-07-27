@@ -3,18 +3,18 @@
 //! paths (region resolve is a test/oracle-gated oracle), and the per-leaf stamp
 //! helpers that write a producer's voxels into an output grid or chunk.
 
-mod model;
-mod walk;
-mod scope_fold;
 mod gather;
+mod model;
 mod resolve_chunk;
 #[cfg(any(test, feature = "oracle"))]
 mod resolve_oracle;
+mod scope_fold;
+mod walk;
 
+pub(crate) use model::{
+    leaf_content_fingerprint, outset_voxels_at, ComposedScope, LeafBody, LeafVisitor,
+};
 pub use model::{
     operation_masks_beyond_bounds, quat_from_lattice, LeafProducer, NodeContent, ScopeFrame,
     VoxelBody,
-};
-pub(crate) use model::{
-    leaf_content_fingerprint, outset_voxels_at, ComposedScope, LeafBody, LeafVisitor,
 };

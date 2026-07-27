@@ -69,7 +69,9 @@ pub struct NodePath {
 impl NodePath {
     /// A path selecting the top-level node at `index`.
     pub fn root_index(index: usize) -> Self {
-        Self { indices: vec![index] }
+        Self {
+            indices: vec![index],
+        }
     }
 
     /// Build a path from an explicit list of child indices.

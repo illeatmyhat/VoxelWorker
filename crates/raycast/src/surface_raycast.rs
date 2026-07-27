@@ -404,7 +404,14 @@ mod tests {
     #[test]
     fn quantize_15deg_fixes_axis_aligned_normals() {
         // Every world axis is already on the 15° lattice (tilt 0/90/180), so it maps to itself.
-        for axis in [Vec3::Z, Vec3::NEG_Z, Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y] {
+        for axis in [
+            Vec3::Z,
+            Vec3::NEG_Z,
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+        ] {
             let quantized = quantize_normal_to_15deg(axis);
             assert!(
                 (quantized - axis).length() < 1.0e-5,
@@ -416,7 +423,7 @@ mod tests {
     #[test]
     fn quantize_15deg_rounds_tilt_and_azimuth_to_nearest_step() {
         let step = core::f32::consts::PI / 12.0; // 15°
-                                                  // A normal tilted 40° off +Z toward azimuth 20° rounds to tilt 45°, azimuth 15°.
+                                                 // A normal tilted 40° off +Z toward azimuth 20° rounds to tilt 45°, azimuth 15°.
         let tilt = 40.0_f32.to_radians();
         let azimuth = 20.0_f32.to_radians();
         let normal = Vec3::new(
@@ -428,9 +435,18 @@ mod tests {
         // The quantized tilt and azimuth read back as multiples of 15°.
         let quantized_tilt = quantized.z.clamp(-1.0, 1.0).acos();
         let quantized_azimuth = quantized.y.atan2(quantized.x);
-        assert!((quantized_tilt - 3.0 * step).abs() < 1.0e-4, "tilt 40° must round to 45°");
-        assert!((quantized_azimuth - step).abs() < 1.0e-4, "azimuth 20° must round to 15°");
-        assert!((quantized.length() - 1.0).abs() < 1.0e-5, "result must be a unit vector");
+        assert!(
+            (quantized_tilt - 3.0 * step).abs() < 1.0e-4,
+            "tilt 40° must round to 45°"
+        );
+        assert!(
+            (quantized_azimuth - step).abs() < 1.0e-4,
+            "azimuth 20° must round to 15°"
+        );
+        assert!(
+            (quantized.length() - 1.0).abs() < 1.0e-5,
+            "result must be a unit vector"
+        );
     }
 
     #[test]
@@ -477,7 +493,11 @@ mod tests {
                 (distance_to_center - radius).abs() < 1.0e-3,
                 "projected point {landed:?} is {distance_to_center} from center, want {radius}"
             );
-            assert!(field(landed).abs() < 1.0e-3, "field at landed = {}", field(landed));
+            assert!(
+                field(landed).abs() < 1.0e-3,
+                "field at landed = {}",
+                field(landed)
+            );
         }
     }
 
@@ -522,7 +542,10 @@ mod tests {
         let field = |point: Vec3| point.z;
         let seat = Vec3::new(3.0, -2.0, 0.0);
         let slid = snap_slide_to_normal(seat, Vec3::X, field);
-        assert!(field(slid).abs() < 1.0e-3, "best-effort point must stay seated on z==0");
+        assert!(
+            field(slid).abs() < 1.0e-3,
+            "best-effort point must stay seated on z==0"
+        );
     }
 
     #[test]
@@ -545,7 +568,10 @@ mod tests {
         let field = sphere_field(Vec3::ZERO, 2.0);
         let hit = Vec3::new(3.0, 0.0, 0.0);
         let result = snap_to_lattice_then_reproject(hit, 0.0, &field);
-        assert!((result.length() - 2.0).abs() < 1.0e-3, "zero step should still project");
+        assert!(
+            (result.length() - 2.0).abs() < 1.0e-3,
+            "zero step should still project"
+        );
     }
 
     #[test]
@@ -561,7 +587,11 @@ mod tests {
             "entry distance {} want ~8.0",
             hit.distance_travelled
         );
-        assert!((hit.point.z - 8.0).abs() < 2.0e-3, "entry z {} want ~8.0", hit.point.z);
+        assert!(
+            (hit.point.z - 8.0).abs() < 2.0e-3,
+            "entry z {} want ~8.0",
+            hit.point.z
+        );
         // The entry normal faces back toward the ray origin: -Z.
         assert!(
             (hit.normal - Vec3::new(0.0, 0.0, -1.0)).length() < 5.0e-3,
@@ -580,8 +610,13 @@ mod tests {
     #[test]
     fn raymarch_zero_direction_misses() {
         let field = sphere_field(Vec3::ZERO, 1.0);
-        assert!(raymarch(Vec3::new(5.0, 0.0, 0.0), Vec3::ZERO, &field, &MarchParams::default())
-            .is_none());
+        assert!(raymarch(
+            Vec3::new(5.0, 0.0, 0.0),
+            Vec3::ZERO,
+            &field,
+            &MarchParams::default()
+        )
+        .is_none());
     }
 }
 

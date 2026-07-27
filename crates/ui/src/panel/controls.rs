@@ -28,7 +28,11 @@ pub(super) fn build_camera_body(ui: &mut egui::Ui, state: &mut PanelState) {
 /// debug faces) — the **body** of the Signal stack's GRIDS section (issue #88). M4 added
 /// the voxel-grid overlay; M5 wired the view cube; M8 wired the block lattice + fine floor
 /// grid (#10). The section header is drawn by the stack; this only lays out the checkboxes.
-pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+pub(super) fn build_display_body(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
     // ADR 0003 Phase C C4a: the three grid MASTERS are scene fields, so they bind to
     // LOCAL copies and a change emits ONE `SetGridMasters`. The masters are read live
     // by the per-frame line batch / mesh shader (no re-resolve), so `SetGridMasters`'s
@@ -45,10 +49,16 @@ pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, resp
         .checkbox(&mut voxel, "Voxel grid on faces (master)")
         .changed();
     // Issue #29 S3: scene-wide MASTERS for the per-object lattice / floor grids.
-    masters_changed |= ui.checkbox(&mut lattice, "Block lattice (master)").changed();
+    masters_changed |= ui
+        .checkbox(&mut lattice, "Block lattice (master)")
+        .changed();
     masters_changed |= ui.checkbox(&mut floor, "Floor grid (master)").changed();
     if masters_changed {
-        response.emit(Intent::SetGridMasters { voxel, lattice, floor });
+        response.emit(Intent::SetGridMasters {
+            voxel,
+            lattice,
+            floor,
+        });
     }
     // ADR 0031: the Points' axes as a nav marker through the model (on) vs occluded scaffold (off).
     ui.checkbox(&mut state.axes_on_top, "Axes on top");
@@ -68,7 +78,11 @@ pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, resp
 /// the button is disabled — the shell serialises exports — and `export.status_line`
 /// carries the "Exporting… done/total" progress; otherwise it is the last completion /
 /// failure / large-export message.
-pub(super) fn build_export_section(ui: &mut egui::Ui, response: &mut PanelResponse, export: ExportPanelState) {
+pub(super) fn build_export_section(
+    ui: &mut egui::Ui,
+    response: &mut PanelResponse,
+    export: ExportPanelState,
+) {
     ui.add_space(8.0);
     theme::section_heading(ui, "Export");
     let button = ui

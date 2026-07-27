@@ -217,7 +217,13 @@ impl DiskChunkStore {
             self.evict_least_recently_used()?;
         }
 
-        self.resident.insert(key, ResidentChunk { chunk, last_used: tick });
+        self.resident.insert(
+            key,
+            ResidentChunk {
+                chunk,
+                last_used: tick,
+            },
+        );
         Ok(())
     }
 
@@ -258,7 +264,13 @@ impl DiskChunkStore {
             // sets stay disjoint and a future eviction rewrites a fresh file).
             self.on_disk.remove(&key);
             remove_file_if_present(&self.path_for(key))?;
-            self.resident.insert(key, ResidentChunk { chunk: chunk.clone(), last_used: tick });
+            self.resident.insert(
+                key,
+                ResidentChunk {
+                    chunk: chunk.clone(),
+                    last_used: tick,
+                },
+            );
             return Ok(Some(chunk));
         }
 
@@ -405,11 +417,7 @@ mod tests {
                             (y as f32 + 0.5 - half[1]).floor() as i32,
                             (z as f32 + 0.5 - half[2]).floor() as i32,
                         ],
-                        block_local_coord: [
-                            (x % 4) as u8,
-                            (y % 4) as u8,
-                            (z % 4) as u8,
-                        ],
+                        block_local_coord: [(x % 4) as u8, (y % 4) as u8, (z % 4) as u8],
                         block_id: voxel_core::core_geom::BlockId(seed),
                         attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
@@ -468,8 +476,14 @@ mod tests {
         let got = store.get(key([0, 0, 0])).unwrap().expect("just put it");
         assert_eq!(got, chunk, "a resident get returns the stored chunk");
         let stats = store.stats();
-        assert_eq!(stats.disk_reloads, 0, "a resident hit must NOT reload from disk");
-        assert_eq!(stats.evictions, 0, "nothing exceeded capacity, so no eviction");
+        assert_eq!(
+            stats.disk_reloads, 0,
+            "a resident hit must NOT reload from disk"
+        );
+        assert_eq!(
+            stats.evictions, 0,
+            "nothing exceeded capacity, so no eviction"
+        );
         assert_eq!(stats.resident_count, 1);
     }
 
@@ -485,13 +499,30 @@ mod tests {
         store.put(key([1, 2, 3]), original.clone()).unwrap();
         // A second put over capacity 1 evicts key [1,2,3] to disk.
         store.put(key([9, 9, 9]), make_chunk(1)).unwrap();
-        assert!(store.stats().evictions >= 1, "the over-capacity put must evict");
-        assert_eq!(store.resident_count(), 1, "capacity 1 keeps exactly one resident");
+        assert!(
+            store.stats().evictions >= 1,
+            "the over-capacity put must evict"
+        );
+        assert_eq!(
+            store.resident_count(),
+            1,
+            "capacity 1 keeps exactly one resident"
+        );
 
         // Get the evicted key back: it must reload from disk and decode identically.
-        let reloaded = store.get(key([1, 2, 3])).unwrap().expect("still stored on disk");
-        assert_eq!(store.stats().disk_reloads, 1, "the evicted get reloads exactly once");
-        assert_eq!(reloaded, original, "the reloaded CompressedChunk equals the original");
+        let reloaded = store
+            .get(key([1, 2, 3]))
+            .unwrap()
+            .expect("still stored on disk");
+        assert_eq!(
+            store.stats().disk_reloads,
+            1,
+            "the evicted get reloads exactly once"
+        );
+        assert_eq!(
+            reloaded, original,
+            "the reloaded CompressedChunk equals the original"
+        );
         assert_eq!(
             grid_fingerprint(&reloaded),
             original_fingerprint,
@@ -520,13 +551,23 @@ mod tests {
                 store.resident_count()
             );
         }
-        assert_eq!(store.resident_count(), capacity, "the store fills to capacity");
+        assert_eq!(
+            store.resident_count(),
+            capacity,
+            "the store fills to capacity"
+        );
 
         // Every chunk ever put is still retrievable (resident or reloaded) and equal.
         for (coord, original) in &originals {
-            let got = store.get(key(*coord)).unwrap().expect("every put chunk is retrievable");
+            let got = store
+                .get(key(*coord))
+                .unwrap()
+                .expect("every put chunk is retrievable");
             assert_eq!(&got, original, "chunk at {coord:?} survived the round-trip");
-            assert!(store.resident_count() <= capacity, "invariant holds across reloads too");
+            assert!(
+                store.resident_count() <= capacity,
+                "invariant holds across reloads too"
+            );
         }
     }
 
@@ -553,8 +594,14 @@ mod tests {
 
         // B is the one on disk; A, C, D are resident (a get on them does NOT reload).
         let reloads_before = store.stats().disk_reloads;
-        let _ = store.get(key([0, 0, 0])).unwrap().expect("A still resident");
-        let _ = store.get(key([2, 0, 0])).unwrap().expect("C still resident");
+        let _ = store
+            .get(key([0, 0, 0]))
+            .unwrap()
+            .expect("A still resident");
+        let _ = store
+            .get(key([2, 0, 0]))
+            .unwrap()
+            .expect("C still resident");
         let _ = store.get(key([3, 0, 0])).unwrap().expect("D resident");
         assert_eq!(
             store.stats().disk_reloads,
@@ -563,7 +610,10 @@ mod tests {
         );
 
         // B IS on disk: getting it reloads exactly once.
-        let _ = store.get(key([1, 0, 0])).unwrap().expect("B reloads from disk");
+        let _ = store
+            .get(key([1, 0, 0]))
+            .unwrap()
+            .expect("B reloads from disk");
         assert_eq!(
             store.stats().disk_reloads,
             reloads_before + 1,
@@ -626,15 +676,26 @@ mod tests {
 
         // A get for a key never stored: None, no reload.
         assert!(store.get(key([99, 99, 99])).unwrap().is_none());
-        assert_eq!(store.stats().disk_reloads, 0, "a missing key does not reload");
+        assert_eq!(
+            store.stats().disk_reloads,
+            0,
+            "a missing key does not reload"
+        );
 
         // Force an eviction, then access the evicted key: exactly one reload.
         store.put(key([2, 0, 0]), make_chunk(2)).unwrap(); // evicts the LRU of {0,1}
         assert_eq!(store.stats().evictions, 1);
         // The LRU among [0] and [1] after the loop: both were touched in the loop in
         // order 0 then 1, so [0] is older → [0] is the victim.
-        let _ = store.get(key([0, 0, 0])).unwrap().expect("evicted [0] reloads");
-        assert_eq!(store.stats().disk_reloads, 1, "exactly one reload, on the evicted key");
+        let _ = store
+            .get(key([0, 0, 0]))
+            .unwrap()
+            .expect("evicted [0] reloads");
+        assert_eq!(
+            store.stats().disk_reloads,
+            1,
+            "exactly one reload, on the evicted key"
+        );
     }
 
     /// Overwriting an existing resident key updates its value without evicting
@@ -649,7 +710,11 @@ mod tests {
         // Overwrite [0] with a new value — at capacity, but NOT a new key.
         let replacement = make_chunk(123);
         store.put(key([0, 0, 0]), replacement.clone()).unwrap();
-        assert_eq!(store.stats().evictions, 0, "overwriting a resident key evicts nothing");
+        assert_eq!(
+            store.stats().evictions,
+            0,
+            "overwriting a resident key evicts nothing"
+        );
         assert_eq!(store.resident_count(), 2);
         let got = store.get(key([0, 0, 0])).unwrap().expect("resident");
         assert_eq!(got, replacement, "the overwrite took effect");
@@ -658,9 +723,19 @@ mod tests {
         // [1] (now the LRU), not [0].
         store.put(key([2, 0, 0]), make_chunk(2)).unwrap();
         assert_eq!(store.stats().disk_reloads, 0);
-        let _ = store.get(key([0, 0, 0])).unwrap().expect("[0] stayed resident");
-        assert_eq!(store.stats().disk_reloads, 0, "[0] was MRU after overwrite, not evicted");
-        let _ = store.get(key([1, 0, 0])).unwrap().expect("[1] reloads from disk");
+        let _ = store
+            .get(key([0, 0, 0]))
+            .unwrap()
+            .expect("[0] stayed resident");
+        assert_eq!(
+            store.stats().disk_reloads,
+            0,
+            "[0] was MRU after overwrite, not evicted"
+        );
+        let _ = store
+            .get(key([1, 0, 0]))
+            .unwrap()
+            .expect("[1] reloads from disk");
         assert_eq!(store.stats().disk_reloads, 1, "[1] was the LRU victim");
     }
 
@@ -678,8 +753,15 @@ mod tests {
         let fresh = make_chunk(200);
         store.put(key([0, 0, 0]), fresh.clone()).unwrap();
         let got = store.get(key([0, 0, 0])).unwrap().expect("resident again");
-        assert_eq!(store.stats().disk_reloads, 0, "[0] was resident — no reload");
-        assert_eq!(got, fresh, "the re-put value supersedes the stale disk copy");
+        assert_eq!(
+            store.stats().disk_reloads,
+            0,
+            "[0] was resident — no reload"
+        );
+        assert_eq!(
+            got, fresh,
+            "the re-put value supersedes the stale disk copy"
+        );
     }
 
     /// The store directory is created idempotently (constructing twice on the same
@@ -690,7 +772,10 @@ mod tests {
         let _store_a = DiskChunkStore::new(&temp.path, 2).unwrap();
         // Constructing again on the same (now-existing) directory must succeed.
         let store_b = DiskChunkStore::new(&temp.path, 2);
-        assert!(store_b.is_ok(), "re-creating the store on an existing dir is a no-op");
+        assert!(
+            store_b.is_ok(),
+            "re-creating the store on an existing dir is a no-op"
+        );
     }
 
     /// `remove` forgets a key from BOTH RAM and disk: after removing a spilled key,
@@ -708,8 +793,15 @@ mod tests {
         store.remove(key([0, 0, 0])).unwrap();
         assert!(!store.contains(key([0, 0, 0])), "[0] is forgotten");
         let reloads_before = store.stats().disk_reloads;
-        assert!(store.get(key([0, 0, 0])).unwrap().is_none(), "a removed key returns None");
-        assert_eq!(store.stats().disk_reloads, reloads_before, "a removed key does not reload");
+        assert!(
+            store.get(key([0, 0, 0])).unwrap().is_none(),
+            "a removed key returns None"
+        );
+        assert_eq!(
+            store.stats().disk_reloads,
+            reloads_before,
+            "a removed key does not reload"
+        );
 
         // Remove the resident key too, then idempotently remove a never-held key.
         store.remove(key([1, 0, 0])).unwrap();
@@ -724,16 +816,24 @@ mod tests {
         let temp = TempDir::new("clear_store");
         let mut store = DiskChunkStore::new(&temp.path, 2).unwrap();
         for index in 0..6u16 {
-            store.put(key([index as i32, 0, 0]), make_chunk(index)).unwrap();
+            store
+                .put(key([index as i32, 0, 0]), make_chunk(index))
+                .unwrap();
         }
-        assert!(store.stats().on_disk_count >= 1, "some chunks spilled to disk");
+        assert!(
+            store.stats().on_disk_count >= 1,
+            "some chunks spilled to disk"
+        );
 
         store.clear().unwrap();
         let stats = store.stats();
         assert_eq!(stats.resident_count, 0, "clear empties RAM");
         assert_eq!(stats.on_disk_count, 0, "clear empties the disk set");
         for index in 0..6u16 {
-            assert!(store.get(key([index as i32, 0, 0])).unwrap().is_none(), "all keys forgotten");
+            assert!(
+                store.get(key([index as i32, 0, 0])).unwrap().is_none(),
+                "all keys forgotten"
+            );
         }
         // The store is still usable after a clear.
         store.put(key([0, 0, 0]), make_chunk(42)).unwrap();

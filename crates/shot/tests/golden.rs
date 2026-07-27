@@ -137,9 +137,24 @@ const CASES: &[GoldenCase] = &[
     GoldenCase {
         name: "onion-ghost",
         args: &[
-            "--view-mode", "onion", "--select-node", "0",
-            "--shape", "sphere", "--size-x", "8", "--size-y", "8", "--size-z", "8",
-            "--onion", "8", "--layer-lower", "56", "--layer-upper", "72",
+            "--view-mode",
+            "onion",
+            "--select-node",
+            "0",
+            "--shape",
+            "sphere",
+            "--size-x",
+            "8",
+            "--size-y",
+            "8",
+            "--size-z",
+            "8",
+            "--onion",
+            "8",
+            "--layer-lower",
+            "56",
+            "--layer-upper",
+            "72",
         ],
     },
     // Issue #29 S5: the world reference grid (Points). The same instanced village,
@@ -190,7 +205,13 @@ const CASES: &[GoldenCase] = &[
     // this stays the band-clipped SketchSolid case in the two-layer / brick cross-checks.
     GoldenCase {
         name: "sketch-revolve-dome",
-        args: &["--demo-sketch-revolve", "--view-mode", "onion", "--select-node", "0"],
+        args: &[
+            "--demo-sketch-revolve",
+            "--view-mode",
+            "onion",
+            "--select-node",
+            "0",
+        ],
     },
     // ADR 0010 E3 (#50): a sketch→extrude (L-footprint) solid — a SketchSolid producer that
     // is NOT band-clipped (its 3-block extrusion fits under the layer-track grid_z), the
@@ -285,7 +306,13 @@ const CASES: &[GoldenCase] = &[
     // pinned by demo-buried-cutter above and the window case below.
     GoldenCase {
         name: "demo-subtract-cutter-selected",
-        args: &["--demo-subtract", "--select-node", "1", "--view-mode", "booleans"],
+        args: &[
+            "--demo-subtract",
+            "--select-node",
+            "1",
+            "--view-mode",
+            "booleans",
+        ],
     },
     // ADR 0018 Decision 6: the FIXTURE-SELECTION golden — the window scene with the window
     // INSTANCE selected, in Show-booleans mode. Its own operation is inert (ADR 0017
@@ -295,7 +322,13 @@ const CASES: &[GoldenCase] = &[
     // frame is already visible and never ghosts (the retired #78 union tint).
     GoldenCase {
         name: "demo-window-fixture-selected",
-        args: &["--demo-window-fixture", "--select-node", "1", "--view-mode", "booleans"],
+        args: &[
+            "--demo-window-fixture",
+            "--select-node",
+            "1",
+            "--view-mode",
+            "booleans",
+        ],
     },
     // ADR 0018 Decision 6: the INTERSECT-mask ghost — the demo-intersect scene with the
     // MASK selected, in Show-booleans mode. The mask's body ghosts AMBER: quiet over the
@@ -303,7 +336,13 @@ const CASES: &[GoldenCase] = &[
     // Stone cube buries it. Also pins that Intersect never renders the Subtract red.
     GoldenCase {
         name: "demo-intersect-mask-selected",
-        args: &["--demo-intersect", "--select-node", "1", "--view-mode", "booleans"],
+        args: &[
+            "--demo-intersect",
+            "--select-node",
+            "1",
+            "--view-mode",
+            "booleans",
+        ],
     },
     // ADR 0018 Decision 6: the ROOT-PART master — a Group whose Stone body carries an
     // exposed corner cutter AND a strictly-interior buried cutter, with the ROOT PART
@@ -314,7 +353,12 @@ const CASES: &[GoldenCase] = &[
     // tint appears anywhere — the mode ghosts only the invisible-by-success boolean masks.
     GoldenCase {
         name: "demo-booleans-root",
-        args: &["--demo-child-booleans", "--select-root", "--view-mode", "booleans"],
+        args: &[
+            "--demo-child-booleans",
+            "--select-root",
+            "--view-mode",
+            "booleans",
+        ],
     },
     // ADR 0018 Decision 4: the SAME scene in NORMAL mode — the finished carved look with
     // ZERO ghosts. Pins that Normal renders no overlay regardless of selection (the mode,
@@ -333,8 +377,17 @@ const CASES: &[GoldenCase] = &[
     GoldenCase {
         name: "onion-region-two-object",
         args: &[
-            "--demo-scene", "--view-mode", "onion", "--select-node", "0",
-            "--onion", "8", "--layer-lower", "30", "--layer-upper", "50",
+            "--demo-scene",
+            "--view-mode",
+            "onion",
+            "--select-node",
+            "0",
+            "--onion",
+            "8",
+            "--layer-lower",
+            "30",
+            "--layer-upper",
+            "50",
         ],
     },
     // Issue #88: the FOLDED display stack. The same instanced village with the floating
@@ -354,9 +407,20 @@ const CASES: &[GoldenCase] = &[
     GoldenCase {
         name: "normal-ignores-band",
         args: &[
-            "--view-mode", "normal",
-            "--shape", "sphere", "--size-x", "8", "--size-y", "8", "--size-z", "8",
-            "--layer-lower", "56", "--layer-upper", "72",
+            "--view-mode",
+            "normal",
+            "--shape",
+            "sphere",
+            "--size-x",
+            "8",
+            "--size-y",
+            "8",
+            "--size-z",
+            "8",
+            "--layer-lower",
+            "56",
+            "--layer-upper",
+            "72",
         ],
     },
     // Grid-overlay anti-moiré (the 2026-07-17 "waffle iron" fix): a LARGE thin-walled
@@ -372,8 +436,8 @@ const CASES: &[GoldenCase] = &[
     GoldenCase {
         name: "tube-grid-overlay",
         args: &[
-            "--shape", "tube", "--size-x", "50", "--size-y", "10", "--size-z", "50",
-            "--wall", "1", "--grid",
+            "--shape", "tube", "--size-x", "50", "--size-y", "10", "--size-z", "50", "--wall", "1",
+            "--grid",
         ],
     },
 ];

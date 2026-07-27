@@ -166,7 +166,11 @@ mod tests {
     fn integer_lattice_points_are_zero() {
         // Gradient noise vanishes at integer lattice points by construction.
         let noise = PerlinNoise::new(9);
-        for &p in &[Vec3::ZERO, Vec3::new(3.0, -7.0, 12.0), Vec3::new(-5.0, 5.0, 0.0)] {
+        for &p in &[
+            Vec3::ZERO,
+            Vec3::new(3.0, -7.0, 12.0),
+            Vec3::new(-5.0, 5.0, 0.0),
+        ] {
             assert!(noise.noise(p).abs() < 1e-6);
         }
     }
@@ -180,12 +184,18 @@ mod tests {
         // Zero octaves normalises to zero (no divide-by-zero).
         assert_eq!(a.fractal_noise(p, 0, 2.0, 0.5), 0.0);
         // Different seeds give different fields.
-        assert_ne!(a.fractal_noise(p, 4, 2.0, 0.5), b.fractal_noise(p, 4, 2.0, 0.5));
+        assert_ne!(
+            a.fractal_noise(p, 4, 2.0, 0.5),
+            b.fractal_noise(p, 4, 2.0, 0.5)
+        );
     }
 
     #[test]
     fn permutation_is_seeded() {
-        assert_ne!(PerlinNoise::new(1).permutation(), PerlinNoise::new(2).permutation());
+        assert_ne!(
+            PerlinNoise::new(1).permutation(),
+            PerlinNoise::new(2).permutation()
+        );
     }
 
     /// The PROVEN range bound (ADR 0021 Decision 1): `|noise| <= NOISE_BOUND`, and hence
@@ -229,9 +239,12 @@ mod tests {
                     "noise({point:?}) = {single} exceeds the proven bound {NOISE_BOUND}"
                 );
                 // The fBm bound is octave-independent, so vary the shaping too.
-                for (octaves, lacunarity, gain) in
-                    [(1u32, 2.0f32, 0.5f32), (4, 2.0, 0.5), (8, 2.7, 0.9), (3, 1.3, 1.0)]
-                {
+                for (octaves, lacunarity, gain) in [
+                    (1u32, 2.0f32, 0.5f32),
+                    (4, 2.0, 0.5),
+                    (8, 2.7, 0.9),
+                    (3, 1.3, 1.0),
+                ] {
                     let fractal = noise.fractal_noise(point, octaves, lacunarity, gain);
                     assert!(
                         fractal.abs() <= NOISE_BOUND,
@@ -266,6 +279,9 @@ mod tests {
             "observed noise extreme {worst} — if this ever exceeds 1.0, any code that assumed \
              a bound below the proven 2.0 must be re-audited"
         );
-        assert!(worst > 0.5, "sampling found only {worst}; the walk is not exploring the field");
+        assert!(
+            worst > 0.5,
+            "sampling found only {worst}; the walk is not exploring the field"
+        );
     }
 }

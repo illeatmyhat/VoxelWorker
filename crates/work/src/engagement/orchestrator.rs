@@ -650,92 +650,91 @@ impl DisplayOrchestrator {
                     // ride in the side atlas. ADR 0011 G2 — a loaded VS material does not skip the
                     // install either (the raymarch textures per-face from the block's D2Array).
                     {
-                            let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
-                            // The single-owner mirror is the truth for records + atlas geometry;
-                            // the renderer seams read straight from it (item 9).
-                            let mirror = self
-                                .incremental_brick_field
+                        let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
+                        // The single-owner mirror is the truth for records + atlas geometry;
+                        // the renderer seams read straight from it (item 9).
+                        let mirror = self
+                            .incremental_brick_field
+                            .as_ref()
+                            .expect("records_empty false ⇒ a resident mirror");
+                        // ADR 0011 interior elision: the record set is SURFACE-ONLY by
+                        // construction (`build_brick_field` fuses the occlusion decision
+                        // into emission — a fully-occluded interior block never becomes a
+                        // record, so nothing here needs a second mask pass). For a large
+                        // solid the per-edit record upload is ∝surface, not ∝volume.
+                        // Interiors live in the two-layer chunks the clip-map derives from.
+                        let gpu_records = pack_gpu_records(mirror.records(), |_| false);
+                        // Patch in place iff we produced an incremental update AND the
+                        // renderer actually HOLDS A LIVE, CURRENT FIELD; otherwise (wholesale,
+                        // or the display re-engaging from a mesh fallback) install fresh. The
+                        // staleness rules live in `brick_patch_in_place` (pure, unit-tested):
+                        // F2 — a cleared/present-but-empty field must re-install, never patch;
+                        // and a PENDING deferred clear (`brick_display_pending_clear`) marks
+                        // the live field a stale F1 placeholder that must also re-install.
+                        let renderer_holds_live_field = self
+                            .brick_raymarch_renderer
+                            .as_ref()
+                            .is_some_and(|renderer| renderer.has_brick_field());
+                        if brick_patch_in_place(
+                            update.is_some(),
+                            renderer_holds_live_field,
+                            self.brick_display_pending_clear,
+                        ) {
+                            let update = update
                                 .as_ref()
-                                .expect("records_empty false ⇒ a resident mirror");
-                            // ADR 0011 interior elision: the record set is SURFACE-ONLY by
-                            // construction (`build_brick_field` fuses the occlusion decision
-                            // into emission — a fully-occluded interior block never becomes a
-                            // record, so nothing here needs a second mask pass). For a large
-                            // solid the per-edit record upload is ∝surface, not ∝volume.
-                            // Interiors live in the two-layer chunks the clip-map derives from.
-                            let gpu_records = pack_gpu_records(mirror.records(), |_| false);
-                            // Patch in place iff we produced an incremental update AND the
-                            // renderer actually HOLDS A LIVE, CURRENT FIELD; otherwise (wholesale,
-                            // or the display re-engaging from a mesh fallback) install fresh. The
-                            // staleness rules live in `brick_patch_in_place` (pure, unit-tested):
-                            // F2 — a cleared/present-but-empty field must re-install, never patch;
-                            // and a PENDING deferred clear (`brick_display_pending_clear`) marks
-                            // the live field a stale F1 placeholder that must also re-install.
-                            let renderer_holds_live_field = self
-                                .brick_raymarch_renderer
-                                .as_ref()
-                                .is_some_and(|renderer| renderer.has_brick_field());
-                            if brick_patch_in_place(
-                                update.is_some(),
-                                renderer_holds_live_field,
-                                self.brick_display_pending_clear,
-                            ) {
-                                let update = update
-                                    .as_ref()
-                                    .expect("brick_patch_in_place true ⇒ an update was produced");
-                                if update.atlas_grew {
-                                    println!(
-                                        "brick: atlas grew — full re-pack ({} sculpted slots)",
-                                        mirror.sculpted_brick_count()
-                                    );
-                                }
-                                let renderer = self
-                                    .brick_raymarch_renderer
-                                    .as_mut()
-                                    .expect("brick_patch_in_place true ⇒ a live field is resident");
-                                // `patch_brick_field` patches the cell-key side atlas from the
-                                // mirror too (its own dirty-slot list), so mixed bricks stay current.
-                                renderer.patch_brick_field(
-                                    &self.device,
-                                    &self.queue,
-                                    mirror,
-                                    update,
-                                    &gpu_records,
-                                    &pyramid,
-                                    recentre_voxels,
-                                );
-                            } else {
-                                // Wholesale install: the upload payload was moved out of the
-                                // build; a re-engaging incremental edit (no wholesale payload)
-                                // re-packs it once from the mirror (the legitimate resize pack).
-                                // The cell-key side atlas is re-packed from the mirror the same way,
-                                // so a mixed scene's per-voxel tiles upload with the occupancy atlas.
-                                let atlas = wholesale_atlas
-                                    .unwrap_or_else(|| mirror.pack_atlas_payload());
-                                let cell_key_atlas = mirror.pack_cell_key_atlas_payload();
-                                let renderer =
-                                    self.brick_raymarch_renderer.get_or_insert_with(|| {
-                                        BrickRaymarchRenderer::new(
-                                            &self.device,
-                                            &self.queue,
-                                            self.color_format,
-                                        )
-                                    });
-                                renderer.install_brick_field_with_cell_keys(
-                                    &self.device,
-                                    &self.queue,
-                                    mirror.records(),
-                                    &atlas,
-                                    &cell_key_atlas,
-                                    &gpu_records,
-                                    &pyramid,
-                                    recentre_voxels,
+                                .expect("brick_patch_in_place true ⇒ an update was produced");
+                            if update.atlas_grew {
+                                println!(
+                                    "brick: atlas grew — full re-pack ({} sculpted slots)",
+                                    mirror.sculpted_brick_count()
                                 );
                             }
-                            brick_display_installed = true;
+                            let renderer = self
+                                .brick_raymarch_renderer
+                                .as_mut()
+                                .expect("brick_patch_in_place true ⇒ a live field is resident");
+                            // `patch_brick_field` patches the cell-key side atlas from the
+                            // mirror too (its own dirty-slot list), so mixed bricks stay current.
+                            renderer.patch_brick_field(
+                                &self.device,
+                                &self.queue,
+                                mirror,
+                                update,
+                                &gpu_records,
+                                &pyramid,
+                                recentre_voxels,
+                            );
+                        } else {
+                            // Wholesale install: the upload payload was moved out of the
+                            // build; a re-engaging incremental edit (no wholesale payload)
+                            // re-packs it once from the mirror (the legitimate resize pack).
+                            // The cell-key side atlas is re-packed from the mirror the same way,
+                            // so a mixed scene's per-voxel tiles upload with the occupancy atlas.
+                            let atlas =
+                                wholesale_atlas.unwrap_or_else(|| mirror.pack_atlas_payload());
+                            let cell_key_atlas = mirror.pack_cell_key_atlas_payload();
+                            let renderer = self.brick_raymarch_renderer.get_or_insert_with(|| {
+                                BrickRaymarchRenderer::new(
+                                    &self.device,
+                                    &self.queue,
+                                    self.color_format,
+                                )
+                            });
+                            renderer.install_brick_field_with_cell_keys(
+                                &self.device,
+                                &self.queue,
+                                mirror.records(),
+                                &atlas,
+                                &cell_key_atlas,
+                                &gpu_records,
+                                &pyramid,
+                                recentre_voxels,
+                            );
+                        }
+                        brick_display_installed = true;
                     } // end display-install block
-                    // `build` (this rebuild's boundary set) is consumed only by the display
-                    // install above; ADR 0012 retired the fog occupancy consumer.
+                      // `build` (this rebuild's boundary set) is consumed only by the display
+                      // install above; ADR 0012 retired the fog occupancy consumer.
                 }
                 // Inline install seam: the resident mirror/field now reflect THIS resolve;
                 // discard any superseded in-flight async brick result on arrival.
@@ -766,10 +765,8 @@ impl DisplayOrchestrator {
         // is redundant → SKIP the build and mark it stale; the C1 interlock composes via
         // `route_mesh_build` (a stale mesh, like an outstanding async build, is never inline-
         // patched — it rebuilds wholesale when next needed).
-        let brick_display_engaged = Self::brick_display_engaged_predicate(
-            brick_display_installed,
-            debug_face_orientation,
-        );
+        let brick_display_engaged =
+            Self::brick_display_engaged_predicate(brick_display_installed, debug_face_orientation);
         let mesh_route = route_mesh_build(
             brick_display_engaged,
             self.mesh_stale,
@@ -807,14 +804,15 @@ impl DisplayOrchestrator {
                 let dirty = incremental_dirty_chunks
                     .expect("InlineIncremental is only routed for an incremental edit");
                 profiling::scope!("cuboid_incremental_two_layer");
-                self.cuboid_mesh_renderer.incremental_rebuild_from_two_layer_chunks(
-                    &self.device,
-                    &two_layer_chunks,
-                    grid_dimensions,
-                    recentre_voxels,
-                    density,
-                    &dirty,
-                );
+                self.cuboid_mesh_renderer
+                    .incremental_rebuild_from_two_layer_chunks(
+                        &self.device,
+                        &two_layer_chunks,
+                        grid_dimensions,
+                        recentre_voxels,
+                        density,
+                        &dirty,
+                    );
                 // Reached only with `mesh_stale == false` (a stale mesh forces wholesale via
                 // `route_mesh_build`), so the in-place patch is sound. The install seam clears
                 // `mesh_stale` + bumps the generation (cleanup b: the sole non-Skip stale writer).
@@ -1153,6 +1151,9 @@ impl DisplayOrchestrator {
     pub fn voxel_renderers_mut(
         &mut self,
     ) -> (&mut CuboidMeshRenderer, Option<&mut BrickRaymarchRenderer>) {
-        (&mut self.cuboid_mesh_renderer, self.brick_raymarch_renderer.as_mut())
+        (
+            &mut self.cuboid_mesh_renderer,
+            self.brick_raymarch_renderer.as_mut(),
+        )
     }
 }

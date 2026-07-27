@@ -349,7 +349,9 @@ pub fn widest_run_in_band_over_chunks<'grid>(
     // them into a SINGLE shared row per (z, y) keyed by GLOBAL X, so a run straddling
     // a chunk seam lands as adjacent bits in the same bitset — the seam vanishes.
     widest_run_over(
-        chunk_grids.into_iter().flat_map(|grid| grid.occupied.iter()),
+        chunk_grids
+            .into_iter()
+            .flat_map(|grid| grid.occupied.iter()),
         region_dimensions,
         band_min,
         band_max,
@@ -392,20 +394,14 @@ pub fn signed_distance_elliptical_cylinder(
     let radial = (glam::Vec2::new(point.x / semi_axis_x, point.y / semi_axis_y).length() - 1.0)
         * semi_axis_x.min(semi_axis_y);
     let vertical = point.z.abs() - half_height;
-    radial.max(vertical).min(0.0)
-        + glam::Vec2::new(radial.max(0.0), vertical.max(0.0)).length()
+    radial.max(vertical).min(0.0) + glam::Vec2::new(radial.max(0.0), vertical.max(0.0)).length()
 }
 
 /// Dispatch to the right SDF for a shape kind (the `sdf(p)` dispatcher).
 ///
 /// `semi_axes` are the inscribed half-extents `(AX, AY, AZ)`; `wall_voxels` is
 /// `wall * density` (Tube only).
-pub fn signed_distance(
-    shape: ShapeKind,
-    point: Vec3,
-    semi_axes: Vec3,
-    wall_voxels: f32,
-) -> f32 {
+pub fn signed_distance(shape: ShapeKind, point: Vec3, semi_axes: Vec3, wall_voxels: f32) -> f32 {
     let semi_axis_x = semi_axes.x;
     let semi_axis_y = semi_axes.y;
     let semi_axis_z = semi_axes.z;
@@ -452,13 +448,22 @@ mod default_size_tests {
     #[test]
     fn each_kind_defaults_to_its_own_proportion() {
         let [bx, by, bz] = ShapeKind::Box.default_size_blocks();
-        assert!(bx == by && by == bz, "a box default is a cube, got {bx}×{by}×{bz}");
+        assert!(
+            bx == by && by == bz,
+            "a box default is a cube, got {bx}×{by}×{bz}"
+        );
         let [sx, sy, sz] = ShapeKind::Sphere.default_size_blocks();
-        assert!(sx == sy && sy == sz, "a sphere default is cubic, got {sx}×{sy}×{sz}");
+        assert!(
+            sx == sy && sy == sz,
+            "a sphere default is cubic, got {sx}×{sy}×{sz}"
+        );
         for kind in [ShapeKind::Cylinder, ShapeKind::Tube] {
             let [x, y, z] = kind.default_size_blocks();
             assert_eq!(x, y, "{kind:?} has a round cross-section (X == Y)");
-            assert!(z > x, "{kind:?} stands taller than wide (Z > X), got {x}×{y}×{z}");
+            assert!(
+                z > x,
+                "{kind:?} stands taller than wide (Z > X), got {x}×{y}×{z}"
+            );
         }
         let [tx, ty, tz] = ShapeKind::Torus.default_size_blocks();
         assert_eq!(tx, ty, "a torus ring is round in the XY plane (X == Y)");
@@ -484,8 +489,15 @@ mod categorical_block_id_tests {
                 attrs: BlockAttrs::DEFAULT,
                 grid_overlay: false,
             };
-            assert_eq!(voxel.color_index(), id, "the colour index is the block id verbatim");
-            assert!(voxel.color_index() <= 2, "the procedural ids stay in the shader's colour range");
+            assert_eq!(
+                voxel.color_index(),
+                id,
+                "the colour index is the block id verbatim"
+            );
+            assert!(
+                voxel.color_index() <= 2,
+                "the procedural ids stay in the shader's colour range"
+            );
         }
     }
 

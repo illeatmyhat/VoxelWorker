@@ -7,13 +7,13 @@
 
 use document::command::{Command, Inverse};
 use document::intent::{Intent, IntentEffect};
-use document::scene::{Node, NodeContent, NodeId, NodeTransform, Point, VoxelBody, Scene};
+use document::scene::{Node, NodeContent, NodeId, NodeTransform, Point, Scene, VoxelBody};
 use document::voxel::SdfShape;
 
 use ui::panel::Selection;
 
-use super::AppCore;
 use super::command_stack::{RecordedCommand, SketchGroup};
+use super::AppCore;
 
 /// What one [`dispatch`](AppCore::dispatch) produced, beyond the scene mutation itself.
 ///
@@ -50,7 +50,10 @@ impl DispatchOutcome {
 
     /// An effect-only outcome (a field write): no mint, no selection steer.
     fn effect(effect: IntentEffect) -> Self {
-        Self { effect, ..Self::none() }
+        Self {
+            effect,
+            ..Self::none()
+        }
     }
 
     /// An add-family outcome: the minted node both patches the inverse AND becomes the
@@ -65,7 +68,11 @@ impl DispatchOutcome {
 
     /// A steer-only outcome: selection moves, nothing was minted.
     fn steered(effect: IntentEffect, steer: SelectionSteer) -> Self {
-        Self { effect, minted_node: None, selection_steer: Some(steer) }
+        Self {
+            effect,
+            minted_node: None,
+            selection_steer: Some(steer),
+        }
     }
 }
 
@@ -81,7 +88,11 @@ fn node_write(
     write: impl FnOnce(&mut Node) -> bool,
 ) -> DispatchOutcome {
     let applied = scene.node_by_id_mut(target).map(write).unwrap_or(false);
-    DispatchOutcome::effect(if applied { full_effect } else { IntentEffect::none() })
+    DispatchOutcome::effect(if applied {
+        full_effect
+    } else {
+        IntentEffect::none()
+    })
 }
 
 /// Dispatch helper for a per-point field write — the `scene.points` sibling of
@@ -93,7 +104,11 @@ fn point_write(
     write: impl FnOnce(&mut Point) -> bool,
 ) -> DispatchOutcome {
     let applied = scene.points.get_mut(index).map(write).unwrap_or(false);
-    DispatchOutcome::effect(if applied { full_effect } else { IntentEffect::none() })
+    DispatchOutcome::effect(if applied {
+        full_effect
+    } else {
+        IntentEffect::none()
+    })
 }
 
 /// Capture helper: read the addressed node's prior value via `prior` (which returns
@@ -211,7 +226,11 @@ impl AppCore {
         let effect = outcome.effect;
         (
             RecordedCommand {
-                command: Command { intent, inverse, counter_before },
+                command: Command {
+                    intent,
+                    inverse,
+                    counter_before,
+                },
                 selection_before,
                 point_selection_before,
             },
@@ -299,16 +318,20 @@ impl AppCore {
 
             // --- Node field writes (inverse = same intent carrying the prior value) ---
             Intent::SetEnabled { target, .. } => node_field_inverse(scene, *target, |node| {
-                Some(Intent::SetEnabled { target: *target, enabled: node.enabled })
+                Some(Intent::SetEnabled {
+                    target: *target,
+                    enabled: node.enabled,
+                })
             }),
             Intent::SetShape { target, .. } => node_field_inverse(scene, *target, |node| {
                 match &node.content {
                     // `SdfShape` is no longer `Copy` (it owns an optional boxed
                     // retained-size expression), so clone the prior shape so undo
                     // replays the EXACT authored size (ADR 0003 §3f(0)).
-                    NodeContent::Tool { shape, .. } => {
-                        Some(Intent::SetShape { target: *target, shape: shape.clone() })
-                    }
+                    NodeContent::Tool { shape, .. } => Some(Intent::SetShape {
+                        target: *target,
+                        shape: shape.clone(),
+                    }),
                     _ => None,
                 }
             }),
@@ -316,9 +339,10 @@ impl AppCore {
                 match &node.content {
                     // Clone the prior producer so undo replays the EXACT sketch +
                     // extrude span (ADR 0003 §3i).
-                    NodeContent::SketchTool { producer, .. } => {
-                        Some(Intent::SetSketch { target: *target, producer: producer.clone() })
-                    }
+                    NodeContent::SketchTool { producer, .. } => Some(Intent::SetSketch {
+                        target: *target,
+                        producer: producer.clone(),
+                    }),
                     _ => None,
                 }
             }),
@@ -327,9 +351,10 @@ impl AppCore {
                     // Sketch nodes share the material field; capture their prior
                     // material too so the shared material edit is undoable.
                     NodeContent::Tool { material, .. }
-                    | NodeContent::SketchTool { material, .. } => {
-                        Some(Intent::SetMaterial { target: *target, material: *material })
-                    }
+                    | NodeContent::SketchTool { material, .. } => Some(Intent::SetMaterial {
+                        target: *target,
+                        material: *material,
+                    }),
                     _ => None,
                 }
             }),
@@ -338,7 +363,10 @@ impl AppCore {
             // and an Instance the referenced definition's finished body — the reusable
             // cutter (issue #76). All capture the same field inverse.
             Intent::SetOperation { target, .. } => node_field_inverse(scene, *target, |node| {
-                Some(Intent::SetOperation { target: *target, operation: node.operation })
+                Some(Intent::SetOperation {
+                    target: *target,
+                    operation: node.operation,
+                })
             }),
             Intent::SetDefinitionFixture { def, .. } => match scene.def_by_id(*def) {
                 // A DEFINITION field write (ADR 0017 Decision 4, issue #77): the
@@ -361,18 +389,27 @@ impl AppCore {
                 })
             }),
             Intent::SetName { target, .. } => node_field_inverse(scene, *target, |node| {
-                Some(Intent::SetName { target: *target, name: node.name.clone() })
+                Some(Intent::SetName {
+                    target: *target,
+                    name: node.name.clone(),
+                })
             }),
-            Intent::SetCloudSeed { target, .. } => node_field_inverse(scene, *target, |node| {
-                match &node.content {
+            Intent::SetCloudSeed { target, .. } => {
+                node_field_inverse(scene, *target, |node| match &node.content {
                     NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => {
-                        Some(Intent::SetCloudSeed { target: *target, seed: *seed })
+                        Some(Intent::SetCloudSeed {
+                            target: *target,
+                            seed: *seed,
+                        })
                     }
                     _ => None,
-                }
-            }),
+                })
+            }
             Intent::SetNodeGrids { target, .. } => node_field_inverse(scene, *target, |node| {
-                Some(Intent::SetNodeGrids { target: *target, grids: node.grids })
+                Some(Intent::SetNodeGrids {
+                    target: *target,
+                    grids: node.grids,
+                })
             }),
 
             // --- Global ---
@@ -401,29 +438,34 @@ impl AppCore {
                 },
                 _ => Inverse::NoOp,
             },
-            Intent::SetPointHidden { index, .. } => point_field_inverse(scene, *index, |point| {
-                Intent::SetPointHidden { index: *index, hidden: point.hidden }
-            }),
-            Intent::SetPointPlanes { index, .. } => point_field_inverse(scene, *index, |point| {
-                Intent::SetPointPlanes {
+            Intent::SetPointHidden { index, .. } => {
+                point_field_inverse(scene, *index, |point| Intent::SetPointHidden {
+                    index: *index,
+                    hidden: point.hidden,
+                })
+            }
+            Intent::SetPointPlanes { index, .. } => {
+                point_field_inverse(scene, *index, |point| Intent::SetPointPlanes {
                     index: *index,
                     xz: point.plane_xz,
                     xy: point.plane_xy,
                     yz: point.plane_yz,
-                }
-            }),
-            Intent::SetPointAxes { index, .. } => point_field_inverse(scene, *index, |point| {
-                Intent::SetPointAxes {
+                })
+            }
+            Intent::SetPointAxes { index, .. } => {
+                point_field_inverse(scene, *index, |point| Intent::SetPointAxes {
                     index: *index,
                     x: point.axis_x,
                     y: point.axis_y,
                     z: point.axis_z,
-                }
-            }),
-            Intent::SetPointPosition { index, .. } => point_field_inverse(scene, *index, |point| {
-                Intent::SetPointPosition { index: *index, position_blocks: point.position_blocks }
-            }),
-
+                })
+            }
+            Intent::SetPointPosition { index, .. } => {
+                point_field_inverse(scene, *index, |point| Intent::SetPointPosition {
+                    index: *index,
+                    position_blocks: point.position_blocks,
+                })
+            }
         }
     }
 
@@ -602,7 +644,11 @@ impl AppCore {
     /// the enter-state) and discard the session. Nothing reaches the main stack. Returns the
     /// merged effect of the reversed edits (`scene` → re-resolve) when the session was non-empty,
     /// else `none`.
-    pub fn cancel_sketch_group(&mut self, scene: &mut Scene, selection: &mut Selection) -> IntentEffect {
+    pub fn cancel_sketch_group(
+        &mut self,
+        scene: &mut Scene,
+        selection: &mut Selection,
+    ) -> IntentEffect {
         let Some(group) = self.command_stack.open_group.take() else {
             return IntentEffect::none();
         };
@@ -677,7 +723,12 @@ impl AppCore {
             Intent::AddNode { content } => {
                 DispatchOutcome::minted(full_effect, scene.add_node(content.into_node()))
             }
-            Intent::PlaceNode { content, offset_voxels, offset_local, rotation_quaternion } => {
+            Intent::PlaceNode {
+                content,
+                offset_voxels,
+                offset_local,
+                rotation_quaternion,
+            } => {
                 // Build the node exactly as AddNode, then override its identity transform with
                 // the picked placement (ADR 0008 absolute voxel frame), the sub-voxel pivot
                 // remainder (ADR 0027 continuous placement), AND — when the drop supplied one —
@@ -725,7 +776,9 @@ impl AppCore {
             }
             Intent::SetShape { target, shape } => {
                 node_write(scene, target, full_effect, |node| match &mut node.content {
-                    NodeContent::Tool { shape: node_shape, .. } => {
+                    NodeContent::Tool {
+                        shape: node_shape, ..
+                    } => {
                         *node_shape = shape;
                         true
                     }
@@ -734,7 +787,10 @@ impl AppCore {
             }
             Intent::SetSketch { target, producer } => {
                 node_write(scene, target, full_effect, |node| match &mut node.content {
-                    NodeContent::SketchTool { producer: node_producer, .. } => {
+                    NodeContent::SketchTool {
+                        producer: node_producer,
+                        ..
+                    } => {
                         *node_producer = producer;
                         true
                     }
@@ -745,8 +801,14 @@ impl AppCore {
                 // Sketch nodes carry the same shared material field, so the material
                 // edit applies to them too (ADR 0003 §3i).
                 node_write(scene, target, full_effect, |node| match &mut node.content {
-                    NodeContent::Tool { material: node_material, .. }
-                    | NodeContent::SketchTool { material: node_material, .. } => {
+                    NodeContent::Tool {
+                        material: node_material,
+                        ..
+                    }
+                    | NodeContent::SketchTool {
+                        material: node_material,
+                        ..
+                    } => {
                         *node_material = material;
                         true
                     }
@@ -774,7 +836,10 @@ impl AppCore {
                 let applied = scene.set_definition_fixture(def, fixture);
                 DispatchOutcome::effect(if applied { full_effect } else { none })
             }
-            Intent::SetOffset { target, offset_measurements } => {
+            Intent::SetOffset {
+                target,
+                offset_measurements,
+            } => {
                 // The intent carries the per-axis authored measurement (ADR 0003
                 // §3f(0)). Derive the canonical voxel offset at the document density
                 // and RETAIN the expression — the measurement→voxel rule has one
@@ -799,10 +864,12 @@ impl AppCore {
                     _ => false,
                 })
             }
-            Intent::SetNodeGrids { target, grids } => node_write(scene, target, full_effect, |node| {
-                node.grids = grids;
-                true
-            }),
+            Intent::SetNodeGrids { target, grids } => {
+                node_write(scene, target, full_effect, |node| {
+                    node.grids = grids;
+                    true
+                })
+            }
             // --- Global ---
             Intent::SetDensity { voxels_per_block } => {
                 // Density is a document-level attribute (ADR 0003 §3f(0)): one field
@@ -870,14 +937,19 @@ impl AppCore {
                                 // collapse to a 0-voxel (degenerate) axis.
                                 *axis = ((*axis as i64 * new_density / old_density).max(1)) as u32;
                             }
-                            *shape = SdfShape::from_voxels(shape.kind, size_voxels, shape.wall_blocks);
+                            *shape =
+                                SdfShape::from_voxels(shape.kind, size_voxels, shape.wall_blocks);
                         }
                     }
                 }
                 scene.voxels_per_block = voxels_per_block;
                 DispatchOutcome::effect(full_effect)
             }
-            Intent::SetGridMasters { voxel, lattice, floor } => {
+            Intent::SetGridMasters {
+                voxel,
+                lattice,
+                floor,
+            } => {
                 // The masters are read live by the per-frame line batch, so no
                 // re-resolve — `full_effect` is already `none()` for this intent.
                 scene.master_voxel_grid = voxel;
@@ -886,9 +958,11 @@ impl AppCore {
                 DispatchOutcome::effect(full_effect)
             }
 
-
             // --- Points ---
-            Intent::AddPoint { position_blocks, name } => {
+            Intent::AddPoint {
+                position_blocks,
+                name,
+            } => {
                 let point = document::scene::Point {
                     name,
                     position_blocks,
@@ -930,12 +1004,13 @@ impl AppCore {
                     true
                 })
             }
-            Intent::SetPointPosition { index, position_blocks } => {
-                point_write(scene, index, full_effect, |point| {
-                    point.position_blocks = position_blocks;
-                    true
-                })
-            }
+            Intent::SetPointPosition {
+                index,
+                position_blocks,
+            } => point_write(scene, index, full_effect, |point| {
+                point.position_blocks = position_blocks;
+                true
+            }),
         }
     }
 }

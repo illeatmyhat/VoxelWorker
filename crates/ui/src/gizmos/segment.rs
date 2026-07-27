@@ -52,7 +52,10 @@ pub fn marked_segment(painter: &Painter, a: Pos2, b: Pos2) {
     let mid = a + (b - a) * 0.5;
     let cross = Stroke::new(STROKE_HANDLE, color_palette::WARN);
     painter.line_segment(
-        [mid + Vec2::splat(-MARK_CROSS_ARM), mid + Vec2::splat(MARK_CROSS_ARM)],
+        [
+            mid + Vec2::splat(-MARK_CROSS_ARM),
+            mid + Vec2::splat(MARK_CROSS_ARM),
+        ],
         cross,
     );
     painter.line_segment(

@@ -43,7 +43,10 @@ pub fn build_add_shape_dialog(
     let top = central_rect.top() + DIALOG_MARGIN;
     let max_rect = Rect::from_min_size(
         Pos2::new(left, top),
-        Vec2::new(DIALOG_WIDTH, (central_rect.height() - 2.0 * DIALOG_MARGIN).max(0.0)),
+        Vec2::new(
+            DIALOG_WIDTH,
+            (central_rect.height() - 2.0 * DIALOG_MARGIN).max(0.0),
+        ),
     );
     let mut dialog_ui = root_ui.new_child(UiBuilder::new().max_rect(max_rect));
 
@@ -59,23 +62,47 @@ pub fn build_add_shape_dialog(
 
             ui.label("Position");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.placement_snap.position, PositionSnap::NoSnap, "No snap");
-                ui.selectable_value(&mut state.placement_snap.position, PositionSnap::Block, "Block");
-                ui.selectable_value(&mut state.placement_snap.position, PositionSnap::Voxel, "Voxel");
+                ui.selectable_value(
+                    &mut state.placement_snap.position,
+                    PositionSnap::NoSnap,
+                    "No snap",
+                );
+                ui.selectable_value(
+                    &mut state.placement_snap.position,
+                    PositionSnap::Block,
+                    "Block",
+                );
+                ui.selectable_value(
+                    &mut state.placement_snap.position,
+                    PositionSnap::Voxel,
+                    "Voxel",
+                );
             });
             ui.add_space(6.0);
 
             ui.label("Angle");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.placement_snap.angle, AngleSnap::Continuous, "Continuous");
+                ui.selectable_value(
+                    &mut state.placement_snap.angle,
+                    AngleSnap::Continuous,
+                    "Continuous",
+                );
                 ui.selectable_value(&mut state.placement_snap.angle, AngleSnap::Deg15, "15°");
             });
             ui.add_space(6.0);
 
             ui.label("Pivot");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.placement_snap.pivot, PlacementPivot::Base, "Base");
-                ui.selectable_value(&mut state.placement_snap.pivot, PlacementPivot::VolumetricCenter, "Center");
+                ui.selectable_value(
+                    &mut state.placement_snap.pivot,
+                    PlacementPivot::Base,
+                    "Base",
+                );
+                ui.selectable_value(
+                    &mut state.placement_snap.pivot,
+                    PlacementPivot::VolumetricCenter,
+                    "Center",
+                );
             });
         });
 

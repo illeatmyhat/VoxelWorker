@@ -6,12 +6,12 @@
 //! mixed scene DOES reach the brick path through the renderer; the rendering side is proven by
 //! the mixed-material golden + parity test. This module remains the CPU mirror's own contract.)
 use crate::brick::*;
-use voxel_core::core_geom::MaterialChoice;
-use evaluation::cuboid::VoxelBox;
 use document::scene::Scene;
-use evaluation::two_layer_store::{MicroblockGeometry, TwoLayerChunk, TwoLayerStore};
-use voxel_core::voxel::ShapeKind;
 use document::voxel::GeometryParams;
+use evaluation::cuboid::VoxelBox;
+use evaluation::two_layer_store::{MicroblockGeometry, TwoLayerChunk, TwoLayerStore};
+use voxel_core::core_geom::MaterialChoice;
+use voxel_core::voxel::ShapeKind;
 
 /// The density the hand-built fixtures use — small enough to state a block's cuboids
 /// by hand, and deliberately NOT 16 (the brick edge follows the density).
@@ -131,15 +131,30 @@ fn emission_classifies_uniform_and_mixed_sculpted_blocks() {
     // Exactly the two mixed blocks own a cell-key tile.
     assert_eq!(build.mixed_brick_count(), 2);
     assert_eq!(build.cell_key_tiles.len(), 2);
-    assert_eq!(build.sculpted_brick_count(), 3, "all three boundary blocks are sculpted");
+    assert_eq!(
+        build.sculpted_brick_count(),
+        3,
+        "all three boundary blocks are sculpted"
+    );
 
     // (a) The uniform block: one cell key on the record, NO cell-key tile.
     let record = build
-        .find_record([uniform_block[0] as i64, uniform_block[1] as i64, uniform_block[2] as i64])
+        .find_record([
+            uniform_block[0] as i64,
+            uniform_block[1] as i64,
+            uniform_block[2] as i64,
+        ])
         .expect("uniform boundary block must have a record");
     assert_eq!(record.material_id, 1);
-    assert!(record.overlay, "the uniform block's single cell key sets the overlay bit");
-    assert_eq!(record.payload.cell_key_slot(), None, "a uniform brick owns no cell-key tile");
+    assert!(
+        record.overlay,
+        "the uniform block's single cell key sets the overlay bit"
+    );
+    assert_eq!(
+        record.payload.cell_key_slot(),
+        None,
+        "a uniform brick owns no cell-key tile"
+    );
     assert!(matches!(record.payload, BrickPayload::Sculpted { .. }));
     assert_eq!(record.payload.kind_discriminant(), 1);
 
@@ -179,10 +194,17 @@ fn emission_classifies_uniform_and_mixed_sculpted_blocks() {
 
     // (d) The coarse block: id + the chunk's overlay marker, no slot of either pool.
     let record = build
-        .find_record([coarse_block[0] as i64, coarse_block[1] as i64, coarse_block[2] as i64])
+        .find_record([
+            coarse_block[0] as i64,
+            coarse_block[1] as i64,
+            coarse_block[2] as i64,
+        ])
         .expect("coarse block must have a record");
     assert_eq!(record.material_id, 2);
-    assert!(record.overlay, "a coarse block carries its chunk's per-block overlay marker");
+    assert!(
+        record.overlay,
+        "a coarse block carries its chunk's per-block overlay marker"
+    );
     assert_eq!(record.payload.occupancy_atlas_slot(), None);
     assert_eq!(record.payload.cell_key_slot(), None);
 
@@ -303,9 +325,16 @@ fn incremental_uniform_mixed_flip_churns_only_the_cell_key_pool() {
         &[(block_a, mixed_a.clone()), (block_b, uniform_b.clone())],
     );
     let update = mirror.apply_dirty_update(&step_1, &[[0, 0, 0]]);
-    assert!(!update.atlas_grew, "the occupancy atlas must not grow on a material flip");
+    assert!(
+        !update.atlas_grew,
+        "the occupancy atlas must not grow on a material flip"
+    );
     assert_eq!(mirror.slot_high_water(), occupancy_high_water);
-    assert_eq!(mirror.mixed_brick_count(), 1, "exactly one block is mixed after the flip");
+    assert_eq!(
+        mirror.mixed_brick_count(),
+        1,
+        "exactly one block is mixed after the flip"
+    );
     assert_eq!(
         mirror.cell_key_slot_high_water(),
         1,
@@ -329,7 +358,11 @@ fn incremental_uniform_mixed_flip_churns_only_the_cell_key_pool() {
         .iter()
         .find(|record| unpack_world_block_key(record.packed_world_block_key) == [1, 0, 0])
         .expect("block B must still have a record");
-    assert_eq!(record_b.payload.cell_key_slot(), None, "block B is UNIFORM after the flip");
+    assert_eq!(
+        record_b.payload.cell_key_slot(),
+        None,
+        "block B is UNIFORM after the flip"
+    );
     assert_eq!((record_b.material_id, record_b.overlay), (2, true));
     assert_cell_key_parity(&mirror, &step_1, "step 1 (uniform↔mixed flip)");
 
@@ -378,7 +411,10 @@ fn a_uniform_scene_emits_no_cell_key_tiles() {
     );
     let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
     let build = build_brick_field(&chunks, voxels_per_block);
-    assert!(build.sculpted_brick_count() > 0, "the fixture must have sculpted bricks");
+    assert!(
+        build.sculpted_brick_count() > 0,
+        "the fixture must have sculpted bricks"
+    );
     assert!(
         build.cell_key_tiles.is_empty(),
         "a single-material scene must pay no per-voxel material cost"
@@ -395,7 +431,10 @@ fn a_uniform_scene_emits_no_cell_key_tiles() {
     // …and therefore packs a ZERO-LENGTH side atlas: the second pool costs such a scene
     // nothing at all (not even a tile grid).
     let side_atlas = build.cell_key_atlas_payload();
-    assert!(side_atlas.bytes.is_empty(), "no mixed brick ⇒ no side-atlas bytes");
+    assert!(
+        side_atlas.bytes.is_empty(),
+        "no mixed brick ⇒ no side-atlas bytes"
+    );
     assert_eq!(side_atlas.cell_key_slot_count, 0);
     assert_eq!(side_atlas.geometry.bricks_per_axis, 0);
     assert_eq!(side_atlas.geometry.atlas_dim_voxels, 0);
@@ -419,8 +458,7 @@ fn packed_cell_keys_at_slot(bytes: &[u8], bricks_per_axis: u32, slot: u32) -> Ve
     for local_z in 0..edge {
         for local_y in 0..edge {
             for local_x in 0..edge {
-                let texel = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
-                    * atlas_dim
+                let texel = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y) * atlas_dim
                     + origin[0]
                     + local_x;
                 keys.push(u16::from_le_bytes([bytes[texel * 2], bytes[texel * 2 + 1]]));
@@ -486,11 +524,7 @@ fn mixed_bricks_pack_the_r16_side_atlas_at_their_own_slot_origins() {
             .cell_key_slot()
             .expect("a mixed block must own a cell-key slot");
         assert_eq!(
-            packed_cell_keys_at_slot(
-                &side_atlas.bytes,
-                side_atlas.geometry.bricks_per_axis,
-                slot
-            ),
+            packed_cell_keys_at_slot(&side_atlas.bytes, side_atlas.geometry.bricks_per_axis, slot),
             expected_cell_keys(cuboids),
             "the packed side atlas must carry {block:?}'s keys at its slot origin"
         );
@@ -554,8 +588,14 @@ fn incremental_cell_key_pool_reports_its_work_list_and_packs_like_wholesale() {
     let update = mirror.apply_dirty_update(&step_1, &[[0, 0, 0]]);
     assert_eq!(update.freed_cell_key_slots, vec![0]);
     assert_eq!(update.written_cell_key_slots, vec![0]);
-    assert!(!update.cell_key_atlas_grew, "a reused slot cannot grow the side atlas");
-    assert!(!update.atlas_grew, "the occupancy pool is untouched by a material flip");
+    assert!(
+        !update.cell_key_atlas_grew,
+        "a reused slot cannot grow the side atlas"
+    );
+    assert!(
+        !update.atlas_grew,
+        "the occupancy pool is untouched by a material flip"
+    );
 
     // The dirty-slot bytes the sink uploads ARE the tile's little-endian texels.
     let mut expected_bytes = Vec::new();
@@ -580,13 +620,17 @@ fn incremental_cell_key_pool_reports_its_work_list_and_packs_like_wholesale() {
     // record's slot, exactly the tile a from-scratch build packs at ITS slot.
     let packed = mirror.pack_cell_key_atlas_payload();
     assert_eq!(
-        packed, mirror.to_build().cell_key_atlas_payload(),
+        packed,
+        mirror.to_build().cell_key_atlas_payload(),
         "the two materialisations of one mirror must be byte-identical"
     );
     let wholesale = build_brick_field(&step_2, HAND_DENSITY);
     let wholesale_atlas = wholesale.cell_key_atlas_payload();
     assert_eq!(packed.geometry, wholesale_atlas.geometry);
-    assert_eq!(packed.cell_key_slot_count, wholesale_atlas.cell_key_slot_count);
+    assert_eq!(
+        packed.cell_key_slot_count,
+        wholesale_atlas.cell_key_slot_count
+    );
     for record in mirror.records() {
         let Some(mirror_slot) = record.payload.cell_key_slot() else {
             continue;
@@ -597,11 +641,7 @@ fn incremental_cell_key_pool_reports_its_work_list_and_packs_like_wholesale() {
             .and_then(|whole| whole.payload.cell_key_slot())
             .expect("the wholesale build must call the same block mixed");
         assert_eq!(
-            packed_cell_keys_at_slot(
-                &packed.bytes,
-                packed.geometry.bricks_per_axis,
-                mirror_slot
-            ),
+            packed_cell_keys_at_slot(&packed.bytes, packed.geometry.bricks_per_axis, mirror_slot),
             packed_cell_keys_at_slot(
                 &wholesale_atlas.bytes,
                 wholesale_atlas.geometry.bricks_per_axis,
