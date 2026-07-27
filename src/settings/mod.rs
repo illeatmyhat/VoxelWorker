@@ -54,8 +54,9 @@ fn default_wall_blocks() -> u32 {
     1
 }
 
-/// The serde-able mirror of one [`SelectionTarget`]. Kept in step with the `ui` enum by
-/// the exhaustive matches in [`SelectionConfig`]'s two conversions.
+/// The serde-able mirror of one PERSISTED [`SelectionTarget`] kind. Kept in step with the
+/// `ui` enum by the exhaustive matches in [`SelectionConfig`]'s two conversions — the sketch
+/// kinds are named there and dropped, so adding a kind to `ui` still breaks this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SelectionTargetConfig {
     /// A scene-graph node, by its stable id.
@@ -79,16 +80,24 @@ pub struct SelectionConfig {
 }
 
 impl SelectionConfig {
-    /// Capture the config mirror from the live [`Selection`].
+    /// Capture the config mirror from the live [`Selection`], **dropping every sketch entity**.
+    ///
+    /// ADR 0032 folded the retired `sketch_selection` field into one set, but not its
+    /// persistence policy: an in-mode pick is momentary — cleared on entering and on leaving a
+    /// sketch — and an `EntityId` is the one target that can go stale against a profile edited
+    /// between the dump and the replay. So the sketch side reaches neither the document nor the
+    /// dump, exactly as when it was the sole justified `transient` field (ADR 0022/0024).
     pub fn from_selection(selection: &Selection) -> Self {
         Self {
             targets: selection
                 .targets()
-                .map(|target| match target {
-                    SelectionTarget::Node(id) => SelectionTargetConfig::Node(id),
+                .filter_map(|target| match target {
+                    SelectionTarget::Node(id) => Some(SelectionTargetConfig::Node(id)),
                     SelectionTarget::ReferencePoint(index) => {
-                        SelectionTargetConfig::ReferencePoint(index)
+                        Some(SelectionTargetConfig::ReferencePoint(index))
                     }
+                    SelectionTarget::SketchPoint { .. }
+                    | SelectionTarget::SketchSegment { .. } => None,
                 })
                 .collect(),
         }
@@ -512,11 +521,8 @@ impl AppConfig {
             // ADR 0028 (#95): restore the armed sketch tool, so a mid-edit repro re-enters with
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
-            // ADR 0030: the sketch selection is transient in-mode state; a fresh load starts with
-            // nothing picked (the config does not persist it — re-entering a sketch clears it anyway).
-            sketch_selection: ui::panel::SketchSelection::default(),
-            // Mirrored from the restored scene's outgoing `active` fields just below, once
-            // the scene is in place (ADR 0032 slice 4).
+            // Restored from `SelectionConfig` just below, once the scene is in place, so a
+            // target can be checked against the nodes that actually came back.
             selection: ui::panel::Selection::default(),
         };
         // step 8: restore the persisted full scene when present and non-empty;

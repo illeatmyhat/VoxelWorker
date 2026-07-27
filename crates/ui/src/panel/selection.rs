@@ -11,10 +11,17 @@
 //! mode (an admission filter), never a second data structure.
 
 use document::scene::NodeId;
+use document::sketch::EntityId;
 
 /// One picked thing. ADR 0032 keeps these in ONE set: mode exclusivity is an admission
-/// filter, not a reason for parallel structures. Sketch entities join as further variants
-/// when [`SketchSelection`](super::SketchSelection) folds in.
+/// filter, not a reason for parallel structures.
+///
+/// The sketch variants carry their owning sketch node, not just the entity id, because an
+/// [`EntityId`] is minted from a per-sketch counter and means nothing without its scope —
+/// the same law ADR 0008 states for spatial values. It also makes a target self-contained
+/// for the one consumer that must find the owning producer to edit it (the sketch delete),
+/// and it lets a restore sweep drop targets whose sketch left the scene, at the seam where
+/// `to_panel_state` already drops a stale `sketch_mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SelectionTarget {
     /// A scene-graph node, at any depth (ADR 0001) — but an instance picks as itself, never
@@ -22,6 +29,34 @@ pub enum SelectionTarget {
     Node(NodeId),
     /// A reference Point, by its index in `Scene::points`.
     ReferencePoint(usize),
+    /// A vertex of a sketch profile (ADR 0030), addressable only from inside that sketch.
+    SketchPoint {
+        /// The sketch node that owns the entity counter this id came from.
+        sketch: NodeId,
+        /// The point's id within that sketch.
+        entity: EntityId,
+    },
+    /// An edge of a sketch profile (ADR 0030). Deleting one leaves its endpoints as free
+    /// points, unlike deleting a vertex — which is why the kind is a variant, not a flag.
+    SketchSegment {
+        /// The sketch node that owns the entity counter this id came from.
+        sketch: NodeId,
+        /// The segment's id within that sketch.
+        entity: EntityId,
+    },
+}
+
+impl SelectionTarget {
+    /// The sketch this target belongs to, or `None` for a kind that is not a sketch entity.
+    /// The admission question — "may this enter while that sketch is open?" — asked of a
+    /// target rather than of a parallel data structure.
+    pub fn owning_sketch(self) -> Option<NodeId> {
+        match self {
+            SelectionTarget::SketchPoint { sketch, .. }
+            | SelectionTarget::SketchSegment { sketch, .. } => Some(sketch),
+            SelectionTarget::Node(_) | SelectionTarget::ReferencePoint(_) => None,
+        }
+    }
 }
 
 /// How a click asked the selection to change (ADR 0032). A VIEW action, not an
@@ -83,7 +118,7 @@ impl Selection {
     pub fn primary_node_id(&self) -> Option<NodeId> {
         self.targets.iter().rev().find_map(|target| match target {
             SelectionTarget::Node(id) => Some(*id),
-            SelectionTarget::ReferencePoint(_) => None,
+            _ => None,
         })
     }
 
@@ -92,7 +127,7 @@ impl Selection {
     pub fn primary_point_index(&self) -> Option<usize> {
         self.targets.iter().rev().find_map(|target| match target {
             SelectionTarget::ReferencePoint(index) => Some(*index),
-            SelectionTarget::Node(_) => None,
+            _ => None,
         })
     }
 
@@ -140,6 +175,42 @@ impl Selection {
             self.targets.push(SelectionTarget::ReferencePoint(index));
         }
     }
+
+    /// The picked VERTEX ids of `sketch`, in pick order. Deletion is id-keyed and no-ops on
+    /// an unknown id (`Sketch::delete_point_cascade`), so pick order is as good as any.
+    pub fn sketch_points(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
+        self.targets.iter().filter_map(move |target| match *target {
+            SelectionTarget::SketchPoint { sketch: owner, entity } if owner == sketch => {
+                Some(entity)
+            }
+            _ => None,
+        })
+    }
+
+    /// The picked EDGE ids of `sketch`, in pick order.
+    pub fn sketch_segments(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
+        self.targets.iter().filter_map(move |target| match *target {
+            SelectionTarget::SketchSegment { sketch: owner, entity } if owner == sketch => {
+                Some(entity)
+            }
+            _ => None,
+        })
+    }
+
+    /// Is anything inside `sketch` picked? What the context menu's Delete is gated on while a
+    /// sketch is open.
+    pub fn holds_sketch_entities(&self, sketch: NodeId) -> bool {
+        self.targets
+            .iter()
+            .any(|target| target.owning_sketch() == Some(sketch))
+    }
+
+    /// Drop every sketch entity, keeping nodes and Points. Entering and leaving a sketch mode
+    /// clears the sketch side of the selection WITHOUT disturbing what is picked outside it —
+    /// which is why this is not [`clear`](Self::clear).
+    pub fn clear_sketch_entities(&mut self) {
+        self.targets.retain(|target| target.owning_sketch().is_none());
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +220,19 @@ mod tests {
     const FIRST: SelectionTarget = SelectionTarget::Node(NodeId(1));
     const SECOND: SelectionTarget = SelectionTarget::Node(NodeId(2));
     const POINT: SelectionTarget = SelectionTarget::ReferencePoint(0);
+
+    const SKETCH: NodeId = NodeId(9);
+    const OTHER_SKETCH: NodeId = NodeId(10);
+
+    /// A vertex of the fixture sketch.
+    fn vertex(entity: EntityId) -> SelectionTarget {
+        SelectionTarget::SketchPoint { sketch: SKETCH, entity }
+    }
+
+    /// An edge of the fixture sketch.
+    fn edge(entity: EntityId) -> SelectionTarget {
+        SelectionTarget::SketchSegment { sketch: SKETCH, entity }
+    }
 
     /// The primary is the most recently picked target OF ITS KIND, so a mixed selection
     /// answers both questions at once — the reason ADR 0032 holds one set, not two.
@@ -192,5 +276,81 @@ mod tests {
         selection.select_only(POINT);
         assert_eq!(selection.len(), 1);
         assert_eq!(selection.primary_node_id(), None);
+    }
+
+    /// A plain click **replaces**: selecting a second vertex leaves only it (ADR 0030). Ported
+    /// from the retired `SketchSelection`, which stated the same law over its own set.
+    #[test]
+    fn selecting_a_second_vertex_replaces_the_first() {
+        let mut selection = Selection::default();
+        selection.select_only(vertex(1));
+        selection.select_only(vertex(2));
+        assert!(!selection.contains(vertex(1)));
+        assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![2]);
+    }
+
+    /// Shift-click accumulates, and a second toggle removes the same entity.
+    #[test]
+    fn toggling_vertices_accumulates_then_removes() {
+        let mut selection = Selection::default();
+        selection.toggle(vertex(1));
+        selection.toggle(vertex(2));
+        assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![1, 2]);
+        selection.toggle(vertex(1));
+        assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![2]);
+    }
+
+    /// A point id and a segment id are minted from the SAME per-sketch counter but name
+    /// different things, so the KIND has to distinguish them — id 7 as a vertex and id 7 as an
+    /// edge are two targets, and each is found by its own query.
+    #[test]
+    fn a_vertex_and_an_edge_of_the_same_id_are_distinct_targets() {
+        let mut selection = Selection::default();
+        selection.toggle(vertex(7));
+        selection.toggle(edge(7));
+        assert_eq!(selection.len(), 2);
+        assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![7]);
+        assert_eq!(selection.sketch_segments(SKETCH).collect::<Vec<_>>(), vec![7]);
+    }
+
+    /// The whole point of tagging: the SAME entity id in two different sketches is two
+    /// targets, and a query for one sketch never answers with the other's entities.
+    #[test]
+    fn entity_ids_do_not_collide_across_sketches() {
+        let mut selection = Selection::default();
+        selection.toggle(vertex(3));
+        selection.toggle(SelectionTarget::SketchPoint { sketch: OTHER_SKETCH, entity: 3 });
+        assert_eq!(selection.len(), 2);
+        assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(selection.sketch_points(OTHER_SKETCH).collect::<Vec<_>>(), vec![3]);
+        assert!(selection.holds_sketch_entities(OTHER_SKETCH));
+    }
+
+    /// Entering or leaving a sketch clears the sketch side ONLY — what is picked outside it
+    /// survives, which a plain `clear` would wrongly take with it.
+    #[test]
+    fn clearing_sketch_entities_spares_nodes_and_points() {
+        let mut selection = Selection::default();
+        selection.toggle(FIRST);
+        selection.toggle(POINT);
+        selection.toggle(vertex(1));
+        selection.toggle(edge(2));
+
+        selection.clear_sketch_entities();
+        assert!(!selection.holds_sketch_entities(SKETCH));
+        assert_eq!(selection.primary_node_id(), Some(NodeId(1)));
+        assert_eq!(selection.primary_point_index(), Some(0));
+        assert_eq!(selection.len(), 2);
+    }
+
+    /// A sketch entity is not a node or a Point, so it never becomes either primary — the
+    /// inspector keeps mirroring the node while a vertex is picked inside its sketch.
+    #[test]
+    fn sketch_entities_are_never_a_node_or_point_primary() {
+        let mut selection = Selection::default();
+        selection.toggle(FIRST);
+        selection.toggle(vertex(1));
+        assert_eq!(selection.primary_node_id(), Some(NodeId(1)));
+        assert_eq!(selection.primary_point_index(), None);
     }
 }

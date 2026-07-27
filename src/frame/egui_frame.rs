@@ -267,12 +267,12 @@ pub fn run_egui_frame(
             );
             let context = ui.ctx().clone();
             let in_sketch = panel_state.sketch_mode.is_some();
-            // Delete is enabled only when there is something to remove: a non-empty sketch
-            // selection, or (normal mode) an active node.
-            let delete_enabled = if in_sketch {
-                !panel_state.sketch_selection.is_empty()
-            } else {
-                panel_state.selected_node().is_some()
+            // Delete is enabled only when there is something to remove: an entity picked inside
+            // the OPEN sketch, or (normal mode) a picked node. Asking per-sketch, not "is the
+            // selection non-empty", so a node picked outside the mode never arms it (ADR 0032).
+            let delete_enabled = match panel_state.sketch_mode {
+                Some(sketch) => panel_state.selection.holds_sketch_entities(sketch),
+                None => panel_state.selected_node().is_some(),
             };
             let mut close = false;
             let area = egui::Area::new(egui::Id::new("viewport_context_menu"))

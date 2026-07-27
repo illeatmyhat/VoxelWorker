@@ -44,8 +44,8 @@ pub use selection::{Selection, SelectionRequest, SelectionTarget};
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use state::{
     AngleSnap, ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost,
-    PlacementPivot, PlacementSnap, PositionSnap, SignalStackState, SketchExit, SketchSelection,
-    SketchTool, ViewMode,
+    PlacementPivot, PlacementSnap, PositionSnap, SignalStackState, SketchExit, SketchTool,
+    ViewMode,
 };
 
 use crate::palette::BlockPalette;

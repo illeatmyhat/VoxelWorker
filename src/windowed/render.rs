@@ -279,6 +279,19 @@ impl WindowedState {
         // exactly as a selection-only Intent used to.
         let selection_effect = match prepared.panel_response.select.take() {
             Some(request) => {
+                // The admission rule, asserted rather than typed: a sketch entity may only be
+                // picked while its own sketch is the open mode. It holds by construction — the
+                // only minters of a sketch target are the in-mode click handlers, which read
+                // `sketch_mode` for the id — so a violation is a shell bug, not a user state.
+                debug_assert!(
+                    match request {
+                        ui::panel::SelectionRequest::Only(target) => target
+                            .owning_sketch()
+                            .is_none_or(|sketch| self.panel_state.sketch_mode == Some(sketch)),
+                        ui::panel::SelectionRequest::Clear => true,
+                    },
+                    "a sketch entity was selected outside its own open sketch"
+                );
                 self.panel_state.selection.apply_request(request);
                 crate::IntentEffect::selection()
             }
@@ -294,7 +307,7 @@ impl WindowedState {
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
             self.panel_state.sketch_mode = Some(node);
             self.armed_tool = None;
-            self.panel_state.sketch_selection.clear();
+            self.panel_state.selection.clear_sketch_entities();
             self.app_core.begin_sketch_group();
         }
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
@@ -308,7 +321,7 @@ impl WindowedState {
                 }
             };
             self.panel_state.sketch_mode = None;
-            self.panel_state.sketch_selection.clear();
+            self.panel_state.selection.clear_sketch_entities();
         }
         // ADR 0030: a context-menu Delete in sketch mode removes the current selection as one edit
         // (queues a SetSketch through `viewport_intents`, gathered just below).
@@ -1106,29 +1119,38 @@ impl WindowedState {
     /// keeps the selection (Fusion). Reuses the same hit-tests the drag and delete run, so what you
     /// click is what you pick. Pure selection-state mutation — records no document edit.
     pub(super) fn resolve_sketch_selection_click(&mut self, cursor_x: f64, cursor_y: f64) {
-        let shift = self.shift_held;
-        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
-            if let Some(&point_id) = self.sketch_point_ids.get(index) {
-                if shift {
-                    self.panel_state.sketch_selection.toggle_point(point_id);
-                } else {
-                    self.panel_state.sketch_selection.select_point(point_id);
-                }
-                return;
-            }
-        }
-        if let Some(seg_id) = self.sketch_segment_at(cursor_x, cursor_y) {
-            if shift {
-                self.panel_state.sketch_selection.toggle_segment(seg_id);
-            } else {
-                self.panel_state.sketch_selection.select_segment(seg_id);
-            }
+        let Some(sketch) = self.panel_state.sketch_mode else {
             return;
+        };
+        let shift = self.shift_held;
+        match self.sketch_entity_target_at(sketch, cursor_x, cursor_y) {
+            Some(target) if shift => self.panel_state.selection.toggle(target),
+            Some(target) => self.panel_state.selection.select_only(target),
+            // Empty space: a plain click clears; a Shift-click leaves the set alone (Fusion).
+            // Only the sketch side goes — what is picked outside the mode is not this click's
+            // business (ADR 0032).
+            None if !shift => self.panel_state.selection.clear_sketch_entities(),
+            None => {}
         }
-        // Empty space: a plain click clears; a Shift-click leaves the set alone (Fusion).
-        if !shift {
-            self.panel_state.sketch_selection.clear();
+    }
+
+    /// ADR 0030/0032: the [`SelectionTarget`](ui::panel::SelectionTarget) under the cursor
+    /// (physical px) inside `sketch`, or `None` over empty space. Vertices take priority over
+    /// segments, as everywhere. The ONE place a sketch target is minted, which is what makes
+    /// the shell's admission `debug_assert` hold by construction.
+    fn sketch_entity_target_at(
+        &self,
+        sketch: document::scene::NodeId,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<ui::panel::SelectionTarget> {
+        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
+            if let Some(&entity) = self.sketch_point_ids.get(index) {
+                return Some(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
+            }
         }
+        self.sketch_segment_at(cursor_x, cursor_y)
+            .map(|entity| ui::panel::SelectionTarget::SketchSegment { sketch, entity })
     }
 
     /// ADR 0030: is the cursor (physical px) over a sketch entity — a vertex or a segment? Used by
@@ -1145,17 +1167,12 @@ impl WindowedState {
     /// right-clicking one of several selected entities deletes them all — otherwise the selection is
     /// replaced with just that entity. Vertices take priority over segments, as everywhere.
     pub(super) fn right_click_select_sketch_entity(&mut self, cursor_x: f64, cursor_y: f64) {
-        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
-            if let Some(&point_id) = self.sketch_point_ids.get(index) {
-                if !self.panel_state.sketch_selection.contains_point(point_id) {
-                    self.panel_state.sketch_selection.select_point(point_id);
-                }
-                return;
-            }
-        }
-        if let Some(seg_id) = self.sketch_segment_at(cursor_x, cursor_y) {
-            if !self.panel_state.sketch_selection.contains_segment(seg_id) {
-                self.panel_state.sketch_selection.select_segment(seg_id);
+        let Some(sketch) = self.panel_state.sketch_mode else {
+            return;
+        };
+        if let Some(target) = self.sketch_entity_target_at(sketch, cursor_x, cursor_y) {
+            if !self.panel_state.selection.contains(target) {
+                self.panel_state.selection.select_only(target);
             }
         }
     }
@@ -1170,14 +1187,14 @@ impl WindowedState {
         let Some(target) = self.panel_state.sketch_mode else {
             return;
         };
-        if self.panel_state.sketch_selection.is_empty() {
+        if !self.panel_state.selection.holds_sketch_entities(target) {
             return;
         }
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
-        let points: Vec<_> = self.panel_state.sketch_selection.points().collect();
-        let segments: Vec<_> = self.panel_state.sketch_selection.segments().collect();
+        let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
+        let segments: Vec<_> = self.panel_state.selection.sketch_segments(target).collect();
         let mut next = producer;
         for point_id in points {
             next = next.with_point_deleted(point_id);
@@ -1186,7 +1203,7 @@ impl WindowedState {
             next = next.with_segment_deleted(seg_id);
         }
         self.commit_sketch_profile_edit(target, next);
-        self.panel_state.sketch_selection.clear();
+        self.panel_state.selection.clear_sketch_entities();
     }
 
     /// ADR 0028 (#95): queue an add/delete profile edit as ONE entry in the open sketch undo
@@ -1302,7 +1319,10 @@ impl WindowedState {
                 .unwrap_or(false);
             let point_id = handles.point_ids.get(index).copied();
             let selected = point_id
-                .map(|id| self.panel_state.sketch_selection.contains_point(id))
+                .map(|entity| {
+                    let picked = ui::panel::SelectionTarget::SketchPoint { sketch: target, entity };
+                    self.panel_state.selection.contains(picked)
+                })
                 .unwrap_or(false);
             // Precedence: dragged > delete-hover (warn ✕) > selected > hover > idle. A selected
             // vertex stays filled-accent even under the cursor (only the destructive delete-hover
@@ -1368,7 +1388,9 @@ impl WindowedState {
                 // Precedence: delete-hover (Marked ✕) > Selected > plain Hover > Idle. A selected
                 // edge stays bold even under the cursor (Select hover never shrinks it); only the
                 // destructive delete-hover overrides it.
-                let selected = self.panel_state.sketch_selection.contains_segment(seg_id);
+                let picked =
+                    ui::panel::SelectionTarget::SketchSegment { sketch: target, entity: seg_id };
+                let selected = self.panel_state.selection.contains(picked);
                 let state = match hovered_segment {
                     Some((id, ui::gizmos::HandleState::Marked)) if id == seg_id => {
                         ui::gizmos::HandleState::Marked
