@@ -210,6 +210,59 @@ fn a_cursor_on_geometry_places_a_node_seated_on_the_entered_face() {
     );
 }
 
+/// **`surface_point_absolute` resolves SUB-VOXEL.** Two cursors two pixels apart — less than one
+/// voxel of travel at this framing — must answer two DIFFERENT points, both on the composed
+/// surface. The voxel-centre answer this replaced was constant across a whole cell, which is what
+/// made the orbit-center marker jump a cell at a time under the cursor.
+#[test]
+fn the_surface_point_resolves_sub_voxel_cursor_motion() {
+    // Straight-down orthographic, far enough out that the eye is nowhere near the Box (the
+    // default iso camera sits INSIDE a 32-voxel box, where a surface march starts already
+    // submerged).
+    let camera = OrbitCamera {
+        orbit_center: glam::Vec3::ZERO,
+        target: Vec3::ZERO,
+        orbit_theta: -std::f32::consts::FRAC_PI_2,
+        orbit_phi: 0.0,
+        orbit_distance: 60.0,
+        roll: 0.0,
+        projection_mode: ProjectionMode::Orthographic,
+    };
+    let fixture = placement_fixture(camera);
+    let frame = fixture.frame();
+    // Screen centre: straight down onto the Box's top face.
+    let cursor = [640.0, 360.0];
+    let at = |cursor| {
+        fixture
+            .app_core
+            .surface_point_absolute(cursor, VIEWPORT, &frame, &fixture.scene, true)
+            .expect("a top-down cursor on the Box resolves to a point")
+    };
+    let here = at(cursor);
+    let nudged = at([cursor[0] + 2.0, cursor[1]]);
+
+    let travelled = here.distance(nudged);
+    assert!(
+        travelled > 1e-4,
+        "a 2px cursor move must move the point, got {here:?} then {nudged:?}"
+    );
+    assert!(
+        travelled < 1.0,
+        "2px is sub-voxel at this framing; a jump of {travelled} voxels means it snapped"
+    );
+
+    // Both points lie ON the composed surface, not merely near the picked cell.
+    let leaves = fixture.scene.leaf_producers(DENSITY);
+    let leaf_refs: Vec<&document::scene::LeafProducer> = leaves.iter().collect();
+    for point in [here, nudged] {
+        let distance = evaluation::composed_field_at(&leaf_refs, point, DENSITY);
+        assert!(
+            distance.abs() < 0.5,
+            "{point:?} is {distance} from the composed surface"
+        );
+    }
+}
+
 /// **World-plane tier + the frame guard.** A top-down cursor aimed OFF the object
 /// misses geometry, resolves `OnWorldPlane { Ground }`, and drops a node that sits
 /// on the ground straddling the clicked point.

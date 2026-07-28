@@ -145,6 +145,8 @@ impl WindowedState {
         // extent in Onion-fog mode (else the whole scene). Read it from the shared clip
         // (a no-op walk outside Onion-fog mode, where it returns the scene `grid_z`).
         let layer_track_len = self.current_mesh_clip(grid_z).track_len;
+        // Read before the call: `run_egui_frame` borrows `self` mutably.
+        let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -181,8 +183,9 @@ impl WindowedState {
                 &self.sketch_segment_lines,
                 // ADR 0028 (#95): the add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
-                // ADR 0032: the orbit-center marker, projected last frame.
-                self.orbit_center_overlay,
+                // ADR 0032: the orbit-center marker — live under the cursor while a placement is
+                // armed, projected-last-frame while Shift+MMB turns about it.
+                orbit_center_marker,
             )
         };
 
@@ -1278,8 +1281,11 @@ impl WindowedState {
             .then_some(self.app_core.camera.orbit_center)
     }
 
-    /// Project [`visible_orbit_center`](Self::visible_orbit_center) for NEXT frame's draw, the
-    /// same one-frame lag the sketch overlay takes. Culled behind the camera.
+    /// Project the ORBITING marker for NEXT frame's draw, the same one-frame lag the sketch
+    /// overlay takes. Culled behind the camera.
+    ///
+    /// The armed-placement marker does not come through here — see
+    /// [`orbit_center_marker`](Self::orbit_center_marker) for why it must not.
     fn refresh_orbit_center_overlay(
         &mut self,
         view_projection: glam::Mat4,
@@ -1287,6 +1293,9 @@ impl WindowedState {
         pixels_per_point: f32,
     ) {
         self.orbit_center_overlay = None;
+        if self.placing_orbit_center {
+            return;
+        }
         let Some(center) = self.visible_orbit_center() else {
             return;
         };
@@ -1299,8 +1308,33 @@ impl WindowedState {
         let py = vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh;
         self.orbit_center_overlay = Some((
             egui::Pos2::new(px / pixels_per_point, py / pixels_per_point),
-            self.placing_orbit_center,
+            false,
         ));
+    }
+
+    /// Where the orbit-center gizmo draws THIS frame, and whether a placement is armed.
+    ///
+    /// An armed placement reads the LIVE cursor instead of the projection cache. That is not an
+    /// approximation: the preview point is the cursor ray's own surface hit, so projecting it
+    /// back to screen returns the cursor by construction. Going through the cache would only add
+    /// the two frames between a `CursorMoved` and the draw that shows it — which is exactly what
+    /// made the marker trail the cursor. The gate on the preview keeps the refusal visible: a ray
+    /// that finds nothing draws nothing, even though the cursor is still somewhere.
+    ///
+    /// The orbiting marker keeps the cached projection, where the lag is invisible —
+    /// `orbit_about_point` holds the pivot screen-fixed for the whole drag by construction.
+    fn orbit_center_marker(&self, pixels_per_point: f32) -> Option<(egui::Pos2, bool)> {
+        if !self.placing_orbit_center {
+            return self.orbit_center_overlay;
+        }
+        let (cursor_x, cursor_y) = self.orbit_center_preview.and(self.last_cursor_position)?;
+        Some((
+            egui::Pos2::new(
+                cursor_x as f32 / pixels_per_point,
+                cursor_y as f32 / pixels_per_point,
+            ),
+            true,
+        ))
     }
 
     /// The surface point at `cursor_px` in the camera's render frame, or `None` when the ray
@@ -1316,6 +1350,9 @@ impl WindowedState {
     /// found nothing, which made placing over sky or an empty scene silently equivalent to not
     /// placing at all — the failure was invisible precisely because the fallback was plausible.
     /// The gizmo simply does not draw on a miss, and the click does not commit.
+    ///
+    /// The point is CONTINUOUS, not a voxel centre: a pivot is a camera quantity with no lattice
+    /// meaning, and a snapped one visibly jumps a whole cell at a time under the cursor.
     pub(super) fn surface_point_at(&self, cursor_px: Option<(f64, f64)>) -> Option<glam::Vec3> {
         let (cursor_x, cursor_y) = cursor_px?;
         let density = self.panel_state.geometry.voxels_per_block;
@@ -1330,23 +1367,16 @@ impl WindowedState {
         };
         let cursor = [cursor_x as f32, cursor_y as f32];
         let viewport = [vx as f32, vy as f32, vw as f32, vh as f32];
-        // `pick_voxel` and the plane tier both answer in ABSOLUTE voxels; the camera lives in
-        // the RECENTRED render frame, so each rebases the same way (ADR 0008 — the recentre is
-        // carried, this is the only conversion). The geometry half adds a half so the point
-        // lands at the cell's centre rather than its corner.
-        let absolute = match self.app_core.pick_voxel(cursor, viewport, &frame) {
-            Some(pick) => glam::Vec3::new(
-                pick.absolute_voxel[0] as f32 + 0.5,
-                pick.absolute_voxel[1] as f32 + 0.5,
-                pick.absolute_voxel[2] as f32 + 0.5,
-            ),
-            None => self.app_core.world_plane_point(
-                cursor,
-                viewport,
-                &frame,
-                self.panel_state.scene.master_floor_grid,
-            )?,
-        };
+        // Both tiers answer in ABSOLUTE voxels; the camera lives in the RECENTRED render frame,
+        // so the point rebases once here (ADR 0008 — the recentre is carried, this is the only
+        // conversion).
+        let absolute = self.app_core.surface_point_absolute(
+            cursor,
+            viewport,
+            &frame,
+            &self.panel_state.scene,
+            self.panel_state.scene.master_floor_grid,
+        )?;
         Some(absolute - glam::Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32))
     }
 

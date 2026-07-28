@@ -50,6 +50,21 @@ const PHI_MAX: f32 = std::f32::consts::PI;
 /// blend is smooth (no 1-frame flip) right through the singular frame.
 const UP_BLEND_BAND: f32 = 0.05;
 
+/// Floor under the `sin(phi)` azimuth damping in [`OrbitCamera::orbit_by_drag`], so a horizontal
+/// drag never loses ALL authority.
+///
+/// The damping stops the view whipping sideways near a pole, where the same drag sweeps a huge
+/// arc. Undamped it is unusable; damped to literal zero it is *locked* — and a theta change at
+/// the pole is perfectly meaningful there (it spins the image about the view axis, which at the
+/// pole IS rotation about world Z, squarely inside the constrained family). The damping was
+/// forbidding the one motion the constraint permits.
+///
+/// This is a Jacobian regularisation: the screen-drag → parameter map genuinely degenerates in
+/// `phi`/`theta` coordinates, and the floor papers over it. It is LOAD-BEARING, not scaffolding —
+/// constrained orbit keeps integrating in this chart by design (see the Orbit type entry in
+/// `docs/design/tool-modes-and-navigation.md`), so nothing later deletes it. Tune it by feel.
+const AZIMUTH_DAMPING_FLOOR: f32 = 0.3;
+
 /// Orthographic half-height factor relative to `orbit_distance` (`vh = distance *
 /// 0.42`, chosen so toggling perspective ↔ orthographic keeps roughly the same
 /// framing at the target). Shared with [`crate::projection`] and the pan math.
@@ -349,9 +364,11 @@ impl OrbitCamera {
     ///
     /// Azimuth (`theta`) is damped by `sin(phi)` so the view doesn't "whip" sideways
     /// as it approaches a pole: the same horizontal drag sweeps a smaller arc the
-    /// closer the eye is to straight-up/down (where azimuth is degenerate).
+    /// closer the eye is to straight-up/down (where azimuth is degenerate). The
+    /// damping is floored at `AZIMUTH_DAMPING_FLOOR` so it never reaches zero — a
+    /// pole where the drag does nothing at all reads as a locked-up camera.
     pub fn orbit_by_drag(&mut self, delta_x: f32, delta_y: f32) {
-        let azimuth_damping = self.orbit_phi.sin().max(0.0);
+        let azimuth_damping = self.orbit_phi.sin().max(AZIMUTH_DAMPING_FLOOR);
         self.orbit_theta -= delta_x * 0.01 * azimuth_damping;
         self.orbit_phi = (self.orbit_phi - delta_y * 0.01).clamp(PHI_MIN, PHI_MAX);
     }
@@ -603,6 +620,38 @@ mod tests {
         let mut camera = OrbitCamera::default();
         camera.orbit_by_drag(0.0, -1000.0);
         assert!(approx(camera.orbit_phi, PI), "phi = {}", camera.orbit_phi);
+    }
+
+    /// At the EXACT pole a horizontal drag must still turn the camera. `sin(0) == 0`, so the
+    /// undamped-by-`sin` azimuth had no authority there at all and the orbit read as locked; the
+    /// floor restores it. Theta at the pole is not a no-op — `up_vector_base` derives the up from
+    /// it, so the view spins about the axis it is looking down.
+    #[test]
+    fn a_horizontal_drag_still_turns_at_the_exact_pole() {
+        for pole in [0.0, PI] {
+            let mut camera = OrbitCamera {
+                orbit_phi: pole,
+                orbit_theta: 0.5,
+                ..OrbitCamera::default()
+            };
+            let up_before = camera.up_vector();
+            camera.orbit_by_drag(40.0, 0.0);
+
+            assert!(
+                approx(camera.orbit_phi, pole),
+                "a horizontal drag must not leave the pole: phi = {}",
+                camera.orbit_phi
+            );
+            assert!(
+                (camera.orbit_theta - 0.5).abs() > 1e-3,
+                "theta must move at phi = {pole}, got {}",
+                camera.orbit_theta
+            );
+            assert!(
+                camera.up_vector().distance(up_before) > 1e-3,
+                "the view must actually turn at phi = {pole}"
+            );
+        }
     }
 
     #[test]

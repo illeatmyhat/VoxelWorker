@@ -378,6 +378,56 @@ impl AppCore {
         }
     }
 
+    /// The exact point the cursor ray meets the scene, in ABSOLUTE voxels — geometry first, the
+    /// visible world planes second, `None` when it meets neither.
+    ///
+    /// CONTINUOUS, not a lattice cell. It runs the SAME refinement the geometry placement tier
+    /// runs — sphere-trace the cursor ray against the composed SDF, falling back to the picked
+    /// face's centre projected onto that surface when the march grazes past — because a caller
+    /// that wants a free-floating location (the orbit center, a camera quantity with no lattice
+    /// meaning at all) would otherwise watch the point jump a whole voxel at a time as the cursor
+    /// crosses cell boundaries. `pick_voxel` only answers WHICH surface; the SDF answers where on
+    /// it, and that answer is the one a drop would use, so the two cannot disagree.
+    pub fn surface_point_absolute(
+        &self,
+        cursor: [f32; 2],
+        viewport: [f32; 4],
+        frame: &PickFrame<'_>,
+        scene: &Scene,
+        ground_plane_visible: bool,
+    ) -> Option<Vec3> {
+        let Some(pick) = self.pick_voxel(cursor, viewport, frame) else {
+            return self.world_plane_point(cursor, viewport, frame, ground_plane_visible);
+        };
+        let leaves = scene.leaf_producers(frame.density);
+        let leaf_refs: Vec<&LeafProducer> = leaves.iter().collect();
+        let field = |probe: Vec3| evaluation::composed_field_at(&leaf_refs, probe, frame.density);
+        let face_centre = Vec3::new(
+            pick.absolute_voxel[0] as f32 + 0.5 + pick.face_normal[0] as f32 * 0.5,
+            pick.absolute_voxel[1] as f32 + 0.5 + pick.face_normal[1] as f32 * 0.5,
+            pick.absolute_voxel[2] as f32 + 0.5 + pick.face_normal[2] as f32 * 0.5,
+        );
+        let grazed = || raycast::project_to_surface(face_centre, field);
+        Some(
+            self.cursor_pick_ray(cursor, viewport, frame)
+                .and_then(|(render_ray, recentre_vec, unit_direction)| {
+                    let origin = self.cursor_ray_origin_absolute(&render_ray, recentre_vec);
+                    raycast::raymarch(
+                        origin,
+                        unit_direction,
+                        field,
+                        &raycast::MarchParams::default(),
+                    )
+                })
+                // A march that reports zero travel started already inside the solid — the camera
+                // is submerged in geometry — and its "surface point" is just the eye. Take the
+                // picked face instead, which is a real surface either way.
+                .filter(|surface_hit| surface_hit.distance_travelled > 1e-3)
+                .map(|surface_hit| surface_hit.point)
+                .unwrap_or_else(grazed),
+        )
+    }
+
     /// Resolve where an armed primitive would drop for a cursor position, and the
     /// [`Intent`] that places it there (`docs/design/direct-manipulation.md`).
     ///
