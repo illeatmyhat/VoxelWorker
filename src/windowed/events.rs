@@ -102,6 +102,15 @@ impl ApplicationHandler for App {
                     // only a stationary release (below) drops the node.
                     state.armed_press =
                         state.armed_tool.is_some() && !egui_consumed && !in_cube && !in_chrome;
+                    // ADR 0032: a plain viewport press arms a NODE selection resolve — but only
+                    // when every other left-click consumer declined. An armed tool keeps its click
+                    // for the placement drop, and sketch mode keeps its three paths; selecting a
+                    // node from inside a sketch would leave the mode's own selection behind.
+                    state.viewport_select_press = !egui_consumed
+                        && !in_cube
+                        && !in_chrome
+                        && state.armed_tool.is_none()
+                        && state.panel_state.sketch_mode.is_none();
                     // ADR 0028 (#94/#95): a sketch-mode press, on the live viewport (not egui /
                     // cube). The Select tool grabs a vertex handle (a drag that suppresses orbit);
                     // the Add-point / Delete tools ARM a stationary-release edit (a drag still
@@ -236,6 +245,24 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // ADR 0032: a STATIONARY release of a plain viewport press picks the node
+                    // under the cursor (a drag orbited instead — the same click-vs-drag threshold
+                    // every other release path uses). Runs BEFORE `last_cursor_position` is
+                    // cleared below, which the raycast needs.
+                    if state.viewport_select_press {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if stationary {
+                                state.pending_viewport_select =
+                                    state.resolve_viewport_selection_click(up_x, up_y);
+                            }
+                        }
+                    }
+                    state.viewport_select_press = false;
                     state.sketch_select_press = false;
                     state.sketch_edit_press = false;
                     state.armed_press = false;

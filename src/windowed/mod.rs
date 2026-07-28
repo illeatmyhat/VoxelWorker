@@ -331,6 +331,16 @@ struct WindowedState {
     /// stops a click on the context-menu Delete button from being read as a "click empty → clear"
     /// that wipes the selection before the menu's delete runs.
     sketch_select_press: bool,
+    /// Whether the most recent left-press armed a **node** selection resolve (ADR 0032): the live
+    /// viewport, with no tool armed and no sketch mode open — i.e. every other left-click consumer
+    /// declined. A STATIONARY release with this set picks the node under the cursor; a drag orbits
+    /// instead, so the view stays freely rotatable.
+    viewport_select_press: bool,
+    /// The selection change a viewport click resolved, waiting for the next `render` to apply it
+    /// at the ONE select seam. Not applied in the event handler: landing it there would skip the
+    /// inspector mirror re-sync and the operand-ghost re-derivation the seam performs, and a node
+    /// click — unlike a sketch-entity click — moves the primary node.
+    pending_viewport_select: Option<ui::panel::SelectionRequest>,
     /// The in-progress vertex drag (a press landed on a handle), or `None`. While `Some`, each
     /// frame re-projects the cursor onto the sketch plane, grid-snaps, and DIRECTLY updates the
     /// scene node for a live re-resolve preview (no command recorded). On release the `events`
@@ -651,6 +661,8 @@ impl WindowedState {
             last_ray_unprojection: None,
             sketch_edit_press: false,
             sketch_select_press: false,
+            viewport_select_press: false,
+            pending_viewport_select: None,
             sketch_drag: None,
             shift_held: false,
         }

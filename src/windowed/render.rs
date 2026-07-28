@@ -277,7 +277,12 @@ impl WindowedState {
         // `armed_tool`. The shell is the single place a click lands on the workspace
         // selection; the effect below re-syncs the inspector mirror and the operand ghost
         // exactly as a selection-only Intent used to.
-        let selection_effect = match prepared.panel_response.select.take() {
+        let selection_effect = match prepared
+            .panel_response
+            .select
+            .take()
+            .or_else(|| self.pending_viewport_select.take())
+        {
             Some(request) => {
                 // The admission rule, asserted rather than typed: a sketch entity may only be
                 // picked while its own sketch is the open mode. It holds by construction — the
@@ -285,7 +290,8 @@ impl WindowedState {
                 // `sketch_mode` for the id — so a violation is a shell bug, not a user state.
                 debug_assert!(
                     match request {
-                        ui::panel::SelectionRequest::Only(target) => target
+                        ui::panel::SelectionRequest::Only(target)
+                        | ui::panel::SelectionRequest::Toggle(target) => target
                             .owning_sketch()
                             .is_none_or(|sketch| self.panel_state.sketch_mode == Some(sketch)),
                         ui::panel::SelectionRequest::Clear => true,
@@ -1150,6 +1156,58 @@ impl WindowedState {
             // business (ADR 0032).
             None if !shift => self.panel_state.selection.clear_sketch_entities(),
             None => {}
+        }
+    }
+
+    /// ADR 0032: resolve a stationary viewport click into a node selection change, or `None`
+    /// when the click asks for nothing.
+    ///
+    /// The raycast names the solid absolute voxel under the cursor (CPU truth over the resident
+    /// chunks — never the GPU brick field, so what is selected is what the document says is
+    /// there), and the document says which node owns it. Plain click **replaces** the selection;
+    /// Shift **toggles** that node in/out. A plain click on empty space **clears**; a Shift-click
+    /// on empty space keeps the selection (Fusion, matching the sketch rule).
+    ///
+    /// A voxel that resolves to no node is treated as empty space: it means the raycast and the
+    /// document's fold disagree, and clearing is the honest answer to "you clicked nothing I can
+    /// name".
+    pub(super) fn resolve_viewport_selection_click(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<ui::panel::SelectionRequest> {
+        let density = self.panel_state.geometry.voxels_per_block;
+        let [vx, vy, vw, vh] = self.last_viewport_px;
+        let frame = crate::PickFrame {
+            region_dimensions: self.region_dimensions,
+            recentre_voxels: self.recentre_voxels.voxels(),
+            density,
+            chunks: &self.resident_chunks,
+            band: self.last_pick_band,
+        };
+        // `pick_voxel` answers in the scene's ABSOLUTE voxel frame, which is exactly the frame
+        // `picked_node_at_voxel` reads — no recentre to undo (ADR 0008: the frame is carried).
+        let picked = self
+            .app_core
+            .pick_voxel(
+                [cursor_x as f32, cursor_y as f32],
+                [vx as f32, vy as f32, vw as f32, vh as f32],
+                &frame,
+            )
+            .and_then(|pick| {
+                self.panel_state
+                    .scene
+                    .picked_node_at_voxel(pick.absolute_voxel, density)
+            });
+        match (picked, self.shift_held) {
+            (Some(node), true) => Some(ui::panel::SelectionRequest::Toggle(
+                ui::panel::SelectionTarget::Node(node),
+            )),
+            (Some(node), false) => Some(ui::panel::SelectionRequest::Only(
+                ui::panel::SelectionTarget::Node(node),
+            )),
+            (None, false) => Some(ui::panel::SelectionRequest::Clear),
+            (None, true) => None,
         }
     }
 

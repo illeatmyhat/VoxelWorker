@@ -67,6 +67,9 @@ impl SelectionTarget {
 pub enum SelectionRequest {
     /// A plain click: replace the whole selection with this target.
     Only(SelectionTarget),
+    /// A Shift-click: add this target, or drop it if it was already picked. Multi-select
+    /// exists the moment this does (ADR 0032) — there is no separate "add" gesture.
+    Toggle(SelectionTarget),
     /// A click on empty space, or a deselect: drop everything.
     Clear,
 }
@@ -138,6 +141,7 @@ impl Selection {
     pub fn apply_request(&mut self, request: SelectionRequest) {
         match request {
             SelectionRequest::Only(target) => self.select_only(target),
+            SelectionRequest::Toggle(target) => self.toggle(target),
             SelectionRequest::Clear => self.clear(),
         }
     }
@@ -375,5 +379,41 @@ mod tests {
         selection.toggle(vertex(1));
         assert_eq!(selection.primary_node_id(), Some(NodeId(1)));
         assert_eq!(selection.primary_point_index(), None);
+    }
+
+    /// ADR 0032: the three requests a click can make, through the one door the shell uses.
+    /// `Toggle` is what makes multi-select exist — a Shift-click accumulates, and Shift-clicking
+    /// an already-picked target removes it rather than re-picking it.
+    #[test]
+    fn apply_request_covers_replace_accumulate_and_clear() {
+        let mut selection = Selection::default();
+
+        selection.apply_request(SelectionRequest::Only(FIRST));
+        assert_eq!(selection.targets().collect::<Vec<_>>(), vec![FIRST]);
+
+        selection.apply_request(SelectionRequest::Toggle(SECOND));
+        assert_eq!(
+            selection.targets().collect::<Vec<_>>(),
+            vec![FIRST, SECOND],
+            "a Toggle of an unpicked target ADDS it, and it becomes the primary"
+        );
+        assert_eq!(selection.primary_node_id(), Some(NodeId(2)));
+
+        selection.apply_request(SelectionRequest::Toggle(FIRST));
+        assert_eq!(
+            selection.targets().collect::<Vec<_>>(),
+            vec![SECOND],
+            "a Toggle of a picked target REMOVES it"
+        );
+
+        selection.apply_request(SelectionRequest::Only(POINT));
+        assert_eq!(
+            selection.targets().collect::<Vec<_>>(),
+            vec![POINT],
+            "a plain click replaces the whole set regardless of kind"
+        );
+
+        selection.apply_request(SelectionRequest::Clear);
+        assert!(selection.is_empty());
     }
 }

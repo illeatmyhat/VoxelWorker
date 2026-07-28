@@ -572,4 +572,118 @@ mod tests {
             "only {hits}/49 wide-baseline rays hit the far box — a melted unprojection misses it"
         );
     }
+
+    /// **ADR 0032 slice 3: the pick names the node you clicked.** The shell's viewport-select
+    /// gesture is exactly this composition — `pick_voxel` names the solid absolute voxel under
+    /// the cursor, `Scene::picked_node_at_voxel` names the node that owns it — and the two halves
+    /// were built against different frames, so composing them is where a frame error would show.
+    ///
+    /// Two disjoint boxes make the expected answer unambiguous: whichever AABB contains the hit
+    /// voxel IS the node the click must select. Sweeping a cursor grid over both means a
+    /// systematic off-by-one would land some hit in the other box's answer, or in none.
+    #[test]
+    fn a_viewport_pick_resolves_the_node_it_landed_on() {
+        use document::scene::{Node, NodeContent, NodeTransform};
+
+        const VPB: u32 = 8;
+        const BOX_BLOCKS: u32 = 4;
+        const GAP_BLOCKS: i64 = 6;
+
+        let box_node = |name: &str, offset_blocks: [i64; 3], material| {
+            let mut node = Node::new(
+                name,
+                NodeContent::Tool {
+                    shape: SdfShape::from_blocks(ShapeKind::Box, [BOX_BLOCKS; 3], 1, VPB),
+                    material,
+                },
+            );
+            node.transform = NodeTransform::from_blocks(offset_blocks, VPB);
+            node
+        };
+        let mut scene = Scene::from_nodes(vec![
+            box_node("Left", [0, 0, 0], MaterialChoice::Stone),
+            box_node("Right", [GAP_BLOCKS, 0, 0], MaterialChoice::Wood),
+        ]);
+        scene.voxels_per_block = VPB;
+        scene.ensure_node_ids();
+        let (left, right) = (scene.roots[0], scene.roots[1]);
+
+        // Each box's absolute voxel AABB, corner-anchored at its offset.
+        let span = (BOX_BLOCKS * VPB) as i64;
+        let box_low = [[0i64, 0, 0], [GAP_BLOCKS * VPB as i64, 0, 0]];
+        let contains = |low: [i64; 3], voxel: [i64; 3]| {
+            (0..3).all(|axis| voxel[axis] >= low[axis] && voxel[axis] < low[axis] + span)
+        };
+
+        // Frame both boxes: aim at the midpoint of the pair in the render frame.
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        let RebuildOutcome::Built(probe) = app_core.rebuild(&scene, VPB) else {
+            panic!("the fixture's density is in bounds");
+        };
+        let recentre = probe.recentre_voxels.voxels();
+        let pair_centre = glam::Vec3::new(
+            ((GAP_BLOCKS * VPB as i64 + span) / 2 - recentre[0]) as f32,
+            (span / 2 - recentre[1]) as f32,
+            (span / 2 - recentre[2]) as f32,
+        );
+        app_core = AppCore::new(OrbitCamera {
+            target: pair_centre,
+            orbit_theta: 0.6,
+            orbit_phi: 1.0,
+            orbit_distance: 160.0,
+            roll: 0.0,
+            projection_mode: camera::ProjectionMode::Perspective,
+        });
+        let RebuildOutcome::Built(output) = app_core.rebuild(&scene, VPB) else {
+            panic!("the fixture's density is in bounds");
+        };
+        let chunks = output.two_layer_chunks.clone();
+        let frame = PickFrame {
+            region_dimensions: output.region_dimensions,
+            recentre_voxels: output.recentre_voxels.voxels(),
+            density: VPB,
+            chunks: &chunks,
+            band: LayerBand::FULL,
+        };
+
+        let mut hits_per_node = [0usize; 2];
+        for row in 1..12 {
+            for column in 1..12 {
+                let cursor = [
+                    VIEWPORT[2] * column as f32 / 12.0,
+                    VIEWPORT[3] * row as f32 / 12.0,
+                ];
+                let Some(pick) = app_core.pick_voxel(cursor, VIEWPORT, &frame) else {
+                    continue;
+                };
+                let expected = match (
+                    contains(box_low[0], pick.absolute_voxel),
+                    contains(box_low[1], pick.absolute_voxel),
+                ) {
+                    (true, false) => {
+                        hits_per_node[0] += 1;
+                        left
+                    }
+                    (false, true) => {
+                        hits_per_node[1] += 1;
+                        right
+                    }
+                    _ => panic!(
+                        "pick at {cursor:?} named {:?}, which is in neither box",
+                        pick.absolute_voxel
+                    ),
+                };
+                assert_eq!(
+                    scene.picked_node_at_voxel(pick.absolute_voxel, VPB),
+                    Some(expected),
+                    "the voxel {:?} the raycast named must resolve to the node whose body                      contains it",
+                    pick.absolute_voxel
+                );
+            }
+        }
+        assert!(
+            hits_per_node[0] > 4 && hits_per_node[1] > 4,
+            "the sweep must land on BOTH boxes for the test to bite (got {hits_per_node:?})"
+        );
+    }
 }
