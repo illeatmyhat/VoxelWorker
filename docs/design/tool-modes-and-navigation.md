@@ -56,9 +56,49 @@ around two different pivots.
 - **UI (Fusion's split button):** the display icon rail holds an orbit button whose face is the
   MRU type, with a dropdown offering the other (Free Orbit lives only there); the context menu
   offers Constrained Orbit.
-- **Camera representation:** whichever parameterization is most durable to degenerate cases
-  (gimbal lock at the poles) — i.e. orientation-first (quaternion), with theta/phi as a derived
-  readout for the view cube / Home persistence, not the storage.
+- **Camera representation (owner-resolved 2026-07-27, REVERSING the 2026-07-26 line below):**
+  **two representations, Constrained is primary.** The spherical chart (`theta`/`phi`/`roll`)
+  stays the stored truth with its own math; the quaternion/trackball is a **secondary**
+  representation with its own dedicated operations, authoritative only while Free Orbit is the
+  active type. Exactly **one is authoritative at a time**, keyed off the MRU type — never both
+  live and synced, which would be the two-truths bug (and an F9 dump would capture whichever was
+  stale).
+
+  *Superseded:* "orientation-first (quaternion), with theta/phi as a derived readout" —
+  owner-resolved 2026-07-26, reversed the next day. Why the reversal: quaternion-primary makes
+  every `theta`/`phi` consumer convert on day one — `HomeView`, `SnapTween` (which *writes*
+  angles over time), the view-cube snap tables, `is_face_constrained`, config persistence — and
+  that migration is the expensive part of the work, not the integrator. Chart-primary pays none
+  of it until Free Orbit ships, and Free's cost is then purely additive. The competing claim,
+  that quaternion storage is more durable at the poles, does not survive contact: the pole
+  problem it solves is a *trajectory* continuity problem, and the seam below only ever converts
+  at discrete events.
+
+- **The seam.** `theta`/`phi`/`roll` is a proper chart of SO(3), so **both conversion directions
+  are exact**. Constrained → Free evaluates the chart forward: no choice, no loss. Free →
+  Constrained inverts it — unique away from the poles, and *at* a pole `theta` and `roll` are not
+  individually determined (only their combination is), which is gauge freedom, not information
+  loss: every consistent choice reproduces a bit-identical view. Resolve it the way
+  `nearest_equivalent_theta` already resolves its equivalents — take the `theta` nearest the last
+  chart `theta` and let `roll` absorb the remainder.
+
+  Gimbal lock does not enter. Lock is a failure of continuity *along a trajectory*; a type switch
+  is a single point. **Guard:** the active type may never change mid-gesture, so the conversion
+  stays a point and never becomes a path.
+
+- **Re-levelling on Free → Constrained (owner-resolved 2026-07-27): animate it.** A free orbit
+  leaves accumulated `roll`, and Constrained Orbit's promise is that world-up stays up, so the
+  switch drops the roll to zero. That is the one deliberately lossy step in the seam, and a hard
+  cut reads as a glitch — so it runs as an eased `SnapTween`, the same machinery Home already
+  uses to re-upright roll. Animated, it reads as intent.
+
+- **Integrator before UI.** Within this slice: the orbit-type split button is vacuous until Free
+  Orbit exists, and Free Orbit *is* the trackball representation. Building explicit orbit mode
+  first would ship a dead dropdown and add a second gesture call-site.
+
+- Every per-frame camera consumer (`direction()`, the up vector, `eye()`, the view cube's
+  matrices, `is_face_constrained`) reads through **representation-generic accessors** — the view
+  cube still renders during a Free drag and must not read a frozen `theta`/`phi`.
 
 ### Entering orbit — two paths, two pivots (owner-resolved 2026-07-23, restated 2026-07-27)
 
@@ -70,8 +110,14 @@ them is **which mechanisms may move each one**, and nothing else: the orbit math
    orbit center**, which raycasts a surface — geometry or a visible picking plane) and moved by
    *nothing else*. Panning does not move it. Zooming does not move it. That is the whole
    feature: slide the view across the model and the thing you are inspecting stays the thing you
-   turn around. Until a center has ever been placed it reads as `camera.target`, so a fresh
-   document turns about what it is looking at. (Plain MMB stays **pan**.)
+   turn around. Until a center has ever been placed it sits at the **world origin**, and reset
+   sends it back there. (Plain MMB stays **pan**.)
+
+   While a placement is armed and while Shift+MMB is turning about it, the center draws as a
+   ringed-crosshair marker — the pivot is the one camera quantity with no on-screen geometry of
+   its own, so an unplaced or forgotten one is otherwise invisible. It is **continuous**, not
+   voxel-snapped: it is a camera quantity with no lattice meaning, and a snapped one visibly
+   jumps a cell at a time under the cursor.
 2. **Explicit orbit mode → `camera.target`.** Entered by a button in the **display-settings icon
    rail** or the **context menu**. A **targeting reticle** overlays the viewport; **LMB-drag
    orbits about `camera.target`**, and an **LMB-click raycasts a surface and sets `camera.target`

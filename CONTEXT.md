@@ -190,8 +190,9 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   surface — geometry or a visible picking plane) and at no other time. Pan, zoom and every
   other camera verb leave it exactly where it was put; that invariance is the whole point,
   because it lets you slide the view across the model while the feature you are inspecting
-  stays the feature you turn around. Until something is placed it reads as the **view target**,
-  so a fresh document turns about what it is looking at.
+  stays the feature you turn around. Until something is placed it sits at the **world origin**,
+  and resetting it sends it back there — never to the view target, which would make "reset" mean
+  something different every time you had panned.
 
 - **View target** — the world point the camera looks at (`camera.target`), and the *other*
   pivot. **Pan** slides it, zoom moves toward it, the view cube swings around it, and explicit
