@@ -18,8 +18,10 @@ const PAGE: Color32 = Color32::from_rgb(0x07, 0x08, 0x0a);
 /// The sheet's measure: prose wraps here and rows span it, so the reference reads the same
 /// whatever the window is dragged to.
 const CONTENT_WIDTH: f32 = 980.0;
-/// The glyph size the rail uses, and the size every mark must survive.
-const RAIL_GLYPH: f32 = 15.0;
+/// The glyph size the rail uses, and the size every mark must survive. It must track
+/// `ui::chrome`'s own `GLYPH_BOX`: judging the set at a size nothing draws at is how a mark gets
+/// tuned for a slot that does not exist.
+const RAIL_GLYPH: f32 = 24.0;
 /// The glyph size a palette tile or drawer thumbnail uses.
 const TILE_GLYPH: f32 = 30.0;
 /// How many frames `--scroll` is re-requested for. Two would do; three is cheap insurance.
@@ -135,7 +137,7 @@ impl Sheet {
                 ("GRID", "18 × 18 units"),
                 ("STROKE", "1.25 · square · miter"),
                 ("RADIUS", "0 — everywhere"),
-                ("RAIL", "15 pt"),
+                ("RAIL", "24 pt"),
                 ("TILE", "30 pt"),
                 ("ACCENT", "exactly one"),
             ] {
@@ -366,7 +368,8 @@ impl Sheet {
         }
     }
 
-    /// One catalogue row: the glyph at 15 pt and 30 pt, its name, and what it means. Hovering
+    /// One catalogue row: the glyph at the rail size and the tile size, its name, and what it
+    /// means. Hovering
     /// lifts it to the hover colour, so the three states are demonstrated rather than described.
     fn icon_row(&mut self, ui: &mut Ui, icon: Icon) {
         let width = ui.available_width().min(CONTENT_WIDTH);
@@ -385,7 +388,7 @@ impl Sheet {
             color_palette::TEXT_MUTED
         };
 
-        // 15 pt — the rail size. If a mark fails, it fails here.
+        // The rail size. If a mark fails, it fails here.
         let small = Rect::from_min_size(
             rect.left_top() + Vec2::new(10.0, (40.0 - RAIL_GLYPH) * 0.5),
             Vec2::splat(RAIL_GLYPH),

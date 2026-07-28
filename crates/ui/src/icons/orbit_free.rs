@@ -1,77 +1,68 @@
-//! `orbit-free` — the trackball: a small cross, and an orbit round each of its arms.
+//! `orbit-free` — the trackball: two rings threaded through each other, and no axis at all.
 //!
-//! Two arrows on two different axes, which is the whole content of "free": there is no privileged
-//! up, so no one orbit is the orbit. [`orbit_constrained`](super::orbit_constrained) is the same
-//! drawing with the second orbit taken away and the cross straightened into a single long rod.
+//! Transpiled from the owner's SVG (`scratchpad/icons/owner/free-s22.svg`). The same conversion
+//! note applies as for [`orbit_constrained`](super::orbit_constrained): the source opens its
+//! ellipses with `stroke-dasharray` against `pathLength="360"`, which measures arc length, so
+//! these sweeps came from integrating the ellipses rather than from the dash numbers.
 //!
-//! Both paths are ellipses that lean, because a circle round an axis is a circle only when you are
-//! looking straight down that axis — and here there are two axes, so a flat-on circle would have to
-//! be wrong about at least one of them. The two share a lean, so they read as two tracks in one
-//! space rather than two swirls that happen to overlap.
+//! ## The two rings interlock — each passes in front exactly once
 //!
-//! ## The cross is small, and that is the whole point of it
+//! That is the whole content of "free": no ring is privileged, so neither can be wholly in front.
+//! The source says it with a small circular clip that swaps which mask wins in one corner; here it
+//! is the same thing said as sweeps, since a painter has no masks. The wide ring is cut TWICE (the
+//! tall one crosses in front on both sides of the swap) and the tall ring once.
 //!
-//! It was first drawn at a rod's length, and at that size it is two long strokes meeting in the
-//! middle and it swamps the box. That is backwards. The cross is not the subject; it is the
-//! registration mark the orbits are aligned on, and the orbits are the subject. Cut to about a
-//! third of the box it reads as a centre, and the outer band — the only place an arrow can be big
-//! enough to see — comes free.
+//! ## The cross is small, and that is the point of it
 //!
-//! ## The cross is upright, and that is a ruling against the reference
+//! It is not the subject; it is the registration mark the rings are aligned on, and its arms stop
+//! well inside them. At a rod's length it swamps the box and the mark becomes
+//! [`orbit_constrained`](super::orbit_constrained) with an extra stroke.
 //!
-//! Fusion tips its cross a few degrees. Drawn that way at 15 pt it failed, and not marginally: an
-//! axis-aligned stroke lands on the pixel grid, and a stroke a few degrees off it resolves as a
-//! two-pixel grey smear, so both arms went soft at once. Tipping to a full 45° keeps them crisp but
-//! hands the glyph the `cancel` silhouette. The lean the reference is asking for lives in the
-//! orbits instead, where a curve is already off-grid everywhere and pays nothing for it.
+//! It is axis-aligned rather than tipped. Tipping a few degrees puts both arms off the pixel grid
+//! at once and each resolves as a two-pixel grey smear; a full 45° stays crisp but hands the glyph
+//! the `cancel` silhouette.
 
-use super::{IconPainter, TurningArrow};
+use super::IconPainter;
 
-/// Half an arm's length — about a third of the box. The cross registers the centre; it is not the
-/// subject, and it must stay well inside the orbits.
-const ARM_HALF_LENGTH: f32 = 1.9;
-/// The orbit round the upright arm: wide and shallow, seen from a little above.
-/// [`orbit_constrained`](super::orbit_constrained) draws the same one.
-const UPRIGHT_ORBIT_RADII: (f32, f32) = (7.0, 4.3);
-/// The orbit round the flat arm: the same ellipse stood on its end.
-const FLAT_ORBIT_RADII: (f32, f32) = (4.3, 7.0);
-/// The lean both orbits share.
-const ORBIT_TILT: f32 = -0.18;
-/// Each sweep leaves a gap where its own arm passes in front — the top for the upright orbit, the
-/// right flank for the flat one — and the arrowhead ends at the far lip of that gap. The angle is
-/// small because these ellipses are elongated: a quarter of a radian at the narrow end of one is
-/// nearly three units of gap.
-/// Each is centred on where the TILTED path crosses its arm, which is not the parameter's own top
-/// or flank — tilt one and the two part company.
-const UPRIGHT_ORBIT_SWEEP: (f32, f32) = (-1.26, 4.62);
-const FLAT_ORBIT_SWEEP: (f32, f32) = (0.31, 6.20);
-/// The arrowheads: longer and narrower than the sheet's static arrows, because at 15 pt a short
-/// wide chevron with its own curve running past it closes into a blob.
-const ARROW_HEAD: (f32, f32) = (2.6, 1.5);
+const CENTER: (f32, f32) = (9.0, 9.0);
+/// The wide ring — the same ellipse [`orbit_constrained`](super::orbit_constrained) draws, which
+/// is what makes the pair read as one family rather than two unrelated marks.
+const WIDE_RADII: (f32, f32) = (6.1875, 2.8125);
+/// Its two visible runs. The gap between them is where the tall ring crosses in front; the ends
+/// are the ring's own opening, which carries the arrowhead.
+const WIDE_SWEEPS: [(f32, f32); 2] = [(5.3197, 8.0170), (8.5863, 10.2648)];
+/// The tall ring: the same ellipse stood on its end.
+const TALL_RADII: (f32, f32) = (2.8125, 6.1875);
+/// One run — cut only where the wide ring wins the swap, at the lower right.
+const TALL_SWEEP: (f32, f32) = (0.7317, 5.5663);
+/// The two arrowheads, FILLED, their bearings a right angle apart. Two headings that far apart is
+/// what says these are two different turns rather than one long swirl.
+const WIDE_HEAD: [(f32, f32); 3] = [(11.5312, 7.0312), (13.3312, 5.8500), (13.3312, 8.2125)];
+const TALL_HEAD: [(f32, f32); 3] = [(10.9688, 6.4688), (9.7875, 4.6688), (12.1500, 4.6688)];
+/// Half an arm of the centre cross.
+const ARM_HALF_LENGTH: f32 = 1.6875;
 
 pub(super) fn draw(g: &IconPainter) {
-    let center = (9.0_f32, 9.0_f32);
-
-    // The two axes: the registration mark, and the reason there is no world-up here.
-    g.line(&[
-        (center.0, center.1 - ARM_HALF_LENGTH),
-        (center.0, center.1 + ARM_HALF_LENGTH),
-    ]);
-    g.line(&[
-        (center.0 - ARM_HALF_LENGTH, center.1),
-        (center.0 + ARM_HALF_LENGTH, center.1),
-    ]);
-
-    for (radii, sweep) in [
-        (UPRIGHT_ORBIT_RADII, UPRIGHT_ORBIT_SWEEP),
-        (FLAT_ORBIT_RADII, FLAT_ORBIT_SWEEP),
-    ] {
-        g.turning_arrow(TurningArrow {
-            center,
-            radii,
-            sweep,
-            tilt: ORBIT_TILT,
-            head: ARROW_HEAD,
-        });
+    for (from, to) in WIDE_SWEEPS {
+        g.arc(CENTER, WIDE_RADII.0, WIDE_RADII.1, from, to);
     }
+    g.fill(&WIDE_HEAD);
+
+    g.arc(
+        CENTER,
+        TALL_RADII.0,
+        TALL_RADII.1,
+        TALL_SWEEP.0,
+        TALL_SWEEP.1,
+    );
+    g.fill(&TALL_HEAD);
+
+    g.line(&[
+        (CENTER.0 - ARM_HALF_LENGTH, CENTER.1),
+        (CENTER.0 + ARM_HALF_LENGTH, CENTER.1),
+    ]);
+    g.line(&[
+        (CENTER.0, CENTER.1 - ARM_HALF_LENGTH),
+        (CENTER.0, CENTER.1 + ARM_HALF_LENGTH),
+    ]);
 }

@@ -7,19 +7,22 @@ use crate::icons::Icon;
 use crate::panel::ViewMode;
 use crate::theme;
 
-const RAIL_WIDTH: f32 = 34.0;
-const BUTTON_HEIGHT: f32 = 32.0;
+const RAIL_WIDTH: f32 = 42.0;
+const BUTTON_HEIGHT: f32 = 40.0;
 const RAIL_GAP: f32 = 6.0;
-const GLYPH_BOX: f32 = 18.0;
+/// The rail's glyph box. The marks are authored on an 18-unit grid and this is the size that grid
+/// is drawn AT — the answer to "does this mark read?" is always about this number, so it is the one
+/// the `design_reference` sheet judges against too.
+const GLYPH_BOX: f32 = 24.0;
 /// Height of the orbit-type button's dropdown half, which sits BELOW the face rather than beside
 /// it. Taking the strip off the side left the mark an off-centre 23 pt of a 34 pt rail to live in,
 /// and every legibility problem the pair had was really that: a glyph authored for a square box,
 /// judged in a letterbox. The button grows by this much instead, so the face stays a full,
 /// centred, rail-width square and the caret costs the mark nothing.
-const CARET_HEIGHT: f32 = 11.0;
+const CARET_HEIGHT: f32 = 13.0;
 /// The caret's own glyph box — smaller than [`GLYPH_BOX`], because a chevron is a pointer at the
 /// menu and must not read as a second subject beside the face's mark.
-const CARET_BOX: f32 = 9.0;
+const CARET_BOX: f32 = 11.0;
 /// The rail index of the orbit-type split button.
 const ORBIT_TYPE_BUTTON: usize = 3;
 

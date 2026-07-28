@@ -1,69 +1,48 @@
-//! `orbit-constrained` — the turntable: a rod standing in an orbit, and the orbit is an arrow.
+//! `orbit-constrained` — a ring turning about the one axis the camera keeps upright.
 //!
-//! The LINE is the subject: the content of "constrained" is that ONE axis is privileged — world-up
-//! stays up, the camera never rolls, the poles are places you cannot get past. It runs the full
-//! height of the box and out past the path at both ends, because that overhang is the whole
-//! difference between a rod THROUGH an orbit and a hoop with something stuck on it.
+//! Transpiled from the owner's SVG (`scratchpad/icons/owner/constrained-s22.svg`), which derives
+//! this from the free mark by taking one ring away and standing it on its axis. The numbers below
+//! are that file's, converted once: it opens its ellipse with `stroke-dasharray` against
+//! `pathLength="360"`, which measures ARC LENGTH, not the parametric angle [`IconPainter::arc`]
+//! takes — so the sweep here came from integrating the ellipse, not from reading the dash off.
 //!
-//! The path is an ELLIPSE, not a circle, and it leans. A circle round a standing axis is a circle
-//! only when you are looking down the axis, which is the one viewpoint from which the axis itself
-//! is invisible; drawn flat-on it reads as a swirl on the page rather than a track in space. Wide
-//! and shallow with a small tilt is a circle seen from a little above — the same view the mark's
-//! own reader has of the scene.
+//! ## Depth is occlusion, not skew
 //!
-//! It is gapped at the top, where the far side passes behind the axis, and the arrowhead sits at
-//! the gap's far lip pointing into it. Direction is what separates an orbit from a ring, so the
-//! head is oversized and narrow-legged — at 15 pt the glyph box is about eighteen PIXELS, and a
-//! short wide chevron there closes into a blob.
+//! The ellipse is not tilted. Earlier drafts leaned it to suggest perspective and every one read as
+//! a swirl; what actually says "a ring around a rod" is one stroke stopping where another passes in
+//! front of it. That costs a gap and buys the third dimension.
 //!
-//! Four other paths were drawn and rendered before this one, and each failed the same way: a front
-//! half-ring is a bowl the axis stands in; a small hooked loop at the axis's end is a four-pixel
-//! squiggle; a third-turn arc over the top of a hanging axis is a PICKAXE, which the eye reaches
-//! well before it reaches "orbit"; and a perfect circle is the swirl above.
+//! ## Only ONE cut is real
 //!
-//! [`orbit_free`](super::orbit_free) is deliberately a different construction, not this one plus a
-//! stroke: a small cross with two open arrows half a turn apart. Line against cross, one arrow
-//! against two.
+//! The ring's opening already sits at the top, exactly where the axis would have stood in front of
+//! it — so cutting the ring there removes nothing. What is left is the near crossing: at the bottom
+//! the ring passes in FRONT, so the AXIS breaks and the ring stays whole.
 
-use super::{IconPainter, TurningArrow};
+use super::IconPainter;
 
-/// Half the axis's length. It must exceed the orbit's vertical reach — the overhang is what makes
-/// it a rod through the path rather than a stem under it.
-const AXIS_HALF_LENGTH: f32 = 7.6;
-/// The orbit's semi-axes: wide and shallow, a circle round a STANDING axis seen from a little
-/// above. [`orbit_free`](super::orbit_free) uses the same pair, swapped for its second arrow.
-const ORBIT_RADII: (f32, f32) = (5.9, 3.6);
-/// The lean of the orbit's plane. Small — enough that the path is not sitting flat on the page,
-/// not so much that it stops reading as level.
-const ORBIT_TILT: f32 = -0.18;
-/// The sweep, in the painter's angles (clockwise from +x, y growing downward): from just clockwise
-/// of the top, round the near side, ending just anticlockwise of the top again. The gap left at the
-/// top is the far side, which the axis stands in front of, and it is where the arrowhead points.
-///
-/// The angle is small because the ellipse is wide: a quarter of a radian either side of the top is
-/// nearly three units of GAP on a path this flat, and a wider one stops reading as an occlusion and
-/// starts reading as a broken curve. It is centred on where the TILTED path crosses the axis, which
-/// is not the parameter's own top — tilt one and the two part company.
-const ORBIT_SWEEP: (f32, f32) = (-1.22, 4.58);
-/// The arrowhead: longer and narrower than the sheet's static arrows, because here it carries the
-/// mark's whole meaning at 15 pt and a short wide one closes up into a blob.
-const ARROW_HEAD: (f32, f32) = (2.9, 1.6);
+const CENTER: (f32, f32) = (9.0, 9.0);
+/// Wide and shallow: a circle about the vertical axis, seen from a little above.
+const RING_RADII: (f32, f32) = (6.1875, 2.8125);
+/// The opening, at the top, where the axis passes in front and the arrowhead lands.
+const RING_SWEEP: (f32, f32) = (5.3197, 10.2950);
+/// The arrowhead, FILLED — a stroked chevron this size closes into a blob at rail size.
+const ARROW_HEAD: [(f32, f32); 3] = [(11.5312, 7.0312), (13.3312, 5.8500), (13.3312, 8.2125)];
+/// The axis, in two runs; the gap is where the ring's near side crosses in front. It spans the
+/// free mark's tall ring, so the pair fills one box, and overruns the ring at both ends — the
+/// overhang is what reads as "through" rather than "attached to".
+const AXIS_X: f32 = 9.0;
+const AXIS_FAR: (f32, f32) = (2.8125, 10.3458);
+const AXIS_NEAR: (f32, f32) = (13.2817, 15.1875);
 
 pub(super) fn draw(g: &IconPainter) {
-    let center = (9.0_f32, 9.0_f32);
-
-    // The fixed world-up: the subject.
-    g.line(&[
-        (center.0, center.1 - AXIS_HALF_LENGTH),
-        (center.0, center.1 + AXIS_HALF_LENGTH),
-    ]);
-
-    // The traveller: round the near side, ending at the gap's far lip and pointing into it.
-    g.turning_arrow(TurningArrow {
-        center,
-        radii: ORBIT_RADII,
-        sweep: ORBIT_SWEEP,
-        tilt: ORBIT_TILT,
-        head: ARROW_HEAD,
-    });
+    g.line(&[(AXIS_X, AXIS_FAR.0), (AXIS_X, AXIS_FAR.1)]);
+    g.line(&[(AXIS_X, AXIS_NEAR.0), (AXIS_X, AXIS_NEAR.1)]);
+    g.arc(
+        CENTER,
+        RING_RADII.0,
+        RING_RADII.1,
+        RING_SWEEP.0,
+        RING_SWEEP.1,
+    );
+    g.fill(&ARROW_HEAD);
 }
