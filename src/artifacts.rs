@@ -694,7 +694,10 @@ mod tests {
                 let mut shortcuts = ui::shortcuts::Shortcuts::default();
                 shortcuts.bind(
                     ui::shortcuts::ShortcutCommand::DeleteSelection,
-                    Some(ui::shortcuts::ShortcutKey::Delete),
+                    Some(egui::KeyboardShortcut::new(
+                        egui::Modifiers::NONE,
+                        egui::Key::Delete,
+                    )),
                 );
                 crate::settings::ShortcutsConfig::from_shortcuts(&shortcuts)
             },

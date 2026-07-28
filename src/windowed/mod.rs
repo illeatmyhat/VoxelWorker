@@ -48,7 +48,6 @@ use crate::{
 mod events;
 mod export;
 mod geometry;
-mod keys;
 mod palette;
 mod render;
 mod view_cube;

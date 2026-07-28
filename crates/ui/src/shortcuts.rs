@@ -1,27 +1,134 @@
 //! The keyboard-shortcut settings — **the one place a keybind is written down**.
 //!
-//! Every command the keyboard can reach is a [`ShortcutCommand`], and [`Shortcuts`] maps each to
-//! at most one [`ShortcutKey`]. A command with `None` is not an omission; it is a command the
-//! keyboard cannot reach yet, listed so the settings stay the complete inventory rather than a
-//! list of the ones somebody remembered.
+//! Every command the keyboard can reach is a [`ShortcutCommand`], and each one carries its own
+//! built-in binding ([`ShortcutCommand::built_in`]) the way a Krita `<Action>` carries its
+//! `<shortcut>` next to its label. [`Shortcuts`] is that inventory plus the user's overrides. A
+//! command with `None` is not an omission; it is a command the keyboard cannot reach yet, listed
+//! so the settings stay the complete inventory rather than a list of the ones somebody remembered.
 //!
 //! **Why a registry rather than a literal at each site.** A menu row that spelled its own binding
 //! ("Esc", flushed right) and a shell handler that matched its own key are two facts about one
 //! binding, free to drift — and the menu is the thing users read to learn the binding, so the copy
 //! that drifts is the one that lies. Nothing here can drift: the row is handed a *command* and
-//! looks the key up, and the shell asks which command a key means. Neither is offered a string.
+//! looks the key up, and the shell asks which commands the frame's presses meant. Neither is
+//! offered a string.
 //!
 //! That is also the enforcement. The shell's `context_menu_row` takes no shortcut text at all, so
 //! a hardcoded one is a type error, not a review note. On the winit side the same rule is a clippy
-//! `disallowed-types` entry on `KeyCode`, with the single translation table opting out.
+//! `disallowed-types` entry on `KeyCode`, which has no opt-out anywhere: presses are read out of
+//! egui's own input, which `egui_winit` has already translated.
+//!
+//! **What is egui's and what is ours.** The key, the modifiers, the human-readable spelling and
+//! the consume-once matching are all [`egui::KeyboardShortcut`] and
+//! [`egui::InputState::consume_shortcut`] — including the OS-aware formatting that writes `⌘⇧P` on
+//! a Mac and `Ctrl+Shift+P` elsewhere. What egui has no opinion about, and what this module is, is
+//! *which commands exist* and *which binding each one holds*.
+//!
+//! # The shape, and where it comes from
+//!
+//! Blender and Krita converge on the same four properties, and this module takes all four:
+//!
+//! 1. **Keyed by command, never by position.** Blender's keymap items name an operator `idname`;
+//!    Krita's actions have a `name`. A positional table where row 4 silently means "reset orbit
+//!    center" is the thing both avoid.
+//! 2. **The default is declared beside the command's own metadata.** Krita puts `<shortcut>` in the
+//!    same `<Action>` block as `<text>` and `<toolTip>`; here [`ShortcutCommand::built_in`] sits
+//!    next to [`ShortcutCommand::label`], and both platforms' answers for one command are in one
+//!    match arm where they can be compared.
+//! 3. **The user's changes are stored as a sparse override.** Blender persists a *diff* of
+//!    add/remove items against the defaults rather than a copy, so a default that improves reaches
+//!    the people who never rebound it. [`Shortcuts`] holds only the overrides, and only those are
+//!    persisted.
+//! 4. **A whole alternative set is a first-class thing.** Blender ships entire keyconfigs
+//!    ("Industry Compatible", Maya); Krita ships shortcut schemes (Photoshop, Paint Tool Sai).
+//!    [`ShortcutPlatform`] is that seam here — today it selects the two platform sets, and a
+//!    "Fusion-like" or "Blender-like" scheme would enter the same way.
+//!
+//! # The platform law: each platform's set is written on its own merits
+//!
+//! The built-in bindings are not one set with a modifier substituted at the edges. Each platform's
+//! answer is decided per command, because the platforms disagree about more than which modifier is
+//! under the thumb:
+//!
+//! * The **key itself** can differ. The delete verb is `Delete` on Windows and `Backspace` (⌫) on
+//!   a Mac, where the forward-delete key is absent from every laptop keyboard. No modifier rule
+//!   produces that.
+//! * A key can be **unavailable**. `F9` is Mission Control at the system level on macOS, so a
+//!   binding on it is one the app never receives.
+//! * The **conventional** shortcut for a verb is sometimes simply a different shortcut, because
+//!   that is what people on that platform already have in their fingers.
+//!
+//! So [`Modifiers::COMMAND`] — egui's "Ctrl here, ⌘ there" modifier — is deliberately **not** used.
+//! It is precisely the heuristic this law rejects: it makes the Mac binding a derivative of the
+//! Windows one and hides the question of what the Mac binding should be. Each arm names its own
+//! platform's real modifiers, and the tests hold it to that.
 //!
 //! The bindings are **settings** in the ADR 0022 sense: preference that outlives any one project,
-//! persisted through a serde mirror out in the shell (this crate links no serde, ADR 0016).
+//! persisted through a serde mirror out in the shell (this crate links no serde, ADR 0016 — the
+//! shortcut type itself is serde-able, so only the command inventory needs mirroring).
+
+use egui::{Key, KeyboardShortcut, Modifiers};
+use std::collections::BTreeMap;
+
+/// An unmodified key.
+const fn bare(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(Modifiers::NONE, key)
+}
+
+/// `Ctrl+Shift+<key>` — the Windows/Linux spelling, naming `ctrl` because that is the key that is
+/// actually pressed there.
+const fn ctrl_shift(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(
+        Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        },
+        key,
+    )
+}
+
+/// `⌘⇧<key>` — the macOS spelling, naming `mac_cmd` for the same reason.
+const fn command_shift(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(
+        Modifiers {
+            mac_cmd: true,
+            shift: true,
+            ..Modifiers::NONE
+        },
+        key,
+    )
+}
+
+/// Which platform's keyboard conventions a set of built-in bindings follows.
+///
+/// Two variants, not one per OS: Windows and Linux agree with each other about every shortcut in
+/// this application, and macOS is the one that does not. This is also the seam an alternative
+/// *scheme* would enter through — Blender's keyconfig presets and Krita's shortcut schemes are the
+/// same idea, a whole set swapped as a unit rather than a binding patched at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShortcutPlatform {
+    /// macOS.
+    MacOs,
+    /// Windows and Linux, which share these conventions.
+    WindowsAndLinux,
+}
+
+impl ShortcutPlatform {
+    /// The platform this binary was built for. A native app, so the question is settled at compile
+    /// time — there is no runtime OS to discover, and reading one would only invite the sets to be
+    /// selected by something other than the machine the keys are pressed on.
+    pub const HOST: Self = if cfg!(target_os = "macos") {
+        Self::MacOs
+    } else {
+        Self::WindowsAndLinux
+    };
+}
 
 /// A command the keyboard can be bound to.
 ///
 /// The variants are the inventory the settings list renders, in the order it renders them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShortcutCommand {
     /// End the running modal command, keeping what it produced.
     AcceptCommand,
@@ -41,8 +148,7 @@ pub enum ShortcutCommand {
 }
 
 impl ShortcutCommand {
-    /// Every command, in settings-list order. The array length is the registry's width, so a new
-    /// variant that is not added here fails to compile at [`Shortcuts::DEFAULT`].
+    /// Every command, in settings-list order.
     pub const ALL: [Self; 7] = [
         Self::AcceptCommand,
         Self::CancelCommand,
@@ -66,125 +172,157 @@ impl ShortcutCommand {
         }
     }
 
-    /// Position in [`ALL`](Self::ALL) — the registry's storage index.
-    fn index(self) -> usize {
+    /// The command's built-in binding on `platform`, before any user override.
+    ///
+    /// One arm per command with both platforms inside it, so "was this decided independently, or
+    /// copied?" is answerable by reading the arm. Most commands answer the same on both — that is
+    /// a conclusion (confirm really is Return everywhere), not a default.
+    pub const fn built_in(self, platform: ShortcutPlatform) -> Option<KeyboardShortcut> {
         match self {
-            Self::AcceptCommand => 0,
-            Self::CancelCommand => 1,
-            Self::DeleteSelection => 2,
-            Self::PlaceOrbitCenter => 3,
-            Self::ResetOrbitCenter => 4,
-            Self::EnterConstrainedOrbit => 5,
-            Self::ExportRepro => 6,
+            // The universal pair. Return confirms and Escape backs out on every platform this
+            // application runs on; there is nothing to decide differently.
+            Self::AcceptCommand => Some(bare(Key::Enter)),
+            Self::CancelCommand => Some(bare(Key::Escape)),
+
+            // Unbound on both. These are viewport verbs with no cross-application convention, and
+            // one that claimed a letter key would be taking it from every future mode at once.
+            // They are listed anyway so they can BE bound — the inventory is the point.
+            Self::DeleteSelection
+            | Self::PlaceOrbitCenter
+            | Self::ResetOrbitCenter
+            | Self::EnterConstrainedOrbit => None,
+
+            // The repro dump: a developer affordance, so it wants a chord nothing else claims
+            // rather than a key a modeller might hit by accident. `Shift` plus the platform's own
+            // application modifier, on a letter no viewport verb wants.
+            Self::ExportRepro => match platform {
+                ShortcutPlatform::WindowsAndLinux => Some(ctrl_shift(Key::P)),
+                ShortcutPlatform::MacOs => Some(command_shift(Key::P)),
+            },
         }
     }
 }
 
-/// A bindable key.
+/// How many modifiers a shortcut carries — its **specificity**.
 ///
-/// Bare keys only — no modifiers, because no command wants one yet and a chord type nobody uses
-/// would be a second thing to keep in step with the translation table. Adding modifiers means
-/// widening this type, which is exactly the edit that should be visible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ShortcutKey {
-    /// The Return / Enter key.
-    Return,
-    /// The Escape key.
-    Escape,
-    /// The forward-delete key.
-    Delete,
-    /// The backspace key.
-    Backspace,
-    /// The F9 function key.
-    F9,
+/// egui matches modifiers logically, so `Ctrl+Shift+S` would also satisfy a bare `Ctrl+S` check.
+/// Consuming the more specific binding first is what stops the plainer one from stealing the
+/// press, and is why [`Shortcuts::consume`] sorts by this.
+fn specificity(shortcut: KeyboardShortcut) -> u32 {
+    let Modifiers {
+        alt,
+        ctrl,
+        shift,
+        mac_cmd,
+        command,
+    } = shortcut.modifiers;
+    u32::from(alt) + u32::from(ctrl) + u32::from(shift) + u32::from(mac_cmd) + u32::from(command)
 }
 
-impl ShortcutKey {
-    /// Every key that can be bound, for the settings list's picker.
-    pub const ALL: [Self; 5] = [
-        Self::Return,
-        Self::Escape,
-        Self::Delete,
-        Self::Backspace,
-        Self::F9,
-    ];
-
-    /// How the key is spelled on screen — in the menu's right-hand column and in the settings
-    /// list, from this one definition.
-    pub fn display(self) -> &'static str {
-        match self {
-            Self::Return => "Return",
-            Self::Escape => "Esc",
-            Self::Delete => "Del",
-            Self::Backspace => "Backspace",
-            Self::F9 => "F9",
-        }
-    }
-}
-
-/// The keyboard-shortcut settings: one optional key per command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The keyboard-shortcut settings: a platform's built-in bindings plus the user's overrides.
+///
+/// Only the overrides are stored, Blender-style. Holding a full copy of the table would freeze
+/// today's defaults into every existing config, so a binding improved next year would reach only
+/// people who had never opened the settings.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Shortcuts {
-    /// Indexed by [`ShortcutCommand::index`]; `None` is "not reachable from the keyboard".
-    bindings: [Option<ShortcutKey>; ShortcutCommand::ALL.len()],
+    /// Whose built-in set the overrides sit on top of.
+    platform: ShortcutPlatform,
+    /// The commands the user has changed. The value is the *new* binding: `None` means explicitly
+    /// unbound, which is different from "not overridden" (absent from the map).
+    overrides: BTreeMap<ShortcutCommand, Option<KeyboardShortcut>>,
 }
 
 impl Shortcuts {
-    /// The built-in bindings. Only the universal pair is bound out of the box — a viewport verb
-    /// that took a letter key would be claiming it from every future mode at once.
-    pub const DEFAULT: Self = Self {
-        bindings: [
-            Some(ShortcutKey::Return),
-            Some(ShortcutKey::Escape),
-            None,
-            None,
-            None,
-            None,
-            Some(ShortcutKey::F9),
-        ],
-    };
-
-    /// The key bound to `command`, if any.
-    pub fn key(&self, command: ShortcutCommand) -> Option<ShortcutKey> {
-        self.bindings[command.index()]
+    /// A platform's built-in set, with nothing overridden.
+    pub fn for_platform(platform: ShortcutPlatform) -> Self {
+        Self {
+            platform,
+            overrides: BTreeMap::new(),
+        }
     }
 
-    /// How `command`'s binding is spelled on screen, if it has one.
-    pub fn display(&self, command: ShortcutCommand) -> Option<&'static str> {
-        self.key(command).map(ShortcutKey::display)
+    /// The binding in force for `command`: its override if it has one, else the built-in.
+    pub fn shortcut(&self, command: ShortcutCommand) -> Option<KeyboardShortcut> {
+        match self.overrides.get(&command) {
+            Some(overridden) => *overridden,
+            None => command.built_in(self.platform),
+        }
     }
 
-    /// Bind `command` to `key`, clearing that key off whatever else held it — one key means one
-    /// command, so rebinding never leaves two handlers racing for the same press.
-    pub fn bind(&mut self, command: ShortcutCommand, key: Option<ShortcutKey>) {
-        if let Some(key) = key {
-            for binding in &mut self.bindings {
-                if *binding == Some(key) {
-                    *binding = None;
+    /// How `command`'s binding is spelled on screen, if it has one — egui's own OS-aware
+    /// formatting, so the menu column and the settings list read the same and read native.
+    pub fn display(&self, ctx: &egui::Context, command: ShortcutCommand) -> Option<String> {
+        self.shortcut(command)
+            .map(|shortcut| ctx.format_shortcut(&shortcut))
+    }
+
+    /// Override `command`'s binding, taking the shortcut off whatever else held it — one chord
+    /// means one command, so rebinding never leaves two handlers racing for the same press.
+    pub fn bind(&mut self, command: ShortcutCommand, shortcut: Option<KeyboardShortcut>) {
+        if let Some(shortcut) = shortcut {
+            for held_by in ShortcutCommand::ALL {
+                if held_by != command && self.shortcut(held_by) == Some(shortcut) {
+                    self.overrides.insert(held_by, None);
                 }
             }
         }
-        self.bindings[command.index()] = key;
+        self.overrides.insert(command, shortcut);
     }
 
-    /// Which command a pressed key means, if any. The shell's whole key dispatch.
-    pub fn command(&self, key: ShortcutKey) -> Option<ShortcutCommand> {
-        ShortcutCommand::ALL
-            .into_iter()
-            .find(|command| self.key(*command) == Some(key))
+    /// Drop `command`'s override, returning it to the built-in binding.
+    pub fn reset(&mut self, command: ShortcutCommand) {
+        self.overrides.remove(&command);
     }
 
-    /// The settings list: every command with its binding, in inventory order.
-    pub fn list(&self) -> impl Iterator<Item = (ShortcutCommand, Option<ShortcutKey>)> + '_ {
+    /// Which command holds `shortcut`, if any.
+    pub fn command(&self, shortcut: KeyboardShortcut) -> Option<ShortcutCommand> {
         ShortcutCommand::ALL
             .into_iter()
-            .map(|command| (command, self.key(command)))
+            .find(|command| self.shortcut(*command) == Some(shortcut))
+    }
+
+    /// The commands whose bindings were pressed this frame, **consuming** the presses.
+    ///
+    /// Call it AFTER the egui pass: a focused text field has already eaten its keys by then, so a
+    /// typed Escape ends the edit instead of cancelling the running viewport command. That
+    /// ordering is the reason this reads egui's input rather than the raw winit event — the guard
+    /// is structural instead of a "was egui focused?" flag the caller has to remember.
+    pub fn consume(&self, ctx: &egui::Context) -> Vec<ShortcutCommand> {
+        let mut bound: Vec<(ShortcutCommand, KeyboardShortcut)> = ShortcutCommand::ALL
+            .into_iter()
+            .filter_map(|command| self.shortcut(command).map(|shortcut| (command, shortcut)))
+            .collect();
+        bound.sort_by_key(|(_, shortcut)| std::cmp::Reverse(specificity(*shortcut)));
+        ctx.input_mut(|input| {
+            bound
+                .into_iter()
+                .filter(|(_, shortcut)| input.consume_shortcut(shortcut))
+                .map(|(command, _)| command)
+                .collect()
+        })
+    }
+
+    /// The settings list: every command with the binding in force, in inventory order.
+    pub fn list(&self) -> impl Iterator<Item = (ShortcutCommand, Option<KeyboardShortcut>)> + '_ {
+        ShortcutCommand::ALL
+            .into_iter()
+            .map(|command| (command, self.shortcut(command)))
+    }
+
+    /// Just the overrides — what persistence writes down, and all it writes down.
+    pub fn overrides(
+        &self,
+    ) -> impl Iterator<Item = (ShortcutCommand, Option<KeyboardShortcut>)> + '_ {
+        self.overrides
+            .iter()
+            .map(|(command, shortcut)| (*command, *shortcut))
     }
 }
 
 impl Default for Shortcuts {
     fn default() -> Self {
-        Self::DEFAULT
+        Self::for_platform(ShortcutPlatform::HOST)
     }
 }
 
@@ -192,34 +330,95 @@ impl Default for Shortcuts {
 mod tests {
     use super::*;
 
+    /// Each platform's set names only modifiers its own platform has. A `ctrl` on the Mac side is
+    /// a binding under the wrong finger; a `mac_cmd` on the other is one that key cannot press.
     #[test]
-    fn the_index_agrees_with_the_inventory_order() {
-        for (position, command) in ShortcutCommand::ALL.into_iter().enumerate() {
-            assert_eq!(command.index(), position, "{command:?}");
+    fn each_platform_names_only_its_own_modifiers() {
+        for command in ShortcutCommand::ALL {
+            if let Some(shortcut) = command.built_in(ShortcutPlatform::MacOs) {
+                assert!(
+                    !shortcut.modifiers.ctrl,
+                    "the Mac binding for {command:?} chords with Ctrl"
+                );
+            }
+            if let Some(shortcut) = command.built_in(ShortcutPlatform::WindowsAndLinux) {
+                assert!(
+                    !shortcut.modifiers.mac_cmd,
+                    "the Windows/Linux binding for {command:?} chords with ⌘"
+                );
+            }
+        }
+    }
+
+    /// The platform law itself. `Modifiers::COMMAND` is egui's "Ctrl here, ⌘ there" — the exact
+    /// substitution heuristic the per-command arms exist to replace. A binding that reaches for it
+    /// has stopped asking what the shortcut should BE on each platform and started deriving one
+    /// from the other.
+    #[test]
+    fn no_binding_is_derived_from_the_other_platforms() {
+        for platform in [ShortcutPlatform::MacOs, ShortcutPlatform::WindowsAndLinux] {
+            for command in ShortcutCommand::ALL {
+                let Some(shortcut) = command.built_in(platform) else {
+                    continue;
+                };
+                assert!(
+                    !shortcut.modifiers.command,
+                    "{platform:?}'s {command:?} uses Modifiers::COMMAND; name the platform's own \
+                     modifier and decide the binding on its merits"
+                );
+            }
+        }
+    }
+
+    /// Every platform's set is a valid registry in its own right, not only the host's.
+    #[test]
+    fn no_platform_binds_one_shortcut_to_two_commands() {
+        for platform in [ShortcutPlatform::MacOs, ShortcutPlatform::WindowsAndLinux] {
+            let shortcuts = Shortcuts::for_platform(platform);
+            for (command, shortcut) in shortcuts.list() {
+                let Some(shortcut) = shortcut else { continue };
+                assert_eq!(shortcuts.command(shortcut), Some(command), "{platform:?}");
+            }
         }
     }
 
     #[test]
-    fn no_key_is_bound_to_two_commands() {
-        let shortcuts = Shortcuts::default();
-        for key in ShortcutKey::ALL {
-            let holders = ShortcutCommand::ALL
-                .into_iter()
-                .filter(|command| shortcuts.key(*command) == Some(key))
-                .count();
-            assert!(holders <= 1, "{key:?} is bound to {holders} commands");
-        }
-    }
-
-    #[test]
-    fn binding_a_held_key_takes_it_off_the_previous_command() {
+    fn binding_a_held_shortcut_takes_it_off_the_previous_command() {
+        let escape = bare(Key::Escape);
         let mut shortcuts = Shortcuts::default();
-        shortcuts.bind(ShortcutCommand::DeleteSelection, Some(ShortcutKey::Escape));
-        assert_eq!(shortcuts.key(ShortcutCommand::CancelCommand), None);
+        shortcuts.bind(ShortcutCommand::DeleteSelection, Some(escape));
+        assert_eq!(shortcuts.shortcut(ShortcutCommand::CancelCommand), None);
         assert_eq!(
-            shortcuts.command(ShortcutKey::Escape),
+            shortcuts.command(escape),
             Some(ShortcutCommand::DeleteSelection)
         );
+    }
+
+    /// An explicit unbind is an override, not an absence — otherwise it would read as "never
+    /// touched" and the built-in would come straight back.
+    #[test]
+    fn an_explicit_unbind_survives_and_reset_undoes_it() {
+        let mut shortcuts = Shortcuts::default();
+        shortcuts.bind(ShortcutCommand::CancelCommand, None);
+        assert_eq!(shortcuts.shortcut(ShortcutCommand::CancelCommand), None);
+        assert_eq!(shortcuts.overrides().count(), 1);
+        shortcuts.reset(ShortcutCommand::CancelCommand);
+        assert_eq!(
+            shortcuts.shortcut(ShortcutCommand::CancelCommand),
+            Some(bare(Key::Escape))
+        );
+        assert_eq!(shortcuts.overrides().count(), 0);
+    }
+
+    /// Only what the user changed is written down, so a default improved later still reaches them.
+    #[test]
+    fn an_untouched_set_has_nothing_to_persist() {
+        assert_eq!(Shortcuts::default().overrides().count(), 0);
+    }
+
+    #[test]
+    fn a_chord_outranks_the_bare_key_it_contains() {
+        assert!(specificity(ctrl_shift(Key::P)) > specificity(bare(Key::P)));
     }
 
     #[test]

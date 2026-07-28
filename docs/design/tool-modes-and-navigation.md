@@ -232,6 +232,16 @@ Every menu row shows its **keybind flushed right**, in the weak tone. A row the 
 reach leaves the column empty rather than inventing a binding, so the menu doubles as the honest
 list of what is bound.
 
+Nothing here spells a key, though. `ui::shortcuts` is the one place a binding is written down: a
+menu row is handed a **command** and looks the binding up, and the shell asks which commands the
+frame's presses meant. A hardcoded shortcut in a row is a type error, and a `KeyCode` named
+anywhere in the shell is a clippy failure. The structure follows Blender and Krita — keyed by
+command, the default declared beside the command's own label, the user's changes stored as a sparse
+override, and a whole alternative set treated as a first-class swappable thing. That last one is
+how the **per-platform** sets work: macOS and Windows/Linux each get their own binding per command,
+decided on its own merits rather than by substituting ⌘ for Ctrl. Return and Escape land the same
+on both because they genuinely are the same; the repro dump is `Ctrl+Shift+P` and `⌘⇧P`.
+
 ### The rest
 
 - **Pan:** middle-drag (unchanged).

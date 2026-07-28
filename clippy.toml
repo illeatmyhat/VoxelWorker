@@ -13,7 +13,8 @@ disallowed-methods = [
 
 # Keybinds must be declared in the ui::shortcuts settings and dispatched by COMMAND; a `KeyCode`
 # named anywhere else is a second copy of a binding, free to drift from the one the menu shows.
-# The single winit translation table (src/windowed/keys.rs) opts out.
+# There is no opt-out: presses are read out of egui's input, which egui-winit has already
+# translated, so nothing in the shell has cause to name a winit key at all.
 disallowed-types = [
-    { path = "winit::keyboard::KeyCode", reason = "bind the command in ui::shortcuts and dispatch through Shortcuts::command; src/windowed/keys.rs is the only translation table" },
+    { path = "winit::keyboard::KeyCode", reason = "bind the command in ui::shortcuts and dispatch through Shortcuts::consume — presses come from egui's input, not raw winit" },
 ]

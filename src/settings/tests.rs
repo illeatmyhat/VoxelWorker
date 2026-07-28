@@ -18,7 +18,13 @@ fn config_round_trips_through_json() {
         // Off its defaults, so a round-trip that dropped the bindings fails here.
         shortcuts: {
             let mut shortcuts = Shortcuts::default();
-            shortcuts.bind(ShortcutCommand::DeleteSelection, Some(ShortcutKey::Delete));
+            shortcuts.bind(
+                ShortcutCommand::DeleteSelection,
+                Some(egui::KeyboardShortcut::new(
+                    egui::Modifiers::NONE,
+                    egui::Key::Delete,
+                )),
+            );
             ShortcutsConfig::from_shortcuts(&shortcuts)
         },
         scene: None,

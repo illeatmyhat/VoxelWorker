@@ -164,7 +164,7 @@ fn context_menu_row(
         font.clone(),
         color,
     );
-    if let Some(shortcut) = shortcuts.display(command) {
+    if let Some(shortcut) = shortcuts.display(ui.ctx(), command) {
         // Always the weak tone, even on the warn-tinted row: the binding is a reminder, not a
         // second thing to act on, and matching the label's colour would make it read as one.
         ui.painter().text(

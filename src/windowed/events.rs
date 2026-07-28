@@ -51,55 +51,9 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(new_size) => {
                 state.resize(new_size.width, new_size.height);
             }
-            // Keyboard commands, dispatched through the `ui::shortcuts` settings: the press is
-            // translated to a bindable key, the settings say which COMMAND that key means, and
-            // only then does anything happen. No handler names a key, so a rebind moves one
-            // settings entry and both the menu's right-hand column and this dispatch follow.
-            // Ignored while egui has focus, so none of it fires from a text field.
-            WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } if !egui_consumed && key_event.state == ElementState::Pressed => {
-                let command = match key_event.physical_key {
-                    winit::keyboard::PhysicalKey::Code(code) => super::keys::shortcut_key(code)
-                        .and_then(|key| state.panel_state.shortcuts.command(key)),
-                    winit::keyboard::PhysicalKey::Unidentified(_) => None,
-                };
-                match command {
-                    // A press no command claims.
-                    None => {}
-                    // Dump the scene + LIVE camera to the repro file (`shot --from-config`), so an
-                    // exact live-view bug reproduces headlessly.
-                    Some(ui::shortcuts::ShortcutCommand::ExportRepro) => state.export_repro(),
-                    // ADR 0032: Cancel is a priority chain, not one act. An armed orbit-center
-                    // placement outranks the tool ghost — it is what the cursor is carrying, so it
-                    // goes back first and leaves any armed tool alone. With nothing to put back it
-                    // CANCELS the running modal command (the same act the viewport menu's Cancel
-                    // row performs); with no command running it disarms the tool ghost (ADR 0022).
-                    // Leaving never writes the DEFAULT orbit type: a session override dies with
-                    // the mode rather than outliving it.
-                    Some(ui::shortcuts::ShortcutCommand::CancelCommand) => {
-                        if !state.cancel_orbit_center_placement()
-                            && !state.end_modal_command(ui::panel::ModeCommand::Cancel)
-                        {
-                            state.disarm_placement();
-                        }
-                    }
-                    // The other half of the universal pair. It does nothing when no command is
-                    // running — Accept is not a general viewport verb.
-                    Some(ui::shortcuts::ShortcutCommand::AcceptCommand) => {
-                        state.end_modal_command(ui::panel::ModeCommand::Accept);
-                    }
-                    // Listed in the settings so they can BE bound, but reachable only from the
-                    // viewport menu today. Unbound by default, so this arm is unreachable until
-                    // somebody binds one — at which point it is the missing half, not dead code.
-                    Some(
-                        ui::shortcuts::ShortcutCommand::DeleteSelection
-                        | ui::shortcuts::ShortcutCommand::PlaceOrbitCenter
-                        | ui::shortcuts::ShortcutCommand::ResetOrbitCenter
-                        | ui::shortcuts::ShortcutCommand::EnterConstrainedOrbit,
-                    ) => {}
-                }
-            }
+            // No keyboard arm here. Presses are read out of egui's own input after the pass
+            // (`run_shortcut_commands`), so a focused text field eats its keys first and the
+            // dispatch never names a `KeyCode` — see `ui::shortcuts`.
             WindowEvent::MouseInput {
                 state: button_state,
                 button: MouseButton::Left,

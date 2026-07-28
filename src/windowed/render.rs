@@ -378,6 +378,9 @@ impl WindowedState {
         if let Some(command) = prepared.panel_response.mode_command {
             self.end_modal_command(command);
         }
+        // The keyboard half of the same doors. Read AFTER the pass, so a focused text field has
+        // already eaten its own keys.
+        self.run_shortcut_commands();
         // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
         // re-resolves the volume and records ONE coalesced command in the open group. Uses
         // this frame's viewport (from `prepared`) to build the cursor→plane ray; its effect
@@ -1317,6 +1320,54 @@ impl WindowedState {
         self.orbiting_in_orbit_mode = false;
         self.orbit_mode_recenter_press = false;
         true
+    }
+
+    /// Run whatever the frame's key presses were bound to (`ui::shortcuts`).
+    ///
+    /// No handler here names a key. The settings say which command each binding holds, egui's
+    /// `consume_shortcut` says which of them fired, and this match says what each one DOES — so a
+    /// rebind moves one settings entry and both the menu's right-hand column and this dispatch
+    /// follow it. Called after the egui pass, which is what makes a focused text field swallow its
+    /// own Escape instead of cancelling the running viewport command.
+    fn run_shortcut_commands(&mut self) {
+        for command in self
+            .panel_state
+            .shortcuts
+            .clone()
+            .consume(&self.egui_bridge.context)
+        {
+            match command {
+                // Dump the scene + LIVE camera to the repro file (`shot --from-config`), so an
+                // exact live-view bug reproduces headlessly.
+                ui::shortcuts::ShortcutCommand::ExportRepro => self.export_repro(),
+                // ADR 0032: Cancel is a priority chain, not one act. An armed orbit-center
+                // placement outranks the tool ghost — it is what the cursor is carrying, so it
+                // goes back first and leaves any armed tool alone. With nothing to put back it
+                // CANCELS the running modal command (the same act the viewport menu's Cancel row
+                // performs); with no command running it disarms the tool ghost (ADR 0022).
+                // Leaving never writes the DEFAULT orbit type: a session override dies with the
+                // mode rather than outliving it.
+                ui::shortcuts::ShortcutCommand::CancelCommand => {
+                    if !self.cancel_orbit_center_placement()
+                        && !self.end_modal_command(ui::panel::ModeCommand::Cancel)
+                    {
+                        self.disarm_placement();
+                    }
+                }
+                // The other half of the universal pair. It does nothing when no command is
+                // running — Accept is not a general viewport verb.
+                ui::shortcuts::ShortcutCommand::AcceptCommand => {
+                    self.end_modal_command(ui::panel::ModeCommand::Accept);
+                }
+                // Listed in the settings so they CAN be bound, but reachable only from the
+                // viewport menu today. Unbound by default, so these are unreachable until
+                // somebody binds one — at which point this is the missing half, not dead code.
+                ui::shortcuts::ShortcutCommand::DeleteSelection
+                | ui::shortcuts::ShortcutCommand::PlaceOrbitCenter
+                | ui::shortcuts::ShortcutCommand::ResetOrbitCenter
+                | ui::shortcuts::ShortcutCommand::EnterConstrainedOrbit => {}
+            }
+        }
     }
 
     /// Where the orbit-center gizmo draws, and whether it draws at all: the armed preview

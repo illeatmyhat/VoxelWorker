@@ -25,7 +25,7 @@ use ui::panel::{
     LayerRange, OrbitMode, PanelState, PlacementGhost, PlacementSnap, Selection, SelectionTarget,
     SignalStackState, SketchTool, ViewMode,
 };
-use ui::shortcuts::{ShortcutCommand, ShortcutKey, Shortcuts};
+use ui::shortcuts::{ShortcutCommand, Shortcuts};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
@@ -162,50 +162,41 @@ pub enum ShortcutCommandConfig {
     ExportRepro,
 }
 
-/// The serde-able mirror of one [`ShortcutKey`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ShortcutKeyConfig {
-    /// [`ShortcutKey::Return`].
-    Return,
-    /// [`ShortcutKey::Escape`].
-    Escape,
-    /// [`ShortcutKey::Delete`].
-    Delete,
-    /// [`ShortcutKey::Backspace`].
-    Backspace,
-    /// [`ShortcutKey::F9`].
-    F9,
-}
-
-/// One row of the keyboard-shortcut settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// One overridden binding.
+///
+/// The binding needs no mirror of its own: [`egui::KeyboardShortcut`] is serde-able (the shell
+/// turns on egui's `serde` feature), so the key and its modifiers persist as egui spells them and
+/// there is no second key enum to keep in step. Only the COMMAND inventory is ours to mirror.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShortcutBindingConfig {
     /// The command the row is about.
     pub command: ShortcutCommandConfig,
-    /// Its key, or `None` for a command the keyboard cannot reach.
+    /// Its new binding. `None` is an explicit **unbind**, which is a different thing from the row
+    /// being absent — absent means "never changed", and the built-in applies.
     #[serde(default)]
-    pub key: Option<ShortcutKeyConfig>,
+    pub shortcut: Option<egui::KeyboardShortcut>,
 }
 
 /// The serde-able mirror of the [`Shortcuts`] settings (ADR 0016: `ui` links no serde).
 ///
-/// Persisted as the whole list rather than the diff from the defaults, so the file reads as the
-/// same inventory the settings UI shows — including the commands nothing is bound to, which are
-/// the ones somebody scanning the file most wants to see.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// **Only the overrides are written**, the way Blender persists a keymap diff rather than a copy.
+/// A full snapshot would freeze today's built-ins into every existing config, so a binding improved
+/// next year would reach only the people who had never opened the settings. The complete inventory
+/// is never in the file because it is never in doubt — it comes from `ShortcutCommand::ALL`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShortcutsConfig {
-    /// One row per command, in inventory order.
+    /// The changed bindings, in command order. Empty for a user who has rebound nothing.
     #[serde(default)]
-    pub bindings: Vec<ShortcutBindingConfig>,
+    pub overrides: Vec<ShortcutBindingConfig>,
 }
 
 impl ShortcutsConfig {
     /// Capture the config mirror from the live [`Shortcuts`].
     pub fn from_shortcuts(shortcuts: &Shortcuts) -> Self {
         Self {
-            bindings: shortcuts
-                .list()
-                .map(|(command, key)| ShortcutBindingConfig {
+            overrides: shortcuts
+                .overrides()
+                .map(|(command, shortcut)| ShortcutBindingConfig {
                     command: match command {
                         ShortcutCommand::AcceptCommand => ShortcutCommandConfig::AcceptCommand,
                         ShortcutCommand::CancelCommand => ShortcutCommandConfig::CancelCommand,
@@ -221,13 +212,7 @@ impl ShortcutsConfig {
                         }
                         ShortcutCommand::ExportRepro => ShortcutCommandConfig::ExportRepro,
                     },
-                    key: key.map(|key| match key {
-                        ShortcutKey::Return => ShortcutKeyConfig::Return,
-                        ShortcutKey::Escape => ShortcutKeyConfig::Escape,
-                        ShortcutKey::Delete => ShortcutKeyConfig::Delete,
-                        ShortcutKey::Backspace => ShortcutKeyConfig::Backspace,
-                        ShortcutKey::F9 => ShortcutKeyConfig::F9,
-                    }),
+                    shortcut,
                 })
                 .collect(),
         }
@@ -235,12 +220,14 @@ impl ShortcutsConfig {
 
     /// Rebuild the runtime [`Shortcuts`] this config describes.
     ///
-    /// Starts from the built-in bindings, so a command the file predates keeps its default rather
-    /// than silently arriving unbound. Applying through `bind` also means a stored file that bound
-    /// one key to two commands cannot produce two handlers racing for the press.
+    /// Starts from the host platform's built-ins and lays the overrides on top, so a command the
+    /// file predates keeps its default rather than silently arriving unbound — and a config
+    /// carried from a Windows machine to a Mac picks up the Mac set for everything it did not
+    /// explicitly rebind. Applying through `bind` also means a stored file that put one chord on
+    /// two commands cannot produce two handlers racing for the press.
     pub fn to_shortcuts(&self) -> Shortcuts {
         let mut shortcuts = Shortcuts::default();
-        for binding in &self.bindings {
+        for binding in &self.overrides {
             let command = match binding.command {
                 ShortcutCommandConfig::AcceptCommand => ShortcutCommand::AcceptCommand,
                 ShortcutCommandConfig::CancelCommand => ShortcutCommand::CancelCommand,
@@ -252,26 +239,9 @@ impl ShortcutsConfig {
                 }
                 ShortcutCommandConfig::ExportRepro => ShortcutCommand::ExportRepro,
             };
-            shortcuts.bind(
-                command,
-                binding.key.map(|key| match key {
-                    ShortcutKeyConfig::Return => ShortcutKey::Return,
-                    ShortcutKeyConfig::Escape => ShortcutKey::Escape,
-                    ShortcutKeyConfig::Delete => ShortcutKey::Delete,
-                    ShortcutKeyConfig::Backspace => ShortcutKey::Backspace,
-                    ShortcutKeyConfig::F9 => ShortcutKey::F9,
-                }),
-            );
+            shortcuts.bind(command, binding.shortcut);
         }
         shortcuts
-    }
-}
-
-impl Default for ShortcutsConfig {
-    /// The full inventory at its built-in bindings — not an empty list, so a fresh config file
-    /// and a captured one are the same shape.
-    fn default() -> Self {
-        Self::from_shortcuts(&Shortcuts::default())
     }
 }
 
