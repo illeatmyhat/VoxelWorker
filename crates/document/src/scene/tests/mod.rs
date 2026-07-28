@@ -11,6 +11,7 @@ mod intersect;
 mod leaf_origin;
 mod operand_body;
 mod pick;
+mod pick_net;
 mod placement;
 mod resolve;
 mod sealed_scopes;

@@ -1,7 +1,7 @@
 //! Which node owns a voxel (ADR 0032): the picked-node resolver
 //! ([`Scene::picked_node_at_voxel`]), the single-cell scoped fold it runs
 //! ([`fold_owner_into`]), and the per-leaf coverage test that fold asks
-//! ([`leaf_covers_local_point`]).
+//! ([`leaf_covers_cell`]).
 
 use super::gather::{dense_leaf_placement, leaf_is_out_of_phase};
 use voxel_core::spatial_index::VoxelAabb;
@@ -50,8 +50,13 @@ impl Scene {
 
         for leaf in &leaves {
             sync_owner_scope_stack(&mut open_scopes, &mut root_owner, &leaf.scope_path);
-            let local = leaf_local_point(leaf, absolute_voxel, voxels_per_block);
-            let covered = leaf_covers_local_point(leaf, local, voxels_per_block);
+            let placement = leaf_placement(leaf, voxels_per_block);
+            let local = placement
+                .local_of_abs_cell_centre(absolute_voxel)
+                .voxels()
+                .to_array();
+            let covered =
+                leaf_covers_cell(leaf, &placement, absolute_voxel, local, voxels_per_block);
             let owner = match open_scopes.last_mut() {
                 Some((_, scope_owner)) => scope_owner,
                 None => &mut root_owner,
@@ -74,9 +79,11 @@ impl Scene {
                         *owner = None;
                     }
                 }
-                // A scope holding an Emboss node pre-composes into one CompositeProducer
-                // before it reaches a visitor, so no Emboss leaf arrives here. The dense
-                // fold's matching arm says the same.
+                // A scope holding an Emboss node normally pre-composes into one
+                // CompositeProducer before it reaches a visitor. One that could NOT compose
+                // still arrives here — the dense fold's matching arm prints and skips it — so
+                // this skips too, and both agree that an unevaluable emboss stays visible as
+                // missing geometry instead of silently resolving as some other operation.
                 CombineOp::Emboss { .. } => {}
             }
         }
@@ -142,7 +149,8 @@ fn fold_owner_into(
                 *parent = None;
             }
         }
-        // Pre-composed before it reaches the fold, exactly as in the dense resolvers.
+        // Skipped rather than folded, exactly as the dense resolvers skip a scope close whose
+        // siblings could not be composed.
         CombineOp::Emboss { .. } => {}
     }
 }
@@ -160,33 +168,45 @@ fn leaf_origin_at_local_point(
         .unwrap_or(leaf.origin)
 }
 
-/// Whether `leaf` occupies the cell whose centre maps to `local` in the leaf's own frame.
+/// Whether `leaf` occupies `absolute_voxel`, whose centre maps to `local` in the leaf's own
+/// frame. Each branch below answers exactly as the emit path that owns that case does — and
+/// crucially, each takes ITS OWN bound, because the two paths are bounded differently.
 ///
-/// The caller maps through substrate's ONE placement affine, so an axis-aligned TURN is
-/// honoured — the display emits the turned cells (ADR 0026/0027), and a pick that tested the
-/// unturned footprint would be dead on the visible body and live in the air beside it. What
-/// remains here is only how the mapped point is tested:
-/// - an out-of-phase FIELD leaf (a genuine rotation or a sub-voxel seat) lands between
-///   lattice cells, so its field is sampled at the mapped point — the same test
-///   `gather_placed_field_into_grid` applies per cell;
-/// - every other leaf is a lattice bijection, so the mapped point is an exact cell centre
-///   and a one-cell `resolve_into` window answers as the forward emit does. A fieldless
-///   out-of-phase body falls through to that rather than being declined, matching the
-///   resolvers, which have no guard either.
+/// **Out of phase** (a genuine rotation or a sub-voxel seat): the field is sampled at the
+/// mapped point, bounded by the placed WORLD box — the same cells
+/// `gather_placed_field_into_grid` iterates, and the live classifier's
+/// `gather_rotated_leaf_into_region` applies no bound of its own beyond the blocks it is
+/// handed. The local `[0, full_dim)` box is NOT the same bound: a slid or turned body's
+/// outermost cell centre can map exactly onto `full_dim` and still be on the surface, so
+/// testing the local box would declare a stamped cell empty — dead clicks along one face of
+/// every sub-voxel-seated body, and a cutter that fails to carve ownership at its own rim.
 ///
-/// A point outside the producer's own `[0, full_dim)` box is rejected before either test:
-/// both resolvers bound a leaf's emission by that box (the gather through
-/// `LeafPlacement::world_aabb`, the forward emit by clamping its window), so a field that
-/// still reads negative out there emits nothing and must not pick.
-fn leaf_covers_local_point(leaf: &LeafProducer, local: [f32; 3], voxels_per_block: u32) -> bool {
+/// **In phase**: a lattice bijection, so the mapped point is an exact cell centre and a
+/// one-cell `resolve_into` window answers as the forward emit does. Here the producer's own
+/// `[0, full_dim)` grid IS the bound, because that is what the forward stamp resolves and
+/// translates. A fieldless out-of-phase body falls through to this rather than being declined,
+/// matching the resolvers, which have no guard either.
+fn leaf_covers_cell(
+    leaf: &LeafProducer,
+    placement: &substrate::spatial::LeafPlacement,
+    absolute_voxel: [i64; 3],
+    local: [f32; 3],
+    voxels_per_block: u32,
+) -> bool {
+    if leaf_is_out_of_phase(leaf.rotation, leaf.offset_local_voxels) {
+        if let Some(field) = leaf.producer.as_field() {
+            let (world_min, world_max) = placement.world_aabb();
+            if (0..3).any(|axis| {
+                absolute_voxel[axis] < world_min[axis] || absolute_voxel[axis] >= world_max[axis]
+            }) {
+                return false;
+            }
+            return field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL;
+        }
+    }
     let full_dimensions = leaf.producer.full_dimensions(voxels_per_block);
     if (0..3).any(|axis| local[axis] < 0.0 || local[axis] >= full_dimensions[axis] as f32) {
         return false;
-    }
-    if leaf_is_out_of_phase(leaf.rotation, leaf.offset_local_voxels) {
-        if let Some(field) = leaf.producer.as_field() {
-            return field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL;
-        }
     }
     let local_index: [i64; 3] = std::array::from_fn(|axis| local[axis].floor() as i64);
     let mut cell = VoxelGrid::new([0, 0, 0]);
@@ -201,15 +221,10 @@ fn leaf_covers_local_point(leaf: &LeafProducer, local: [f32; 3], voxels_per_bloc
     !cell.occupied.is_empty()
 }
 
-/// The absolute cell's centre in the leaf's own `[0, full_dim)` voxel frame, through the
-/// leaf's continuous world↔local affine. Built from the already-outset-adjusted low corner,
-/// so no dilation is re-applied here; the rebase happens in i64 before any f32 rotation, so
-/// a leaf placed millions of voxels out keeps full sub-voxel precision (ADR 0008).
-fn leaf_local_point(
-    leaf: &LeafProducer,
-    absolute_voxel: [i64; 3],
-    voxels_per_block: u32,
-) -> [f32; 3] {
+/// The leaf's continuous world↔local affine, built from the already-outset-adjusted low
+/// corner so no dilation is re-applied here. The rebase happens in i64 before any f32
+/// rotation, so a leaf placed millions of voxels out keeps full sub-voxel precision (ADR 0008).
+fn leaf_placement(leaf: &LeafProducer, voxels_per_block: u32) -> substrate::spatial::LeafPlacement {
     dense_leaf_placement(
         leaf.rotation,
         leaf.offset_local_voxels,
@@ -217,7 +232,4 @@ fn leaf_local_point(
         leaf.producer.as_ref(),
         voxels_per_block,
     )
-    .local_of_abs_cell_centre(absolute_voxel)
-    .voxels()
-    .to_array()
 }

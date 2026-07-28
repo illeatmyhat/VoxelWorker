@@ -25,16 +25,20 @@
 //!    exactly the "occupancy drifts at a sub-voxel/off-block/rotated seat" bug. This is the
 //!    GREEN net that would have caught the classifier-vs-resolve half of the session's bugs.
 //!
-//! 2. **Two-layer vs the dense oracle**. Where the two SHOULD agree — integer offsets
-//!    (block-aligned AND off-block), identity rotation, zero local slide — a normal green
-//!    test ([`two_layer_matches_dense_for_integer_placements`]) pins it. Where the dense
-//!    oracle is KNOWN-BLIND — it drops rotation and `offset_local_voxels` entirely (the
-//!    deferred "Step 2": `Scene::resolve_region` reads `_rotation` / `_offset_local_voxels`
-//!    and ignores them) — the comparison is parked in an `#[ignore]`d test
-//!    ([`two_layer_matches_dense_for_rotated_and_fractional_placements`]). That ignored test
-//!    is a documented **red-in-waiting**: it fails today because the dense reference has not
-//!    yet learned the ADR 0027 affine, and it turns green (delete the `#[ignore]`) the moment
-//!    Step 2 teaches the dense oracle to apply rotation + the fractional local offset.
+//! 2. **Two-layer vs the dense oracle**. Where the two agree — integer offsets (block-aligned
+//!    AND off-block), identity rotation, zero local slide — a normal green test
+//!    ([`two_layer_matches_dense_for_integer_placements`]) pins it. The rotated / fractional
+//!    comparison ([`two_layer_matches_dense_for_rotated_and_fractional_placements`]) was once
+//!    parked `#[ignore]`d as a red-in-waiting, because the dense oracle dropped rotation and
+//!    `offset_local_voxels` outright; ADR 0027 "Step 2" taught it the affine (both routes now
+//!    fold through the shared `LeafPlacement`), so that test runs green and unignored.
+//!
+//!    One narrower blindness survives and nothing here covers it: an AXIS-ALIGNED turn on a
+//!    whole-voxel seat is classified IN PHASE (`substrate::spatial::is_in_phase`), so
+//!    `Scene::resolve_region` emits it through `stamp_producer` — a pure translation of the
+//!    producer's own unrotated grid — and stamps the UNTURNED footprint, while `leaf_affine`
+//!    here honours the turn. Measured: a 4x2x2-block box quarter-turned about Z reports a
+//!    placed extent of 16x32x16 voxels and a dense-oracle span of 32x16x16.
 //!
 //! Everything here compares occupancy at the **CPU data level** (sets of occupied absolute
 //! voxel cells), so no GPU is involved.
