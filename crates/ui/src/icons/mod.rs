@@ -457,27 +457,38 @@ impl<'a> IconPainter<'a> {
         ]);
     }
 
-    /// Stroke an arc and put an [`arrowhead`](Self::arrowhead) on the `to` end of it, aimed along
-    /// the direction of travel — the set's "this turns" mark, as opposed to a bare arc, which is
+    /// Stroke a [`TurningArrow`] — the set's "this turns" mark, as opposed to a bare arc, which is
     /// only a curve.
     ///
-    /// The tip and its bearing are both derived from the same arc parameters that drew the curve,
-    /// so the head cannot drift off the path when the arc is retuned. `head` is the arrowhead's
-    /// `(trail, spread)`.
-    pub fn arrowed_arc(
-        &self,
-        center: (f32, f32),
-        rx: f32,
-        ry: f32,
-        from: f32,
-        to: f32,
-        head: (f32, f32),
-    ) {
-        self.arc(center, rx, ry, from, to);
-        let tip = (center.0 + rx * to.cos(), center.1 + ry * to.sin());
+    /// The tip and its bearing are derived from the same parameters that drew the curve, so the
+    /// head cannot drift off the path when the arc is retuned.
+    pub fn turning_arrow(&self, arrow: TurningArrow) {
+        let (center, (rx, ry), (from, to)) = (arrow.center, arrow.radii, arrow.sweep);
+        let tilt = (arrow.tilt.cos(), arrow.tilt.sin());
+        let tilted = |point: (f32, f32)| {
+            let (dx, dy) = (point.0 - center.0, point.1 - center.1);
+            (
+                center.0 + dx * tilt.0 - dy * tilt.1,
+                center.1 + dx * tilt.1 + dy * tilt.0,
+            )
+        };
+
+        let path: Vec<(f32, f32)> = self
+            .arc_points(center, rx, ry, from, to)
+            .into_iter()
+            .map(tilted)
+            .collect();
+        self.line(&path);
+
         let winding = if to >= from { 1.0 } else { -1.0 };
-        let heading = (-rx * to.sin() * winding, ry * to.cos() * winding);
-        self.arrowhead(tip, heading, head.0, head.1);
+        let travel = (-rx * to.sin() * winding, ry * to.cos() * winding);
+        // The bearing is a direction, not a point, so it rotates without the centre offset.
+        let heading = (
+            travel.0 * tilt.0 - travel.1 * tilt.1,
+            travel.0 * tilt.1 + travel.1 * tilt.0,
+        );
+        let tip = tilted((center.0 + rx * to.cos(), center.1 + ry * to.sin()));
+        self.arrowhead(tip, heading, arrow.head.0, arrow.head.1);
     }
 
     /// Sample an arc into grid-space points.
@@ -500,6 +511,26 @@ impl<'a> IconPainter<'a> {
             })
             .collect()
     }
+}
+
+/// One turning arrow: an elliptical arc with an arrowhead on the end it travels toward.
+///
+/// The ellipse is a circle seen at an angle — an orbit drawn in perspective rather than flat-on —
+/// and `tilt` is which way that circle's plane leans. Both are what make a curved arrow read as a
+/// path round something in space instead of a flat swirl on the page.
+#[derive(Clone, Copy)]
+pub struct TurningArrow {
+    /// Grid centre of the ellipse the arc is cut from.
+    pub center: (f32, f32),
+    /// The `(x, y)` semi-axes, before the tilt.
+    pub radii: (f32, f32),
+    /// Start and end angle in radians, clockwise from +x with y growing downward. The head goes on
+    /// the end.
+    pub sweep: (f32, f32),
+    /// How far the whole ellipse is rotated about its centre.
+    pub tilt: f32,
+    /// The arrowhead's `(trail, spread)` — see [`IconPainter::arrowhead`].
+    pub head: (f32, f32),
 }
 
 /// Which shelf of the set a glyph belongs to. The grouping is the vocabulary's own, not a

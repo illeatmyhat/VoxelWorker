@@ -1,57 +1,53 @@
-//! `orbit-free` — the trackball: a small cross, and two curved arrows going round it.
+//! `orbit-free` — the trackball: a small cross, and an orbit round each of its arms.
 //!
-//! One arrow drawn twice, half a turn from itself, round a cross. The comparison the eye makes on
-//! the split button's face is [`orbit_constrained`](super::orbit_constrained)'s single rod through
-//! a closed ring against this open pinwheel — because a turntable has an up and a trackball does
-//! not. Both sit on the same radius, so the pair reads as one family.
+//! Two arrows on two different axes, which is the whole content of "free": there is no privileged
+//! up, so no one orbit is the orbit. [`orbit_constrained`](super::orbit_constrained) is the same
+//! drawing with the second orbit taken away and the cross straightened into a single long rod.
+//!
+//! Both paths are ellipses that lean, because a circle round an axis is a circle only when you are
+//! looking straight down that axis — and here there are two axes, so a flat-on circle would have to
+//! be wrong about at least one of them. The two share a lean, so they read as two tracks in one
+//! space rather than two swirls that happen to overlap.
 //!
 //! ## The cross is small, and that is the whole point of it
 //!
-//! It was first drawn at the sibling's length, and at that size it is two long strokes meeting in
-//! the middle and it swamps the box. That is backwards. The cross is not the subject here; it is
-//! the registration mark the arrows are aligned on, and the arrows are the subject. Cut to about a
+//! It was first drawn at a rod's length, and at that size it is two long strokes meeting in the
+//! middle and it swamps the box. That is backwards. The cross is not the subject; it is the
+//! registration mark the orbits are aligned on, and the orbits are the subject. Cut to about a
 //! third of the box it reads as a centre, and the outer band — the only place an arrow can be big
 //! enough to see — comes free.
 //!
 //! ## The cross is upright, and that is a ruling against the reference
 //!
-//! Fusion tips its cross a few degrees, and this mark was drawn that way first: a 16° tip, so that
-//! NEITHER arm claims the vertical the way a constrained orbit's axis does. At 15 pt it failed, and
-//! not marginally. An axis-aligned stroke lands on the pixel grid; a stroke a few degrees off it
-//! resolves as a two-pixel grey smear, so both arms went soft at once. Tipping to a full 45° keeps
-//! them crisp but hands the glyph the `cancel` silhouette, which is not a trade worth making on a
-//! navigation button. So the arms stay on the cardinals, and the two arrows carry the meaning.
-//!
-//! ## Half a turn apart, not a quarter
-//!
-//! The reference puts one small hooked arrow round each arm, and that was drawn: a little loop
-//! wrapping the vertical arm, another wrapping the horizontal. It does not survive, for a reason
-//! that is structural rather than a matter of tuning. Two loops on arms ninety degrees apart are
-//! themselves ninety degrees apart, and a loop needs nearly that much angular room to be legible,
-//! so they meet. Shrinking them until they clear each other makes each one a four-pixel squiggle;
-//! rendered, that is a scribble at every size it was tried at.
-//!
-//! Two big arrows on one radius, half a turn apart, have the opposite property: each is long enough
-//! to read as a curve, and the two are as far from each other as anything in the box can be. The
-//! mark is symmetric under a half turn, so neither arm looks like the main one — which is exactly
-//! what free orbit means.
-//!
-//! The literal "one arrow per axis" is what is given up. What is kept is what reading the mark
-//! depends on: two arrows, each visibly an arrow, going round a centre that has no up.
+//! Fusion tips its cross a few degrees. Drawn that way at 15 pt it failed, and not marginally: an
+//! axis-aligned stroke lands on the pixel grid, and a stroke a few degrees off it resolves as a
+//! two-pixel grey smear, so both arms went soft at once. Tipping to a full 45° keeps them crisp but
+//! hands the glyph the `cancel` silhouette. The lean the reference is asking for lives in the
+//! orbits instead, where a curve is already off-grid everywhere and pays nothing for it.
 
-use super::IconPainter;
+use super::{IconPainter, TurningArrow};
 
-/// Half an arm's length — about a third of the box, and deliberately far short of
-/// [`orbit_constrained`](super::orbit_constrained)'s axis. The cross registers the centre; it is
-/// not the subject, and it must stay well inside the arrows' radius.
-const ARM_HALF_LENGTH: f32 = 3.0;
-/// The arrows' radius — [`orbit_constrained`](super::orbit_constrained)'s ring radius, so the two
-/// marks sit on a common circle and read as one family.
-const ARC_RADIUS: f32 = 5.5;
-const ARC_FROM: f32 = -0.30;
-const ARC_TO: f32 = -2.70;
-const ARROW_TRAIL: f32 = 2.9;
-const ARROW_SPREAD: f32 = 1.6;
+/// Half an arm's length — about a third of the box. The cross registers the centre; it is not the
+/// subject, and it must stay well inside the orbits.
+const ARM_HALF_LENGTH: f32 = 1.9;
+/// The orbit round the upright arm: wide and shallow, seen from a little above.
+/// [`orbit_constrained`](super::orbit_constrained) draws the same one.
+const UPRIGHT_ORBIT_RADII: (f32, f32) = (7.0, 4.3);
+/// The orbit round the flat arm: the same ellipse stood on its end.
+const FLAT_ORBIT_RADII: (f32, f32) = (4.3, 7.0);
+/// The lean both orbits share.
+const ORBIT_TILT: f32 = -0.18;
+/// Each sweep leaves a gap where its own arm passes in front — the top for the upright orbit, the
+/// right flank for the flat one — and the arrowhead ends at the far lip of that gap. The angle is
+/// small because these ellipses are elongated: a quarter of a radian at the narrow end of one is
+/// nearly three units of gap.
+/// Each is centred on where the TILTED path crosses its arm, which is not the parameter's own top
+/// or flank — tilt one and the two part company.
+const UPRIGHT_ORBIT_SWEEP: (f32, f32) = (-1.26, 4.62);
+const FLAT_ORBIT_SWEEP: (f32, f32) = (0.31, 6.20);
+/// The arrowheads: longer and narrower than the sheet's static arrows, because at 15 pt a short
+/// wide chevron with its own curve running past it closes into a blob.
+const ARROW_HEAD: (f32, f32) = (2.6, 1.5);
 
 pub(super) fn draw(g: &IconPainter) {
     let center = (9.0_f32, 9.0_f32);
@@ -66,15 +62,16 @@ pub(super) fn draw(g: &IconPainter) {
         (center.0 + ARM_HALF_LENGTH, center.1),
     ]);
 
-    // One arrow, and its twin half a turn away.
-    for half_turn in [0.0, std::f32::consts::PI] {
-        g.arrowed_arc(
+    for (radii, sweep) in [
+        (UPRIGHT_ORBIT_RADII, UPRIGHT_ORBIT_SWEEP),
+        (FLAT_ORBIT_RADII, FLAT_ORBIT_SWEEP),
+    ] {
+        g.turning_arrow(TurningArrow {
             center,
-            ARC_RADIUS,
-            ARC_RADIUS,
-            ARC_FROM + half_turn,
-            ARC_TO + half_turn,
-            (ARROW_TRAIL, ARROW_SPREAD),
-        );
+            radii,
+            sweep,
+            tilt: ORBIT_TILT,
+            head: ARROW_HEAD,
+        });
     }
 }

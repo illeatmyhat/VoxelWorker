@@ -11,8 +11,12 @@ const RAIL_WIDTH: f32 = 34.0;
 const BUTTON_HEIGHT: f32 = 32.0;
 const RAIL_GAP: f32 = 6.0;
 const GLYPH_BOX: f32 = 18.0;
-/// Width of the orbit-type button's dropdown half. The rest is the face.
-const CARET_WIDTH: f32 = 11.0;
+/// Height of the orbit-type button's dropdown half, which sits BELOW the face rather than beside
+/// it. Taking the strip off the side left the mark an off-centre 23 pt of a 34 pt rail to live in,
+/// and every legibility problem the pair had was really that: a glyph authored for a square box,
+/// judged in a letterbox. The button grows by this much instead, so the face stays a full,
+/// centred, rail-width square and the caret costs the mark nothing.
+const CARET_HEIGHT: f32 = 11.0;
 /// The caret's own glyph box — smaller than [`GLYPH_BOX`], because a chevron is a pointer at the
 /// menu and must not read as a second subject beside the face's mark.
 const CARET_BOX: f32 = 9.0;
@@ -43,9 +47,10 @@ pub enum RailClick {
 /// The number of rail buttons, in the order [`icon_rail`] draws and dispatches them.
 const RAIL_BUTTONS: usize = 4;
 
-/// The full rail height, used to place the readout below the rail.
+/// The full rail height, used to place the readout below the rail. The orbit-type button carries
+/// its caret strip on top of the common button height.
 pub fn rail_height() -> f32 {
-    RAIL_BUTTONS as f32 * BUTTON_HEIGHT
+    RAIL_BUTTONS as f32 * BUTTON_HEIGHT + CARET_HEIGHT
 }
 
 /// The rail's top Y (points) given the cube's bottom edge.
@@ -72,24 +77,24 @@ pub fn orbit_type_button_rect(cube_left: f32, cube_bottom: f32, cube_size: f32) 
             rail.left(),
             rail.top() + ORBIT_TYPE_BUTTON as f32 * BUTTON_HEIGHT,
         ),
-        Vec2::new(RAIL_WIDTH, BUTTON_HEIGHT),
+        Vec2::new(RAIL_WIDTH, BUTTON_HEIGHT + CARET_HEIGHT),
     )
 }
 
-/// Split a rail button into a split button's two halves: `(face, caret)`.
+/// Split a rail button into a split button's two halves: `(face, caret)`, the caret UNDER the face.
 ///
 /// They are separate hit targets and light separately, which is the affordance — a control that
 /// hovers as one block is a button, and a control that hovers in two pieces is a split button. A
 /// hairline between them says the same thing while nothing is hovered.
 fn split_halves(button_rect: Rect) -> (Rect, Rect) {
-    let divider_x = button_rect.right() - CARET_WIDTH;
+    let divider_y = button_rect.bottom() - CARET_HEIGHT;
     (
         Rect::from_min_max(
             button_rect.left_top(),
-            Pos2::new(divider_x, button_rect.bottom()),
+            Pos2::new(button_rect.right(), divider_y),
         ),
         Rect::from_min_max(
-            Pos2::new(divider_x, button_rect.top()),
+            Pos2::new(button_rect.left(), divider_y),
             button_rect.right_bottom(),
         ),
     )
@@ -115,16 +120,19 @@ pub fn icon_rail(
 
     let mut click = None;
     for index in 0..RAIL_BUTTONS {
+        // The orbit-type button is a SPLIT button: a face with a caret strip under it. Every other
+        // button is one target the common height, so its caret half is empty and never hovers.
+        let split = index == ORBIT_TYPE_BUTTON;
         let button_rect = Rect::from_min_size(
             Pos2::new(
                 rail_rect.left(),
                 rail_rect.top() + index as f32 * BUTTON_HEIGHT,
             ),
-            Vec2::new(RAIL_WIDTH, BUTTON_HEIGHT),
+            Vec2::new(
+                RAIL_WIDTH,
+                BUTTON_HEIGHT + if split { CARET_HEIGHT } else { 0.0 },
+            ),
         );
-        // The orbit-type button is a SPLIT button: two hit targets in one row. Every other button
-        // is one target, so its caret half is empty and never hovers.
-        let split = index == ORBIT_TYPE_BUTTON;
         let (face_rect, caret_rect) = if split {
             split_halves(button_rect)
         } else {
@@ -171,7 +179,8 @@ pub fn icon_rail(
         }
         // Lit mode: a 2 px accent inset bar on the leading edge.
         if lit {
-            let bar = Rect::from_min_size(button_rect.left_top(), Vec2::new(2.0, BUTTON_HEIGHT));
+            let bar =
+                Rect::from_min_size(button_rect.left_top(), Vec2::new(2.0, button_rect.height()));
             painter.rect_filled(bar, 0.0, theme::ACCENT);
         }
 
@@ -195,7 +204,7 @@ pub fn icon_rail(
         if split {
             // The divider, then the chevron: the two marks that say "this opens something".
             painter.line_segment(
-                [caret_rect.left_top(), caret_rect.left_bottom()],
+                [caret_rect.left_top(), caret_rect.right_top()],
                 Stroke::new(1.0_f32, theme::RULE),
             );
             Icon::ChevronDown.draw(
