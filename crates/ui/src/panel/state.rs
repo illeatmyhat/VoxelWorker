@@ -558,6 +558,14 @@ pub struct PanelState {
     /// arming is a later slice.
     #[snapshot(session)]
     pub placement_ghost: Option<PlacementGhost>,
+    /// The ARMED primitive's kind, or `None` when nothing is armed — what lights the rail's
+    /// shape cell and shows the `Add <shape>` dialog. NOT [`placement_ghost`](Self::placement_ghost),
+    /// which is `None` whenever the cursor is off a valid drop (including over the rail itself).
+    ///
+    /// **Derived**: the shell refreshes it every frame from its own armed tool (the truth),
+    /// so dropping it costs one recompute and nothing else.
+    #[snapshot(derived)]
+    pub armed_shape: Option<voxel_core::voxel::ShapeKind>,
     /// The armed-tool placement snap settings (owner ruling 2026-07-21): position (no snap /
     /// block / voxel) and orientation (no snap / surface). **Session** state — durable across
     /// adds and relaunch (ADR 0024), edited in the `Add <shape>` dialog, read by
@@ -822,6 +830,12 @@ pub struct PanelResponse {
     /// click), so it rides on the response rather than `intents`. `None` when nothing
     /// was armed this frame.
     pub armed_tool: Option<NodeSpec>,
+    /// The user clicked the rail's ARMED shape cell again this frame → the shell disarms
+    /// the placement flow (the same full disarm Escape and a viewport right-click perform).
+    /// A VIEW action like [`armed_tool`](Self::armed_tool); the two are emitted mutually
+    /// exclusively at the source (the cell reads the armed mirror), and the shell lets an
+    /// explicit disarm win if a future second source ever sets both in one frame.
+    pub disarm_tool: bool,
     /// The sketch node the user asked to **enter sketch mode** on this frame (ADR 0028), via
     /// the inspector's "Edit sketch" button. A VIEW action, NOT a document `Intent` (entering
     /// a mode mutates nothing in the document), so it rides on the response like `focus_node`.

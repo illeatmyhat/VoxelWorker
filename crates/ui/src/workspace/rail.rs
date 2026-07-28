@@ -13,10 +13,8 @@
 //! the treatment the design mock gives `sweep`. It is deliberately not hidden: the shape of
 //! the finished set is information, and a verb that silently appears later reads as a bug.
 
-use document::intent::Intent;
 use document::scene::NodeContent;
 use document::sketch::Operation;
-use document::voxel::SdfShape;
 use voxel_core::voxel::ShapeKind;
 
 use super::{hairline, region_frame, Edge, RAIL_WIDTH};
@@ -38,9 +36,10 @@ const RESERVED_DIM: f32 = 0.35;
 /// The shape set, in the order the design sheet pins it: the authoring atom first, then the
 /// lifts, then the primitives that are sugar over them.
 ///
-/// `Some(kind)` is a shape the document can express today, and clicking it retargets the
-/// selected Tool. `None` is a producer that has a glyph but no reachable intent from here
-/// yet — sketch-family verbs are authored through the inspector, and `sweep` is reserved.
+/// `Some(kind)` is a shape the document can express today, and clicking it ARMS live
+/// placement of that primitive (ADR 0022). `None` is a producer that has a glyph but no
+/// cursor-snap placement yet — sketch-family verbs are authored through "+ Add" and the
+/// inspector, and `sweep` is reserved.
 const SHAPES: &[(Icon, Option<ShapeKind>)] = &[
     (Icon::Sketch, None),
     (Icon::Extrude, None),
@@ -245,22 +244,22 @@ fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved:
     cell.on_hover_text(tip);
 }
 
-/// One shape cell. Clicking an expressible shape retargets the SELECTED Tool node.
-///
-/// The target is read once, up front, and carried into the intent — an edit must never
-/// resolve its own target through the selection at apply time, or it silently retargets when
-/// the selection moves. A pure shape switch emits WITHOUT an auto-frame: re-resolving at the
-/// same size must not move the camera.
+/// One shape cell. Clicking an expressible shape ARMS live placement of that primitive
+/// (ADR 0022) — the same flow as the scene panel's "+ Add" chips: a ghost follows the
+/// cursor and a stationary click drops a node, staying armed for repeats. Clicking the
+/// already-armed cell disarms. The cell is unrelated to the selection (owner ruling
+/// 2026-07-28) and leaves the inspector's mirror alone — the armed spec takes the kind's
+/// own default size at current density/wall/material.
 fn shape_cell(
     ui: &mut egui::Ui,
     icon: Icon,
     kind: Option<ShapeKind>,
-    state: &mut PanelState,
+    state: &PanelState,
     response: &mut PanelResponse,
 ) {
-    let target = state.selection.primary_node_id();
-    let reserved = kind.is_none() || target.is_none();
-    let active = kind.is_some_and(|k| k == state.geometry.shape) && !reserved;
+    let reserved = kind.is_none();
+    // Armed, not selected-node shape: the accent means "this is in your hand".
+    let armed = kind.is_some() && state.armed_shape == kind;
 
     let sense = if reserved {
         egui::Sense::hover()
@@ -268,9 +267,9 @@ fn shape_cell(
         egui::Sense::click()
     };
     let (rect, cell) = ui.allocate_exact_size(egui::vec2(RAIL_WIDTH, CELL_HEIGHT), sense);
-    paint_cell(ui, rect, active, cell.hovered() && !reserved);
+    paint_cell(ui, rect, armed, cell.hovered() && !reserved);
 
-    let color = cell_ink(active, cell.hovered() && !reserved, reserved);
+    let color = cell_ink(armed, cell.hovered() && !reserved, reserved);
     let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TILE_GLYPH));
     // The tile drawing where the noun has one; otherwise its rail twin, which is the
     // designed fallback rather than a missing asset.
@@ -279,19 +278,21 @@ fn shape_cell(
         None => icon.draw(ui.painter(), glyph.shrink(3.0), color),
     }
 
-    let tip = if reserved && kind.is_none() {
+    let tip = if reserved {
         format!("{} — reserved", icon.name())
-    } else if reserved {
-        format!("{} — select a shape node first", icon.name())
+    } else if armed {
+        format!("{} — armed, click to put it down", icon.name())
     } else {
-        icon.name().to_string()
+        format!("{} — click to place", icon.name())
     };
     let cell = cell.on_hover_text(tip);
 
-    if let (true, Some(kind), Some(target)) = (cell.clicked(), kind, target) {
-        state.geometry.shape = kind;
-        let shape = SdfShape::from_geometry(state.geometry.clone());
-        response.emit(Intent::SetShape { target, shape });
+    if let (true, Some(kind)) = (cell.clicked(), kind) {
+        if armed {
+            response.disarm_tool = true;
+        } else {
+            response.armed_tool = Some(crate::panel::tool_node_spec(kind, state));
+        }
     }
 }
 

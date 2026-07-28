@@ -1077,9 +1077,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         loaded_material = Some(material);
     }
 
-    // The armed "Add <shape>" dialog shows when a ghost is armed; read the kind before the
-    // call borrows `panel_state` mutably.
-    let armed_shape = panel_state
+    // The armed "Add <shape>" dialog shows when a ghost is armed. Headless has no shell
+    // armed-tool, so the ghost in the dump IS the armed evidence — seed the mirror from it
+    // (the `--placement-ghost` verification path); otherwise off, so the goldens are unchanged.
+    panel_state.armed_shape = panel_state
         .placement_ghost
         .as_ref()
         .map(|ghost| ghost.shape.kind);
@@ -1108,9 +1109,6 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // the cube itself; the readout is a windowed-only overlay. Keeps every golden
         // diff to the two cube corners.
         None,
-        // The "Add <shape>" dialog shows when a ghost is armed (the `--placement-ghost`
-        // headless verification path); otherwise off, so the goldens are unchanged.
-        armed_shape,
         // ADR 0028 (#94): the headless capture computes no live vertex handles (sketch
         // authoring is a windowed-only interaction); the goldens stay handle-free.
         &[],

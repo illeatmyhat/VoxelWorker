@@ -192,7 +192,7 @@ pub(super) fn build_node_list_section(
 /// kind squashed to the current slab. Density, wall, and material still come from the
 /// current state so it renders immediately (ADR 0003 Phase C C4a). The spec's `into_node`
 /// names the node after the shape kind.
-fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
+pub(crate) fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
     NodeSpec::Tool {
         // `from_blocks` applies the per-kind default (in blocks) at the current density,
         // retaining whole-block measurements and the ≥1 clamp in one owner.

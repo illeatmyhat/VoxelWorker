@@ -148,6 +148,12 @@ impl WindowedState {
         // Read before the call: `run_egui_frame` borrows `self` mutably.
         let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
         let orbit_reticle = self.orbit_reticle_visible();
+        // Refresh the armed-shape mirror from the shell's armed tool (the truth) — the one
+        // reader path the rail's shape cells and the `Add <shape>` dialog share.
+        self.panel_state.armed_shape = self.armed_tool.as_ref().and_then(|spec| match spec {
+            document::intent::NodeSpec::Tool { shape, .. } => Some(shape.kind),
+            _ => None,
+        });
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -171,11 +177,6 @@ impl WindowedState {
                 self.hovered_cube_zone
                     .and_then(camera::view_cube_zone_readout)
                     .as_deref(),
-                // The armed primitive's kind → the "Add <shape>" dialog (owner 2026-07-21).
-                self.armed_tool.as_ref().and_then(|spec| match spec {
-                    document::intent::NodeSpec::Tool { shape, .. } => Some(shape.kind),
-                    _ => None,
-                }),
                 // ADR 0028 (#94): the sketch vertex handles, projected LAST frame (the
                 // viewport + camera the projection needs are only known after this call).
                 // A one-frame lag is imperceptible for handle chrome and self-corrects; the
@@ -298,6 +299,12 @@ impl WindowedState {
         // action carried on the response, like `focus_node`, not a document Intent).
         if let Some(spec) = prepared.panel_response.armed_tool.take() {
             self.armed_tool = Some(spec);
+        }
+        // The rail's armed-cell second click. Handled AFTER the adoption above so an explicit
+        // disarm wins if a future second source ever sets both in one frame; the rail itself
+        // emits the two mutually exclusively. Full disarm (ghost + press latch), same as Esc.
+        if prepared.panel_response.disarm_tool {
+            self.disarm_placement();
         }
         // ADR 0032: a clicked row's selection change — a VIEW action on the response, like
         // `armed_tool`. The shell is the single place a click lands on the workspace

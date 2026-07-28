@@ -824,6 +824,9 @@ impl WindowedState {
         self.armed_tool = None;
         self.pending_placement = None;
         self.panel_state.placement_ghost = None;
+        // Cleared here too (not only by the per-frame refresh) so the rail cell and the
+        // dialog unlight the same frame the ghost vanishes.
+        self.panel_state.armed_shape = None;
         self.armed_press = false;
     }
 

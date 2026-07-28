@@ -91,6 +91,10 @@ fn the_escape_hatches_are_exactly_these() {
             ("coordinate_limit_warning", StateCategory::Derived),
             // The camera target, rounded to whole blocks, refreshed each frame.
             ("point_add_position_blocks", StateCategory::Derived),
+            // The shell's armed tool, mirrored each frame so the rail cell and the
+            // `Add <shape>` dialog share one reader path. The armed GHOST is session
+            // state and rides the dump; this is just its kind, recomputed for free.
+            ("armed_shape", StateCategory::Derived),
         ],
         "the set of fields excused from both persistence artifacts changed"
     );

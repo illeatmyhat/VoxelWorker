@@ -663,6 +663,8 @@ impl AppConfig {
                 .placement_ghost
                 .as_ref()
                 .map(PlacementGhostConfig::to_ghost),
+            // Derived: the shell refreshes it every frame from its armed tool.
+            armed_shape: None,
             // ADR 0028: re-enter sketch mode on the same node a mid-edit dump was taken in.
             // Cleared to `None` below if the id no longer resolves in the restored scene, so a
             // stale sketch node can never trap the mode.
