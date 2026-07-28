@@ -238,15 +238,11 @@ struct WindowedState {
     /// Whether the context menu's "place orbit center" is armed — a transient overlay on the
     /// current tool mode, like an armed create tool, never a mode of its own. While armed the
     /// left click commits the placement instead of selecting, and Esc / a right-click drops it.
+    /// While armed there is no preview POINT — the gizmo draws at the cursor and the surface ray
+    /// is cast once, at the click. Nothing is written onto the camera before that click either:
+    /// `camera.orbit_center` is classified, dumpable view state whose contract is that only
+    /// place/reset move it, so an F9 dump can never capture a point the user never committed.
     placing_orbit_center: bool,
-    /// Where the armed placement would land: the surface point under the cursor, refreshed
-    /// every move, `None` while the cursor is over nothing placeable.
-    ///
-    /// The preview is held HERE and not written onto the camera, even though the gizmo draws it
-    /// and the gizmo is the orbit center. `camera.orbit_center` is classified, dumpable view
-    /// state whose contract is that only place/reset move it; a per-mouse-move writer would
-    /// break that law and let an F9 dump capture a point the user never committed.
-    orbit_center_preview: Option<glam::Vec3>,
     /// Last cursor position, for computing drag deltas.
     last_cursor_position: Option<(f64, f64)>,
     /// Where the most recent left-press landed (for view-cube click detection).
@@ -672,7 +668,6 @@ impl WindowedState {
             orbit_type_menu_open: false,
             active_orbit_type: OrbitType::default(),
             placing_orbit_center: false,
-            orbit_center_preview: None,
             last_cursor_position: None,
             press_position: None,
             press_in_view_cube: false,

@@ -19,10 +19,10 @@ fn config_round_trips_through_json() {
         shortcuts: {
             let mut shortcuts = Shortcuts::default();
             shortcuts.bind(
-                ShortcutCommand::DeleteSelection,
+                ShortcutCommand::PlaceOrbitCenter,
                 Some(egui::KeyboardShortcut::new(
                     egui::Modifiers::NONE,
-                    egui::Key::Delete,
+                    egui::Key::F7,
                 )),
             );
             ShortcutsConfig::from_shortcuts(&shortcuts)

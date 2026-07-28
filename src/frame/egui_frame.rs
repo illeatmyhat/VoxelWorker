@@ -361,7 +361,6 @@ pub fn run_egui_frame(
                 menu_pos_px.y / pixels_per_point,
             );
             let context = ui.ctx().clone();
-            let in_sketch = panel_state.sketch_mode.is_some();
             // Delete is enabled only when there is something to remove: an entity picked inside
             // the OPEN sketch, or (normal mode) a picked node. Asking per-sketch, not "is the
             // selection non-empty", so a node picked outside the mode never arms it (ADR 0032).
@@ -428,16 +427,10 @@ pub fn run_egui_frame(
                             delete_enabled,
                             Some(ui::theme::WARN),
                         ) {
-                            if in_sketch {
-                                // The shell owns the selection + the sketch commit path.
-                                panel_response.delete_sketch_selection = true;
-                            } else if let Some(id) = panel_state.selected_node().map(|node| node.id)
-                            {
-                                panel_response.frame_after_apply = true;
-                                panel_response
-                                    .intents
-                                    .push(document::intent::Intent::RemoveNode { target: id });
-                            }
+                            // One flag, not two branches: whether "delete" means sketch entities
+                            // or a node is the shell's call, and it has to be, because the
+                            // keyboard binding for the same command arrives with no menu at all.
+                            panel_response.delete_selection = true;
                             close = true;
                         }
 

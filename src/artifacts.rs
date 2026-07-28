@@ -693,10 +693,10 @@ mod tests {
             shortcuts: {
                 let mut shortcuts = ui::shortcuts::Shortcuts::default();
                 shortcuts.bind(
-                    ui::shortcuts::ShortcutCommand::DeleteSelection,
+                    ui::shortcuts::ShortcutCommand::PlaceOrbitCenter,
                     Some(egui::KeyboardShortcut::new(
                         egui::Modifiers::NONE,
-                        egui::Key::Delete,
+                        egui::Key::F7,
                     )),
                 );
                 crate::settings::ShortcutsConfig::from_shortcuts(&shortcuts)

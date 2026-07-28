@@ -537,10 +537,8 @@ impl ApplicationHandler for App {
                 }
                 state.last_cursor_position = Some(current);
 
-                // An armed orbit-center placement rides the cursor. The center itself moves —
-                // there is no separate ghost — so the gizmo drawn at it IS the thing being
-                // placed. A no-op when nothing is armed.
-                state.refresh_orbit_center_preview();
+                // Nothing to re-aim for an armed orbit-center placement: the gizmo draws at the
+                // cursor, and the ray is cast once, at the click.
 
                 // #13 Step 4: live hover highlight for the chrome arrows. This runs
                 // on every move, so keep it cheap: the chrome zones are pure

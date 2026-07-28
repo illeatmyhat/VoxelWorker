@@ -184,13 +184,19 @@ impl ShortcutCommand {
             Self::AcceptCommand => Some(bare(Key::Enter)),
             Self::CancelCommand => Some(bare(Key::Escape)),
 
+            // The delete verb, and the case the platform law exists for: the KEY differs, not the
+            // modifier. Windows keyboards have a forward-delete and that is the one people press;
+            // no Mac laptop has ever had one, so ⌫ is the delete key there and Delete would be a
+            // binding most Mac users cannot reach.
+            Self::DeleteSelection => match platform {
+                ShortcutPlatform::WindowsAndLinux => Some(bare(Key::Delete)),
+                ShortcutPlatform::MacOs => Some(bare(Key::Backspace)),
+            },
+
             // Unbound on both. These are viewport verbs with no cross-application convention, and
             // one that claimed a letter key would be taking it from every future mode at once.
             // They are listed anyway so they can BE bound — the inventory is the point.
-            Self::DeleteSelection
-            | Self::PlaceOrbitCenter
-            | Self::ResetOrbitCenter
-            | Self::EnterConstrainedOrbit => None,
+            Self::PlaceOrbitCenter | Self::ResetOrbitCenter | Self::EnterConstrainedOrbit => None,
 
             // The repro dump: a developer affordance, so it wants a chord nothing else claims
             // rather than a key a modeller might hit by accident. `Shift` plus the platform's own

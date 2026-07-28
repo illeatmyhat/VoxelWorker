@@ -175,6 +175,12 @@ them is **which mechanisms may move each one**, and nothing else: the orbit math
    its own, so an unplaced or forgotten one is otherwise invisible. It is **continuous**, not
    voxel-snapped: it is a camera quantity with no lattice meaning, and a snapped one visibly
    jumps a cell at a time under the cursor.
+
+   **While armed, the marker sits under the cursor — not on the surface.** It first tracked the
+   raycast hit, which meant every mouse move paid for a full CPU raycast and the marker visibly
+   lagged the pointer. The ray now runs **once, at the click**. The armed marker is a cursor, and a
+   cursor that trails the mouse is broken however accurate it is; the surface point it will land on
+   is the one under it either way.
 2. **Explicit orbit mode → `camera.target`.** Entered by a button in the **display-settings icon
    rail** or the **context menu**. A **targeting reticle** overlays the viewport; **LMB-drag
    orbits about `camera.target`**, and an **LMB-click raycasts a surface and sets `camera.target`
@@ -241,6 +247,13 @@ override, and a whole alternative set treated as a first-class swappable thing. 
 how the **per-platform** sets work: macOS and Windows/Linux each get their own binding per command,
 decided on its own merits rather than by substituting ⌘ for Ctrl. Return and Escape land the same
 on both because they genuinely are the same; the repro dump is `Ctrl+Shift+P` and `⌘⇧P`.
+
+**Delete** is the binding the per-platform law exists for: `Delete` on Windows/Linux, `Backspace`
+(⌫) on macOS, where no laptop has ever had a forward-delete key. The *key* differs, not the
+modifier — no ⌘-for-Ctrl rule produces that. Both reach one implementation, and **what "delete"
+means is the shell's call, not the menu's**: inside a sketch it is the picked entities, outside one
+the picked node. The keyboard path arrives with no menu to have been built in a mode, so the branch
+cannot live where the row is drawn.
 
 ### The rest
 

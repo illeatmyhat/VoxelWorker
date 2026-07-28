@@ -828,12 +828,15 @@ pub struct PanelResponse {
     /// The shell sets [`PanelState::sketch_mode`](PanelState::sketch_mode) to it. `None` when
     /// no enter was requested.
     pub enter_sketch: Option<NodeId>,
-    /// The user chose **Delete** from the general viewport context menu while in sketch mode this
-    /// frame (ADR 0030) → the shell deletes the current sketch selection (points cascade their
-    /// segments) as one edit and clears it. A VIEW action routed through the response (both the
-    /// selection and the commit path live on the shell, not the panel), like
-    /// [`focus_node`](Self::focus_node). `false` when no sketch delete was requested.
-    pub delete_sketch_selection: bool,
+    /// The user chose **Delete** from the general viewport context menu this frame → the shell
+    /// removes what is picked. WHAT that means is the shell's to decide, not the panel's: inside a
+    /// sketch it deletes the picked entities as one edit with points cascading their segments (ADR
+    /// 0030), and outside one it removes the picked node. Routed as a flag rather than an
+    /// `Intent`, because the selection and the sketch commit path both live on the shell — and
+    /// because the keyboard binding for the same command reaches the same door
+    /// (`ui::shortcuts::ShortcutCommand::DeleteSelection`), which a menu-built intent could not.
+    /// `false` when no delete was requested.
+    pub delete_selection: bool,
     /// How the user asked to move the **orbit center** this frame from the general viewport
     /// context menu (`docs/design/tool-modes-and-navigation.md`) — the deliberate act that is
     /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW

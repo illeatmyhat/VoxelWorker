@@ -353,10 +353,11 @@ impl WindowedState {
             self.panel_state.sketch_mode = None;
             self.panel_state.selection.clear_sketch_entities();
         }
-        // ADR 0030: a context-menu Delete in sketch mode removes the current selection as one edit
-        // (queues a SetSketch through `viewport_intents`, gathered just below).
-        if prepared.panel_response.delete_sketch_selection {
-            self.delete_sketch_selection();
+        // The context menu's Delete. Its keyboard binding lands on the same method from
+        // `run_shortcut_commands` below; both queue through `viewport_intents`, gathered just
+        // after.
+        if prepared.panel_response.delete_selection {
+            self.delete_selection();
         }
         // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
         // is not the document (ADR 0022's classification: this is view state).
@@ -1262,30 +1263,25 @@ impl WindowedState {
         }
     }
 
-    /// Arm an orbit-center placement: from here a preview point follows the cursor until a
-    /// click commits it or Esc / a right-click drops it.
+    /// Arm an orbit-center placement: from here the gizmo rides the cursor until a click commits
+    /// it or Esc / a right-click drops it.
     pub(super) fn begin_orbit_center_placement(&mut self) {
         self.placing_orbit_center = true;
-        self.refresh_orbit_center_preview();
-    }
-
-    /// Re-aim the armed placement at the surface under the cursor. A no-op when nothing is
-    /// armed, so the cursor path can call it unconditionally.
-    pub(super) fn refresh_orbit_center_preview(&mut self) {
-        if !self.placing_orbit_center {
-            return;
-        }
-        self.orbit_center_preview = self.surface_point_at(self.last_cursor_position);
     }
 
     /// Commit the armed placement. Returns whether the click was CONSUMED — true while a
     /// placement is armed at all, so a click over nothing keeps the placement armed rather
-    /// than falling through to select something. Only a click with a live preview places.
+    /// than falling through to select something. Only a click that HITS a surface places.
+    ///
+    /// The ray is cast here and nowhere else. It used to run on every `CursorMoved` to keep a
+    /// preview point in step, which put a full CPU pick between the mouse and the frame that
+    /// showed it — the reason the gizmo trailed the cursor on a large scene. It answers one
+    /// question, asked once, at the moment the answer is needed.
     pub(super) fn commit_orbit_center_placement(&mut self) -> bool {
         if !self.placing_orbit_center {
             return false;
         }
-        if let Some(point) = self.orbit_center_preview.take() {
+        if let Some(point) = self.surface_point_at(self.last_cursor_position) {
             self.app_core.camera.place_orbit_center(point);
             self.placing_orbit_center = false;
         }
@@ -1293,9 +1289,8 @@ impl WindowedState {
     }
 
     /// Drop the armed placement, leaving the committed orbit center untouched — nothing to
-    /// restore, because the preview never wrote to it. Returns whether anything was armed.
+    /// restore, because arming never wrote to it. Returns whether anything was armed.
     pub(super) fn cancel_orbit_center_placement(&mut self) -> bool {
-        self.orbit_center_preview = None;
         std::mem::take(&mut self.placing_orbit_center)
     }
 
@@ -1359,25 +1354,27 @@ impl WindowedState {
                 ui::shortcuts::ShortcutCommand::AcceptCommand => {
                     self.end_modal_command(ui::panel::ModeCommand::Accept);
                 }
+                // The same door the menu's Delete row goes through.
+                ui::shortcuts::ShortcutCommand::DeleteSelection => self.delete_selection(),
                 // Listed in the settings so they CAN be bound, but reachable only from the
                 // viewport menu today. Unbound by default, so these are unreachable until
                 // somebody binds one — at which point this is the missing half, not dead code.
-                ui::shortcuts::ShortcutCommand::DeleteSelection
-                | ui::shortcuts::ShortcutCommand::PlaceOrbitCenter
+                ui::shortcuts::ShortcutCommand::PlaceOrbitCenter
                 | ui::shortcuts::ShortcutCommand::ResetOrbitCenter
                 | ui::shortcuts::ShortcutCommand::EnterConstrainedOrbit => {}
             }
         }
     }
 
-    /// Where the orbit-center gizmo draws, and whether it draws at all: the armed preview
-    /// while placing, else the committed center while a Shift+MMB orbit is turning about it.
-    /// `None` the rest of the time — the center is a pivot, not permanent furniture.
+    /// Where the orbit-center gizmo draws in WORLD space, and whether it draws at all: the
+    /// committed center while a Shift+MMB orbit turns about it. `None` the rest of the time — the
+    /// center is a pivot, not permanent furniture.
+    ///
+    /// An armed placement has no world point to answer with, by design: it draws at the cursor
+    /// ([`orbit_center_marker`](Self::orbit_center_marker)) and resolves a point only at the
+    /// click.
     pub(super) fn visible_orbit_center(&self) -> Option<glam::Vec3> {
-        if self.placing_orbit_center {
-            return self.orbit_center_preview;
-        }
-        self.orbiting_about_center
+        (!self.placing_orbit_center && self.orbiting_about_center)
             .then_some(self.app_core.camera.orbit_center)
     }
 
@@ -1423,12 +1420,15 @@ impl WindowedState {
 
     /// Where the orbit-center gizmo draws THIS frame, and whether a placement is armed.
     ///
-    /// An armed placement reads the LIVE cursor instead of the projection cache. That is not an
-    /// approximation: the preview point is the cursor ray's own surface hit, so projecting it
-    /// back to screen returns the cursor by construction. Going through the cache would only add
-    /// the two frames between a `CursorMoved` and the draw that shows it — which is exactly what
-    /// made the marker trail the cursor. The gate on the preview keeps the refusal visible: a ray
-    /// that finds nothing draws nothing, even though the cursor is still somewhere.
+    /// An armed placement IS the cursor. The gizmo draws at the cursor position and nothing else
+    /// is consulted — no projection cache, no ray, so nothing can put a frame or a CPU pick
+    /// between the mouse and the mark that follows it. What is under the cursor when the click
+    /// lands is the placement's business, not the gizmo's: a click over nothing simply does not
+    /// commit, and the placement stays armed.
+    ///
+    /// This used to gate on a per-move raycast, which made the gizmo both lag and blink out over
+    /// sky. Lag is the worse failure — a mark that trails the cursor stops reading as "this is
+    /// what you are carrying".
     ///
     /// The orbiting marker keeps the cached projection, where the lag is invisible —
     /// `orbit_about_point` holds the pivot screen-fixed for the whole drag by construction.
@@ -1436,7 +1436,7 @@ impl WindowedState {
         if !self.placing_orbit_center {
             return self.orbit_center_overlay;
         }
-        let (cursor_x, cursor_y) = self.orbit_center_preview.and(self.last_cursor_position)?;
+        let (cursor_x, cursor_y) = self.last_cursor_position?;
         Some((
             egui::Pos2::new(
                 cursor_x as f32 / pixels_per_point,
@@ -1529,6 +1529,24 @@ impl WindowedState {
             if !self.panel_state.selection.contains(target) {
                 self.panel_state.selection.select_only(target);
             }
+        }
+    }
+
+    /// Remove what is picked — the one implementation of the Delete command, reached from the
+    /// viewport menu's row and from its keyboard binding alike.
+    ///
+    /// What "picked" means depends on where you are, and deciding that HERE is the point: inside a
+    /// sketch it is the picked entities, outside one it is the picked node. The panel cannot make
+    /// that call for the keyboard path, which arrives with no menu to have been built in a mode.
+    /// A no-op when nothing is picked, so the binding is safe to press at any time.
+    pub(super) fn delete_selection(&mut self) {
+        if self.panel_state.sketch_mode.is_some() {
+            self.delete_sketch_selection();
+            return;
+        }
+        if let Some(id) = self.panel_state.selected_node().map(|node| node.id) {
+            self.viewport_intents
+                .push(crate::Intent::RemoveNode { target: id });
         }
     }
 
