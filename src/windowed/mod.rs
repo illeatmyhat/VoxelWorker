@@ -214,6 +214,18 @@ struct WindowedState {
     /// is not, because the orbit center lives on the camera and no gesture may move it
     /// (`docs/design/tool-modes-and-navigation.md`).
     orbiting_about_center: bool,
+    /// Whether the context menu's "place orbit center" is armed — a transient overlay on the
+    /// current tool mode, like an armed create tool, never a mode of its own. While armed the
+    /// left click commits the placement instead of selecting, and Esc / a right-click drops it.
+    placing_orbit_center: bool,
+    /// Where the armed placement would land: the surface point under the cursor, refreshed
+    /// every move, `None` while the cursor is over nothing placeable.
+    ///
+    /// The preview is held HERE and not written onto the camera, even though the gizmo draws it
+    /// and the gizmo is the orbit center. `camera.orbit_center` is classified, dumpable view
+    /// state whose contract is that only place/reset move it; a per-mouse-move writer would
+    /// break that law and let an F9 dump capture a point the user never committed.
+    orbit_center_preview: Option<glam::Vec3>,
     /// Last cursor position, for computing drag deltas.
     last_cursor_position: Option<(f64, f64)>,
     /// Where the most recent left-press landed (for view-cube click detection).
@@ -317,6 +329,11 @@ struct WindowedState {
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
     /// Refreshed alongside the handles; drawn as a diamond on the next frame.
     sketch_insert_preview: Option<egui::Pos2>,
+    /// The orbit-center marker for THIS frame: its projected screen position (egui points) and
+    /// whether a placement is armed (the marker is riding the cursor), or `None` when the pivot
+    /// should not be drawn. Refreshed alongside the sketch overlay, from
+    /// [`visible_orbit_center`](Self::visible_orbit_center).
+    orbit_center_overlay: Option<(egui::Pos2, bool)>,
     /// The last frame's RAY-FRAME unprojection matrix (`SceneMatrices::ray_unprojection`), cached
     /// so the release handler (in `events`) can invert a cursor into a profile coordinate for an
     /// add-point insert — the same frame `render` fed the overlay refresh, WITHOUT the wide-baseline
@@ -629,6 +646,8 @@ impl WindowedState {
             last_frame_time: std::time::Instant::now(),
             middle_button_held: false,
             orbiting_about_center: false,
+            placing_orbit_center: false,
+            orbit_center_preview: None,
             last_cursor_position: None,
             press_position: None,
             press_in_view_cube: false,
@@ -661,6 +680,7 @@ impl WindowedState {
             sketch_segments: Vec::new(),
             sketch_segment_lines: Vec::new(),
             sketch_insert_preview: None,
+            orbit_center_overlay: None,
             last_ray_unprojection: None,
             sketch_edit_press: false,
             sketch_select_press: false,

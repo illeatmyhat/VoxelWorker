@@ -151,6 +151,12 @@ pub fn run_egui_frame(
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
     sketch_insert_preview: Option<egui::Pos2>,
+    // ADR 0032: the orbit center's projected position (egui points) plus whether a placement is
+    // armed, or `None` when the pivot should not be drawn — it shows while a placement rides the
+    // cursor and while Shift+MMB is turning about it, and is hidden otherwise. Registers no chrome
+    // rect: the pivot is moved by the context menu, never by dragging it. Always `None` on the
+    // headless `shot` path.
+    orbit_center: Option<(egui::Pos2, bool)>,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -331,20 +337,17 @@ pub fn run_egui_frame(
                         // zoom, the view cube and the explicit orbit mode all work on
                         // `camera.target` instead, which is what lets a pan slide the view
                         // while the feature you are inspecting stays the one you turn around.
-                        // Placing uses the position the MENU was opened at rather than the
-                        // live cursor, so the center lands on what was right-clicked and not
-                        // on wherever the pointer drifted while the menu was up.
+                        // "Place" ARMS a placement rather than placing on the spot: the center
+                        // then follows the cursor as its own gizmo until a click commits it,
+                        // so you watch it land instead of finding out after the menu closed.
                         ui.separator();
                         let row = egui::vec2(ui.available_width().max(150.0), 22.0);
                         if ui
-                            .add_sized(row, egui::Button::new("Place orbit center here"))
+                            .add_sized(row, egui::Button::new("Place orbit center"))
                             .clicked()
                         {
                             panel_response.orbit_center_request =
-                                Some(ui::panel::OrbitCenterRequest::PlaceAt([
-                                    menu_pos_px.x,
-                                    menu_pos_px.y,
-                                ]));
+                                Some(ui::panel::OrbitCenterRequest::Place);
                             close = true;
                         }
                         // Always enabled: resetting an unplaced center is a harmless no-op,
@@ -486,6 +489,12 @@ pub fn run_egui_frame(
             if let Some(center) = sketch_insert_preview {
                 ui::chrome::sketch_insert_marker(ui, center);
             }
+        }
+
+        // ADR 0032: the orbit center, on its own foreground layer so it reads over the scene in
+        // every mode — sketch or not.
+        if let Some((center, placing)) = orbit_center {
+            ui::gizmos::orbit_center_overlay(ui, center, placing);
         }
 
         // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the

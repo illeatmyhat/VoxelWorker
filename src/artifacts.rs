@@ -228,12 +228,11 @@ pub struct ViewArtifact {
     /// view the bug was seen at.
     #[serde(default)]
     pub orbit_target: [f32; 3],
-    /// Where the ORBIT CENTER was placed — the pivot Shift+MMB turns about, which pan and
-    /// zoom deliberately leave alone. Restoring `orbit_target` alone would replay the same
-    /// view turning about a different point. `None` (the pre-field default) reads as the
-    /// target.
+    /// The ORBIT CENTER — the pivot Shift+MMB turns about, which pan and zoom deliberately
+    /// leave alone. Restoring `orbit_target` alone would replay the same view turning about a
+    /// different point. Absent from a pre-field dump, which restores the world origin.
     #[serde(default)]
-    pub placed_orbit_center: Option<[f32; 3]>,
+    pub orbit_center: [f32; 3],
 }
 
 /// How the workspace was left, which is neither what the model is nor what the user
@@ -352,7 +351,7 @@ impl DocumentArtifact {
             orbit_phi: _,
             orbit_distance: _,
             orbit_target: _,
-            placed_orbit_center: _,
+            orbit_center: _,
             // Declined — session state. Which viewer mode somebody was in, and which
             // panels they had folded, is the most obviously personal thing here: it is
             // not even a preference they chose, merely where they stopped.
@@ -415,7 +414,7 @@ impl Dump {
             orbit_phi,
             orbit_distance,
             orbit_target,
-            placed_orbit_center,
+            orbit_center,
             home_theta,
             home_phi,
             home_distance,
@@ -455,7 +454,7 @@ impl Dump {
                 orbit_phi: *orbit_phi,
                 orbit_distance: *orbit_distance,
                 orbit_target: *orbit_target,
-                placed_orbit_center: *placed_orbit_center,
+                orbit_center: *orbit_center,
             },
             session: SessionArtifact {
                 view_mode: *view_mode,
@@ -500,7 +499,7 @@ impl Dump {
             orbit_phi: view.orbit_phi,
             orbit_distance: view.orbit_distance,
             orbit_target: view.orbit_target,
-            placed_orbit_center: view.placed_orbit_center,
+            orbit_center: view.orbit_center,
             home_theta: settings.home_theta,
             home_phi: settings.home_phi,
             home_distance: settings.home_distance,
@@ -581,7 +580,7 @@ impl Default for SettingsArtifact {
 impl Default for ViewArtifact {
     fn default() -> Self {
         Self {
-            placed_orbit_center: None,
+            orbit_center: [0.0, 0.0, 0.0],
             voxels_per_block: default_density(),
             snap_to_blocks: true,
             onion_skin: false,
@@ -636,7 +635,7 @@ mod tests {
     /// field would show up as a difference rather than coinciding with the default.
     fn distinctive_state() -> AppConfig {
         AppConfig {
-            placed_orbit_center: None,
+            orbit_center: [0.0, 0.0, 0.0],
             scene: None,
             voxels_per_block: 24,
             projection_mode: ProjectionMode::Orthographic,

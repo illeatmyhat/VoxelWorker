@@ -247,11 +247,11 @@ pub enum SketchExit {
 /// you are inspecting stays the feature you turn around.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrbitCenterRequest {
-    /// Put it on the surface under the given PHYSICAL window pixel — where the menu was
-    /// opened, so the center lands on what was right-clicked, not on wherever the cursor
-    /// drifted to while the menu was up.
-    PlaceAt([f32; 2]),
-    /// Lift it, handing the pivot back to `camera.target`.
+    /// ARM a placement: the center starts following the cursor, drawn as its own gizmo, and
+    /// the next viewport click commits it. Deliberately not "place it at the right-clicked
+    /// point" — the user would not see where it landed until the menu had already closed.
+    Place,
+    /// Send it back to the world origin.
     Reset,
 }
 

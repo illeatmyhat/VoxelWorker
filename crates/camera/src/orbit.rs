@@ -149,13 +149,18 @@ pub struct OrbitCamera {
     pub roll: f32,
     /// Active projection (perspective by default). Display-only param.
     pub projection_mode: ProjectionMode,
-    /// Where the **orbit center** was explicitly put down, or `None` while none has been.
+    /// The **orbit center**: the pivot Shift+MMB turns the model about, at the world origin
+    /// until something puts it elsewhere.
     ///
-    /// Read it through [`Self::orbit_center`], which resolves the `None` to `target`. It is
-    /// stored rather than derived because it is the one pivot nothing implicit may move:
-    /// [`Self::pan_by_drag`] slides `target` and must leave this exactly where the user put
-    /// it, which is the whole difference between the two pivots.
-    pub placed_orbit_center: Option<Vec3>,
+    /// One of the rig's two pivots, and the two are not interchangeable. This one is
+    /// *placed* — written only by [`Self::place_orbit_center`] and
+    /// [`Self::reset_orbit_center`], which the viewport context menu drives. Nothing
+    /// implicit may move it: [`Self::pan_by_drag`] slides [`Self::target`] and leaves this
+    /// exactly where the user put it, so a pan slides the view across the model while the
+    /// feature being inspected stays the feature you turn around. [`Self::target`] is the
+    /// other pivot — the point the camera looks at, which pan, zoom, the view cube and the
+    /// explicit orbit mode all move and orbit about.
+    pub orbit_center: Vec3,
 }
 
 impl Default for OrbitCamera {
@@ -174,7 +179,7 @@ impl Default for OrbitCamera {
             orbit_distance: 10.0,
             roll: 0.0,
             projection_mode: ProjectionMode::Perspective,
-            placed_orbit_center: None,
+            orbit_center: Vec3::ZERO,
         }
     }
 }
@@ -377,30 +382,20 @@ impl OrbitCamera {
     /// the grabbed point does not move on screen, under either projection. That is the
     /// property the gesture is judged by: the surface under the cursor stays put and the
     /// world turns around it.
-    /// The **orbit center**: the pivot Shift+MMB turns the model about.
-    ///
-    /// One of the rig's two pivots, and the two are not interchangeable. This one is
-    /// *placed* — put down on a surface by a deliberate act (the viewport context menu's
-    /// place/reset) and moved by nothing else, so a pan slides the view across the model
-    /// while the point you are inspecting stays the point you turn around. The other is
-    /// [`Self::target`], the point the camera looks at, which pan, zoom, the view cube and
-    /// the explicit orbit mode all move and orbit about.
-    ///
-    /// Until something is placed it reads as `target`, so a fresh document orbits about
-    /// what it is looking at rather than about some arbitrary remembered point.
-    pub fn orbit_center(&self) -> Vec3 {
-        self.placed_orbit_center.unwrap_or(self.target)
-    }
-
-    /// Put the orbit center down at a world `point` — the context menu's "place orbit
-    /// center", the only thing besides [`Self::reset_orbit_center`] that may move it.
+    /// Put the [orbit center](Self::orbit_center) down at a world `point` — what the
+    /// viewport context menu's "place orbit center" drives, and one of only two things that
+    /// may move it.
     pub fn place_orbit_center(&mut self, point: Vec3) {
-        self.placed_orbit_center = Some(point);
+        self.orbit_center = point;
     }
 
-    /// Lift the placed orbit center, returning [`Self::orbit_center`] to tracking `target`.
+    /// Send the [orbit center](Self::orbit_center) back to the **world origin** — the
+    /// context menu's "reset orbit center", and the value a fresh camera starts at.
+    ///
+    /// The origin rather than `target`: a reset should land somewhere the user can predict
+    /// and find again, and a target that pan has been sliding around all session is neither.
     pub fn reset_orbit_center(&mut self) {
-        self.placed_orbit_center = None;
+        self.orbit_center = Vec3::ZERO;
     }
 
     pub fn orbit_about_point(&mut self, pivot: Vec3, delta_x: f32, delta_y: f32) {
@@ -546,17 +541,15 @@ mod tests {
     }
 
     #[test]
-    fn an_unplaced_orbit_center_reads_as_the_target_and_follows_it() {
-        let mut camera = OrbitCamera {
+    fn a_fresh_camera_orbits_the_world_origin() {
+        let camera = OrbitCamera {
             target: Vec3::new(3.0, -2.0, 1.0),
             ..OrbitCamera::default()
         };
-        assert_eq!(camera.orbit_center(), camera.target);
-        camera.pan_by_drag(40.0, -25.0, 720.0);
         assert_eq!(
-            camera.orbit_center(),
-            camera.target,
-            "an unplaced center tracks the target, so a fresh document turns about what it sees"
+            camera.orbit_center,
+            Vec3::ZERO,
+            "the default center is the world origin, independent of wherever the target is"
         );
     }
 
@@ -568,34 +561,25 @@ mod tests {
         camera.place_orbit_center(placed);
 
         camera.pan_by_drag(60.0, 35.0, 900.0);
-        assert_eq!(
-            camera.orbit_center(),
-            placed,
-            "a pan moved the orbit center"
-        );
+        assert_eq!(camera.orbit_center, placed, "a pan moved the orbit center");
         assert_ne!(
             camera.target, placed,
             "the pan should have moved the target"
         );
 
-        camera.orbit_about_point(camera.orbit_center(), 30.0, -12.0);
+        camera.orbit_about_point(camera.orbit_center, 30.0, -12.0);
         assert_eq!(
-            camera.orbit_center(),
-            placed,
+            camera.orbit_center, placed,
             "orbiting about the center moved the center"
         );
         camera.zoom_by_wheel(2.0);
-        assert_eq!(
-            camera.orbit_center(),
-            placed,
-            "a zoom moved the orbit center"
-        );
+        assert_eq!(camera.orbit_center, placed, "a zoom moved the orbit center");
 
         camera.reset_orbit_center();
         assert_eq!(
-            camera.orbit_center(),
-            camera.target,
-            "a reset should hand the pivot back to the target"
+            camera.orbit_center,
+            Vec3::ZERO,
+            "a reset should send the pivot back to the world origin"
         );
     }
 

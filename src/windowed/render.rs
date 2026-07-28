@@ -181,6 +181,8 @@ impl WindowedState {
                 &self.sketch_segment_lines,
                 // ADR 0028 (#95): the add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
+                // ADR 0032: the orbit-center marker, projected last frame.
+                self.orbit_center_overlay,
             )
         };
 
@@ -335,11 +337,14 @@ impl WindowedState {
         // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
         // is not the document (ADR 0022's classification: this is view state).
         match prepared.panel_response.orbit_center_request {
-            Some(ui::panel::OrbitCenterRequest::PlaceAt([x, y])) => {
-                let point = self.surface_point_at(Some((x as f64, y as f64)));
-                self.app_core.camera.place_orbit_center(point);
+            // "Place" ARMS rather than places: the center then follows the cursor, visibly,
+            // until a click commits it. Placing straight onto the right-clicked point would
+            // put it somewhere the user only sees after the menu has already closed.
+            Some(ui::panel::OrbitCenterRequest::Place) => {
+                self.begin_orbit_center_placement();
             }
             Some(ui::panel::OrbitCenterRequest::Reset) => {
+                self.cancel_orbit_center_placement();
                 self.app_core.camera.reset_orbit_center();
             }
             None => {}
@@ -485,6 +490,8 @@ impl WindowedState {
         // draw (in `run_egui_frame`) and the press hit-test (in `events`). A one-frame lag on
         // the handles is imperceptible and self-corrects.
         self.refresh_sketch_overlay(view_projection, prepared.viewport_px, pixels_per_point);
+        // The orbit-center marker, projected for NEXT frame's draw with the same one-frame lag.
+        self.refresh_orbit_center_overlay(view_projection, prepared.viewport_px, pixels_per_point);
         // #95: cache the ray-frame matrix so the release handler (in `events`) can invert a
         // cursor into a profile coordinate for an add-point insert, using the SAME frame the
         // overlay saw and without the wide-baseline `/w` melt of the full-VP inverse.
@@ -1223,22 +1230,94 @@ impl WindowedState {
         }
     }
 
-    /// The surface point at `cursor_px` in the camera's render frame — where the context
-    /// menu's "place orbit center" puts the orbit center
-    /// (`docs/design/tool-modes-and-navigation.md`).
-    ///
-    /// It reuses the selection click's ray verbatim, so the point the camera turns about is the
-    /// same point a click there would have selected; a center that disagreed with the pick would
-    /// make the two gestures feel like they were aimed at different scenes.
-    ///
-    /// A ray that hits nothing (the sky, or an empty scene) falls back to `camera.target`, so
-    /// placing over empty space re-anchors on the view rather than doing nothing — "nothing
-    /// happened" reads as a broken menu item rather than as a deliberate refusal.
-    pub(super) fn surface_point_at(&self, cursor_px: Option<(f64, f64)>) -> glam::Vec3 {
-        let fallback = self.app_core.camera.target;
-        let Some((cursor_x, cursor_y)) = cursor_px else {
-            return fallback;
+    /// Arm an orbit-center placement: from here a preview point follows the cursor until a
+    /// click commits it or Esc / a right-click drops it.
+    pub(super) fn begin_orbit_center_placement(&mut self) {
+        self.placing_orbit_center = true;
+        self.refresh_orbit_center_preview();
+    }
+
+    /// Re-aim the armed placement at the surface under the cursor. A no-op when nothing is
+    /// armed, so the cursor path can call it unconditionally.
+    pub(super) fn refresh_orbit_center_preview(&mut self) {
+        if !self.placing_orbit_center {
+            return;
+        }
+        self.orbit_center_preview = self.surface_point_at(self.last_cursor_position);
+    }
+
+    /// Commit the armed placement. Returns whether the click was CONSUMED — true while a
+    /// placement is armed at all, so a click over nothing keeps the placement armed rather
+    /// than falling through to select something. Only a click with a live preview places.
+    pub(super) fn commit_orbit_center_placement(&mut self) -> bool {
+        if !self.placing_orbit_center {
+            return false;
+        }
+        if let Some(point) = self.orbit_center_preview.take() {
+            self.app_core.camera.place_orbit_center(point);
+            self.placing_orbit_center = false;
+        }
+        true
+    }
+
+    /// Drop the armed placement, leaving the committed orbit center untouched — nothing to
+    /// restore, because the preview never wrote to it. Returns whether anything was armed.
+    pub(super) fn cancel_orbit_center_placement(&mut self) -> bool {
+        self.orbit_center_preview = None;
+        std::mem::take(&mut self.placing_orbit_center)
+    }
+
+    /// Where the orbit-center gizmo draws, and whether it draws at all: the armed preview
+    /// while placing, else the committed center while a Shift+MMB orbit is turning about it.
+    /// `None` the rest of the time — the center is a pivot, not permanent furniture.
+    pub(super) fn visible_orbit_center(&self) -> Option<glam::Vec3> {
+        if self.placing_orbit_center {
+            return self.orbit_center_preview;
+        }
+        self.orbiting_about_center
+            .then_some(self.app_core.camera.orbit_center)
+    }
+
+    /// Project [`visible_orbit_center`](Self::visible_orbit_center) for NEXT frame's draw, the
+    /// same one-frame lag the sketch overlay takes. Culled behind the camera.
+    fn refresh_orbit_center_overlay(
+        &mut self,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+        pixels_per_point: f32,
+    ) {
+        self.orbit_center_overlay = None;
+        let Some(center) = self.visible_orbit_center() else {
+            return;
         };
+        let clip = view_projection * glam::Vec4::new(center.x, center.y, center.z, 1.0);
+        if clip.w <= 0.0 {
+            return;
+        }
+        let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
+        let px = vx + (clip.x / clip.w * 0.5 + 0.5) * vw;
+        let py = vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh;
+        self.orbit_center_overlay = Some((
+            egui::Pos2::new(px / pixels_per_point, py / pixels_per_point),
+            self.placing_orbit_center,
+        ));
+    }
+
+    /// The surface point at `cursor_px` in the camera's render frame, or `None` when the ray
+    /// finds nothing — where an armed orbit-center placement would land.
+    ///
+    /// Both tiers of the armed-tool drop, asked in the same order: geometry first via the
+    /// selection click's own ray, so the point the camera will turn about is the point a click
+    /// there would have selected, then the visible built-in world planes via
+    /// [`world_plane_target`](crate::AppCore::world_plane_target) — one shared implementation,
+    /// so a click cannot drop a node on the ground and place a pivot somewhere else.
+    ///
+    /// A miss is a REFUSAL, not a fallback. This used to answer `camera.target` when the ray
+    /// found nothing, which made placing over sky or an empty scene silently equivalent to not
+    /// placing at all — the failure was invisible precisely because the fallback was plausible.
+    /// The gizmo simply does not draw on a miss, and the click does not commit.
+    pub(super) fn surface_point_at(&self, cursor_px: Option<(f64, f64)>) -> Option<glam::Vec3> {
+        let (cursor_x, cursor_y) = cursor_px?;
         let density = self.panel_state.geometry.voxels_per_block;
         let [vx, vy, vw, vh] = self.last_viewport_px;
         let recentre = self.recentre_voxels.voxels();
@@ -1249,24 +1328,26 @@ impl WindowedState {
             chunks: &self.resident_chunks,
             band: self.last_pick_band,
         };
-        self.app_core
-            .pick_voxel(
-                [cursor_x as f32, cursor_y as f32],
-                [vx as f32, vy as f32, vw as f32, vh as f32],
+        let cursor = [cursor_x as f32, cursor_y as f32];
+        let viewport = [vx as f32, vy as f32, vw as f32, vh as f32];
+        // `pick_voxel` and the plane tier both answer in ABSOLUTE voxels; the camera lives in
+        // the RECENTRED render frame, so each rebases the same way (ADR 0008 — the recentre is
+        // carried, this is the only conversion). The geometry half adds a half so the point
+        // lands at the cell's centre rather than its corner.
+        let absolute = match self.app_core.pick_voxel(cursor, viewport, &frame) {
+            Some(pick) => glam::Vec3::new(
+                pick.absolute_voxel[0] as f32 + 0.5,
+                pick.absolute_voxel[1] as f32 + 0.5,
+                pick.absolute_voxel[2] as f32 + 0.5,
+            ),
+            None => self.app_core.world_plane_point(
+                cursor,
+                viewport,
                 &frame,
-            )
-            .map(|pick| {
-                // `pick_voxel` answers in the ABSOLUTE voxel frame; the camera lives in the
-                // RECENTRED render frame, where a voxel's own position is `absolute − recentre
-                // + 0.5` (ADR 0008 — the recentre is carried, so this is the only conversion,
-                // and the half lands the pivot at the cell's centre rather than its corner).
-                glam::Vec3::new(
-                    (pick.absolute_voxel[0] - recentre[0]) as f32 + 0.5,
-                    (pick.absolute_voxel[1] - recentre[1]) as f32 + 0.5,
-                    (pick.absolute_voxel[2] - recentre[2]) as f32 + 0.5,
-                )
-            })
-            .unwrap_or(fallback)
+                self.panel_state.scene.master_floor_grid,
+            )?,
+        };
+        Some(absolute - glam::Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32))
     }
 
     /// ADR 0030/0032: the [`SelectionTarget`](ui::panel::SelectionTarget) under the cursor

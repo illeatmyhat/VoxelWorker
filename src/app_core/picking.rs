@@ -406,7 +406,7 @@ mod tests {
             MaterialChoice::Stone,
         );
         let camera = OrbitCamera {
-            placed_orbit_center: None,
+            orbit_center: glam::Vec3::ZERO,
             target: glam::Vec3::new(8.0, 8.0, 32.0), // the box centre (it fills [0,16)²×[0,64))
             orbit_theta: 0.4,
             orbit_phi: std::f32::consts::FRAC_PI_2, // horizontal — the tall face side-on
@@ -505,7 +505,7 @@ mod tests {
             (box_half - recentre[2]) as f32,
         );
         let camera = OrbitCamera {
-            placed_orbit_center: None,
+            orbit_center: glam::Vec3::ZERO,
             target: far_centre_render,
             orbit_theta: 0.6,
             orbit_phi: 1.0,
@@ -629,7 +629,7 @@ mod tests {
             (span / 2 - recentre[2]) as f32,
         );
         app_core = AppCore::new(OrbitCamera {
-            placed_orbit_center: None,
+            orbit_center: glam::Vec3::ZERO,
             target: pair_centre,
             orbit_theta: 0.6,
             orbit_phi: 1.0,

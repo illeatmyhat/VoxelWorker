@@ -116,10 +116,10 @@ fn the_orbit_center_is_classified_beside_the_pan_target() {
     // `orbit_target` alone would replay the same view turning about a different point — the
     // pan-target bug again, one field over.
     assert_eq!(
-        AppConfig::category_of("placed_orbit_center"),
+        AppConfig::category_of("orbit_center"),
         Some(StateCategory::View)
     );
-    assert!(AppConfig::category_of("placed_orbit_center")
+    assert!(AppConfig::category_of("orbit_center")
         .expect("classified above")
         .reaches_dump());
 }

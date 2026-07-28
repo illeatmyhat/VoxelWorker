@@ -255,6 +255,129 @@ impl AppCore {
         }
     }
 
+    /// Tier 3 of the placement pick: where the cursor ray meets a **visible built-in world
+    /// plane**, in the ABSOLUTE voxel frame.
+    ///
+    /// Split out because two callers need it and must not drift: the armed-tool drop
+    /// ([`place_primitive`](AppCore::place_primitive)), which asks after geometry misses, and
+    /// [`pick_surface_point`](AppCore::pick_surface_point), which the orbit-center placement
+    /// asks the same way. Both must agree about where "the ground" is, or the same click would
+    /// drop a node and place a pivot at two different points.
+    fn world_plane_target(
+        &self,
+        cursor: [f32; 2],
+        viewport: [f32; 4],
+        frame: &PickFrame<'_>,
+        ground_plane_visible: bool,
+    ) -> PlacementTarget {
+        // Tier 3 — the built-in world planes. Cast the SAME cursor ray the geometry tier used
+        // ([`cursor_pick_ray`], the one shared ray construction), already rebased into the ABSOLUTE
+        // voxel frame. `resolve_placement` then returns a point already in absolute voxels.
+        //
+        // `unproject_screen_point_to_ray` returns the NEAR-PLANE point as the origin. Whether a
+        // world plane is "in front" of that point is the crux, and it is NOT the same question for
+        // the two projections — so the ray's reachability is resolved per projection.
+        //
+        // Precision caveat (ADR 0008): `recentre_voxels as f32` loses integer precision past ~16M
+        // voxels. Correct for the small scenes this placement slice targets; the eventual fix is the
+        // i64 origin-rebase, not a fudge here.
+        let Some((render_ray, recentre_vec, unit_direction)) =
+            self.cursor_pick_ray(cursor, viewport, frame)
+        else {
+            return PlacementTarget::NoSurface;
+        };
+        // A block spans `density` voxels in this frame, so the authorability limit is asked
+        // in voxel units with the density as the block size.
+        let block_size = frame.density.max(1) as f32;
+
+        let target = match self.camera.projection_mode {
+            // Perspective — cast from the EYE (the centre of projection). The near-plane
+            // point is wrong here: it grows with `orbit_distance` and at a far zoom its
+            // lower half dips BELOW the ground, so a downward cursor ray whose near-plane
+            // origin already sits under the ground reports the ground as *behind* it
+            // (`NoSurface`) even while the eye is far above it — placement silently died
+            // across the foreground half of the screen. The eye lies on the same ray line,
+            // sits where the camera actually is, and gives the true eye-distance the
+            // authorability check wants. A perspective view genuinely straddles ground and
+            // sky, so reachability is legitimately per-pixel — exactly `resolve_placement`'s
+            // `t > 0` test from the eye.
+            ProjectionMode::Perspective => {
+                let eye_ray = Ray::new(self.camera.eye() + recentre_vec, unit_direction);
+                resolve_placement(None, eye_ray, MIN_GROUND_FACING, |depth| {
+                    self.camera.depth_is_authorable(depth, block_size)
+                })
+            }
+            // Orthographic — rays are PARALLEL, so there is no eye on the ray and no
+            // per-pixel near/far truth: reachability is a property of the whole VIEW,
+            // uniform across the screen. Any origin-based `t`-sign test would split the
+            // screen along the plane's intersection line (the bug that made the foreground
+            // half report `NoSurface`). Instead, select the plane on the shared direction
+            // and ask the directional question: the plane is reachable iff the eye sits on
+            // its FRONT side while the view looks TOWARD it — `sign(eye·n)` opposes
+            // `sign(dir·n)`. The hit POINT still comes from the pixel's own parallel line
+            // (each strikes a different spot). Depth does not enter ortho authorability (it
+            // keys off `orbit_distance`), so the limit is asked once.
+            ProjectionMode::Orthographic => {
+                let plane = select_world_plane(unit_direction, MIN_GROUND_FACING);
+                let normal = plane.normal();
+                let eye_abs = self.camera.eye() + recentre_vec;
+                let reachable = eye_abs.dot(normal) * unit_direction.dot(normal) < 0.0;
+                if !reachable {
+                    PlacementTarget::NoSurface
+                } else if !self
+                    .camera
+                    .depth_is_authorable(self.camera.orbit_distance, block_size)
+                {
+                    PlacementTarget::TooFar
+                } else {
+                    let line = Ray::new(render_ray.origin + recentre_vec, unit_direction);
+                    let (point, _t) = world_plane_hit(line, plane);
+                    PlacementTarget::OnWorldPlane { point, plane }
+                }
+            }
+        };
+
+        // Only place on a world plane the user can SEE (owner ruling 2026-07-21): the two
+        // vertical planes are never visualized, so they are never a placement target — a
+        // grazing ray that would fall back to one reports NoSurface ("point at a surface")
+        // instead of dropping a node, vertical and centred, on an invisible plane far away.
+        // The ground plane is a target only when its floor grid is shown.
+        match target {
+            PlacementTarget::OnWorldPlane { plane, .. } => {
+                let plane_visible = match plane {
+                    raycast::WorldPlane::Ground => ground_plane_visible,
+                    // The x=0 / y=0 verticals have no visualization, so they are always hidden.
+                    raycast::WorldPlane::VerticalFacingX | raycast::WorldPlane::VerticalFacingY => {
+                        false
+                    }
+                };
+                if plane_visible {
+                    target
+                } else {
+                    PlacementTarget::NoSurface
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Where the cursor ray meets a visible built-in world plane, in ABSOLUTE voxels — the
+    /// point half of [`world_plane_target`](AppCore::world_plane_target), for callers that want
+    /// a location and not a placement decision. `None` for both negative answers (nothing
+    /// visible under the cursor, or too far to author at).
+    pub fn world_plane_point(
+        &self,
+        cursor: [f32; 2],
+        viewport: [f32; 4],
+        frame: &PickFrame<'_>,
+        ground_plane_visible: bool,
+    ) -> Option<Vec3> {
+        match self.world_plane_target(cursor, viewport, frame, ground_plane_visible) {
+            PlacementTarget::OnWorldPlane { point, .. } => Some(point),
+            _ => None,
+        }
+    }
+
     /// Resolve where an armed primitive would drop for a cursor position, and the
     /// [`Intent`] that places it there (`docs/design/direct-manipulation.md`).
     ///
@@ -441,98 +564,13 @@ impl AppCore {
             };
         }
 
-        // Tier 3 — the built-in world planes. Cast the SAME cursor ray the geometry tier used
-        // ([`cursor_pick_ray`], the one shared ray construction), already rebased into the ABSOLUTE
-        // voxel frame. `resolve_placement` then returns a point already in absolute voxels.
-        //
-        // `unproject_screen_point_to_ray` returns the NEAR-PLANE point as the origin. Whether a
-        // world plane is "in front" of that point is the crux, and it is NOT the same question for
-        // the two projections — so the ray's reachability is resolved per projection.
-        //
-        // Precision caveat (ADR 0008): `recentre_voxels as f32` loses integer precision past ~16M
-        // voxels. Correct for the small scenes this placement slice targets; the eventual fix is the
-        // i64 origin-rebase, not a fudge here.
-        let Some((render_ray, recentre_vec, unit_direction)) =
-            self.cursor_pick_ray(cursor, viewport, frame)
-        else {
-            return PlacementOutcome {
-                target: PlacementTarget::NoSurface,
-                intent: None,
-            };
-        };
-        // A block spans `density` voxels in this frame, so the authorability limit is asked
-        // in voxel units with the density as the block size.
-        let block_size = frame.density.max(1) as f32;
-
-        let target = match self.camera.projection_mode {
-            // Perspective — cast from the EYE (the centre of projection). The near-plane
-            // point is wrong here: it grows with `orbit_distance` and at a far zoom its
-            // lower half dips BELOW the ground, so a downward cursor ray whose near-plane
-            // origin already sits under the ground reports the ground as *behind* it
-            // (`NoSurface`) even while the eye is far above it — placement silently died
-            // across the foreground half of the screen. The eye lies on the same ray line,
-            // sits where the camera actually is, and gives the true eye-distance the
-            // authorability check wants. A perspective view genuinely straddles ground and
-            // sky, so reachability is legitimately per-pixel — exactly `resolve_placement`'s
-            // `t > 0` test from the eye.
-            ProjectionMode::Perspective => {
-                let eye_ray = Ray::new(self.camera.eye() + recentre_vec, unit_direction);
-                resolve_placement(None, eye_ray, MIN_GROUND_FACING, |depth| {
-                    self.camera.depth_is_authorable(depth, block_size)
-                })
-            }
-            // Orthographic — rays are PARALLEL, so there is no eye on the ray and no
-            // per-pixel near/far truth: reachability is a property of the whole VIEW,
-            // uniform across the screen. Any origin-based `t`-sign test would split the
-            // screen along the plane's intersection line (the bug that made the foreground
-            // half report `NoSurface`). Instead, select the plane on the shared direction
-            // and ask the directional question: the plane is reachable iff the eye sits on
-            // its FRONT side while the view looks TOWARD it — `sign(eye·n)` opposes
-            // `sign(dir·n)`. The hit POINT still comes from the pixel's own parallel line
-            // (each strikes a different spot). Depth does not enter ortho authorability (it
-            // keys off `orbit_distance`), so the limit is asked once.
-            ProjectionMode::Orthographic => {
-                let plane = select_world_plane(unit_direction, MIN_GROUND_FACING);
-                let normal = plane.normal();
-                let eye_abs = self.camera.eye() + recentre_vec;
-                let reachable = eye_abs.dot(normal) * unit_direction.dot(normal) < 0.0;
-                if !reachable {
-                    PlacementTarget::NoSurface
-                } else if !self
-                    .camera
-                    .depth_is_authorable(self.camera.orbit_distance, block_size)
-                {
-                    PlacementTarget::TooFar
-                } else {
-                    let line = Ray::new(render_ray.origin + recentre_vec, unit_direction);
-                    let (point, _t) = world_plane_hit(line, plane);
-                    PlacementTarget::OnWorldPlane { point, plane }
-                }
-            }
-        };
-
-        // Only place on a world plane the user can SEE (owner ruling 2026-07-21): the two
-        // vertical planes are never visualized, so they are never a placement target — a
-        // grazing ray that would fall back to one reports NoSurface ("point at a surface")
-        // instead of dropping a node, vertical and centred, on an invisible plane far away.
-        // The ground plane is a target only when its floor grid is shown.
-        let target = match target {
-            PlacementTarget::OnWorldPlane { plane, .. } => {
-                let plane_visible = match plane {
-                    raycast::WorldPlane::Ground => ground_plane_visible,
-                    // The x=0 / y=0 verticals have no visualization, so they are always hidden.
-                    raycast::WorldPlane::VerticalFacingX | raycast::WorldPlane::VerticalFacingY => {
-                        false
-                    }
-                };
-                if plane_visible {
-                    target
-                } else {
-                    PlacementTarget::NoSurface
-                }
-            }
-            other => other,
-        };
+        let target = self.world_plane_target(cursor, viewport, frame, ground_plane_visible);
+        // The approach direction the seating below needs. Re-derived rather than threaded out of
+        // the tier, which answers WHERE the ray lands, not how a node sits once it is there.
+        let unit_direction = self
+            .cursor_pick_ray(cursor, viewport, frame)
+            .map(|(_, _, direction)| direction)
+            .unwrap_or(Vec3::NEG_Z);
 
         let intent = match target {
             // A world plane seats exactly like a geometry surface (owner ruling 2026-07-21): the

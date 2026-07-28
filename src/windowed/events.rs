@@ -69,7 +69,12 @@ impl ApplicationHandler for App {
                     && key_event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape)
                 {
-                    state.disarm_placement();
+                    // An armed orbit-center placement outranks the tool ghost: it is the
+                    // thing the cursor is currently carrying, so Esc puts it back first and
+                    // leaves any armed tool alone.
+                    if !state.cancel_orbit_center_placement() {
+                        state.disarm_placement();
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -97,13 +102,24 @@ impl ApplicationHandler for App {
                     // is armed and it landed on the live viewport (not egui / cube /
                     // chrome). Only a stationary release drops the node — a drag no longer
                     // orbits, but the threshold still keeps a twitchy click from placing.
-                    state.armed_press =
-                        state.armed_tool.is_some() && !egui_consumed && !in_cube && !in_chrome;
+                    // An armed orbit-center placement takes the click: the center is already
+                    // under the cursor, so committing is just dropping the restore point. Done
+                    // before every other consumer so the same press cannot also select or place.
+                    let committed_orbit_center = !egui_consumed
+                        && !in_cube
+                        && !in_chrome
+                        && state.commit_orbit_center_placement();
+                    state.armed_press = !committed_orbit_center
+                        && state.armed_tool.is_some()
+                        && !egui_consumed
+                        && !in_cube
+                        && !in_chrome;
                     // ADR 0032: a plain viewport press arms a NODE selection resolve — but only
                     // when every other left-click consumer declined. An armed tool keeps its click
                     // for the placement drop, and sketch mode keeps its three paths; selecting a
                     // node from inside a sketch would leave the mode's own selection behind.
-                    state.viewport_select_press = !egui_consumed
+                    state.viewport_select_press = !committed_orbit_center
+                        && !egui_consumed
                         && !in_cube
                         && !in_chrome
                         && state.armed_tool.is_none()
@@ -304,6 +320,12 @@ impl ApplicationHandler for App {
                 // the cube-menu logic below never runs during placement.
                 if button_state == ElementState::Pressed
                     && !egui_consumed
+                    && state.cancel_orbit_center_placement()
+                {
+                    return;
+                }
+                if button_state == ElementState::Pressed
+                    && !egui_consumed
                     && state.armed_tool.is_some()
                 {
                     state.disarm_placement();
@@ -408,7 +430,7 @@ impl ApplicationHandler for App {
                         let delta_y = (current.1 - previous_y) as f32;
                         if delta_x != 0.0 || delta_y != 0.0 {
                             state.snap_tween = None;
-                            let center = state.app_core.camera.orbit_center();
+                            let center = state.app_core.camera.orbit_center;
                             state
                                 .app_core
                                 .camera
@@ -437,6 +459,11 @@ impl ApplicationHandler for App {
                     }
                 }
                 state.last_cursor_position = Some(current);
+
+                // An armed orbit-center placement rides the cursor. The center itself moves —
+                // there is no separate ghost — so the gizmo drawn at it IS the thing being
+                // placed. A no-op when nothing is armed.
+                state.refresh_orbit_center_preview();
 
                 // #13 Step 4: live hover highlight for the chrome arrows. This runs
                 // on every move, so keep it cheap: the chrome zones are pure
