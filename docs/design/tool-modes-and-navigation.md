@@ -49,12 +49,41 @@ around two different pivots.
 - **Constrained Orbit** — keeps the world-up fixed, so the camera never rolls (the turntable).
   The **default**.
 - **Free Orbit** — full trackball, roll allowed.
-- The active type is a **most-recently-used session variable** (never Settings, never the
-  document), shared by every orbit entry path — Shift+MMB and explicit orbit mode both perform
-  whichever type was last used. The two types share the orbit logic; the entry paths differ
-  only by pivot (see below).
+- The **default type** is a **most-recently-used session variable** (never Settings, never the
+  document). The two types share the orbit logic; the entry paths differ only by pivot (see
+  below).
+
+- **Which entry paths write the default (owner-resolved 2026-07-27, from Fusion's behaviour).**
+  The MRU is the *default* type, not "the type", and the separator is whether the entry path
+  **names a type**:
+
+  | Entry | Names a type? | Orbits as | Writes the default |
+  | --- | --- | --- | --- |
+  | Shift + MMB | no | the default | no |
+  | Rail split-button face | no | the default | no |
+  | Rail dropdown pick | yes | the picked type | **yes** |
+  | Context menu → Constrained Orbit | yes | Constrained | **no** |
+
+  The rail dropdown writes because that is what a split button *is*: picking re-faces the button,
+  which is the same act as setting the default. The context-menu item is not a settings control
+  at all — it is a **command that invokes a tool**, and invoking a tool has never meant "make this
+  the default". Fusion behaves exactly this way, and the earlier line here ("shared by every orbit
+  entry path") was true only of the unqualified paths.
+
+  This is the same shape as the two pivots below: things identical in effect, separated by *which
+  mechanisms may write the persistent value*. Name it; never merge it.
+
+- **Override lifetime (owner-resolved 2026-07-27): the orbit-mode session.** A type-naming command
+  runs its type until you leave the mode, then the default reasserts. Not one drag — an override
+  the user cannot see the boundaries of is one they cannot reason about, and "mode" already means
+  a state with an exit.
+
+  Consequence for the UI: while an override is active the rail button's face is *not* what the
+  next orbit will do. It must show the ACTIVE type as distinct from the default, or the face lies
+  for the duration of the mode.
+
 - **UI (Fusion's split button):** the display icon rail holds an orbit button whose face is the
-  MRU type, with a dropdown offering the other (Free Orbit lives only there); the context menu
+  default type, with a dropdown offering the other (Free Orbit lives only there); the context menu
   offers Constrained Orbit.
 - **Camera representation (owner-resolved 2026-07-27, REVERSING the 2026-07-26 line below):**
   **two representations, Constrained is primary.** The spherical chart (`theta`/`phi`/`roll`)

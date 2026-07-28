@@ -204,11 +204,23 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   the specific mistake this glossary exists to stop: both are "the point the camera orbits", so
   a sentence naming neither is ambiguous. Always say which.
 
-- **Orbit type** — **Constrained Orbit** (world-up fixed, the turntable — the default) or
-  **Free Orbit** (full trackball, roll allowed), Fusion's names. A **most-recently-used session
-  variable** shared by every orbit entry path. Orthogonal to the pivot: type says *how* the
-  camera turns, pivot says *what it turns around*, and the four combinations are all
-  meaningful. _Avoid_: sub-mode, axis-constrained (say Constrained Orbit).
+- **Orbit type** — **Constrained Orbit** (world-up fixed, the turntable) or **Free Orbit** (full
+  trackball, roll allowed), Fusion's names. Orthogonal to the pivot: type says *how* the camera
+  turns, pivot says *what it turns around*, and the four combinations are all meaningful.
+  _Avoid_: sub-mode, axis-constrained (say Constrained Orbit).
+
+- **Default orbit type** — the type an orbit gesture uses when nothing named one: a
+  most-recently-used session variable, written **only** by the display rail's orbit split button.
+  Say "the default type", never "the type" — the two are different whenever an override is
+  running, and a sentence that says "the type" is ambiguous about which it means.
+
+- **Type override** — what a command that *names* a type does: it orbits as that type without
+  touching the default. The viewport context menu's Constrained Orbit is one; the rail's dropdown
+  is not (picking there re-faces the button, which *is* setting the default). An override lasts
+  the **orbit-mode session** and ends when you leave the mode.
+
+  Same distinction as the two pivots above, one level up: what separates a command from a setting
+  is *which mechanisms may write the persistent value*, not how long the effect appears to last.
 
 ## Selection
 
