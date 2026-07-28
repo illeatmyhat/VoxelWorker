@@ -86,12 +86,16 @@ around two different pivots.
   default type, with a dropdown offering the other (Free Orbit lives only there); the context menu
   offers Constrained Orbit.
 
-  *Shipped 2026-07-27 as a plain button, not yet a split one.* The rail's fourth button opens the
-  type menu on click and lights on the accent while the default is Free — the same non-default
-  signal the viewport-mode button uses, so no new icon was needed. The FACE half of a split button
-  is the thing that starts an explicit orbit, and explicit orbit mode does not exist yet; a face
-  that names its type but does nothing when clicked would be worse than one control that opens the
-  menu. It becomes a true split button in the same slice that adds orbit mode.
+  *Shipped 2026-07-28 as a real split button.* The rail's fourth button is divided by a hairline
+  into a glyph face and a narrower caret half, each hovering on its own; the face carries a
+  distinct glyph per type (`orbit-constrained` / `orbit-free`) and lights on the accent while the
+  default is Free — the same non-default signal the viewport-mode button uses.
+
+  Both halves still open the type menu. The face's own action is "start an explicit orbit as this
+  type", and explicit orbit mode does not exist yet; until it does, a face that named its type but
+  did nothing when clicked would be worse than two halves that agree. The face gains its action —
+  and starts showing ACTIVE-vs-default per the override rule above — in the same slice that adds
+  orbit mode.
 - **Camera representation (owner-resolved 2026-07-27, REVERSING the 2026-07-26 line below):**
   **two representations, Constrained is primary.** The spherical chart (`theta`/`phi`/`roll`)
   stays the stored truth with its own math; the quaternion/trackball is a **secondary**

@@ -22,12 +22,33 @@ const CONTENT_WIDTH: f32 = 980.0;
 const RAIL_GLYPH: f32 = 15.0;
 /// The glyph size a palette tile or drawer thumbnail uses.
 const TILE_GLYPH: f32 = 30.0;
+/// How many frames `--scroll` is re-requested for. Two would do; three is cheap insurance.
+const SCROLL_SETTLE_FRAMES: u32 = 3;
 
 /// The sheet's own state: what the pointer is over, so the catalogue can show a live hover
 /// state rather than a printed swatch of one.
 #[derive(Default)]
 pub struct Sheet {
     hovered: Option<&'static str>,
+    /// A starting scroll, held for a few frames and then released so the wheel still works. The
+    /// sheet is taller than any window a GPU will give us, so capturing the lower sections needs
+    /// an offset — `--width`/`--height` alone stopped being enough.
+    ///
+    /// It has to be held rather than set once: egui clamps a requested offset against the content
+    /// height it measured LAST frame, and on the first frame there is no such measurement, so a
+    /// one-shot request lands short.
+    pending_scroll: Option<f32>,
+    scroll_frames_applied: u32,
+}
+
+impl Sheet {
+    /// Start the sheet scrolled `offset` points down.
+    pub fn scrolled_to(offset: f32) -> Self {
+        Self {
+            pending_scroll: Some(offset),
+            ..Self::default()
+        }
+    }
 }
 
 impl Sheet {
@@ -41,7 +62,17 @@ impl Sheet {
                 bottom: 26,
             }))
             .show_inside(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                let mut scroll_area = egui::ScrollArea::vertical();
+                if let Some(offset) = self.pending_scroll {
+                    scroll_area = scroll_area.vertical_scroll_offset(offset);
+                    self.scroll_frames_applied += 1;
+                    if self.scroll_frames_applied >= SCROLL_SETTLE_FRAMES {
+                        self.pending_scroll = None;
+                    } else {
+                        ui.ctx().request_repaint();
+                    }
+                }
+                scroll_area.show(ui, |ui| {
                     // A measured column. Inside a scroll area the available width is
                     // unbounded, so prose would never wrap and long rows would run off the
                     // right edge — the sheet sets its own measure instead.
@@ -64,6 +95,9 @@ impl Sheet {
                     ui.add_space(22.0);
                     section(ui, "Tiles", "the large producer glyphs — a different drawing of the same noun, 26-unit grid at 1.1 stroke");
                     self.tiles(ui);
+                    ui.add_space(22.0);
+                    section(ui, "Viewport gizmos", "camera chrome drawn into the scene — screen-space, never depth-tested, never grabbable");
+                    self.viewport_gizmos(ui);
                     ui.add_space(22.0);
                     section(ui, "Sketch gizmos", "on-canvas manipulators over the 3D plane — screen-space billboards at projected vertices (ADR 0028)");
                     self.sketch_gizmos(ui);
@@ -458,6 +492,49 @@ impl Sheet {
         );
     }
 
+    /// The viewport gizmo specimens — camera chrome rather than sketch chrome, so they sit on a
+    /// plain viewport stage with a body on it instead of on the sketch working plane.
+    fn viewport_gizmos(&mut self, ui: &mut Ui) {
+        // orbit center — the two states, side by side.
+        self.specimen_row_on(
+            ui,
+            viewport_stage,
+            "orbit center · placed / placing",
+            "The camera's placed pivot (ADR 0032): a ringed crosshair round a filled dot, at the \
+             pivot's projected point. Accent when placed, hover-step while a placement rides the \
+             cursor. Deliberately unlike a vertex handle's square thumb — a vertex is a thing you \
+             grab, this is a thing you turn around.",
+            |p, s| {
+                let placed = Pos2::new(s.left() + 62.0, s.center().y + 8.0);
+                let placing = Pos2::new(s.right() - 52.0, s.center().y - 10.0);
+                gizmos::orbit_center(p, placed, false);
+                gizmos::orbit_center(p, placing, true);
+                for (at, tag) in [(placed, "PLACED"), (placing, "PLACING")] {
+                    p.text(
+                        Pos2::new(at.x, s.bottom() - 15.0),
+                        egui::Align2::CENTER_TOP,
+                        tag,
+                        FontId::monospace(7.5),
+                        color_palette::TEXT_FAINT,
+                    );
+                }
+            },
+        );
+        // never occluded — the property that decided the drawing.
+        self.specimen_row_on(
+            ui,
+            viewport_stage,
+            "orbit center · over geometry",
+            "It draws in the screen-space overlay pass, not the depth-tested scene: a pivot placed \
+             on the FAR side of the model is exactly when you most need to see where it went. \
+             Every stroke is laid twice, a dark backing under the accent, so it keeps contrast \
+             over pale geometry as well as over the dark background.",
+            |p, s| {
+                gizmos::orbit_center(p, Pos2::new(s.center().x + 6.0, s.center().y), false);
+            },
+        );
+    }
+
     /// The sketch gizmo specimens — each composed from [`ui::gizmos`] on a flat reference plane.
     fn sketch_gizmos(&mut self, ui: &mut Ui) {
         // profile vertex handle — the four states in a row.
@@ -663,6 +740,20 @@ impl Sheet {
         note: &str,
         draw: impl FnOnce(&Painter, Rect),
     ) {
+        self.specimen_row_on(ui, plane_stage, name, note, draw);
+    }
+
+    /// [`specimen_row`](Self::specimen_row) on a chosen stage. Which stage a gizmo is shown on is
+    /// part of what the sheet says about it: a sketch manipulator belongs over the working plane,
+    /// and camera chrome belongs over the scene.
+    fn specimen_row_on(
+        &mut self,
+        ui: &mut Ui,
+        stage_of: fn(&Painter, Rect),
+        name: &str,
+        note: &str,
+        draw: impl FnOnce(&Painter, Rect),
+    ) {
         let width = ui.available_width().min(CONTENT_WIDTH);
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 104.0), Sense::hover());
         let painter = ui.painter_at(rect);
@@ -670,7 +761,7 @@ impl Sheet {
             rect.left_top() + Vec2::new(0.0, 6.0),
             Vec2::new(206.0, 92.0),
         );
-        plane_stage(&painter, stage);
+        stage_of(&painter, stage);
         draw(&painter, stage);
         let text_x = 224.0;
         painter.text(
@@ -747,6 +838,29 @@ fn section(ui: &mut Ui, title: &str, subtitle: &str) {
         Stroke::new(1.0_f32, color_palette::BORDER),
     );
     ui.add_space(8.0);
+}
+
+/// A plain VIEWPORT stage for a camera-chrome specimen: the dark scene ground with one pale body
+/// standing on it. No plane tint and no grid — this chrome has nothing to do with a working plane,
+/// and the body is here so an overlay gizmo can be shown drawing straight over it, which is the
+/// property that decided how it is drawn.
+fn viewport_stage(painter: &Painter, rect: Rect) {
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(0x0d, 0x0f, 0x12));
+    // A blocky solid, lit face and shaded face: enough body to occlude against, drawn flat so it
+    // never competes with the gizmo it is a backdrop for.
+    let body = Rect::from_min_max(
+        Pos2::new(rect.left() + 44.0, rect.center().y - 14.0),
+        Pos2::new(rect.right() - 34.0, rect.bottom() - 12.0),
+    );
+    painter.rect_filled(body, 0.0, Color32::from_rgb(0x3a, 0x3f, 0x45));
+    let cap = Rect::from_min_max(body.left_top(), Pos2::new(body.right(), body.top() + 9.0));
+    painter.rect_filled(cap, 0.0, Color32::from_rgb(0x4c, 0x52, 0x59));
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0_f32, color_palette::BORDER),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// A flat plane-grid stage for a gizmo specimen: the dark viewport ground, the pale accent plane

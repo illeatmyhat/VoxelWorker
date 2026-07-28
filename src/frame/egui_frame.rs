@@ -462,7 +462,11 @@ pub fn run_egui_frame(
                     ui::chrome::RailClick::CycleMode => {
                         panel_state.view_mode = panel_state.view_mode.next();
                     }
-                    ui::chrome::RailClick::OrbitType => {
+                    // Both halves open the menu for now. The FACE half is the one that will
+                    // start an explicit orbit as the shown type once orbit mode exists; until
+                    // then it opens the menu too, because a face that names a type and does
+                    // nothing when clicked is worse than a redundant one that does something.
+                    ui::chrome::RailClick::OrbitType | ui::chrome::RailClick::OrbitTypeMenu => {
                         *orbit_type_menu_open = !*orbit_type_menu_open;
                     }
                 }

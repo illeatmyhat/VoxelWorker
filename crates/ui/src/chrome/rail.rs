@@ -11,6 +11,13 @@ const RAIL_WIDTH: f32 = 34.0;
 const BUTTON_HEIGHT: f32 = 32.0;
 const RAIL_GAP: f32 = 6.0;
 const GLYPH_BOX: f32 = 18.0;
+/// Width of the orbit-type button's dropdown half. The rest is the face.
+const CARET_WIDTH: f32 = 11.0;
+/// The caret's own glyph box — smaller than [`GLYPH_BOX`], because a chevron is a pointer at the
+/// menu and must not read as a second subject beside the face's mark.
+const CARET_BOX: f32 = 9.0;
+/// The rail index of the orbit-type split button.
+const ORBIT_TYPE_BUTTON: usize = 3;
 
 /// A rail button the user clicked this frame — the shell maps Home / Fit onto the same camera
 /// actions the retired cube badges dispatched, and CycleMode onto the next viewport mode.
@@ -19,11 +26,18 @@ pub enum RailClick {
     Home,
     Fit,
     CycleMode,
-    /// The orbit-type button: opens the type menu rather than acting. Fusion's rail carries the
-    /// same control, and it is the ONE place the DEFAULT orbit type is written — every other
-    /// entry into an orbit either uses the default or overrides it for the session without
-    /// changing it (`docs/design/tool-modes-and-navigation.md`, the entry-path table).
+    /// The orbit-type split button's FACE half — the mark that names the current default type.
+    ///
+    /// In the finished control this is the half that STARTS an orbit as that type, which is why
+    /// it neither names a type nor writes the default (`docs/design/tool-modes-and-navigation.md`,
+    /// the entry-path table). Explicit orbit mode does not exist yet, so for now it opens the menu
+    /// like its caret; it is a separate variant so that when orbit mode lands, only this arm's
+    /// action changes and none of the geometry does.
     OrbitType,
+    /// The orbit-type split button's CARET half — opens the type menu, which is the ONE place the
+    /// DEFAULT orbit type is written. Every other entry into an orbit either uses the default or
+    /// overrides it for the session without changing it.
+    OrbitTypeMenu,
 }
 
 /// The number of rail buttons, in the order [`icon_rail`] draws and dispatches them.
@@ -54,8 +68,30 @@ pub fn rail_rect(cube_left: f32, cube_bottom: f32, cube_size: f32) -> Rect {
 pub fn orbit_type_button_rect(cube_left: f32, cube_bottom: f32, cube_size: f32) -> Rect {
     let rail = rail_rect(cube_left, cube_bottom, cube_size);
     Rect::from_min_size(
-        Pos2::new(rail.left(), rail.top() + 3.0 * BUTTON_HEIGHT),
+        Pos2::new(
+            rail.left(),
+            rail.top() + ORBIT_TYPE_BUTTON as f32 * BUTTON_HEIGHT,
+        ),
         Vec2::new(RAIL_WIDTH, BUTTON_HEIGHT),
+    )
+}
+
+/// Split a rail button into a split button's two halves: `(face, caret)`.
+///
+/// They are separate hit targets and light separately, which is the affordance — a control that
+/// hovers as one block is a button, and a control that hovers in two pieces is a split button. A
+/// hairline between them says the same thing while nothing is hovered.
+fn split_halves(button_rect: Rect) -> (Rect, Rect) {
+    let divider_x = button_rect.right() - CARET_WIDTH;
+    (
+        Rect::from_min_max(
+            button_rect.left_top(),
+            Pos2::new(divider_x, button_rect.bottom()),
+        ),
+        Rect::from_min_max(
+            Pos2::new(divider_x, button_rect.top()),
+            button_rect.right_bottom(),
+        ),
     )
 }
 
@@ -86,11 +122,27 @@ pub fn icon_rail(
             ),
             Vec2::new(RAIL_WIDTH, BUTTON_HEIGHT),
         );
+        // The orbit-type button is a SPLIT button: two hit targets in one row. Every other button
+        // is one target, so its caret half is empty and never hovers.
+        let split = index == ORBIT_TYPE_BUTTON;
+        let (face_rect, caret_rect) = if split {
+            split_halves(button_rect)
+        } else {
+            (button_rect, Rect::NOTHING)
+        };
         let response = ui.interact(
-            button_rect,
+            face_rect,
             Id::new(("signal_rail_button", index)),
             Sense::click(),
         );
+        let caret_response = split.then(|| {
+            ui.interact(
+                caret_rect,
+                Id::new(("signal_rail_caret", index)),
+                Sense::click(),
+            )
+        });
+        let caret_hovered = caret_response.as_ref().is_some_and(|it| it.hovered());
         let hovered = response.hovered();
         // A button lights when it is holding a NON-default state, so the rail reads as "nothing
         // unusual is set" at a glance: the viewport-mode button off Normal, the orbit-type button
@@ -98,10 +150,15 @@ pub fn icon_rail(
         let lit = (index == 2 && view_mode != ViewMode::Normal)
             || (index == 3 && orbit_type == OrbitType::Free);
 
-        if hovered {
-            painter.rect_filled(button_rect, 0.0, theme::ACTIVE_BG);
-        } else if lit {
+        if lit {
             painter.rect_filled(button_rect, 0.0, theme::HOVER_BG);
+        }
+        // Each half lights on its own — that separation IS the split-button affordance.
+        if hovered {
+            painter.rect_filled(face_rect, 0.0, theme::ACTIVE_BG);
+        }
+        if caret_hovered {
+            painter.rect_filled(caret_rect, 0.0, theme::ACTIVE_BG);
         }
         if index > 0 {
             painter.line_segment(
@@ -118,22 +175,43 @@ pub fn icon_rail(
             painter.rect_filled(bar, 0.0, theme::ACCENT);
         }
 
-        let glyph_color = if lit {
-            theme::ACCENT
-        } else if hovered {
-            theme::HANDLE_HOVER
-        } else {
-            theme::TEXT_MUTED
+        let tone = |hovered: bool| {
+            if lit {
+                theme::ACCENT
+            } else if hovered {
+                theme::HANDLE_HOVER
+            } else {
+                theme::TEXT_MUTED
+            }
         };
-        draw_glyph(&painter, button_rect, index, view_mode, glyph_color);
+        draw_glyph(
+            &painter,
+            face_rect,
+            index,
+            view_mode,
+            orbit_type,
+            tone(hovered),
+        );
+        if split {
+            // The divider, then the chevron: the two marks that say "this opens something".
+            painter.line_segment(
+                [caret_rect.left_top(), caret_rect.left_bottom()],
+                Stroke::new(1.0_f32, theme::RULE),
+            );
+            Icon::ChevronDown.draw(
+                &painter,
+                Rect::from_center_size(caret_rect.center(), Vec2::splat(CARET_BOX)),
+                tone(caret_hovered),
+            );
+        }
 
         let response = response.on_hover_text(match index {
             0 => "Home view",
             1 => "Fit scene",
             2 => "Viewport mode",
             _ => match orbit_type {
-                OrbitType::Constrained => "Orbit type: constrained",
-                OrbitType::Free => "Orbit type: free",
+                OrbitType::Constrained => "Constrained orbit",
+                OrbitType::Free => "Free orbit",
             },
         });
         if response.clicked() {
@@ -143,6 +221,11 @@ pub fn icon_rail(
                 2 => RailClick::CycleMode,
                 _ => RailClick::OrbitType,
             });
+        }
+        if let Some(caret_response) = caret_response {
+            if caret_response.on_hover_text("Choose orbit type").clicked() {
+                click = Some(RailClick::OrbitTypeMenu);
+            }
         }
     }
 
@@ -169,6 +252,7 @@ fn draw_glyph(
     button_rect: Rect,
     index: usize,
     view_mode: ViewMode,
+    orbit_type: OrbitType,
     color: Color32,
 ) {
     let icon = match index {
@@ -179,9 +263,12 @@ fn draw_glyph(
             ViewMode::OnionFog => Icon::ModeOnion,
             ViewMode::ShowBooleans => Icon::ModeBooleans,
         },
-        // One glyph for both types: the button always means "orbit", and WHICH type is on is
-        // carried by the lit state and the tooltip rather than by a second mark.
-        _ => Icon::Orbit,
+        // The face NAMES the type. A split button's face is what it will do, so a rail showing one
+        // orbit mark for both types would be showing the noun and hiding the answer.
+        _ => match orbit_type {
+            OrbitType::Constrained => Icon::OrbitConstrained,
+            OrbitType::Free => Icon::OrbitFree,
+        },
     };
     icon.draw(painter, glyph_box(button_rect), color);
 }

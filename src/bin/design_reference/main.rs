@@ -92,7 +92,7 @@ impl Reference {
             gpu,
             bridge,
             egui_winit_state,
-            sheet: sheet::Sheet::default(),
+            sheet: sheet::Sheet::scrolled_to(scroll_from_args()),
         }
     }
 
@@ -140,6 +140,17 @@ impl Reference {
 
         self.egui_winit_state
             .handle_platform_output(&self.window, full_output.platform_output.clone());
+
+        // egui can ask for another frame from inside the UI — `--scroll` does, because its offset
+        // is clamped against a content height that only exists after one layout pass. Nothing
+        // drove that request before, so the window slept through it.
+        if full_output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport.repaint_delay.is_zero())
+        {
+            self.window.request_redraw();
+        }
 
         for (texture_id, image_delta) in &full_output.textures_delta.set {
             self.bridge.renderer.update_texture(
@@ -271,6 +282,18 @@ fn window_size_from_args() -> (f64, f64) {
         }
     }
     (width, height)
+}
+
+/// Read `--scroll` (in logical points). The sheet is now taller than the largest surface a GPU
+/// will configure, so `--height` alone cannot reach the bottom sections; this starts the window
+/// part-way down. It is one-shot — the wheel still works afterwards.
+fn scroll_from_args() -> f32 {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|pair| pair[0] == "--scroll")
+        .and_then(|pair| pair[1].parse::<f32>().ok())
+        .filter(|offset| *offset >= 0.0)
+        .unwrap_or(0.0)
 }
 
 fn main() {

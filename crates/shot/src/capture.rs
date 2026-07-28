@@ -117,6 +117,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // ADR 0018 Decision 3: the viewer mode (`--view-mode`). Only Show-booleans
         // populates the boolean-operand ghost this slice; Normal / Onion-fog leave it empty.
         view_mode: options.view_mode,
+        // ADR 0032: which face the rail's orbit split button shows. No drag happens headlessly,
+        // so this only ever reaches the chrome.
+        default_orbit_type: options.orbit_type,
         // Issue #88: pin the folded/expanded state of the floating Signal display stack for
         // the golden (no pointer input exists on the single shot frame to fold it live).
         stack: voxel_worker::SignalStackState {

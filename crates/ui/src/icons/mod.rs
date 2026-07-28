@@ -79,6 +79,8 @@ mod mode_normal;
 mod mode_onion;
 mod onion_scrub;
 mod orbit;
+mod orbit_constrained;
+mod orbit_free;
 mod outset;
 mod pan;
 mod part;
@@ -436,6 +438,48 @@ impl<'a> IconPainter<'a> {
         self.line_with(&self.arc_points(center, rx, ry, from, to), stroke);
     }
 
+    /// Stroke the set's arrowhead: a two-segment open chevron, tip at `tip`, legs trailing back
+    /// along `direction` — only that vector's bearing is read, not its length.
+    ///
+    /// Open and never filled, so it inherits the one stroke like every other mark, and drawn rather
+    /// than typed, because a glyph character is not available to this set. `trail` is how far the
+    /// legs reach back from the tip and `spread` how far they open to either side, both in grid
+    /// units. The sheet's static arrows sit near 1.6 for both; a mark whose arrowhead has to carry
+    /// meaning at rail size, with its own curve running through the same neighbourhood, needs more.
+    pub fn arrowhead(&self, tip: (f32, f32), direction: (f32, f32), trail: f32, spread: f32) {
+        let length = direction.0.hypot(direction.1).max(1e-6);
+        let (unit_x, unit_y) = (direction.0 / length, direction.1 / length);
+        let back = (tip.0 - unit_x * trail, tip.1 - unit_y * trail);
+        self.line(&[
+            (back.0 - unit_y * spread, back.1 + unit_x * spread),
+            tip,
+            (back.0 + unit_y * spread, back.1 - unit_x * spread),
+        ]);
+    }
+
+    /// Stroke an arc and put an [`arrowhead`](Self::arrowhead) on the `to` end of it, aimed along
+    /// the direction of travel — the set's "this turns" mark, as opposed to a bare arc, which is
+    /// only a curve.
+    ///
+    /// The tip and its bearing are both derived from the same arc parameters that drew the curve,
+    /// so the head cannot drift off the path when the arc is retuned. `head` is the arrowhead's
+    /// `(trail, spread)`.
+    pub fn arrowed_arc(
+        &self,
+        center: (f32, f32),
+        rx: f32,
+        ry: f32,
+        from: f32,
+        to: f32,
+        head: (f32, f32),
+    ) {
+        self.arc(center, rx, ry, from, to);
+        let tip = (center.0 + rx * to.cos(), center.1 + ry * to.sin());
+        let winding = if to >= from { 1.0 } else { -1.0 };
+        let heading = (-rx * to.sin() * winding, ry * to.cos() * winding);
+        self.arrowhead(tip, heading, head.0, head.1);
+    }
+
     /// Sample an arc into grid-space points.
     ///
     /// Segment count follows the on-screen size, so a 44 pt tile does not show facets and a
@@ -525,6 +569,8 @@ pub enum Icon {
     Home,
     Fit,
     Orbit,
+    OrbitConstrained,
+    OrbitFree,
     Pan,
     Zoom,
     AxesGizmo,
@@ -597,6 +643,8 @@ impl Icon {
         Icon::Home,
         Icon::Fit,
         Icon::Orbit,
+        Icon::OrbitConstrained,
+        Icon::OrbitFree,
         Icon::Pan,
         Icon::Zoom,
         Icon::AxesGizmo,
@@ -662,6 +710,8 @@ impl Icon {
             Icon::Home => g.marks(home::DRAW),
             Icon::Fit => g.marks(fit::DRAW),
             Icon::Orbit => orbit::draw(&g),
+            Icon::OrbitConstrained => orbit_constrained::draw(&g),
+            Icon::OrbitFree => orbit_free::draw(&g),
             Icon::Pan => g.marks(pan::DRAW),
             Icon::Zoom => g.marks(zoom::DRAW),
             Icon::AxesGizmo => g.marks(axes_gizmo::DRAW),
@@ -727,6 +777,8 @@ impl Icon {
             Icon::Home => "home",
             Icon::Fit => "fit",
             Icon::Orbit => "orbit",
+            Icon::OrbitConstrained => "orbit-constrained",
+            Icon::OrbitFree => "orbit-free",
             Icon::Pan => "pan",
             Icon::Zoom => "zoom",
             Icon::AxesGizmo => "axes-gizmo",
@@ -792,6 +844,8 @@ impl Icon {
             Icon::Home
             | Icon::Fit
             | Icon::Orbit
+            | Icon::OrbitConstrained
+            | Icon::OrbitFree
             | Icon::Pan
             | Icon::Zoom
             | Icon::AxesGizmo
@@ -852,6 +906,12 @@ impl Icon {
             Icon::Home => "Snap the camera back to the authored home framing of the root part.",
             Icon::Fit => "Frame the selection — or the whole fold when nothing is selected.",
             Icon::Orbit => "Tumble the camera about the pan target; the body stays put.",
+            Icon::OrbitConstrained => {
+                "Constrained orbit: world-up stays up, so the camera never rolls — the turntable."
+            }
+            Icon::OrbitFree => {
+                "Free orbit: the trackball. No privileged axis, so roll accumulates and the poles                  are ordinary points."
+            }
             Icon::Pan => "Slide the pan target across the ground plane; the orbit is unchanged.",
             Icon::Zoom => "Dolly in and out. The readout stays in blocks and voxels, never pixels.",
             Icon::AxesGizmo => "The Z-up triad: vertical is +Z, ground is XY, front is −Y.",

@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use voxel_worker::{
-    CubeFace, GeometryParams, MaterialChoice, ProjectionMode, SdfShape, ShapeKind, ViewCubeElement,
-    ViewMode,
+    CubeFace, GeometryParams, MaterialChoice, OrbitType, ProjectionMode, SdfShape, ShapeKind,
+    ViewCubeElement, ViewMode,
 };
 
 pub(crate) struct ShotOptions {
@@ -46,6 +46,10 @@ pub(crate) struct ShotOptions {
     /// `Normal` would be indistinguishable from a chosen `Normal` and would quietly
     /// override every repro.
     pub(crate) view_mode_explicit: bool,
+    /// `--orbit-type <constrained|free>` (ADR 0032): the DEFAULT orbit type the icon rail's
+    /// split button shows. Camera behaviour is unaffected — the capture takes no drags — so
+    /// this exists to render the rail in its other state.
+    pub(crate) orbit_type: OrbitType,
     /// `--stack-folded` (issue #88): start the floating Signal display stack FOLDED to its
     /// vertical edge tabs (the cube + rail slide right toward the edge). There is no pointer
     /// input on the single `shot` frame, so this flag is how the folded-state golden is
@@ -334,6 +338,7 @@ impl Default for ShotOptions {
             select_root: false,
             view_mode: ViewMode::Normal,
             view_mode_explicit: false,
+            orbit_type: OrbitType::default(),
             stack_folded: false,
             show_block_lattice: false,
             show_floor_grid: false,
@@ -489,6 +494,15 @@ fn parse_view_mode(value: &str) -> ViewMode {
     }
 }
 
+/// Parse an `--orbit-type` value into an [`OrbitType`] (ADR 0032).
+fn parse_orbit_type(value: &str) -> OrbitType {
+    match value.to_ascii_lowercase().as_str() {
+        "constrained" => OrbitType::Constrained,
+        "free" => OrbitType::Free,
+        other => panic!("--orbit-type must be constrained|free, got '{other}'"),
+    }
+}
+
 /// Parse a `--proj` value into a [`ProjectionMode`].
 fn parse_projection(value: &str) -> ProjectionMode {
     match value.to_ascii_lowercase().as_str() {
@@ -620,6 +634,10 @@ pub(crate) fn parse_options() -> ShotOptions {
                 options.view_mode =
                     parse_view_mode(&args.next().expect("--view-mode requires a value"));
                 options.view_mode_explicit = true;
+            }
+            "--orbit-type" => {
+                options.orbit_type =
+                    parse_orbit_type(&args.next().expect("--orbit-type requires a value"));
             }
             "--stack-folded" => {
                 options.stack_folded = true;
