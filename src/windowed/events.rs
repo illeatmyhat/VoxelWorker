@@ -51,34 +51,53 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(new_size) => {
                 state.resize(new_size.width, new_size.height);
             }
-            // F9: dump the current scene + LIVE camera to the repro file (`shot --from-config`).
-            // Lets an exact live-view bug reproduce headlessly. Ignored while egui has focus so it
-            // never fires from a text field.
+            // Keyboard commands, dispatched through the `ui::shortcuts` settings: the press is
+            // translated to a bindable key, the settings say which COMMAND that key means, and
+            // only then does anything happen. No handler names a key, so a rebind moves one
+            // settings entry and both the menu's right-hand column and this dispatch follow.
+            // Ignored while egui has focus, so none of it fires from a text field.
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } if !egui_consumed => {
-                if key_event.state == ElementState::Pressed
-                    && key_event.physical_key
-                        == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F9)
-                {
-                    state.export_repro();
-                }
-                // ADR 0022 live placement: Escape disarms an armed tool (the ghost
-                // vanishes). A no-op when nothing is armed.
-                if key_event.state == ElementState::Pressed
-                    && key_event.physical_key
-                        == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape)
-                {
-                    // An armed orbit-center placement outranks the tool ghost: it is the
-                    // thing the cursor is currently carrying, so Esc puts it back first and
-                    // leaves any armed tool alone.
-                    // ADR 0032: with nothing else to put back, Escape LEAVES the explicit orbit
-                    // mode — the standard way out of a mode, and the reason the mode can be
-                    // entered from a menu row that isn't next to the rail. It leaves the DEFAULT
-                    // type alone: a session override dies with the mode, never outliving it.
-                    if !state.cancel_orbit_center_placement() && !state.leave_orbit_mode() {
-                        state.disarm_placement();
+            } if !egui_consumed && key_event.state == ElementState::Pressed => {
+                let command = match key_event.physical_key {
+                    winit::keyboard::PhysicalKey::Code(code) => super::keys::shortcut_key(code)
+                        .and_then(|key| state.panel_state.shortcuts.command(key)),
+                    winit::keyboard::PhysicalKey::Unidentified(_) => None,
+                };
+                match command {
+                    // A press no command claims.
+                    None => {}
+                    // Dump the scene + LIVE camera to the repro file (`shot --from-config`), so an
+                    // exact live-view bug reproduces headlessly.
+                    Some(ui::shortcuts::ShortcutCommand::ExportRepro) => state.export_repro(),
+                    // ADR 0032: Cancel is a priority chain, not one act. An armed orbit-center
+                    // placement outranks the tool ghost — it is what the cursor is carrying, so it
+                    // goes back first and leaves any armed tool alone. With nothing to put back it
+                    // CANCELS the running modal command (the same act the viewport menu's Cancel
+                    // row performs); with no command running it disarms the tool ghost (ADR 0022).
+                    // Leaving never writes the DEFAULT orbit type: a session override dies with
+                    // the mode rather than outliving it.
+                    Some(ui::shortcuts::ShortcutCommand::CancelCommand) => {
+                        if !state.cancel_orbit_center_placement()
+                            && !state.end_modal_command(ui::panel::ModeCommand::Cancel)
+                        {
+                            state.disarm_placement();
+                        }
                     }
+                    // The other half of the universal pair. It does nothing when no command is
+                    // running — Accept is not a general viewport verb.
+                    Some(ui::shortcuts::ShortcutCommand::AcceptCommand) => {
+                        state.end_modal_command(ui::panel::ModeCommand::Accept);
+                    }
+                    // Listed in the settings so they can BE bound, but reachable only from the
+                    // viewport menu today. Unbound by default, so this arm is unreachable until
+                    // somebody binds one — at which point it is the missing half, not dead code.
+                    Some(
+                        ui::shortcuts::ShortcutCommand::DeleteSelection
+                        | ui::shortcuts::ShortcutCommand::PlaceOrbitCenter
+                        | ui::shortcuts::ShortcutCommand::ResetOrbitCenter
+                        | ui::shortcuts::ShortcutCommand::EnterConstrainedOrbit,
+                    ) => {}
                 }
             }
             WindowEvent::MouseInput {
@@ -308,6 +327,10 @@ impl ApplicationHandler for App {
                     // what the user just pointed at. A miss (sky, no plane) is a REFUSAL, not a
                     // fallback: the view keeps the target it had. This never touches the orbit
                     // CENTER, which only the context menu moves.
+                    //
+                    // It ANIMATES, through the same eased tween every camera snap uses: a cut
+                    // straight to the new centre gives no cue which way the view went, and the
+                    // point of aiming at a feature is to keep hold of it while the frame comes.
                     if state.orbit_mode_recenter_press {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
                             (state.press_position, state.last_cursor_position)
@@ -317,7 +340,10 @@ impl ApplicationHandler for App {
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary {
                                 if let Some(point) = state.surface_point_at(Some((up_x, up_y))) {
-                                    state.app_core.camera.recenter_on(point);
+                                    state.snap_tween = Some(camera::SnapTween::recenter(
+                                        &state.app_core.camera,
+                                        point,
+                                    ));
                                 }
                             }
                         }

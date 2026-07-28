@@ -543,12 +543,14 @@ impl Sheet {
             viewport_stage,
             "orbit mode · targeting reticle",
             "While the explicit orbit mode runs, the left button turns instead of selecting, and \
-             a click re-centres the view on what it hits. The reticle sits on the camera target \
-             and is what makes that flipped verb visible for exactly as long as it holds. \
-             Brackets, not the orbit center's ringed crosshair: the two pivots are separate \
-             points, moved by separate mechanisms, and must never read as one mark.",
+             a click re-centres the view on what it hits. The reticle is what makes that flipped \
+             verb visible for exactly as long as it holds — a ring most of the viewport tall on \
+             the camera target, which the camera looks at, so it is the frame's centre by \
+             construction. Neutral GRAY at half alpha, the one mark outside the accent: at this \
+             size an accent would repaint the whole frame. It hides while the button is down. \
+             Shown here at the specimen stage's scale, so it reads smaller than in the app.",
             |p, s| {
-                gizmos::orbit_reticle(p, Pos2::new(s.center().x + 6.0, s.center().y));
+                gizmos::orbit_reticle(p, s);
             },
         );
     }

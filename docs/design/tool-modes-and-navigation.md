@@ -185,11 +185,26 @@ them is **which mechanisms may move each one**, and nothing else: the orbit math
    *Shipped 2026-07-28 (slice D).* `PanelState::orbit_mode` is the state — `Off` / `UsingDefault` /
    `Named(type)`, the three-way that lets a type override live and die with the mode session
    without the default ever moving. Entered from the rail face or the viewport menu's "Constrained
-   Orbit" (the naming entry), left by either of those or by **Escape**. While it runs the left
-   button is taken from selection, placement and the sketch tools alike; a press latches the active
-   type (the mid-gesture guard), a drag past the click threshold turns, and a stationary release
-   raycasts through the same `surface_point_at` the orbit-center placement uses. A miss is a
-   **refusal**, not a fallback: the target keeps its old value rather than flying to a guessed one.
+   Orbit" (the naming entry), left by the rail face or by the **OK / Cancel** rows below. While it
+   runs the left button is taken from selection, placement and the sketch tools alike; a press
+   latches the active type (the mid-gesture guard), a drag past the click threshold turns, and a
+   stationary release raycasts through the same `surface_point_at` the orbit-center placement uses.
+   A miss is a **refusal**, not a fallback: the target keeps its old value rather than flying to a
+   guessed one.
+
+   The re-centre **animates**. It is the same `SnapTween` the view cube and re-level already use,
+   which now lerps `camera.target` alongside the angles — one tween type, so a snap and a re-centre
+   can never race to write the camera, and every angle-only constructor simply holds the target.
+   A jump-cut here reads as a teleport; the ease is what makes it read as the pan it is.
+
+   The **reticle** is a large ring — 72% of viewport height — with four cardinal ticks outside it
+   and a small centre cross, scaled off height alone so it keeps its proportions at any aspect. It
+   needs no projection: the camera looks *at* `camera.target`, so the target is the viewport centre
+   by construction. It draws in neutral **gray at half alpha** (`color_palette::RETICLE`) — the one
+   mark deliberately outside the accent, because it spans the whole frame and is a place-marker,
+   not a live value; the tone is a theme token so it tracks the theme's contrast. It **hides while
+   a turn is in progress** and returns on release — not on mere click, which would make it blink
+   at every re-centre.
 
 > **Read this before editing the section above.** The two pivots are easy to collapse into one,
 > and doing so has already cost a shipped-then-reverted binding. The write-up briefly said
@@ -197,6 +212,25 @@ them is **which mechanisms may move each one**, and nothing else: the orbit math
 > stored" — a misreading of *"Shift+MMB is always for the clicked surface point"*, where
 > **clicked** means the click that **placed** the center, not the press that starts the drag.
 > There is no transient pivot anywhere in this design.
+
+### OK / Cancel — the general modal-command menu (owner-resolved 2026-07-28)
+
+While any viewport command is running, the context menu is replaced *entirely* by two rows: **OK**
+(`Return`) and **Cancel** (`Esc`). This is the general variant for all viewports, not an orbit-mode
+special case — while a command is up there is no third choice, because a menu offering unrelated
+verbs mid-command would be offering to start a second one. What each row *means* is the command's
+business; for the explicit orbit mode both simply end it, since navigating IS the result and it has
+already happened, so there is nothing left to discard. `ModeCommand::{Accept, Cancel}` on
+`PanelResponse` is the wire.
+
+There is deliberately **no per-command "leave" row**: that would be a second exit for one command
+and no exit for the rest. The unrelated verbs a running command still wants to reach are planned to
+live in a Fusion/Maya-style **pie menu above** this list — which is what keeps the list exactly two
+rows.
+
+Every menu row shows its **keybind flushed right**, in the weak tone. A row the keyboard cannot
+reach leaves the column empty rather than inventing a binding, so the menu doubles as the honest
+list of what is bound.
 
 ### The rest
 

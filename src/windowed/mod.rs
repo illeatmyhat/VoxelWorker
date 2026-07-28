@@ -48,6 +48,7 @@ use crate::{
 mod events;
 mod export;
 mod geometry;
+mod keys;
 mod palette;
 mod render;
 mod view_cube;
@@ -355,10 +356,6 @@ struct WindowedState {
     /// should not be drawn. Refreshed alongside the sketch overlay, from
     /// [`visible_orbit_center`](Self::visible_orbit_center).
     orbit_center_overlay: Option<(egui::Pos2, bool)>,
-    /// The explicit orbit mode's reticle position for THIS frame (egui points) — the projected
-    /// `camera.target` — or `None` when the mode is off or the target sits behind the camera.
-    /// Refreshed alongside [`orbit_center_overlay`](Self::orbit_center_overlay).
-    orbit_target_overlay: Option<egui::Pos2>,
     /// The last frame's RAY-FRAME unprojection matrix (`SceneMatrices::ray_unprojection`), cached
     /// so the release handler (in `events`) can invert a cursor into a profile coordinate for an
     /// add-point insert — the same frame `render` fed the overlay refresh, WITHOUT the wide-baseline
@@ -710,7 +707,6 @@ impl WindowedState {
             sketch_segment_lines: Vec::new(),
             sketch_insert_preview: None,
             orbit_center_overlay: None,
-            orbit_target_overlay: None,
             last_ray_unprojection: None,
             sketch_edit_press: false,
             sketch_select_press: false,

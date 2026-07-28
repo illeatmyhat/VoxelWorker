@@ -43,9 +43,9 @@ pub use add_shape_dialog::build_add_shape_dialog;
 pub use selection::{Selection, SelectionRequest, SelectionTarget};
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use state::{
-    AngleSnap, ExportPanelState, LayerRange, OrbitCenterRequest, OrbitMode, PanelResponse,
-    PanelState, PlacementGhost, PlacementPivot, PlacementSnap, PositionSnap, SignalStackState,
-    SketchExit, SketchTool, ViewMode,
+    AngleSnap, ExportPanelState, LayerRange, ModeCommand, OrbitCenterRequest, OrbitMode,
+    PanelResponse, PanelState, PlacementGhost, PlacementPivot, PlacementSnap, PositionSnap,
+    SignalStackState, SketchExit, SketchTool, ViewMode,
 };
 
 use crate::palette::BlockPalette;

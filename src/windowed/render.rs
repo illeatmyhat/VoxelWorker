@@ -147,6 +147,7 @@ impl WindowedState {
         let layer_track_len = self.current_mesh_clip(grid_z).track_len;
         // Read before the call: `run_egui_frame` borrows `self` mutably.
         let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
+        let orbit_reticle = self.orbit_reticle_visible();
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -188,9 +189,9 @@ impl WindowedState {
                 // ADR 0032: the orbit-center marker — live under the cursor while a placement is
                 // armed, projected-last-frame while Shift+MMB turns about it.
                 orbit_center_marker,
-                // ADR 0032: the camera target's projected position while the orbit mode runs —
-                // where the targeting reticle draws.
-                self.orbit_target_overlay,
+                // ADR 0032: whether the orbit mode's targeting reticle draws — it fills the
+                // viewport rect the frame computes, so no position travels with the flag.
+                orbit_reticle,
             )
         };
 
@@ -372,6 +373,11 @@ impl WindowedState {
             }
             None => {}
         }
+        // The viewport menu's OK / Cancel variant, which every running modal command ends
+        // through. The same door Return / Escape use, so a command can never be left half-out.
+        if let Some(command) = prepared.panel_response.mode_command {
+            self.end_modal_command(command);
+        }
         // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
         // re-resolves the volume and records ONE coalesced command in the open group. Uses
         // this frame's viewport (from `prepared`) to build the cursor→plane ray; its effect
@@ -515,8 +521,6 @@ impl WindowedState {
         self.refresh_sketch_overlay(view_projection, prepared.viewport_px, pixels_per_point);
         // The orbit-center marker, projected for NEXT frame's draw with the same one-frame lag.
         self.refresh_orbit_center_overlay(view_projection, prepared.viewport_px, pixels_per_point);
-        // The orbit mode's reticle, on `camera.target`, with the same lag.
-        self.refresh_orbit_target_overlay(view_projection, prepared.viewport_px, pixels_per_point);
         // #95: cache the ray-frame matrix so the release handler (in `events`) can invert a
         // cursor into a profile coordinate for an add-point insert, using the SAME frame the
         // overlay saw and without the wide-baseline `/w` melt of the full-VP inverse.
@@ -1292,13 +1296,20 @@ impl WindowedState {
         std::mem::take(&mut self.placing_orbit_center)
     }
 
-    /// Leave the explicit orbit mode, restoring the left button to Select. Returns whether the
-    /// mode was running, so Escape can fall through to the tool ghost when it wasn't.
+    /// End the running **modal command** — the OK / Cancel pair the viewport menu offers and
+    /// Return / Escape drive. Returns whether a command was running, so Escape can fall through
+    /// to the tool ghost when none was.
+    ///
+    /// This is the one exit every modal command reports through. Today the only one is the
+    /// explicit orbit mode, and `Accept` and `Cancel` do the same thing for it: navigating IS the
+    /// result and it has already happened, so there is nothing pending to discard. A future
+    /// command with an uncommitted edit is where the two diverge, and it diverges HERE — the
+    /// panel never learns what either word means.
     ///
     /// Any in-flight gesture dies with the mode rather than being stranded in a mode that no
-    /// longer exists, and a per-session type override dies with it too — the DEFAULT type is
-    /// never written here.
-    pub(super) fn leave_orbit_mode(&mut self) -> bool {
+    /// longer exists, and a per-session type override dies with it too: the DEFAULT type is never
+    /// written on the way out.
+    pub(super) fn end_modal_command(&mut self, _command: ui::panel::ModeCommand) -> bool {
         if !self.panel_state.orbit_mode.is_on() {
             return false;
         }
@@ -1342,27 +1353,21 @@ impl WindowedState {
                 .map(|position| (position, false));
     }
 
-    /// Project the explicit orbit mode's RETICLE for next frame's draw, on `camera.target`.
+    /// Whether the explicit orbit mode's reticle draws this frame.
     ///
-    /// The same one-frame lag as the orbiting centre marker, and invisible for the same reason:
-    /// an orbit holds its own pivot screen-fixed by construction, and the one gesture that moves
-    /// the target — the re-centring click — ends before the next frame draws.
-    fn refresh_orbit_target_overlay(
-        &mut self,
-        view_projection: glam::Mat4,
-        viewport_px: [u32; 4],
-        pixels_per_point: f32,
-    ) {
-        self.orbit_target_overlay = None;
-        if !self.panel_state.orbit_mode.is_on() {
-            return;
-        }
-        self.orbit_target_overlay = project_to_screen(
-            self.app_core.camera.target,
-            view_projection,
-            viewport_px,
-            pixels_per_point,
-        );
+    /// Nothing is projected: the camera looks AT its target, so the target is the viewport's
+    /// centre by construction and the reticle is laid out against the rect egui itself just
+    /// measured. That also means it cannot lag the camera by a frame the way a cached
+    /// projection would.
+    ///
+    /// It hides while a TURN is in flight — the mark spans most of the frame, and watching the
+    /// model come round is exactly when you need it out of the way. A press that has not crossed
+    /// the drag threshold keeps it: that press is still a candidate for the re-centring click,
+    /// which aims *at* the reticle, so blanking on mouse-down would hide the sight the moment
+    /// you took the shot.
+    pub(super) fn orbit_reticle_visible(&self) -> bool {
+        let turning = self.orbiting_in_orbit_mode && !self.orbit_mode_recenter_press;
+        self.panel_state.orbit_mode.is_on() && !turning
     }
 
     /// Where the orbit-center gizmo draws THIS frame, and whether a placement is armed.

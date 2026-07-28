@@ -157,6 +157,9 @@ impl HomeView {
             // Home re-uprights too: tween roll back to 0.
             roll_from: camera.roll,
             roll_to: 0.0,
+            // Held: Home restores angles and distance, not the point being looked at.
+            target_from: camera.target,
+            target_to: camera.target,
             elapsed_seconds: 0.0,
             duration_seconds: SnapTween::DEFAULT_DURATION_SECONDS,
         }
@@ -456,18 +459,6 @@ impl OrbitCamera {
         // Orthonormal, so the inverse IS the transpose.
         let rotation = self.view_basis() * basis_before.transpose();
         self.target = pivot + rotation * (target_before - pivot);
-    }
-
-    /// Re-centre the view on a world `point`: slide [`Self::target`] there, carrying the eye
-    /// with it, so `point` lands at the centre of the viewport and the next turn happens
-    /// about what the user pointed at. The explicit orbit mode's click drives this.
-    ///
-    /// It is a PAN, not a rotation — the orbit angles are untouched, so re-centring never
-    /// changes which way the camera faces. And it moves `target` only: the
-    /// [orbit center](Self::orbit_center) is a separate pivot that only the context menu
-    /// places, and the two must never be conflated.
-    pub fn recenter_on(&mut self, point: Vec3) {
-        self.target = point;
     }
 
     /// Put the [orbit center](Self::orbit_center) down at a world `point` — what the

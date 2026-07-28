@@ -255,6 +255,24 @@ pub enum OrbitCenterRequest {
     Reset,
 }
 
+/// How the user ended a **running modal command** from the viewport context menu.
+///
+/// While a modal command is up, the viewport menu is REPLACED by this pair — there is no third
+/// choice, because a menu that offered unrelated verbs mid-command would be offering to start a
+/// second one. Fusion's marking menu behaves the same way, and this is the general seam every
+/// future modal command reports through, not an orbit-mode detail.
+///
+/// The two are distinct in general: `Accept` keeps what the command produced, `Cancel` discards
+/// it. A command with nothing pending to discard — the explicit orbit mode is one; navigating IS
+/// the result, and it has already happened — simply ends on either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeCommand {
+    /// Keep what the command produced and end it.
+    Accept,
+    /// Discard what the command produced and end it.
+    Cancel,
+}
+
 /// The armed **sketch-mode tool** (ADR 0028) — which direct-manipulation verb a viewport
 /// click performs while a sketch is being edited. Only these three arm in slice 1 (#94 vertex
 /// drag, #95 add-point / delete); the Polyline / Rectangle tools are drawn **reserved** on the
@@ -610,6 +628,14 @@ pub struct PanelState {
     /// the way the report was.
     #[snapshot(session)]
     pub orbit_mode: OrbitMode,
+    /// The keyboard-shortcut settings — see [`shortcuts`](crate::shortcuts). The menus read their
+    /// right-hand column out of this, and the shell dispatches key presses through it, so this is
+    /// the single place a binding is written down.
+    ///
+    /// **Settings**: a rebound key is preference that outlives any one project, and it is
+    /// emphatically not something a collaborator should have imposed on them by opening a file.
+    #[snapshot(settings)]
+    pub shortcuts: crate::shortcuts::Shortcuts,
 }
 
 /// Whether the explicit **orbit mode** is running, and what it turns as
@@ -814,6 +840,11 @@ pub struct PanelResponse {
     /// action, not an `Intent`: the camera is not the document. `None` when neither menu item
     /// was chosen.
     pub orbit_center_request: Option<OrbitCenterRequest>,
+    /// How the user ended a **running modal command** this frame, from the viewport context
+    /// menu's OK / Cancel variant. A VIEW action like the rest of this block: the shell owns what
+    /// each modal command's accept and cancel actually mean. `None` when no command was running
+    /// or the menu was dismissed without a choice.
+    pub mode_command: Option<ModeCommand>,
     /// How the user asked to **leave sketch mode** this frame (ADR 0028), via the floating
     /// `CANCEL | FINISH SKETCH` control — `Finish` commits, `Cancel` discards. A VIEW action:
     /// the shell clears [`PanelState::sketch_mode`](PanelState::sketch_mode) (and, from #94,

@@ -55,6 +55,16 @@ pub struct SnapTween {
     /// Roll target (radians). Face/edge/corner/Home snaps re-upright (target 0);
     /// a roll arrow tweens it by ∓π/2 off `roll_from`.
     pub roll_to: f32,
+    /// The orbit TARGET at the tween start.
+    ///
+    /// Every angle snap holds it (`target_to == target_from`, a no-op lerp) — the point a snap
+    /// turns about is the point it was already turning about. Only [`Self::recenter`] moves it,
+    /// which is why it lives on the same tween rather than in a second one: a re-centre and a
+    /// snap are both "the camera is being carried somewhere", and two tweens racing to write the
+    /// camera is exactly the two-truths bug the type system should not have to catch.
+    pub target_from: glam::Vec3,
+    /// The orbit target the tween lands on.
+    pub target_to: glam::Vec3,
     /// Seconds elapsed since the tween started.
     pub elapsed_seconds: f32,
     /// Total duration in seconds (~0.38 s).
@@ -77,6 +87,9 @@ impl SnapTween {
             // A face/edge/corner snap re-uprights: tween roll back to 0.
             roll_from: camera.roll,
             roll_to: 0.0,
+            // Held: a snap turns about the point it was already turning about.
+            target_from: camera.target,
+            target_to: camera.target,
             elapsed_seconds: 0.0,
             duration_seconds: Self::DEFAULT_DURATION_SECONDS,
         }
@@ -94,6 +107,9 @@ impl SnapTween {
             // A face snap re-uprights: tween roll back to 0.
             roll_from: camera.roll,
             roll_to: 0.0,
+            // Held: a snap turns about the point it was already turning about.
+            target_from: camera.target,
+            target_to: camera.target,
             elapsed_seconds: 0.0,
             duration_seconds: Self::DEFAULT_DURATION_SECONDS,
         }
@@ -118,6 +134,9 @@ impl SnapTween {
             // of a turn back to level, not most of a turn forward.
             roll_from: normalize_roll(camera.roll),
             roll_to: 0.0,
+            // Held: a snap turns about the point it was already turning about.
+            target_from: camera.target,
+            target_to: camera.target,
             elapsed_seconds: 0.0,
             duration_seconds: Self::DEFAULT_DURATION_SECONDS,
         }
@@ -145,6 +164,33 @@ impl SnapTween {
             phi_to: camera.orbit_phi,
             roll_from: camera.roll,
             roll_to: camera.roll + delta,
+            // Held: a snap turns about the point it was already turning about.
+            target_from: camera.target,
+            target_to: camera.target,
+            elapsed_seconds: 0.0,
+            duration_seconds: Self::DEFAULT_DURATION_SECONDS,
+        }
+    }
+
+    /// Begin a **re-centring** tween: hold every angle and carry the orbit `target` to `point`.
+    ///
+    /// The explicit orbit mode's click. It is a pan, not a rotation, so the three angles are held
+    /// (`*_to == *_from`) and only the target travels — the view slides until `point` is at the
+    /// centre of the frame, facing the same way it already faced.
+    ///
+    /// It ANIMATES for the reason every other camera snap does: a cut straight to the new centre
+    /// gives no cue as to which way the view moved, and the whole point of aiming at a feature is
+    /// to keep hold of it while the frame comes to it.
+    pub fn recenter(camera: &OrbitCamera, point: glam::Vec3) -> Self {
+        Self {
+            theta_from: camera.orbit_theta,
+            phi_from: camera.orbit_phi,
+            theta_to: camera.orbit_theta,
+            phi_to: camera.orbit_phi,
+            roll_from: camera.roll,
+            roll_to: camera.roll,
+            target_from: camera.target,
+            target_to: point,
             elapsed_seconds: 0.0,
             duration_seconds: Self::DEFAULT_DURATION_SECONDS,
         }
@@ -159,6 +205,7 @@ impl SnapTween {
         camera.orbit_theta = self.theta_from + (self.theta_to - self.theta_from) * eased;
         camera.orbit_phi = self.phi_from + (self.phi_to - self.phi_from) * eased;
         camera.roll = self.roll_from + (self.roll_to - self.roll_from) * eased;
+        camera.target = self.target_from + (self.target_to - self.target_from) * eased;
         let finished = progress >= 1.0;
         if finished {
             // Normalise the settled roll to (−π, π] so repeated arrow presses never

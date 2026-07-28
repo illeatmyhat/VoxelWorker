@@ -211,6 +211,11 @@ pub struct SettingsArtifact {
     /// The window size to restore on next launch.
     #[serde(default = "default_window_size")]
     pub window_size: [u32; 2],
+    /// The keyboard bindings. Settings rather than view state by the membership test above: a
+    /// rebound key is a setup somebody chose to keep, and emphatically not one a collaborator
+    /// should have imposed on them by opening a file.
+    #[serde(default)]
+    pub shortcuts: crate::settings::ShortcutsConfig,
 }
 
 /// Where *you* are working rather than what the model is.
@@ -417,6 +422,7 @@ impl DocumentArtifact {
             home_distance: _,
             home_explicit: _,
             window_size: _,
+            shortcuts: _,
         } = state;
         Self {
             scene: scene.clone(),
@@ -466,6 +472,7 @@ impl Dump {
             selection,
             default_orbit_type,
             orbit_mode,
+            shortcuts,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -481,6 +488,7 @@ impl Dump {
                 home_distance: *home_distance,
                 home_explicit: *home_explicit,
                 window_size: *window_size,
+                shortcuts: shortcuts.clone(),
             },
             view: ViewArtifact {
                 voxels_per_block: *voxels_per_block,
@@ -527,6 +535,7 @@ impl Dump {
         AppConfig {
             scene: document.scene,
             voxels_per_block: view.voxels_per_block,
+            shortcuts: settings.shortcuts,
             projection_mode: settings.projection_mode,
             material: settings.material,
             axes_on_top: settings.axes_on_top,
@@ -614,6 +623,7 @@ impl Default for SettingsArtifact {
             home_distance: default_distance(),
             home_explicit: false,
             window_size: default_window_size(),
+            shortcuts: crate::settings::ShortcutsConfig::default(),
         }
     }
 }
@@ -678,6 +688,16 @@ mod tests {
         AppConfig {
             orbit_center: [0.0, 0.0, 0.0],
             scene: None,
+            // Off its defaults (a command the built-ins leave unbound now holds a key) so a
+            // capture that dropped the bindings fails the round-trip.
+            shortcuts: {
+                let mut shortcuts = ui::shortcuts::Shortcuts::default();
+                shortcuts.bind(
+                    ui::shortcuts::ShortcutCommand::DeleteSelection,
+                    Some(ui::shortcuts::ShortcutKey::Delete),
+                );
+                crate::settings::ShortcutsConfig::from_shortcuts(&shortcuts)
+            },
             voxels_per_block: 24,
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,

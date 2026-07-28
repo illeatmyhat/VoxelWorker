@@ -36,6 +36,7 @@ pub mod gizmos;
 pub mod icons;
 pub mod palette;
 pub mod panel;
+pub mod shortcuts;
 pub mod theme;
 pub mod widgets;
 pub mod workspace;

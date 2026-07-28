@@ -55,6 +55,7 @@ color_token! {
     SCRUBBER_TICK = Color32::from_rgb(0x3a, 0x5f, 0x57), "layer scrubber — the block-boundary snap ticks (teal)";
     SCRUBBER_BAND = Color32::from_rgba_unmultiplied_const(0x5f, 0xb8, 0xa4, 70), "layer scrubber — the selected-band fill (teal, translucent)";
     SCRUBBER_HANDLE_EDGE = Color32::from_rgb(0x10, 0x0c, 0x08), "layer scrubber — the handle border (near-black warm)";
+    RETICLE = Color32::from_rgba_unmultiplied_const(0x8a, 0x93, 0x9c, 128), "orbit-mode targeting reticle — neutral GRAY at 50%, the one mark deliberately outside the accent. It spans most of the viewport, so an accent one would repaint the whole frame; and it is a place-marker, not a live value. The tone is a theme token so it tracks the theme's contrast rather than being pinned to one background";
     DIALOG_BG = Color32::from_rgb(0x12, 0x14, 0x18), "floating dialog background (the Add-shape dialog)";
     DIALOG_BORDER = Color32::from_rgb(0x3c, 0x42, 0x4a), "floating dialog border";
 }

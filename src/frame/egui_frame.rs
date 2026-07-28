@@ -108,6 +108,76 @@ pub struct PreparedEguiFrame {
     pub chrome_rects_px: Vec<[f32; 4]>,
 }
 
+/// One row of a viewport context menu: an [`Icon`](ui::icons::Icon) painter, the label, then the
+/// row's keyboard shortcut flushed to the right edge.
+///
+/// Manual allocate-and-paint rather than an [`egui::Button`], because the mark has to be real
+/// graphics: a unicode character renders as tofu in egui's font, so every glyph in this app is
+/// drawn by an icon painter. That is also why the rows share one helper — a row that reached for
+/// a text glyph because the icon path was inconvenient is exactly the regression to prevent.
+///
+/// The row names its [`ShortcutCommand`](ui::shortcuts::ShortcutCommand) and the binding is looked
+/// up in the [`Shortcuts`](ui::shortcuts::Shortcuts) settings — there is deliberately no way to
+/// pass the text, so a hardcoded "Esc" is a type error rather than a review note. An unbound
+/// command leaves the column empty rather than inventing a binding, which is what lets the menu
+/// double as the honest list of what IS bound.
+///
+/// `enabled == false` greys the row and swallows the click, which is how Delete shows that there
+/// is nothing picked to delete without vanishing and making the menu twitch between opens.
+fn context_menu_row(
+    ui: &mut egui::Ui,
+    shortcuts: &ui::shortcuts::Shortcuts,
+    icon: ui::icons::Icon,
+    label: &str,
+    command: ui::shortcuts::ShortcutCommand,
+    enabled: bool,
+    tint: Option<egui::Color32>,
+) -> bool {
+    const ROW_HEIGHT: f32 = 22.0;
+    const ICON_SIZE: f32 = 13.0;
+    const ICON_INSET: f32 = 6.0;
+    const LABEL_GAP: f32 = 8.0;
+    const SHORTCUT_INSET: f32 = 8.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().max(150.0), ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+    let color = match (enabled, tint) {
+        (false, _) => ui.visuals().weak_text_color(),
+        (true, Some(tint)) => tint,
+        (true, None) => ui.visuals().text_color(),
+    };
+    if enabled && response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.bg_fill);
+    }
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + ICON_INSET + ICON_SIZE / 2.0, rect.center().y),
+        egui::vec2(ICON_SIZE, ICON_SIZE),
+    );
+    icon.draw(ui.painter(), icon_rect, color);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    ui.painter().text(
+        egui::pos2(icon_rect.right() + LABEL_GAP, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font.clone(),
+        color,
+    );
+    if let Some(shortcut) = shortcuts.display(command) {
+        // Always the weak tone, even on the warn-tinted row: the binding is a reminder, not a
+        // second thing to act on, and matching the label's colour would make it read as one.
+        ui.painter().text(
+            egui::pos2(rect.right() - SHORTCUT_INSET, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            shortcut,
+            font,
+            ui.visuals().weak_text_color(),
+        );
+    }
+    enabled && response.clicked()
+}
+
 /// Run the egui pass for one frame: build the panel, upload changed textures to
 /// the GPU, and tessellate the UI into paint jobs.
 ///
@@ -170,11 +240,11 @@ pub fn run_egui_frame(
     // rect: the pivot is moved by the context menu, never by dragging it. Always `None` on the
     // headless `shot` path.
     orbit_center: Option<(egui::Pos2, bool)>,
-    // ADR 0032: the camera TARGET's projected position (egui points) while the explicit orbit
-    // mode runs, or `None` when it is off or the target is behind the camera. The mode's reticle
-    // draws here. A separate point from `orbit_center` on purpose — the two pivots are moved by
-    // different mechanisms and must never be collapsed. Always `None` on the headless `shot` path.
-    orbit_target: Option<egui::Pos2>,
+    // ADR 0032: whether the explicit orbit mode's targeting reticle draws this frame. It fills
+    // the central viewport rect — computed inside this pass, so no position travels with the
+    // flag — and the shell clears it while a TURN is in flight, so the model comes round against
+    // an unobstructed view. Always `false` on the headless `shot` path.
+    orbit_reticle: bool,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -300,46 +370,64 @@ pub fn run_egui_frame(
                 None => panel_state.selected_node().is_some(),
             };
             let mut close = false;
+            // Cloned out of the state the rows also mutate — the bindings are read-only here.
+            let shortcuts = panel_state.shortcuts.clone();
             let area = egui::Area::new(egui::Id::new("viewport_context_menu"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(menu_pos)
                 .show(&context, |ui| {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
                         ui.set_min_width(160.0);
-                        // A menu row: the warn ✕ is drawn by the egui icon painter
-                        // (`Icon::Cancel`), NEVER a font character — a unicode glyph renders as
-                        // tofu in egui's font. Manual allocate-and-paint so the icon is real
-                        // graphics, not text.
-                        let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width().max(150.0), 22.0),
-                            egui::Sense::click(),
-                        );
-                        let color = if delete_enabled {
-                            ui::theme::WARN
-                        } else {
-                            ui.visuals().weak_text_color()
-                        };
-                        if delete_enabled && response.hovered() {
-                            ui.painter().rect_filled(
-                                rect,
-                                3.0,
-                                ui.visuals().widgets.hovered.bg_fill,
-                            );
+                        // A running MODAL COMMAND replaces the whole menu with OK / Cancel. This
+                        // is the general viewport variant, not an orbit-mode special case: while
+                        // a command is up there is no third choice, because a menu offering
+                        // unrelated verbs mid-command would be offering to start a second one.
+                        // The keyboard shortcuts are the universal pair — Return accepts, Escape
+                        // cancels — handled by the shell, which also decides what each MEANS. For
+                        // the explicit orbit mode both simply end it: navigating IS the result and
+                        // it has already happened, so there is nothing left to discard.
+                        //
+                        // The unrelated verbs a running command still wants to reach are planned
+                        // to live in a Fusion/Maya-style PIE MENU above this list, not in it —
+                        // which is what keeps this list exactly two rows.
+                        if panel_state.orbit_mode.is_on() {
+                            if context_menu_row(
+                                ui,
+                                &shortcuts,
+                                ui::icons::Icon::Commit,
+                                "OK",
+                                ui::shortcuts::ShortcutCommand::AcceptCommand,
+                                true,
+                                None,
+                            ) {
+                                panel_response.mode_command = Some(ui::panel::ModeCommand::Accept);
+                                close = true;
+                            }
+                            if context_menu_row(
+                                ui,
+                                &shortcuts,
+                                ui::icons::Icon::Cancel,
+                                "Cancel",
+                                ui::shortcuts::ShortcutCommand::CancelCommand,
+                                true,
+                                None,
+                            ) {
+                                panel_response.mode_command = Some(ui::panel::ModeCommand::Cancel);
+                                close = true;
+                            }
+                            return;
                         }
-                        let icon = 13.0;
-                        let icon_rect = egui::Rect::from_center_size(
-                            egui::pos2(rect.left() + 6.0 + icon / 2.0, rect.center().y),
-                            egui::vec2(icon, icon),
-                        );
-                        ui::icons::Icon::Cancel.draw(ui.painter(), icon_rect, color);
-                        ui.painter().text(
-                            egui::pos2(icon_rect.right() + 8.0, rect.center().y),
-                            egui::Align2::LEFT_CENTER,
+                        // Delete is the one row that carries a colour of its own: removal is the
+                        // only warn-valent act in the menu.
+                        if context_menu_row(
+                            ui,
+                            &shortcuts,
+                            ui::icons::Icon::Cancel,
                             "Delete",
-                            egui::TextStyle::Button.resolve(ui.style()),
-                            color,
-                        );
-                        if delete_enabled && response.clicked() {
+                            ui::shortcuts::ShortcutCommand::DeleteSelection,
+                            delete_enabled,
+                            Some(ui::theme::WARN),
+                        ) {
                             if in_sketch {
                                 // The shell owns the selection + the sketch commit path.
                                 panel_response.delete_sketch_selection = true;
@@ -362,21 +450,34 @@ pub fn run_egui_frame(
                         // then follows the cursor as its own gizmo until a click commits it,
                         // so you watch it land instead of finding out after the menu closed.
                         ui.separator();
-                        let row = egui::vec2(ui.available_width().max(150.0), 22.0);
-                        if ui
-                            .add_sized(row, egui::Button::new("Place orbit center"))
-                            .clicked()
-                        {
+                        // `Orbit` is the generic orbit noun — the pivot itself, as distinct from
+                        // the two TYPE marks a gesture turns as. Reset borrows `Home` for the
+                        // sense it already carries everywhere else in the chrome: back to the
+                        // known place. Neither is a mark authored for this row.
+                        if context_menu_row(
+                            ui,
+                            &shortcuts,
+                            ui::icons::Icon::Orbit,
+                            "Place orbit center",
+                            ui::shortcuts::ShortcutCommand::PlaceOrbitCenter,
+                            true,
+                            None,
+                        ) {
                             panel_response.orbit_center_request =
                                 Some(ui::panel::OrbitCenterRequest::Place);
                             close = true;
                         }
                         // Always enabled: resetting an unplaced center is a harmless no-op,
                         // and greying it out would only make the menu twitch between opens.
-                        if ui
-                            .add_sized(row, egui::Button::new("Reset orbit center"))
-                            .clicked()
-                        {
+                        if context_menu_row(
+                            ui,
+                            &shortcuts,
+                            ui::icons::Icon::Home,
+                            "Reset orbit center",
+                            ui::shortcuts::ShortcutCommand::ResetOrbitCenter,
+                            true,
+                            None,
+                        ) {
                             panel_response.orbit_center_request =
                                 Some(ui::panel::OrbitCenterRequest::Reset);
                             close = true;
@@ -392,21 +493,21 @@ pub fn run_egui_frame(
                         // and nowhere else — it is the type you SET, not the one you reach for on
                         // a particular object.
                         //
-                        // The row toggles, so the same place that turned the mode on turns it off
-                        // without hunting for the rail.
+                        // Entry only. Leaving is the OK / Cancel variant above, which is where
+                        // every modal command ends — a per-command "leave" row would be a second
+                        // exit for one command and no exit for the rest.
                         ui.separator();
-                        let in_orbit_mode = panel_state.orbit_mode.is_on();
-                        let label = if in_orbit_mode {
-                            "Leave orbit mode"
-                        } else {
-                            "Constrained Orbit"
-                        };
-                        if ui.add_sized(row, egui::Button::new(label)).clicked() {
-                            panel_state.orbit_mode = if in_orbit_mode {
-                                ui::panel::OrbitMode::Off
-                            } else {
-                                ui::panel::OrbitMode::Named(OrbitType::Constrained)
-                            };
+                        if context_menu_row(
+                            ui,
+                            &shortcuts,
+                            ui::icons::Icon::OrbitConstrained,
+                            "Constrained Orbit",
+                            ui::shortcuts::ShortcutCommand::EnterConstrainedOrbit,
+                            true,
+                            None,
+                        ) {
+                            panel_state.orbit_mode =
+                                ui::panel::OrbitMode::Named(OrbitType::Constrained);
                             close = true;
                         }
                     });
@@ -611,11 +712,12 @@ pub fn run_egui_frame(
             ui::gizmos::orbit_center_overlay(ui, center, placing);
         }
 
-        // ADR 0032: the explicit orbit mode's targeting reticle, on the camera target. Drawn
-        // whenever the mode runs — it is what says the left button now turns and re-centres, so
-        // hiding it between gestures would leave the flipped verb invisible for most of the mode.
-        if let Some(target) = orbit_target {
-            ui::gizmos::orbit_reticle_overlay(ui, target);
+        // ADR 0032: the explicit orbit mode's targeting reticle, filling the central viewport.
+        // Drawn whenever the mode runs and the button is up — it is what says the left button now
+        // turns and re-centres, so hiding it between gestures would leave the flipped verb
+        // invisible for most of the mode.
+        if orbit_reticle {
+            ui::gizmos::orbit_reticle_overlay(ui, central_rect_points);
         }
 
         // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the

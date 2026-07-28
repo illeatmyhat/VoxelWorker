@@ -25,6 +25,7 @@ use ui::panel::{
     LayerRange, OrbitMode, PanelState, PlacementGhost, PlacementSnap, Selection, SelectionTarget,
     SignalStackState, SketchTool, ViewMode,
 };
+use ui::shortcuts::{ShortcutCommand, ShortcutKey, Shortcuts};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
@@ -138,6 +139,139 @@ impl PlacementGhostConfig {
             offset_local: [0.0, 0.0, 0.0],
             rotation: glam::Quat::IDENTITY,
         }
+    }
+}
+
+/// The serde-able mirror of one [`ShortcutCommand`]. Kept in step by the exhaustive matches in
+/// [`ShortcutsConfig`]'s two conversions, so a command added to `ui` breaks this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ShortcutCommandConfig {
+    /// [`ShortcutCommand::AcceptCommand`].
+    AcceptCommand,
+    /// [`ShortcutCommand::CancelCommand`].
+    CancelCommand,
+    /// [`ShortcutCommand::DeleteSelection`].
+    DeleteSelection,
+    /// [`ShortcutCommand::PlaceOrbitCenter`].
+    PlaceOrbitCenter,
+    /// [`ShortcutCommand::ResetOrbitCenter`].
+    ResetOrbitCenter,
+    /// [`ShortcutCommand::EnterConstrainedOrbit`].
+    EnterConstrainedOrbit,
+    /// [`ShortcutCommand::ExportRepro`].
+    ExportRepro,
+}
+
+/// The serde-able mirror of one [`ShortcutKey`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ShortcutKeyConfig {
+    /// [`ShortcutKey::Return`].
+    Return,
+    /// [`ShortcutKey::Escape`].
+    Escape,
+    /// [`ShortcutKey::Delete`].
+    Delete,
+    /// [`ShortcutKey::Backspace`].
+    Backspace,
+    /// [`ShortcutKey::F9`].
+    F9,
+}
+
+/// One row of the keyboard-shortcut settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShortcutBindingConfig {
+    /// The command the row is about.
+    pub command: ShortcutCommandConfig,
+    /// Its key, or `None` for a command the keyboard cannot reach.
+    #[serde(default)]
+    pub key: Option<ShortcutKeyConfig>,
+}
+
+/// The serde-able mirror of the [`Shortcuts`] settings (ADR 0016: `ui` links no serde).
+///
+/// Persisted as the whole list rather than the diff from the defaults, so the file reads as the
+/// same inventory the settings UI shows — including the commands nothing is bound to, which are
+/// the ones somebody scanning the file most wants to see.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShortcutsConfig {
+    /// One row per command, in inventory order.
+    #[serde(default)]
+    pub bindings: Vec<ShortcutBindingConfig>,
+}
+
+impl ShortcutsConfig {
+    /// Capture the config mirror from the live [`Shortcuts`].
+    pub fn from_shortcuts(shortcuts: &Shortcuts) -> Self {
+        Self {
+            bindings: shortcuts
+                .list()
+                .map(|(command, key)| ShortcutBindingConfig {
+                    command: match command {
+                        ShortcutCommand::AcceptCommand => ShortcutCommandConfig::AcceptCommand,
+                        ShortcutCommand::CancelCommand => ShortcutCommandConfig::CancelCommand,
+                        ShortcutCommand::DeleteSelection => ShortcutCommandConfig::DeleteSelection,
+                        ShortcutCommand::PlaceOrbitCenter => {
+                            ShortcutCommandConfig::PlaceOrbitCenter
+                        }
+                        ShortcutCommand::ResetOrbitCenter => {
+                            ShortcutCommandConfig::ResetOrbitCenter
+                        }
+                        ShortcutCommand::EnterConstrainedOrbit => {
+                            ShortcutCommandConfig::EnterConstrainedOrbit
+                        }
+                        ShortcutCommand::ExportRepro => ShortcutCommandConfig::ExportRepro,
+                    },
+                    key: key.map(|key| match key {
+                        ShortcutKey::Return => ShortcutKeyConfig::Return,
+                        ShortcutKey::Escape => ShortcutKeyConfig::Escape,
+                        ShortcutKey::Delete => ShortcutKeyConfig::Delete,
+                        ShortcutKey::Backspace => ShortcutKeyConfig::Backspace,
+                        ShortcutKey::F9 => ShortcutKeyConfig::F9,
+                    }),
+                })
+                .collect(),
+        }
+    }
+
+    /// Rebuild the runtime [`Shortcuts`] this config describes.
+    ///
+    /// Starts from the built-in bindings, so a command the file predates keeps its default rather
+    /// than silently arriving unbound. Applying through `bind` also means a stored file that bound
+    /// one key to two commands cannot produce two handlers racing for the press.
+    pub fn to_shortcuts(&self) -> Shortcuts {
+        let mut shortcuts = Shortcuts::default();
+        for binding in &self.bindings {
+            let command = match binding.command {
+                ShortcutCommandConfig::AcceptCommand => ShortcutCommand::AcceptCommand,
+                ShortcutCommandConfig::CancelCommand => ShortcutCommand::CancelCommand,
+                ShortcutCommandConfig::DeleteSelection => ShortcutCommand::DeleteSelection,
+                ShortcutCommandConfig::PlaceOrbitCenter => ShortcutCommand::PlaceOrbitCenter,
+                ShortcutCommandConfig::ResetOrbitCenter => ShortcutCommand::ResetOrbitCenter,
+                ShortcutCommandConfig::EnterConstrainedOrbit => {
+                    ShortcutCommand::EnterConstrainedOrbit
+                }
+                ShortcutCommandConfig::ExportRepro => ShortcutCommand::ExportRepro,
+            };
+            shortcuts.bind(
+                command,
+                binding.key.map(|key| match key {
+                    ShortcutKeyConfig::Return => ShortcutKey::Return,
+                    ShortcutKeyConfig::Escape => ShortcutKey::Escape,
+                    ShortcutKeyConfig::Delete => ShortcutKey::Delete,
+                    ShortcutKeyConfig::Backspace => ShortcutKey::Backspace,
+                    ShortcutKeyConfig::F9 => ShortcutKey::F9,
+                }),
+            );
+        }
+        shortcuts
+    }
+}
+
+impl Default for ShortcutsConfig {
+    /// The full inventory at its built-in bindings — not an empty list, so a fresh config file
+    /// and a captured one are the same shape.
+    fn default() -> Self {
+        Self::from_shortcuts(&Shortcuts::default())
     }
 }
 
@@ -360,6 +494,14 @@ pub struct AppConfig {
     /// because a mode running a NAMED type overrides the default without writing it.
     #[snapshot(session)]
     pub orbit_mode: OrbitMode,
+
+    /// The keyboard-shortcut settings (`ui::shortcuts`) — the single place a binding is written
+    /// down, read by the menus' right-hand column and by the shell's key dispatch alike.
+    /// **Settings**: a rebound key is preference that outlives any one project, and one person's
+    /// bindings must not ride into a shared document. `Shortcuts` lives in the serde-free `ui`
+    /// crate, so it persists through the [`ShortcutsConfig`] mirror.
+    #[snapshot(settings)]
+    pub shortcuts: ShortcutsConfig,
 }
 
 impl Default for AppConfig {
@@ -395,6 +537,7 @@ impl Default for AppConfig {
             default_orbit_type: OrbitType::default(),
             orbit_mode: OrbitMode::default(),
             selection: SelectionConfig::default(),
+            shortcuts: ShortcutsConfig::default(),
         }
     }
 }
@@ -452,6 +595,7 @@ impl AppConfig {
             sketch_tool: panel.sketch_tool,
             default_orbit_type: panel.default_orbit_type,
             orbit_mode: panel.orbit_mode,
+            shortcuts: ShortcutsConfig::from_shortcuts(&panel.shortcuts),
             selection: SelectionConfig::from_selection(&panel.selection),
             // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
             sketch_mode: panel.sketch_mode,
@@ -558,6 +702,7 @@ impl AppConfig {
             sketch_tool: self.sketch_tool,
             default_orbit_type: self.default_orbit_type,
             orbit_mode: self.orbit_mode,
+            shortcuts: self.shortcuts.to_shortcuts(),
             // Restored from `SelectionConfig` just below, once the scene is in place, so a
             // target can be checked against the nodes that actually came back.
             selection: ui::panel::Selection::default(),

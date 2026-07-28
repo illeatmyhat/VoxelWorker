@@ -15,6 +15,12 @@ fn config_round_trips_through_json() {
         orbit_center: [0.0, 0.0, 0.0],
         default_orbit_type: camera::OrbitType::Free,
         orbit_mode: ui::panel::OrbitMode::Named(camera::OrbitType::Constrained),
+        // Off its defaults, so a round-trip that dropped the bindings fails here.
+        shortcuts: {
+            let mut shortcuts = Shortcuts::default();
+            shortcuts.bind(ShortcutCommand::DeleteSelection, Some(ShortcutKey::Delete));
+            ShortcutsConfig::from_shortcuts(&shortcuts)
+        },
         scene: None,
         voxels_per_block: 24,
         projection_mode: ProjectionMode::Orthographic,

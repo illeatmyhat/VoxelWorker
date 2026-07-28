@@ -10,3 +10,10 @@ disallowed-methods = [
     { path = "egui::Color32::from_black_alpha", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
     { path = "egui::Color32::from_additive_luminance", reason = "define this colour as a token in ui::theme::color_palette and reference it by name" },
 ]
+
+# Keybinds must be declared in the ui::shortcuts settings and dispatched by COMMAND; a `KeyCode`
+# named anywhere else is a second copy of a binding, free to drift from the one the menu shows.
+# The single winit translation table (src/windowed/keys.rs) opts out.
+disallowed-types = [
+    { path = "winit::keyboard::KeyCode", reason = "bind the command in ui::shortcuts and dispatch through Shortcuts::command; src/windowed/keys.rs is the only translation table" },
+]

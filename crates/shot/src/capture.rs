@@ -1123,7 +1123,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         None,
         // ADR 0032: nor the orbit-mode reticle — the explicit orbit mode is entered by a click
         // the headless path never makes.
-        None,
+        false,
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect
