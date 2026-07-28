@@ -443,14 +443,13 @@ pub fn run_egui_frame(
                         // then follows the cursor as its own gizmo until a click commits it,
                         // so you watch it land instead of finding out after the menu closed.
                         ui.separator();
-                        // `Orbit` is the generic orbit noun — the pivot itself, as distinct from
-                        // the two TYPE marks a gesture turns as. Reset borrows `Home` for the
-                        // sense it already carries everywhere else in the chrome: back to the
-                        // known place. Neither is a mark authored for this row.
+                        // Two marks authored for these rows, sharing a silhouette: place IS the
+                        // pivot gizmo, so the row shows what will appear on screen, and reset is
+                        // the same mark with its ring opened into a revert arrow.
                         if context_menu_row(
                             ui,
                             &shortcuts,
-                            ui::icons::Icon::Orbit,
+                            ui::icons::Icon::OrbitCenterPlace,
                             "Place orbit center",
                             ui::shortcuts::ShortcutCommand::PlaceOrbitCenter,
                             true,
@@ -465,7 +464,7 @@ pub fn run_egui_frame(
                         if context_menu_row(
                             ui,
                             &shortcuts,
-                            ui::icons::Icon::Home,
+                            ui::icons::Icon::OrbitCenterReset,
                             "Reset orbit center",
                             ui::shortcuts::ShortcutCommand::ResetOrbitCenter,
                             true,

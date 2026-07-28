@@ -79,6 +79,8 @@ mod mode_normal;
 mod mode_onion;
 mod onion_scrub;
 mod orbit;
+mod orbit_center_place;
+mod orbit_center_reset;
 mod orbit_constrained;
 mod orbit_free;
 mod outset;
@@ -529,6 +531,8 @@ pub enum Icon {
     Orbit,
     OrbitConstrained,
     OrbitFree,
+    OrbitCenterPlace,
+    OrbitCenterReset,
     Pan,
     Zoom,
     AxesGizmo,
@@ -603,6 +607,8 @@ impl Icon {
         Icon::Orbit,
         Icon::OrbitConstrained,
         Icon::OrbitFree,
+        Icon::OrbitCenterPlace,
+        Icon::OrbitCenterReset,
         Icon::Pan,
         Icon::Zoom,
         Icon::AxesGizmo,
@@ -670,6 +676,8 @@ impl Icon {
             Icon::Orbit => orbit::draw(&g),
             Icon::OrbitConstrained => orbit_constrained::draw(&g),
             Icon::OrbitFree => orbit_free::draw(&g),
+            Icon::OrbitCenterPlace => g.marks(orbit_center_place::DRAW),
+            Icon::OrbitCenterReset => g.marks(orbit_center_reset::DRAW),
             Icon::Pan => g.marks(pan::DRAW),
             Icon::Zoom => g.marks(zoom::DRAW),
             Icon::AxesGizmo => g.marks(axes_gizmo::DRAW),
@@ -737,6 +745,8 @@ impl Icon {
             Icon::Orbit => "orbit",
             Icon::OrbitConstrained => "orbit-constrained",
             Icon::OrbitFree => "orbit-free",
+            Icon::OrbitCenterPlace => "orbit-center-place",
+            Icon::OrbitCenterReset => "orbit-center-reset",
             Icon::Pan => "pan",
             Icon::Zoom => "zoom",
             Icon::AxesGizmo => "axes-gizmo",
@@ -804,6 +814,8 @@ impl Icon {
             | Icon::Orbit
             | Icon::OrbitConstrained
             | Icon::OrbitFree
+            | Icon::OrbitCenterPlace
+            | Icon::OrbitCenterReset
             | Icon::Pan
             | Icon::Zoom
             | Icon::AxesGizmo
@@ -869,6 +881,12 @@ impl Icon {
             }
             Icon::OrbitFree => {
                 "Free orbit: the trackball. No privileged axis, so roll accumulates and the poles                  are ordinary points."
+            }
+            Icon::OrbitCenterPlace => {
+                "Put the Shift+MMB pivot on the surface under the cursor. The mark IS the marker."
+            }
+            Icon::OrbitCenterReset => {
+                "Send the Shift+MMB pivot back to the world origin, where it started."
             }
             Icon::Pan => "Slide the pan target across the ground plane; the orbit is unchanged.",
             Icon::Zoom => "Dolly in and out. The readout stays in blocks and voxels, never pixels.",
