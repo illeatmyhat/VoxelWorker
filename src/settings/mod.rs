@@ -22,7 +22,7 @@ use camera::{HomeView, OrbitCamera, OrbitType, ProjectionMode};
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 use ui::panel::{
-    LayerRange, PanelState, PlacementGhost, PlacementSnap, Selection, SelectionTarget,
+    LayerRange, OrbitMode, PanelState, PlacementGhost, PlacementSnap, Selection, SelectionTarget,
     SignalStackState, SketchTool, ViewMode,
 };
 use voxel_core::core_geom::MaterialChoice;
@@ -353,6 +353,13 @@ pub struct AppConfig {
     /// [`projection_mode`](Self::projection_mode).
     #[snapshot(session)]
     pub default_orbit_type: OrbitType,
+
+    /// Whether the **explicit orbit mode** is running, and at which type — the state that
+    /// decides whether the left button selects or turns. Session state for the same reason
+    /// [`default_orbit_type`](Self::default_orbit_type) is, and recorded separately from it
+    /// because a mode running a NAMED type overrides the default without writing it.
+    #[snapshot(session)]
+    pub orbit_mode: OrbitMode,
 }
 
 impl Default for AppConfig {
@@ -386,6 +393,7 @@ impl Default for AppConfig {
             sketch_mode: None,
             sketch_tool: SketchTool::default(),
             default_orbit_type: OrbitType::default(),
+            orbit_mode: OrbitMode::default(),
             selection: SelectionConfig::default(),
         }
     }
@@ -443,6 +451,7 @@ impl AppConfig {
                 .map(PlacementGhostConfig::from_ghost),
             sketch_tool: panel.sketch_tool,
             default_orbit_type: panel.default_orbit_type,
+            orbit_mode: panel.orbit_mode,
             selection: SelectionConfig::from_selection(&panel.selection),
             // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
             sketch_mode: panel.sketch_mode,
@@ -548,6 +557,7 @@ impl AppConfig {
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
             default_orbit_type: self.default_orbit_type,
+            orbit_mode: self.orbit_mode,
             // Restored from `SelectionConfig` just below, once the scene is in place, so a
             // target can be checked against the nodes that actually came back.
             selection: ui::panel::Selection::default(),

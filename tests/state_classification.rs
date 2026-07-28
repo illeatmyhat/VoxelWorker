@@ -248,7 +248,12 @@ fn the_session_is_the_workspace_and_nothing_else() {
             // The DEFAULT orbit type — how the author was last steering the view. Session and
             // not settings: it is a most-recently-used working state written by using the tool,
             // not a preference anybody sat down and chose.
-            "default_orbit_type"
+            "default_orbit_type",
+            // ADR 0032 slice D: whether the explicit orbit mode is running, and at which type.
+            // Session for the same reason `sketch_mode` is — a mode is how the workspace was
+            // left — and recorded apart from the default because a NAMED override lives and
+            // dies with the mode without ever writing it.
+            "orbit_mode"
         ],
         "the session set changed: a field joining it now survives relaunch, and a field \
          leaving it stops surviving one"

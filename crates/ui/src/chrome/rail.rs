@@ -4,7 +4,7 @@ use camera::OrbitType;
 use egui::{Color32, Id, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::icons::Icon;
-use crate::panel::ViewMode;
+use crate::panel::{OrbitMode, ViewMode};
 use crate::theme;
 
 const RAIL_WIDTH: f32 = 42.0;
@@ -33,13 +33,13 @@ pub enum RailClick {
     Home,
     Fit,
     CycleMode,
-    /// The orbit-type split button's FACE half — the mark that names the current default type.
+    /// The orbit-type split button's FACE half — TOGGLE the explicit orbit mode, turning as the
+    /// type the face is showing.
     ///
-    /// In the finished control this is the half that STARTS an orbit as that type, which is why
-    /// it neither names a type nor writes the default (`docs/design/tool-modes-and-navigation.md`,
-    /// the entry-path table). Explicit orbit mode does not exist yet, so for now it opens the menu
-    /// like its caret; it is a separate variant so that when orbit mode lands, only this arm's
-    /// action changes and none of the geometry does.
+    /// It neither names a type nor writes the default (`docs/design/tool-modes-and-navigation.md`,
+    /// the entry-path table): entering from a split button's face means "start an orbit as what
+    /// this says", and what it says is already the default. The viewport menu's Constrained Orbit
+    /// is the entry that names one.
     OrbitType,
     /// The orbit-type split button's CARET half — opens the type menu, which is the ONE place the
     /// DEFAULT orbit type is written. Every other entry into an orbit either uses the default or
@@ -113,8 +113,12 @@ pub fn icon_rail(
     cube_bottom: f32,
     cube_size: f32,
     view_mode: ViewMode,
-    orbit_type: OrbitType,
+    default_orbit_type: OrbitType,
+    orbit_mode: OrbitMode,
 ) -> Option<RailClick> {
+    // The face shows the ACTIVE type, not the default: while a naming command's override runs,
+    // a face showing the default would be naming a type nothing is about to use.
+    let active_orbit_type = orbit_mode.active_type(default_orbit_type);
     let rail_rect = rail_rect(cube_left, cube_bottom, cube_size);
     let painter = ui
         .ctx()
@@ -157,9 +161,11 @@ pub fn icon_rail(
         let hovered = response.hovered();
         // A button lights when it is holding a NON-default state, so the rail reads as "nothing
         // unusual is set" at a glance: the viewport-mode button off Normal, the orbit-type button
-        // on Free.
+        // while the orbit mode is running or the default is Free. The mode counts because a mode
+        // that flips the left button's verb is the least ordinary state the rail can be in.
         let lit = (index == 2 && view_mode != ViewMode::Normal)
-            || (index == 3 && orbit_type == OrbitType::Free);
+            || (index == ORBIT_TYPE_BUTTON
+                && (orbit_mode.is_on() || active_orbit_type == OrbitType::Free));
 
         if lit {
             painter.rect_filled(button_rect, 0.0, theme::HOVER_BG);
@@ -201,7 +207,7 @@ pub fn icon_rail(
             face_rect,
             index,
             view_mode,
-            orbit_type,
+            active_orbit_type,
             tone(hovered),
         );
         if split {
@@ -218,13 +224,10 @@ pub fn icon_rail(
         }
 
         let response = response.on_hover_text(match index {
-            0 => "Home view",
-            1 => "Fit scene",
-            2 => "Viewport mode",
-            _ => match orbit_type {
-                OrbitType::Constrained => "Constrained orbit",
-                OrbitType::Free => "Free orbit",
-            },
+            0 => "Home view".to_string(),
+            1 => "Fit scene".to_string(),
+            2 => "Viewport mode".to_string(),
+            _ => orbit_face_tooltip(default_orbit_type, orbit_mode),
         });
         if response.clicked() {
             click = Some(match index {
@@ -248,6 +251,38 @@ pub fn icon_rail(
         StrokeKind::Inside,
     );
     click
+}
+
+/// The name of an orbit type, as the chrome says it.
+fn orbit_type_name(orbit_type: OrbitType) -> &'static str {
+    match orbit_type {
+        OrbitType::Constrained => "Constrained",
+        OrbitType::Free => "Free",
+    }
+}
+
+/// The face's tooltip — the one place the rail can say what the glyph cannot.
+///
+/// The glyph names the ACTIVE type, which is all a face can show. When an override is running,
+/// that face is indistinguishable from the same type being the default, so the words carry the
+/// difference: which type is running, that it lasts only for this mode, and what the default will
+/// go back to being. Dropping the parenthetical when the two agree keeps it from reading as a
+/// warning about nothing.
+fn orbit_face_tooltip(default_orbit_type: OrbitType, orbit_mode: OrbitMode) -> String {
+    let active = orbit_mode.active_type(default_orbit_type);
+    let name = orbit_type_name(active);
+    match orbit_mode {
+        OrbitMode::Off => format!("Start a {} orbit", name.to_lowercase()),
+        OrbitMode::UsingDefault => format!("Leave {} orbit", name.to_lowercase()),
+        OrbitMode::Named(_) if active == default_orbit_type => {
+            format!("Leave {} orbit", name.to_lowercase())
+        }
+        OrbitMode::Named(_) => format!(
+            "Leave {} orbit — this mode only; the default stays {}",
+            name.to_lowercase(),
+            orbit_type_name(default_orbit_type).to_lowercase()
+        ),
+    }
 }
 
 /// A centred square glyph box inside a rail button — the rail set is authored on a square 18-unit

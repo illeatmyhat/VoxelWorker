@@ -72,7 +72,11 @@ impl ApplicationHandler for App {
                     // An armed orbit-center placement outranks the tool ghost: it is the
                     // thing the cursor is currently carrying, so Esc puts it back first and
                     // leaves any armed tool alone.
-                    if !state.cancel_orbit_center_placement() {
+                    // ADR 0032: with nothing else to put back, Escape LEAVES the explicit orbit
+                    // mode — the standard way out of a mode, and the reason the mode can be
+                    // entered from a menu row that isn't next to the rail. It leaves the DEFAULT
+                    // type alone: a session override dies with the mode, never outliving it.
+                    if !state.cancel_orbit_center_placement() && !state.leave_orbit_mode() {
                         state.disarm_placement();
                     }
                 }
@@ -109,7 +113,26 @@ impl ApplicationHandler for App {
                         && !in_cube
                         && !in_chrome
                         && state.commit_orbit_center_placement();
+                    // ADR 0032: the explicit ORBIT MODE flips the left button's verb — a drag
+                    // turns the camera about `camera.target` and a stationary click re-centres
+                    // the view on the surface it hits. It outranks selection and the sketch
+                    // paths, which is the whole point of a mode, but NOT an armed orbit-center
+                    // placement: that is a transient overlay the user is mid-way through.
+                    let in_orbit_mode = !committed_orbit_center
+                        && !egui_consumed
+                        && !in_cube
+                        && !in_chrome
+                        && state.panel_state.orbit_mode.is_on();
+                    state.orbiting_in_orbit_mode = in_orbit_mode;
+                    state.orbit_mode_recenter_press = in_orbit_mode;
+                    if in_orbit_mode {
+                        // The TYPE is latched at press for the same reason Shift+MMB latches it:
+                        // the two types are two representations of one orientation, exact only
+                        // as a single point, so a conversion must never land inside a trajectory.
+                        state.active_orbit_type = state.panel_state.active_orbit_type();
+                    }
                     state.armed_press = !committed_orbit_center
+                        && !in_orbit_mode
                         && state.armed_tool.is_some()
                         && !egui_consumed
                         && !in_cube
@@ -119,6 +142,7 @@ impl ApplicationHandler for App {
                     // for the placement drop, and sketch mode keeps its three paths; selecting a
                     // node from inside a sketch would leave the mode's own selection behind.
                     state.viewport_select_press = !committed_orbit_center
+                        && !in_orbit_mode
                         && !egui_consumed
                         && !in_cube
                         && !in_chrome
@@ -128,7 +152,11 @@ impl ApplicationHandler for App {
                     // cube). The Select tool grabs a vertex handle; the Add-point / Delete tools
                     // ARM a stationary-release edit. The view stays freely rotatable throughout
                     // via Shift+MMB, which is gated on neither sketch mode nor the armed tool.
-                    if state.panel_state.sketch_mode.is_some() && !egui_consumed && !in_cube {
+                    if state.panel_state.sketch_mode.is_some()
+                        && !in_orbit_mode
+                        && !egui_consumed
+                        && !in_cube
+                    {
                         if let Some((cursor_x, cursor_y)) = position {
                             match state.panel_state.sketch_tool {
                                 ui::panel::SketchTool::Select => {
@@ -275,6 +303,27 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // ADR 0032 orbit mode: a STATIONARY release RE-CENTRES the view — the surface
+                    // under the cursor becomes `camera.target`, so the next turn happens about
+                    // what the user just pointed at. A miss (sky, no plane) is a REFUSAL, not a
+                    // fallback: the view keeps the target it had. This never touches the orbit
+                    // CENTER, which only the context menu moves.
+                    if state.orbit_mode_recenter_press {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if stationary {
+                                if let Some(point) = state.surface_point_at(Some((up_x, up_y))) {
+                                    state.app_core.camera.recenter_on(point);
+                                }
+                            }
+                        }
+                    }
+                    state.orbiting_in_orbit_mode = false;
+                    state.orbit_mode_recenter_press = false;
                     state.viewport_select_press = false;
                     state.sketch_select_press = false;
                     state.sketch_edit_press = false;
@@ -451,6 +500,35 @@ impl ApplicationHandler for App {
                             state.app_core.camera.orbit_about_point_as(
                                 state.active_orbit_type,
                                 center,
+                                delta_x,
+                                delta_y,
+                            );
+                        }
+                    }
+                }
+
+                // ADR 0032: under the explicit ORBIT MODE the left button turns the camera about
+                // `camera.target` — the same turn the cube drag performs, but at the latched
+                // ACTIVE type (the mode may be running a per-session override of the default).
+                // The first move past the threshold also spends the press: one press is either a
+                // turn or a re-centring click, never both.
+                let orbiting = orbiting || state.orbiting_in_orbit_mode;
+                if state.orbiting_in_orbit_mode {
+                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                        let delta_x = (current.0 - previous_x) as f32;
+                        let delta_y = (current.1 - previous_y) as f32;
+                        if let Some((down_x, down_y)) = state.press_position {
+                            let moved = (current.0 - down_x).abs()
+                                >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                || (current.1 - down_y).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if moved {
+                                state.orbit_mode_recenter_press = false;
+                            }
+                        }
+                        if delta_x != 0.0 || delta_y != 0.0 {
+                            state.snap_tween = None;
+                            state.app_core.camera.orbit_by_drag_as(
+                                state.active_orbit_type,
                                 delta_x,
                                 delta_y,
                             );

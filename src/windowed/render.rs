@@ -188,6 +188,9 @@ impl WindowedState {
                 // ADR 0032: the orbit-center marker — live under the cursor while a placement is
                 // armed, projected-last-frame while Shift+MMB turns about it.
                 orbit_center_marker,
+                // ADR 0032: the camera target's projected position while the orbit mode runs —
+                // where the targeting reticle draws.
+                self.orbit_target_overlay,
             )
         };
 
@@ -512,6 +515,8 @@ impl WindowedState {
         self.refresh_sketch_overlay(view_projection, prepared.viewport_px, pixels_per_point);
         // The orbit-center marker, projected for NEXT frame's draw with the same one-frame lag.
         self.refresh_orbit_center_overlay(view_projection, prepared.viewport_px, pixels_per_point);
+        // The orbit mode's reticle, on `camera.target`, with the same lag.
+        self.refresh_orbit_target_overlay(view_projection, prepared.viewport_px, pixels_per_point);
         // #95: cache the ray-frame matrix so the release handler (in `events`) can invert a
         // cursor into a profile coordinate for an add-point insert, using the SAME frame the
         // overlay saw and without the wide-baseline `/w` melt of the full-VP inverse.
@@ -1287,6 +1292,22 @@ impl WindowedState {
         std::mem::take(&mut self.placing_orbit_center)
     }
 
+    /// Leave the explicit orbit mode, restoring the left button to Select. Returns whether the
+    /// mode was running, so Escape can fall through to the tool ghost when it wasn't.
+    ///
+    /// Any in-flight gesture dies with the mode rather than being stranded in a mode that no
+    /// longer exists, and a per-session type override dies with it too — the DEFAULT type is
+    /// never written here.
+    pub(super) fn leave_orbit_mode(&mut self) -> bool {
+        if !self.panel_state.orbit_mode.is_on() {
+            return false;
+        }
+        self.panel_state.orbit_mode = ui::panel::OrbitMode::Off;
+        self.orbiting_in_orbit_mode = false;
+        self.orbit_mode_recenter_press = false;
+        true
+    }
+
     /// Where the orbit-center gizmo draws, and whether it draws at all: the armed preview
     /// while placing, else the committed center while a Shift+MMB orbit is turning about it.
     /// `None` the rest of the time — the center is a pivot, not permanent furniture.
@@ -1316,17 +1337,32 @@ impl WindowedState {
         let Some(center) = self.visible_orbit_center() else {
             return;
         };
-        let clip = view_projection * glam::Vec4::new(center.x, center.y, center.z, 1.0);
-        if clip.w <= 0.0 {
+        self.orbit_center_overlay =
+            project_to_screen(center, view_projection, viewport_px, pixels_per_point)
+                .map(|position| (position, false));
+    }
+
+    /// Project the explicit orbit mode's RETICLE for next frame's draw, on `camera.target`.
+    ///
+    /// The same one-frame lag as the orbiting centre marker, and invisible for the same reason:
+    /// an orbit holds its own pivot screen-fixed by construction, and the one gesture that moves
+    /// the target — the re-centring click — ends before the next frame draws.
+    fn refresh_orbit_target_overlay(
+        &mut self,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+        pixels_per_point: f32,
+    ) {
+        self.orbit_target_overlay = None;
+        if !self.panel_state.orbit_mode.is_on() {
             return;
         }
-        let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
-        let px = vx + (clip.x / clip.w * 0.5 + 0.5) * vw;
-        let py = vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh;
-        self.orbit_center_overlay = Some((
-            egui::Pos2::new(px / pixels_per_point, py / pixels_per_point),
-            false,
-        ));
+        self.orbit_target_overlay = project_to_screen(
+            self.app_core.camera.target,
+            view_projection,
+            viewport_px,
+            pixels_per_point,
+        );
     }
 
     /// Where the orbit-center gizmo draws THIS frame, and whether a placement is armed.
@@ -1687,6 +1723,28 @@ impl WindowedState {
             }
         }
     }
+}
+
+/// Project a point in the camera's render frame to egui points inside `viewport_px`, or `None`
+/// when it sits behind the camera. The two pivot overlays share it so a marker and a reticle
+/// cannot disagree about where a world point lands on screen.
+fn project_to_screen(
+    point: glam::Vec3,
+    view_projection: glam::Mat4,
+    viewport_px: [u32; 4],
+    pixels_per_point: f32,
+) -> Option<egui::Pos2> {
+    let clip = view_projection * glam::Vec4::new(point.x, point.y, point.z, 1.0);
+    if clip.w <= 0.0 {
+        return None;
+    }
+    let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
+    let px = vx + (clip.x / clip.w * 0.5 + 0.5) * vw;
+    let py = vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh;
+    Some(egui::Pos2::new(
+        px / pixels_per_point,
+        py / pixels_per_point,
+    ))
 }
 
 /// The closest point on segment `a→b` to `p` (all in the same 2D space) — the foot of the

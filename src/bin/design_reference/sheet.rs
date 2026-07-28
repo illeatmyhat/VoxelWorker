@@ -536,6 +536,21 @@ impl Sheet {
                 gizmos::orbit_center(p, Pos2::new(s.center().x + 6.0, s.center().y), false);
             },
         );
+
+        // orbit-mode reticle — the flipped left button made visible.
+        self.specimen_row_on(
+            ui,
+            viewport_stage,
+            "orbit mode · targeting reticle",
+            "While the explicit orbit mode runs, the left button turns instead of selecting, and \
+             a click re-centres the view on what it hits. The reticle sits on the camera target \
+             and is what makes that flipped verb visible for exactly as long as it holds. \
+             Brackets, not the orbit center's ringed crosshair: the two pivots are separate \
+             points, moved by separate mechanisms, and must never read as one mark.",
+            |p, s| {
+                gizmos::orbit_reticle(p, Pos2::new(s.center().x + 6.0, s.center().y));
+            },
+        );
     }
 
     /// The sketch gizmo specimens — each composed from [`ui::gizmos`] on a flat reference plane.

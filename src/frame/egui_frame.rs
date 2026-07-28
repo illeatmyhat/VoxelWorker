@@ -170,6 +170,11 @@ pub fn run_egui_frame(
     // rect: the pivot is moved by the context menu, never by dragging it. Always `None` on the
     // headless `shot` path.
     orbit_center: Option<(egui::Pos2, bool)>,
+    // ADR 0032: the camera TARGET's projected position (egui points) while the explicit orbit
+    // mode runs, or `None` when it is off or the target is behind the camera. The mode's reticle
+    // draws here. A separate point from `orbit_center` on purpose — the two pivots are moved by
+    // different mechanisms and must never be collapsed. Always `None` on the headless `shot` path.
+    orbit_target: Option<egui::Pos2>,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -376,6 +381,34 @@ pub fn run_egui_frame(
                                 Some(ui::panel::OrbitCenterRequest::Reset);
                             close = true;
                         }
+
+                        // The explicit ORBIT MODE, entered by NAMING a type
+                        // (docs/design/tool-modes-and-navigation.md, the entry-path table). This
+                        // is the one entry that names one, and naming here does NOT write the
+                        // default: invoking a tool has never meant "make this the default", and
+                        // the override lives exactly as long as the mode does.
+                        //
+                        // Only Constrained is offered. Free Orbit lives in the rail's dropdown
+                        // and nowhere else — it is the type you SET, not the one you reach for on
+                        // a particular object.
+                        //
+                        // The row toggles, so the same place that turned the mode on turns it off
+                        // without hunting for the rail.
+                        ui.separator();
+                        let in_orbit_mode = panel_state.orbit_mode.is_on();
+                        let label = if in_orbit_mode {
+                            "Leave orbit mode"
+                        } else {
+                            "Constrained Orbit"
+                        };
+                        if ui.add_sized(row, egui::Button::new(label)).clicked() {
+                            panel_state.orbit_mode = if in_orbit_mode {
+                                ui::panel::OrbitMode::Off
+                            } else {
+                                ui::panel::OrbitMode::Named(OrbitType::Constrained)
+                            };
+                            close = true;
+                        }
                     });
                 });
             if close {
@@ -455,6 +488,7 @@ pub fn run_egui_frame(
                 cube_size,
                 panel_state.view_mode,
                 panel_state.default_orbit_type,
+                panel_state.orbit_mode,
             ) {
                 match click {
                     ui::chrome::RailClick::Home => rail_action = Some(ChromeClickAction::Home),
@@ -462,11 +496,18 @@ pub fn run_egui_frame(
                     ui::chrome::RailClick::CycleMode => {
                         panel_state.view_mode = panel_state.view_mode.next();
                     }
-                    // Both halves open the menu for now. The FACE half is the one that will
-                    // start an explicit orbit as the shown type once orbit mode exists; until
-                    // then it opens the menu too, because a face that names a type and does
-                    // nothing when clicked is worse than a redundant one that does something.
-                    ui::chrome::RailClick::OrbitType | ui::chrome::RailClick::OrbitTypeMenu => {
+                    // The FACE toggles the explicit orbit mode, entering it as the DEFAULT type —
+                    // a split button's face starts what it shows, and it shows the default. It
+                    // never names a type, so re-entering from here drops any override the last
+                    // session was carrying.
+                    ui::chrome::RailClick::OrbitType => {
+                        panel_state.orbit_mode = if panel_state.orbit_mode.is_on() {
+                            ui::panel::OrbitMode::Off
+                        } else {
+                            ui::panel::OrbitMode::UsingDefault
+                        };
+                    }
+                    ui::chrome::RailClick::OrbitTypeMenu => {
                         *orbit_type_menu_open = !*orbit_type_menu_open;
                     }
                 }
@@ -568,6 +609,13 @@ pub fn run_egui_frame(
         // every mode — sketch or not.
         if let Some((center, placing)) = orbit_center {
             ui::gizmos::orbit_center_overlay(ui, center, placing);
+        }
+
+        // ADR 0032: the explicit orbit mode's targeting reticle, on the camera target. Drawn
+        // whenever the mode runs — it is what says the left button now turns and re-centres, so
+        // hiding it between gestures would leave the flipped verb invisible for most of the mode.
+        if let Some(target) = orbit_target {
+            ui::gizmos::orbit_reticle_overlay(ui, target);
         }
 
         // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the

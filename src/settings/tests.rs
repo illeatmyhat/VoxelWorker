@@ -14,6 +14,7 @@ fn config_round_trips_through_json() {
     let config = AppConfig {
         orbit_center: [0.0, 0.0, 0.0],
         default_orbit_type: camera::OrbitType::Free,
+        orbit_mode: ui::panel::OrbitMode::Named(camera::OrbitType::Constrained),
         scene: None,
         voxels_per_block: 24,
         projection_mode: ProjectionMode::Orthographic,

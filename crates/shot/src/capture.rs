@@ -1121,6 +1121,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // ADR 0032: no orbit-center marker — it shows only during a placement or a Shift+MMB
         // orbit, both windowed-only gestures.
         None,
+        // ADR 0032: nor the orbit-mode reticle — the explicit orbit mode is entered by a click
+        // the headless path never makes.
+        None,
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect

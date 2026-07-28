@@ -91,11 +91,10 @@ around two different pivots.
   distinct glyph per type (`orbit-constrained` / `orbit-free`) and lights on the accent while the
   default is Free — the same non-default signal the viewport-mode button uses.
 
-  Both halves still open the type menu. The face's own action is "start an explicit orbit as this
-  type", and explicit orbit mode does not exist yet; until it does, a face that named its type but
-  did nothing when clicked would be worse than two halves that agree. The face gains its action —
-  and starts showing ACTIVE-vs-default per the override rule above — in the same slice that adds
-  orbit mode.
+  *Completed 2026-07-28 (slice D).* The face now **toggles the explicit orbit mode** and the caret
+  half alone opens the type menu, so the two halves finally do different things. The face draws the
+  ACTIVE type — the override's, while one is running — per the rule above, and its tooltip names
+  both when they differ ("Leave free orbit — this mode only; the default stays constrained").
 - **Camera representation (owner-resolved 2026-07-27, REVERSING the 2026-07-26 line below):**
   **two representations, Constrained is primary.** The spherical chart (`theta`/`phi`/`roll`)
   stays the stored truth with its own math; the quaternion/trackball is a **secondary**
@@ -183,6 +182,15 @@ them is **which mechanisms may move each one**, and nothing else: the orbit math
    the view cube, zoom) orbits/operates about `camera.target`. Leaving the mode restores
    LMB = select. This mode is **independent of the orbit center** and never writes it.
 
+   *Shipped 2026-07-28 (slice D).* `PanelState::orbit_mode` is the state — `Off` / `UsingDefault` /
+   `Named(type)`, the three-way that lets a type override live and die with the mode session
+   without the default ever moving. Entered from the rail face or the viewport menu's "Constrained
+   Orbit" (the naming entry), left by either of those or by **Escape**. While it runs the left
+   button is taken from selection, placement and the sketch tools alike; a press latches the active
+   type (the mid-gesture guard), a drag past the click threshold turns, and a stationary release
+   raycasts through the same `surface_point_at` the orbit-center placement uses. A miss is a
+   **refusal**, not a fallback: the target keeps its old value rather than flying to a guessed one.
+
 > **Read this before editing the section above.** The two pivots are easy to collapse into one,
 > and doing so has already cost a shipped-then-reverted binding. The write-up briefly said
 > Shift+MMB orbits "the surface point under the cursor at press, raycast per gesture, never
@@ -211,10 +219,9 @@ them is **which mechanisms may move each one**, and nothing else: the orbit math
 
 1. ~~Orbit type toggle + default~~ — RESOLVED 2026-07-26 (see "Orbit types": Constrained
    default, MRU split button, session variable). SHIPPED 2026-07-27 (slices A–C): the Free Orbit
-   integrator, the seam, and the rail's type menu. Still open from that section: the **type
-   override** (a type-naming command that does not write the default) and the rail face showing
-   active-vs-default, both of which need the explicit orbit mode that carries the override's
-   lifetime.
+   integrator, the seam, and the rail's type menu. CLOSED 2026-07-28 (slice D): the **type
+   override** and the rail face showing active-vs-default both landed with the explicit orbit mode
+   that carries the override's lifetime.
 2. Sketch E/R: disabled, or remapped — and to what. (Still open; deferred with the W/E/R epic.)
 3. ~~Orbit-mode legibility~~ — RESOLVED 2026-07-26: the targeting reticle overlay IS the
    flipped-verb affordance.
@@ -259,4 +266,5 @@ three view modes.
    scene nodes) and the **sketch E/R remapping** — both explicitly punted by the owner to a later
    pass, after the Q selection system is correct.
 5. Explicit orbit mode + orbit center, and the sketch W move — fold in around 2–4 as their surfaces
-   (the context menu, the rail) land.
+   (the context menu, the rail) land. The orbit center ✅ SHIPPED with step 2; the **explicit orbit
+   mode** ✅ SHIPPED 2026-07-28 (slice D of the camera epic). The sketch W move remains.

@@ -214,6 +214,14 @@ struct WindowedState {
     /// is not, because the orbit center lives on the camera and no gesture may move it
     /// (`docs/design/tool-modes-and-navigation.md`).
     orbiting_about_center: bool,
+    /// Whether the left button is currently turning the camera under the explicit ORBIT MODE.
+    /// Latched at press like every other camera verb, so leaving the mode mid-drag cannot strand
+    /// a gesture that no longer has a mode to belong to.
+    orbiting_in_orbit_mode: bool,
+    /// Whether this orbit-mode press is still a candidate for the RE-CENTRING click — cleared the
+    /// moment the drag threshold is crossed, so one press is either a turn or a re-centre and
+    /// never both.
+    orbit_mode_recenter_press: bool,
     /// Whether the icon rail's orbit-type menu is open. Shell state and not panel state: it is a
     /// momentary chrome affordance, not something a relaunch should restore — what survives is
     /// the DEFAULT the menu writes.
@@ -347,6 +355,10 @@ struct WindowedState {
     /// should not be drawn. Refreshed alongside the sketch overlay, from
     /// [`visible_orbit_center`](Self::visible_orbit_center).
     orbit_center_overlay: Option<(egui::Pos2, bool)>,
+    /// The explicit orbit mode's reticle position for THIS frame (egui points) — the projected
+    /// `camera.target` — or `None` when the mode is off or the target sits behind the camera.
+    /// Refreshed alongside [`orbit_center_overlay`](Self::orbit_center_overlay).
+    orbit_target_overlay: Option<egui::Pos2>,
     /// The last frame's RAY-FRAME unprojection matrix (`SceneMatrices::ray_unprojection`), cached
     /// so the release handler (in `events`) can invert a cursor into a profile coordinate for an
     /// add-point insert — the same frame `render` fed the overlay refresh, WITHOUT the wide-baseline
@@ -659,6 +671,8 @@ impl WindowedState {
             last_frame_time: std::time::Instant::now(),
             middle_button_held: false,
             orbiting_about_center: false,
+            orbiting_in_orbit_mode: false,
+            orbit_mode_recenter_press: false,
             orbit_type_menu_open: false,
             active_orbit_type: OrbitType::default(),
             placing_orbit_center: false,
@@ -696,6 +710,7 @@ impl WindowedState {
             sketch_segment_lines: Vec::new(),
             sketch_insert_preview: None,
             orbit_center_overlay: None,
+            orbit_target_overlay: None,
             last_ray_unprojection: None,
             sketch_edit_press: false,
             sketch_select_press: false,

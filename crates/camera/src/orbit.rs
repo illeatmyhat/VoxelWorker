@@ -443,6 +443,33 @@ impl OrbitCamera {
     /// the grabbed point does not move on screen, under either projection. That is the
     /// property the gesture is judged by: the surface under the cursor stays put and the
     /// world turns around it.
+    pub fn orbit_about_point_as(
+        &mut self,
+        orbit_type: OrbitType,
+        pivot: Vec3,
+        delta_x: f32,
+        delta_y: f32,
+    ) {
+        let basis_before = self.view_basis();
+        let target_before = self.target;
+        self.orbit_by_drag_as(orbit_type, delta_x, delta_y);
+        // Orthonormal, so the inverse IS the transpose.
+        let rotation = self.view_basis() * basis_before.transpose();
+        self.target = pivot + rotation * (target_before - pivot);
+    }
+
+    /// Re-centre the view on a world `point`: slide [`Self::target`] there, carrying the eye
+    /// with it, so `point` lands at the centre of the viewport and the next turn happens
+    /// about what the user pointed at. The explicit orbit mode's click drives this.
+    ///
+    /// It is a PAN, not a rotation — the orbit angles are untouched, so re-centring never
+    /// changes which way the camera faces. And it moves `target` only: the
+    /// [orbit center](Self::orbit_center) is a separate pivot that only the context menu
+    /// places, and the two must never be conflated.
+    pub fn recenter_on(&mut self, point: Vec3) {
+        self.target = point;
+    }
+
     /// Put the [orbit center](Self::orbit_center) down at a world `point` — what the
     /// viewport context menu's "place orbit center" drives, and one of only two things that
     /// may move it.
@@ -457,21 +484,6 @@ impl OrbitCamera {
     /// and find again, and a target that pan has been sliding around all session is neither.
     pub fn reset_orbit_center(&mut self) {
         self.orbit_center = Vec3::ZERO;
-    }
-
-    pub fn orbit_about_point_as(
-        &mut self,
-        orbit_type: OrbitType,
-        pivot: Vec3,
-        delta_x: f32,
-        delta_y: f32,
-    ) {
-        let basis_before = self.view_basis();
-        let target_before = self.target;
-        self.orbit_by_drag_as(orbit_type, delta_x, delta_y);
-        // Orthonormal, so the inverse IS the transpose.
-        let rotation = self.view_basis() * basis_before.transpose();
-        self.target = pivot + rotation * (target_before - pivot);
     }
 
     /// Pan by a screen-space drag delta (middle-drag): slide `target` (and with it

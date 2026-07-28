@@ -603,6 +603,64 @@ pub struct PanelState {
     /// dump so a repro orbits the way the report did.
     #[snapshot(session)]
     pub default_orbit_type: OrbitType,
+    /// Whether the explicit **orbit mode** is running, and what it turns as — see [`OrbitMode`].
+    ///
+    /// **Session** state alongside [`sketch_mode`](Self::sketch_mode), and for the same reason: a
+    /// mode is where you left the workspace, and a dump taken mid-orbit should re-enter turning
+    /// the way the report was.
+    #[snapshot(session)]
+    pub orbit_mode: OrbitMode,
+}
+
+/// Whether the explicit **orbit mode** is running, and what it turns as
+/// (`docs/design/tool-modes-and-navigation.md`).
+///
+/// While it runs the left button turns the camera about `camera.target` instead of selecting, a
+/// targeting reticle marks that target, and a stationary click re-centres the view on the surface
+/// it hits. Leaving restores left = select. It is independent of the orbit center — the Shift+MMB
+/// pivot — and never writes it.
+///
+/// It also exists to carry the TYPE OVERRIDE's lifetime, which is why [`Named`](Self::Named) is a
+/// variant here rather than a flag on the gesture: a command that names a type runs that type
+/// until the mode ends, and an override whose boundaries the user cannot see is one they cannot
+/// reason about. "Mode" already means a state with an exit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OrbitMode {
+    /// Not in the mode: the left button selects.
+    #[default]
+    Off,
+    /// In the mode, turning as [`default_orbit_type`](PanelState::default_orbit_type) — what the
+    /// rail's split-button FACE enters, since a split button's face never names a type.
+    UsingDefault,
+    /// In the mode, turning as the type a command NAMED — the viewport menu's Constrained Orbit.
+    /// Naming a type here does not write the default; invoking a tool has never meant "make this
+    /// the default".
+    Named(OrbitType),
+}
+
+impl OrbitMode {
+    /// Whether the mode is running at all — the one question the input router and the reticle ask.
+    pub fn is_on(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// What an orbit STARTED NOW turns as, given the default. The single definition of "active
+    /// type": the rail's face shows it and the gesture latches it, and those two must not be able
+    /// to disagree.
+    pub fn active_type(self, default_type: OrbitType) -> OrbitType {
+        match self {
+            Self::Named(named) => named,
+            Self::Off | Self::UsingDefault => default_type,
+        }
+    }
+}
+
+impl PanelState {
+    /// What an orbit started now would turn as — the mode's override if one is running, else the
+    /// default. See [`OrbitMode::active_type`].
+    pub fn active_orbit_type(&self) -> OrbitType {
+        self.orbit_mode.active_type(self.default_orbit_type)
+    }
 }
 
 impl PanelState {

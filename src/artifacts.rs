@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 
 use camera::{OrbitType, ProjectionMode};
 use document::scene::Scene;
-use ui::panel::{SignalStackState, SketchTool, ViewMode};
+use ui::panel::{OrbitMode, SignalStackState, SketchTool, ViewMode};
 use voxel_core::core_geom::MaterialChoice;
 
 use crate::settings::{AppConfig, PlacementGhostConfig, SelectionConfig};
@@ -94,6 +94,18 @@ enum ProjectionModeConfig {
 enum OrbitTypeConfig {
     Constrained,
     Free,
+}
+
+/// The same shim for the `ui` crate's [`OrbitMode`] — whether the explicit orbit mode is
+/// running, and whether it is running a NAMED type override rather than the default. The
+/// override lives here and not in `default_orbit_type` because it belongs to the mode session:
+/// a dump taken mid-mode replays turning as the same type, without the default having moved.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "OrbitMode")]
+enum OrbitModeConfig {
+    Off,
+    UsingDefault,
+    Named(#[serde(with = "OrbitTypeConfig")] OrbitType),
 }
 
 /// The same shim for the `ui` crate's [`ViewMode`]. `ui` links egui and the domain crates
@@ -312,6 +324,11 @@ pub struct SessionArtifact {
     /// remote shim; a pre-field dump degrades to the default `Constrained`.
     #[serde(default, with = "OrbitTypeConfig")]
     pub default_orbit_type: OrbitType,
+    /// Whether the **explicit orbit mode** is running, and at which type. Distinct from
+    /// `default_orbit_type`: a mode running a named override leaves the default alone, so
+    /// both have to be recorded to replay what the left button was doing.
+    #[serde(default, with = "OrbitModeConfig")]
+    pub orbit_mode: OrbitMode,
 }
 
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
@@ -385,6 +402,7 @@ impl DocumentArtifact {
             // Declined — session state. How somebody was steering the view is where they
             // stopped, and a shared model has no camera at all.
             default_orbit_type: _,
+            orbit_mode: _,
             // Declined — session/settings. One person's snap preference must not ride into a
             // shared document.
             placement_snap: _,
@@ -447,6 +465,7 @@ impl Dump {
             sketch_tool,
             selection,
             default_orbit_type,
+            orbit_mode,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -484,6 +503,7 @@ impl Dump {
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
                 default_orbit_type: *default_orbit_type,
+                orbit_mode: *orbit_mode,
                 selection: selection.clone(),
             },
         }
@@ -533,6 +553,7 @@ impl Dump {
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
             default_orbit_type: session.default_orbit_type,
+            orbit_mode: session.orbit_mode,
             selection: session.selection,
         }
     }
@@ -708,6 +729,9 @@ mod tests {
             // Off its default (Free, not Constrained) so a capture that dropped it fails the
             // round-trip rather than coinciding with a default restore.
             default_orbit_type: OrbitType::Free,
+            // Off its default, and NAMING a type that differs from `default_orbit_type` above —
+            // so a capture that collapsed the mode into the default fails the round-trip.
+            orbit_mode: OrbitMode::Named(OrbitType::Constrained),
             // Off its default (two targets of different kinds, in pick order) so a capture
             // that dropped the selection fails the round-trip.
             selection: SelectionConfig {
