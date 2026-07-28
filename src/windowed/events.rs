@@ -277,10 +277,11 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 // The middle button carries BOTH camera verbs, chosen by Shift at press:
-                // plain MMB pans, Shift+MMB orbits about the surface point under the cursor
-                // (tool-modes-and-navigation.md — the transient pivot, raycast per gesture and
-                // never stored). A press that egui consumed (over the side panel / dock) or on
-                // the Signal chrome doesn't grab the scene; the view cube takes no middle
+                // plain MMB pans, Shift+MMB orbits about the ORBIT CENTER
+                // (tool-modes-and-navigation.md). The center is not resolved here — the
+                // camera holds it, and the whole point of it being placed is that a gesture
+                // never picks it. A press that egui consumed (over the side panel / dock) or
+                // on the Signal chrome doesn't grab the scene; the view cube takes no middle
                 // clicks, so no cube gating is needed here.
                 //
                 // The verb is LATCHED at press and the two flags are mutually exclusive, so
@@ -290,9 +291,8 @@ impl ApplicationHandler for App {
                     .map(|(x, y)| state.position_in_signal_chrome(x, y))
                     .unwrap_or(false);
                 let grabbed = button_state == ElementState::Pressed && !egui_consumed && !in_chrome;
-                let orbit_gesture = grabbed && state.shift_held;
-                state.middle_button_held = grabbed && !orbit_gesture;
-                state.orbit_pivot = orbit_gesture.then(|| state.resolve_orbit_pivot());
+                state.orbiting_about_center = grabbed && state.shift_held;
+                state.middle_button_held = grabbed && !state.orbiting_about_center;
             }
             WindowEvent::MouseInput {
                 state: button_state,
@@ -396,21 +396,23 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Shift+MMB orbits about the TRANSIENT pivot latched at press — the surface
-                // point under the cursor then, so the grabbed feature stays put on screen and
-                // the model turns around it. Mutually exclusive with the pan below (the press
-                // arm sets exactly one), so the cursor can never both orbit and pan in a move.
-                let orbiting = orbiting || state.orbit_pivot.is_some();
-                if let Some(pivot) = state.orbit_pivot {
+                // Shift+MMB orbits about the ORBIT CENTER, read fresh each move rather than
+                // latched: it cannot change mid-drag, because the only things that write it
+                // are the context menu's place/reset. Mutually exclusive with the pan below
+                // (the press arm sets exactly one), so the cursor can never both orbit and
+                // pan in a move.
+                let orbiting = orbiting || state.orbiting_about_center;
+                if state.orbiting_about_center {
                     if let Some((previous_x, previous_y)) = state.last_cursor_position {
                         let delta_x = (current.0 - previous_x) as f32;
                         let delta_y = (current.1 - previous_y) as f32;
                         if delta_x != 0.0 || delta_y != 0.0 {
                             state.snap_tween = None;
+                            let center = state.app_core.camera.orbit_center();
                             state
                                 .app_core
                                 .camera
-                                .orbit_about_point(pivot, delta_x, delta_y);
+                                .orbit_about_point(center, delta_x, delta_y);
                         }
                     }
                 }

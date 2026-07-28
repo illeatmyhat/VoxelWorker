@@ -225,6 +225,7 @@ fn a_cursor_over_the_ground_places_a_node_on_it() {
     // the viewport and its sides are empty screen. Orthographic keeps the depth
     // authorable at any reach and maps the screen linearly to world XY.
     let camera = OrbitCamera {
+        placed_orbit_center: None,
         target: Vec3::ZERO,
         orbit_theta: -std::f32::consts::FRAC_PI_2,
         orbit_phi: 0.0, // top pole: looking straight down −Z
@@ -331,6 +332,7 @@ fn a_cursor_over_the_ground_of_an_empty_scene_places_a_node() {
     // Same top-down ortho framing as the populated ground test, so the ray meets the
     // ground plane in front of it — the only difference is an EMPTY resident set.
     let camera = OrbitCamera {
+        placed_orbit_center: None,
         target: Vec3::ZERO,
         orbit_theta: -std::f32::consts::FRAC_PI_2,
         orbit_phi: 0.0,
@@ -404,6 +406,7 @@ fn a_downward_cursor_over_ground_never_misses_in_either_projection() {
         // none may report NoSurface (the near-plane-origin regression).
         for &orbit_phi in &[0.15_f32, 0.30, 0.45] {
             let camera = OrbitCamera {
+                placed_orbit_center: None,
                 target: Vec3::ZERO,
                 orbit_theta: 0.6,
                 orbit_phi,
@@ -562,6 +565,7 @@ fn the_15deg_joint_solve_lands_a_quantized_normal_on_a_curved_surface() {
 #[test]
 fn nosnap_deg15_keeps_the_sub_voxel_cursor_position_on_a_flat_face() {
     let camera = OrbitCamera {
+        placed_orbit_center: None,
         target: Vec3::ZERO,
         orbit_theta: -std::f32::consts::FRAC_PI_2,
         orbit_phi: 0.0, // straight down onto the Box's top face
@@ -659,6 +663,7 @@ fn block_snap_rounds_the_offset_to_block_boundaries() {
 #[test]
 fn a_hidden_ground_plane_places_nothing() {
     let camera = OrbitCamera {
+        placed_orbit_center: None,
         target: Vec3::ZERO,
         orbit_theta: -std::f32::consts::FRAC_PI_2,
         orbit_phi: 0.0, // straight down
@@ -718,6 +723,7 @@ fn a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane() {
     // Near-horizontal orthographic view: the ground grazes, so `select_world_plane`
     // would choose a vertical — which is invisible, hence not a target.
     let camera = OrbitCamera {
+        placed_orbit_center: None,
         target: Vec3::ZERO,
         orbit_theta: 0.3,
         orbit_phi: 1.49, // ~85° — nearly horizontal, the dump's pose
@@ -774,6 +780,7 @@ fn a_cursor_at_the_sky_places_nothing() {
     // it. (The orthographic counterpart is `an_orthographic_skyward_cursor_places_nothing`,
     // which the directional reachability test now answers correctly too.)
     let camera = OrbitCamera {
+        placed_orbit_center: None,
         target: Vec3::new(0.0, 0.0, 50.0),
         orbit_theta: 0.0,
         orbit_phi: std::f32::consts::PI,
@@ -811,6 +818,7 @@ fn an_orthographic_skyward_cursor_places_nothing() {
     // Eye above the ground looking straight UP (+Z), orthographic. The ground is behind
     // the view, so every parallel ray faces away from it.
     let camera = OrbitCamera {
+        placed_orbit_center: None,
         target: Vec3::new(0.0, 0.0, 50.0),
         orbit_theta: 0.0,
         orbit_phi: std::f32::consts::PI,

@@ -325,6 +325,38 @@ pub fn run_egui_frame(
                             }
                             close = true;
                         }
+
+                        // The ORBIT CENTER rows (docs/design/tool-modes-and-navigation.md).
+                        // These two are the ONLY things that move the Shift+MMB pivot — pan,
+                        // zoom, the view cube and the explicit orbit mode all work on
+                        // `camera.target` instead, which is what lets a pan slide the view
+                        // while the feature you are inspecting stays the one you turn around.
+                        // Placing uses the position the MENU was opened at rather than the
+                        // live cursor, so the center lands on what was right-clicked and not
+                        // on wherever the pointer drifted while the menu was up.
+                        ui.separator();
+                        let row = egui::vec2(ui.available_width().max(150.0), 22.0);
+                        if ui
+                            .add_sized(row, egui::Button::new("Place orbit center here"))
+                            .clicked()
+                        {
+                            panel_response.orbit_center_request =
+                                Some(ui::panel::OrbitCenterRequest::PlaceAt([
+                                    menu_pos_px.x,
+                                    menu_pos_px.y,
+                                ]));
+                            close = true;
+                        }
+                        // Always enabled: resetting an unplaced center is a harmless no-op,
+                        // and greying it out would only make the menu twitch between opens.
+                        if ui
+                            .add_sized(row, egui::Button::new("Reset orbit center"))
+                            .clicked()
+                        {
+                            panel_response.orbit_center_request =
+                                Some(ui::panel::OrbitCenterRequest::Reset);
+                            close = true;
+                        }
                     });
                 });
             if close {

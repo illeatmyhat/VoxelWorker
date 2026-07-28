@@ -60,20 +60,31 @@ around two different pivots.
   (gimbal lock at the poles) — i.e. orientation-first (quaternion), with theta/phi as a derived
   readout for the view cube / Home persistence, not the storage.
 
-### Entering orbit — two paths, two pivots (owner-resolved 2026-07-26, Fusion's actual model)
+### Entering orbit — two paths, two pivots (owner-resolved 2026-07-23, restated 2026-07-27)
 
-There really are **two pivots**, one per entry path — they do not share a point:
+There really are **two pivots**, one per entry path — they do not share a point. What separates
+them is **which mechanisms may move each one**, and nothing else: the orbit math is identical.
 
-1. **Shift + Middle-mouse (transient pivot).** Hold Shift+MMB to orbit about the **surface point
-   under the cursor at press** — raycast per-gesture, never stored. (Plain MMB stays **pan**.)
-2. **Explicit orbit mode (persistent pivot = `camera.target`).** Entered by a button in the
-   **display-settings icon rail** or the **context menu**. A **targeting reticle** overlays the
-   viewport; **LMB-drag orbits about `camera.target`**, and an **LMB-click raycasts a surface
-   (geometry or a visible picking plane) and sets `camera.target` to the hit — a pan** that
-   re-centers the view on the new pivot. Every non-Shift+MMB mechanism (this mode, the view
-   cube, zoom) orbits/operates about `camera.target`. Leaving the mode restores LMB = select.
+1. **Shift + Middle-mouse → the orbit center.** Hold Shift+MMB to orbit about the **orbit
+   center**: a point put down by a deliberate act (the general context menu's **place / reset
+   orbit center**, which raycasts a surface — geometry or a visible picking plane) and moved by
+   *nothing else*. Panning does not move it. Zooming does not move it. That is the whole
+   feature: slide the view across the model and the thing you are inspecting stays the thing you
+   turn around. Until a center has ever been placed it reads as `camera.target`, so a fresh
+   document turns about what it is looking at. (Plain MMB stays **pan**.)
+2. **Explicit orbit mode → `camera.target`.** Entered by a button in the **display-settings icon
+   rail** or the **context menu**. A **targeting reticle** overlays the viewport; **LMB-drag
+   orbits about `camera.target`**, and an **LMB-click raycasts a surface and sets `camera.target`
+   to the hit — a pan** that re-centers the view on it. Every non-Shift+MMB mechanism (this mode,
+   the view cube, zoom) orbits/operates about `camera.target`. Leaving the mode restores
+   LMB = select. This mode is **independent of the orbit center** and never writes it.
 
-The general context menu's "place / reset orbit center" writes `camera.target` the same way.
+> **Read this before editing the section above.** The two pivots are easy to collapse into one,
+> and doing so has already cost a shipped-then-reverted binding. The write-up briefly said
+> Shift+MMB orbits "the surface point under the cursor at press, raycast per gesture, never
+> stored" — a misreading of *"Shift+MMB is always for the clicked surface point"*, where
+> **clicked** means the click that **placed** the center, not the press that starts the drag.
+> There is no transient pivot anywhere in this design.
 
 ### The rest
 
@@ -107,9 +118,13 @@ The general context menu's "place / reset orbit center" writes `camera.target` t
 
 **In:** unified `Selection` (one mixed-kind set; `Scene::active` + `active_point` die; session
 state, undo steers it as an effect — CONTEXT.md "Selection"); the picked-node resolver
-(CONTEXT.md "Picked node"); LMB = select + shift-click accumulate; orbit rebind (Shift+MMB
-transient pivot, explicit orbit mode + reticle, orbit-type split button, quaternion camera);
-projection mode reclassified Settings→session.
+(CONTEXT.md "Picked node"); LMB = select + shift-click accumulate; orbit rebind (Shift+MMB about
+the orbit center, plus the context menu's place/reset that puts it down); projection mode
+reclassified Settings→session.
+
+This scope box used to also list the explicit orbit mode + reticle, the orbit-type split button
+and the quaternion camera, which contradicted sequencing step 5 below. Step 5 wins: those three
+need surfaces (the rail) and a camera refactor that the Q slice does not.
 
 **Deferred:** scene-node marquee (built once with the sketch marquee, sequencing step 3);
 viewport Point picking (Points enter `Selection` as targets now, gizmo hit-testing later);

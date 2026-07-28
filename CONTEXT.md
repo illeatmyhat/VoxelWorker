@@ -185,17 +185,29 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   armed), Esc / right-click disarms, and pressing any mode key disarms first — a mode key
   outranks the pending ghost.
 
-- **Orbit center** — the **persistent** orbit pivot: the camera's target point, which zoom, the
-  view cube, and explicit orbit mode all operate about. User-placeable (explicit orbit mode's
-  reticle click, the context menu) by raycasting a surface — geometry or a visible picking
-  plane — which **pans** the view onto the new pivot. Distinct from the **transient pivot**:
-  Shift+MMB orbits about the surface point under the cursor at press, raycast per gesture and
-  never stored. Two pivots by design (the Fusion model) — they never merge.
+- **Orbit center** — the pivot **Shift+MMB** turns the model about. *Placed*: it moves when a
+  deliberate act puts it somewhere (the viewport context menu's place/reset, which raycasts a
+  surface — geometry or a visible picking plane) and at no other time. Pan, zoom and every
+  other camera verb leave it exactly where it was put; that invariance is the whole point,
+  because it lets you slide the view across the model while the feature you are inspecting
+  stays the feature you turn around. Until something is placed it reads as the **view target**,
+  so a fresh document turns about what it is looking at.
+
+- **View target** — the world point the camera looks at (`camera.target`), and the *other*
+  pivot. **Pan** slides it, zoom moves toward it, the view cube swings around it, and explicit
+  orbit mode both orbits about it and re-places it (an LMB-click there raycasts a surface and
+  **pans** the view onto the hit). Everything except Shift+MMB operates about this one.
+
+  The two pivots never merge, and the distinction is **which mechanisms may move it** — not
+  transient-vs-persistent, and not one being a special case of the other. Conflating them is
+  the specific mistake this glossary exists to stop: both are "the point the camera orbits", so
+  a sentence naming neither is ambiguous. Always say which.
 
 - **Orbit type** — **Constrained Orbit** (world-up fixed, the turntable — the default) or
   **Free Orbit** (full trackball, roll allowed), Fusion's names. A **most-recently-used session
-  variable** shared by every orbit entry path; the two types share the orbit logic and the
-  entry paths differ only by pivot. _Avoid_: sub-mode, axis-constrained (say Constrained Orbit).
+  variable** shared by every orbit entry path. Orthogonal to the pivot: type says *how* the
+  camera turns, pivot says *what it turns around*, and the four combinations are all
+  meaningful. _Avoid_: sub-mode, axis-constrained (say Constrained Orbit).
 
 ## Selection
 

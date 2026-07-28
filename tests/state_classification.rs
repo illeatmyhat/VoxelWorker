@@ -109,6 +109,21 @@ fn the_pan_target_that_started_this_is_classified() {
         .reaches_dump());
 }
 
+#[test]
+fn the_orbit_center_is_classified_beside_the_pan_target() {
+    // The SECOND camera pivot, and the one a capture is most likely to drop next: it is not
+    // moved by any gesture, so nothing in a replay would reconstruct it. A dump that restored
+    // `orbit_target` alone would replay the same view turning about a different point — the
+    // pan-target bug again, one field over.
+    assert_eq!(
+        AppConfig::category_of("placed_orbit_center"),
+        Some(StateCategory::View)
+    );
+    assert!(AppConfig::category_of("placed_orbit_center")
+        .expect("classified above")
+        .reaches_dump());
+}
+
 /// The two objects that are classified whole and carried as a hand-picked subset, named
 /// so that being a subset stays a deliberate act.
 ///

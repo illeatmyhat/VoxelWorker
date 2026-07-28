@@ -208,12 +208,12 @@ struct WindowedState {
     /// Timestamp of the previous frame, for advancing the snap tween.
     last_frame_time: std::time::Instant,
     /// Whether the middle mouse button is held for a PAN drag. Mutually exclusive with
-    /// [`Self::orbit_pivot`]: the middle button's verb is latched at press by Shift.
+    /// [`Self::orbiting_about_center`]: the middle button's verb is latched at press by Shift.
     middle_button_held: bool,
-    /// The transient pivot of an in-progress Shift+MMB orbit — the surface point under
-    /// the cursor at press, raycast per gesture and never stored beyond it
-    /// (`docs/design/tool-modes-and-navigation.md`). `None` when no orbit gesture is live.
-    orbit_pivot: Option<glam::Vec3>,
+    /// Whether a Shift+MMB orbit gesture is live. Only the gesture is state here — the pivot
+    /// is not, because the orbit center lives on the camera and no gesture may move it
+    /// (`docs/design/tool-modes-and-navigation.md`).
+    orbiting_about_center: bool,
     /// Last cursor position, for computing drag deltas.
     last_cursor_position: Option<(f64, f64)>,
     /// Where the most recent left-press landed (for view-cube click detection).
@@ -628,7 +628,7 @@ impl WindowedState {
             snap_tween: None,
             last_frame_time: std::time::Instant::now(),
             middle_button_held: false,
-            orbit_pivot: None,
+            orbiting_about_center: false,
             last_cursor_position: None,
             press_position: None,
             press_in_view_cube: false,

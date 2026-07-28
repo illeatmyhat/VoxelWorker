@@ -246,6 +246,14 @@ pub struct AppConfig {
     /// the pre-field behaviour (target defaulted to the origin).
     #[snapshot(view)]
     pub orbit_target: [f32; 3],
+    /// Where the ORBIT CENTER was placed (the Shift+MMB pivot), or `None` while none has
+    /// been. The other pivot, and the one nothing implicit moves: a pan slides
+    /// `orbit_target` and deliberately leaves this alone, so a repro that restored only the
+    /// target would replay the same view turning about a different point. A dump written
+    /// without the key restores `None`, which reads as the target — the behaviour before
+    /// the center existed.
+    #[snapshot(view)]
+    pub placed_orbit_center: Option<[f32; 3]>,
 
     // --- view-cube home view (#13) ---
     // The Home button's saved view. A dump missing these keys loads the camera
@@ -354,6 +362,7 @@ impl Default for AppConfig {
             orbit_phi: default_phi(),
             orbit_distance: default_distance(),
             orbit_target: [0.0, 0.0, 0.0],
+            placed_orbit_center: None,
             home_theta: default_theta(),
             home_phi: default_phi(),
             home_distance: default_distance(),
@@ -402,6 +411,7 @@ impl AppConfig {
             orbit_phi: camera.orbit_phi,
             orbit_distance: camera.orbit_distance,
             orbit_target: camera.target.to_array(),
+            placed_orbit_center: camera.placed_orbit_center.map(|point| point.to_array()),
             home_theta: home_view.theta,
             home_phi: home_view.phi,
             home_distance: home_view.distance,
@@ -589,6 +599,7 @@ impl AppConfig {
         camera.orbit_phi = self.orbit_phi;
         camera.orbit_distance = self.orbit_distance;
         camera.target = glam::Vec3::from_array(self.orbit_target);
+        camera.placed_orbit_center = self.placed_orbit_center.map(glam::Vec3::from_array);
         camera.projection_mode = self.projection_mode;
     }
 

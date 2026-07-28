@@ -12,6 +12,7 @@ fn save_and_reload(config: &AppConfig) -> AppConfig {
 #[test]
 fn config_round_trips_through_json() {
     let config = AppConfig {
+        placed_orbit_center: None,
         scene: None,
         voxels_per_block: 24,
         projection_mode: ProjectionMode::Orthographic,

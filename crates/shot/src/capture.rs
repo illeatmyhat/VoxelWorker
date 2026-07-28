@@ -881,6 +881,13 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             Some(config) => glam::Vec3::from_array(config.orbit_target),
             None => glam::Vec3::ZERO,
         },
+        // Restored for completeness, though a still frame never orbits: a repro that
+        // dropped it would still render identically, and one that later grew an
+        // orbit-driven capture would not.
+        placed_orbit_center: from_config
+            .as_ref()
+            .and_then(|config| config.placed_orbit_center)
+            .map(glam::Vec3::from_array),
         orbit_theta: theta,
         orbit_phi: phi,
         // `--from-config` uses the persisted orbit distance (the exact live zoom); otherwise the

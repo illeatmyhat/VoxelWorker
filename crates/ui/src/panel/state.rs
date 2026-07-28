@@ -238,6 +238,23 @@ pub enum SketchExit {
     Cancel,
 }
 
+/// What the viewport context menu asked of the **orbit center** — the pivot Shift+MMB turns
+/// about (`docs/design/tool-modes-and-navigation.md`).
+///
+/// The two menu items are the entire set of things that may move it. Every other camera verb
+/// (pan, zoom, the view cube, the explicit orbit mode) operates on `camera.target` instead, and
+/// keeping the two apart is the point: a pan slides the view across the model while the feature
+/// you are inspecting stays the feature you turn around.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrbitCenterRequest {
+    /// Put it on the surface under the given PHYSICAL window pixel — where the menu was
+    /// opened, so the center lands on what was right-clicked, not on wherever the cursor
+    /// drifted to while the menu was up.
+    PlaceAt([f32; 2]),
+    /// Lift it, handing the pivot back to `camera.target`.
+    Reset,
+}
+
 /// The armed **sketch-mode tool** (ADR 0028) — which direct-manipulation verb a viewport
 /// click performs while a sketch is being edited. Only these three arm in slice 1 (#94 vertex
 /// drag, #95 add-point / delete); the Polyline / Rectangle tools are drawn **reserved** on the
@@ -718,6 +735,12 @@ pub struct PanelResponse {
     /// selection and the commit path live on the shell, not the panel), like
     /// [`focus_node`](Self::focus_node). `false` when no sketch delete was requested.
     pub delete_sketch_selection: bool,
+    /// How the user asked to move the **orbit center** this frame from the general viewport
+    /// context menu (`docs/design/tool-modes-and-navigation.md`) — the deliberate act that is
+    /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW
+    /// action, not an `Intent`: the camera is not the document. `None` when neither menu item
+    /// was chosen.
+    pub orbit_center_request: Option<OrbitCenterRequest>,
     /// How the user asked to **leave sketch mode** this frame (ADR 0028), via the floating
     /// `CANCEL | FINISH SKETCH` control — `Finish` commits, `Cancel` discards. A VIEW action:
     /// the shell clears [`PanelState::sketch_mode`](PanelState::sketch_mode) (and, from #94,

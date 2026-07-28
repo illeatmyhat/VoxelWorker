@@ -332,6 +332,18 @@ impl WindowedState {
         if prepared.panel_response.delete_sketch_selection {
             self.delete_sketch_selection();
         }
+        // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
+        // is not the document (ADR 0022's classification: this is view state).
+        match prepared.panel_response.orbit_center_request {
+            Some(ui::panel::OrbitCenterRequest::PlaceAt([x, y])) => {
+                let point = self.surface_point_at(Some((x as f64, y as f64)));
+                self.app_core.camera.place_orbit_center(point);
+            }
+            Some(ui::panel::OrbitCenterRequest::Reset) => {
+                self.app_core.camera.reset_orbit_center();
+            }
+            None => {}
+        }
         // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
         // re-resolves the volume and records ONE coalesced command in the open group. Uses
         // this frame's viewport (from `prepared`) to build the cursor→plane ray; its effect
@@ -1211,21 +1223,20 @@ impl WindowedState {
         }
     }
 
-    /// The **transient pivot** for a Shift+MMB orbit: the surface point under the cursor at
-    /// press, in the camera's render frame (`docs/design/tool-modes-and-navigation.md`).
+    /// The surface point at `cursor_px` in the camera's render frame — where the context
+    /// menu's "place orbit center" puts the orbit center
+    /// (`docs/design/tool-modes-and-navigation.md`).
     ///
-    /// Raycast per gesture and never stored — which is the whole point of calling it transient.
     /// It reuses the selection click's ray verbatim, so the point the camera turns about is the
-    /// same point a click would have selected; a pivot that disagreed with the pick would make
-    /// the two gestures feel like they were aimed at different scenes.
+    /// same point a click there would have selected; a center that disagreed with the pick would
+    /// make the two gestures feel like they were aimed at different scenes.
     ///
-    /// A ray that hits nothing (the sky, or an empty scene) falls back to `camera.target`, which
-    /// is what every other orbit mechanism turns about. The alternative — declining to orbit at
-    /// all — would make the gesture dead over empty space, and "nothing happened" reads as a
-    /// broken binding rather than as a deliberate refusal.
-    pub(super) fn resolve_orbit_pivot(&self) -> glam::Vec3 {
+    /// A ray that hits nothing (the sky, or an empty scene) falls back to `camera.target`, so
+    /// placing over empty space re-anchors on the view rather than doing nothing — "nothing
+    /// happened" reads as a broken menu item rather than as a deliberate refusal.
+    pub(super) fn surface_point_at(&self, cursor_px: Option<(f64, f64)>) -> glam::Vec3 {
         let fallback = self.app_core.camera.target;
-        let Some((cursor_x, cursor_y)) = self.last_cursor_position else {
+        let Some((cursor_x, cursor_y)) = cursor_px else {
             return fallback;
         };
         let density = self.panel_state.geometry.voxels_per_block;
