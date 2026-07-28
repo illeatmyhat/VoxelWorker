@@ -85,6 +85,13 @@ around two different pivots.
 - **UI (Fusion's split button):** the display icon rail holds an orbit button whose face is the
   default type, with a dropdown offering the other (Free Orbit lives only there); the context menu
   offers Constrained Orbit.
+
+  *Shipped 2026-07-27 as a plain button, not yet a split one.* The rail's fourth button opens the
+  type menu on click and lights on the accent while the default is Free — the same non-default
+  signal the viewport-mode button uses, so no new icon was needed. The FACE half of a split button
+  is the thing that starts an explicit orbit, and explicit orbit mode does not exist yet; a face
+  that names its type but does nothing when clicked would be worse than one control that opens the
+  menu. It becomes a true split button in the same slice that adds orbit mode.
 - **Camera representation (owner-resolved 2026-07-27, REVERSING the 2026-07-26 line below):**
   **two representations, Constrained is primary.** The spherical chart (`theta`/`phi`/`roll`)
   stays the stored truth with its own math; the quaternion/trackball is a **secondary**
@@ -120,6 +127,24 @@ around two different pivots.
   switch drops the roll to zero. That is the one deliberately lossy step in the seam, and a hard
   cut reads as a glitch — so it runs as an eased `SnapTween`, the same machinery Home already
   uses to re-upright roll. Animated, it reads as intent.
+
+- **What shipped 2026-07-27 (slices A–C).** `crates/camera/src/free_orbit.rs` holds the trackball
+  integrator and the seam: `free_orientation: Option<Quat>` on `OrbitCamera` IS the authority bit
+  (no second flag to disagree with it), `orbit_by_drag_as` / `orbit_about_point_as` are the one
+  door both types go through, and `ensure_free` / `ensure_constrained` are idempotent so the
+  shell's type variable can be policy and the `Option` mechanism without the two ever being proven
+  in sync. `direction()` and `up_vector()` dispatch; `is_face_constrained` was rewritten against
+  those two vectors instead of the `roll` field so it answers under both types.
+
+  Chart-native surfaces close the seam before they act — the view cube (drag, click, and its
+  Home/Fit/Set-home menu) and the rail's Home/Fit, because all of them read or write `theta`/`phi`
+  and a live trackball leaves those stale. So do the two persistence paths, through the
+  non-mutating `OrbitCamera::as_chart`: a config or an F9 dump written mid-Free would otherwise
+  record a pose the user left some time ago.
+
+  The animated re-level plays where it is the *only* thing happening — picking Constrained from
+  the rail menu. It deliberately does not fire on a chart-native op that is about to snap anyway
+  (a face snap re-uprights on its own) nor mid-drag (the tween would fight the gesture).
 
 - **Integrator before UI.** Within this slice: the orbit-type split button is vacuous until Free
   Orbit exists, and Free Orbit *is* the trackball representation. Building explicit orbit mode
@@ -181,7 +206,11 @@ them is **which mechanisms may move each one**, and nothing else: the orbit math
 ## Open questions
 
 1. ~~Orbit type toggle + default~~ — RESOLVED 2026-07-26 (see "Orbit types": Constrained
-   default, MRU split button, session variable).
+   default, MRU split button, session variable). SHIPPED 2026-07-27 (slices A–C): the Free Orbit
+   integrator, the seam, and the rail's type menu. Still open from that section: the **type
+   override** (a type-naming command that does not write the default) and the rail face showing
+   active-vs-default, both of which need the explicit orbit mode that carries the override's
+   lifetime.
 2. Sketch E/R: disabled, or remapped — and to what. (Still open; deferred with the W/E/R epic.)
 3. ~~Orbit-mode legibility~~ — RESOLVED 2026-07-26: the targeting reticle overlay IS the
    flipped-verb affordance.

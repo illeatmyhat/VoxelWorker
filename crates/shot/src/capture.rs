@@ -905,6 +905,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             Some(config) => config.projection_mode,
             None => options.projection_mode,
         },
+        ..OrbitCamera::default()
     };
     // Issue #25: ALL uniform uploads (camera matrix → gizmo/lattice/view-cube
     // and the voxel pass) are deferred to AFTER `run_egui_frame`, because the
@@ -1098,6 +1099,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &mut None,
         // ADR 0030: nor the general viewport context menu (windowed-only interaction).
         &mut None,
+        // ADR 0032: nor the icon rail's orbit-type menu.
+        &mut false,
         // Signal (#86): no zone-name readout in the goldens — the highlight lives in
         // the cube itself; the readout is a windowed-only overlay. Keeps every golden
         // diff to the two cube corners.

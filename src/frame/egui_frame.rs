@@ -5,6 +5,10 @@
 
 use crate::*;
 
+/// Width (egui points) of the rail's orbit-type menu. The menu opens LEFTWARD off its button, so
+/// this is also how far left of the rail it reaches.
+const MENU_WIDTH: f32 = 160.0;
+
 /// Everything needed to translate egui output into wgpu draw calls, plus the
 /// persistent egui context. Lives for the whole program; reused every frame.
 pub struct EguiPaintBridge {
@@ -84,6 +88,11 @@ pub struct PreparedEguiFrame {
     /// `panel_state.view_mode` (pure display state), like the ortho toggle, so it is not
     /// reported here. `None` on the headless `shot` path (the rail is never clicked).
     pub rail_action: Option<ChromeClickAction>,
+    /// The orbit TYPE picked from the rail's type menu this frame, if any. The pick has already
+    /// been written to `panel_state.default_orbit_type` — this reports it so the shell can close
+    /// the Free Orbit seam and start the animated re-level when the pick is Constrained
+    /// (`docs/design/tool-modes-and-navigation.md`). `None` on the headless `shot` path.
+    pub orbit_type_picked: Option<OrbitType>,
     /// Signal (issue #88): the horizontal inset (PHYSICAL PIXELS) from the central
     /// viewport's RIGHT edge to the view cube's right edge, so the cube + rail slide left
     /// of the floating display stack and track its fold state. The caller feeds it to
@@ -129,6 +138,10 @@ pub fn run_egui_frame(
     // selection (sketch mode) or the active node (normal mode). The headless `shot` path passes
     // `&mut None` (no menu).
     viewport_menu_at: &mut Option<egui::Pos2>,
+    // Whether the icon rail's orbit-TYPE menu is open. Unlike the two context menus this carries
+    // no position: the menu anchors to the rail button it belongs to, whose rect is computed
+    // inside this pass. The headless `shot` path passes `&mut false` (no menu).
+    orbit_type_menu_open: &mut bool,
     // Signal (#86): the hovered view-cube zone's name (e.g. `TOP·FRONT`), drawn as a
     // faint readout line under the cube. `None` when nothing is hovered — and always
     // `None` on the headless `shot` path, so the goldens stay pure cube geometry.
@@ -164,6 +177,9 @@ pub fn run_egui_frame(
     // shell's `ChromeClickAction`; a mode-cycle click mutates `panel_state.view_mode` in
     // place inside the closure (never surfaced), like the ortho toggle.
     let mut rail_action: Option<ChromeClickAction> = None;
+    // The rail's type menu pick, applied in place to `panel_state.default_orbit_type` and
+    // reported so the shell can re-level.
+    let mut orbit_type_picked: Option<OrbitType> = None;
     // Signal (issue #88): the cube's right inset (physical px) = the display stack's current
     // width, computed inside the closure once the central rect + fold state are known.
     let mut view_cube_right_inset_px: u32 = 0;
@@ -432,14 +448,67 @@ pub fn run_egui_frame(
         // surface and the `shot` capture.
         if cube_fits {
             chrome_rects_points.push(ui::chrome::rail_rect(cube_left, cube_bottom, cube_size));
-            if let Some(click) =
-                ui::chrome::icon_rail(ui, cube_left, cube_bottom, cube_size, panel_state.view_mode)
-            {
+            if let Some(click) = ui::chrome::icon_rail(
+                ui,
+                cube_left,
+                cube_bottom,
+                cube_size,
+                panel_state.view_mode,
+                panel_state.default_orbit_type,
+            ) {
                 match click {
                     ui::chrome::RailClick::Home => rail_action = Some(ChromeClickAction::Home),
                     ui::chrome::RailClick::Fit => rail_action = Some(ChromeClickAction::Fit),
                     ui::chrome::RailClick::CycleMode => {
                         panel_state.view_mode = panel_state.view_mode.next();
+                    }
+                    ui::chrome::RailClick::OrbitType => {
+                        *orbit_type_menu_open = !*orbit_type_menu_open;
+                    }
+                }
+            }
+
+            // The orbit-TYPE menu, anchored to its own rail button and opening to the LEFT (the
+            // rail sits against the viewport's right edge). This is the one control that writes
+            // the DEFAULT orbit type; every other entry into an orbit either uses the default or
+            // overrides it without changing it.
+            if *orbit_type_menu_open {
+                let button = ui::chrome::orbit_type_button_rect(cube_left, cube_bottom, cube_size);
+                let context = ui.ctx().clone();
+                let area = egui::Area::new(egui::Id::new("orbit_type_menu"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(button.left() - MENU_WIDTH, button.top()))
+                    .show(&context, |ui| {
+                        egui::Frame::menu(ui.style()).show(ui, |ui| {
+                            ui.set_min_width(MENU_WIDTH);
+                            for (orbit_type, label) in [
+                                (OrbitType::Constrained, "Constrained orbit"),
+                                (OrbitType::Free, "Free orbit"),
+                            ] {
+                                let selected = panel_state.default_orbit_type == orbit_type;
+                                if ui.selectable_label(selected, label).clicked() {
+                                    panel_state.default_orbit_type = orbit_type;
+                                    orbit_type_picked = Some(orbit_type);
+                                }
+                            }
+                        });
+                    });
+                if orbit_type_picked.is_some() {
+                    *orbit_type_menu_open = false;
+                }
+                // Click-away, the same rule the cube menu uses: a PRIMARY click outside the menu
+                // closes it. The rail button's own click is consumed by `icon_rail` above (it
+                // toggles), so a second click on the button closes rather than re-opening.
+                let pointer = context.input(|input| input.pointer.clone());
+                if pointer.primary_clicked() {
+                    let inside = pointer
+                        .interact_pos()
+                        .map(|position| {
+                            area.response.rect.contains(position) || button.contains(position)
+                        })
+                        .unwrap_or(false);
+                    if !inside {
+                        *orbit_type_menu_open = false;
                     }
                 }
             }
@@ -577,6 +646,7 @@ pub fn run_egui_frame(
         viewport_px,
         cube_menu_request,
         rail_action,
+        orbit_type_picked,
         view_cube_right_inset_px,
         chrome_rects_px,
     }

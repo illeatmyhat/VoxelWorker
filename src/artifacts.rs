@@ -68,7 +68,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use camera::ProjectionMode;
+use camera::{OrbitType, ProjectionMode};
 use document::scene::Scene;
 use ui::panel::{SignalStackState, SketchTool, ViewMode};
 use voxel_core::core_geom::MaterialChoice;
@@ -85,6 +85,15 @@ use crate::settings::{AppConfig, PlacementGhostConfig, SelectionConfig};
 enum ProjectionModeConfig {
     Perspective,
     Orthographic,
+}
+
+/// The same shim for [`OrbitType`] — `camera` carries no serde either, so the default orbit type
+/// is persisted from out here exactly as the projection is.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "OrbitType")]
+enum OrbitTypeConfig {
+    Constrained,
+    Free,
 }
 
 /// The same shim for the `ui` crate's [`ViewMode`]. `ui` links egui and the domain crates
@@ -298,6 +307,11 @@ pub struct SessionArtifact {
     /// `serde(default)` degrades a pre-field dump to nothing picked.
     #[serde(default)]
     pub selection: SelectionConfig,
+    /// The **default orbit type** — what an orbit gesture turns as when nothing named a type
+    /// (`docs/design/tool-modes-and-navigation.md`). Persisted through the `OrbitTypeConfig`
+    /// remote shim; a pre-field dump degrades to the default `Constrained`.
+    #[serde(default, with = "OrbitTypeConfig")]
+    pub default_orbit_type: OrbitType,
 }
 
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
@@ -368,6 +382,9 @@ impl DocumentArtifact {
             // Declined — session state. Which sketch tool was armed is where they stopped too.
             sketch_tool: _,
             selection: _,
+            // Declined — session state. How somebody was steering the view is where they
+            // stopped, and a shared model has no camera at all.
+            default_orbit_type: _,
             // Declined — session/settings. One person's snap preference must not ride into a
             // shared document.
             placement_snap: _,
@@ -429,6 +446,7 @@ impl Dump {
             sketch_mode,
             sketch_tool,
             selection,
+            default_orbit_type,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -465,6 +483,7 @@ impl Dump {
                 placement_snap: *placement_snap,
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
+                default_orbit_type: *default_orbit_type,
                 selection: selection.clone(),
             },
         }
@@ -513,6 +532,7 @@ impl Dump {
             placement_snap: session.placement_snap,
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
+            default_orbit_type: session.default_orbit_type,
             selection: session.selection,
         }
     }
@@ -685,6 +705,9 @@ mod tests {
             sketch_mode: Some(document::scene::NodeId(9)),
             // Off its default (Delete, not Select) for the same reason (ADR 0028, #95).
             sketch_tool: SketchTool::Delete,
+            // Off its default (Free, not Constrained) so a capture that dropped it fails the
+            // round-trip rather than coinciding with a default restore.
+            default_orbit_type: OrbitType::Free,
             // Off its default (two targets of different kinds, in pick order) so a capture
             // that dropped the selection fails the round-trip.
             selection: SelectionConfig {

@@ -18,7 +18,7 @@
 //! Loading still never panics: a missing file, an unreadable file, or invalid JSON all
 //! yield `None`, and the caller uses its built-in defaults.
 
-use camera::{HomeView, OrbitCamera, ProjectionMode};
+use camera::{HomeView, OrbitCamera, OrbitType, ProjectionMode};
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 use ui::panel::{
@@ -343,6 +343,16 @@ pub struct AppConfig {
     /// the serde-free `ui` crate, so it persists through the [`SelectionConfig`] mirror.
     #[snapshot(session)]
     pub selection: SelectionConfig,
+
+    /// The **default orbit type** (`docs/design/tool-modes-and-navigation.md`): what an orbit
+    /// gesture turns as when nothing named a type. Written only by the display rail's orbit split
+    /// button; a command that *names* a type overrides it for the orbit-mode session without
+    /// writing here. Session state alongside [`sketch_tool`](Self::sketch_tool) — a
+    /// most-recently-used working state, never a preference. `OrbitType` lives in the serde-free
+    /// `camera` crate, so it persists through the `OrbitTypeConfig` remote shim like
+    /// [`projection_mode`](Self::projection_mode).
+    #[snapshot(session)]
+    pub default_orbit_type: OrbitType,
 }
 
 impl Default for AppConfig {
@@ -375,6 +385,7 @@ impl Default for AppConfig {
             placement_ghost: None,
             sketch_mode: None,
             sketch_tool: SketchTool::default(),
+            default_orbit_type: OrbitType::default(),
             selection: SelectionConfig::default(),
         }
     }
@@ -431,6 +442,7 @@ impl AppConfig {
                 .as_ref()
                 .map(PlacementGhostConfig::from_ghost),
             sketch_tool: panel.sketch_tool,
+            default_orbit_type: panel.default_orbit_type,
             selection: SelectionConfig::from_selection(&panel.selection),
             // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
             sketch_mode: panel.sketch_mode,
@@ -535,6 +547,7 @@ impl AppConfig {
             // ADR 0028 (#95): restore the armed sketch tool, so a mid-edit repro re-enters with
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
+            default_orbit_type: self.default_orbit_type,
             // Restored from `SelectionConfig` just below, once the scene is in place, so a
             // target can be checked against the nodes that actually came back.
             selection: ui::panel::Selection::default(),

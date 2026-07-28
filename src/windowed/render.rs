@@ -164,6 +164,8 @@ impl WindowedState {
                 &mut self.context_menu_open_at,
                 // The general viewport right-click menu (mode-dispatched Delete).
                 &mut self.viewport_menu_at,
+                // The icon rail's orbit-type menu.
+                &mut self.orbit_type_menu_open,
                 // Signal (#86): the hovered cube zone's readout name, or None.
                 self.hovered_cube_zone
                     .and_then(camera::view_cube_zone_readout)
@@ -200,6 +202,12 @@ impl WindowedState {
 
         // #13 Step 3: execute a context-menu selection (egui drew + closed the
         // menu; the ortho toggle already mutated `panel_state.projection_mode`).
+        // Home / Fit / Set-home are chart-native like the cube itself (Home SAVES and restores
+        // `theta`/`phi`), so the Free Orbit seam closes before any of them reads or writes an
+        // angle.
+        if prepared.cube_menu_request.is_some() {
+            self.settle_to_constrained();
+        }
         match prepared.cube_menu_request {
             Some(ViewCubeMenuRequest::Home) => {
                 self.snap_tween = Some(self.home_snap_tween());
@@ -215,7 +223,16 @@ impl WindowedState {
         // `panel_state.view_mode` inside `run_egui_frame`, so it needs nothing here (the
         // overlay re-derivation below keys on the mode change, like a panel-driven one).
         if let Some(action) = prepared.rail_action {
+            self.settle_to_constrained();
             self.run_chrome_action(action);
+        }
+
+        // Picking Constrained from the rail's type menu is the one act that is a TYPE SWITCH and
+        // nothing else, so it is where the owner's animated re-level actually plays: nothing is
+        // orbiting to fight the tween. Picking Free needs no eager conversion — the next drag
+        // seeds the trackball from whatever the chart holds then.
+        if prepared.orbit_type_picked == Some(OrbitType::Constrained) {
+            self.settle_to_constrained();
         }
 
         // Camera UX change: right-click a node row → "Focus" frames that node. This

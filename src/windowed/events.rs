@@ -179,6 +179,10 @@ impl ApplicationHandler for App {
                                     matches!(zone, Some(CubeChromeZone::RotateArrow(_)))
                                         && !state.app_core.camera.is_face_constrained();
                                 if let (Some(zone), false) = (zone, rotate_disabled) {
+                                    // The cube is chart-native: close the Free Orbit seam before
+                                    // reading angles off the camera, or the tween would start
+                                    // from the stale chart and jump.
+                                    state.settle_to_constrained();
                                     let action =
                                         chrome_zone_left_click_action(zone, &state.app_core.camera);
                                     state.run_chrome_action(action);
@@ -309,6 +313,12 @@ impl ApplicationHandler for App {
                 let grabbed = button_state == ElementState::Pressed && !egui_consumed && !in_chrome;
                 state.orbiting_about_center = grabbed && state.shift_held;
                 state.middle_button_held = grabbed && !state.orbiting_about_center;
+                if state.orbiting_about_center {
+                    // The TYPE is latched with the verb, and for a stronger reason: the two types
+                    // are two representations of one orientation, exact only as a single point.
+                    // Converting mid-drag would put a conversion inside a trajectory.
+                    state.active_orbit_type = state.panel_state.default_orbit_type;
+                }
             }
             WindowEvent::MouseInput {
                 state: button_state,
@@ -413,7 +423,14 @@ impl ApplicationHandler for App {
                         if delta_x != 0.0 || delta_y != 0.0 {
                             // A manual orbit cancels any in-progress snap tween.
                             state.snap_tween = None;
-                            state.app_core.camera.orbit_by_drag(delta_x, delta_y);
+                            // Always Constrained, whatever the default type is: the cube is a
+                            // chart-native surface, and a drag on it is the same turntable the
+                            // face snaps land on.
+                            state.app_core.camera.orbit_by_drag_as(
+                                OrbitType::Constrained,
+                                delta_x,
+                                delta_y,
+                            );
                         }
                     }
                 }
@@ -431,10 +448,12 @@ impl ApplicationHandler for App {
                         if delta_x != 0.0 || delta_y != 0.0 {
                             state.snap_tween = None;
                             let center = state.app_core.camera.orbit_center;
-                            state
-                                .app_core
-                                .camera
-                                .orbit_about_point(center, delta_x, delta_y);
+                            state.app_core.camera.orbit_about_point_as(
+                                state.active_orbit_type,
+                                center,
+                                delta_x,
+                                delta_y,
+                            );
                         }
                     }
                 }

@@ -6,7 +6,7 @@ mod rail;
 mod sketch_overlay;
 mod status;
 
-pub use rail::{icon_rail, rail_height, rail_rect, rail_top, RailClick};
+pub use rail::{icon_rail, orbit_type_button_rect, rail_height, rail_rect, rail_top, RailClick};
 pub use sketch_overlay::{
     sketch_exit_control, sketch_insert_marker, sketch_segment_lines, sketch_vertex_handles,
     SKETCH_HANDLE_GRAB_PAD, SKETCH_HANDLE_HALF, SKETCH_INSERT_MARKER_HALF, SKETCH_SEGMENT_GRAB_PAD,

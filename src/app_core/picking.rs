@@ -413,6 +413,7 @@ mod tests {
             orbit_distance: 160.0,
             roll: 0.0,
             projection_mode: camera::ProjectionMode::Orthographic,
+            ..OrbitCamera::default()
         };
         let mut app_core = AppCore::new(camera);
         let RebuildOutcome::Built(output) = app_core.rebuild(&scene, DENSITY) else {
@@ -512,6 +513,7 @@ mod tests {
             orbit_distance: 160.0, // frames the 64-voxel box
             roll: 0.0,
             projection_mode: camera::ProjectionMode::Perspective, // the melting projection
+            ..OrbitCamera::default()
         };
         app_core = AppCore::new(camera);
         let RebuildOutcome::Built(output) = app_core.rebuild(&scene, VPB) else {
@@ -636,6 +638,7 @@ mod tests {
             orbit_distance: 160.0,
             roll: 0.0,
             projection_mode: camera::ProjectionMode::Perspective,
+            ..OrbitCamera::default()
         });
         let RebuildOutcome::Built(output) = app_core.rebuild(&scene, VPB) else {
             panic!("the fixture's density is in bounds");

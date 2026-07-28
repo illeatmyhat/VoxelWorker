@@ -28,7 +28,7 @@ use crate::{
     chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
     procedural_material_average_color, view_cube_corner, AppConfig, AppCore, ChromeClickAction,
     CubeChromeZone, CubeFace, CubeRect, GpuContext, HomeView, InfiniteGridRenderer, LayerBand,
-    MaterialSource, NodeSpec, OrbitCamera, PanelState, PointsRenderer, RebuildOutcome,
+    MaterialSource, NodeSpec, OrbitCamera, OrbitType, PanelState, PointsRenderer, RebuildOutcome,
     RebuildOutput, RecentreVoxels, SceneGridRenderer, SdfShape, SnapTween, TransformGizmoRenderer,
     ViewCubeElement, ViewCubeRenderer, COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -214,6 +214,19 @@ struct WindowedState {
     /// is not, because the orbit center lives on the camera and no gesture may move it
     /// (`docs/design/tool-modes-and-navigation.md`).
     orbiting_about_center: bool,
+    /// Whether the icon rail's orbit-type menu is open. Shell state and not panel state: it is a
+    /// momentary chrome affordance, not something a relaunch should restore — what survives is
+    /// the DEFAULT the menu writes.
+    orbit_type_menu_open: bool,
+    /// The orbit TYPE this gesture is turning as, latched at press from
+    /// `panel_state.default_orbit_type`.
+    ///
+    /// Latched for the same reason the pan/orbit verb is, and one stronger: the two types are
+    /// two representations of the orientation, and the seam between them is exact only as a
+    /// single POINT. Converting mid-drag would put a conversion inside a trajectory, which is
+    /// where continuity failures live. Not persisted — the default is what survives a relaunch,
+    /// not the gesture (`docs/design/tool-modes-and-navigation.md`).
+    active_orbit_type: OrbitType,
     /// Whether the context menu's "place orbit center" is armed — a transient overlay on the
     /// current tool mode, like an armed create tool, never a mode of its own. While armed the
     /// left click commits the placement instead of selecting, and Esc / a right-click drops it.
@@ -646,6 +659,8 @@ impl WindowedState {
             last_frame_time: std::time::Instant::now(),
             middle_button_held: false,
             orbiting_about_center: false,
+            orbit_type_menu_open: false,
+            active_orbit_type: OrbitType::default(),
             placing_orbit_center: false,
             orbit_center_preview: None,
             last_cursor_position: None,
@@ -754,7 +769,9 @@ impl WindowedState {
         let window_size = [self.surface_config.width, self.surface_config.height];
         let config = AppConfig::capture(
             &self.panel_state,
-            &self.app_core.camera,
+            // The chart view of the camera: persistence and the repro dump speak in angles, and
+            // a live Free Orbit leaves those stale (`OrbitCamera::as_chart`).
+            &self.app_core.camera.as_chart(),
             self.home_view,
             window_size,
         );
@@ -771,7 +788,9 @@ impl WindowedState {
         let window_size = [self.surface_config.width, self.surface_config.height];
         let config = AppConfig::capture(
             &self.panel_state,
-            &self.app_core.camera,
+            // The chart view of the camera: persistence and the repro dump speak in angles, and
+            // a live Free Orbit leaves those stale (`OrbitCamera::as_chart`).
+            &self.app_core.camera.as_chart(),
             self.home_view,
             window_size,
         );

@@ -63,7 +63,7 @@ pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use camera::{
     adjacent_face, chrome_zone_left_click_action, classify_cube_point, nearest_equivalent_theta,
     ArrowDir, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect, HomeView, OrbitCamera,
-    ProjectionMode, RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
+    OrbitType, ProjectionMode, RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
 };
 pub use display::brick::{
     build_brick_field, build_brick_field_all_blocks, build_brick_field_with_tiles,

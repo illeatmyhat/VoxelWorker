@@ -2,7 +2,7 @@
 //! [`PanelResponse`] / [`ExportPanelState`] carried between the shell and the
 //! section builders.
 
-use camera::ProjectionMode;
+use camera::{OrbitType, ProjectionMode};
 use document::intent::{Intent, NodeSpec};
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
@@ -588,6 +588,21 @@ pub struct PanelState {
     /// policy.
     #[snapshot(session)]
     pub selection: super::Selection,
+    /// The **default orbit type**: what an orbit gesture turns as when nothing named a type.
+    ///
+    /// Say "the default type", never "the type" — a command that *names* a type (the viewport
+    /// context menu's Constrained Orbit) overrides it for the orbit-mode session WITHOUT writing
+    /// here, so the two differ whenever an override is running. Only the display rail's orbit
+    /// split button writes this: picking from a split button re-faces it, which is the same act
+    /// as setting the default, whereas invoking a command has never meant "make this the
+    /// default". (`docs/design/tool-modes-and-navigation.md`, the entry-path table.)
+    ///
+    /// **Session** state alongside [`sketch_tool`](Self::sketch_tool): how the author was last
+    /// steering the view is where they left the workspace — never Settings (it is a
+    /// most-recently-used working state, not a preference), never the document, and it rides the
+    /// dump so a repro orbits the way the report did.
+    #[snapshot(session)]
+    pub default_orbit_type: OrbitType,
 }
 
 impl PanelState {

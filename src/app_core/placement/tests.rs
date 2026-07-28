@@ -227,6 +227,7 @@ fn the_surface_point_resolves_sub_voxel_cursor_motion() {
         orbit_distance: 60.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Orthographic,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     let frame = fixture.frame();
@@ -285,6 +286,7 @@ fn a_cursor_over_the_ground_places_a_node_on_it() {
         orbit_distance: 60.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Orthographic,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     // Aim near the right edge: well outside the Box's centred silhouette, so the
@@ -392,6 +394,7 @@ fn a_cursor_over_the_ground_of_an_empty_scene_places_a_node() {
         orbit_distance: 60.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Orthographic,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     // Reuse the fixture's frame geometry (region dims + recentre) but strip the
@@ -470,6 +473,7 @@ fn a_downward_cursor_over_ground_never_misses_in_either_projection() {
                 orbit_distance: 500.0,
                 roll: 0.0,
                 projection_mode,
+                ..OrbitCamera::default()
             };
             let fixture = placement_fixture(camera);
             let mut placements = 0;
@@ -625,6 +629,7 @@ fn nosnap_deg15_keeps_the_sub_voxel_cursor_position_on_a_flat_face() {
         orbit_distance: 60.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Orthographic,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     // Off the screen centre but still over the centred Box, so the ray hits the flat top face
@@ -723,6 +728,7 @@ fn a_hidden_ground_plane_places_nothing() {
         orbit_distance: 60.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Orthographic,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     let cursor = [1200.0, 360.0]; // off the box, onto the ground
@@ -783,6 +789,7 @@ fn a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane() {
         orbit_distance: 120.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Orthographic,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     let empty = PickFrame {
@@ -840,6 +847,7 @@ fn a_cursor_at_the_sky_places_nothing() {
         orbit_distance: 20.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Perspective,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     let outcome = fixture.app_core.place_primitive(
@@ -878,6 +886,7 @@ fn an_orthographic_skyward_cursor_places_nothing() {
         orbit_distance: 20.0,
         roll: 0.0,
         projection_mode: ProjectionMode::Orthographic,
+        ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
     // Empty resident set: tier 1 (geometry) misses, isolating the world-plane tier.

@@ -99,6 +99,30 @@ impl SnapTween {
         }
     }
 
+    /// Begin a **re-levelling** tween: hold the orbit angles and carry `roll` back to 0.
+    ///
+    /// This is what a Free Orbit leaves behind. Closing the seam
+    /// ([`OrbitCamera::ensure_constrained`]) is view-preserving — the tilted horizon survives as
+    /// `roll` — so re-uprighting is a separate, deliberate act, and the owner ruling is that it
+    /// ANIMATES: a hard cut back to level reads as a glitch. Angles held, roll eased, same easing
+    /// and duration as every other snap.
+    ///
+    /// [`OrbitCamera::ensure_constrained`]: crate::orbit::OrbitCamera
+    pub fn re_level(camera: &OrbitCamera) -> Self {
+        Self {
+            theta_from: camera.orbit_theta,
+            phi_from: camera.orbit_phi,
+            theta_to: camera.orbit_theta,
+            phi_to: camera.orbit_phi,
+            // Normalised so the twist takes the short way round: a roll of 6 radians is a tenth
+            // of a turn back to level, not most of a turn forward.
+            roll_from: normalize_roll(camera.roll),
+            roll_to: 0.0,
+            elapsed_seconds: 0.0,
+            duration_seconds: Self::DEFAULT_DURATION_SECONDS,
+        }
+    }
+
     /// Begin a **roll** tween: twist the view by ∓π/2 about the view axis without
     /// moving the orbit angles. `Cw` rolls the view clockwise on screen, `Ccw`
     /// counter-clockwise. The orbit angles are held (`*_to == *_from`) so only
@@ -279,6 +303,29 @@ mod tests {
         assert!(approx(tween.roll_to, 0.0));
         assert!(tween.advance(&mut camera, 1.0));
         assert!(approx(camera.roll, 0.0));
+    }
+
+    /// A re-level tween holds the orbit angles and carries roll to 0 the short way — the
+    /// animated half of "switching back to Constrained re-uprights".
+    #[test]
+    fn re_level_holds_the_angles_and_takes_the_short_way_to_level() {
+        let mut camera = OrbitCamera {
+            orbit_theta: 1.3,
+            orbit_phi: 0.8,
+            roll: 2.0 * PI - 0.4,
+            ..OrbitCamera::default()
+        };
+        let mut tween = SnapTween::re_level(&camera);
+        assert!(approx(tween.roll_to, 0.0));
+        assert!(
+            approx(tween.roll_from, -0.4),
+            "roll_from must be the short-way representative, got {}",
+            tween.roll_from
+        );
+        assert!(tween.advance(&mut camera, 1.0));
+        assert!(approx(camera.roll, 0.0), "roll {}", camera.roll);
+        assert!(approx(camera.orbit_theta, 1.3), "theta moved");
+        assert!(approx(camera.orbit_phi, 0.8), "phi moved");
     }
 
     /// Roll normalises to (−π, π] at rest, so repeated arrow presses never grow it

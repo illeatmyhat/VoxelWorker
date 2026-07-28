@@ -19,6 +19,21 @@ fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
 }
 
 impl WindowedState {
+    /// Bring the camera back to the spherical chart before a **chart-native** camera op runs,
+    /// re-levelling the horizon with an eased tween if it had to convert.
+    ///
+    /// The ViewCube, Home and Fit all speak `theta`/`phi` — snap tables, saved angles, eased
+    /// interpolation — so none of them can act on a live trackball, whose chart fields are stale
+    /// by definition. Converting is view-preserving on its own (`ensure_constrained` hands the
+    /// tilted horizon to `roll`); the tween is the owner ruling that returning to Constrained
+    /// re-uprights, ANIMATED. A face/element/Home snap started immediately after simply replaces
+    /// this tween and re-uprights too, so the two never fight.
+    pub(super) fn settle_to_constrained(&mut self) {
+        if self.app_core.camera.ensure_constrained() && self.app_core.camera.roll != 0.0 {
+            self.snap_tween = Some(SnapTween::re_level(&self.app_core.camera));
+        }
+    }
+
     /// #13: save the live camera orbit as the new Home view (the right-click
     /// "set current view as home" context-menu action; Step 3).
     pub(super) fn set_home_to_current(&mut self) {

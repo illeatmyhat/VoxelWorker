@@ -23,7 +23,7 @@
 
 use glam::{Quat, Vec3};
 
-use crate::tween::{nearest_equivalent_theta, normalize_roll, SnapTween};
+use crate::tween::{nearest_equivalent_theta, SnapTween};
 use crate::view_cube::{CubeFace, CUBE_FACES};
 
 /// Field of view (vertical) for the perspective projection, in radians. Shared with
@@ -84,6 +84,24 @@ pub enum ProjectionMode {
     Perspective,
     /// Orthographic frustum whose half-height tracks `orbit_distance`.
     Orthographic,
+}
+
+/// **How** the camera turns — Fusion's two orbit types.
+///
+/// Orthogonal to the pivot (*what* it turns around): all four combinations are meaningful, and
+/// `docs/design/tool-modes-and-navigation.md` keeps the two axes apart deliberately. This one
+/// says nothing about which point the rotation is anchored at.
+///
+/// Serialized at the application seam like [`ProjectionMode`] (this crate carries no serde).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OrbitType {
+    /// The turntable: world-up stays up, so the camera never rolls. The default, and the
+    /// representation the spherical chart (`orbit_theta` / `orbit_phi`) stores directly.
+    #[default]
+    Constrained,
+    /// The full trackball: the drag turns the model about a screen-space axis and roll
+    /// accumulates freely.
+    Free,
 }
 
 /// The saved "home" view: the orbit angles + distance the Home button returns to.
@@ -176,6 +194,18 @@ pub struct OrbitCamera {
     /// other pivot — the point the camera looks at, which pan, zoom, the view cube and the
     /// explicit orbit mode all move and orbit about.
     pub orbit_center: Vec3,
+    /// The **trackball** orientation: `Some` exactly while Free Orbit is the active type, and
+    /// authoritative over `orbit_theta` / `orbit_phi` / `roll` whenever it is.
+    ///
+    /// The `Option` IS the authority bit — there is no separate flag that could disagree with the
+    /// data it describes, and while this is `Some` the chart is stale by definition. Do not read
+    /// it directly: [`Self::direction`] and [`Self::up_vector`] dispatch on it, and every other
+    /// consumer is built on those two. `crate::free_orbit` holds the integrator, the seam and the
+    /// reasoning.
+    ///
+    /// **Not persisted**, exactly like [`Self::roll`]: a load lands in the chart, and if the
+    /// session default is Free the first drag seeds this from it through the seam.
+    pub free_orientation: Option<Quat>,
 }
 
 impl Default for OrbitCamera {
@@ -195,6 +225,7 @@ impl Default for OrbitCamera {
             roll: 0.0,
             projection_mode: ProjectionMode::Perspective,
             orbit_center: Vec3::ZERO,
+            free_orientation: None,
         }
     }
 }
@@ -231,6 +262,10 @@ impl OrbitCamera {
     /// Unit direction from the target toward the camera eye (Z-up spherical:
     /// `phi` is the polar angle from +Z, `theta` the azimuth in the XY plane).
     pub fn direction(&self) -> Vec3 {
+        // Free Orbit is authoritative when it is live; the chart below is stale by definition.
+        if let Some(orientation) = self.free_orientation {
+            return (orientation * Vec3::Z).normalize();
+        }
         let (sin_phi, cos_phi) = self.orbit_phi.sin_cos();
         let (sin_theta, cos_theta) = self.orbit_theta.sin_cos();
         Vec3::new(sin_phi * cos_theta, sin_phi * sin_theta, cos_phi)
@@ -270,9 +305,13 @@ impl OrbitCamera {
     pub fn is_face_constrained(&self) -> bool {
         // cos(8°) ≈ 0.990 — a tight cone around the face normal.
         const FACE_ALIGN_COS: f32 = 0.990;
-        let aligned = self.direction().dot(self.nearest_face().normal()) >= FACE_ALIGN_COS;
-        // Upright within ~8° of roll (the rotate arrows assume a screen-aligned face).
-        let upright = normalize_roll(self.roll).abs() <= 0.14;
+        let direction = self.direction();
+        let aligned = direction.dot(self.nearest_face().normal()) >= FACE_ALIGN_COS;
+        // Upright within ~8°: the screen up is close to the canonical ROLL-FREE up for this
+        // direction. Stated against the two vectors rather than against the `roll` field so it
+        // answers under Free Orbit too, where the chart is stale — away from the poles the two
+        // are the same predicate, because the angle between those vectors IS `roll`.
+        let upright = self.up_vector().dot(self.roll_free_up_for(direction)) >= FACE_ALIGN_COS;
         aligned && upright
     }
 
@@ -335,6 +374,11 @@ impl OrbitCamera {
     /// [`OrbitCamera::view_projection`]: crate::projection
     /// [`OrbitCamera::view_cube_view_projection`]: crate::projection
     pub fn up_vector(&self) -> Vec3 {
+        // Under Free Orbit the whole orientation lives in the quaternion, roll included — there
+        // is no separate roll to compose, and no pole to blend around.
+        if let Some(orientation) = self.free_orientation {
+            return (orientation * Vec3::Y).normalize();
+        }
         let base = self.up_vector_base();
         if self.roll == 0.0 {
             return base;
@@ -376,7 +420,7 @@ impl OrbitCamera {
     /// The camera's orthonormal view basis as world→camera columns
     /// (`right`, `screen_up`, `back`) — the SAME frame `look_at_rh` builds, so a
     /// rotation expressed against it is the rotation the user sees.
-    fn view_basis(&self) -> glam::Mat3 {
+    pub(crate) fn view_basis(&self) -> glam::Mat3 {
         let forward = -self.direction().normalize();
         let right = forward.cross(self.up_vector()).normalize_or_zero();
         let screen_up = right.cross(forward);
@@ -415,10 +459,16 @@ impl OrbitCamera {
         self.orbit_center = Vec3::ZERO;
     }
 
-    pub fn orbit_about_point(&mut self, pivot: Vec3, delta_x: f32, delta_y: f32) {
+    pub fn orbit_about_point_as(
+        &mut self,
+        orbit_type: OrbitType,
+        pivot: Vec3,
+        delta_x: f32,
+        delta_y: f32,
+    ) {
         let basis_before = self.view_basis();
         let target_before = self.target;
-        self.orbit_by_drag(delta_x, delta_y);
+        self.orbit_by_drag_as(orbit_type, delta_x, delta_y);
         // Orthonormal, so the inverse IS the transpose.
         let rotation = self.view_basis() * basis_before.transpose();
         self.target = pivot + rotation * (target_before - pivot);
@@ -501,7 +551,7 @@ mod tests {
                     ..OrbitCamera::default()
                 };
                 let before = camera.view_basis().transpose() * (pivot - camera.eye());
-                camera.orbit_about_point(pivot, delta_x, delta_y);
+                camera.orbit_about_point_as(OrbitType::Constrained, pivot, delta_x, delta_y);
                 let after = camera.view_basis().transpose() * (pivot - camera.eye());
                 assert!(
                     (before - after).length() < 1e-2,
@@ -526,7 +576,7 @@ mod tests {
         let mut dragged = base;
         dragged.orbit_by_drag(21.0, -13.0);
         let mut pivoted = base;
-        pivoted.orbit_about_point(base.target, 21.0, -13.0);
+        pivoted.orbit_about_point_as(OrbitType::Constrained, base.target, 21.0, -13.0);
 
         assert!((pivoted.target - dragged.target).length() < 1e-4);
         assert!((pivoted.orbit_theta - dragged.orbit_theta).abs() < 1e-6);
@@ -548,7 +598,7 @@ mod tests {
         };
         let radius_before = (camera.eye() - pivot).length();
         for _ in 0..12 {
-            camera.orbit_about_point(pivot, 17.0, 9.0);
+            camera.orbit_about_point_as(OrbitType::Constrained, pivot, 17.0, 9.0);
         }
         let radius_after = (camera.eye() - pivot).length();
         assert!(
@@ -584,7 +634,7 @@ mod tests {
             "the pan should have moved the target"
         );
 
-        camera.orbit_about_point(camera.orbit_center, 30.0, -12.0);
+        camera.orbit_about_point_as(OrbitType::Constrained, camera.orbit_center, 30.0, -12.0);
         assert_eq!(
             camera.orbit_center, placed,
             "orbiting about the center moved the center"

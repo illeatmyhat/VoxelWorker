@@ -244,7 +244,11 @@ fn the_session_is_the_workspace_and_nothing_else() {
             // ADR 0032: the workspace selection. It left the DOCUMENT — where undo used to
             // restore it and a shared file used to carry it — and joined the session on the
             // sketch selection's law: selecting is not an edit.
-            "selection"
+            "selection",
+            // The DEFAULT orbit type — how the author was last steering the view. Session and
+            // not settings: it is a most-recently-used working state written by using the tool,
+            // not a preference anybody sat down and chose.
+            "default_orbit_type"
         ],
         "the session set changed: a field joining it now survives relaunch, and a field \
          leaving it stops surviving one"
