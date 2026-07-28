@@ -7,12 +7,12 @@
 
 use document::command::{Command, Inverse};
 use document::intent::{Intent, IntentEffect};
-use document::scene::{Node, NodeContent, NodeId, NodeTransform, Point, Scene, VoxelBody};
+use document::scene::{Node, NodeContent, NodeId, NodeTransform, Point, PointId, Scene, VoxelBody};
 use document::voxel::SdfShape;
 
 use ui::panel::Selection;
 
-use super::command_stack::{RecordedCommand, SketchGroup};
+use super::command_stack::SketchGroup;
 use super::AppCore;
 
 /// What one [`dispatch`](AppCore::dispatch) produced, beyond the scene mutation itself.
@@ -39,7 +39,7 @@ enum SelectionSteer {
     /// survivor. `None` when the scene emptied and nothing is left to select.
     Node(Option<NodeId>),
     /// Land the reference-Point selection here.
-    Point(Option<usize>),
+    Point(Option<PointId>),
 }
 
 impl DispatchOutcome {
@@ -189,50 +189,92 @@ impl AppCore {
         effect
     }
 
+    /// Apply several [`Intent`]s as **one undo step** — the multi-target verbs' door
+    /// (ADR 0033: Delete over a multi-selection reverses as one press of Ctrl+Z, exactly
+    /// as the sketch multi-delete already does through its single `SetSketch`). Each
+    /// intent goes through the same [`record`](Self::record) protocol as a lone apply;
+    /// only the stack push differs. A coordinate-limit rejection skips just the offending
+    /// intent, matching what N separate applies would have done.
+    pub fn apply_transaction(
+        &mut self,
+        scene: &mut Scene,
+        selection: &mut Selection,
+        intents: Vec<Intent>,
+    ) -> IntentEffect {
+        let mut merged = IntentEffect::none();
+        let mut transaction = Vec::new();
+        for intent in intents {
+            if scene.intent_exceeds_coordinate_limit(&intent, scene.voxels_per_block) {
+                merged = merged.merged_with(IntentEffect::rejected());
+                continue;
+            }
+            let (command, effect) = self.record(scene, selection, intent);
+            transaction.push(command);
+            merged = merged.merged_with(effect);
+        }
+        if transaction.is_empty() {
+            return merged;
+        }
+        // Same routing as `apply_intent`: an open sketch group swallows the commands
+        // (Finish folds the whole session into one step anyway), otherwise the batch
+        // lands whole.
+        if let Some(group) = self.command_stack.open_group.as_mut() {
+            group.session_undo.extend(transaction);
+            group.session_redo.clear();
+        } else {
+            self.command_stack.undo.push(transaction);
+            self.command_stack.redo.clear();
+        }
+        merged
+    }
+
     /// Land a dispatch's [`SelectionSteer`] on the workspace selection (ADR 0032). The
     /// SINGLE write point for an edit's selection effect — no edit op writes selection.
     fn apply_selection_steer(selection: &mut Selection, steer: Option<SelectionSteer>) {
         match steer {
             Some(SelectionSteer::Node(node)) => selection.set_primary_node(node),
-            Some(SelectionSteer::Point(index)) => selection.set_primary_point_index(index),
+            Some(SelectionSteer::Point(point)) => selection.set_primary_point(point),
             None => {}
         }
     }
 
-    /// Snapshot the pre-state (selection + the id counter — the COUNTER RULE in command.rs),
-    /// capture the inverse by reading the scene BEFORE the mutation, dispatch (which may mint
-    /// ids the inverse needs), then assemble the [`RecordedCommand`] with the add-family
-    /// minted-id patch — the shared record protocol BOTH the main-stack apply and the
-    /// in-session sketch-group apply go through, so the two can never diverge on capture
-    /// ordering. Touches no stack; the caller decides where the command lands.
+    /// Snapshot the id counter (the COUNTER RULE in command.rs), capture the inverse by
+    /// reading the scene BEFORE the mutation, dispatch (which may mint ids the inverse
+    /// needs), then assemble the [`Command`] with the add-family minted-id patch — the
+    /// shared record protocol BOTH the main-stack apply and the in-session sketch-group
+    /// apply go through, so the two can never diverge on capture ordering. Touches no
+    /// stack; the caller decides where the command lands.
+    ///
+    /// The selection is NOT captured (ADR 0033: the undo stack carries no selection).
+    /// What it gets instead is the forward steer, then a validity [`prune`] — the same
+    /// pair every mutation path runs.
+    ///
+    /// [`prune`]: Selection::prune
     fn record(
         &mut self,
         scene: &mut Scene,
         selection: &mut Selection,
         intent: Intent,
-    ) -> (RecordedCommand, IntentEffect) {
-        let selection_before = selection.primary_node_id();
-        let point_selection_before = selection.primary_point_index();
+    ) -> (Command, IntentEffect) {
         let counter_before = scene.next_node_id;
         let inverse = self.capture_inverse(scene, &intent, counter_before);
         let outcome = self.dispatch(scene, intent.clone());
         Self::apply_selection_steer(selection, outcome.selection_steer);
+        let mut effect = outcome.effect;
+        if selection.prune(scene) {
+            effect = effect.merged_with(IntentEffect::selection());
+        }
         // The add family mints exactly one node; its inverse needs that id (the placeholder
         // captured above is patched with the real minted id here).
         let inverse = match (inverse, outcome.minted_node) {
             (Inverse::RemoveAdded { .. }, Some(id)) => Inverse::RemoveAdded { id },
             (other, _) => other,
         };
-        let effect = outcome.effect;
         (
-            RecordedCommand {
-                command: Command {
-                    intent,
-                    inverse,
-                    counter_before,
-                },
-                selection_before,
-                point_selection_before,
+            Command {
+                intent,
+                inverse,
+                counter_before,
             },
             effect,
         )
@@ -520,31 +562,35 @@ impl AppCore {
         effect
     }
 
-    /// Apply `command`'s [`Inverse`] to `scene` and restore the captured selection + counter,
-    /// returning the forward intent's [`effect_of`](Self::effect_of) (with `selection_changed`
-    /// forced on, since an undo always restores `selection_before`). Shared by the main-stack
-    /// [`undo`](Self::undo) and the in-session undo of an open sketch group — it touches NEITHER
-    /// stack, so the caller owns the pop/push. A [`Inverse::Field`] is routed back through
-    /// [`dispatch`](Self::dispatch) (the single owner of the field-write mutations); only the
-    /// structural arms live in [`Inverse::apply`].
+    /// Apply `command`'s [`Inverse`] to `scene` and restore the captured counter,
+    /// returning the forward intent's [`effect_of`](Self::effect_of). Shared by the
+    /// main-stack [`undo`](Self::undo) and the in-session undo of an open sketch group —
+    /// it touches NEITHER stack, so the caller owns the pop/push. A [`Inverse::Field`] is
+    /// routed back through [`dispatch`](Self::dispatch) (the single owner of the
+    /// field-write mutations); only the structural arms live in [`Inverse::apply`].
+    ///
+    /// ADR 0033: no selection is restored — undo touches only the document, and the
+    /// validity prune drops any target the reversal invalidated (undoing an add leaves
+    /// nothing selected, the Fusion rule).
     fn reverse_command(
         &mut self,
         scene: &mut Scene,
         selection: &mut Selection,
-        recorded: &RecordedCommand,
+        command: &Command,
     ) -> IntentEffect {
-        let command = &recorded.command;
         match &command.inverse {
             Inverse::Field(prior) => {
-                // A field write never steers selection; the restore below is authoritative.
+                // A field write never steers selection.
                 self.dispatch(scene, prior.clone());
             }
             structural => structural.apply(scene),
         }
-        selection.set_primary_node(recorded.selection_before);
-        selection.set_primary_point_index(recorded.point_selection_before);
         scene.next_node_id = command.counter_before;
-        Self::effect_of(&command.intent).merged_with(IntentEffect::selection())
+        let effect = Self::effect_of(&command.intent);
+        if selection.prune(scene) {
+            return effect.merged_with(IntentEffect::selection());
+        }
+        effect
     }
 
     /// Re-dispatch `command`'s forward `intent`, returning its
@@ -555,13 +601,15 @@ impl AppCore {
         &mut self,
         scene: &mut Scene,
         selection: &mut Selection,
-        recorded: &RecordedCommand,
+        command: &Command,
     ) -> IntentEffect {
-        let intent = &recorded.command.intent;
+        let intent = &command.intent;
         let outcome = self.dispatch(scene, intent.clone());
         // Redo re-lands the forward edit's selection steer (a re-minted node arrives
-        // selected again), matching what the original apply did.
+        // selected again), matching what the original apply did — then prunes, matching
+        // what every mutation path does (ADR 0033).
         Self::apply_selection_steer(selection, outcome.selection_steer);
+        selection.prune(scene);
         Self::effect_of(intent).merged_with(IntentEffect::selection())
     }
 
@@ -970,8 +1018,8 @@ impl AppCore {
                 };
                 scene.add_point(point);
                 // A freshly-added Point arrives selected, like a freshly-added node.
-                let added = scene.points.len().saturating_sub(1);
-                DispatchOutcome::steered(full_effect, SelectionSteer::Point(Some(added)))
+                let added = scene.points.last().map(|point| point.id);
+                DispatchOutcome::steered(full_effect, SelectionSteer::Point(added))
             }
             Intent::RemovePoint { index } => {
                 scene.remove_point(index);
@@ -979,7 +1027,10 @@ impl AppCore {
                 // the removed Point was it — the post-removal fallback the panel used to
                 // predict against a list it had not shrunk yet.
                 let remaining = scene.points.len();
-                let survivor = (remaining > 0).then(|| index.min(remaining - 1));
+                let survivor = (remaining > 0)
+                    .then(|| index.min(remaining - 1))
+                    .and_then(|slot| scene.points.get(slot))
+                    .map(|point| point.id);
                 DispatchOutcome::steered(full_effect, SelectionSteer::Point(survivor))
             }
             Intent::SetPointHidden { index, hidden } => {

@@ -107,9 +107,11 @@ impl Scene {
         if self.points.iter().any(|point| point.is_origin) {
             return;
         }
+        let id = self.mint_point_id();
         self.points.insert(
             0,
             Point {
+                id,
                 name: "Origin".to_string(),
                 position_blocks: [0, 0, 0],
                 offset_voxels: [0, 0, 0],
@@ -149,8 +151,11 @@ impl Scene {
     /// #29 fix): only the Origin keeps the ground (XY, Z-up) plane on by default (via
     /// [`ensure_origin_point`](Self::ensure_origin_point)). The plane/axis flags on
     /// the passed `point` are overridden here so every "+ Add Point" path gets the
-    /// clean default; the caller controls only the point's name/position/identity.
+    /// clean default; the caller controls only the point's name/position. The id is
+    /// minted here too (ADR 0033) — identity is the document's to hand out, never the
+    /// caller's to invent.
     pub fn add_point(&mut self, mut point: Point) {
+        point.id = self.mint_point_id();
         point.plane_xz = false;
         point.plane_xy = false;
         point.plane_yz = false;

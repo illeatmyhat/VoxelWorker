@@ -13,5 +13,5 @@ mod navigate;
 
 pub use model::{
     AssemblyDef, CombineOp, DefId, LeafOrigin, Node, NodeBuilder, NodeGrids, NodeId, NodePath,
-    Point, ROOT_NODE_ID,
+    Point, PointId, ROOT_NODE_ID,
 };

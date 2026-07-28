@@ -10,7 +10,7 @@
 //! over a box and a Point returns both. Which kinds may enter is a property of the editing
 //! mode (an admission filter), never a second data structure.
 
-use document::scene::NodeId;
+use document::scene::{NodeContent, NodeId, PointId, Scene};
 use document::sketch::EntityId;
 
 /// One picked thing. ADR 0032 keeps these in ONE set: mode exclusivity is an admission
@@ -27,8 +27,9 @@ pub enum SelectionTarget {
     /// A scene-graph node, at any depth (ADR 0001) — but an instance picks as itself, never
     /// into its definition (ADR 0017).
     Node(NodeId),
-    /// A reference Point, by its index in `Scene::points`.
-    ReferencePoint(usize),
+    /// A reference Point, by its stable id (ADR 0033) — never its `Vec` slot, which
+    /// shifts on `RemovePoint` and would silently re-point at a different Point.
+    ReferencePoint(PointId),
     /// A vertex of a sketch profile (ADR 0030), addressable only from inside that sketch.
     SketchPoint {
         /// The sketch node that owns the entity counter this id came from.
@@ -127,11 +128,21 @@ impl Selection {
         })
     }
 
-    /// The most recently picked reference Point index, or `None`. The successor of
+    /// Every picked node id, in pick order — the multi-target verbs' read (Delete acts
+    /// on all of these, ADR 0033), where [`primary_node_id`](Self::primary_node_id) is
+    /// the single-target consumers'.
+    pub fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.targets.iter().filter_map(|target| match target {
+            SelectionTarget::Node(id) => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// The most recently picked reference Point, or `None`. The successor of
     /// `Scene::active_point`.
-    pub fn primary_point_index(&self) -> Option<usize> {
+    pub fn primary_point_id(&self) -> Option<PointId> {
         self.targets.iter().rev().find_map(|target| match target {
-            SelectionTarget::ReferencePoint(index) => Some(*index),
+            SelectionTarget::ReferencePoint(id) => Some(*id),
             _ => None,
         })
     }
@@ -172,13 +183,13 @@ impl Selection {
         }
     }
 
-    /// Replace every picked reference POINT with `index` (or drop them all for `None`),
+    /// Replace every picked reference POINT with `point` (or drop them all for `None`),
     /// leaving other kinds untouched.
-    pub fn set_primary_point_index(&mut self, index: Option<usize>) {
+    pub fn set_primary_point(&mut self, point: Option<PointId>) {
         self.targets
             .retain(|target| !matches!(target, SelectionTarget::ReferencePoint(_)));
-        if let Some(index) = index {
-            self.targets.push(SelectionTarget::ReferencePoint(index));
+        if let Some(id) = point {
+            self.targets.push(SelectionTarget::ReferencePoint(id));
         }
     }
 
@@ -220,6 +231,32 @@ impl Selection {
         self.targets
             .retain(|target| target.owning_sketch().is_none());
     }
+
+    /// Drop every target that no longer resolves against `scene`, returning whether
+    /// anything was dropped. The ADR 0033 rule: the undo stack carries no selection, so
+    /// this — run after any document mutation (apply, undo, redo) — is the ONE place
+    /// selection learns the document changed. Undoing an add leaves nothing selected,
+    /// exactly like Fusion.
+    pub fn prune(&mut self, scene: &Scene) -> bool {
+        let before = self.targets.len();
+        self.targets.retain(|target| match *target {
+            SelectionTarget::Node(id) => scene.node_by_id(id).is_some(),
+            SelectionTarget::ReferencePoint(id) => scene.points.iter().any(|point| point.id == id),
+            SelectionTarget::SketchPoint { sketch, entity } => sketch_of(scene, sketch)
+                .is_some_and(|s| s.points().iter().any(|point| point.id == entity)),
+            SelectionTarget::SketchSegment { sketch, entity } => sketch_of(scene, sketch)
+                .is_some_and(|s| s.segments().iter().any(|segment| segment.id == entity)),
+        });
+        self.targets.len() != before
+    }
+}
+
+/// The sketch under `node`, when that node is a sketch producer — the prune's resolver.
+fn sketch_of(scene: &Scene, node: NodeId) -> Option<&document::sketch::Sketch> {
+    match &scene.node_by_id(node)?.content {
+        NodeContent::SketchTool { producer, .. } => Some(&producer.sketch),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -228,7 +265,7 @@ mod tests {
 
     const FIRST: SelectionTarget = SelectionTarget::Node(NodeId(1));
     const SECOND: SelectionTarget = SelectionTarget::Node(NodeId(2));
-    const POINT: SelectionTarget = SelectionTarget::ReferencePoint(0);
+    const POINT: SelectionTarget = SelectionTarget::ReferencePoint(PointId(5));
 
     const SKETCH: NodeId = NodeId(9);
     const OTHER_SKETCH: NodeId = NodeId(10);
@@ -258,7 +295,7 @@ mod tests {
         selection.toggle(POINT);
         selection.toggle(SECOND);
         assert_eq!(selection.primary_node_id(), Some(NodeId(2)));
-        assert_eq!(selection.primary_point_index(), Some(0));
+        assert_eq!(selection.primary_point_id(), Some(PointId(5)));
         assert_eq!(selection.len(), 3);
     }
 
@@ -270,12 +307,12 @@ mod tests {
         selection.toggle(POINT);
         selection.set_primary_node(Some(NodeId(7)));
         assert_eq!(selection.primary_node_id(), Some(NodeId(7)));
-        assert_eq!(selection.primary_point_index(), Some(0));
+        assert_eq!(selection.primary_point_id(), Some(PointId(5)));
         assert!(!selection.contains(FIRST));
 
         selection.set_primary_node(None);
         assert_eq!(selection.primary_node_id(), None);
-        assert_eq!(selection.primary_point_index(), Some(0));
+        assert_eq!(selection.primary_point_id(), Some(PointId(5)));
     }
 
     /// Shift-clicking a picked target removes it; a plain click replaces everything.
@@ -366,7 +403,7 @@ mod tests {
         selection.clear_sketch_entities();
         assert!(!selection.holds_sketch_entities(SKETCH));
         assert_eq!(selection.primary_node_id(), Some(NodeId(1)));
-        assert_eq!(selection.primary_point_index(), Some(0));
+        assert_eq!(selection.primary_point_id(), Some(PointId(5)));
         assert_eq!(selection.len(), 2);
     }
 
@@ -378,7 +415,7 @@ mod tests {
         selection.toggle(FIRST);
         selection.toggle(vertex(1));
         assert_eq!(selection.primary_node_id(), Some(NodeId(1)));
-        assert_eq!(selection.primary_point_index(), None);
+        assert_eq!(selection.primary_point_id(), None);
     }
 
     /// ADR 0032: the three requests a click can make, through the one door the shell uses.

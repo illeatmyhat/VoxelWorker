@@ -413,6 +413,15 @@ impl WindowedState {
             );
             merged_effect = merged_effect.merged_with(effect);
         }
+        // Batched intents that must land as ONE undo step (multi-node Delete, ADR 0033).
+        for transaction in std::mem::take(&mut self.viewport_transactions) {
+            let effect = self.app_core.apply_transaction(
+                &mut self.panel_state.scene,
+                &mut self.panel_state.selection,
+                transaction,
+            );
+            merged_effect = merged_effect.merged_with(effect);
+        }
         // Coordinate-limit warning (authoring-time only): latch a rejected edit into the
         // inspector warning, and clear it on the next accepted geometry edit.
         if merged_effect.coordinate_limit_rejected {
@@ -1536,17 +1545,41 @@ impl WindowedState {
     /// viewport menu's row and from its keyboard binding alike.
     ///
     /// What "picked" means depends on where you are, and deciding that HERE is the point: inside a
-    /// sketch it is the picked entities, outside one it is the picked node. The panel cannot make
+    /// sketch it is the picked entities, outside one it is the picked nodes. The panel cannot make
     /// that call for the keyboard path, which arrives with no menu to have been built in a mode.
     /// A no-op when nothing is picked, so the binding is safe to press at any time.
+    ///
+    /// A multi-selection deletes whole (ADR 0033), filtered to its **selection roots**: a node
+    /// whose ancestor is also picked is skipped, because removing the ancestor takes it anyway
+    /// and a second `RemoveNode` on the dead id would ride the transaction as a no-op. The batch
+    /// is ONE undo step, mirroring the sketch multi-delete.
     pub(super) fn delete_selection(&mut self) {
         if self.panel_state.sketch_mode.is_some() {
             self.delete_sketch_selection();
             return;
         }
-        if let Some(id) = self.panel_state.selected_node().map(|node| node.id) {
-            self.viewport_intents
-                .push(crate::Intent::RemoveNode { target: id });
+        let picked: std::collections::BTreeSet<document::scene::NodeId> =
+            self.panel_state.selection.nodes().collect();
+        let scene = &self.panel_state.scene;
+        let has_picked_ancestor = |id: document::scene::NodeId| {
+            let mut current = id;
+            while let Some((Some(parent), _)) = scene.parent_and_index_of(current) {
+                if picked.contains(&parent) {
+                    return true;
+                }
+                current = parent;
+            }
+            false
+        };
+        let intents: Vec<crate::Intent> = self
+            .panel_state
+            .selection
+            .nodes()
+            .filter(|id| !has_picked_ancestor(*id))
+            .map(|target| crate::Intent::RemoveNode { target })
+            .collect();
+        if !intents.is_empty() {
+            self.viewport_transactions.push(intents);
         }
     }
 

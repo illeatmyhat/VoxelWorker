@@ -44,7 +44,7 @@ pub(super) fn build_points_section(
             (
                 name,
                 point.hidden,
-                state.selection.primary_point_index() == Some(index),
+                state.selection.primary_point_id() == Some(point.id),
             )
         };
         ui.horizontal(|ui| {
@@ -93,8 +93,16 @@ pub(super) fn build_points_section(
     // binds to a LOCAL copy of the Point's fields (egui needs the `&mut`); a change
     // emits the matching `SetPoint*` intent instead of mutating the Point. The buffer
     // is read fresh from the scene each frame, so it always reflects the live value.
-    if let Some(active) = state.selection.primary_point_index() {
-        if let Some(point) = state.scene.points.get(active) {
+    if let Some(active_id) = state.selection.primary_point_id() {
+        // The SetPoint* intents are index-keyed (transient, so an index is sound there);
+        // the selection is id-keyed (ADR 0033). Resolve id → row here.
+        if let Some((active, point)) = state
+            .scene
+            .points
+            .iter()
+            .enumerate()
+            .find(|(_, point)| point.id == active_id)
+        {
             let point = point.clone();
             ui.add_space(4.0);
             ui.separator();
@@ -197,9 +205,17 @@ pub(super) fn build_points_section(
             response.emit(Intent::RemovePoint { index });
         }
     } else if let Some(index) = select {
-        response.select = Some(crate::panel::SelectionRequest::Only(
-            crate::panel::SelectionTarget::ReferencePoint(index),
-        ));
+        // The row is index-addressed (it IS a row), but the selection keys by the
+        // stable id (ADR 0033). Ctrl-click (Cmd on mac — egui's command modifier)
+        // toggles membership in the set (ADR 0032 multi-select).
+        if let Some(point) = state.scene.points.get(index) {
+            let target = crate::panel::SelectionTarget::ReferencePoint(point.id);
+            response.select = Some(if ui.input(|input| input.modifiers.command) {
+                crate::panel::SelectionRequest::Toggle(target)
+            } else {
+                crate::panel::SelectionRequest::Only(target)
+            });
+        }
     }
 
     ui.separator();

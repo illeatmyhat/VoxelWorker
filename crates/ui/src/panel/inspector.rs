@@ -53,6 +53,20 @@ pub(super) fn build_inspector_section(
         }
     };
 
+    // ADR 0032: a multi-selection announces itself; the editors below still bind to the
+    // per-kind primary (newest of kind), which is what a Delete or steer acts from.
+    if state.selection.len() > 1 {
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "{} selected — editing the newest.",
+                state.selection.len()
+            ))
+            .small()
+            .weak(),
+        );
+    }
+
     match kind {
         ActiveKind::Tool => {
             // ADR 0017: the combine-operation selector shows on every node kind —

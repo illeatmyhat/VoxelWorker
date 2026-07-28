@@ -150,10 +150,18 @@ fn card(
     ui.painter()
         .galley(egui::pos2(rect.left() + 10.0, rect.top() + 30.0), name, ink);
 
-    if hit.clicked() && !selected {
-        response.select = Some(crate::panel::SelectionRequest::Only(
-            crate::panel::SelectionTarget::Node(id),
-        ));
+    // Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in the set
+    // (ADR 0032 multi-select); a plain click replaces.
+    if hit.clicked() {
+        if ui.input(|input| input.modifiers.command) {
+            response.select = Some(crate::panel::SelectionRequest::Toggle(
+                crate::panel::SelectionTarget::Node(id),
+            ));
+        } else if !selected {
+            response.select = Some(crate::panel::SelectionRequest::Only(
+                crate::panel::SelectionTarget::Node(id),
+            ));
+        }
     }
 }
 

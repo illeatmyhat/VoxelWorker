@@ -145,13 +145,13 @@ fn cancel_rolls_the_session_back_to_enter() {
 }
 
 #[test]
-fn cancel_restores_the_enter_selection() {
-    // Regression for the review's confirmed finding [5]: Cancel must restore the enter
-    // SELECTION, not just the producer — the general transaction model gets this for free
-    // because each reversed command restores its own captured `selection_before`.
+fn cancel_leaves_the_selection_where_it_stood() {
+    // ADR 0033 reverses the review's old finding [5]: Cancel restores the DOCUMENT and
+    // touches the selection only through the validity prune. Reversing a SetSketch
+    // invalidates nothing the user picked, so whatever selection stood at Cancel time
+    // stands after it — the Fusion rule, replacing "restore the enter selection".
     let mut core = test_core();
     let (mut scene, target) = single_sketch_scene();
-    // The workspace arrives with the sketch node picked.
     let mut selection = selection_of_first_root(&scene);
     assert_eq!(selection.primary_node_id(), Some(target));
 
@@ -164,13 +164,31 @@ fn cancel_restores_the_enter_selection() {
             producer: box_sketch(48, 48, 48),
         },
     );
-    // The shell moves the selection mid-session (e.g. a sub-element pick), then the user Cancels.
+    // The shell moves the selection mid-session, then the user Cancels.
     selection.clear();
     core.cancel_sketch_group(&mut scene, &mut selection);
     assert_eq!(
         selection.primary_node_id(),
+        None,
+        "Cancel reverses edits, not the user's selection moves"
+    );
+
+    // And a still-valid pick survives the same Cancel untouched.
+    let mut selection = selection_of_first_root(&scene);
+    core.begin_sketch_group();
+    core.apply_intent(
+        &mut scene,
+        &mut selection,
+        Intent::SetSketch {
+            target,
+            producer: box_sketch(64, 64, 64),
+        },
+    );
+    core.cancel_sketch_group(&mut scene, &mut selection);
+    assert_eq!(
+        selection.primary_node_id(),
         Some(target),
-        "Cancel restores the selection captured before the first in-mode edit"
+        "a target the reversal did not invalidate is not pruned"
     );
 }
 

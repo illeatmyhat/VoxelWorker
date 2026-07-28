@@ -312,6 +312,9 @@ struct WindowedState {
     /// Placement intents produced by a viewport click this frame, drained into the SAME
     /// apply loop as the panel intents so a drop goes through `apply_intent` + rebuild.
     viewport_intents: Vec<crate::Intent>,
+    /// Intent batches that must apply as ONE undo step (multi-node Delete, ADR 0033).
+    /// Drained right after `viewport_intents` through `AppCore::apply_transaction`.
+    viewport_transactions: Vec<Vec<crate::Intent>>,
     /// ADR 0028 (#94): the sketch profile's vertex handles, projected to egui points with
     /// their interaction state, refreshed at the END of each frame and drawn on the NEXT
     /// (a one-frame lag, imperceptible for handle chrome). Empty outside sketch mode.
@@ -694,6 +697,7 @@ impl WindowedState {
             pending_placement: None,
             armed_press: false,
             viewport_intents: Vec::new(),
+            viewport_transactions: Vec::new(),
             sketch_overlay_points: Vec::new(),
             sketch_vertex_px: Vec::new(),
             sketch_point_ids: Vec::new(),

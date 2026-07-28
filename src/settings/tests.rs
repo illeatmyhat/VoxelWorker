@@ -73,7 +73,7 @@ fn config_round_trips_through_json() {
         selection: SelectionConfig {
             targets: vec![
                 SelectionTargetConfig::Node(NodeId(3)),
-                SelectionTargetConfig::ReferencePoint(1),
+                SelectionTargetConfig::ReferencePoint(document::scene::PointId(1)),
             ],
         },
     };

@@ -50,7 +50,7 @@ pub use extent::{
 };
 pub use graph::{
     AssemblyDef, CombineOp, DefId, LeafOrigin, Node, NodeBuilder, NodeGrids, NodeId, NodePath,
-    Point, ROOT_NODE_ID,
+    Point, PointId, ROOT_NODE_ID,
 };
 pub use producers::{operation_masks_beyond_bounds, quat_from_lattice, LeafProducer, ScopeFrame};
 pub use producers::{NodeContent, VoxelBody};
@@ -141,8 +141,10 @@ pub struct Scene {
     /// `AppConfig.show_floor_grid` mirror was deleted in #31).
     #[serde(default = "default_master_grid")]
     pub master_floor_grid: bool,
-    /// Document-owned monotonic counter for minting [`NodeId`]s (ADR 0003 Phase B).
-    /// `0` is never minted (it is the unassigned sentinel); the first real id is `1`.
+    /// Document-owned monotonic counter for minting [`NodeId`]s (ADR 0003 Phase B)
+    /// **and [`PointId`]s** (ADR 0033) — one counter so the undo machinery's
+    /// `counter_before` rewind covers both kinds. `0` is never minted (it is the
+    /// unassigned sentinel); the first real id is `1`.
     /// [`ensure_node_ids`](Self::ensure_node_ids) advances it past any ids already
     /// present in a loaded scene before minting new ones.
     #[serde(default)]

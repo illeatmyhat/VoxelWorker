@@ -139,10 +139,18 @@ fn node_row(
         ui.painter().galley(tag_rect.min + pad, tag, theme::BG);
     }
 
-    if row.clicked() && !selected {
-        response.select = Some(crate::panel::SelectionRequest::Only(
-            crate::panel::SelectionTarget::Node(id),
-        ));
+    // Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in the set
+    // (ADR 0032 multi-select); a plain click replaces.
+    if row.clicked() {
+        if ui.input(|input| input.modifiers.command) {
+            response.select = Some(crate::panel::SelectionRequest::Toggle(
+                crate::panel::SelectionTarget::Node(id),
+            ));
+        } else if !selected {
+            response.select = Some(crate::panel::SelectionRequest::Only(
+                crate::panel::SelectionTarget::Node(id),
+            ));
+        }
     }
 }
 

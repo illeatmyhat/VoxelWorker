@@ -164,9 +164,15 @@ pub(super) fn build_node_list_section(
     } else if let Some(clicked_id) = select {
         // ADR 0003 Phase B4: a clicked row reports its node's stable NodeId; select
         // THAT, so the highlight and inspector follow the node through later
-        // structural edits. Only emit when it actually changes the selection (the old
-        // guard) — a selection click is selection-only (no re-resolve, no auto-frame).
-        if state.selection.primary_node_id() != Some(clicked_id) {
+        // structural edits. Ctrl-click (Cmd on mac — egui's command modifier) toggles
+        // membership in the set (ADR 0032 multi-select); a plain click replaces, and
+        // only when it actually changes the selection (the old guard) — a selection
+        // click is selection-only (no re-resolve, no auto-frame).
+        if ui.input(|input| input.modifiers.command) {
+            response.select = Some(crate::panel::SelectionRequest::Toggle(
+                crate::panel::SelectionTarget::Node(clicked_id),
+            ));
+        } else if state.selection.primary_node_id() != Some(clicked_id) {
             response.select = Some(crate::panel::SelectionRequest::Only(
                 crate::panel::SelectionTarget::Node(clicked_id),
             ));

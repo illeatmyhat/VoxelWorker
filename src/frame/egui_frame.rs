@@ -652,21 +652,15 @@ pub fn run_egui_frame(
             }
         }
 
-        // Signal: the persistent bottom-left status line (mode · selection · dims ·
-        // density). Draws on BOTH paths. Selection name + scene dims + density are read
-        // from the panel's scene each frame.
+        // Signal: the persistent bottom-left status line (mode · dims · density).
+        // Draws on BOTH paths; dims + density are read from the panel's scene each frame.
         {
             let density = panel_state.scene.voxels_per_block;
             let dims = panel_state.scene.placed_region_dimensions(density);
-            let selection = panel_state
-                .selected_node()
-                .map(|node| node.name.as_str())
-                .filter(|name| !name.is_empty());
             ui::chrome::status_line(
                 ui,
                 central_rect_points,
                 panel_state.view_mode,
-                selection,
                 dims,
                 density,
             );

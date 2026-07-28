@@ -759,7 +759,9 @@ mod tests {
             // that dropped the selection fails the round-trip.
             selection: SelectionConfig {
                 targets: vec![
-                    crate::settings::SelectionTargetConfig::ReferencePoint(2),
+                    crate::settings::SelectionTargetConfig::ReferencePoint(
+                        document::scene::PointId(2),
+                    ),
                     crate::settings::SelectionTargetConfig::Node(document::scene::NodeId(7)),
                 ],
             },

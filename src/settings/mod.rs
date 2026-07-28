@@ -62,8 +62,8 @@ fn default_wall_blocks() -> u32 {
 pub enum SelectionTargetConfig {
     /// A scene-graph node, by its stable id.
     Node(NodeId),
-    /// A reference Point, by its index in `Scene::points`.
-    ReferencePoint(usize),
+    /// A reference Point, by its stable id (ADR 0033).
+    ReferencePoint(document::scene::PointId),
 }
 
 /// The serde-able mirror of the workspace [`Selection`] (ADR 0032), carried in the session

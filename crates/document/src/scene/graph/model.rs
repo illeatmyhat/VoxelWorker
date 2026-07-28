@@ -407,6 +407,18 @@ pub struct AssemblyDef {
     pub fixture: bool,
 }
 
+/// A **process-stable Point identity** (ADR 0033). Minted from the same document-owned
+/// counter as [`NodeId`] ([`Scene::next_node_id`]) so the undo machinery's counter rewind
+/// covers both kinds with one field; the two never collide because they are different
+/// types keying different collections. `PointId(0)` is the unassigned sentinel a
+/// deserialized pre-0033 Point carries until [`Scene::ensure_node_ids`] mints it a real
+/// id. **Never a `Vec` index** — an index shifts on `RemovePoint` and silently re-points
+/// at a *different* Point, which an existence check cannot catch.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+pub struct PointId(pub u64);
+
 /// A world-anchored **reference element** (issue #29 grid rework): a named point
 /// in the world-block lattice that carries optional reference planes (ground /
 /// front / side) and axis lines. Distinct from the per-selection transform gizmo
@@ -421,6 +433,12 @@ pub struct AssemblyDef {
 /// with no re-resolve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Point {
+    /// Stable identity (ADR 0033) — what the workspace selection keys on, never the
+    /// `Vec` slot. The index-keyed Point *intents* stay sound (they are transient and
+    /// undo replay is deterministic); identity is only needed where a reference outlives
+    /// mutations it cannot see.
+    #[serde(default)]
+    pub id: PointId,
     /// Human-readable name (e.g. "Origin").
     #[serde(default)]
     pub name: String,
@@ -475,6 +493,8 @@ impl Default for Point {
     /// `is_origin`/`name`.
     fn default() -> Self {
         Self {
+            // The unassigned sentinel; every insertion path mints a real id.
+            id: PointId(0),
             name: String::new(),
             position_blocks: [0, 0, 0],
             offset_voxels: [0, 0, 0],

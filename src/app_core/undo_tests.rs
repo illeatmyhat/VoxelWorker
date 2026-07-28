@@ -1108,6 +1108,70 @@ fn redo_cleared_after_apply() {
     assert_eq!(core.redo_depth(), 0, "a fresh edit clears the redo stack");
 }
 
+// === ADR 0033: the undo stack carries no selection; the validity prune replaces it ===
+
+#[test]
+fn undoing_an_add_leaves_nothing_selected() {
+    // The Fusion rule. The minted node arrived selected (the forward steer); undoing
+    // the add removes it from the scene, and the prune — not a restore — empties the
+    // selection rather than resurrecting what was picked before.
+    let mut scene = two_tool_scene();
+    let mut core = test_core();
+    let mut selection = selection_of_first_root(&scene);
+    core.apply_intent(
+        &mut scene,
+        &mut selection,
+        Intent::AddNode {
+            content: NodeSpec::Tool {
+                shape: box_shape([5, 5, 5]),
+                material: MaterialChoice::Plain,
+            },
+        },
+    );
+    let minted = selection
+        .primary_node_id()
+        .expect("the add arrives selected");
+    assert!(scene.node_by_id(minted).is_some());
+
+    let effect = core.undo(&mut scene, &mut selection);
+    assert_eq!(
+        selection.primary_node_id(),
+        None,
+        "the pruned selection holds no dead id and restores no old one"
+    );
+    assert!(
+        effect.selection_changed,
+        "a prune that dropped a target reports it"
+    );
+}
+
+#[test]
+fn undo_no_longer_collapses_a_multi_selection() {
+    // The collapse ADR 0033 exists to kill: with two nodes picked, undoing an unrelated
+    // field edit used to restore a single captured primary, silently shrinking the set.
+    let mut scene = two_tool_scene();
+    let mut core = test_core();
+    let first = scene.roots[0];
+    let second = scene.roots[1];
+    let mut selection = selection_of_first_root(&scene);
+    selection.toggle(ui::panel::SelectionTarget::Node(second));
+
+    core.apply_intent(
+        &mut scene,
+        &mut selection,
+        Intent::SetName {
+            target: first,
+            name: "Renamed".to_string(),
+        },
+    );
+    core.undo(&mut scene, &mut selection);
+    assert!(
+        selection.contains(ui::panel::SelectionTarget::Node(first))
+            && selection.contains(ui::panel::SelectionTarget::Node(second)),
+        "both picks survive an unrelated undo"
+    );
+}
+
 // === effect_of routing: undo/redo return the per-intent effect, not blanket-true ===
 
 #[test]
@@ -1133,8 +1197,9 @@ fn undo_of_field_edit_reports_scene_not_points() {
         "rename does not touch the points overlay"
     );
     assert!(
-        undo_effect.selection_changed,
-        "undo always re-syncs the selection mirror"
+        !undo_effect.selection_changed,
+        "ADR 0033: undo carries no selection, and a rename invalidates no target — \
+         nothing pruned, nothing to re-sync"
     );
     // And it is not the old blanket-true effect.
     assert_ne!(
@@ -1193,7 +1258,10 @@ fn undo_of_point_edit_reports_points_not_scene() {
         !undo_effect.scene_changed,
         "a point edit triggers no voxel re-resolve"
     );
-    assert!(undo_effect.selection_changed);
+    assert!(
+        !undo_effect.selection_changed,
+        "ADR 0033: a hidden-flag flip invalidates no target, so nothing pruned"
+    );
 }
 
 #[test]
@@ -1221,8 +1289,8 @@ fn undo_of_grid_masters_does_not_claim_scene_changed() {
         !undo_effect.points_changed,
         "grid masters do not touch points"
     );
-    // Selection is still re-synced (undo restores selection_before).
-    assert!(undo_effect.selection_changed);
+    // ADR 0033: undo carries no selection; nothing invalidated means nothing pruned.
+    assert!(!undo_effect.selection_changed);
     let redo_effect = core.redo(&mut scene, &mut selection);
     assert!(
         !redo_effect.scene_changed,

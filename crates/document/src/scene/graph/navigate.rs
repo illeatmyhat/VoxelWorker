@@ -26,9 +26,23 @@ impl Scene {
         for id in self.arena.keys() {
             max_existing = max_existing.max(id.0);
         }
+        // PointIds mint from the same counter (ADR 0033), so the advance covers them too.
+        for point in &self.points {
+            max_existing = max_existing.max(point.id.0);
+        }
         // `.max(2)`: id `1` is reserved for the root part ([`ROOT_NODE_ID`]), so the
         // first real id a load-path mint hands out is `2`.
         self.next_node_id = self.next_node_id.max(max_existing + 1).max(2);
+
+        // Mint for any Point still under the `PointId(0)` sentinel (a pre-0033 dump).
+        // Points are id-keyed only in the SELECTION, not in a spine, so unlike the node
+        // case below there is nothing to repoint.
+        for point in &mut self.points {
+            if point.id.0 == 0 {
+                point.id = PointId(self.next_node_id);
+                self.next_node_id += 1;
+            }
+        }
 
         // Re-key any still-unassigned node out of the `NodeId(0)` sentinel slot. With
         // the arena keyed by id, minting a fresh id means MOVING the arena entry AND
@@ -55,6 +69,16 @@ impl Scene {
                 self.arena.insert(fresh, node);
             }
         }
+    }
+
+    /// Mint a fresh [`PointId`] (ADR 0033) — same counter as node ids, so the undo
+    /// machinery's `counter_before` rewind makes a redone `AddPoint` re-mint the identical
+    /// id, exactly as it does for nodes.
+    pub fn mint_point_id(&mut self) -> PointId {
+        self.next_node_id = self.next_node_id.max(2);
+        let id = PointId(self.next_node_id);
+        self.next_node_id += 1;
+        id
     }
 
     /// Replace every spine reference to `old` with `new` across the top-level

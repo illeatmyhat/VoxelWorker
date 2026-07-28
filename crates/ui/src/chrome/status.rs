@@ -5,15 +5,15 @@ use egui::{Color32, FontId, Id, LayerId, Order, Pos2, Rect, TextFormat};
 use crate::panel::ViewMode;
 use crate::theme;
 
-/// Draw `VIEWPORT <MODE> · SEL <node> · <dims> · <density> vx/blk` in faint mono, mode + selection
-/// in accent, `·` in border grey. `viewport_rect` is the central 3D rect (egui points); `selection`
-/// the active node name or `None` (→ `—`); `dims` the resolved grid extent (voxels); `density`
-/// voxels-per-block. Foreground `layer_painter` at an absolute position, so it renders on `shot`.
+/// Draw `VIEWPORT <MODE> · <dims> · <density> vx/blk` in faint mono, mode in accent, `·` in
+/// border grey. `viewport_rect` is the central 3D rect (egui points); `dims` the resolved grid
+/// extent (voxels); `density` voxels-per-block. Foreground `layer_painter` at an absolute
+/// position, so it renders on `shot`. (A `SEL <node>` segment lived here once — deleted; it
+/// duplicated the browser highlight and the owner judged it purposeless.)
 pub fn status_line(
     ui: &egui::Ui,
     viewport_rect: Rect,
     view_mode: ViewMode,
-    selection: Option<&str>,
     dims: [u32; 3],
     density: u32,
 ) {
@@ -29,10 +29,7 @@ pub fn status_line(
 
     let mut job = egui::text::LayoutJob::default();
     job.append("VIEWPORT ", 0.0, faint.clone());
-    job.append(view_mode.status_label(), 0.0, accent.clone());
-    job.append("  ·  ", 0.0, dot.clone());
-    job.append("SEL ", 0.0, faint.clone());
-    job.append(selection.unwrap_or("—"), 0.0, accent);
+    job.append(view_mode.status_label(), 0.0, accent);
     job.append("  ·  ", 0.0, dot.clone());
     job.append(
         &format!("{}×{}×{}", dims[0], dims[1], dims[2]),
