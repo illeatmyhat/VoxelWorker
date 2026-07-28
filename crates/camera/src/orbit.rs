@@ -343,6 +343,42 @@ impl OrbitCamera {
         self.orbit_phi = (self.orbit_phi - delta_y * 0.01).clamp(PHI_MIN, PHI_MAX);
     }
 
+    /// The camera's orthonormal view basis as world→camera columns
+    /// (`right`, `screen_up`, `back`) — the SAME frame `look_at_rh` builds, so a
+    /// rotation expressed against it is the rotation the user sees.
+    fn view_basis(&self) -> glam::Mat3 {
+        let forward = -self.direction().normalize();
+        let right = forward.cross(self.up_vector()).normalize_or_zero();
+        let screen_up = right.cross(forward);
+        glam::Mat3::from_cols(right, screen_up, -forward)
+    }
+
+    /// Orbit about an arbitrary world `pivot` rather than about `target` — the
+    /// **transient pivot** of the Shift+MMB gesture, which turns the model about the
+    /// surface point under the cursor at press (raycast per gesture, never stored).
+    ///
+    /// The rotation itself is [`Self::orbit_by_drag`]'s, so both entry paths perform the
+    /// same Constrained Orbit and differ only in what they turn around. What this adds is
+    /// the re-anchoring: the whole camera swings rigidly about `pivot`, which means
+    /// carrying `target` around with it.
+    ///
+    /// **The guarantee, and it is exact.** Let `R` be the basis change the drag produced.
+    /// Setting `target ← pivot + R·(target − pivot)` puts the eye at `pivot + R·(eye −
+    /// pivot)`, because the eye is `target + direction·distance` and `R` is precisely what
+    /// carries the old view direction to the new one. The pivot's position *in camera
+    /// coordinates* is then `Bᵀ(pivot − eye)` both before and after — the `R`s cancel — so
+    /// the grabbed point does not move on screen, under either projection. That is the
+    /// property the gesture is judged by: the surface under the cursor stays put and the
+    /// world turns around it.
+    pub fn orbit_about_point(&mut self, pivot: Vec3, delta_x: f32, delta_y: f32) {
+        let basis_before = self.view_basis();
+        let target_before = self.target;
+        self.orbit_by_drag(delta_x, delta_y);
+        // Orthonormal, so the inverse IS the transpose.
+        let rotation = self.view_basis() * basis_before.transpose();
+        self.target = pivot + rotation * (target_before - pivot);
+    }
+
     /// Pan by a screen-space drag delta (middle-drag): slide `target` (and with it
     /// the eye, since `eye = target + direction·distance`) within the camera's view
     /// plane, so the grabbed point stays locked under the cursor as the model
@@ -399,6 +435,82 @@ mod tests {
     use super::*;
     use crate::view_cube::{CubeFace, ViewCubeElement, CUBE_FACES};
     use std::f32::consts::{FRAC_PI_2, PI};
+
+    /// A pivot orbit turns the world about the grabbed point, so that point must not move
+    /// on screen — the one property the Shift+MMB gesture is judged by. Checked in CAMERA
+    /// coordinates (`basisᵀ·(pivot − eye)`), which is what both projections consume, so the
+    /// assertion holds for perspective and orthographic alike.
+    #[test]
+    fn an_orbit_about_a_point_leaves_that_point_fixed_on_screen() {
+        for pivot in [
+            Vec3::ZERO,
+            Vec3::new(7.0, -3.0, 2.0),
+            Vec3::new(-120.0, 45.0, -60.0),
+        ] {
+            for (delta_x, delta_y) in [(35.0, 0.0), (0.0, -28.0), (-19.0, 23.0), (60.0, 60.0)] {
+                let mut camera = OrbitCamera {
+                    target: Vec3::new(1.0, 2.0, -1.0),
+                    orbit_theta: 0.9,
+                    orbit_phi: 1.1,
+                    orbit_distance: 40.0,
+                    ..OrbitCamera::default()
+                };
+                let before = camera.view_basis().transpose() * (pivot - camera.eye());
+                camera.orbit_about_point(pivot, delta_x, delta_y);
+                let after = camera.view_basis().transpose() * (pivot - camera.eye());
+                assert!(
+                    (before - after).length() < 1e-2,
+                    "pivot {pivot:?} drifted under drag ({delta_x}, {delta_y}): \
+                     {before:?} -> {after:?}"
+                );
+            }
+        }
+    }
+
+    /// Both orbit entry paths perform the SAME Constrained Orbit and differ only in what
+    /// they turn around, so a pivot orbit ABOUT the target must be the plain drag exactly.
+    #[test]
+    fn an_orbit_about_the_target_is_the_plain_drag() {
+        let base = OrbitCamera {
+            target: Vec3::new(4.0, -2.0, 6.0),
+            orbit_theta: -0.4,
+            orbit_phi: 2.0,
+            orbit_distance: 12.0,
+            ..OrbitCamera::default()
+        };
+        let mut dragged = base;
+        dragged.orbit_by_drag(21.0, -13.0);
+        let mut pivoted = base;
+        pivoted.orbit_about_point(base.target, 21.0, -13.0);
+
+        assert!((pivoted.target - dragged.target).length() < 1e-4);
+        assert!((pivoted.orbit_theta - dragged.orbit_theta).abs() < 1e-6);
+        assert!((pivoted.orbit_phi - dragged.orbit_phi).abs() < 1e-6);
+    }
+
+    /// The gesture is a rigid turn about the pivot, so the eye's distance to the pivot is
+    /// an invariant — the orbit never dollies. `orbit_distance` (eye to TARGET) is free to
+    /// stay put; it is the pivot radius that must hold.
+    #[test]
+    fn an_orbit_about_a_point_preserves_its_radius() {
+        let pivot = Vec3::new(-9.0, 4.0, 15.0);
+        let mut camera = OrbitCamera {
+            target: Vec3::new(2.0, 2.0, 2.0),
+            orbit_theta: 1.7,
+            orbit_phi: 0.8,
+            orbit_distance: 25.0,
+            ..OrbitCamera::default()
+        };
+        let radius_before = (camera.eye() - pivot).length();
+        for _ in 0..12 {
+            camera.orbit_about_point(pivot, 17.0, 9.0);
+        }
+        let radius_after = (camera.eye() - pivot).length();
+        assert!(
+            (radius_before - radius_after).abs() < 1e-2,
+            "radius drifted over twelve drags: {radius_before} -> {radius_after}"
+        );
+    }
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4

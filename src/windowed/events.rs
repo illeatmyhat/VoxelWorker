@@ -85,21 +85,18 @@ impl ApplicationHandler for App {
                     state.press_position = position;
                     state.press_in_view_cube = in_cube;
                     state.view_cube_drag_active = false;
-                    // Pressing on the view cube does NOT start a scene-path orbit
-                    // (`left_button_held`): a press on the cube either becomes a
-                    // cube-drag orbit (handled in CursorMoved) or, if it stays put,
-                    // snaps on release. So the scene orbit path is reserved for
-                    // presses that started outside the cube, outside the Signal
-                    // chrome (stack + rail — egui's heuristic no longer covers them
-                    // now the stack doesn't allocate in the root ui), and not on egui.
+                    // A press on the view cube either becomes a cube-drag orbit (handled in
+                    // CursorMoved) or, if it stays put, snaps on release. The cube is the one
+                    // affordance where LEFT-drag still turns the camera; the scene left-drag
+                    // orbit is gone (tool-modes-and-navigation.md — left's default verb is
+                    // Select, orbit moved to Shift+MMB).
                     let in_chrome = position
                         .map(|(x, y)| state.position_in_signal_chrome(x, y))
                         .unwrap_or(false);
-                    state.left_button_held = !egui_consumed && !in_cube && !in_chrome;
                     // ADR 0022 live placement: this press begins a placement when a tool
                     // is armed and it landed on the live viewport (not egui / cube /
-                    // chrome). `left_button_held` still gates orbit, so a DRAG orbits and
-                    // only a stationary release (below) drops the node.
+                    // chrome). Only a stationary release drops the node — a drag no longer
+                    // orbits, but the threshold still keeps a twitchy click from placing.
                     state.armed_press =
                         state.armed_tool.is_some() && !egui_consumed && !in_cube && !in_chrome;
                     // ADR 0032: a plain viewport press arms a NODE selection resolve — but only
@@ -112,16 +109,12 @@ impl ApplicationHandler for App {
                         && state.armed_tool.is_none()
                         && state.panel_state.sketch_mode.is_none();
                     // ADR 0028 (#94/#95): a sketch-mode press, on the live viewport (not egui /
-                    // cube). The Select tool grabs a vertex handle (a drag that suppresses orbit);
-                    // the Add-point / Delete tools ARM a stationary-release edit (a drag still
-                    // orbits, so the view stays freely rotatable while any tool is armed).
+                    // cube). The Select tool grabs a vertex handle; the Add-point / Delete tools
+                    // ARM a stationary-release edit. The view stays freely rotatable throughout
+                    // via Shift+MMB, which is gated on neither sketch mode nor the armed tool.
                     if state.panel_state.sketch_mode.is_some() && !egui_consumed && !in_cube {
                         if let Some((cursor_x, cursor_y)) = position {
                             match state.panel_state.sketch_tool {
-                                // The grab is AUTHORITATIVE for orbit suppression: when it takes a
-                                // handle we force `left_button_held = false` so the drag never also
-                                // orbits — NOT relying on the handle's chrome rect (that rect can
-                                // misalign under egui zoom, or lag a frame behind this cache).
                                 ui::panel::SketchTool::Select => {
                                     // A viewport Select press arms a selection resolve on the
                                     // stationary release (this arm only runs under `!egui_consumed`,
@@ -129,11 +122,8 @@ impl ApplicationHandler for App {
                                     state.sketch_select_press = true;
                                     state.sketch_drag =
                                         state.begin_sketch_vertex_drag(cursor_x, cursor_y);
-                                    if state.sketch_drag.is_some() {
-                                        state.left_button_held = false;
-                                    }
                                 }
-                                // Arm the edit; a stationary release performs it, a drag orbits.
+                                // Arm the edit; a stationary release performs it.
                                 ui::panel::SketchTool::AddPoint | ui::panel::SketchTool::Delete => {
                                     state.sketch_edit_press = true;
                                 }
@@ -181,8 +171,9 @@ impl ApplicationHandler for App {
                         }
                     }
                     // ADR 0022 live placement: a STATIONARY armed release drops the
-                    // pending node (a drag orbited instead — the same threshold the cube
-                    // uses to tell a click from a drag). The tool STAYS armed so several
+                    // pending node. A drag no longer orbits, but the threshold stays: it is
+                    // what keeps a twitchy press from placing, and it becomes the
+                    // click-vs-marquee discriminator once the marquee lands. The tool STAYS armed so several
                     // can be placed; the ghost keeps following. NoSurface/TooFar left
                     // `pending_placement` None, so a click there does nothing.
                     if state.armed_press && state.pending_placement.is_some() {
@@ -200,8 +191,9 @@ impl ApplicationHandler for App {
                         }
                     }
                     // ADR 0028 (#95): a STATIONARY release with a sketch add-point / delete edit
-                    // armed performs it (a drag orbited instead — the same click-vs-drag threshold
-                    // placement uses). Runs BEFORE `last_cursor_position` is cleared below, since
+                    // armed performs it (the same click-vs-drag threshold placement uses; a drag
+                    // no longer orbits, but a twitchy press must still not edit).
+                    // Runs BEFORE `last_cursor_position` is cleared below, since
                     // the insert/delete hit-test needs the release cursor. The tool stays armed.
                     if state.sketch_edit_press {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
@@ -246,8 +238,9 @@ impl ApplicationHandler for App {
                         }
                     }
                     // ADR 0032: a STATIONARY release of a plain viewport press picks the node
-                    // under the cursor (a drag orbited instead — the same click-vs-drag threshold
-                    // every other release path uses). Runs BEFORE `last_cursor_position` is
+                    // under the cursor (the same click-vs-drag threshold every other release path
+                    // uses; it survives the orbit rebind as the future marquee discriminator).
+                    // Runs BEFORE `last_cursor_position` is
                     // cleared below, which the raycast needs.
                     if state.viewport_select_press {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
@@ -266,7 +259,6 @@ impl ApplicationHandler for App {
                     state.sketch_select_press = false;
                     state.sketch_edit_press = false;
                     state.armed_press = false;
-                    state.left_button_held = false;
                     state.last_cursor_position = None;
                     state.press_in_view_cube = false;
                     state.view_cube_drag_active = false;
@@ -284,16 +276,23 @@ impl ApplicationHandler for App {
                 button: MouseButton::Middle,
                 ..
             } => {
-                // Middle-drag pans the camera (explicit camera action). A press
-                // that egui consumed (over the side panel / dock) or on the Signal
-                // chrome doesn't grab the scene, mirroring the left-orbit gate. The
-                // view cube doesn't take middle clicks, so no cube gating is needed here.
+                // The middle button carries BOTH camera verbs, chosen by Shift at press:
+                // plain MMB pans, Shift+MMB orbits about the surface point under the cursor
+                // (tool-modes-and-navigation.md — the transient pivot, raycast per gesture and
+                // never stored). A press that egui consumed (over the side panel / dock) or on
+                // the Signal chrome doesn't grab the scene; the view cube takes no middle
+                // clicks, so no cube gating is needed here.
+                //
+                // The verb is LATCHED at press and the two flags are mutually exclusive, so
+                // releasing Shift mid-drag cannot flip an orbit into a pan halfway through.
                 let in_chrome = state
                     .last_cursor_position
                     .map(|(x, y)| state.position_in_signal_chrome(x, y))
                     .unwrap_or(false);
-                state.middle_button_held =
-                    button_state == ElementState::Pressed && !egui_consumed && !in_chrome;
+                let grabbed = button_state == ElementState::Pressed && !egui_consumed && !in_chrome;
+                let orbit_gesture = grabbed && state.shift_held;
+                state.middle_button_held = grabbed && !orbit_gesture;
+                state.orbit_pivot = orbit_gesture.then(|| state.resolve_orbit_pivot());
             }
             WindowEvent::MouseInput {
                 state: button_state,
@@ -363,10 +362,9 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let current = (position.x, position.y);
 
-                // A press that started on the view cube becomes an orbit drag once
-                // it moves past the threshold. This routes the SAME delta into
-                // `orbit_by_drag` as a scene drag (no double-application: the cube
-                // press never sets `left_button_held`, so only one path fires).
+                // A press that started on the view cube becomes an orbit drag once it
+                // moves past the threshold — the cube's own affordance, kept when orbit
+                // left the left button everywhere else.
                 if state.press_in_view_cube && !state.view_cube_drag_active {
                     if let Some((down_x, down_y)) = state.press_position {
                         let moved = (current.0 - down_x).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
@@ -379,24 +377,40 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let orbiting = state.left_button_held || state.view_cube_drag_active;
+                // The view cube is the one place a LEFT-drag still turns the camera, about
+                // `camera.target` like every non-Shift+MMB mechanism.
+                let orbiting = state.view_cube_drag_active;
                 if orbiting {
                     if let Some((previous_x, previous_y)) = state.last_cursor_position {
-                        let mut delta_x = (current.0 - previous_x) as f32;
+                        // #13 Step 6.1: a cube drag GRABS the cube and turns it with the
+                        // cursor, so the camera must orbit the OPPOSITE way round the model
+                        // than the cursor moves (dragging the cube's right edge leftward spins
+                        // the model to show its right face) — hence the flipped horizontal.
+                        let delta_x = -((current.0 - previous_x) as f32);
                         let delta_y = (current.1 - previous_y) as f32;
-                        // #13 Step 6.1: a cube drag GRABS the cube and turns it with
-                        // the cursor, so the camera must orbit the OPPOSITE way round
-                        // the model from a scene drag (dragging the cube's right edge
-                        // leftward spins the model to show its right face). The scene
-                        // drag keeps its existing sign; only the cube-drag path flips
-                        // the horizontal component.
-                        if state.view_cube_drag_active {
-                            delta_x = -delta_x;
-                        }
                         if delta_x != 0.0 || delta_y != 0.0 {
                             // A manual orbit cancels any in-progress snap tween.
                             state.snap_tween = None;
                             state.app_core.camera.orbit_by_drag(delta_x, delta_y);
+                        }
+                    }
+                }
+
+                // Shift+MMB orbits about the TRANSIENT pivot latched at press — the surface
+                // point under the cursor then, so the grabbed feature stays put on screen and
+                // the model turns around it. Mutually exclusive with the pan below (the press
+                // arm sets exactly one), so the cursor can never both orbit and pan in a move.
+                let orbiting = orbiting || state.orbit_pivot.is_some();
+                if let Some(pivot) = state.orbit_pivot {
+                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                        let delta_x = (current.0 - previous_x) as f32;
+                        let delta_y = (current.1 - previous_y) as f32;
+                        if delta_x != 0.0 || delta_y != 0.0 {
+                            state.snap_tween = None;
+                            state
+                                .app_core
+                                .camera
+                                .orbit_about_point(pivot, delta_x, delta_y);
                         }
                     }
                 }

@@ -1211,6 +1211,53 @@ impl WindowedState {
         }
     }
 
+    /// The **transient pivot** for a Shift+MMB orbit: the surface point under the cursor at
+    /// press, in the camera's render frame (`docs/design/tool-modes-and-navigation.md`).
+    ///
+    /// Raycast per gesture and never stored — which is the whole point of calling it transient.
+    /// It reuses the selection click's ray verbatim, so the point the camera turns about is the
+    /// same point a click would have selected; a pivot that disagreed with the pick would make
+    /// the two gestures feel like they were aimed at different scenes.
+    ///
+    /// A ray that hits nothing (the sky, or an empty scene) falls back to `camera.target`, which
+    /// is what every other orbit mechanism turns about. The alternative — declining to orbit at
+    /// all — would make the gesture dead over empty space, and "nothing happened" reads as a
+    /// broken binding rather than as a deliberate refusal.
+    pub(super) fn resolve_orbit_pivot(&self) -> glam::Vec3 {
+        let fallback = self.app_core.camera.target;
+        let Some((cursor_x, cursor_y)) = self.last_cursor_position else {
+            return fallback;
+        };
+        let density = self.panel_state.geometry.voxels_per_block;
+        let [vx, vy, vw, vh] = self.last_viewport_px;
+        let recentre = self.recentre_voxels.voxels();
+        let frame = crate::PickFrame {
+            region_dimensions: self.region_dimensions,
+            recentre_voxels: recentre,
+            density,
+            chunks: &self.resident_chunks,
+            band: self.last_pick_band,
+        };
+        self.app_core
+            .pick_voxel(
+                [cursor_x as f32, cursor_y as f32],
+                [vx as f32, vy as f32, vw as f32, vh as f32],
+                &frame,
+            )
+            .map(|pick| {
+                // `pick_voxel` answers in the ABSOLUTE voxel frame; the camera lives in the
+                // RECENTRED render frame, where a voxel's own position is `absolute − recentre
+                // + 0.5` (ADR 0008 — the recentre is carried, so this is the only conversion,
+                // and the half lands the pivot at the cell's centre rather than its corner).
+                glam::Vec3::new(
+                    (pick.absolute_voxel[0] - recentre[0]) as f32 + 0.5,
+                    (pick.absolute_voxel[1] - recentre[1]) as f32 + 0.5,
+                    (pick.absolute_voxel[2] - recentre[2]) as f32 + 0.5,
+                )
+            })
+            .unwrap_or(fallback)
+    }
+
     /// ADR 0030/0032: the [`SelectionTarget`](ui::panel::SelectionTarget) under the cursor
     /// (physical px) inside `sketch`, or `None` over empty space. Vertices take priority over
     /// segments, as everywhere. The ONE place a sketch target is minted, which is what makes
