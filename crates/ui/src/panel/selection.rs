@@ -163,8 +163,8 @@ impl Selection {
         self.targets.push(target);
     }
 
-    /// Toggle a target in / out of the set (a Shift-click — accumulate). Re-picking an
-    /// already-picked target moves it to the end, so it becomes the primary.
+    /// Toggle a target in / out of the set (a modifier-click — accumulate). Re-picking an
+    /// already-picked target drops it.
     pub fn toggle(&mut self, target: SelectionTarget) {
         if let Some(position) = self.targets.iter().position(|held| *held == target) {
             self.targets.remove(position);

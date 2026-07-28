@@ -66,11 +66,12 @@ pub(super) fn build_node_list_section(
     // select/delete/visibility ops (now NodeId-typed) are fed it directly — the
     // path is kept only for depth/indentation.
     let rows = state.scene.tree_rows();
-    // Selection is keyed by NodeId; compare each row's id against the active id so
-    // the highlight tracks the selected node by identity.
-    let active_id = state.selection.primary_node_id();
+    // Selection is keyed by NodeId; the highlight shows MEMBERSHIP, not the primary, so
+    // every picked row stays lit in a multi-selection.
     for (_path, id, depth) in &rows {
-        let is_active = active_id == Some(*id);
+        let is_active = state
+            .selection
+            .contains(crate::panel::SelectionTarget::Node(*id));
         // ADR 0018 Decision 2: the root part is the top row — selectable like any node,
         // but undeletable and with no visibility toggle (it always folds; hiding it is
         // meaningless). Its child count is `roots.len()` (its real spine), since the
@@ -172,7 +173,10 @@ pub(super) fn build_node_list_section(
             response.select = Some(crate::panel::SelectionRequest::Toggle(
                 crate::panel::SelectionTarget::Node(clicked_id),
             ));
-        } else if state.selection.primary_node_id() != Some(clicked_id) {
+        } else if state.selection.primary_node_id() != Some(clicked_id) || state.selection.len() > 1
+        {
+            // The `len` arm: a plain click on a member of a multi-selection collapses
+            // the set to just it, matching what "replace" means.
             response.select = Some(crate::panel::SelectionRequest::Only(
                 crate::panel::SelectionTarget::Node(clicked_id),
             ));

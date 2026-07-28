@@ -54,14 +54,7 @@ pub(super) fn build_fold_strip(
                         ui.spacing_mut().item_spacing = egui::vec2(CARD_GAP, 0.0);
                         ui.add_space(11.0);
                         for (index, id) in roots.iter().enumerate() {
-                            card(
-                                ui,
-                                &state.scene,
-                                *id,
-                                index,
-                                state.selection.primary_node_id(),
-                                response,
-                            );
+                            card(ui, &state.scene, *id, index, &state.selection, response);
                         }
                     });
                 });
@@ -95,13 +88,14 @@ fn card(
     scene: &Scene,
     id: NodeId,
     index: usize,
-    selected_id: Option<NodeId>,
+    selection: &crate::panel::Selection,
     response: &mut PanelResponse,
 ) {
     let Some(node) = scene.node_by_id(id) else {
         return;
     };
-    let selected = selected_id == Some(id);
+    // Membership, not primary — every picked card keeps its highlight in a multi-selection.
+    let selected = selection.contains(crate::panel::SelectionTarget::Node(id));
     let (rect, hit) =
         ui.allocate_exact_size(egui::vec2(CARD_WIDTH, CARD_HEIGHT), egui::Sense::click());
     let painter = ui.painter();
@@ -157,7 +151,9 @@ fn card(
             response.select = Some(crate::panel::SelectionRequest::Toggle(
                 crate::panel::SelectionTarget::Node(id),
             ));
-        } else if !selected {
+        } else if !selected || selection.len() > 1 {
+            // The `len` arm: a plain click on a member of a multi-selection collapses
+            // the set to just it, matching what "replace" means.
             response.select = Some(crate::panel::SelectionRequest::Only(
                 crate::panel::SelectionTarget::Node(id),
             ));

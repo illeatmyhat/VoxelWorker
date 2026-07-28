@@ -53,7 +53,7 @@ pub(super) fn build_browser(
                             &state.scene,
                             id,
                             depth,
-                            state.selection.primary_node_id(),
+                            &state.selection,
                             state.sketch_mode,
                             response,
                         );
@@ -86,14 +86,15 @@ fn node_row(
     scene: &Scene,
     id: NodeId,
     depth: usize,
-    selected_id: Option<NodeId>,
+    selection: &crate::panel::Selection,
     sketch_mode: Option<NodeId>,
     response: &mut PanelResponse,
 ) {
     let Some(node) = scene.node_by_id(id) else {
         return;
     };
-    let selected = selected_id == Some(id);
+    // Membership, not primary — every picked row keeps its highlight in a multi-selection.
+    let selected = selection.contains(crate::panel::SelectionTarget::Node(id));
     let editing = sketch_mode == Some(id);
     let (rect, row) =
         ui.allocate_exact_size(egui::vec2(BROWSER_WIDTH, ROW_HEIGHT), egui::Sense::click());
@@ -146,7 +147,9 @@ fn node_row(
             response.select = Some(crate::panel::SelectionRequest::Toggle(
                 crate::panel::SelectionTarget::Node(id),
             ));
-        } else if !selected {
+        } else if !selected || selection.len() > 1 {
+            // The `len` arm: a plain click on a member of a multi-selection collapses
+            // the set to just it, matching what "replace" means.
             response.select = Some(crate::panel::SelectionRequest::Only(
                 crate::panel::SelectionTarget::Node(id),
             ));

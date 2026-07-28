@@ -44,7 +44,10 @@ pub(super) fn build_points_section(
             (
                 name,
                 point.hidden,
-                state.selection.primary_point_id() == Some(point.id),
+                // Membership, not primary — a multi-selection keeps every picked row lit.
+                state
+                    .selection
+                    .contains(crate::panel::SelectionTarget::ReferencePoint(point.id)),
             )
         };
         ui.horizontal(|ui| {
