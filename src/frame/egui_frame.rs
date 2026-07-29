@@ -235,6 +235,10 @@ pub fn run_egui_frame(
     // line to the snapped cursor, or the rectangle ghost's five closing corners. Empty when
     // no drawing gesture is live, and always empty on the headless `shot` path.
     sketch_draw_preview: &[egui::Pos2],
+    // Sketch-selection slice 3: the marquee rubber band (egui points) and whether it is a
+    // window (`true`, solid + stronger fill) or crossing (`false`, dashed + lighter) box, or
+    // `None` when no marquee is live. Always `None` on the headless `shot` path.
+    sketch_marquee: Option<(egui::Rect, bool)>,
     // ADR 0032: the orbit center's projected position (egui points) plus whether a placement is
     // armed, or `None` when the pivot should not be drawn — it shows while a placement rides the
     // cursor and while Shift+MMB is turning about it, and is hidden otherwise. Registers no chrome
@@ -697,6 +701,10 @@ pub fn run_egui_frame(
             // rectangle ghost. Passive like the insert marker.
             if !sketch_draw_preview.is_empty() {
                 ui::chrome::sketch_draw_preview(ui, sketch_draw_preview);
+            }
+            // Slice 3: the marquee rubber band — solid window / dashed crossing. Passive.
+            if let Some((rect, window)) = sketch_marquee {
+                ui::chrome::sketch_marquee_band(ui, rect, window);
             }
         }
 

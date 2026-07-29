@@ -1162,6 +1162,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         None,
         // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.
         &[],
+        // Slice 3: nor a marquee band — box-select is a windowed-only gesture.
+        None,
         // ADR 0032: no orbit-center marker — it shows only during a placement or a Shift+MMB
         // orbit, both windowed-only gestures.
         None,

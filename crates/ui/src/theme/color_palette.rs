@@ -51,6 +51,8 @@ color_token! {
     SKETCH_PLANE_GRID = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x24), "sketch plane fine grid lines — accent, quiet";
     SKETCH_PLANE_GRID_BLOCK = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x55), "sketch plane block grid lines — accent, brighter, reads through the fine grid";
     ACCENT_FAINT = Color32::from_rgba_premultiplied(0x2f, 0x37, 0x43, 0x4d), "a faint accent tint — the rail's lit-cell glow / the DISPLAY-stack accent wash (premultiplied)";
+    MARQUEE_WINDOW_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x1e), "marquee WINDOW box fill (drag left→right, fully-enclosed semantic) — the stronger of the pair";
+    MARQUEE_CROSSING_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x0c), "marquee CROSSING box fill (drag right→left, any-intersection) — lighter, under a dashed outline";
     SCRUBBER_TRACK = Color32::from_rgb(0x1b, 0x17, 0x12), "layer scrubber — the track background (a warm-dark channel the band rides in)";
     SCRUBBER_TICK = Color32::from_rgb(0x3a, 0x5f, 0x57), "layer scrubber — the block-boundary snap ticks (teal)";
     SCRUBBER_BAND = Color32::from_rgba_unmultiplied_const(0x5f, 0xb8, 0xa4, 70), "layer scrubber — the selected-band fill (teal, translucent)";

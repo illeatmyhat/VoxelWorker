@@ -183,6 +183,8 @@ impl WindowedState {
                 self.sketch_insert_preview,
                 // #99: the drawing tools' dashed preview, projected last frame.
                 &self.sketch_draw_preview,
+                // Slice 3: the marquee rubber band, computed last frame.
+                self.sketch_marquee_band,
                 // ADR 0032: the orbit-center marker — live under the cursor while a placement is
                 // armed, projected-last-frame while Shift+MMB turns about it.
                 orbit_center_marker,
@@ -1176,7 +1178,7 @@ impl WindowedState {
     /// endpoint b px)`, the nearest within the grab pad — iterated over the actual segment
     /// ENTITIES (ADR 0030), not consecutive vertices, so it is correct for an open or
     /// multi-loop graph. `None` when no edge is close enough or an endpoint is culled.
-    fn nearest_sketch_segment(
+    pub(super) fn nearest_sketch_segment(
         &self,
         cursor_x: f64,
         cursor_y: f64,
@@ -1355,6 +1357,57 @@ impl WindowedState {
             // business (ADR 0032).
             None if !shift => self.panel_state.selection.clear_sketch_entities(),
             None => {}
+        }
+    }
+
+    /// Sketch-selection slice 3: resolve a DRAGGED empty-space Select release into the box
+    /// selection. Direction picks the semantic (Fusion): left→right = **window** — points inside
+    /// the box, segments with ≥1 endpoint inside; right→left = **crossing** — any entity the box
+    /// touches, so a segment passing through with both endpoints outside still selects. Shift
+    /// accumulates into the set; a plain marquee replaces the sketch-entity selection (an empty
+    /// box therefore clears, like a plain empty click). A behind-camera endpoint culls its
+    /// entity, matching the overlay cull. Pure selection-state mutation — no document edit.
+    pub(super) fn resolve_sketch_marquee(&mut self, up_x: f64, up_y: f64) {
+        let Some((down_x, down_y)) = self.sketch_marquee_anchor.take() else {
+            return;
+        };
+        let Some(sketch) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let window = up_x >= down_x;
+        let rect = egui::Rect::from_two_pos(
+            egui::Pos2::new(down_x as f32, down_y as f32),
+            egui::Pos2::new(up_x as f32, up_y as f32),
+        );
+        let mut picked: Vec<ui::panel::SelectionTarget> = Vec::new();
+        for (index, vertex) in self.sketch_vertex_px.iter().enumerate() {
+            let inside = vertex.map(|px| rect.contains(px)).unwrap_or(false);
+            if let (true, Some(&entity)) = (inside, self.sketch_point_ids.get(index)) {
+                picked.push(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
+            }
+        }
+        for &(entity, a_index, b_index) in &self.sketch_segments {
+            if let (Some(Some(a)), Some(Some(b))) = (
+                self.sketch_vertex_px.get(a_index),
+                self.sketch_vertex_px.get(b_index),
+            ) {
+                let hit = if window {
+                    rect.contains(*a) || rect.contains(*b)
+                } else {
+                    segment_touches_rect(*a, *b, rect)
+                };
+                if hit {
+                    picked.push(ui::panel::SelectionTarget::SketchSegment { sketch, entity });
+                }
+            }
+        }
+        if !self.shift_held {
+            self.panel_state.selection.clear_sketch_entities();
+        }
+        for target in picked {
+            if !self.panel_state.selection.contains(target) {
+                self.panel_state.selection.toggle(target);
+            }
         }
     }
 
@@ -1845,11 +1898,13 @@ impl WindowedState {
         self.sketch_segment_lines.clear();
         self.sketch_insert_preview = None;
         self.sketch_draw_preview.clear();
+        self.sketch_marquee_band = None;
 
         let Some(target) = self.panel_state.sketch_mode else {
-            // #99: a drawing gesture dies with the mode.
+            // #99 / slice 3: a drawing or marquee gesture dies with the mode.
             self.sketch_chain = None;
             self.sketch_rect_anchor = None;
+            self.sketch_marquee_anchor = None;
             return;
         };
         let Some(handles) = self
@@ -1867,6 +1922,9 @@ impl WindowedState {
         }
         if tool != ui::panel::SketchTool::Rectangle {
             self.sketch_rect_anchor = None;
+        }
+        if tool != ui::panel::SketchTool::Select {
+            self.sketch_marquee_anchor = None;
         }
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
         let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
@@ -2049,7 +2107,32 @@ impl WindowedState {
                     }
                 }
             }
-            ui::panel::SketchTool::Select | ui::panel::SketchTool::AddPoint => {}
+            ui::panel::SketchTool::Select => {
+                // Slice 3: the marquee rubber band, once the press travels past the click
+                // threshold. Direction is read LIVE from the cursor, so the style flips
+                // mid-drag with the semantic (solid window / dashed crossing).
+                if let (Some((down_x, down_y)), Some((cursor_x, cursor_y))) =
+                    (self.sketch_marquee_anchor, self.last_cursor_position)
+                {
+                    let past_threshold = (cursor_x - down_x).abs()
+                        >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                        || (cursor_y - down_y).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                    if past_threshold {
+                        let rect = egui::Rect::from_two_pos(
+                            egui::Pos2::new(
+                                down_x as f32 / pixels_per_point,
+                                down_y as f32 / pixels_per_point,
+                            ),
+                            egui::Pos2::new(
+                                cursor_x as f32 / pixels_per_point,
+                                cursor_y as f32 / pixels_per_point,
+                            ),
+                        );
+                        self.sketch_marquee_band = Some((rect, cursor_x >= down_x));
+                    }
+                }
+            }
+            ui::panel::SketchTool::AddPoint => {}
         }
     }
 }
@@ -2076,6 +2159,38 @@ fn project_to_screen(
     ))
 }
 
+/// Whether segment `a→b` touches `rect` at all — the crossing-marquee predicate: an endpoint
+/// inside, or an intersection with any rect edge (touching counts).
+fn segment_touches_rect(a: egui::Pos2, b: egui::Pos2, rect: egui::Rect) -> bool {
+    if rect.contains(a) || rect.contains(b) {
+        return true;
+    }
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ];
+    (0..4).any(|edge| segments_intersect(a, b, corners[edge], corners[(edge + 1) % 4]))
+}
+
+/// Whether segments `a→b` and `c→d` intersect, inclusive of touching endpoints.
+fn segments_intersect(a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, d: egui::Pos2) -> bool {
+    let orient = |p: egui::Pos2, q: egui::Pos2, r: egui::Pos2| {
+        (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+    };
+    let (o1, o2) = (orient(a, b, c), orient(a, b, d));
+    let (o3, o4) = (orient(c, d, a), orient(c, d, b));
+    if o1 == 0.0 && o2 == 0.0 && o3 == 0.0 && o4 == 0.0 {
+        // Fully collinear: intersect iff the 1D shadows overlap on both axes.
+        let overlaps =
+            |lo_a: f32, hi_a: f32, lo_b: f32, hi_b: f32| lo_a.max(lo_b) <= hi_a.min(hi_b);
+        return overlaps(a.x.min(b.x), a.x.max(b.x), c.x.min(d.x), c.x.max(d.x))
+            && overlaps(a.y.min(b.y), a.y.max(b.y), c.y.min(d.y), c.y.max(d.y));
+    }
+    o1 * o2 <= 0.0 && o3 * o4 <= 0.0
+}
+
 /// The closest point on segment `a→b` to `p` (all in the same 2D space) — the foot of the
 /// perpendicular, clamped to the segment ends. The add-point insert preview sits here.
 fn closest_point_on_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> egui::Pos2 {
@@ -2095,8 +2210,11 @@ fn point_to_segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32
 
 #[cfg(test)]
 mod tests {
-    use super::{closest_point_on_segment, point_to_segment_distance};
-    use egui::pos2;
+    use super::{
+        closest_point_on_segment, point_to_segment_distance, segment_touches_rect,
+        segments_intersect,
+    };
+    use egui::{pos2, Rect};
 
     #[test]
     fn foot_falls_inside_the_span_for_a_perpendicular_drop() {
@@ -2134,5 +2252,73 @@ mod tests {
         // Coincident endpoints (a culled/collapsed edge) must not divide by zero.
         let a = pos2(3.0, 3.0);
         assert_eq!(closest_point_on_segment(pos2(9.0, 9.0), a, a), a);
+    }
+
+    #[test]
+    fn a_segment_through_the_box_touches_without_an_endpoint_inside() {
+        // The crossing-only case the spec calls out: both endpoints outside, the run passes
+        // through — crossing selects it, window (≥1 endpoint inside) would not.
+        let rect = Rect::from_min_max(pos2(10.0, 10.0), pos2(20.0, 20.0));
+        assert!(segment_touches_rect(
+            pos2(0.0, 15.0),
+            pos2(30.0, 15.0),
+            rect
+        ));
+        assert!(
+            !(rect.contains(pos2(0.0, 15.0)) || rect.contains(pos2(30.0, 15.0))),
+            "the window predicate misses it"
+        );
+    }
+
+    #[test]
+    fn a_segment_beside_the_box_touches_nothing() {
+        let rect = Rect::from_min_max(pos2(10.0, 10.0), pos2(20.0, 20.0));
+        assert!(!segment_touches_rect(pos2(0.0, 5.0), pos2(30.0, 5.0), rect));
+        // A diagonal skimming PAST the corner (outside) also misses.
+        assert!(!segment_touches_rect(pos2(0.0, 8.0), pos2(8.0, 0.0), rect));
+    }
+
+    #[test]
+    fn an_endpoint_inside_the_box_touches() {
+        let rect = Rect::from_min_max(pos2(10.0, 10.0), pos2(20.0, 20.0));
+        assert!(segment_touches_rect(
+            pos2(15.0, 15.0),
+            pos2(40.0, 40.0),
+            rect
+        ));
+    }
+
+    #[test]
+    fn collinear_disjoint_segments_do_not_intersect() {
+        // All four orientations are zero, but the shadows do not overlap — the naive sign test
+        // would call this an intersection.
+        assert!(!segments_intersect(
+            pos2(0.0, 10.0),
+            pos2(5.0, 10.0),
+            pos2(10.0, 10.0),
+            pos2(20.0, 10.0)
+        ));
+        assert!(segments_intersect(
+            pos2(0.0, 10.0),
+            pos2(12.0, 10.0),
+            pos2(10.0, 10.0),
+            pos2(20.0, 10.0)
+        ));
+    }
+
+    #[test]
+    fn crossing_segments_intersect() {
+        assert!(segments_intersect(
+            pos2(0.0, 0.0),
+            pos2(10.0, 10.0),
+            pos2(0.0, 10.0),
+            pos2(10.0, 0.0)
+        ));
+        assert!(!segments_intersect(
+            pos2(0.0, 0.0),
+            pos2(1.0, 1.0),
+            pos2(0.0, 10.0),
+            pos2(10.0, 0.0)
+        ));
     }
 }

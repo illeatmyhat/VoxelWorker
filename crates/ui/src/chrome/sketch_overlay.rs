@@ -115,6 +115,26 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
     }
 }
 
+/// Draw the directional marquee rubber band (sketch-selection slice 3). `window` (drag
+/// left→right, fully-enclosed semantic) = solid accent outline + the stronger fill; crossing
+/// (right→left, any-intersection) = dashed outline + lighter fill — dashed already means
+/// "looser" in the gizmo family, so the semantic is legible mid-drag. Not chrome — a passive
+/// preview over an already-armed press.
+pub fn sketch_marquee_band(ui: &egui::Ui, rect: Rect, window: bool) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_marquee_band"),
+    ));
+    let stroke = Stroke::new(1.0_f32, theme::ACCENT);
+    if window {
+        painter.rect_filled(rect, 0.0, theme::MARQUEE_WINDOW_FILL);
+        painter.rect_stroke(rect, 0.0, stroke, StrokeKind::Inside);
+    } else {
+        painter.rect_filled(rect, 0.0, theme::MARQUEE_CROSSING_FILL);
+        gizmos::dashed_rect(&painter, rect, stroke);
+    }
+}
+
 /// Draw the committed segment lines between their projected endpoints. Idle edges first, then the
 /// single hovered/marked one on top so its brighter line (or warn line + ✕) is never clipped.
 pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, gizmos::HandleState)]) {

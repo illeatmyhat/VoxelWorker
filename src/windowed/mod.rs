@@ -387,6 +387,16 @@ struct WindowedState {
     /// stops a click on the context-menu Delete button from being read as a "click empty → clear"
     /// that wipes the selection before the menu's delete runs.
     sketch_select_press: bool,
+    /// The marquee's press corner (physical px), or `None`. Armed only by an EMPTY-SPACE Select
+    /// press (no vertex, no segment — a press on an entity clicks or drags it instead). A release
+    /// past the click threshold resolves the box: dragged left→right = window (fully-enclosed
+    /// semantics), right→left = crossing (any-intersection). A marquee is a gesture — it dies
+    /// with the release, the tool switch, and the mode.
+    sketch_marquee_anchor: Option<(f64, f64)>,
+    /// The marquee rubber band for THIS frame: the box (egui points) and whether it is a
+    /// window (`true`, solid + accent fill) or crossing (`false`, dashed + lighter) box, or
+    /// `None` when no marquee is live. Refreshed alongside the handles; drawn next frame.
+    sketch_marquee_band: Option<(egui::Rect, bool)>,
     /// Whether the most recent left-press armed a **node** selection resolve (ADR 0032): the live
     /// viewport, with no tool armed and no sketch mode open — i.e. every other left-click consumer
     /// declined. A STATIONARY release with this set picks the node under the cursor; a drag orbits
@@ -732,6 +742,8 @@ impl WindowedState {
             sketch_chain: None,
             sketch_rect_anchor: None,
             sketch_select_press: false,
+            sketch_marquee_anchor: None,
+            sketch_marquee_band: None,
             viewport_select_press: false,
             pending_viewport_select: None,
             sketch_drag: None,
@@ -910,6 +922,8 @@ impl WindowedState {
             sketch_chain: _,
             sketch_rect_anchor: _,
             sketch_select_press: _,
+            sketch_marquee_anchor: _,
+            sketch_marquee_band: _,
             viewport_select_press: _,
             pending_viewport_select: _,
             sketch_drag: _,

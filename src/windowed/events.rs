@@ -140,6 +140,14 @@ impl ApplicationHandler for App {
                                     state.sketch_select_press = true;
                                     state.sketch_drag =
                                         state.begin_sketch_vertex_drag(cursor_x, cursor_y);
+                                    // An EMPTY-SPACE press may become a marquee past the click
+                                    // threshold; a press on a vertex or segment never does (it
+                                    // clicks / drags that entity instead).
+                                    state.sketch_marquee_anchor = (state.sketch_drag.is_none()
+                                        && state
+                                            .nearest_sketch_segment(cursor_x, cursor_y)
+                                            .is_none())
+                                    .then_some((cursor_x, cursor_y));
                                 }
                                 // Arm the edit; a stationary release performs it.
                                 ui::panel::SketchTool::AddPoint
@@ -273,9 +281,16 @@ impl ApplicationHandler for App {
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary {
                                 state.resolve_sketch_selection_click(up_x, up_y);
+                            } else {
+                                // Slice 3: a DRAGGED release of an empty-space press resolves
+                                // the directional marquee (left→right window, right→left
+                                // crossing). A drag from an entity moved the vertex instead
+                                // (the anchor never armed).
+                                state.resolve_sketch_marquee(up_x, up_y);
                             }
                         }
                     }
+                    state.sketch_marquee_anchor = None;
                     // ADR 0032: a STATIONARY release of a plain viewport press picks the node
                     // under the cursor (the same click-vs-drag threshold every other release path
                     // uses; it survives the orbit rebind as the future marquee discriminator).
