@@ -518,6 +518,64 @@ impl VoxelProducer for SdfShape {
     fn as_field(&self) -> Option<&dyn Field> {
         Some(self)
     }
+
+    /// A box its 12 edges on the `[0, full]` corners; a cylinder its 2 rim ellipses
+    /// (axis along Z); a tube those plus the 2 inner rim ellipses — unless the wall
+    /// consumes the whole cross-section, leaving no hole and no inner rims. A sphere
+    /// and a torus are smooth everywhere and catalogue none.
+    fn edge_polylines_local(
+        &self,
+        voxels_per_block: u32,
+        circle_segments: u32,
+    ) -> Vec<Vec<[f32; 3]>> {
+        let grid = self.grid_dimensions(voxels_per_block);
+        let full = [grid[0] as f32, grid[1] as f32, grid[2] as f32];
+        let half = [full[0] / 2.0, full[1] / 2.0, full[2] / 2.0];
+        let rim_pair = |semi_x: f32, semi_y: f32| -> Vec<Vec<[f32; 3]>> {
+            [0.0, full[2]]
+                .into_iter()
+                .map(|z| {
+                    (0..=circle_segments)
+                        .map(|step| {
+                            let angle =
+                                step as f32 / circle_segments as f32 * std::f32::consts::TAU;
+                            [
+                                half[0] + semi_x * angle.cos(),
+                                half[1] + semi_y * angle.sin(),
+                                z,
+                            ]
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        match self.kind {
+            ShapeKind::Box => {
+                let corner = |x: f32, y: f32, z: f32| [x * full[0], y * full[1], z * full[2]];
+                let mut polylines = Vec::with_capacity(12);
+                for a in [0.0, 1.0] {
+                    for b in [0.0, 1.0] {
+                        polylines.push(vec![corner(0.0, a, b), corner(1.0, a, b)]);
+                        polylines.push(vec![corner(a, 0.0, b), corner(a, 1.0, b)]);
+                        polylines.push(vec![corner(a, b, 0.0), corner(a, b, 1.0)]);
+                    }
+                }
+                polylines
+            }
+            ShapeKind::Cylinder => rim_pair(half[0], half[1]),
+            ShapeKind::Tube => {
+                let mut polylines = rim_pair(half[0], half[1]);
+                let wall_voxels = (self.wall_blocks * voxels_per_block) as f32;
+                let inner_x = half[0] - wall_voxels;
+                let inner_y = half[1] - wall_voxels;
+                if inner_x > 0.01 && inner_y > 0.01 {
+                    polylines.extend(rim_pair(inner_x, inner_y));
+                }
+                polylines
+            }
+            ShapeKind::Sphere | ShapeKind::Torus => Vec::new(),
+        }
+    }
 }
 
 impl Field for SdfShape {

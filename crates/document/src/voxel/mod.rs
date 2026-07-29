@@ -179,6 +179,24 @@ pub trait VoxelProducer: Send + Sync {
         None
     }
 
+    /// The producer's ANALYTIC feature-edge polylines in its own `[0, full_dim)` local
+    /// voxel frame (ADR 0032 selection feedback) — only edges the AUTHORED geometry
+    /// actually has, never anything derived from the voxel surface. `circle_segments`
+    /// tessellates one full rim turn (fixed, not screen-adaptive, so the polyline is
+    /// world-stable under orbit).
+    ///
+    /// The default empty answer is honest for a producer with no authored creases: a
+    /// voxel body, a composed scope, an outset wrapper (whose dilated surface has left
+    /// the authored edges behind).
+    fn edge_polylines_local(
+        &self,
+        voxels_per_block: u32,
+        circle_segments: u32,
+    ) -> Vec<Vec<[f32; 3]>> {
+        let _ = (voxels_per_block, circle_segments);
+        Vec::new()
+    }
+
     /// The producer's FULL grid dimensions in voxels (its `[0, full_dim)` local frame).
     /// This is the span [`resolve`] writes into and the AABB the classifier / chunk
     /// window clip against. A sized producer (an SDF Tool, a sketch solid) returns its

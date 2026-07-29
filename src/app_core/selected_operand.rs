@@ -16,10 +16,10 @@
 
 use display::mesh::SelectedOperandGhostBody;
 use display::renderer::OperandGhostStyle;
-use document::scene::{CombineOp, NodeContent, NodeId, Scene};
+use document::scene::{CombineOp, NodeId, Scene};
 use evaluation::two_layer_store::TwoLayerStore;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint};
-use voxel_core::voxel::{RecentreVoxels, ShapeKind};
+use voxel_core::voxel::RecentreVoxels;
 
 use super::AppCore;
 
@@ -85,122 +85,44 @@ pub struct SelectedBodyCel {
 /// is world-stable under orbit — the whole point of the analytic edges.
 const EDGE_CIRCLE_SEGMENTS: u32 = 96;
 
-/// The analytic feature-edge catalogue of one shape, as polylines in the producer's
-/// LOCAL `[0, full]` voxel frame. Only edges the authored geometry actually has: a box
-/// its 12 edges, a cylinder its 2 rim ellipses (axis along Z), a tube those plus the 2
-/// inner rim ellipses; a sphere and a torus are smooth everywhere and catalogue none.
-fn shape_edge_polylines(kind: ShapeKind, grid: [u32; 3], wall_voxels: f32) -> Vec<Vec<[f32; 3]>> {
-    let full = [grid[0] as f32, grid[1] as f32, grid[2] as f32];
-    let half = [full[0] / 2.0, full[1] / 2.0, full[2] / 2.0];
-    let rim_pair = |semi_x: f32, semi_y: f32| -> Vec<Vec<[f32; 3]>> {
-        [0.0, full[2]]
-            .into_iter()
-            .map(|z| {
-                (0..=EDGE_CIRCLE_SEGMENTS)
-                    .map(|step| {
-                        let angle =
-                            step as f32 / EDGE_CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
-                        [
-                            half[0] + semi_x * angle.cos(),
-                            half[1] + semi_y * angle.sin(),
-                            z,
-                        ]
-                    })
-                    .collect()
-            })
-            .collect()
-    };
-    match kind {
-        ShapeKind::Box => {
-            let corner = |x: f32, y: f32, z: f32| [x * full[0], y * full[1], z * full[2]];
-            let mut polylines = Vec::with_capacity(12);
-            for a in [0.0, 1.0] {
-                for b in [0.0, 1.0] {
-                    polylines.push(vec![corner(0.0, a, b), corner(1.0, a, b)]);
-                    polylines.push(vec![corner(a, 0.0, b), corner(a, 1.0, b)]);
-                    polylines.push(vec![corner(a, b, 0.0), corner(a, b, 1.0)]);
-                }
-            }
-            polylines
-        }
-        ShapeKind::Cylinder => rim_pair(half[0], half[1]),
-        ShapeKind::Tube => {
-            let mut polylines = rim_pair(half[0], half[1]);
-            // The inner wall is the SDF's inner elliptical cylinder (semi-axes reduced
-            // by the wall). A wall consuming the whole cross-section leaves no hole —
-            // and no inner rims.
-            let inner_x = half[0] - wall_voxels;
-            let inner_y = half[1] - wall_voxels;
-            if inner_x > 0.01 && inner_y > 0.01 {
-                polylines.extend(rim_pair(inner_x, inner_y));
-            }
-            polylines
-        }
-        ShapeKind::Sphere | ShapeKind::Torus => Vec::new(),
-    }
-}
-
-/// Walk a `node_body_slice` and emit every Tool leaf's edge catalogue as segment
-/// endpoint pairs in TRUE-WORLD voxels (the slice root is absolutely placed; Group
-/// descent accumulates child offsets the same way the resolve walk does). Leaves the
-/// catalogue can't describe yet — sketch solids, voxel bodies, instances — emit
-/// nothing.
+/// Emit every leaf's authored edge catalogue ([`VoxelProducer::edge_polylines_local`])
+/// as segment endpoint pairs in TRUE-WORLD voxels. Consumes the SAME `leaf_producers`
+/// walk the evaluator reads — never a hand-mirrored descent — so placement, instance
+/// expansion, the cycle guard and fixture splicing stay single-sourced. A pre-composed
+/// scope or an outset-wrapped leaf arrives as a producer that honestly catalogues
+/// nothing (its authored edges are gone from the surface it resolves).
+///
+/// [`VoxelProducer::edge_polylines_local`]: document::voxel::VoxelProducer::edge_polylines_local
 fn collect_edge_segments_true_world(slice: &Scene, density: u32, out: &mut Vec<[f32; 3]>) {
-    fn visit(
-        slice: &Scene,
-        node_id: NodeId,
-        offset_voxels: [i64; 3],
-        offset_local: [f32; 3],
-        density: u32,
-        out: &mut Vec<[f32; 3]>,
-    ) {
-        let Some(node) = slice.arena.get(&node_id) else {
-            return;
-        };
-        if !node.enabled {
-            return;
+    for leaf in slice.leaf_producers(density) {
+        let polylines = leaf
+            .producer
+            .edge_polylines_local(density, EDGE_CIRCLE_SEGMENTS);
+        if polylines.is_empty() {
+            continue;
         }
-        let offset_voxels: [i64; 3] =
-            std::array::from_fn(|axis| offset_voxels[axis] + node.transform.offset_voxels[axis]);
-        let offset_local: [f32; 3] = std::array::from_fn(|axis| {
-            offset_local[axis] + node.transform.offset_local_voxels[axis]
-        });
-        match &node.content {
-            NodeContent::Group(children) => {
-                for &child in children {
-                    visit(slice, child, offset_voxels, offset_local, density, out);
+        let grid = leaf.producer.full_dimensions(density);
+        let full = glam::Vec3::new(grid[0] as f32, grid[1] as f32, grid[2] as f32);
+        let placement = LeafPlacement::from_origin_and_local(
+            leaf.rotation,
+            full,
+            leaf.world_offset_voxels,
+            leaf.offset_local_voxels,
+        );
+        for polyline in polylines {
+            for pair in polyline.windows(2) {
+                for point in pair {
+                    out.push(
+                        placement
+                            .world_of(ProducerLocalVoxelPoint::from_voxels(
+                                glam::Vec3::from_array(*point),
+                            ))
+                            .voxels()
+                            .to_array(),
+                    );
                 }
             }
-            NodeContent::Tool { shape, .. } => {
-                let grid = shape.grid_dimensions(density);
-                let full = glam::Vec3::new(grid[0] as f32, grid[1] as f32, grid[2] as f32);
-                let placement = LeafPlacement::from_origin_and_local(
-                    node.transform.rotation(),
-                    full,
-                    offset_voxels,
-                    offset_local,
-                );
-                let wall_voxels = (shape.wall_blocks * density) as f32;
-                for polyline in shape_edge_polylines(shape.kind, grid, wall_voxels) {
-                    for pair in polyline.windows(2) {
-                        for point in pair {
-                            out.push(
-                                placement
-                                    .world_of(ProducerLocalVoxelPoint::from_voxels(
-                                        glam::Vec3::from_array(*point),
-                                    ))
-                                    .voxels()
-                                    .to_array(),
-                            );
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
-    }
-    for &root in &slice.roots {
-        visit(slice, root, [0; 3], [0.0; 3], density, out);
     }
 }
 
@@ -321,8 +243,8 @@ fn evaluate_operand_ghost_slices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use document::scene::{Node, NodeContent, NodeTransform, ROOT_NODE_ID};
-    use document::voxel::SdfShape;
+    use document::scene::{DefId, Node, NodeContent, NodeTransform, ROOT_NODE_ID};
+    use document::voxel::{SdfShape, VoxelProducer};
     use voxel_core::core_geom::MaterialChoice;
     use voxel_core::voxel::ShapeKind;
 
@@ -467,7 +389,11 @@ mod tests {
     /// the `[0, full]` corners; a sphere and a torus are smooth and list nothing.
     #[test]
     fn box_catalogues_twelve_edges_and_smooth_kinds_none() {
-        let edges = shape_edge_polylines(ShapeKind::Box, [32, 32, 32], 8.0);
+        let catalogue = |kind, blocks| {
+            SdfShape::from_blocks(kind, blocks, 1, DENSITY)
+                .edge_polylines_local(DENSITY, EDGE_CIRCLE_SEGMENTS)
+        };
+        let edges = catalogue(ShapeKind::Box, [4, 4, 4]);
         assert_eq!(edges.len(), 12);
         for polyline in &edges {
             assert_eq!(polyline.len(), 2, "a box edge is one straight segment");
@@ -480,8 +406,8 @@ mod tests {
                 }
             }
         }
-        assert!(shape_edge_polylines(ShapeKind::Sphere, [32, 32, 32], 8.0).is_empty());
-        assert!(shape_edge_polylines(ShapeKind::Torus, [32, 32, 16], 8.0).is_empty());
+        assert!(catalogue(ShapeKind::Sphere, [4, 4, 4]).is_empty());
+        assert!(catalogue(ShapeKind::Torus, [4, 4, 2]).is_empty());
     }
 
     /// A tube catalogues 4 rim ellipses (outer + inner × top + bottom, axis along Z);
@@ -489,7 +415,11 @@ mod tests {
     /// pair. A cylinder is the outer pair alone.
     #[test]
     fn tube_catalogues_four_rims_until_the_wall_closes_the_hole() {
-        let rims = shape_edge_polylines(ShapeKind::Tube, [64, 64, 32], 8.0);
+        let catalogue = |kind, blocks, wall_blocks| {
+            SdfShape::from_blocks(kind, blocks, wall_blocks, DENSITY)
+                .edge_polylines_local(DENSITY, EDGE_CIRCLE_SEGMENTS)
+        };
+        let rims = catalogue(ShapeKind::Tube, [8, 8, 4], 1);
         assert_eq!(rims.len(), 4);
         for rim in &rims {
             let z = rim[0][2];
@@ -500,12 +430,9 @@ mod tests {
         let radii: Vec<f32> = rims.iter().map(|rim| rim[0][0] - 32.0).collect();
         assert_eq!(radii, vec![32.0, 32.0, 24.0, 24.0]);
 
-        let walled_shut = shape_edge_polylines(ShapeKind::Tube, [32, 32, 32], 16.0);
+        let walled_shut = catalogue(ShapeKind::Tube, [4, 4, 4], 2);
         assert_eq!(walled_shut.len(), 2, "no hole, no inner rims");
-        assert_eq!(
-            shape_edge_polylines(ShapeKind::Cylinder, [64, 64, 32], 0.0).len(),
-            2
-        );
+        assert_eq!(catalogue(ShapeKind::Cylinder, [8, 8, 4], 0).len(), 2);
     }
 
     /// The cel's edge segments land in the RENDER frame: the host box's 12 edges
@@ -569,6 +496,88 @@ mod tests {
                 && (span[1] - 64.0).abs() < 1e-3
                 && (span[2] - 32.0).abs() < 1e-3,
             "a 64×32×32 box turned 90° about Z spans 32×64×32, got {span:?}"
+        );
+    }
+
+    /// An instance's edges are the definition's catalogue under the instance's
+    /// placement: a definition holding a rotated 64×32×32 box, instanced at a block
+    /// offset, shows 12 edges spanning 32×64×32 anchored on the instance offset —
+    /// translation-only composition, exactly like the resolve walk.
+    #[test]
+    fn instance_edges_land_at_the_instanced_placement() {
+        let quarter_turn = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let mut inner = box_tool([8, 4, 4], [0, 0, 0], CombineOp::Union, "Turned");
+        inner.transform = inner.transform.clone().with_rotation(quarter_turn);
+        let mut instance = Node::new("House 1", NodeContent::Instance(DefId(7)));
+        instance.transform = NodeTransform::from_blocks([2, 0, 0], DENSITY);
+        let mut scene = Scene::from_nodes(vec![instance]);
+        scene.voxels_per_block = DENSITY;
+        scene.add_definition(DefId(7), "House", [inner]);
+        scene.ensure_node_ids();
+
+        let target = scene.roots[0];
+        let cel = AppCore::selected_body_cel(&scene, &[target], DENSITY).expect("instance body");
+        assert_eq!(
+            cel.edge_segments.len(),
+            24,
+            "12 box edges, 2 endpoints each"
+        );
+        let recentre = cel.recentre.voxels();
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for point in &cel.edge_segments {
+            for axis in 0..3 {
+                let true_world = point[axis] + recentre[axis] as f32;
+                min[axis] = min[axis].min(true_world);
+                max[axis] = max[axis].max(true_world);
+            }
+        }
+        assert!(
+            (min[0] - 16.0).abs() < 1e-3 && min[1].abs() < 1e-3 && min[2].abs() < 1e-3,
+            "low corner anchors on the instance offset, got {min:?}"
+        );
+        let span: Vec<f32> = (0..3).map(|axis| max[axis] - min[axis]).collect();
+        assert!(
+            (span[0] - 32.0).abs() < 1e-3
+                && (span[1] - 64.0).abs() < 1e-3
+                && (span[2] - 32.0).abs() < 1e-3,
+            "the definition's turned box spans 32×64×32, got {span:?}"
+        );
+    }
+
+    /// Two instances of one definition each catalogue their own copy; a fixture
+    /// definition's spliced Subtract child catalogues too (the walk never reads
+    /// operations — the shader clips edges to where they crease the composed body).
+    #[test]
+    fn every_instance_and_spliced_cutter_catalogues_edges() {
+        let host = box_tool([4, 4, 4], [0, 0, 0], CombineOp::Union, "Host");
+        let cutter = box_tool([2, 2, 2], [1, 1, 1], CombineOp::Subtract, "Cutter");
+        let mut first = Node::new("First", NodeContent::Instance(DefId(3)));
+        first.transform = NodeTransform::from_blocks([0, 0, 0], DENSITY);
+        let mut second = Node::new("Second", NodeContent::Instance(DefId(3)));
+        second.transform = NodeTransform::from_blocks([10, 0, 0], DENSITY);
+        let mut scene = Scene::from_nodes(vec![first, second]);
+        scene.voxels_per_block = DENSITY;
+        scene.add_definition(DefId(3), "Notched", [host, cutter]);
+        scene.set_definition_fixture(DefId(3), true);
+        scene.ensure_node_ids();
+
+        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0], scene.roots[1]], DENSITY)
+            .expect("both instances derive bodies");
+        assert_eq!(
+            cel.edge_segments.len(),
+            96,
+            "2 instances × (host 24 + spliced cutter 24) endpoints"
+        );
+        let recentre = cel.recentre.voxels();
+        let xs: Vec<f32> = cel
+            .edge_segments
+            .iter()
+            .map(|point| point[0] + recentre[0] as f32)
+            .collect();
+        assert!(
+            xs.iter().any(|&x| x < 40.0) && xs.iter().any(|&x| x >= 80.0),
+            "each instance's edges sit at its own placement"
         );
     }
 
