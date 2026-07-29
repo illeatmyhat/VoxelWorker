@@ -91,6 +91,11 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         "Rectangle — drag opposite corners",
         Some(SketchTool::Rectangle),
     ),
+    (
+        Icon::ThreePointArc,
+        "Arc — click start, end, then a point it passes through",
+        Some(SketchTool::ThreePointArc),
+    ),
 ];
 
 /// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch

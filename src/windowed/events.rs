@@ -141,17 +141,16 @@ impl ApplicationHandler for App {
                                     state.sketch_drag =
                                         state.begin_sketch_vertex_drag(cursor_x, cursor_y);
                                     // An EMPTY-SPACE press may become a marquee past the click
-                                    // threshold; a press on a vertex or segment never does (it
+                                    // threshold; a press on a vertex or edge never does (it
                                     // clicks / drags that entity instead).
                                     state.sketch_marquee_anchor = (state.sketch_drag.is_none()
-                                        && state
-                                            .nearest_sketch_segment(cursor_x, cursor_y)
-                                            .is_none())
+                                        && state.nearest_sketch_edge(cursor_x, cursor_y).is_none())
                                     .then_some((cursor_x, cursor_y));
                                 }
                                 // Arm the edit; a stationary release performs it.
                                 ui::panel::SketchTool::AddPoint
-                                | ui::panel::SketchTool::Polyline => {
+                                | ui::panel::SketchTool::Polyline
+                                | ui::panel::SketchTool::ThreePointArc => {
                                     state.sketch_edit_press = true;
                                 }
                                 // #99: the rectangle is a press-drag-release gesture — the
@@ -251,6 +250,11 @@ impl ApplicationHandler for App {
                                     // #99: place / chain the clicked point; commits internally.
                                     ui::panel::SketchTool::Polyline => {
                                         state.sketch_polyline_click(up_x, up_y);
+                                    }
+                                    // #102: endpoint, endpoint, then the through-point that
+                                    // solves the bulge; commits internally.
+                                    ui::panel::SketchTool::ThreePointArc => {
+                                        state.sketch_arc_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Rectangle => {}

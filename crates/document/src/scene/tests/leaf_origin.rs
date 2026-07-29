@@ -135,8 +135,8 @@ fn a_nested_instance_picks_as_the_outermost_placement() {
         OUTER_DEF,
         "Bracket",
         vec![
-            NodeBuilder::Leaf(stone_box([4, 0, 0])),
-            NodeBuilder::Leaf(instance_node(
+            NodeBuilder::leaf(stone_box([4, 0, 0])),
+            NodeBuilder::leaf(instance_node(
                 INNER_DEF,
                 [0, 0, 0],
                 CombineOp::Union,

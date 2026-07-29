@@ -179,6 +179,9 @@ impl WindowedState {
                 // ADR 0030: the committed segment lines, projected last frame — drawn under the
                 // vertex dots so the profile reads as connected edges.
                 &self.sketch_segment_lines,
+                // ADR 0030 §5 (#102): the committed arc curves, projected last frame — the same
+                // under-layer as the straight edges.
+                &self.sketch_arc_lines,
                 // ADR 0028 (#95): the add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
                 // #99: the drawing tools' dashed preview, projected last frame.
@@ -1208,6 +1211,57 @@ impl WindowedState {
         nearest.map(|(seg_id, a, b, _)| (seg_id, a, b))
     }
 
+    /// The sketch ARC under the cursor (physical px) as `(arc id, distance)`, measured against
+    /// the arc's drawn chord polyline so the pick follows the curve rather than its chord
+    /// (#102). `None` when no arc is within the grab pad.
+    fn nearest_sketch_arc(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<(document::sketch::EntityId, f32)> {
+        let pad_px = ui::chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        let mut nearest: Option<(document::sketch::EntityId, f32)> = None;
+        for (arc_id, chords) in &self.sketch_arc_chords {
+            let Some(distance) = chords
+                .windows(2)
+                .map(|pair| point_to_segment_distance(cursor, pair[0], pair[1]))
+                .min_by(|a, b| a.total_cmp(b))
+            else {
+                continue;
+            };
+            if distance <= pad_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
+                nearest = Some((*arc_id, distance));
+            }
+        }
+        nearest
+    }
+
+    /// The sketch EDGE under the cursor — the nearer of the closest segment and the closest arc
+    /// (#102). One resolution so hover feedback and the click that follows it can never
+    /// disagree about which edge the cursor is on.
+    pub(super) fn nearest_sketch_edge(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<SketchEdgeHit> {
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        let segment = self
+            .nearest_sketch_segment(cursor_x, cursor_y)
+            .map(|(id, a, b)| (id, point_to_segment_distance(cursor, a, b)));
+        let arc = self.nearest_sketch_arc(cursor_x, cursor_y);
+        match (segment, arc) {
+            (Some((seg_id, seg_d)), Some((arc_id, arc_d))) => Some(if arc_d < seg_d {
+                SketchEdgeHit::Arc(arc_id)
+            } else {
+                SketchEdgeHit::Segment(seg_id)
+            }),
+            (Some((seg_id, _)), None) => Some(SketchEdgeHit::Segment(seg_id)),
+            (None, Some((arc_id, _))) => Some(SketchEdgeHit::Arc(arc_id)),
+            (None, None) => None,
+        }
+    }
+
     /// The id of the sketch SEGMENT under the cursor (physical px), for add-point — the click
     /// splits the named segment (ADR 0030). `None` when no edge is close enough.
     fn sketch_segment_at(
@@ -1326,6 +1380,84 @@ impl WindowedState {
         }
     }
 
+    /// #102: one 3-point-arc click (ADR 0030 §5). Click 1 picks the start endpoint, click 2 the
+    /// end endpoint — each an existing vertex under the cursor or a fresh snapped free point —
+    /// and click 3 names a coordinate the curve passes through, which the included angle is
+    /// solved from and then discarded (a through-point is an input, never an entity). Picking the
+    /// start twice, or a pair already joined, drops the gesture rather than storing a degenerate
+    /// arc. Each click that changes the store commits one entry in the open sketch undo group.
+    pub(super) fn sketch_arc_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        // An endpoint deleted mid-gesture (Delete key, undo) leaves a dangling id — drop the
+        // gesture rather than arc to a ghost.
+        let alive = |id| producer.sketch.points().iter().any(|point| point.id == id);
+        if let Some((start, end)) = self.sketch_arc_gesture {
+            if !alive(start) || end.is_some_and(|id| !alive(id)) {
+                self.sketch_arc_gesture = None;
+            }
+        }
+        // The third click is a coordinate, not a vertex: solve the sweep and store the arc.
+        if let Some((start, Some(end))) = self.sketch_arc_gesture {
+            self.sketch_arc_gesture = None;
+            let Some(through) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
+                return;
+            };
+            let coord = |id| {
+                producer
+                    .sketch
+                    .points()
+                    .iter()
+                    .find(|point| point.id == id)
+                    .map(|point| point.at.in_plane())
+            };
+            let (Some(from), Some(to)) = (coord(start), coord(end)) else {
+                return;
+            };
+            let Some(degrees) =
+                document::sketch::included_angle_through_degrees(from, to, through.in_plane())
+            else {
+                return;
+            };
+            let Some(bulge) = voxel_core::units::AngleMeasurement::from_degrees_f64(degrees) else {
+                return;
+            };
+            let next = producer.with_arc_between(start, end, bulge);
+            if next != producer {
+                self.commit_sketch_profile_edit(target, next);
+            }
+            return;
+        }
+
+        let existing = self
+            .sketch_vertex_at(cursor_x, cursor_y)
+            .and_then(|index| self.sketch_point_ids.get(index).copied());
+        let (next, clicked) = match existing {
+            Some(id) => (producer.clone(), id),
+            None => {
+                let Some(snapped) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
+                    return;
+                };
+                producer.with_point_placed(snapped)
+            }
+        };
+        self.sketch_arc_gesture = match self.sketch_arc_gesture {
+            None => Some((clicked, None)),
+            // A zero-length arc, or a pair the store already joins, cannot be held (ADR 0030 §5).
+            Some((start, _)) if start == clicked || next.sketch.pair_is_joined(start, clicked) => {
+                None
+            }
+            Some((start, _)) => Some((start, Some(clicked))),
+        };
+        if next != producer {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
     /// #99: the rectangle tool's release. Takes the press-time anchor corner; a release whose
     /// snapped opposite corner spans both in-plane axes appends the closed four-segment loop
     /// as one undo entry — a degenerate (zero-span) or off-plane release draws nothing. Either
@@ -1410,6 +1542,24 @@ impl WindowedState {
                 if hit {
                     picked.push(ui::panel::SelectionTarget::SketchSegment { sketch, entity });
                 }
+            }
+        }
+        // #102: an arc answers the box through its drawn chords — window takes it when an
+        // ENDPOINT is inside (the segment rule, so a bulge crossing the box edge doesn't count),
+        // crossing when any chord touches.
+        for (entity, chords) in &self.sketch_arc_chords {
+            let hit = match (window, chords.first(), chords.last()) {
+                (true, Some(a), Some(b)) => rect.contains(*a) || rect.contains(*b),
+                (false, _, _) => chords
+                    .windows(2)
+                    .any(|pair| segment_touches_rect(pair[0], pair[1], rect)),
+                (true, _, _) => false,
+            };
+            if hit {
+                picked.push(ui::panel::SelectionTarget::SketchArc {
+                    sketch,
+                    entity: *entity,
+                });
             }
         }
         if !self.shift_held {
@@ -1733,8 +1883,15 @@ impl WindowedState {
                 return Some(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
             }
         }
-        self.sketch_segment_at(cursor_x, cursor_y)
-            .map(|entity| ui::panel::SelectionTarget::SketchSegment { sketch, entity })
+        self.nearest_sketch_edge(cursor_x, cursor_y)
+            .map(|hit| match hit {
+                SketchEdgeHit::Segment(entity) => {
+                    ui::panel::SelectionTarget::SketchSegment { sketch, entity }
+                }
+                SketchEdgeHit::Arc(entity) => {
+                    ui::panel::SelectionTarget::SketchArc { sketch, entity }
+                }
+            })
     }
 
     /// ADR 0030: is the cursor (physical px) over a sketch entity — a vertex or a segment? Used by
@@ -1743,7 +1900,7 @@ impl WindowedState {
     /// even though the handle sits in the chrome hit-set.
     pub(super) fn cursor_over_sketch_entity(&self, cursor_x: f64, cursor_y: f64) -> bool {
         self.sketch_vertex_at(cursor_x, cursor_y).is_some()
-            || self.sketch_segment_at(cursor_x, cursor_y).is_some()
+            || self.nearest_sketch_edge(cursor_x, cursor_y).is_some()
     }
 
     /// ADR 0030: a right-click over a sketch entity selects it (Fusion: right-clicking an entity
@@ -1804,8 +1961,9 @@ impl WindowedState {
     }
 
     /// ADR 0030: delete every entity in the sketch selection as ONE edit — each selected point
-    /// (cascading its incident segments) then each selected segment (a no-op if a cascade already
-    /// took it), committed through the same anchor-preserving path a single delete uses
+    /// (cascading its incident segments and arcs) then each selected segment and arc (a no-op if
+    /// a cascade already took it), committed through the same anchor-preserving path a single
+    /// delete uses
     /// ([`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit)), then the selection is
     /// cleared. No-op when nothing is picked or no sketch is being edited. Invoked by the general
     /// viewport context menu's Delete.
@@ -1821,12 +1979,16 @@ impl WindowedState {
         };
         let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
         let segments: Vec<_> = self.panel_state.selection.sketch_segments(target).collect();
+        let arcs: Vec<_> = self.panel_state.selection.sketch_arcs(target).collect();
         let mut next = producer;
         for point_id in points {
             next = next.with_point_deleted(point_id);
         }
         for seg_id in segments {
             next = next.with_segment_deleted(seg_id);
+        }
+        for arc_id in arcs {
+            next = next.with_arc_deleted(arc_id);
         }
         self.commit_sketch_profile_edit(target, next);
         self.panel_state.selection.clear_sketch_entities();
@@ -1907,15 +2069,18 @@ impl WindowedState {
         self.sketch_point_ids.clear();
         self.sketch_segments.clear();
         self.sketch_segment_lines.clear();
+        self.sketch_arc_lines.clear();
+        self.sketch_arc_chords.clear();
         self.sketch_insert_preview = None;
         self.sketch_draw_preview.clear();
         self.sketch_marquee_band = None;
 
         let Some(target) = self.panel_state.sketch_mode else {
-            // #99 / slice 3: a drawing or marquee gesture dies with the mode.
+            // #99 / slice 3 / #102: a drawing or marquee gesture dies with the mode.
             self.sketch_chain = None;
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
+            self.sketch_arc_gesture = None;
             return;
         };
         let Some(handles) = self
@@ -1936,6 +2101,9 @@ impl WindowedState {
         }
         if tool != ui::panel::SketchTool::Select {
             self.sketch_marquee_anchor = None;
+        }
+        if tool != ui::panel::SketchTool::ThreePointArc {
+            self.sketch_arc_gesture = None;
         }
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
         let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
@@ -1993,31 +2161,52 @@ impl WindowedState {
         self.sketch_point_ids = handles.point_ids.clone();
         self.sketch_segments = handles.segments.clone();
 
+        // Arc chord polylines in PHYSICAL px (#102), from the same tessellation the resolve
+        // flattens with. A behind-camera chord vertex culls the whole arc, matching the
+        // segment rule — a partially-projected curve would draw a fold across the viewport.
+        for (arc_id, polyline) in &handles.arcs {
+            let projected: Option<Vec<egui::Pos2>> = polyline
+                .iter()
+                .map(|vertex| {
+                    let clip =
+                        view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
+                    (clip.w > 0.0).then(|| {
+                        egui::Pos2::new(
+                            vx + (clip.x / clip.w * 0.5 + 0.5) * vw,
+                            vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh,
+                        )
+                    })
+                })
+                .collect();
+            if let Some(projected) = projected {
+                self.sketch_arc_chords.push((*arc_id, projected));
+            }
+        }
+
         // The segment under the cursor and the state it should draw in. A vertex under the cursor
         // takes priority — it already answers with its own handle state — so a segment lights up
         // only when no vertex is hit, the SAME decision the vertex-grab makes. Reusing that
         // hit-test keeps the feedback exactly aligned with what a click acts on. Select → Hover
         // (brighter, "you can pick this edge"); Add-point has its own insert diamond, so
         // segments stay Idle.
-        let hovered_segment: Option<(document::sketch::EntityId, ui::gizmos::HandleState)> =
-            match tool {
-                ui::panel::SketchTool::Select => Some(ui::gizmos::HandleState::Hover),
-                // Add-point has its own insert diamond; the drawing tools (#99) target
-                // points and empty plane, never an edge.
-                ui::panel::SketchTool::AddPoint
-                | ui::panel::SketchTool::Polyline
-                | ui::panel::SketchTool::Rectangle => None,
-            }
-            .and_then(|state| {
-                self.last_cursor_position.and_then(|(cx, cy)| {
-                    if self.sketch_vertex_at(cx, cy).is_some() {
-                        None
-                    } else {
-                        self.nearest_sketch_segment(cx, cy)
-                            .map(|(seg_id, _, _)| (seg_id, state))
-                    }
-                })
-            });
+        let hovered_edge: Option<(SketchEdgeHit, ui::gizmos::HandleState)> = match tool {
+            ui::panel::SketchTool::Select => Some(ui::gizmos::HandleState::Hover),
+            // Add-point has its own insert diamond; the drawing tools (#99, #102) target
+            // points and empty plane, never an edge.
+            ui::panel::SketchTool::AddPoint
+            | ui::panel::SketchTool::Polyline
+            | ui::panel::SketchTool::Rectangle
+            | ui::panel::SketchTool::ThreePointArc => None,
+        }
+        .and_then(|state| {
+            self.last_cursor_position.and_then(|(cx, cy)| {
+                if self.sketch_vertex_at(cx, cy).is_some() {
+                    None
+                } else {
+                    self.nearest_sketch_edge(cx, cy).map(|hit| (hit, state))
+                }
+            })
+        });
 
         // The segment LINES to draw next frame: each committed edge between its two projected
         // endpoints, in egui points (ADR 0030 — an open sketch resolves to nothing, so the edges
@@ -2038,13 +2227,33 @@ impl WindowedState {
                     entity: seg_id,
                 };
                 let selected = self.panel_state.selection.contains(picked);
-                let state = match hovered_segment {
+                let state = match hovered_edge {
                     _ if selected => ui::gizmos::HandleState::Selected,
-                    Some((id, state)) if id == seg_id => state,
+                    Some((SketchEdgeHit::Segment(id), state)) if id == seg_id => state,
                     _ => ui::gizmos::HandleState::Idle,
                 };
                 self.sketch_segment_lines.push((a, b, state));
             }
+        }
+
+        // The arc curves to draw next frame, in egui points — the same precedence the
+        // segments use, so a picked arc and a picked segment read identically (#102).
+        for (arc_id, chords) in &self.sketch_arc_chords {
+            let picked = ui::panel::SelectionTarget::SketchArc {
+                sketch: target,
+                entity: *arc_id,
+            };
+            let selected = self.panel_state.selection.contains(picked);
+            let state = match hovered_edge {
+                _ if selected => ui::gizmos::HandleState::Selected,
+                Some((SketchEdgeHit::Arc(id), state)) if id == *arc_id => state,
+                _ => ui::gizmos::HandleState::Idle,
+            };
+            let curve = chords
+                .iter()
+                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
+                .collect();
+            self.sketch_arc_lines.push((curve, state));
         }
 
         // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
@@ -2139,9 +2348,66 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::ThreePointArc => {
+                // #102: with one endpoint down, the dashed chord to the snapped cursor (the
+                // curve is not determined yet); with both down, the arc the third click would
+                // commit, tessellated through the cursor as its through-point.
+                if let (Some((start, end)), Some((cursor_x, cursor_y))) =
+                    (self.sketch_arc_gesture, self.last_cursor_position)
+                {
+                    let profile_of = |id| {
+                        self.sketch_node_state(target).and_then(|(producer, _)| {
+                            producer
+                                .sketch
+                                .points()
+                                .iter()
+                                .find(|point| point.id == id)
+                                .map(|point| point.at.in_plane())
+                        })
+                    };
+                    let cursor = self
+                        .sketch_snapped_point_at(cursor_x, cursor_y)
+                        .map(|point| point.in_plane());
+                    let ring: Option<Vec<[f64; 2]>> = match (profile_of(start), end, cursor) {
+                        (Some(from), None, Some(cursor)) => Some(vec![from, cursor]),
+                        (Some(from), Some(end), Some(through)) => profile_of(end).map(|to| {
+                            let sweep =
+                                document::sketch::included_angle_through_degrees(from, to, through)
+                                    .unwrap_or(0.0);
+                            let mut ring = vec![from];
+                            ring.extend(
+                                document::sketch::arc_interior_points(from, to, sweep)
+                                    .iter()
+                                    .map(|point| point.in_plane()),
+                            );
+                            ring.push(to);
+                            ring
+                        }),
+                        _ => None,
+                    };
+                    if let Some(ring) = ring {
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        // A behind-camera vertex culls the whole preview, as the rectangle's does.
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
+}
+
+/// Which kind of sketch EDGE a cursor resolved to (#102) — the two entity stores share an id
+/// space but not a vector, so the kind travels with the id rather than being re-derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SketchEdgeHit {
+    /// A straight segment.
+    Segment(document::sketch::EntityId),
+    /// An arc.
+    Arc(document::sketch::EntityId),
 }
 
 /// Quantize a continuous in-plane profile coordinate by the sketch position snap (#96):

@@ -154,6 +154,41 @@ pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, gizmos::HandleS
     }
 }
 
+/// Draw the committed arc curves as polylines through their projected chords (ADR 0030 §5). Same
+/// idle-then-emphasised ordering and the same [`gizmos::HandleState`] vocabulary the segment lines
+/// use, so an arc and a straight edge answer the pointer identically. A `Marked` arc stamps its
+/// warn `✕` once, at the curve's midpoint, rather than once per chord.
+pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleState)]) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_arc_curves"),
+    ));
+    let draw = |curve: &[Pos2], state: gizmos::HandleState| {
+        if state == gizmos::HandleState::Marked {
+            for pair in curve.windows(2) {
+                gizmos::warn_segment(&painter, pair[0], pair[1]);
+            }
+            if let Some(mid) = curve.get(curve.len() / 2) {
+                gizmos::warn_cross(&painter, *mid);
+            }
+        } else {
+            for pair in curve.windows(2) {
+                gizmos::styled_segment(&painter, pair[0], pair[1], state);
+            }
+        }
+    };
+    for (curve, state) in curves {
+        if *state == gizmos::HandleState::Idle {
+            draw(curve, *state);
+        }
+    }
+    for (curve, state) in curves {
+        if *state != gizmos::HandleState::Idle {
+            draw(curve, *state);
+        }
+    }
+}
+
 /// Draw the profile vertex handles at their projected positions and register each grab rect as
 /// chrome so a press drags the vertex instead of orbiting.
 pub fn sketch_vertex_handles(

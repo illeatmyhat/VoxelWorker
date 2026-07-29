@@ -45,6 +45,15 @@ pub enum SelectionTarget {
         /// The segment's id within that sketch.
         entity: EntityId,
     },
+    /// An ARC edge of a sketch profile (ADR 0030 §5, #102). A separate variant from
+    /// [`SketchSegment`](Self::SketchSegment) because it deletes out of a different store —
+    /// the id spaces are shared but the vectors are not.
+    SketchArc {
+        /// The sketch node that owns the entity counter this id came from.
+        sketch: NodeId,
+        /// The arc's id within that sketch.
+        entity: EntityId,
+    },
 }
 
 impl SelectionTarget {
@@ -54,7 +63,8 @@ impl SelectionTarget {
     pub fn owning_sketch(self) -> Option<NodeId> {
         match self {
             SelectionTarget::SketchPoint { sketch, .. }
-            | SelectionTarget::SketchSegment { sketch, .. } => Some(sketch),
+            | SelectionTarget::SketchSegment { sketch, .. }
+            | SelectionTarget::SketchArc { sketch, .. } => Some(sketch),
             SelectionTarget::Node(_) | SelectionTarget::ReferencePoint(_) => None,
         }
     }
@@ -216,6 +226,17 @@ impl Selection {
         })
     }
 
+    /// The picked ARC ids of `sketch`, in pick order (#102).
+    pub fn sketch_arcs(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
+        self.targets.iter().filter_map(move |target| match *target {
+            SelectionTarget::SketchArc {
+                sketch: owner,
+                entity,
+            } if owner == sketch => Some(entity),
+            _ => None,
+        })
+    }
+
     /// Is anything inside `sketch` picked? What the context menu's Delete is gated on while a
     /// sketch is open.
     pub fn holds_sketch_entities(&self, sketch: NodeId) -> bool {
@@ -246,6 +267,8 @@ impl Selection {
                 .is_some_and(|s| s.points().iter().any(|point| point.id == entity)),
             SelectionTarget::SketchSegment { sketch, entity } => sketch_of(scene, sketch)
                 .is_some_and(|s| s.segments().iter().any(|segment| segment.id == entity)),
+            SelectionTarget::SketchArc { sketch, entity } => sketch_of(scene, sketch)
+                .is_some_and(|s| s.arcs().iter().any(|arc| arc.id == entity)),
         });
         self.targets.len() != before
     }
@@ -365,6 +388,30 @@ mod tests {
         selection.toggle(edge(7));
         assert_eq!(selection.len(), 2);
         assert_eq!(selection.sketch_points(SKETCH).collect::<Vec<_>>(), vec![7]);
+        assert_eq!(
+            selection.sketch_segments(SKETCH).collect::<Vec<_>>(),
+            vec![7]
+        );
+    }
+
+    /// An arc of the fixture sketch.
+    fn curve(entity: EntityId) -> SelectionTarget {
+        SelectionTarget::SketchArc {
+            sketch: SKETCH,
+            entity,
+        }
+    }
+
+    /// #102: arcs live in their own store, so the same id as a vertex and as a segment is a
+    /// third distinct target and answers only its own query.
+    #[test]
+    fn an_arc_is_its_own_kind() {
+        let mut selection = Selection::default();
+        selection.toggle(vertex(7));
+        selection.toggle(edge(7));
+        selection.toggle(curve(7));
+        assert_eq!(selection.len(), 3);
+        assert_eq!(selection.sketch_arcs(SKETCH).collect::<Vec<_>>(), vec![7]);
         assert_eq!(
             selection.sketch_segments(SKETCH).collect::<Vec<_>>(),
             vec![7]

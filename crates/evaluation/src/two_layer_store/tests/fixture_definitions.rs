@@ -87,7 +87,7 @@ fn round_trip_matches_dense_for_fixture_scenes() {
     // (2) One-level piercing: the fixture splices into its host GROUP's fold;
     // the bystander before the group (filling the opening's volume) survives.
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [3, 1, 3],
             [2, 0, 2],
             MaterialChoice::Wood,

@@ -40,7 +40,7 @@ fn round_trip_matches_dense_for_scoped_scenes() {
     // (1) The golden scene's shape: a bystander placed BEFORE a group whose
     // internal cutter overlaps it — only the scope seal protects the bystander.
     let scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [3, 3, 3],
             MaterialChoice::Wood,
@@ -80,7 +80,7 @@ fn round_trip_matches_dense_for_scoped_scenes() {
             )
             .into()],
         ),
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [2, 2, 2],
             MaterialChoice::Wood,
@@ -123,18 +123,18 @@ fn round_trip_matches_dense_for_scoped_scenes() {
     // instance's cutter volume.
     let def_id = DefId(1);
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [3, 3, 3],
             MaterialChoice::Wood,
             CombineOp::Union,
         )),
-        NodeBuilder::Leaf({
+        NodeBuilder::leaf({
             let mut instance = Node::new("Notched 1", NodeContent::Instance(def_id));
             instance.transform = NodeTransform::from_blocks([0, 0, 0], DENSITY);
             instance
         }),
-        NodeBuilder::Leaf({
+        NodeBuilder::leaf({
             let mut instance = Node::new("Notched 2", NodeContent::Instance(def_id));
             instance.transform = NodeTransform::from_blocks([8, 0, 0], DENSITY);
             instance
@@ -166,7 +166,7 @@ fn round_trip_matches_dense_for_scoped_scenes() {
     // no operation knob, so the GROUP node's own operation is flipped by id after
     // construction (roots[1] is the group).
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [4, 4, 4],
             [0, 0, 0],
             MaterialChoice::Stone,
@@ -195,7 +195,7 @@ fn sealed_cutter_does_not_degrade_blocks_outside_its_scope() {
     // [1,2)³ plus a 4³ cutter at blocks [1,5)³ — the cutter covers deep-interior
     // Stone blocks, but is sealed inside the inner group.
     let scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [8, 8, 8],
             [0, 0, 0],
             MaterialChoice::Stone,

@@ -199,7 +199,7 @@ fn a_far_placed_body_picks_the_same_way() {
 #[test]
 fn a_scope_sibling_carve_hands_the_cell_to_the_body_beneath() {
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(body(2, [0, 0, 0], MaterialChoice::Stone)),
+        NodeBuilder::leaf(body(2, [0, 0, 0], MaterialChoice::Stone)),
         NodeBuilder::group(
             "Part",
             vec![

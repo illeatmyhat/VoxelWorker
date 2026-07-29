@@ -62,7 +62,9 @@ pub use label_chip::label_chip;
 pub use open_segment::open_segment;
 pub use orbit_center::{orbit_center, orbit_center_overlay, ORBIT_CENTER_RADIUS};
 pub use orbit_reticle::{orbit_reticle, orbit_reticle_overlay};
-pub use segment::{dashed_segment, marked_segment, segment, styled_segment};
+pub use segment::{
+    dashed_segment, marked_segment, segment, styled_segment, warn_cross, warn_segment,
+};
 pub use snap_ticks::snap_ticks;
 pub use vertex_handle::{vertex_handle, HandleState};
 

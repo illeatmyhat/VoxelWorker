@@ -148,7 +148,7 @@ fn round_trip_matches_dense_for_intersect_scenes() {
     // the parent accumulator (the scope-close-under-Intersect path, incl. the
     // ∅-in-chunk annihilation for chunks the group's body never reaches).
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [8, 8, 8],
             [0, 0, 0],
             MaterialChoice::Stone,
@@ -169,7 +169,7 @@ fn round_trip_matches_dense_for_intersect_scenes() {
     // (7) An Intersect leaf SEALED inside a group trims the group's body only;
     // an outside bystander must survive whole.
     let scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [6, 6, 6],
             MaterialChoice::Wood,

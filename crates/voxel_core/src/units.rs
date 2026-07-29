@@ -25,6 +25,9 @@
 //! the crate. It feeds `SetOffset` (the placement Intent, now landed as
 //! `NodeTransform::from_measurements`) and sketch profile points
 //! (`SketchPoint.offset_measurements`, #101), both re-evaluated on `SetDensity`.
+//!
+//! [`AngleMeasurement`] is the family's second kind (ADR 0029): an authored angle in
+//! exact degrees, density-free, first consumed by the sketch arc bulge (#102).
 
 use std::fmt;
 
@@ -136,6 +139,69 @@ impl Measurement {
             }
         };
         Ok(whole_block_voxels as i64 + self.voxel_term)
+    }
+}
+
+/// A parametric ANGLE measurement in degrees — ADR 0029's `Angle` kind, first consumed by
+/// the sketch arc bulge (ADR 0030 §5, #102).
+///
+/// The authored-quantity family's second kind, realised as its own type rather than a
+/// runtime tag on [`Measurement`]: an angle and a length share retention semantics (the
+/// stored expression is the truth, exact rationals, float-free persistence) but none of the
+/// arithmetic — an angle has no block term, no density, and no voxel evaluation, so a
+/// shared representation would force every length call-site through a kind check it can
+/// never fail. The degree value is a reduced exact rational, mirroring the block term.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AngleMeasurement {
+    /// Degrees as an exact rational (numerator, denominator), serialised reduced.
+    degrees_numerator: i128,
+    degrees_denominator: i128,
+}
+
+impl Default for AngleMeasurement {
+    /// The zero angle, as a valid `0/1` rational (not the all-zero derive, whose
+    /// denominator would be an invalid rational).
+    fn default() -> Self {
+        Self::from_degrees(0)
+    }
+}
+
+impl AngleMeasurement {
+    /// Build an angle from an exact degree rational.
+    pub fn new(degrees: ExactRational) -> Self {
+        Self {
+            degrees_numerator: degrees.numerator(),
+            degrees_denominator: degrees.denominator(),
+        }
+    }
+
+    /// A whole-degree angle.
+    pub fn from_degrees(degrees: i64) -> Self {
+        Self::new(ExactRational::from_integer(degrees as i128))
+    }
+
+    /// Quantize a solved continuous degree value onto the exact store at 1/3600°
+    /// (arc-second) resolution — the entry for creation tools whose inputs are floats
+    /// (the 3-point arc solve, #102). Exact thereafter. `None` for a non-finite input.
+    pub fn from_degrees_f64(degrees: f64) -> Option<Self> {
+        if !degrees.is_finite() {
+            return None;
+        }
+        let arc_seconds = (degrees * 3600.0).round();
+        ExactRational::new(arc_seconds as i128, 3600).map(Self::new)
+    }
+
+    /// The exact degree value.
+    pub fn degrees(self) -> ExactRational {
+        ExactRational::new(self.degrees_numerator, self.degrees_denominator)
+            .expect("stored degree denominator is non-zero")
+    }
+
+    /// The degree value evaluated to `f64` — the tessellation/display evaluation, the
+    /// analogue of [`Measurement::to_voxels`]. Angles carry no density, so unlike a length
+    /// the evaluation cannot fail; the float is derived, never stored.
+    pub fn to_degrees_f64(self) -> f64 {
+        self.degrees_numerator as f64 / self.degrees_denominator as f64
     }
 }
 

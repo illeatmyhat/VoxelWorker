@@ -101,6 +101,7 @@ mod snap_voxel;
 mod sphere;
 mod subtract;
 mod sweep;
+mod three_point_arc;
 mod torus;
 mod tube;
 mod union;
@@ -584,6 +585,7 @@ pub enum Icon {
     AddPoint,
     Polyline,
     Rectangle,
+    ThreePointArc,
     CloseLoop,
     SnapNone,
     SnapVoxel,
@@ -652,6 +654,7 @@ impl Icon {
         Icon::AddPoint,
         Icon::Polyline,
         Icon::Rectangle,
+        Icon::ThreePointArc,
         Icon::CloseLoop,
         Icon::SnapNone,
         Icon::SnapVoxel,
@@ -720,6 +723,7 @@ impl Icon {
             Icon::AddPoint => g.marks(add_point::DRAW),
             Icon::Polyline => g.marks(polyline::DRAW),
             Icon::Rectangle => g.marks(rectangle::DRAW),
+            Icon::ThreePointArc => g.marks(three_point_arc::DRAW),
             Icon::CloseLoop => g.marks(close_loop::DRAW),
             Icon::SnapNone => g.marks(snap_none::DRAW),
             Icon::SnapVoxel => g.marks(snap_voxel::DRAW),
@@ -788,6 +792,7 @@ impl Icon {
             Icon::AddPoint => "add-point",
             Icon::Polyline => "polyline",
             Icon::Rectangle => "rectangle",
+            Icon::ThreePointArc => "three-point-arc",
             Icon::CloseLoop => "close-loop",
             Icon::SnapNone => "snap-none",
             Icon::SnapVoxel => "snap-voxel",
@@ -850,6 +855,7 @@ impl Icon {
             | Icon::AddPoint
             | Icon::Polyline
             | Icon::Rectangle
+            | Icon::ThreePointArc
             | Icon::CloseLoop
             | Icon::SnapNone
             | Icon::SnapVoxel
@@ -951,6 +957,9 @@ impl Icon {
             }
             Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
             Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",
+            Icon::ThreePointArc => {
+                "Sketch: click start, end, then a point the curve passes through; the arc stores \n                 endpoints plus the solved included angle."
+            }
             Icon::CloseLoop => {
                 "Sketch: join the open polyline back to its start vertex; the closing run is dashed \
                  until the click commits it."

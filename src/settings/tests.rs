@@ -447,10 +447,10 @@ fn full_scene_round_trips_through_json() {
     // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
     // the Group's child (path [2, 0]) by its stable id.
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(stone),
-        NodeBuilder::Leaf(clouds),
+        NodeBuilder::leaf(stone),
+        NodeBuilder::leaf(clouds),
         group,
-        NodeBuilder::Leaf(instance),
+        NodeBuilder::leaf(instance),
     ]);
     scene.add_definition(
         def_id,

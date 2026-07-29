@@ -361,6 +361,29 @@ impl SketchSolid {
         next
     }
 
+    /// This producer with an arc of the given signed included angle joining the existing
+    /// points `from → to` (#102 — the 3-point tool commits through here after consuming
+    /// its through-point). Unchanged for a self-loop, an unknown endpoint, a degenerate
+    /// bulge, or an already-joined pair ([`Sketch::connect_arc`]). Pure.
+    pub fn with_arc_between(
+        &self,
+        from: EntityId,
+        to: EntityId,
+        bulge: voxel_core::units::AngleMeasurement,
+    ) -> SketchSolid {
+        let mut next = self.clone();
+        next.sketch.connect_arc(from, to, bulge);
+        next
+    }
+
+    /// This producer with just the arc `arc_id` deleted, its endpoints left as free points
+    /// (ADR 0030 §6). No-op if unknown. Pure.
+    pub fn with_arc_deleted(&self, arc_id: EntityId) -> SketchSolid {
+        let mut next = self.clone();
+        next.sketch.delete_arc(arc_id);
+        next
+    }
+
     /// The resolved grid's voxel dimensions `[x, y, z]` (the prism's AABB), or
     /// `[0, 0, 0]` for a degenerate profile. The two in-plane axes get the
     /// profile's bounding-box span; the normal axis gets `height_voxels`.

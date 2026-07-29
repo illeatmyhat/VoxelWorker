@@ -25,7 +25,7 @@ fn group_cutter_carves_only_inside_its_group() {
     // Bystander [3,5)³ blocks; group body [0,4)³; cutter [2,4)³ (overlapping the
     // bystander's [3,4)³ corner). The group comes AFTER the bystander.
     let sealed = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [3, 3, 3],
             MaterialChoice::Wood,
@@ -105,7 +105,7 @@ fn cutter_after_group_carves_the_groups_composed_body() {
             )
             .into()],
         ),
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [2, 2, 2],
             MaterialChoice::Wood,
@@ -142,18 +142,18 @@ fn definition_internal_subtract_is_spent_inside_the_definition() {
     let def_id = DefId(1);
     let mut scene = Scene::from_nodes(vec![
         // Bystander overlapping the FIRST instance's internal cutter box.
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [3, 3, 3],
             MaterialChoice::Wood,
             CombineOp::Union,
         )),
-        NodeBuilder::Leaf({
+        NodeBuilder::leaf({
             let mut instance = Node::new("Notched 1", NodeContent::Instance(def_id));
             instance.transform = NodeTransform::from_blocks([0, 0, 0], DENSITY);
             instance
         }),
-        NodeBuilder::Leaf({
+        NodeBuilder::leaf({
             let mut instance = Node::new("Notched 2", NodeContent::Instance(def_id));
             instance.transform = NodeTransform::from_blocks([8, 0, 0], DENSITY);
             instance
@@ -307,7 +307,7 @@ fn pure_union_groups_pre_compose_identically_to_the_flat_walk() {
     // Three OVERLAPPING boxes so later-wins material is actually exercised, with
     // the middle one wrapped in a group in one scene and flat in the other.
     let grouped = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [3, 3, 3],
             [0, 0, 0],
             MaterialChoice::Stone,
@@ -317,7 +317,7 @@ fn pure_union_groups_pre_compose_identically_to_the_flat_walk() {
             "Middle",
             vec![box_tool([3, 3, 3], [1, 1, 0], MaterialChoice::Wood, CombineOp::Union).into()],
         ),
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [3, 3, 3],
             [2, 2, 0],
             MaterialChoice::Plain,
@@ -353,7 +353,7 @@ fn pure_union_groups_pre_compose_identically_to_the_flat_walk() {
 #[test]
 fn chunked_resolve_matches_monolithic_for_scoped_scene() {
     let scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [3, 3, 3],
             MaterialChoice::Wood,
@@ -397,7 +397,7 @@ fn chunked_resolve_matches_monolithic_for_scoped_scene() {
 fn group_operation_flip_changes_only_the_enclosed_leaf_fingerprints() {
     let build = |group_operation: CombineOp| {
         let mut scene = Scene::from_nodes(vec![
-            NodeBuilder::Leaf(box_tool(
+            NodeBuilder::leaf(box_tool(
                 [2, 2, 2],
                 [8, 0, 0],
                 MaterialChoice::Wood,

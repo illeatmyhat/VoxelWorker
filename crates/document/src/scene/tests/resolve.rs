@@ -448,7 +448,7 @@ fn an_outset_cutter_carves_more_than_an_undilated_one() {
 fn an_outset_on_a_part_dilates_the_parts_composed_body() {
     let voxels_per_block = 8;
     let part_scene = |outset_voxels: i64, with_internal_cut: bool| {
-        let mut children = vec![NodeBuilder::Leaf({
+        let mut children = vec![NodeBuilder::leaf({
             let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
             Node::new(
                 "Body",
@@ -459,7 +459,7 @@ fn an_outset_on_a_part_dilates_the_parts_composed_body() {
             )
         })];
         if with_internal_cut {
-            children.push(NodeBuilder::Leaf({
+            children.push(NodeBuilder::leaf({
                 let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
                 let mut node = Node::new(
                     "Cut",
@@ -552,7 +552,7 @@ fn an_outset_shell_takes_the_nearest_members_material() {
     };
     let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
         "Part",
-        vec![NodeBuilder::Leaf(stone), NodeBuilder::Leaf(wood)],
+        vec![NodeBuilder::leaf(stone), NodeBuilder::leaf(wood)],
     )]);
     let path = crate::scene::NodePath::from_indices(vec![0]);
     scene
@@ -604,7 +604,7 @@ fn chunked_resolve_matches_monolithic_for_an_outset_part() {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 2, 2], 1, voxels_per_block);
         let mut node = Node::new("M", NodeContent::Tool { shape, material });
         node.transform = NodeTransform::from_blocks(offset_blocks, voxels_per_block);
-        NodeBuilder::Leaf(node)
+        NodeBuilder::leaf(node)
     };
     let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
         "Part",
@@ -665,7 +665,7 @@ fn emboss_moves_the_surface_within_the_cutters_footprint() {
         };
         Scene::from_nodes(vec![NodeBuilder::group(
             "Part",
-            vec![NodeBuilder::Leaf(slab), NodeBuilder::Leaf(stamp)],
+            vec![NodeBuilder::leaf(slab), NodeBuilder::leaf(stamp)],
         )])
     };
     let occupancy = |scene: &Scene| {

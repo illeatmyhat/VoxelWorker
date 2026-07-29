@@ -233,7 +233,7 @@ fn fixture_inside_a_sealed_group_cannot_carve_outside_it() {
     // order — would carve it.
     let bystander = box_tool([3, 1, 3], [2, 0, 2], MaterialChoice::Wood, CombineOp::Union);
     let mut spliced = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(bystander.clone()),
+        NodeBuilder::leaf(bystander.clone()),
         NodeBuilder::group(
             "Walled",
             vec![
@@ -252,7 +252,7 @@ fn fixture_inside_a_sealed_group_cannot_carve_outside_it() {
             group_children.push(child.into());
         }
         Scene::from_nodes(vec![
-            NodeBuilder::Leaf(bystander),
+            NodeBuilder::leaf(bystander),
             NodeBuilder::group("Walled", group_children),
         ])
     };

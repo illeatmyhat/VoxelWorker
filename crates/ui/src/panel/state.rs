@@ -316,6 +316,10 @@ pub enum SketchTool {
     /// Draw a rectangle (#99): press one corner, drag, release at the opposite corner to
     /// append the closed four-segment loop. A degenerate (zero-span) drag draws nothing.
     Rectangle,
+    /// Draw a 3-point arc (#102): click the start, the end, then a point the arc passes
+    /// THROUGH. The through-point is consumed — the stored form is the two endpoints plus
+    /// the solved included angle (ADR 0030 §5).
+    ThreePointArc,
 }
 
 /// The floating Signal **display stack**'s viewer state (issue #88; ADR 0018 Decision 8,

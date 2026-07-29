@@ -133,6 +133,7 @@ enum SketchToolConfig {
     AddPoint,
     Polyline,
     Rectangle,
+    ThreePointArc,
 }
 
 /// And for the Signal display stack's fold state. A struct rather than an enum, which

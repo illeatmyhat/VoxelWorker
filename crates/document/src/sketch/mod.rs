@@ -34,7 +34,7 @@ mod tests;
 
 pub use solid::SketchSolid;
 
-use voxel_core::units::Measurement;
+use voxel_core::units::{AngleMeasurement, Measurement};
 
 /// Which axis the sketch plane's normal points along — i.e. the axis the profile
 /// is EXTRUDED along (ADR 0003 §3i, 2a axis-aligned scope).
@@ -255,6 +255,32 @@ pub struct Segment {
     pub role: EntityRole,
 }
 
+/// A circular-arc entity joining two [`Point`]s **by id** (ADR 0030 §5, #102). The
+/// canonical stored form is the two endpoints plus one included-angle bulge — compact,
+/// unambiguous, fully parametric; centre and radius are DERIVED. Creation tools (the
+/// 3-point tool today) compute this form; their extra inputs (the through-point) are
+/// consumed at creation, never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Arc {
+    /// Stable identity.
+    pub id: EntityId,
+    /// Endpoint point id (tail).
+    pub from: EntityId,
+    /// Endpoint point id (head).
+    pub to: EntityId,
+    /// The signed included angle (ADR 0029's `Angle` kind): the arc sweeps from
+    /// [`from`](Self::from) to [`to`](Self::to) **counter-clockwise in the plane's
+    /// in-plane basis for a positive angle**, clockwise for a negative one. Magnitude
+    /// strictly inside `(0, 360)` — zero and full-turn bulges are degenerate and erased
+    /// by [`Sketch::repair`].
+    pub bulge: AngleMeasurement,
+    /// Lineage id for region identity across edits (ADR 0030 §3), like [`Segment::origin`].
+    pub origin: EntityId,
+    /// Real vs construction geometry (reserved).
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
 /// A grid-aligned PLANE plus a collection of sketch ENTITIES — points and segments
 /// (arcs, region picks, and sub-voxel/parametric coordinates arrive in later slices,
 /// ADR 0030). The extrudable **profile is DERIVED** from the closed loop the segments
@@ -272,6 +298,10 @@ pub struct Sketch {
     points: Vec<Point>,
     /// The segment entities joining points by id.
     segments: Vec<Segment>,
+    /// The arc entities joining points by id (#102). `serde(default)` so a pre-arc
+    /// document loads with none.
+    #[serde(default)]
+    arcs: Vec<Arc>,
     /// The next id to hand out. Ids are monotonic and never reused, so this only grows.
     next_id: EntityId,
 }
@@ -287,6 +317,7 @@ impl Sketch {
             plane,
             points: Vec::with_capacity(profile.len()),
             segments: Vec::with_capacity(profile.len()),
+            arcs: Vec::new(),
             next_id: 0,
         };
         let ids: Vec<EntityId> = profile.iter().map(|&at| sketch.add_point(at)).collect();
@@ -323,6 +354,7 @@ impl Sketch {
             plane,
             points: Vec::new(),
             segments: Vec::new(),
+            arcs: Vec::new(),
             next_id: 0,
         }
     }
@@ -337,11 +369,23 @@ impl Sketch {
         &self.segments
     }
 
+    /// Read-only view of the arc entities (#102).
+    pub fn arcs(&self) -> &[Arc] {
+        &self.arcs
+    }
+
     /// Test-only mutable access to the raw segment vector, for constructing the malformed
     /// stores the load-repair path is meant to erase.
     #[cfg(test)]
     pub(crate) fn segments_mut_for_test(&mut self) -> &mut Vec<Segment> {
         &mut self.segments
+    }
+
+    /// Test-only mutable access to the raw arc vector — the arc twin of
+    /// [`segments_mut_for_test`](Self::segments_mut_for_test).
+    #[cfg(test)]
+    pub(crate) fn arcs_mut_for_test(&mut self) -> &mut Vec<Arc> {
+        &mut self.arcs
     }
 
     /// Allocate a point entity at `at`, returning its fresh id.
@@ -390,25 +434,28 @@ impl Sketch {
         if self.points.is_empty() {
             return Vec::new();
         }
-        // Neighbour point-ids per point, in ascending-id order for determinism.
+        // Neighbour point-ids per point (segments AND arcs — both are region-graph edges,
+        // ADR 0030 §2), in ascending-id order for determinism.
         let neighbours = |point_id: EntityId| -> Vec<EntityId> {
+            let other = |from: EntityId, to: EntityId| {
+                if from == point_id {
+                    Some(to)
+                } else if to == point_id {
+                    Some(from)
+                } else {
+                    None
+                }
+            };
             let mut ns: Vec<EntityId> = self
                 .segments
                 .iter()
-                .filter_map(|seg| {
-                    if seg.from == point_id {
-                        Some(seg.to)
-                    } else if seg.to == point_id {
-                        Some(seg.from)
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|seg| other(seg.from, seg.to))
+                .chain(self.arcs.iter().filter_map(|arc| other(arc.from, arc.to)))
                 .collect();
             ns.sort_unstable();
             ns
         };
-        // Start at the lowest-id point that has at least one incident segment.
+        // Start at the lowest-id point that has at least one incident edge.
         let Some(start) = self
             .points
             .iter()
@@ -448,14 +495,48 @@ impl Sketch {
     }
 
     /// The DERIVED flattened profile: the closed loop's vertices in traversal order (ADR
-    /// 0030). This is what the producer resolves; slice 1 yields exactly one loop, so the
-    /// occupancy is byte-identical to the former `profile` vector (`point_in_polygon` is
-    /// winding-agnostic, so the traversal direction does not matter).
+    /// 0030), with each arc edge tessellated into sub-voxel chords (#102 —
+    /// [`ARC_SAGITTA_TOLERANCE_VOXELS`]). This is what the producer resolves; the
+    /// tessellated polygon IS the resolved meaning (ADR 0019), and `point_in_polygon` is
+    /// winding-agnostic, so the traversal direction does not matter.
     pub fn flattened_loop(&self) -> Vec<SketchPoint> {
-        self.loop_order()
-            .into_iter()
-            .filter_map(|id| self.point_index(id).map(|i| self.points[i].at))
-            .collect()
+        let order = self.loop_order();
+        let position = |id: EntityId| self.point_index(id).map(|i| self.points[i].at);
+        let count = order.len();
+        let mut flattened = Vec::with_capacity(count);
+        for (index, &id) in order.iter().enumerate() {
+            let Some(at) = position(id) else { continue };
+            flattened.push(at);
+            // The edge to the NEXT loop point: an arc interpolates its chord fan here; a
+            // segment contributes nothing between its endpoints.
+            let next_id = order[(index + 1) % count];
+            let Some(arc) = self.arc_joining(id, next_id) else {
+                continue;
+            };
+            let (Some(from_at), Some(to_at)) = (position(arc.from), position(arc.to)) else {
+                continue;
+            };
+            let mut chord_fan = arc_interior_points(
+                from_at.in_plane(),
+                to_at.in_plane(),
+                arc.bulge.to_degrees_f64(),
+            );
+            if arc.from != id {
+                // Traversed head→tail: the same geometric points, walked backwards.
+                chord_fan.reverse();
+            }
+            flattened.extend(chord_fan);
+        }
+        flattened
+    }
+
+    /// The arc joining points `a` and `b` in either direction, if any. Unambiguous by
+    /// construction: [`connect`](Self::connect) / [`connect_arc`](Self::connect_arc)
+    /// reject a second edge over an already-joined pair.
+    fn arc_joining(&self, a: EntityId, b: EntityId) -> Option<&Arc> {
+        self.arcs
+            .iter()
+            .find(|arc| (arc.from == a && arc.to == b) || (arc.from == b && arc.to == a))
     }
 
     /// The point ids of the flattened loop, in the SAME order as
@@ -470,10 +551,11 @@ impl Sketch {
         self.point_index(id).map(|i| &mut self.points[i].at)
     }
 
-    /// Delete a point by id and every segment incident to it (ADR 0030 §6). Segments'
-    /// other endpoints survive as free points. No dangling reference can result.
+    /// Delete a point by id and every segment/arc incident to it (ADR 0030 §6). The
+    /// edges' other endpoints survive as free points. No dangling reference can result.
     pub fn delete_point_cascade(&mut self, id: EntityId) {
         self.segments.retain(|seg| seg.from != id && seg.to != id);
+        self.arcs.retain(|arc| arc.from != id && arc.to != id);
         self.points.retain(|point| point.id != id);
     }
 
@@ -514,20 +596,65 @@ impl Sketch {
     /// Connect two existing points with a fresh segment, returning its id (ADR 0030 —
     /// coincidence is shared point identity, so drawing to an existing point means naming
     /// its id here, never minting a coordinate twin). `None` — and no mutation — for a
-    /// self-loop, an unknown endpoint, or a pair already joined by a segment in either
-    /// direction (a duplicate edge would double the region graph's boundary).
+    /// self-loop, an unknown endpoint, or a pair already joined by any edge (segment OR
+    /// arc, #102) in either direction — a second edge over one pair would double the
+    /// region graph's boundary (and a chord-plus-arc D-shape is a region the slice-1 loop
+    /// walk cannot orient).
     pub fn connect(&mut self, from: EntityId, to: EntityId) -> Option<EntityId> {
         if from == to
             || self.point_index(from).is_none()
             || self.point_index(to).is_none()
-            || self
-                .segments
-                .iter()
-                .any(|seg| (seg.from == from && seg.to == to) || (seg.from == to && seg.to == from))
+            || self.pair_is_joined(from, to)
         {
             return None;
         }
         Some(self.add_segment(from, to))
+    }
+
+    /// Connect two existing points with a fresh arc of the given signed included angle
+    /// (#102), returning its id. `None` — and no mutation — for a self-loop, an unknown
+    /// endpoint, a degenerate bulge (zero or a full turn or more), or a pair already
+    /// joined by ANY edge in either direction: two edges over one point pair (a D-shape)
+    /// is a region the slice-1 loop walk cannot orient, so it is rejected at the door
+    /// rather than authored into an ambiguous store.
+    pub fn connect_arc(
+        &mut self,
+        from: EntityId,
+        to: EntityId,
+        bulge: AngleMeasurement,
+    ) -> Option<EntityId> {
+        let sweep = bulge.to_degrees_f64();
+        if from == to
+            || self.point_index(from).is_none()
+            || self.point_index(to).is_none()
+            || !arc_sweep_is_valid(sweep)
+            || self.pair_is_joined(from, to)
+        {
+            return None;
+        }
+        let id = self.alloc_id();
+        self.arcs.push(Arc {
+            id,
+            from,
+            to,
+            bulge,
+            origin: id,
+            role: EntityRole::Real,
+        });
+        Some(id)
+    }
+
+    /// Whether any edge — segment or arc — already joins `a` and `b` in either direction.
+    pub fn pair_is_joined(&self, a: EntityId, b: EntityId) -> bool {
+        let joins = |from: EntityId, to: EntityId| (from == a && to == b) || (from == b && to == a);
+        self.segments.iter().any(|seg| joins(seg.from, seg.to))
+            || self.arcs.iter().any(|arc| joins(arc.from, arc.to))
+    }
+
+    /// Delete just the arc with id `arc_id`, its endpoints left as free points (ADR 0030
+    /// §6 — deleting a segment/arc removes only it). No-op if `arc_id` is unknown.
+    pub fn delete_arc(&mut self, arc_id: EntityId) {
+        self.arcs.retain(|arc| arc.id != arc_id);
     }
 
     /// The lowest-id point entity sitting EXACTLY at `at`'s position, if any. The drawing
@@ -569,20 +696,149 @@ impl Sketch {
         }
     }
 
-    /// Erase every structurally-invalid segment — one that references a point id not in the
-    /// store, or a self-loop (`from == to`) — returning the number removed (ADR 0030 load
+    /// Erase every structurally-invalid segment or arc — one that references a point id not
+    /// in the store, a self-loop (`from == to`), or (arcs) a degenerate bulge — returning
+    /// the number removed (ADR 0030 load
     /// policy: erase invalid objects rather than fail the load). Points are never invalid; a
     /// point left with no incident edge is a legal free point. The resolve already tolerates a
     /// dangling reference (the missing vertex is filtered out of the flattened loop), so this
     /// is a cleanup + audit, not a crash guard.
     pub fn repair(&mut self) -> usize {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
-        let before = self.segments.len();
+        let before = self.segments.len() + self.arcs.len();
         self.segments.retain(|seg| {
             seg.from != seg.to && point_ids.contains(&seg.from) && point_ids.contains(&seg.to)
         });
-        before - self.segments.len()
+        // An arc is additionally invalid on a degenerate bulge — a zero sweep is a
+        // segment pretending, a full turn or more has no single chord-anchored shape.
+        self.arcs.retain(|arc| {
+            arc.from != arc.to
+                && point_ids.contains(&arc.from)
+                && point_ids.contains(&arc.to)
+                && arc_sweep_is_valid(arc.bulge.to_degrees_f64())
+        });
+        before - self.segments.len() - self.arcs.len()
     }
+}
+
+/// Arc tessellation tolerance (#102): the maximum sagitta (chord-to-arc deviation), in
+/// voxels, of one tessellated chord. **Versioned**: the flattened polygon is the resolved
+/// meaning (ADR 0019), so changing this value changes what an arc-bounded profile
+/// occupies — treat an edit like a document-format change, not a tuning knob.
+pub const ARC_SAGITTA_TOLERANCE_VOXELS: f64 = 1.0 / 16.0;
+
+/// Hard cap on chords per arc, so a huge-radius near-collinear arc cannot degenerate
+/// into an unbounded fan.
+const ARC_MAX_CHORDS: u32 = 512;
+
+/// Whether a signed sweep is a legal arc bulge: finite, non-zero, strictly under a full
+/// turn in magnitude.
+fn arc_sweep_is_valid(sweep_degrees: f64) -> bool {
+    sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
+}
+
+/// The centre and radius DERIVED from the canonical arc form (ADR 0030 §5): endpoints
+/// plus signed sweep, positive sweeping counter-clockwise about the centre. `None` for a
+/// degenerate chord (coincident endpoints) or an invalid sweep.
+pub fn arc_center_radius(
+    from: [f64; 2],
+    to: [f64; 2],
+    sweep_degrees: f64,
+) -> Option<([f64; 2], f64)> {
+    if !arc_sweep_is_valid(sweep_degrees) {
+        return None;
+    }
+    let chord = [to[0] - from[0], to[1] - from[1]];
+    let chord_length = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
+    if chord_length <= f64::EPSILON {
+        return None;
+    }
+    let half_sweep = sweep_degrees.to_radians() / 2.0;
+    let radius = chord_length / (2.0 * half_sweep.sin().abs());
+    // The centre sits on the chord's perpendicular bisector at the signed apothem: the
+    // signed tangent puts it left of `from → to` for a minor CCW sweep and flips it for
+    // the major/CW cases, one formula covering all four quadrants (continuous through
+    // the 180° apothem-zero).
+    let mid = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
+    let left = [-chord[1] / chord_length, chord[0] / chord_length];
+    let apothem = (chord_length / 2.0) / half_sweep.tan();
+    Some((
+        [mid[0] + left[0] * apothem, mid[1] + left[1] * apothem],
+        radius,
+    ))
+}
+
+/// The arc's tessellated INTERIOR vertices from `from` to `to` (both endpoints
+/// exclusive), as continuous sub-voxel points (#101), each chord's sagitta within
+/// [`ARC_SAGITTA_TOLERANCE_VOXELS`]. Empty when the arc is degenerate — the callers
+/// then fall back to the straight chord.
+pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> Vec<SketchPoint> {
+    let Some((center, radius)) = arc_center_radius(from, to, sweep_degrees) else {
+        return Vec::new();
+    };
+    let chords = arc_chord_count(radius, sweep_degrees);
+    let start = (from[1] - center[1]).atan2(from[0] - center[0]);
+    let step = sweep_degrees.to_radians() / chords as f64;
+    (1..chords)
+        .map(|chord_index| {
+            let angle = start + step * chord_index as f64;
+            SketchPoint::from_continuous(
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            )
+        })
+        .collect()
+}
+
+/// How many chords keep each sagitta within tolerance, capped at [`ARC_MAX_CHORDS`].
+fn arc_chord_count(radius: f64, sweep_degrees: f64) -> u32 {
+    let tolerance = ARC_SAGITTA_TOLERANCE_VOXELS;
+    if 2.0 * radius <= tolerance {
+        return 1; // the whole arc deviates less than the tolerance from its chord
+    }
+    let max_step = 2.0 * (1.0 - tolerance / radius).acos();
+    ((sweep_degrees.to_radians().abs() / max_step).ceil() as u32).clamp(1, ARC_MAX_CHORDS)
+}
+
+/// Solve the 3-POINT creation (#102): the signed included angle of the arc from `from`
+/// to `to` that passes through `through`. The through-point is consumed here — the
+/// canonical stored form is endpoints + this angle (ADR 0030 §5). `None` when the three
+/// points are collinear or coincident (no finite circle).
+pub fn included_angle_through_degrees(
+    from: [f64; 2],
+    to: [f64; 2],
+    through: [f64; 2],
+) -> Option<f64> {
+    // Circumcentre via the perpendicular-bisector determinant.
+    let determinant = 2.0
+        * (from[0] * (to[1] - through[1])
+            + to[0] * (through[1] - from[1])
+            + through[0] * (from[1] - to[1]));
+    if determinant.abs() <= f64::EPSILON {
+        return None;
+    }
+    let magnitude = |p: [f64; 2]| p[0] * p[0] + p[1] * p[1];
+    let center = [
+        (magnitude(from) * (to[1] - through[1])
+            + magnitude(to) * (through[1] - from[1])
+            + magnitude(through) * (from[1] - to[1]))
+            / determinant,
+        (magnitude(from) * (through[0] - to[0])
+            + magnitude(to) * (from[0] - through[0])
+            + magnitude(through) * (to[0] - from[0]))
+            / determinant,
+    ];
+    let angle_of = |p: [f64; 2]| (p[1] - center[1]).atan2(p[0] - center[0]).to_degrees();
+    let wrap = |a: f64| a.rem_euclid(360.0);
+    let ccw_to_end = wrap(angle_of(to) - angle_of(from));
+    let ccw_to_through = wrap(angle_of(through) - angle_of(from));
+    // `through` on the counter-clockwise leg ⇒ the arc sweeps CCW (positive); otherwise
+    // it is the clockwise remainder of the turn.
+    Some(if ccw_to_through <= ccw_to_end {
+        ccw_to_end
+    } else {
+        ccw_to_end - 360.0
+    })
 }
 
 /// The OPERATION that turns a [`Sketch`]'s 2D profile into a 3D volume (ADR 0003

@@ -319,12 +319,12 @@ fn scope_shapes(placed: &Node, density: u32) -> Vec<(&'static str, Scene)> {
     shapes.push((
         "a mask opens the scope",
         with_minted_ids(Scene::from_nodes(vec![
-            NodeBuilder::Leaf(ground.clone()),
+            NodeBuilder::leaf(ground.clone()),
             NodeBuilder::group(
                 "Part",
                 vec![
-                    NodeBuilder::Leaf(cut(CombineOp::Intersect)),
-                    NodeBuilder::Leaf(placed.clone()),
+                    NodeBuilder::leaf(cut(CombineOp::Intersect)),
+                    NodeBuilder::leaf(placed.clone()),
                 ],
             ),
         ])),
@@ -334,12 +334,12 @@ fn scope_shapes(placed: &Node, density: u32) -> Vec<(&'static str, Scene)> {
     // own sibling — becomes one cutter against the ground beneath it.
     {
         let mut scene = Scene::from_nodes(vec![
-            NodeBuilder::Leaf(ground.clone()),
+            NodeBuilder::leaf(ground.clone()),
             NodeBuilder::group(
                 "Cut",
                 vec![
-                    NodeBuilder::Leaf(placed.clone()),
-                    NodeBuilder::Leaf(cut(CombineOp::Subtract)),
+                    NodeBuilder::leaf(placed.clone()),
+                    NodeBuilder::leaf(cut(CombineOp::Subtract)),
                 ],
             ),
         ]);
@@ -352,18 +352,18 @@ fn scope_shapes(placed: &Node, density: u32) -> Vec<(&'static str, Scene)> {
     // order, and the innermost surviving body must still be the node that names the cell.
     {
         let mut scene = Scene::from_nodes(vec![
-            NodeBuilder::Leaf(ground.clone()),
+            NodeBuilder::leaf(ground.clone()),
             NodeBuilder::group(
                 "Outer",
                 vec![
-                    NodeBuilder::Leaf(box_at([3, 3, 3], [0, 0, 0], CombineOp::Union, density)),
+                    NodeBuilder::leaf(box_at([3, 3, 3], [0, 0, 0], CombineOp::Union, density)),
                     NodeBuilder::group(
                         "Middle",
                         vec![
-                            NodeBuilder::Leaf(placed.clone()),
+                            NodeBuilder::leaf(placed.clone()),
                             NodeBuilder::group(
                                 "Inner",
-                                vec![NodeBuilder::Leaf(cut(CombineOp::Union))],
+                                vec![NodeBuilder::leaf(cut(CombineOp::Union))],
                             ),
                         ],
                     ),
@@ -425,8 +425,8 @@ fn a_pre_composed_scope_agrees_with_the_material_its_shell_wears() {
             let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
                 "Part",
                 vec![
-                    NodeBuilder::Leaf(box_at([2, 2, 2], [0, 0, 0], CombineOp::Union, DENSITY)),
-                    NodeBuilder::Leaf(box_at(
+                    NodeBuilder::leaf(box_at([2, 2, 2], [0, 0, 0], CombineOp::Union, DENSITY)),
+                    NodeBuilder::leaf(box_at(
                         [2, 2, 2],
                         [2 + gap_blocks, 0, 0],
                         CombineOp::Union,

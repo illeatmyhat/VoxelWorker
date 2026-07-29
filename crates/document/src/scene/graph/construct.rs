@@ -56,7 +56,7 @@ impl Scene {
     /// caller splices the returned id where it belongs.
     fn insert_builder(&mut self, spec: NodeBuilder) -> NodeId {
         match spec {
-            NodeBuilder::Leaf(node) => self.insert_subtree(node),
+            NodeBuilder::Leaf(node) => self.insert_subtree(*node),
             NodeBuilder::Group {
                 name,
                 transform,

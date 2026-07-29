@@ -326,8 +326,10 @@ impl Node {
 /// [`Node`] converts in via [`From`], so flat fixtures stay `vec![node_a, node_b]`.
 pub enum NodeBuilder {
     /// A leaf (or pre-built) node inserted as-is. Its content may NOT be a Group with
-    /// by-value children (the spine is ids) — use [`NodeBuilder::group`] for that.
-    Leaf(Node),
+    /// by-value children (the spine is ids) — use [`NodeBuilder::group`] for that. Boxed
+    /// because a `Node` carrying a sketch producer dwarfs the Group arm; build it with
+    /// [`NodeBuilder::leaf`] rather than the variant.
+    Leaf(Box<Node>),
     /// A Group node (`name` + `transform`) wrapping child specs, inserted as a fresh
     /// arena node whose spine is the children's minted ids.
     Group {
@@ -343,6 +345,11 @@ pub enum NodeBuilder {
 }
 
 impl NodeBuilder {
+    /// A leaf spec wrapping an already-built `node`.
+    pub fn leaf(node: Node) -> Self {
+        NodeBuilder::Leaf(Box::new(node))
+    }
+
     /// A Group spec with an identity transform wrapping `children`.
     pub fn group(name: impl Into<String>, children: Vec<NodeBuilder>) -> Self {
         NodeBuilder::Group {
@@ -374,7 +381,7 @@ impl NodeBuilder {
 
 impl From<Node> for NodeBuilder {
     fn from(node: Node) -> Self {
-        NodeBuilder::Leaf(node)
+        NodeBuilder::leaf(node)
     }
 }
 

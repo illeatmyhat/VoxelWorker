@@ -230,7 +230,7 @@ fn ensure_node_ids_mints_unique_stable_ids() {
         )
     }
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(clouds("A")),
+        NodeBuilder::leaf(clouds("A")),
         NodeBuilder::group("G", vec![clouds("B").into(), clouds("C").into()]),
     ]);
     scene.add_definition(DefId(1), "Def".to_string(), vec![clouds("D")]);
@@ -334,7 +334,7 @@ fn node_id_and_path_resolution_round_trip() {
         )
     }
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(clouds("A")),
+        NodeBuilder::leaf(clouds("A")),
         NodeBuilder::group(
             "G",
             vec![
@@ -342,7 +342,7 @@ fn node_id_and_path_resolution_round_trip() {
                 NodeBuilder::group("H", vec![clouds("C").into()]),
             ],
         ),
-        NodeBuilder::Leaf(clouds("D")),
+        NodeBuilder::leaf(clouds("D")),
     ]);
     scene.ensure_node_ids();
 

@@ -48,20 +48,30 @@ pub fn styled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState) {
 /// state, so a segment delete-hover carries the same destructive vocabulary as a vertex one
 /// (colour the line, not just an overlay — the Fusion-style "this edge goes" cue in our warn hue).
 pub fn marked_segment(painter: &Painter, a: Pos2, b: Pos2) {
+    warn_segment(painter, a, b);
+    warn_cross(painter, a + (b - a) * 0.5);
+}
+
+/// The warn-red line of a delete-armed edge, without the `✕`. A curve stamps the cross once at its
+/// own midpoint (see [`crate::chrome::sketch_arc_curves`]), not once per chord.
+pub fn warn_segment(painter: &Painter, a: Pos2, b: Pos2) {
     painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, color_palette::WARN));
-    let mid = a + (b - a) * 0.5;
+}
+
+/// The warn `✕` of a delete-armed edge, centred on `at`.
+pub fn warn_cross(painter: &Painter, at: Pos2) {
     let cross = Stroke::new(STROKE_HANDLE, color_palette::WARN);
     painter.line_segment(
         [
-            mid + Vec2::splat(-MARK_CROSS_ARM),
-            mid + Vec2::splat(MARK_CROSS_ARM),
+            at + Vec2::splat(-MARK_CROSS_ARM),
+            at + Vec2::splat(MARK_CROSS_ARM),
         ],
         cross,
     );
     painter.line_segment(
         [
-            mid + Vec2::new(MARK_CROSS_ARM, -MARK_CROSS_ARM),
-            mid + Vec2::new(-MARK_CROSS_ARM, MARK_CROSS_ARM),
+            at + Vec2::new(MARK_CROSS_ARM, -MARK_CROSS_ARM),
+            at + Vec2::new(-MARK_CROSS_ARM, MARK_CROSS_ARM),
         ],
         cross,
     );

@@ -99,9 +99,9 @@ impl SelectionConfig {
                     SelectionTarget::ReferencePoint(index) => {
                         Some(SelectionTargetConfig::ReferencePoint(index))
                     }
-                    SelectionTarget::SketchPoint { .. } | SelectionTarget::SketchSegment { .. } => {
-                        None
-                    }
+                    SelectionTarget::SketchPoint { .. }
+                    | SelectionTarget::SketchSegment { .. }
+                    | SelectionTarget::SketchArc { .. } => None,
                 })
                 .collect(),
         }

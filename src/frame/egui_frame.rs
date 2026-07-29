@@ -227,6 +227,12 @@ pub fn run_egui_frame(
     // the only shape cue); the hovered segment draws brighter (Select) or warn-red with a `✕`
     // (Delete). Empty unless a sketch is being edited, always empty on the headless `shot` path.
     sketch_segment_lines: &[(egui::Pos2, egui::Pos2, ui::gizmos::HandleState)],
+    // ADR 0030 §5 (#102): the sketch's committed arc curves for THIS frame — each an already-
+    // projected polyline (egui points) from endpoint to endpoint through the tessellated chords,
+    // plus its interaction state. Same layer and vocabulary as the segment lines: an arc is an
+    // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
+    // headless `shot` path.
+    sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
     // ADR 0028 (#95): the add-point insert-preview marker for THIS frame (egui points), or
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
@@ -688,6 +694,8 @@ pub fn run_egui_frame(
             // Not chrome — a segment press is handled by the shell's hit-test, and these are a
             // passive under-layer.
             ui::chrome::sketch_segment_lines(ui, sketch_segment_lines);
+            // ADR 0030 §5: the committed arc curves, on the same under-layer as the straight edges.
+            ui::chrome::sketch_arc_curves(ui, sketch_arc_lines);
             // ADR 0028 (#94): the draggable profile-vertex handles, drawn at the shell's
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).

@@ -3,6 +3,7 @@ use crate::voxel::VoxelProducer;
 use std::collections::BTreeSet;
 use voxel_core::voxel::VoxelGrid;
 
+mod arcs;
 mod coarse_solid;
 mod drawing;
 mod edges;

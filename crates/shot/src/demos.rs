@@ -411,7 +411,7 @@ pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> DemoScene {
     let mut scene = with_node_ids(Scene::from_nodes(vec![
         // The bystander spans blocks [3,5)³ — its lower corner octant [3,4)³ lies INSIDE
         // the cutter's box. Placed BEFORE the group, so only the scope seal protects it.
-        NodeBuilder::Leaf(make(
+        NodeBuilder::leaf(make(
             [2, 2, 2],
             [3, 3, 3],
             MaterialChoice::Wood,
@@ -900,8 +900,8 @@ pub(crate) fn build_demo_groups(voxels_per_block: u32) -> DemoScene {
 
     let mut scene = Scene::from_nodes(vec![
         cluster,
-        NodeBuilder::Leaf(lone),
-        NodeBuilder::Leaf(widget_instance),
+        NodeBuilder::leaf(lone),
+        NodeBuilder::leaf(widget_instance),
     ]);
     scene.add_definition(
         widget_def_id,

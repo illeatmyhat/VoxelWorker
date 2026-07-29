@@ -345,6 +345,16 @@ struct WindowedState {
     /// (`sketch_vertex_px` `None`) culls its line. Built in
     /// [`refresh_sketch_overlay`](Self::refresh_sketch_overlay) alongside the handles.
     sketch_segment_lines: Vec<(egui::Pos2, egui::Pos2, ui::gizmos::HandleState)>,
+    /// Each committed ARC's tessellated polyline in egui POINTS for THIS frame plus its
+    /// [`HandleState`](ui::gizmos::HandleState) (#102) — the curve twin of
+    /// [`sketch_segment_lines`](Self::sketch_segment_lines), drawn with the same vocabulary. An
+    /// arc with any behind-camera chord vertex is culled whole, matching the segment rule.
+    sketch_arc_lines: Vec<(Vec<egui::Pos2>, ui::gizmos::HandleState)>,
+    /// Each committed arc as `(arc id, its chord polyline in PHYSICAL px)` for this frame —
+    /// what the Select hit-test measures the cursor against (#102). Separate from
+    /// [`sketch_arc_lines`](Self::sketch_arc_lines) because that one is drawing state in egui
+    /// points and this one is hit-test state in physical px, exactly as the segment pair splits.
+    sketch_arc_chords: Vec<(document::sketch::EntityId, Vec<egui::Pos2>)>,
     /// The add-point tool's insert-preview marker for THIS frame (egui points): where a click
     /// would drop a vertex on the hovered segment (the foot of the perpendicular from the
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
@@ -380,6 +390,15 @@ struct WindowedState {
     /// (#96: sub-voxel under NoSnap), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
     sketch_rect_anchor: Option<document::sketch::SketchPoint>,
+    /// The 3-point arc gesture (#102): the endpoint ids clicked so far — `None` before the
+    /// first click, `Some((start, None))` after it, `Some((start, Some(end)))` waiting for the
+    /// through-point that solves and commits the arc. Cleared when the armed tool leaves
+    /// ThreePointArc or sketch mode exits: like the polyline chain, it is a gesture, not
+    /// workspace state.
+    sketch_arc_gesture: Option<(
+        document::sketch::EntityId,
+        Option<document::sketch::EntityId>,
+    )>,
     /// Whether the most recent left-press armed a sketch **selection** resolve (sketch mode, the
     /// Select tool, on the live viewport — NOT egui chrome or the cube). A STATIONARY release with
     /// this set resolves the click into the selection; a drag leaves it (the vertex move happens
@@ -734,6 +753,8 @@ impl WindowedState {
             sketch_point_ids: Vec::new(),
             sketch_segments: Vec::new(),
             sketch_segment_lines: Vec::new(),
+            sketch_arc_lines: Vec::new(),
+            sketch_arc_chords: Vec::new(),
             sketch_insert_preview: None,
             sketch_draw_preview: Vec::new(),
             orbit_center_overlay: None,
@@ -741,6 +762,7 @@ impl WindowedState {
             sketch_edit_press: false,
             sketch_chain: None,
             sketch_rect_anchor: None,
+            sketch_arc_gesture: None,
             sketch_select_press: false,
             sketch_marquee_anchor: None,
             sketch_marquee_band: None,
@@ -877,6 +899,8 @@ impl WindowedState {
             sketch_point_ids: _,
             sketch_segments: _,
             sketch_segment_lines: _,
+            sketch_arc_lines: _,
+            sketch_arc_chords: _,
             sketch_insert_preview: _,
             sketch_draw_preview: _,
             orbit_center_overlay: _,
@@ -921,6 +945,7 @@ impl WindowedState {
             sketch_edit_press: _,
             sketch_chain: _,
             sketch_rect_anchor: _,
+            sketch_arc_gesture: _,
             sketch_select_press: _,
             sketch_marquee_anchor: _,
             sketch_marquee_band: _,

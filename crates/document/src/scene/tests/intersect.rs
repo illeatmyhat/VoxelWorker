@@ -177,7 +177,7 @@ fn intersect_respects_sealed_scopes() {
     // (a) Group-under-Intersect: the Stone body is masked by the group's Wood box
     // — survivors are the Stone cells inside blocks [2,4)³, still Stone.
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [4, 4, 4],
             [0, 0, 0],
             MaterialChoice::Stone,
@@ -213,7 +213,7 @@ fn intersect_respects_sealed_scopes() {
     // bystander placed before the group — overlapping nothing of the mask's scope
     // — survives whole.
     let scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [2, 2, 2],
             [6, 6, 6],
             MaterialChoice::Wood,
@@ -298,7 +298,7 @@ fn chunked_resolve_matches_monolithic_for_intersect_scenes() {
     // Scoped: a group closing under Intersect whose body misses whole chunks of
     // the parent body — the ∅-in-chunk scope close must still annihilate there.
     let mut scene = Scene::from_nodes(vec![
-        NodeBuilder::Leaf(box_tool(
+        NodeBuilder::leaf(box_tool(
             [8, 8, 8],
             [0, 0, 0],
             MaterialChoice::Stone,

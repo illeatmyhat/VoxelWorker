@@ -1158,6 +1158,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &[],
         // ADR 0030: no sketch segment lines either — windowed-only overlay.
         &[],
+        // ADR 0030 §5 (#102): nor arc curves, for the same reason.
+        &[],
         // ADR 0028 (#95): likewise no add-point insert preview in the headless goldens.
         None,
         // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.

@@ -44,6 +44,11 @@ pub struct SketchHandles {
     /// line per entry and hit-tests add-point against them (splitting the named segment by id).
     /// A segment with a dangling endpoint is omitted.
     pub segments: Vec<(EntityId, usize, usize)>,
+    /// Each arc entity as `(arc id, its tessellated polyline in the render frame)` (#102).
+    /// The polyline runs endpoint to endpoint INCLUSIVE, at the same chord tolerance the
+    /// resolve flattens with, so the drawn curve is exactly the boundary the profile
+    /// occupies. An arc with a dangling endpoint is omitted.
+    pub arcs: Vec<(EntityId, Vec<[f32; 3]>)>,
     /// A point ON the sketch plane in the render frame (the first vertex) — the ray
     /// intersection anchor.
     pub plane_point: [f32; 3],
@@ -183,24 +188,24 @@ impl Scene {
         let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
         let recentre_vec = Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
 
+        // One continuous profile coordinate into the render frame — the map every handle and
+        // arc chord goes through, so a drawn curve and a dragged vertex share one frame.
+        let to_render = |coord: [f64; 2]| {
+            let mut local = [0.0f32; 3];
+            local[in0] = (coord[0] - min[0] as f64) as f32;
+            local[in1] = (coord[1] - min[1] as f64) as f32;
+            // local[normal] stays 0.0 — the profile lives on the plane.
+            let world = placement
+                .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(
+                    local,
+                )))
+                .voxels();
+            (world - recentre_vec).to_array()
+        };
+
         let vertices: Vec<[f32; 3]> = points
             .iter()
-            .map(|point| {
-                let mut local = [0.0f32; 3];
-                // Integer part rebased exactly, then the sub-voxel fraction (#101) — so a
-                // handle sits on the vertex's continuous position, not its snapped floor.
-                local[in0] =
-                    (point.at.offset_voxels[0] - min[0]) as f32 + point.at.offset_local_voxels[0];
-                local[in1] =
-                    (point.at.offset_voxels[1] - min[1]) as f32 + point.at.offset_local_voxels[1];
-                // local[normal] stays 0.0 — the profile lives on the plane.
-                let world = placement
-                    .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(
-                        local,
-                    )))
-                    .voxels();
-                (world - recentre_vec).to_array()
-            })
+            .map(|point| to_render(point.at.in_plane()))
             .collect();
 
         // Segment connectivity, mapped to vertex indices; a dangling endpoint drops the segment.
@@ -210,6 +215,31 @@ impl Scene {
             .segments()
             .iter()
             .filter_map(|seg| Some((seg.id, index_of(seg.from)?, index_of(seg.to)?)))
+            .collect();
+
+        // Arc polylines, tessellated at the resolve's chord tolerance (#102) and mapped
+        // through the same frame — so the drawn curve IS the boundary that occupies.
+        let position_of = |id: EntityId| {
+            points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        let arcs: Vec<(EntityId, Vec<[f32; 3]>)> = producer
+            .sketch
+            .arcs()
+            .iter()
+            .filter_map(|arc| {
+                let (from, to) = (position_of(arc.from)?, position_of(arc.to)?);
+                let mut polyline = vec![to_render(from)];
+                polyline.extend(
+                    crate::sketch::arc_interior_points(from, to, arc.bulge.to_degrees_f64())
+                        .into_iter()
+                        .map(|point| to_render(point.in_plane())),
+                );
+                polyline.push(to_render(to));
+                Some((arc.id, polyline))
+            })
             .collect();
 
         let plane_normal = (node.transform.rotation() * unit_axis(normal)).to_array();
@@ -226,6 +256,7 @@ impl Scene {
             vertices,
             point_ids,
             segments,
+            arcs,
             plane_point,
             plane_normal,
             placement,

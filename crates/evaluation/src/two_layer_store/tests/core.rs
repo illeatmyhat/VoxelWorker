@@ -906,7 +906,7 @@ fn an_outset_part_classifies_as_the_dense_resolve_does() {
         let mut node = Node::new("M", NodeContent::Tool { shape, material });
         node.transform = NodeTransform::from_blocks(offset, density);
         node.operation = operation;
-        NodeBuilder::Leaf(node)
+        NodeBuilder::leaf(node)
     };
 
     for outset_voxels in [3i64, -2] {
@@ -983,7 +983,7 @@ fn an_emboss_classifies_as_the_dense_resolve_does() {
         };
         let scene = Scene::from_nodes(vec![NodeBuilder::group(
             "Part",
-            vec![NodeBuilder::Leaf(slab), NodeBuilder::Leaf(stamp)],
+            vec![NodeBuilder::leaf(slab), NodeBuilder::leaf(stamp)],
         )]);
         assert_two_layer_round_trip_matches_dense(&scene, density, &format!("emboss-{amount}"));
     }
@@ -1059,7 +1059,7 @@ fn point_occupancy_matches_the_expansion_at_every_voxel() {
     // A sphere: every chunk arm at once — coarse interior, boundary shell, and air.
     let sphere = SdfShape::from_blocks(ShapeKind::Sphere, [6, 6, 6], 1, density);
     assert_agrees(
-        &Scene::from_nodes(vec![NodeBuilder::Leaf(Node::new(
+        &Scene::from_nodes(vec![NodeBuilder::leaf(Node::new(
             "Sphere",
             NodeContent::Tool {
                 shape: sphere,
@@ -1074,7 +1074,7 @@ fn point_occupancy_matches_the_expansion_at_every_voxel() {
     // the whole answer — the case where the coarse layer cannot mask a mistake.
     let tube = SdfShape::from_blocks(ShapeKind::Tube, [6, 3, 6], 1, density);
     assert_agrees(
-        &Scene::from_nodes(vec![NodeBuilder::Leaf(Node::new(
+        &Scene::from_nodes(vec![NodeBuilder::leaf(Node::new(
             "Tube",
             NodeContent::Tool {
                 shape: tube,
