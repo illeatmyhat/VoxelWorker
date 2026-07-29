@@ -968,8 +968,8 @@ impl WindowedState {
             return IntentEffect::none();
         };
 
-        // Cursor → the continuous profile coordinate under it, then grid-snap (round to the
-        // nearest voxel). The ray/plane math is shared with the add-point insert.
+        // Cursor → the continuous profile coordinate under it, then quantize by the position
+        // snap (#96). The ray/plane math is shared with the add-point insert.
         let Some(profile_coord) = self.cursor_to_profile_coord(
             cursor_x,
             cursor_y,
@@ -979,10 +979,11 @@ impl WindowedState {
         ) else {
             return IntentEffect::none();
         };
-        let snapped = [
-            profile_coord[0].round() as i64,
-            profile_coord[1].round() as i64,
-        ];
+        let snapped = apply_sketch_snap(
+            profile_coord,
+            self.panel_state.sketch_snap,
+            self.panel_state.geometry.voxels_per_block,
+        );
 
         // Build the preview from the pre-drag producer with ONLY the dragged vertex moved, then
         // compensate the offset by the bbox-min shift so the rest of the profile holds still.
@@ -995,9 +996,9 @@ impl WindowedState {
             self.sketch_drag = None;
             return IntentEffect::none();
         };
-        // A voxel-snapped drag re-authors the whole position (#101): the fraction zeroes
-        // and a stale retained expression drops with it.
-        *point = document::sketch::SketchPoint::new(snapped[0], snapped[1]);
+        // The snap policy re-authors the whole position (#96/#101): a snapped drag zeroes
+        // the fraction, NoSnap carries it; either way a stale retained expression drops.
+        *point = snapped;
         let new_min = Self::profile_bbox_min(&preview);
         let [in0, in1] = preview.sketch.plane.in_plane_axes();
         let mut new_offset = original_offset;
@@ -1242,16 +1243,24 @@ impl WindowedState {
             &handles,
         )?;
         let (producer, _) = self.sketch_node_state(target)?;
-        // Split the segment under the cursor with a grid-snapped point (ADR 0030).
-        let point =
-            document::sketch::SketchPoint::new(coord[0].round() as i64, coord[1].round() as i64);
+        // Split the segment under the cursor with a policy-snapped point (ADR 0030, #96).
+        let point = apply_sketch_snap(
+            coord,
+            self.panel_state.sketch_snap,
+            self.panel_state.geometry.voxels_per_block,
+        );
         Some(producer.with_point_on_segment(seg_id, point))
     }
 
-    /// The grid-snapped profile coordinate under the cursor (physical px), through the cached
-    /// ray frame — the shared entry the drawing tools (#99) resolve a press or release with.
-    /// `None` when the cursor misses the plane or no sketch is being edited.
-    pub(super) fn sketch_snapped_coord_at(&self, cursor_x: f64, cursor_y: f64) -> Option<[i64; 2]> {
+    /// The snap-policy profile point under the cursor (physical px), through the cached
+    /// ray frame — the shared entry the drawing tools (#99) and vertex edits resolve a press
+    /// or release with, quantized by [`PanelState::sketch_snap`] (#96). `None` when the
+    /// cursor misses the plane or no sketch is being edited.
+    pub(super) fn sketch_snapped_point_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<document::sketch::SketchPoint> {
         let target = self.panel_state.sketch_mode?;
         let handles = self
             .panel_state
@@ -1264,7 +1273,11 @@ impl WindowedState {
             self.last_viewport_px,
             &handles,
         )?;
-        Some([coord[0].round() as i64, coord[1].round() as i64])
+        Some(apply_sketch_snap(
+            coord,
+            self.panel_state.sketch_snap,
+            self.panel_state.geometry.voxels_per_block,
+        ))
     }
 
     /// #99: one polyline click. Resolves the cursor to a point — an existing vertex under it
@@ -1294,11 +1307,10 @@ impl WindowedState {
         let (mut next, clicked) = match existing {
             Some(id) => (producer.clone(), id),
             None => {
-                let Some(snapped) = self.sketch_snapped_coord_at(cursor_x, cursor_y) else {
+                let Some(snapped) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
                     return;
                 };
-                producer
-                    .with_point_placed(document::sketch::SketchPoint::new(snapped[0], snapped[1]))
+                producer.with_point_placed(snapped)
             }
         };
         self.sketch_chain = match self.sketch_chain {
@@ -1325,16 +1337,13 @@ impl WindowedState {
         let Some(target) = self.panel_state.sketch_mode else {
             return;
         };
-        let Some(corner) = self.sketch_snapped_coord_at(cursor_x, cursor_y) else {
+        let Some(corner) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
             return;
         };
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
-        let next = producer.with_rectangle(
-            document::sketch::SketchPoint::new(anchor[0], anchor[1]),
-            document::sketch::SketchPoint::new(corner[0], corner[1]),
-        );
+        let next = producer.with_rectangle(anchor, corner);
         if next != producer {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2054,9 +2063,10 @@ impl WindowedState {
         }
 
         // Drawing-tool previews (#99): the uncommitted geometry, snapped exactly as the click
-        // will commit it, so the dashed line never lies about where the point lands.
-        let snapped_screen = |coord: [i64; 2]| {
-            let render = handles.profile_to_render([coord[0] as f64, coord[1] as f64]);
+        // will commit it (#96: through the same policy), so the dashed line never lies about
+        // where the point lands.
+        let snapped_screen = |coord: [f64; 2]| {
+            let render = handles.profile_to_render(coord);
             project_to_screen(
                 glam::Vec3::from_array(render),
                 view_projection,
@@ -2079,8 +2089,8 @@ impl WindowedState {
                             egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point)
                         });
                     let cursor = self
-                        .sketch_snapped_coord_at(cursor_x, cursor_y)
-                        .and_then(snapped_screen);
+                        .sketch_snapped_point_at(cursor_x, cursor_y)
+                        .and_then(|point| snapped_screen(point.in_plane()));
                     if let (Some(a), Some(b)) = (chain_end, cursor) {
                         self.sketch_draw_preview.extend([a, b]);
                     }
@@ -2091,14 +2101,9 @@ impl WindowedState {
                 if let (Some(anchor), Some((cursor_x, cursor_y))) =
                     (self.sketch_rect_anchor, self.last_cursor_position)
                 {
-                    if let Some(corner) = self.sketch_snapped_coord_at(cursor_x, cursor_y) {
-                        let ring = [
-                            anchor,
-                            [corner[0], anchor[1]],
-                            corner,
-                            [anchor[0], corner[1]],
-                            anchor,
-                        ];
+                    if let Some(corner) = self.sketch_snapped_point_at(cursor_x, cursor_y) {
+                        let (a, c) = (anchor.in_plane(), corner.in_plane());
+                        let ring = [a, [c[0], a[1]], c, [a[0], c[1]], a];
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         // A behind-camera corner culls the whole preview rather than
@@ -2135,6 +2140,32 @@ impl WindowedState {
                 }
             }
             ui::panel::SketchTool::AddPoint => {}
+        }
+    }
+}
+
+/// Quantize a continuous in-plane profile coordinate by the sketch position snap (#96):
+/// `NoSnap` carries the sub-voxel fraction on the point (#101), `Voxel` rounds to the plane's
+/// own voxel grid, `Block` rounds to block boundaries. Every sketch vertex edit — drag,
+/// add-point split, polyline, rectangle — resolves through this one policy.
+fn apply_sketch_snap(
+    coord: [f64; 2],
+    snap: ui::panel::PositionSnap,
+    voxels_per_block: u32,
+) -> document::sketch::SketchPoint {
+    match snap {
+        ui::panel::PositionSnap::NoSnap => {
+            document::sketch::SketchPoint::from_continuous(coord[0], coord[1])
+        }
+        ui::panel::PositionSnap::Voxel => {
+            document::sketch::SketchPoint::new(coord[0].round() as i64, coord[1].round() as i64)
+        }
+        ui::panel::PositionSnap::Block => {
+            let block = voxels_per_block.max(1) as f64;
+            document::sketch::SketchPoint::new(
+                ((coord[0] / block).round() * block) as i64,
+                ((coord[1] / block).round() * block) as i64,
+            )
         }
     }
 }
@@ -2213,10 +2244,30 @@ fn point_to_segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32
 #[cfg(test)]
 mod tests {
     use super::{
-        closest_point_on_segment, point_to_segment_distance, segment_touches_rect,
-        segments_intersect,
+        apply_sketch_snap, closest_point_on_segment, point_to_segment_distance,
+        segment_touches_rect, segments_intersect,
     };
     use egui::{pos2, Rect};
+    use ui::panel::PositionSnap;
+
+    #[test]
+    fn the_snap_policy_quantizes_a_profile_coordinate() {
+        // Voxel rounds to the plane's own grid; Block to multiples of the density; NoSnap
+        // carries the exact position as integer + fraction (#96/#101).
+        assert_eq!(
+            apply_sketch_snap([2.6, -1.4], PositionSnap::Voxel, 8).in_plane(),
+            [3.0, -1.0]
+        );
+        assert_eq!(
+            apply_sketch_snap([11.0, -5.0], PositionSnap::Block, 8).in_plane(),
+            [8.0, -8.0]
+        );
+        let free = apply_sketch_snap([2.6, -1.4], PositionSnap::NoSnap, 8).in_plane();
+        assert!(
+            (free[0] - 2.6).abs() < 1e-6 && (free[1] + 1.4).abs() < 1e-6,
+            "NoSnap carries the position to f32-fraction precision, got {free:?}"
+        );
+    }
 
     #[test]
     fn foot_falls_inside_the_span_for_a_perpendicular_drop() {

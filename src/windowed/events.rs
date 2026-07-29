@@ -158,7 +158,7 @@ impl ApplicationHandler for App {
                                 // press pins the anchor corner; the release commits.
                                 ui::panel::SketchTool::Rectangle => {
                                     state.sketch_rect_anchor =
-                                        state.sketch_snapped_coord_at(cursor_x, cursor_y);
+                                        state.sketch_snapped_point_at(cursor_x, cursor_y);
                                 }
                             }
                         }

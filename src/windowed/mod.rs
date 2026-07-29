@@ -376,10 +376,10 @@ struct WindowedState {
     /// open. Cleared when the armed tool leaves Polyline or sketch mode exits — a chain is a
     /// gesture, not workspace state.
     sketch_chain: Option<(document::sketch::EntityId, document::sketch::EntityId)>,
-    /// The rectangle tool's press-time corner (#99) as a snapped profile coordinate, or
-    /// `None`. The release at the opposite corner commits the loop and clears this; a
-    /// degenerate (zero-span) release just clears it.
-    sketch_rect_anchor: Option<[i64; 2]>,
+    /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
+    /// (#96: sub-voxel under NoSnap), or `None`. The release at the opposite corner commits
+    /// the loop and clears this; a degenerate (zero-span) release just clears it.
+    sketch_rect_anchor: Option<document::sketch::SketchPoint>,
     /// Whether the most recent left-press armed a sketch **selection** resolve (sketch mode, the
     /// Select tool, on the live viewport — NOT egui chrome or the cube). A STATIONARY release with
     /// this set resolves the click into the selection; a drag leaves it (the vertex move happens

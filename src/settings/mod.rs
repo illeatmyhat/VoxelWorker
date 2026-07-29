@@ -22,8 +22,8 @@ use camera::{HomeView, OrbitCamera, OrbitType, ProjectionMode};
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 use ui::panel::{
-    ArmedTool, LayerRange, OrbitMode, PanelState, PlacementGhost, PlacementSnap, Selection,
-    SelectionTarget, SignalStackState, SketchTool, ViewMode,
+    ArmedTool, LayerRange, OrbitMode, PanelState, PlacementGhost, PlacementSnap, PositionSnap,
+    Selection, SelectionTarget, SignalStackState, SketchTool, ViewMode,
 };
 use ui::shortcuts::{ShortcutCommand, Shortcuts};
 use voxel_core::core_geom::MaterialChoice;
@@ -462,6 +462,13 @@ pub struct AppConfig {
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
 
+    /// The sketch-mode position snap (#96): how a vertex edit quantizes on the sketch plane's
+    /// own grid (none / voxel / block). Session state alongside
+    /// [`placement_snap`](Self::placement_snap) — durable across edits and relaunch;
+    /// `PositionSnap` derives its own serde, so no remote shim is needed.
+    #[snapshot(session)]
+    pub sketch_snap: PositionSnap,
+
     /// The workspace selection (ADR 0032) — the picked nodes and reference Points. Session
     /// state alongside [`sketch_mode`](Self::sketch_mode): what was picked is how the
     /// workspace was left, so a dump replays with the same things selected. It never
@@ -526,6 +533,7 @@ impl Default for AppConfig {
             armed_tool: None,
             sketch_mode: None,
             sketch_tool: SketchTool::default(),
+            sketch_snap: PositionSnap::default(),
             default_orbit_type: OrbitType::default(),
             orbit_mode: OrbitMode::default(),
             selection: SelectionConfig::default(),
@@ -585,6 +593,7 @@ impl AppConfig {
                 .as_ref()
                 .and_then(ArmedToolConfig::from_armed),
             sketch_tool: panel.sketch_tool,
+            sketch_snap: panel.sketch_snap,
             default_orbit_type: panel.default_orbit_type,
             orbit_mode: panel.orbit_mode,
             shortcuts: ShortcutsConfig::from_shortcuts(&panel.shortcuts),
@@ -694,6 +703,7 @@ impl AppConfig {
             // ADR 0028 (#95): restore the armed sketch tool, so a mid-edit repro re-enters with
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
+            sketch_snap: self.sketch_snap,
             default_orbit_type: self.default_orbit_type,
             orbit_mode: self.orbit_mode,
             shortcuts: self.shortcuts.to_shortcuts(),

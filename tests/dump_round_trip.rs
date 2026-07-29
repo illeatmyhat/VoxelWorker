@@ -220,6 +220,11 @@ fn arbitrary_config(rng: &mut Lcg, scene: Option<Scene>) -> AppConfig {
             SketchTool::Polyline,
             SketchTool::Rectangle,
         ]),
+        sketch_snap: rng.pick(&[
+            PositionSnap::NoSnap,
+            PositionSnap::Block,
+            PositionSnap::Voxel,
+        ]),
         default_orbit_type: rng.pick(&[OrbitType::Constrained, OrbitType::Free]),
         orbit_mode: rng.pick(&[
             OrbitMode::Off,
@@ -362,6 +367,15 @@ fn every_enum_variant_survives_the_full_loop() {
         let mut config = base();
         config.placement_snap.position = position;
         cases.push((format!("placement_snap.position={position:?}"), config));
+    }
+    for sketch_snap in [
+        PositionSnap::NoSnap,
+        PositionSnap::Block,
+        PositionSnap::Voxel,
+    ] {
+        let mut config = base();
+        config.sketch_snap = sketch_snap;
+        cases.push((format!("sketch_snap={sketch_snap:?}"), config));
     }
     for angle in [AngleSnap::Continuous, AngleSnap::Deg15] {
         let mut config = base();

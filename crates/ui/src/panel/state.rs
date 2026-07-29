@@ -609,6 +609,16 @@ pub struct PanelState {
     /// with the same tool in hand.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
+    /// The sketch-mode **position snap** (#96): how a vertex edit quantizes on the sketch
+    /// plane's own grid — sub-voxel continuous ([`PositionSnap::NoSnap`], the fraction rides
+    /// the vertex, #101), whole-voxel (the default), or block boundaries. Reuses ADR 0027's
+    /// [`PositionSnap`]; per ADR 0028 §5 the lattice stands in for a constraint solver.
+    ///
+    /// **Session** state alongside [`sketch_tool`](Self::sketch_tool) and on the same footing
+    /// as [`placement_snap`](Self::placement_snap): an editing preference that is never
+    /// document state, durable across edits and relaunch.
+    #[snapshot(session)]
+    pub sketch_snap: PositionSnap,
     /// The workspace **selection** — every picked target, whatever its kind: scene nodes,
     /// reference Points, and (ADR 0030) sketch vertices and edges. The successor of BOTH the
     /// document's `Scene::active` / `Scene::active_point` AND the retired `SketchSelection`,

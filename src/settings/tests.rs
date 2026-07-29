@@ -70,6 +70,8 @@ fn config_round_trips_through_json() {
         sketch_mode: Some(document::scene::NodeId(9)),
         // Non-default (not Select) so the round-trip exercises the armed sketch tool (#95).
         sketch_tool: ui::panel::SketchTool::AddPoint,
+        // Non-default (not Voxel) so the round-trip exercises the sketch snap (#96).
+        sketch_snap: ui::panel::PositionSnap::NoSnap,
         selection: SelectionConfig {
             targets: vec![
                 SelectionTargetConfig::Node(NodeId(3)),
@@ -104,6 +106,7 @@ fn the_session_survives_a_relaunch_through_the_panel_and_back() {
         angle: ui::panel::AngleSnap::Deg15,
         pivot: ui::panel::PlacementPivot::VolumetricCenter,
     };
+    panel.sketch_snap = ui::panel::PositionSnap::NoSnap;
 
     let config = AppConfig::capture(
         &panel,
@@ -120,6 +123,10 @@ fn the_session_survives_a_relaunch_through_the_panel_and_back() {
     assert_eq!(
         restored.placement_snap, panel.placement_snap,
         "snap settings survive relaunch"
+    );
+    assert_eq!(
+        restored.sketch_snap, panel.sketch_snap,
+        "the sketch snap survives relaunch (#96)"
     );
 }
 

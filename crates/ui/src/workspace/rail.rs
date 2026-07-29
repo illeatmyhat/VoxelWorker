@@ -20,7 +20,7 @@ use voxel_core::voxel::ShapeKind;
 
 use super::{hairline, region_frame, Edge, RAIL_WIDTH};
 use crate::icons::{large::LargeIcon, Icon};
-use crate::panel::{PanelResponse, PanelState, SketchTool};
+use crate::panel::{PanelResponse, PanelState, PositionSnap, SketchTool};
 use crate::theme;
 
 /// A shape cell: full rail width less the hairline, tall enough for a 26 px tile plus air.
@@ -90,6 +90,27 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         Icon::Rectangle,
         "Rectangle — drag opposite corners",
         Some(SketchTool::Rectangle),
+    ),
+];
+
+/// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch
+/// plane's own grid. One is always active; clicking another switches
+/// [`PanelState::sketch_snap`] — pure editing state, no document write.
+const SKETCH_SNAPS: &[(Icon, &str, PositionSnap)] = &[
+    (
+        Icon::SnapNone,
+        "Position snap — none: the vertex lands exactly under the cursor, sub-voxel",
+        PositionSnap::NoSnap,
+    ),
+    (
+        Icon::SnapVoxel,
+        "Position snap — voxel: whole-voxel grid crossings. The default",
+        PositionSnap::Voxel,
+    ),
+    (
+        Icon::SnapBlock,
+        "Position snap — block: block boundaries, for clean inter-part mating",
+        PositionSnap::Block,
     ),
 ];
 
@@ -173,6 +194,13 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
                 }
             }
             None => sketch_cell(ui, icon, tip, false, true),
+        }
+    }
+    rail_heading(ui, "Snap");
+    for &(icon, tip, snap) in SKETCH_SNAPS {
+        let active = state.sketch_snap == snap;
+        if sketch_tool_cell(ui, icon, tip, active) {
+            state.sketch_snap = snap;
         }
     }
     rail_heading(ui, "Op");

@@ -322,6 +322,10 @@ pub struct SessionArtifact {
     /// `Select`.
     #[serde(default, with = "SketchToolConfig")]
     pub sketch_tool: SketchTool,
+    /// The sketch-mode position snap (#96). Durable like `placement_snap`; `PositionSnap`
+    /// derives its own serde, and a pre-field dump degrades to the default `Voxel`.
+    #[serde(default)]
+    pub sketch_snap: ui::panel::PositionSnap,
     /// The workspace selection (ADR 0032) — the picked nodes and reference Points. A dump
     /// replays with the same things selected; `SelectionConfig` derives its own serde (it
     /// lives out here, not in the serde-free `ui` crate), so no remote shim is needed. The
@@ -407,6 +411,9 @@ impl DocumentArtifact {
             sketch_mode: _,
             // Declined — session state. Which sketch tool was armed is where they stopped too.
             sketch_tool: _,
+            // Declined — session state. One person's snap preference must not ride into a
+            // shared document (the placement_snap reasoning, in-mode).
+            sketch_snap: _,
             selection: _,
             // Declined — session state. How somebody was steering the view is where they
             // stopped, and a shared model has no camera at all.
@@ -473,6 +480,7 @@ impl Dump {
             placement_snap,
             sketch_mode,
             sketch_tool,
+            sketch_snap,
             selection,
             default_orbit_type,
             orbit_mode,
@@ -514,6 +522,7 @@ impl Dump {
                 placement_snap: *placement_snap,
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
+                sketch_snap: *sketch_snap,
                 default_orbit_type: *default_orbit_type,
                 orbit_mode: *orbit_mode,
                 selection: selection.clone(),
@@ -565,6 +574,7 @@ impl Dump {
             placement_snap: session.placement_snap,
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
+            sketch_snap: session.sketch_snap,
             default_orbit_type: session.default_orbit_type,
             orbit_mode: session.orbit_mode,
             selection: session.selection,
@@ -753,6 +763,8 @@ mod tests {
             sketch_mode: Some(document::scene::NodeId(9)),
             // Off its default (AddPoint, not Select) for the same reason (ADR 0028, #95).
             sketch_tool: SketchTool::AddPoint,
+            // Off its default (NoSnap, not Voxel) for the same reason (#96).
+            sketch_snap: ui::panel::PositionSnap::NoSnap,
             // Off its default (Free, not Constrained) so a capture that dropped it fails the
             // round-trip rather than coinciding with a default restore.
             default_orbit_type: OrbitType::Free,

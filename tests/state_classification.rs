@@ -243,6 +243,9 @@ fn the_session_is_the_workspace_and_nothing_else() {
             // mid-edit relaunch (the same "how the workspace was left" the ghost is).
             "sketch_mode",
             "sketch_tool",
+            // #96: the sketch position snap — the in-mode sibling of `placement_snap`,
+            // durable for the same reason.
+            "sketch_snap",
             // ADR 0032: the workspace selection. It left the DOCUMENT — where undo used to
             // restore it and a shared file used to carry it — and joined the session on the
             // sketch selection's law: selecting is not an edit.
