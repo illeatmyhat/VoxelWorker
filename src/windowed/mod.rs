@@ -487,6 +487,19 @@ impl WindowedState {
             Some(config) => config.to_panel_state(),
             None => PanelState::with_view_cube_default(),
         };
+        // ADR 0022: a config saved mid-arm carries the placement ghost (session state), but
+        // the shell's armed tool is not persisted — RE-ARM from the ghost, or the per-frame
+        // arm pass clears it on the first frame and the repro silently loses the pending
+        // drop. The ghost carries no material; the mirror is the same source the original
+        // arm read (`tool_node_spec`).
+        let restored_armed_tool =
+            panel_state
+                .placement_ghost
+                .as_ref()
+                .map(|ghost| NodeSpec::Tool {
+                    shape: ghost.shape.clone(),
+                    material: panel_state.material,
+                });
         let shape = SdfShape::from_geometry(panel_state.geometry.clone());
         // ADR 0011 G5: the startup DOOR constructs NO `VoxelGrid` — it returns only the region
         // dimensions + resolve recentre (the camera auto-frame and layer scrubber
@@ -684,8 +697,9 @@ impl WindowedState {
             context_menu_open_at: None,
             viewport_menu_at: None,
             hovered_cube_zone: None,
-            // ADR 0022 live placement: nothing armed until the user picks a "+ Add" chip.
-            armed_tool: None,
+            // ADR 0022 live placement: nothing armed until the user picks a "+ Add" chip —
+            // unless the restored config was saved mid-arm (re-armed from its ghost above).
+            armed_tool: restored_armed_tool,
             // Seed the placement pick-set from the STARTUP covering set — the same chunks the
             // display's `first_build` drew (below). Without this, `resident_chunks` stayed empty
             // until the first edit ran `rebuild_geometry`, so on a fresh launch a pick found no
