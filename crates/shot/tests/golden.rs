@@ -440,6 +440,30 @@ const CASES: &[GoldenCase] = &[
             "--grid",
         ],
     },
+    // ADR 0032: the selection-cel JUNCTION creases — the subtract scene with the HOST
+    // selected under `--selection-cel`. The cel draws the screen-space outline + wash plus
+    // the analytic edge overlay: the host's authored box catalogue AND the three traced
+    // open L-curves where the flush-corner cutter's walls meet the host's faces
+    // (`trace_intersection_curves`, no closed form). Pins the traced-junction pipeline in
+    // the render gate end-to-end: pair enumeration, bracket pruning, seed screen, and the
+    // hull+depth clip of over-spans.
+    GoldenCase {
+        name: "demo-subtract-junction-cel",
+        args: &["--demo-subtract", "--select-node", "0", "--selection-cel"],
+    },
+    // ADR 0032: the CURVED junction — a blind bore (Cylinder Subtract into a Box) with the
+    // host selected under `--selection-cel`. The bore's mouth is a full circle on the top
+    // face: the one junction class the flush-corner case cannot show (a closed curved
+    // curve, seeded + traced to closure, deduped to exactly one loop).
+    GoldenCase {
+        name: "demo-cylinder-subtract-junction-cel",
+        args: &[
+            "--demo-cylinder-subtract",
+            "--select-node",
+            "0",
+            "--selection-cel",
+        ],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -455,6 +479,13 @@ const CASES: &[GoldenCase] = &[
 /// * `sketch-revolve-dome` — IMPLICITLY band-clipped: the layer-track upper bound is taken from
 ///   the (default-cylinder) `shape` grid_z (80), below the revolve composite grid_z (128), so
 ///   the dense golden clips the vase's upper third — and the two-layer band reclip now matches.
+///
+/// ADR 0032: the two `*-junction-cel` cases are NOT in this list (nor the brick list). The
+/// selection cel is a screen-space post-pass over the solid's depth/normal buffers, and those
+/// buffers are not bit-identical across display paths at silhouette pixels — the same
+/// translucent-composite reasoning as `onion-ghost` below. The cel is pinned against the dense
+/// reference only; cross-path parity of the underlying SOLIDS is already gated by
+/// `demo-subtract`.
 ///
 /// ADR 0012 (H1): `onion-ghost` is NOT in this list. The onion ghost is a TRANSLUCENT
 /// alpha-blended pass, so the underlying solid's shading shows through the whole ghost cap —
