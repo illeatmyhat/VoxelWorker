@@ -431,7 +431,11 @@ mod proofs {
         let sign: [i8; 3] = kani::any();
         match LatticeOrientation::from_gather(source, sign) {
             Some(orientation) => orientation,
-            None => kani::reject(),
+            None => {
+                // Prune the invalid gathers (no `kani::reject` in this Kani).
+                kani::assume(false);
+                unreachable!()
+            }
         }
     }
 

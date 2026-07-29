@@ -18,10 +18,13 @@
 //! ## Verification note (ADR 0014 DoD exemption)
 //!
 //! The SOUNDNESS half — "a pruned cell contains no surface point" — reduces to the
-//! bracket contract, and the Lipschitz bracket this module offers for it is proven
-//! by the `#[cfg(kani)]` lemma below (production callers may instead supply the
-//! evaluator's `cell_field_interval` brackets, which carry their own
-//! conservative-never-narrow contract). The predictor–corrector ITERATION is
+//! bracket contract plus the prune's [`PRUNE_SLOP`]. The `#[cfg(kani)]` lemma
+//! below proves exactly the slopped Lipschitz form on the ±4096 value domain (the
+//! slop-free form is REFUTED — its witness harness is kept beside the proof), and
+//! it covers ONLY [`lipschitz_cell_bracket`]: production callers supplying the
+//! evaluator's `cell_field_interval` brackets rest on that primitive's own
+//! conservative-never-narrow contract, not on this lemma. The predictor–corrector
+//! ITERATION is
 //! numeric refinement with no finite-domain invariant a model checker can close
 //! over; its failure mode is a missed or truncated polyline in a display-only
 //! overlay, never an unsound claim, and it is pinned by analytic-oracle unit tests
@@ -88,6 +91,20 @@ pub struct ImplicitSurfacePair<'a> {
     pub bracket_g: &'a dyn Fn(Vec3, f32) -> (f32, f32),
 }
 
+/// Everything one [`trace_intersection_curves`] run produced, with its truncation
+/// flags — no silent caps: a missing- or short-curve report starts by reading
+/// these, not by hunting.
+#[derive(Debug, Clone)]
+pub struct SurfaceIntersectionOutcome {
+    pub curves: Vec<TracedCurve>,
+    /// Seed enumeration stopped at `max_seeds` with cells still unvisited —
+    /// whole curves may be missing.
+    pub seed_budget_exhausted: bool,
+    /// At least one march stopped at `max_steps_per_curve` — that polyline is
+    /// truncated mid-curve.
+    pub step_budget_exhausted: bool,
+}
+
 /// One traced junction curve: an ordered polyline on `F = 0 ∩ G = 0`.
 #[derive(Debug, Clone)]
 pub struct TracedCurve {
@@ -102,9 +119,18 @@ pub struct TracedCurve {
     pub min_dihedral_sine: f32,
 }
 
+/// The rounding slop the seeding prune grants both brackets: a cell is discarded
+/// only when a bracket clears zero by MORE than this. f32 evaluates the brackets,
+/// and one rounding step at an interval edge can otherwise exclude a zero sitting
+/// exactly on the frontier — Kani REFUTED the slop-free claim (the witness
+/// harness below keeps the counterexample class on record) and PROVES the slopped
+/// claim on the ±4096 value domain the selection overlap boxes inhabit.
+pub const PRUNE_SLOP: f32 = 1e-2;
+
 /// The bracket of an L-Lipschitz field over a cell, from its centre sample: every
-/// value on the cell lies within `L · circumradius` of the centre value. Proven by
-/// the `#[cfg(kani)]` lemma below.
+/// value on the cell lies within `L · circumradius` of the centre value — up to
+/// f32 rounding at the interval edges, which the prune's [`PRUNE_SLOP`] absorbs
+/// (see the `#[cfg(kani)]` lemma below for exactly what is proven).
 pub fn lipschitz_cell_bracket(centre_value: f32, lipschitz: f32, circumradius: f32) -> (f32, f32) {
     let spread = lipschitz * circumradius;
     (centre_value - spread, centre_value + spread)
@@ -187,7 +213,8 @@ fn correct_onto_curve(
 
 /// March from `seed` (already ON the curve) in the direction of `first_tangent`,
 /// collecting points until the curve closes, leaves `bounds`, or degenerates.
-/// Returns the marched points (excluding the seed) and whether it closed.
+/// Returns the marched points (excluding the seed) and whether it closed;
+/// `step_exhausted` is raised (never cleared) when the step cap cut the march.
 fn march(
     pair: &ImplicitSurfacePair<'_>,
     seed: Vec3,
@@ -195,6 +222,7 @@ fn march(
     bounds: (Vec3, Vec3),
     config: &SurfaceIntersectionConfig,
     min_sine: &mut f32,
+    step_exhausted: &mut bool,
 ) -> (Vec<Vec3>, bool) {
     let mut points = Vec::new();
     let mut current = seed;
@@ -223,6 +251,7 @@ fn march(
         heading = tangent;
         current = next;
     }
+    *step_exhausted = true;
     (points, false)
 }
 
@@ -235,17 +264,24 @@ pub fn trace_intersection_curves(
     overlap_min: Vec3,
     overlap_max: Vec3,
     config: &SurfaceIntersectionConfig,
-) -> Vec<TracedCurve> {
+) -> SurfaceIntersectionOutcome {
+    let mut seed_budget_exhausted = false;
+    let mut step_budget_exhausted = false;
     // Seed candidates: octree descent, pruning by the conservative brackets.
     let mut seeds: Vec<Vec3> = Vec::new();
     let extent = overlap_max - overlap_min;
     let root_size = extent.max_element();
     if root_size <= 0.0 || root_size.is_nan() {
-        return Vec::new();
+        return SurfaceIntersectionOutcome {
+            curves: Vec::new(),
+            seed_budget_exhausted,
+            step_budget_exhausted,
+        };
     }
     let mut stack = vec![(overlap_min, root_size)];
     while let Some((cell_min, size)) = stack.pop() {
         if seeds.len() >= config.max_seeds as usize {
+            seed_budget_exhausted = true;
             break;
         }
         // Clip to the overlap box (the root cube squares it off).
@@ -253,11 +289,11 @@ pub fn trace_intersection_curves(
             continue;
         }
         let (low_f, high_f) = (pair.bracket_f)(cell_min, size);
-        if low_f > 0.0 || high_f < 0.0 {
+        if low_f > PRUNE_SLOP || high_f < -PRUNE_SLOP {
             continue;
         }
         let (low_g, high_g) = (pair.bracket_g)(cell_min, size);
-        if low_g > 0.0 || high_g < 0.0 {
+        if low_g > PRUNE_SLOP || high_g < -PRUNE_SLOP {
             continue;
         }
         if size <= config.seed_cell {
@@ -323,11 +359,27 @@ pub fn trace_intersection_curves(
             continue;
         };
         min_sine = min_sine.min(sine);
-        let (forward, closed) = march(pair, on_curve, tangent, bounds, config, &mut min_sine);
+        let (forward, closed) = march(
+            pair,
+            on_curve,
+            tangent,
+            bounds,
+            config,
+            &mut min_sine,
+            &mut step_budget_exhausted,
+        );
         let mut points = vec![on_curve];
         points.extend(forward);
         if !closed {
-            let (backward, _) = march(pair, on_curve, -tangent, bounds, config, &mut min_sine);
+            let (backward, _) = march(
+                pair,
+                on_curve,
+                -tangent,
+                bounds,
+                config,
+                &mut min_sine,
+                &mut step_budget_exhausted,
+            );
             points.reverse();
             points.extend(backward);
             points.reverse();
@@ -353,20 +405,58 @@ pub fn trace_intersection_curves(
             min_dihedral_sine: min_sine,
         });
     }
-    curves
+    SurfaceIntersectionOutcome {
+        curves,
+        seed_budget_exhausted,
+        step_budget_exhausted,
+    }
 }
 
-/// The seed-prune soundness lemma, machine-checked over nondet f32 (the float form
-/// of "a cell whose Lipschitz bracket excludes zero contains no zero"): any sample
-/// consistent with the Lipschitz hypothesis lies inside [`lipschitz_cell_bracket`],
-/// so a bracket that excludes zero excludes every zero. Bounded model check —
-/// `cargo kani` in WSL (memory: kani-wsl-toolchain).
+/// The seed-prune soundness lemmas, machine-checked over nondet f32. Bounded
+/// model check — `cargo kani` in WSL (memory: kani-wsl-toolchain).
+///
+/// What is and is NOT proven: the slop-free claim "any sample consistent with the
+/// Lipschitz hypothesis lies inside [`lipschitz_cell_bracket`]" is FALSE in f32 —
+/// Kani refuted it (rounding of `sample - centre` versus `centre ± spread` under
+/// catastrophic cancellation), and the witness harness pins that refutation so the
+/// slop never reads as optional. The proven form adds [`PRUNE_SLOP`], on the
+/// ±4096 value domain selection overlap boxes inhabit (half-ulp there is ~5e-4,
+/// 20× inside the slop). Production callers supplying `cell_field_interval`
+/// brackets are NOT covered by this lemma — they rest on that primitive's own
+/// conservative-never-narrow contract.
 #[cfg(kani)]
 mod kani_proofs {
-    use super::lipschitz_cell_bracket;
+    use super::{lipschitz_cell_bracket, PRUNE_SLOP};
 
+    const DOMAIN: f32 = 4096.0;
+
+    /// A sample consistent with the Lipschitz hypothesis is never pruned: it lies
+    /// within [`PRUNE_SLOP`] of the bracket, so a bracket clearing zero by more
+    /// than the slop excludes every zero.
+    ///
+    /// Quantifies over `spread` directly (as `lipschitz` with circumradius 1.0,
+    /// whose product is exact) rather than the `L · r` factor pair: the SAME
+    /// float feeds the hypothesis and the bracket, so the product's own rounding
+    /// cancels out of the theorem — any `fl(L · r)` production computes IS some
+    /// such spread — while sparing the solver a nondet multiplication it cannot
+    /// close within the harness timeout.
     #[kani::proof]
-    fn lipschitz_bracket_contains_every_consistent_sample() {
+    fn lipschitz_bracket_with_slop_contains_every_consistent_sample() {
+        let centre_value: f32 = kani::any();
+        let spread: f32 = kani::any();
+        let sample: f32 = kani::any();
+        kani::assume(centre_value.abs() <= DOMAIN && sample.abs() <= DOMAIN);
+        kani::assume(spread >= 0.0 && spread <= DOMAIN);
+        kani::assume((sample - centre_value).abs() <= spread);
+        let (low, high) = lipschitz_cell_bracket(centre_value, spread, 1.0);
+        assert!(sample >= low - PRUNE_SLOP && sample <= high + PRUNE_SLOP);
+    }
+
+    /// The refutation witness: WITHOUT the slop the same claim fails — this
+    /// harness must keep failing, or the slop has silently become dead weight.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn lipschitz_bracket_without_slop_is_refuted() {
         let centre_value: f32 = kani::any();
         let lipschitz: f32 = kani::any();
         let circumradius: f32 = kani::any();
@@ -376,9 +466,6 @@ mod kani_proofs {
         kani::assume(circumradius.is_finite() && circumradius >= 0.0);
         let spread = lipschitz * circumradius;
         kani::assume(spread.is_finite());
-        // The Lipschitz hypothesis: the sample deviates from the centre by at most
-        // L · r (f32 subtraction of finite values within the bracket is exact
-        // enough: IEEE round-to-nearest of `a - b` is monotone in both operands).
         kani::assume((sample - centre_value).abs() <= spread);
         let (low, high) = lipschitz_cell_bracket(centre_value, lipschitz, circumradius);
         assert!(sample >= low && sample <= high);
@@ -422,7 +509,8 @@ mod tests {
             bracket_f: &bracket_f,
             bracket_g: &bracket_g,
         };
-        let curves = trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(26.0), &config);
+        let curves =
+            trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(26.0), &config).curves;
         assert_eq!(curves.len(), 1, "one intersection circle");
         let curve = &curves[0];
         assert!(curve.closed, "the circle closes");
@@ -456,7 +544,8 @@ mod tests {
             bracket_f: &bracket_f,
             bracket_g: &bracket_g,
         };
-        let curves = trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(20.0), &config);
+        let curves =
+            trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(20.0), &config).curves;
         assert_eq!(curves.len(), 1);
         let curve = &curves[0];
         assert!(curve.closed);
@@ -492,7 +581,8 @@ mod tests {
             bracket_f: &bracket_f,
             bracket_g: &bracket_g,
         };
-        let curves = trace_intersection_curves(&pair, Vec3::splat(8.0), Vec3::splat(20.0), &config);
+        let curves =
+            trace_intersection_curves(&pair, Vec3::splat(8.0), Vec3::splat(20.0), &config).curves;
         assert!(!curves.is_empty(), "the notch junction exists");
         let mut on_surface_points = 0usize;
         for curve in &curves {
@@ -521,7 +611,8 @@ mod tests {
             bracket_f: &bracket_f,
             bracket_g: &bracket_g,
         };
-        let curves = trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(30.0), &config);
+        let curves =
+            trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(30.0), &config).curves;
         assert!(
             curves.iter().all(|curve| curve.points.len() < 4),
             "kissing spheres have no transversal junction"
@@ -544,7 +635,8 @@ mod tests {
             bracket_f: &bracket_f,
             bracket_g: &bracket_g,
         };
-        let curves = trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(30.0), &config);
+        let curves =
+            trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(30.0), &config).curves;
         assert!(curves.is_empty());
     }
 
@@ -566,11 +658,64 @@ mod tests {
         };
         let run = || {
             trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(26.0), &config)
+                .curves
                 .into_iter()
                 .flat_map(|curve| curve.points)
                 .flat_map(|point| [point.x.to_bits(), point.y.to_bits(), point.z.to_bits()])
                 .collect::<Vec<u32>>()
         };
         assert_eq!(run(), run());
+    }
+
+    /// The tangency floor's two sides, on a GRAZING but transversal crease: a
+    /// cylinder entering a plane at 10° off-horizontal (dihedral sine ≈ 0.17 at
+    /// the ellipse's shallow tips, just above the 0.15 floor) traces its full
+    /// closed ellipse; the same cylinder at 5° (sine ≈ 0.09) loses its tips to
+    /// the floor and degenerates to open side arcs — never a phantom closure.
+    #[test]
+    fn grazing_transversal_crease_survives_the_floor_until_it_reads_flush() {
+        let config = lipschitz_pair_config();
+        let field_f = |p: Vec3| p.z - 10.0;
+        let trace_at_tilt = |tilt_degrees: f32| {
+            let tilt = tilt_degrees.to_radians();
+            let axis_direction = Vec3::new(tilt.cos(), 0.0, tilt.sin());
+            let axis_point = Vec3::new(30.0, 30.0, 10.0);
+            let field_g = move |p: Vec3| {
+                let offset = p - axis_point;
+                (offset - axis_direction * offset.dot(axis_direction)).length() - 4.0
+            };
+            let f: &dyn Fn(Vec3) -> f32 = &field_f;
+            let g: &dyn Fn(Vec3) -> f32 = &field_g;
+            let bracket_f = bracket_of(f);
+            let bracket_g = bracket_of(g);
+            let pair = ImplicitSurfacePair {
+                field_f: f,
+                field_g: g,
+                bracket_f: &bracket_f,
+                bracket_g: &bracket_g,
+            };
+            trace_intersection_curves(&pair, Vec3::splat(0.0), Vec3::splat(60.0), &config)
+        };
+
+        let above = trace_at_tilt(10.0);
+        assert!(!above.seed_budget_exhausted && !above.step_budget_exhausted);
+        assert_eq!(above.curves.len(), 1, "one ellipse, traced once");
+        let ellipse = &above.curves[0];
+        assert!(ellipse.closed, "shallow but legitimate: the ellipse closes");
+        let min_x = ellipse.points.iter().map(|p| p.x).fold(f32::MAX, f32::min);
+        let max_x = ellipse.points.iter().map(|p| p.x).fold(f32::MIN, f32::max);
+        // Semi-major axis r / sin(tilt) ≈ 23: the march crossed the shallow tips.
+        assert!(max_x - min_x > 40.0, "full elongation, tips included");
+        assert!(
+            ellipse.min_dihedral_sine > 0.15 && ellipse.min_dihedral_sine < 0.25,
+            "the recorded minimum is the tip dihedral, got {}",
+            ellipse.min_dihedral_sine
+        );
+
+        let below = trace_at_tilt(5.0);
+        assert!(
+            below.curves.iter().all(|curve| !curve.closed),
+            "below the floor the tips read as flush: open side arcs only"
+        );
     }
 }

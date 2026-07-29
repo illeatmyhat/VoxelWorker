@@ -79,6 +79,10 @@ pub struct SelectedBodyCel {
     /// cylinder's 2 rim ellipses, a tube's 4), not anything derived from the voxel
     /// surface. Empty when no selected shape catalogues any edge.
     pub edge_segments: Vec<[f32; 3]>,
+    /// A cap cut the junction tracing short (pair cap, seed or step budget) —
+    /// some crease lines may be missing. Surfaced so a missing-line report is a
+    /// lookup, not a hunt; the catalogue edges are never truncated.
+    pub edge_trace_truncated: bool,
 }
 
 /// Segments per tessellated rim ellipse. Fixed (not screen-adaptive) so the polyline
@@ -127,8 +131,10 @@ fn collect_edge_segments_true_world(slice: &Scene, density: u32, out: &mut Vec<[
 }
 
 /// Hard cap on traced surface pairs per selection change (runaway guard for a
-/// selection overlapping very many bodies — pairs beyond it silently skip, which
-/// costs junction lines, never correctness).
+/// selection overlapping very many bodies). Deterministic truncation: pairs
+/// enumerate `(i, j < i)` over the DOCUMENT-ORDER leaf walk, so the same scene
+/// and selection always trace the same 64 — the cut costs junction lines (and
+/// raises the truncation flag), never correctness or golden stability.
 const JUNCTION_PAIR_CAP: usize = 64;
 
 /// Trace the CSG junction curves of the selection — where a selected leaf's
@@ -145,12 +151,16 @@ const JUNCTION_PAIR_CAP: usize = 64;
 /// a fieldless producer skips by type. The prune brackets are the evaluator's own
 /// `cell_field_interval` — conservative-never-narrow per producer, so the seeding
 /// never silently loses a curve to an optimistic Lipschitz guess.
+///
+/// Returns whether any cap truncated the result (the pair cap here, or a seed /
+/// step budget inside the tracer) — surfaced, never silent.
 fn collect_junction_segments_true_world(
     scene: &Scene,
     picked: &std::collections::BTreeSet<NodeId>,
     density: u32,
     out: &mut Vec<[f32; 3]>,
-) {
+) -> bool {
+    let mut truncated = false;
     let in_selection = |id: NodeId| {
         if picked.contains(&id) {
             return true;
@@ -270,14 +280,14 @@ fn collect_junction_segments_true_world(
                 continue;
             }
             if traced_pairs >= JUNCTION_PAIR_CAP {
-                return;
+                return true;
             }
             traced_pairs += 1;
             let field_a = world_field(a, density);
             let field_b = world_field(b, density);
             let bracket_a = world_bracket(a, density);
             let bracket_b = world_bracket(b, density);
-            let curves = substrate::spatial::trace_intersection_curves(
+            let outcome = substrate::spatial::trace_intersection_curves(
                 &substrate::spatial::ImplicitSurfacePair {
                     field_f: &field_a,
                     field_g: &field_b,
@@ -288,7 +298,8 @@ fn collect_junction_segments_true_world(
                 glam::Vec3::from_array(overlap_max),
                 &config,
             );
-            for curve in curves {
+            truncated |= outcome.seed_budget_exhausted || outcome.step_budget_exhausted;
+            for curve in outcome.curves {
                 for pair in curve.points.windows(2) {
                     out.push(pair[0].to_array());
                     out.push(pair[1].to_array());
@@ -300,6 +311,7 @@ fn collect_junction_segments_true_world(
             }
         }
     }
+    truncated
 }
 
 impl AppCore {
@@ -363,7 +375,7 @@ impl AppCore {
         if bodies.is_empty() {
             return None;
         }
-        collect_junction_segments_true_world(
+        let edge_trace_truncated = collect_junction_segments_true_world(
             scene,
             &picked,
             density,
@@ -381,6 +393,7 @@ impl AppCore {
             recentre,
             density,
             edge_segments,
+            edge_trace_truncated,
         })
     }
 }
@@ -940,7 +953,8 @@ mod tests {
             glam::Vec3::new(31.0, 31.0, 31.0),
             glam::Vec3::new(65.0, 65.0, 65.0),
             &substrate::spatial::SurfaceIntersectionConfig::default(),
-        );
+        )
+        .curves;
         assert_eq!(curves.len(), 3, "one L per body face, no flush phantoms");
         for curve in &curves {
             assert!(!curve.closed, "each L is open (aborts at the body edges)");
@@ -1009,7 +1023,8 @@ mod tests {
             glam::Vec3::new(15.0, 15.0, 15.0),
             glam::Vec3::new(49.0, 49.0, 65.0),
             &substrate::spatial::SurfaceIntersectionConfig::default(),
-        );
+        )
+        .curves;
         assert_eq!(curves.len(), 1, "one bore mouth, traced once");
         let circle = &curves[0];
         assert!(circle.closed);

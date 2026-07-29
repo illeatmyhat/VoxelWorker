@@ -829,9 +829,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 cel.density,
             );
             println!(
-                "selection outline: {} body(ies), {} edge segment(s)",
+                "selection outline: {} body(ies), {} edge segment(s){}",
                 cel.bodies.len(),
-                cel.edge_segments.len() / 2
+                cel.edge_segments.len() / 2,
+                if cel.edge_trace_truncated {
+                    " (junction tracing TRUNCATED by a cap)"
+                } else {
+                    ""
+                }
             );
         }
         selection_outline_renderer.prepare(&gpu.device, options.width, options.height, &depth_view);
