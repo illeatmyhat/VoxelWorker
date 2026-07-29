@@ -1,0 +1,156 @@
+//! Analytic feature-edge catalogue of a sketch solid (ADR 0032 selection feedback):
+//! the authored profile's own creases, lifted by the operation. An extrude creases
+//! along its two cap outlines and at every non-tangent profile vertex; a revolve
+//! creases on a latitude circle per non-tangent off-axis vertex, plus the profile
+//! outline at both sweep ends of a partial turn. A tangent vertex (collinear,
+//! same-direction neighbours — e.g. a `split_segment` midpoint) creases nothing.
+
+use super::solid::revolve_axes;
+use super::*;
+
+/// Exact tangency at a loop vertex: collinear AND same-direction (i128 over whole-voxel
+/// profile coords — no epsilon; stays exact when sub-voxel coords land as fixed-point).
+fn vertex_is_tangent(previous: [i64; 2], vertex: [i64; 2], next: [i64; 2]) -> bool {
+    let edge_in = [vertex[0] - previous[0], vertex[1] - previous[1]];
+    let edge_out = [next[0] - vertex[0], next[1] - vertex[1]];
+    let cross = edge_in[0] as i128 * edge_out[1] as i128 - edge_in[1] as i128 * edge_out[0] as i128;
+    let dot = edge_in[0] as i128 * edge_out[0] as i128 + edge_in[1] as i128 * edge_out[1] as i128;
+    cross == 0 && dot > 0
+}
+
+impl SketchSolid {
+    /// The catalogue as polylines in the producer-local `[0, grid_dimensions()]` voxel
+    /// frame — the SAME frame the resolve samples (ADR 0008: extrude fully
+    /// corner-anchored on the profile bbox min; revolve corner-anchored axially,
+    /// centred on the two radial axes). Empty for a degenerate producer.
+    /// `circle_segments` tessellates one full latitude turn; a partial arc keeps the
+    /// same angular density.
+    pub(crate) fn profile_edge_polylines_local(&self, circle_segments: u32) -> Vec<Vec<[f32; 3]>> {
+        let Some((profile_min, _)) = self.profile_bounds() else {
+            return Vec::new();
+        };
+        let mut ring: Vec<[i64; 2]> = self
+            .sketch
+            .flattened_loop()
+            .iter()
+            .map(|point| point.offset_voxels)
+            .collect();
+        ring.dedup();
+        while ring.len() > 1 && ring.first() == ring.last() {
+            ring.pop();
+        }
+        if ring.len() < 3 {
+            return Vec::new();
+        }
+        let vertex_count = ring.len();
+        let neighbours = |index: usize| {
+            (
+                ring[(index + vertex_count - 1) % vertex_count],
+                ring[index],
+                ring[(index + 1) % vertex_count],
+            )
+        };
+        let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
+        let normal = self.sketch.plane.normal_axis();
+        let mut polylines = Vec::new();
+        match self.operation {
+            Operation::Extrude { height_voxels } => {
+                let height = height_voxels as f32;
+                let local_point = |vertex: [i64; 2], along_normal: f32| -> [f32; 3] {
+                    let mut point = [0.0f32; 3];
+                    point[in_plane_0] = (vertex[0] - profile_min[0]) as f32;
+                    point[in_plane_1] = (vertex[1] - profile_min[1]) as f32;
+                    point[normal] = along_normal;
+                    point
+                };
+                for cap in [0.0, height] {
+                    let mut outline: Vec<[f32; 3]> = ring
+                        .iter()
+                        .map(|&vertex| local_point(vertex, cap))
+                        .collect();
+                    outline.push(outline[0]);
+                    polylines.push(outline);
+                }
+                for index in 0..vertex_count {
+                    let (previous, vertex, next) = neighbours(index);
+                    if !vertex_is_tangent(previous, vertex, next) {
+                        polylines.push(vec![local_point(vertex, 0.0), local_point(vertex, height)]);
+                    }
+                }
+            }
+            Operation::Revolve { axis, sweep } => {
+                let dimensions = self.grid_dimensions();
+                let (axial_world_axis, axial_min, radial_a, radial_b) =
+                    revolve_axes(axis, in_plane_0, in_plane_1, normal, profile_min);
+                let half_a = dimensions[radial_a] as f32 / 2.0;
+                let half_b = dimensions[radial_b] as f32 / 2.0;
+                let (axial_coord, radial_coord) = match axis {
+                    RevolveAxis::InPlane0 => (0usize, 1usize),
+                    RevolveAxis::InPlane1 => (1, 0),
+                };
+                let turn_degrees = sweep.turn_degrees.min(360);
+                let turn_radians = (turn_degrees as f32).to_radians();
+                let place = |axial: f32, radius: f32, angle: f32| -> [f32; 3] {
+                    let mut point = [0.0f32; 3];
+                    point[axial_world_axis] = axial - axial_min as f32;
+                    point[radial_a] = half_a + radius * angle.cos();
+                    point[radial_b] = half_b + radius * angle.sin();
+                    point
+                };
+                // A latitude circle (arc, for a partial turn) per non-tangent off-axis
+                // vertex; a vertex ON the axis is a pole and creases nothing.
+                let steps = (circle_segments * turn_degrees).div_ceil(360).max(1);
+                for index in 0..vertex_count {
+                    let (previous, vertex, next) = neighbours(index);
+                    if vertex_is_tangent(previous, vertex, next) || vertex[radial_coord] == 0 {
+                        continue;
+                    }
+                    let radius = vertex[radial_coord].unsigned_abs() as f32;
+                    let axial = vertex[axial_coord] as f32;
+                    let mut arc: Vec<[f32; 3]> = (0..=steps)
+                        .map(|step| place(axial, radius, turn_radians * step as f32 / steps as f32))
+                        .collect();
+                    if turn_degrees == 360 {
+                        // Close the loop bit-exactly (sin(TAU) is not exactly 0.0).
+                        *arc.last_mut().expect("steps >= 1") = arc[0];
+                    }
+                    polylines.push(arc);
+                }
+                // A partial sweep exposes the profile at both ends. The revolve folds
+                // radius by |·|, so a straddling edge bends AT the axis: insert the
+                // crossing point so the outline follows the folded silhouette.
+                if turn_degrees < 360 {
+                    for angle in [0.0, turn_radians] {
+                        let mut outline = Vec::with_capacity(vertex_count + 1);
+                        for index in 0..vertex_count {
+                            let vertex = ring[index];
+                            let next = ring[(index + 1) % vertex_count];
+                            outline.push(place(
+                                vertex[axial_coord] as f32,
+                                vertex[radial_coord].unsigned_abs() as f32,
+                                angle,
+                            ));
+                            let radial_here = vertex[radial_coord];
+                            let radial_next = next[radial_coord];
+                            if radial_here != 0
+                                && radial_next != 0
+                                && (radial_here < 0) != (radial_next < 0)
+                            {
+                                let toward_crossing = radial_here.unsigned_abs() as f32
+                                    / (radial_here.unsigned_abs() + radial_next.unsigned_abs())
+                                        as f32;
+                                let axial_at_crossing = vertex[axial_coord] as f32
+                                    + toward_crossing
+                                        * (next[axial_coord] - vertex[axial_coord]) as f32;
+                                outline.push(place(axial_at_crossing, 0.0, angle));
+                            }
+                        }
+                        outline.push(outline[0]);
+                        polylines.push(outline);
+                    }
+                }
+            }
+        }
+        polylines
+    }
+}

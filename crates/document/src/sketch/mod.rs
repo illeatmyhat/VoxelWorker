@@ -12,11 +12,12 @@
 //!
 //! **Leak-free by construction (§3i leak-retirement).** The profile points and the
 //! extrude span are integer voxels on the lattice/sub-lattice — there is no
-//! implicit centre anchor and so no half-block correction. The producer emits its
-//! voxels centred on its own origin-centred grid exactly the way `SdfShape` does
-//! (centres at `idx + 0.5 − grid/2`), but its placement does NOT route through
-//! `leaf_lattice_shift_voxels`: a sketch's footprint is corner-anchored, so the
-//! block-lattice shift the implicit-centre model needed is identically zero. (The
+//! implicit centre anchor and so no half-block correction. The producer samples
+//! CORNER-ANCHORED: the resolve tests the profile at `bbox_min + idx + 0.5` (no
+//! `grid/2` centring anywhere — a revolve centres only its two RADIAL axes), and
+//! its placement does NOT route through `leaf_lattice_shift_voxels`: a sketch's
+//! footprint is corner-anchored, so the block-lattice shift the implicit-centre
+//! model needed is identically zero. (The
 //! resolve path treats a sketch leaf like a VoxelBody — no intrinsic block size, no
 //! lattice snap — see `Scene::resolve_*`.)
 //!
@@ -25,6 +26,7 @@
 //! The profile is a closed simple polygon (≥3 points); a degenerate profile
 //! (fewer than 3 points, or zero area) resolves to nothing rather than panicking.
 
+mod edges;
 mod produce;
 mod solid;
 #[cfg(test)]

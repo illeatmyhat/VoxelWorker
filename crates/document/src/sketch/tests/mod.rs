@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use voxel_core::voxel::VoxelGrid;
 
 mod coarse_solid;
+mod edges;
 mod edits;
 mod extrude;
 mod field;

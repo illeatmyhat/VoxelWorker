@@ -55,7 +55,7 @@ pub(super) struct RevolveField {
 /// passes the profile bounds min, `revolve_cell_is_solid` the sample bbox min; both
 /// select the same coord from it. One definition so the two stay in lockstep (the cell
 /// test's own comment already says "matching resolve_revolve").
-fn revolve_axes(
+pub(super) fn revolve_axes(
     axis: RevolveAxis,
     in_plane_0: usize,
     in_plane_1: usize,
@@ -199,7 +199,7 @@ impl SketchSolid {
     /// in-plane axis, or `None` for a degenerate profile (fewer than 3 points or a
     /// zero-extent span on either in-plane axis). The local in-plane grid is sized
     /// `max − min`; cells are addressed from `min`.
-    fn profile_bounds(&self) -> Option<([i64; 2], [i64; 2])> {
+    pub(super) fn profile_bounds(&self) -> Option<([i64; 2], [i64; 2])> {
         // Per-operation degeneracy: an Extrude with zero height is empty (its prism
         // has no thickness); a Revolve with zero turn is empty (no sweep). Other
         // operations branch here as they are added.

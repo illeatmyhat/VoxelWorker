@@ -287,6 +287,16 @@ impl VoxelProducer for SketchSolid {
     fn as_field(&self) -> Option<&dyn crate::voxel::Field> {
         Some(self)
     }
+
+    /// Density-independent like the geometry itself (the profile is authored in
+    /// voxels outright) — see [`SketchSolid::profile_edge_polylines_local`].
+    fn edge_polylines_local(
+        &self,
+        _voxels_per_block: u32,
+        circle_segments: u32,
+    ) -> Vec<Vec<[f32; 3]>> {
+        self.profile_edge_polylines_local(circle_segments)
+    }
 }
 
 impl crate::voxel::Field for SketchSolid {

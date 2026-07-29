@@ -581,6 +581,41 @@ mod tests {
         );
     }
 
+    /// A sketch solid's edges arrive through the same leaf walk (the producer answers
+    /// the catalogue itself): an L extrude catalogues 2 cap outlines (6 windows each)
+    /// + 6 laterals = 36 segment endpoints, corner-anchored at the node's offset.
+    #[test]
+    fn sketch_solid_cel_edges_flow_through_the_leaf_walk() {
+        use document::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
+        let profile = vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(4, 0),
+            SketchPoint::new(4, 2),
+            SketchPoint::new(2, 2),
+            SketchPoint::new(2, 4),
+            SketchPoint::new(0, 4),
+        ];
+        let node = Node::new(
+            "L",
+            NodeContent::SketchTool {
+                producer: SketchSolid::extrude(Sketch::new(PlaneAxis::Z, profile), 3),
+                material: MaterialChoice::Stone,
+            },
+        );
+        let mut scene = Scene::from_nodes(vec![node]);
+        scene.voxels_per_block = DENSITY;
+        scene.ensure_node_ids();
+
+        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0]], DENSITY)
+            .expect("sketch solid derives a body");
+        assert_eq!(cel.edge_segments.len(), 36);
+        let recentre = cel.recentre.voxels();
+        for point in &cel.edge_segments {
+            let z = point[2] + recentre[2] as f32;
+            assert!(z == 0.0 || z == 3.0, "every edge point sits on a cap plane");
+        }
+    }
+
     /// Selecting the ROOT PART x-rays every boolean in the whole scene (the scene-wide
     /// master): two hosts each with their own cutter → two ghost bodies.
     #[test]
