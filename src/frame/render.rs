@@ -159,7 +159,6 @@ pub fn upload_overlay_uniforms(
     aspect_ratio: f32,
     view_projection: glam::Mat4,
     ndc_depth: camera::NdcDepthMapping,
-    viewport_px: [u32; 4],
     gizmo_placement: Option<([f32; 3], [f32; 3])>,
     transform_gizmo: &TransformGizmoRenderer,
     selected_operand_ghost: &SelectedOperandGhostRenderer,
@@ -178,9 +177,9 @@ pub fn upload_overlay_uniforms(
     // ADR 0018 Decision 6: the operand ghost + the corner cube ride the scene camera directly.
     selected_operand_ghost.update_uniforms(queue, view_projection);
     // ADR 0032: the selection outline's G-buffer records the SAME scene matrix (the wash
-    // compares its hardware depth against the scene's), its epsilon rides the matching
-    // NDC-depth mapping, and the crease pass sizes its block footprint to the viewport.
-    selection_outline.update_uniforms(queue, view_projection, ndc_depth, viewport_px[3]);
+    // compares its hardware depth against the scene's), and its epsilon rides the matching
+    // NDC-depth mapping.
+    selection_outline.update_uniforms(queue, view_projection, ndc_depth);
     view_cube.update_uniforms(queue, camera.view_cube_view_projection());
 }
 

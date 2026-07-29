@@ -83,12 +83,6 @@ pub struct NdcDepthMapping {
     pub depth_scale: f32,
     /// The projection matrix's `w_axis.z` (the constant term of clip z).
     pub depth_offset: f32,
-    /// The projection matrix's `y_axis.y` — the LATERAL companion to the z-row,
-    /// carried so the same pass can convert a world length into a screen footprint
-    /// (the selection crease pass sizes its filter to the projected block):
-    /// `pixels_per_world_unit = vertical_scale · viewport_height_px / (2·d)` under
-    /// perspective (`d` = view depth), and with `d = 1` under orthographic.
-    pub vertical_scale: f32,
     /// Which branch of the mapping applies (`clip_w` is 1 vs `−view_z`).
     pub orthographic: bool,
 }
@@ -161,7 +155,6 @@ impl OrbitCamera {
         let ndc_depth = NdcDepthMapping {
             depth_scale: projection.z_axis.z,
             depth_offset: projection.w_axis.z,
-            vertical_scale: projection.y_axis.y,
             orthographic: self.projection_mode == ProjectionMode::Orthographic,
         };
         match self.projection_mode {
@@ -445,23 +438,6 @@ mod tests {
                 assert!(
                     (analytic_slope - numeric_slope).abs() < numeric_slope * 0.01 + 1e-6,
                     "{mode:?} depth {depth}: analytic slope {analytic_slope} vs numeric {numeric_slope}"
-                );
-                // Lateral scale: a world offset `u` along the camera's up axis at
-                // this depth must span `vertical_scale · u / d` of NDC y (d = 1
-                // under orthographic) — the projected-footprint form the selection
-                // crease pass sizes its block-relative filter with.
-                let offset = 0.75f32;
-                // The VIEW frame's up (look_at orthonormalises the camera's up
-                // against forward), so the offset stays at this exact view depth.
-                let right = forward.cross(camera.up_vector()).normalize();
-                let view_up = right.cross(forward);
-                let shifted = matrices.view_projection * (point + view_up * offset).extend(1.0);
-                let ndc_y_span = (shifted.y / shifted.w - clip.y / clip.w).abs();
-                let lateral_depth = if mapping.orthographic { 1.0 } else { depth };
-                let mapping_span = mapping.vertical_scale.abs() * offset / lateral_depth;
-                assert!(
-                    (ndc_y_span - mapping_span).abs() < ndc_y_span * 0.01 + 1e-5,
-                    "{mode:?} depth {depth}: ndc y span {ndc_y_span} vs mapping {mapping_span}"
                 );
             }
         }

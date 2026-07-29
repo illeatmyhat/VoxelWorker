@@ -1222,7 +1222,6 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         aspect_ratio,
         view_projection,
         scene_matrices.ndc_depth,
-        prepared.viewport_px,
         gizmo_placement,
         &transform_gizmo_renderer,
         &selected_operand_ghost_renderer,

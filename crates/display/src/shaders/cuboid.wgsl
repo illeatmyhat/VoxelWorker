@@ -184,16 +184,6 @@ fn vertex_main(vertex: VertexInput) -> VertexOutput {
     return output;
 }
 
-// Selection-hull normal target (selection_outline.rs): the face's outward normal
-// with coverage in alpha, premultiplied-style, so the crease pass's mip chain can
-// average normals without bleeding the cleared background in. Depth test/write of
-// the hull pipeline picks WHICH fragment's normal survives (nearest front face /
-// farthest back face). No bindings beyond group(0)'s vertex uniforms.
-@fragment
-fn hull_normal_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.world_normal, 1.0);
-}
-
 @fragment
 fn fragment_main(
     input: VertexOutput,
