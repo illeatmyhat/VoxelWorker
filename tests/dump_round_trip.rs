@@ -214,7 +214,7 @@ fn arbitrary_config(rng: &mut Lcg, scene: Option<Scene>) -> AppConfig {
             pivot: rng.pick(&[PlacementPivot::Base, PlacementPivot::VolumetricCenter]),
         },
         sketch_mode: rng.flag().then_some(NodeId(9)),
-        sketch_tool: rng.pick(&[SketchTool::Select, SketchTool::AddPoint, SketchTool::Delete]),
+        sketch_tool: rng.pick(&[SketchTool::Select, SketchTool::AddPoint]),
         default_orbit_type: rng.pick(&[OrbitType::Constrained, OrbitType::Free]),
         orbit_mode: rng.pick(&[
             OrbitMode::Off,
@@ -324,7 +324,7 @@ fn every_enum_variant_survives_the_full_loop() {
         config.view_mode = view_mode;
         cases.push((format!("view_mode={view_mode:?}"), config));
     }
-    for sketch_tool in [SketchTool::Select, SketchTool::AddPoint, SketchTool::Delete] {
+    for sketch_tool in [SketchTool::Select, SketchTool::AddPoint] {
         let mut config = base();
         config.sketch_tool = sketch_tool;
         cases.push((format!("sketch_tool={sketch_tool:?}"), config));

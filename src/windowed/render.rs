@@ -1155,7 +1155,7 @@ impl WindowedState {
     /// The profile-vertex index under the cursor (physical px), the nearest within the handle
     /// grab radius, or `None`. Reads the profile-order [`sketch_vertex_px`](Self::sketch_vertex_px)
     /// cache, so it shares the exact projection the overlay drew. Used by the vertex-drag grab
-    /// (#94) and the delete hit-test (#95).
+    /// (#94) and the selection click resolve (ADR 0030).
     fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
         let grab_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
             * self.window.scale_factor() as f32;
@@ -1242,35 +1242,11 @@ impl WindowedState {
         Some(producer.with_point_on_segment(seg_id, point))
     }
 
-    /// ADR 0030: the delete producer for a click at the cursor (physical px). A POINT under the
-    /// cursor is deleted, cascading its incident segments (delete a point → remove its edges and
-    /// nothing else); otherwise a SEGMENT under the cursor is deleted on its own, its endpoints
-    /// left as free points (delete a line → remove only the line). `None` when neither is under
-    /// the cursor or `target` is not an enabled sketch node. The caller routes the returned
-    /// producer through [`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit).
-    pub(super) fn sketch_delete_at(
-        &self,
-        cursor_x: f64,
-        cursor_y: f64,
-    ) -> Option<document::sketch::SketchSolid> {
-        let target = self.panel_state.sketch_mode?;
-        let (producer, _) = self.sketch_node_state(target)?;
-        // Prefer a vertex hit (delete the point + its segments); fall back to a segment hit
-        // (delete just that line). ADR 0030 — delete any entity, the clicked one only.
-        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
-            if let Some(&point_id) = self.sketch_point_ids.get(index) {
-                return Some(producer.with_point_deleted(point_id));
-            }
-        }
-        let seg_id = self.sketch_segment_at(cursor_x, cursor_y)?;
-        Some(producer.with_segment_deleted(seg_id))
-    }
-
     /// ADR 0030: resolve a stationary Select-tool click into the sketch selection. A vertex under
     /// the cursor takes priority (it already answers as a handle), then a segment, else empty
     /// space. Plain click **replaces** the selection with that one entity; `shift` **toggles** it
     /// in/out (accumulate). A plain click on empty space **clears**; a Shift-click on empty space
-    /// keeps the selection (Fusion). Reuses the same hit-tests the drag and delete run, so what you
+    /// keeps the selection (Fusion). Reuses the same hit-tests the drag runs, so what you
     /// click is what you pick. Pure selection-state mutation — records no document edit.
     pub(super) fn resolve_sketch_selection_click(&mut self, cursor_x: f64, cursor_y: f64) {
         let Some(sketch) = self.panel_state.sketch_mode else {
@@ -1760,9 +1736,8 @@ impl WindowedState {
     /// each profile vertex (render frame) to screen, storing the egui-point handles + their
     /// interaction state for drawing, and the physical-pixel centres **in profile order** for the
     /// press hit-tests (a culled behind-camera vertex is `None`, keeping the indices aligned so
-    /// segments can pair adjacent vertices). Also derives the delete-hover **Marked** state and
-    /// the add-point **insert-preview** marker from the armed tool. Clears everything outside
-    /// sketch mode.
+    /// segments can pair adjacent vertices). Also derives the add-point **insert-preview**
+    /// marker from the armed tool. Clears everything outside sketch mode.
     fn refresh_sketch_overlay(
         &mut self,
         view_projection: glam::Mat4,
@@ -1820,13 +1795,11 @@ impl WindowedState {
                     self.panel_state.selection.contains(picked)
                 })
                 .unwrap_or(false);
-            // Precedence: dragged > delete-hover (warn ✕) > selected > hover > idle. A selected
-            // vertex stays filled-accent even under the cursor (only the destructive delete-hover
-            // overrides it), matching the segment rule so a point and an edge read alike (ADR 0030).
+            // Precedence: dragged > selected > hover > idle. A selected vertex stays
+            // filled-accent even under the cursor, matching the segment rule so a point and an
+            // edge read alike (ADR 0030).
             let state = if dragging_point == point_id {
                 ui::gizmos::HandleState::Snapped
-            } else if hovered && tool == ui::panel::SketchTool::Delete {
-                ui::gizmos::HandleState::Marked
             } else if selected {
                 ui::gizmos::HandleState::Selected
             } else if hovered {
@@ -1848,14 +1821,13 @@ impl WindowedState {
 
         // The segment under the cursor and the state it should draw in. A vertex under the cursor
         // takes priority — it already answers with its own handle state — so a segment lights up
-        // only when no vertex is hit, the SAME decision the vertex-grab and `sketch_delete_at`
-        // make. Reusing those two hit-tests keeps the feedback exactly aligned with what a click
-        // acts on. Select → Hover (brighter, "you can pick this edge"); Delete → Marked (warn +
-        // `✕`, "this edge goes"); Add-point has its own insert diamond, so segments stay Idle.
+        // only when no vertex is hit, the SAME decision the vertex-grab makes. Reusing that
+        // hit-test keeps the feedback exactly aligned with what a click acts on. Select → Hover
+        // (brighter, "you can pick this edge"); Add-point has its own insert diamond, so
+        // segments stay Idle.
         let hovered_segment: Option<(document::sketch::EntityId, ui::gizmos::HandleState)> =
             match tool {
                 ui::panel::SketchTool::Select => Some(ui::gizmos::HandleState::Hover),
-                ui::panel::SketchTool::Delete => Some(ui::gizmos::HandleState::Marked),
                 ui::panel::SketchTool::AddPoint => None,
             }
             .and_then(|state| {
@@ -1881,18 +1853,14 @@ impl WindowedState {
             ) {
                 let a = egui::Pos2::new(a_px.x / pixels_per_point, a_px.y / pixels_per_point);
                 let b = egui::Pos2::new(b_px.x / pixels_per_point, b_px.y / pixels_per_point);
-                // Precedence: delete-hover (Marked ✕) > Selected > plain Hover > Idle. A selected
-                // edge stays bold even under the cursor (Select hover never shrinks it); only the
-                // destructive delete-hover overrides it.
+                // Precedence: Selected > plain Hover > Idle. A selected edge stays bold even
+                // under the cursor (Select hover never shrinks it).
                 let picked = ui::panel::SelectionTarget::SketchSegment {
                     sketch: target,
                     entity: seg_id,
                 };
                 let selected = self.panel_state.selection.contains(picked);
                 let state = match hovered_segment {
-                    Some((id, ui::gizmos::HandleState::Marked)) if id == seg_id => {
-                        ui::gizmos::HandleState::Marked
-                    }
                     _ if selected => ui::gizmos::HandleState::Selected,
                     Some((id, state)) if id == seg_id => state,
                     _ => ui::gizmos::HandleState::Idle,

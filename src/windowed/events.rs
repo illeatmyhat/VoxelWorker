@@ -122,8 +122,8 @@ impl ApplicationHandler for App {
                         && state.panel_state.armed_tool.is_none()
                         && state.panel_state.sketch_mode.is_none();
                     // ADR 0028 (#94/#95): a sketch-mode press, on the live viewport (not egui /
-                    // cube). The Select tool grabs a vertex handle; the Add-point / Delete tools
-                    // ARM a stationary-release edit. The view stays freely rotatable throughout
+                    // cube). The Select tool grabs a vertex handle; the Add-point tool ARMS a
+                    // stationary-release edit. The view stays freely rotatable throughout
                     // via Shift+MMB, which is gated on neither sketch mode nor the armed tool.
                     if state.panel_state.sketch_mode.is_some()
                         && !in_orbit_mode
@@ -141,7 +141,7 @@ impl ApplicationHandler for App {
                                         state.begin_sketch_vertex_drag(cursor_x, cursor_y);
                                 }
                                 // Arm the edit; a stationary release performs it.
-                                ui::panel::SketchTool::AddPoint | ui::panel::SketchTool::Delete => {
+                                ui::panel::SketchTool::AddPoint => {
                                     state.sketch_edit_press = true;
                                 }
                             }
@@ -211,11 +211,11 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0028 (#95): a STATIONARY release with a sketch add-point / delete edit
-                    // armed performs it (the same click-vs-drag threshold placement uses; a drag
+                    // ADR 0028 (#95): a STATIONARY release with a sketch add-point edit armed
+                    // performs it (the same click-vs-drag threshold placement uses; a drag
                     // no longer orbits, but a twitchy press must still not edit).
                     // Runs BEFORE `last_cursor_position` is cleared below, since
-                    // the insert/delete hit-test needs the release cursor. The tool stays armed.
+                    // the insert hit-test needs the release cursor. The tool stays armed.
                     if state.sketch_edit_press {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
                             (state.press_position, state.last_cursor_position)
@@ -229,9 +229,6 @@ impl ApplicationHandler for App {
                                 let edit = match state.panel_state.sketch_tool {
                                     ui::panel::SketchTool::AddPoint => {
                                         state.sketch_insert_at(up_x, up_y)
-                                    }
-                                    ui::panel::SketchTool::Delete => {
-                                        state.sketch_delete_at(up_x, up_y)
                                     }
                                     ui::panel::SketchTool::Select => None,
                                 };

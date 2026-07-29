@@ -123,14 +123,14 @@ enum ViewModeConfig {
 
 /// The same shim for the `ui` crate's [`SketchTool`] (ADR 0028, #95) — the armed sketch-mode
 /// verb. `ui` carries no serde (the crate law), so the tool is persisted from out here exactly
-/// as the viewer mode is. Mirrors all three variants; a dump naming a variant this build lacks
-/// falls back to the default (`Select`), the same tolerance every other key gets.
+/// as the viewer mode is. Mirrors both variants; a dump naming a variant this build lacks
+/// (e.g. the retired `Delete` tool) falls back to the default (`Select`), the same tolerance
+/// every other key gets.
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "SketchTool")]
 enum SketchToolConfig {
     Select,
     AddPoint,
-    Delete,
 }
 
 /// And for the Signal display stack's fold state. A struct rather than an enum, which
@@ -749,8 +749,8 @@ mod tests {
             // Off its default (Some, not None) so a capture that dropped it fails the
             // round-trip rather than coinciding with a default restore (ADR 0028).
             sketch_mode: Some(document::scene::NodeId(9)),
-            // Off its default (Delete, not Select) for the same reason (ADR 0028, #95).
-            sketch_tool: SketchTool::Delete,
+            // Off its default (AddPoint, not Select) for the same reason (ADR 0028, #95).
+            sketch_tool: SketchTool::AddPoint,
             // Off its default (Free, not Constrained) so a capture that dropped it fails the
             // round-trip rather than coinciding with a default restore.
             default_orbit_type: OrbitType::Free,

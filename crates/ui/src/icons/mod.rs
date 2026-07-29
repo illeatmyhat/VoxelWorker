@@ -54,7 +54,6 @@ mod close_loop;
 mod commit;
 mod composed_part;
 mod cylinder;
-mod delete_vertex;
 mod density;
 mod displace;
 mod drawer;
@@ -585,7 +584,6 @@ pub enum Icon {
     AddPoint,
     Polyline,
     Rectangle,
-    DeleteVertex,
     CloseLoop,
     SnapNone,
     SnapVoxel,
@@ -654,7 +652,6 @@ impl Icon {
         Icon::AddPoint,
         Icon::Polyline,
         Icon::Rectangle,
-        Icon::DeleteVertex,
         Icon::CloseLoop,
         Icon::SnapNone,
         Icon::SnapVoxel,
@@ -723,7 +720,6 @@ impl Icon {
             Icon::AddPoint => g.marks(add_point::DRAW),
             Icon::Polyline => g.marks(polyline::DRAW),
             Icon::Rectangle => g.marks(rectangle::DRAW),
-            Icon::DeleteVertex => g.marks(delete_vertex::DRAW),
             Icon::CloseLoop => g.marks(close_loop::DRAW),
             Icon::SnapNone => g.marks(snap_none::DRAW),
             Icon::SnapVoxel => g.marks(snap_voxel::DRAW),
@@ -792,7 +788,6 @@ impl Icon {
             Icon::AddPoint => "add-point",
             Icon::Polyline => "polyline",
             Icon::Rectangle => "rectangle",
-            Icon::DeleteVertex => "delete-vertex",
             Icon::CloseLoop => "close-loop",
             Icon::SnapNone => "snap-none",
             Icon::SnapVoxel => "snap-voxel",
@@ -855,7 +850,6 @@ impl Icon {
             | Icon::AddPoint
             | Icon::Polyline
             | Icon::Rectangle
-            | Icon::DeleteVertex
             | Icon::CloseLoop
             | Icon::SnapNone
             | Icon::SnapVoxel
@@ -957,7 +951,6 @@ impl Icon {
             }
             Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
             Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",
-            Icon::DeleteVertex => "Sketch: remove a profile point — the inverse of place, not a boolean subtract.",
             Icon::CloseLoop => {
                 "Sketch: join the open polyline back to its start vertex; the closing run is dashed \
                  until the click commits it."

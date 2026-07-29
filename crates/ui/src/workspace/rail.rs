@@ -65,10 +65,11 @@ const TOOLS: &[(Icon, bool)] = &[
 ];
 
 /// The sketch-mode rail toolset (ADR 0028): the direct-manipulation vertex tools. Rendered in
-/// place of `SHAPES`/`TOOLS` while a sketch is being edited. The three that carry `Some(tool)`
-/// ARM that [`SketchTool`] on click (#94 select/move, #95 add-point/delete); Polyline and
-/// Rectangle carry `None` — drawn RESERVED until slice 3, so the finished toolbelt is visible
-/// without pretending the verbs work (the rail's standing convention).
+/// place of `SHAPES`/`TOOLS` while a sketch is being edited. The two that carry `Some(tool)`
+/// ARM that [`SketchTool`] on click (#94 select/move, #95 add-point); Polyline and Rectangle
+/// carry `None` — drawn RESERVED until slice 3, so the finished toolbelt is visible without
+/// pretending the verbs work (the rail's standing convention). Delete is NOT a tool: it acts
+/// on the selection via the Delete key or context menu (`docs/design/sketch-selection.md`).
 const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
     (
         Icon::SelectVertex,
@@ -82,11 +83,6 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
     ),
     (Icon::Polyline, "Line / polyline", None),
     (Icon::Rectangle, "Rectangle", None),
-    (
-        Icon::DeleteVertex,
-        "Delete vertex",
-        Some(SketchTool::Delete),
-    ),
 ];
 
 /// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
