@@ -482,6 +482,7 @@ impl WindowedState {
                     Some(cel) => self.selection_outline_renderer.rebuild(
                         &self.gpu.device,
                         &cel.bodies,
+                        &cel.edge_segments,
                         cel.grid_dimensions,
                         cel.recentre,
                         cel.density,

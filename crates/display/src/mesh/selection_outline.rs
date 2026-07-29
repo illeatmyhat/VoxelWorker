@@ -53,11 +53,20 @@ const SELECTION_COINCIDENCE_HALF_WIDTH: f32 = 0.5;
 /// slope epsilon collapses toward zero.
 const SELECTION_EPSILON_FLOOR: f32 = 1e-6;
 
+/// The analytic feature edges' depth tolerance in voxels: how far the voxelised
+/// surface may sit from the authored surface along the view ray and still count as
+/// "the edge is on the visible surface". The stair faces deviate up to a full voxel
+/// from the analytic curve, so this is wider than the wash's half-voxel coincidence.
+const SELECTION_EDGE_HALF_WIDTH: f32 = 1.0;
+
 /// std140-safe composite uniforms; field order matches the WGSL
 /// `SelectionOutlineUniforms` exactly.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct SelectionOutlineUniforms {
+    /// The scene pass's own view-projection — the edge lines project through it so
+    /// their fragments land on the same pixels + depths as the voxel surface.
+    view_projection: [[f32; 4]; 4],
     /// Wash colour: the Signal accent (linear) + the resting wash alpha.
     tint: [f32; 4],
     outline_alpha: f32,
@@ -67,7 +76,8 @@ struct SelectionOutlineUniforms {
     depth_offset: f32,
     orthographic: f32,
     epsilon_floor: f32,
-    _pad: [f32; 2],
+    edge_half_width: f32,
+    _pad: f32,
 }
 
 /// GPU resources for the selection outline + wash. Owned by the shell beside the
@@ -80,6 +90,10 @@ pub struct SelectionOutlineRenderer {
     /// Full-screen composite: `selection_outline.wgsl`, alpha-blended onto the
     /// resolved target, no depth attachment.
     composite_pipeline: wgpu::RenderPipeline,
+    /// Analytic feature-edge lines (same shader module, `edge_*` entries): 1px
+    /// `LineList` drawn inside the composite pass, visibility decided per fragment
+    /// against the hull interval + scene depth.
+    edge_pipeline: wgpu::RenderPipeline,
     composite_bind_group_layout: wgpu::BindGroupLayout,
     gbuffer_uniform_buffer: wgpu::Buffer,
     gbuffer_uniform_bind_group: wgpu::BindGroup,
@@ -93,6 +107,10 @@ pub struct SelectionOutlineRenderer {
     /// The uploaded chunk buffers of every selected body (empty = nothing selected /
     /// the selection has no body), sorted by coord within each body.
     chunk_buffers: Vec<CuboidChunkBuffers>,
+    /// The analytic edge segments' vertex buffer (render-frame voxel positions,
+    /// endpoint pairs) + its vertex count. `None`/0 = no catalogued edges.
+    edge_vertex_buffer: Option<wgpu::Buffer>,
+    edge_vertex_count: u32,
     /// The composed scene's voxel dims + density the meshes were built against, echoed
     /// into the per-frame uniforms (the vertex stage's corner-anchoring scalars).
     grid_dimensions: [u32; 3],
@@ -197,9 +215,11 @@ impl SelectionOutlineRenderer {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("selection-outline composite bind group layout"),
                 entries: &[
+                    // VERTEX too: the edge lines project through the uniforms'
+                    // view_projection in their vertex stage.
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -273,6 +293,47 @@ impl SelectionOutlineRenderer {
             cache: None,
         });
 
+        // Same shader module + bind group as the composite; only the topology and
+        // entry points differ. No depth attachment — visibility is the fragment's own
+        // NDC depth against the hull interval + scene samples.
+        let edge_vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<[f32; 3]>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x3,
+            }],
+        };
+        let edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("selection-outline edge pipeline"),
+            layout: Some(&composite_layout),
+            vertex: wgpu::VertexState {
+                module: &composite_shader,
+                entry_point: Some("edge_vertex_main"),
+                buffers: std::slice::from_ref(&edge_vertex_layout),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_shader,
+                entry_point: Some("edge_fragment_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let gbuffer_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("selection-outline gbuffer uniforms"),
             size: std::mem::size_of::<CuboidUniforms>() as u64,
@@ -298,6 +359,7 @@ impl SelectionOutlineRenderer {
             front_hull_pipeline,
             back_hull_pipeline,
             composite_pipeline,
+            edge_pipeline,
             composite_bind_group_layout,
             gbuffer_uniform_buffer,
             gbuffer_uniform_bind_group,
@@ -307,6 +369,8 @@ impl SelectionOutlineRenderer {
             back_hull_view: None,
             target_size: (0, 0),
             chunk_buffers: Vec::new(),
+            edge_vertex_buffer: None,
+            edge_vertex_count: 0,
             grid_dimensions: [0; 3],
             voxels_per_block: 1,
         }
@@ -376,6 +440,8 @@ impl SelectionOutlineRenderer {
     /// Drop every body (the selection cleared / resolves to no geometry).
     pub fn clear(&mut self) {
         self.chunk_buffers.clear();
+        self.edge_vertex_buffer = None;
+        self.edge_vertex_count = 0;
     }
 
     /// (Re)build the selection meshes for a fresh derivation. Called ONLY on
@@ -387,11 +453,20 @@ impl SelectionOutlineRenderer {
         &mut self,
         device: &wgpu::Device,
         bodies: &[SelectedBodyChunks],
+        edge_segments: &[[f32; 3]],
         grid_dimensions: [u32; 3],
         recentre: RecentreVoxels,
         voxels_per_block: u32,
     ) {
         self.chunk_buffers.clear();
+        self.edge_vertex_count = edge_segments.len() as u32;
+        self.edge_vertex_buffer = (!edge_segments.is_empty()).then(|| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("selection-outline edge vertices"),
+                contents: bytemuck::cast_slice(edge_segments),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
         self.grid_dimensions = grid_dimensions;
         self.voxels_per_block = voxels_per_block.max(1);
         for chunks in bodies {
@@ -439,6 +514,7 @@ impl SelectionOutlineRenderer {
         );
         let tint = selection_cel_tint();
         let composite_uniforms = SelectionOutlineUniforms {
+            view_projection: view_projection.to_cols_array_2d(),
             tint,
             outline_alpha: SELECTION_OUTLINE_ALPHA,
             half_voxel: SELECTION_COINCIDENCE_HALF_WIDTH,
@@ -446,7 +522,8 @@ impl SelectionOutlineRenderer {
             depth_offset: ndc_depth.depth_offset,
             orthographic: if ndc_depth.orthographic { 1.0 } else { 0.0 },
             epsilon_floor: SELECTION_EPSILON_FLOOR,
-            _pad: [0.0; 2],
+            edge_half_width: SELECTION_EDGE_HALF_WIDTH,
+            _pad: 0.0,
         };
         queue.write_buffer(
             &self.composite_uniform_buffer,
@@ -538,5 +615,12 @@ impl SelectionOutlineRenderer {
         pass.set_pipeline(&self.composite_pipeline);
         pass.set_bind_group(0, composite_bind_group, &[]);
         pass.draw(0..3, 0..1);
+        // Analytic feature edges over the wash, same pass + bind group.
+        if let Some(edge_vertex_buffer) = &self.edge_vertex_buffer {
+            pass.set_pipeline(&self.edge_pipeline);
+            pass.set_bind_group(0, composite_bind_group, &[]);
+            pass.set_vertex_buffer(0, edge_vertex_buffer.slice(..));
+            pass.draw(0..self.edge_vertex_count, 0..1);
+        }
     }
 }

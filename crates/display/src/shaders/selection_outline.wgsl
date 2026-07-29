@@ -27,6 +27,9 @@
 // passes' full-attachment clears.
 
 struct SelectionOutlineUniforms {
+    // The scene pass's own view-projection — the analytic edge lines project
+    // through it so their fragments land on the scene's pixels + depths.
+    view_projection: mat4x4<f32>,
     tint: vec4<f32>,
     outline_alpha: f32,
     half_voxel: f32,
@@ -37,8 +40,10 @@ struct SelectionOutlineUniforms {
     depth_offset: f32,
     orthographic: f32,
     epsilon_floor: f32,
+    // The analytic edges' voxel tolerance (wider than half_voxel: stair faces sit
+    // up to a voxel from the authored surface along the view ray).
+    edge_half_width: f32,
     _pad0: f32,
-    _pad1: f32,
 };
 
 @group(0) @binding(0)
@@ -64,20 +69,25 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     return output;
 }
 
-// The half-voxel coincidence tolerance IN NDC at a sampled selection depth:
-// half_voxel · |∂ndc/∂d|, floored by a few depth-buffer ULPs so two triangulations
-// of the same plane still read coincident where the slope collapses.
-fn ndc_epsilon(selection_ndc: f32) -> f32 {
+// A voxel-unit tolerance converted to NDC at a sampled depth: voxels · |∂ndc/∂d|,
+// floored by a few depth-buffer ULPs so two triangulations of the same plane still
+// read coincident where the slope collapses.
+fn ndc_tolerance(selection_ndc: f32, voxels: f32) -> f32 {
     var epsilon: f32;
     if (uniforms.orthographic > 0.5) {
-        epsilon = uniforms.half_voxel * abs(uniforms.depth_scale);
+        epsilon = voxels * abs(uniforms.depth_scale);
     } else {
         // Recover the view depth from the sample itself; depth_scale < −1 and
         // ndc ∈ [0, 1), so the denominator is strictly negative — never zero.
         let view_depth = uniforms.depth_offset / (selection_ndc + uniforms.depth_scale);
-        epsilon = uniforms.half_voxel * abs(uniforms.depth_offset) / (view_depth * view_depth);
+        epsilon = voxels * abs(uniforms.depth_offset) / (view_depth * view_depth);
     }
     return max(epsilon, uniforms.epsilon_floor);
+}
+
+// The wash's half-voxel coincidence tolerance.
+fn ndc_epsilon(selection_ndc: f32) -> f32 {
+    return ndc_tolerance(selection_ndc, uniforms.half_voxel);
 }
 
 // Whether the selected body is the visible surface at a pixel: covered by the
@@ -117,5 +127,53 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (outline) {
         return vec4<f32>(uniforms.tint.rgb, uniforms.outline_alpha);
     }
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+}
+
+// ---- Analytic feature edges (ADR 0032 V1) -----------------------------------
+//
+// The selected shapes' AUTHORED edges (a box's 12, a cylinder/tube's rim
+// ellipses) as world-stable 1px lines, projected under the scene's own
+// view_projection. A fragment survives only where
+//
+//   1. its own NDC depth lies inside the selection's hull interval
+//      `[front − τ, back + τ]` — which clips CSG-carved spans and occluded
+//      bodies for free (the hulls are per-pixel), and
+//   2. some scene MSAA sample sits within τ of it — the edge is ON the visible
+//      voxel surface, not floating where the stairs cut away from the curve.
+//
+// τ is `edge_half_width` voxels through the same ∂ndc/∂d slope as the wash's ε —
+// wider than ε because the voxelised surface legitimately deviates from the
+// authored curve by up to a voxel along the view ray.
+
+struct EdgeVertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+};
+
+@vertex
+fn edge_vertex_main(@location(0) position: vec3<f32>) -> EdgeVertexOutput {
+    var output: EdgeVertexOutput;
+    output.clip_position = uniforms.view_projection * vec4<f32>(position, 1.0);
+    return output;
+}
+
+@fragment
+fn edge_fragment_main(input: EdgeVertexOutput) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(input.clip_position.xy);
+    // The fragment builtin's z IS the line's own NDC depth after the viewport map.
+    let own_ndc = input.clip_position.z;
+    let front = textureLoad(front_hull_depth, pixel, 0);
+    let back = textureLoad(back_hull_depth, pixel, 0);
+    let tolerance = ndc_tolerance(own_ndc, uniforms.edge_half_width);
+    if (front >= 1.0 || own_ndc < front - tolerance || own_ndc > back + tolerance) {
+        discard;
+    }
+    for (var sample_index = 0; sample_index < 4; sample_index = sample_index + 1) {
+        let scene = textureLoad(scene_depth, pixel, sample_index);
+        if (abs(scene - own_ndc) <= tolerance) {
+            return vec4<f32>(uniforms.tint.rgb, uniforms.outline_alpha);
+        }
+    }
+    discard;
     return vec4<f32>(0.0, 0.0, 0.0, 0.0);
 }

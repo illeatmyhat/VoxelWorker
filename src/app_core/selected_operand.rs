@@ -16,9 +16,10 @@
 
 use display::mesh::SelectedOperandGhostBody;
 use display::renderer::OperandGhostStyle;
-use document::scene::{CombineOp, NodeId, Scene};
+use document::scene::{CombineOp, NodeContent, NodeId, Scene};
 use evaluation::two_layer_store::TwoLayerStore;
-use voxel_core::voxel::RecentreVoxels;
+use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint};
+use voxel_core::voxel::{RecentreVoxels, ShapeKind};
 
 use super::AppCore;
 
@@ -73,6 +74,134 @@ pub struct SelectedBodyCel {
     pub recentre: RecentreVoxels,
     /// The document density the bodies were evaluated at.
     pub density: u32,
+    /// Analytic feature-edge segments of the selected shapes (flat endpoint pairs) in
+    /// RENDER-frame voxels — the authored geometry's own edges (a box's 12, a
+    /// cylinder's 2 rim ellipses, a tube's 4), not anything derived from the voxel
+    /// surface. Empty when no selected shape catalogues any edge.
+    pub edge_segments: Vec<[f32; 3]>,
+}
+
+/// Segments per tessellated rim ellipse. Fixed (not screen-adaptive) so the polyline
+/// is world-stable under orbit — the whole point of the analytic edges.
+const EDGE_CIRCLE_SEGMENTS: u32 = 96;
+
+/// The analytic feature-edge catalogue of one shape, as polylines in the producer's
+/// LOCAL `[0, full]` voxel frame. Only edges the authored geometry actually has: a box
+/// its 12 edges, a cylinder its 2 rim ellipses (axis along Z), a tube those plus the 2
+/// inner rim ellipses; a sphere and a torus are smooth everywhere and catalogue none.
+fn shape_edge_polylines(kind: ShapeKind, grid: [u32; 3], wall_voxels: f32) -> Vec<Vec<[f32; 3]>> {
+    let full = [grid[0] as f32, grid[1] as f32, grid[2] as f32];
+    let half = [full[0] / 2.0, full[1] / 2.0, full[2] / 2.0];
+    let rim_pair = |semi_x: f32, semi_y: f32| -> Vec<Vec<[f32; 3]>> {
+        [0.0, full[2]]
+            .into_iter()
+            .map(|z| {
+                (0..=EDGE_CIRCLE_SEGMENTS)
+                    .map(|step| {
+                        let angle =
+                            step as f32 / EDGE_CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+                        [
+                            half[0] + semi_x * angle.cos(),
+                            half[1] + semi_y * angle.sin(),
+                            z,
+                        ]
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    match kind {
+        ShapeKind::Box => {
+            let corner = |x: f32, y: f32, z: f32| [x * full[0], y * full[1], z * full[2]];
+            let mut polylines = Vec::with_capacity(12);
+            for a in [0.0, 1.0] {
+                for b in [0.0, 1.0] {
+                    polylines.push(vec![corner(0.0, a, b), corner(1.0, a, b)]);
+                    polylines.push(vec![corner(a, 0.0, b), corner(a, 1.0, b)]);
+                    polylines.push(vec![corner(a, b, 0.0), corner(a, b, 1.0)]);
+                }
+            }
+            polylines
+        }
+        ShapeKind::Cylinder => rim_pair(half[0], half[1]),
+        ShapeKind::Tube => {
+            let mut polylines = rim_pair(half[0], half[1]);
+            // The inner wall is the SDF's inner elliptical cylinder (semi-axes reduced
+            // by the wall). A wall consuming the whole cross-section leaves no hole —
+            // and no inner rims.
+            let inner_x = half[0] - wall_voxels;
+            let inner_y = half[1] - wall_voxels;
+            if inner_x > 0.01 && inner_y > 0.01 {
+                polylines.extend(rim_pair(inner_x, inner_y));
+            }
+            polylines
+        }
+        ShapeKind::Sphere | ShapeKind::Torus => Vec::new(),
+    }
+}
+
+/// Walk a `node_body_slice` and emit every Tool leaf's edge catalogue as segment
+/// endpoint pairs in TRUE-WORLD voxels (the slice root is absolutely placed; Group
+/// descent accumulates child offsets the same way the resolve walk does). Leaves the
+/// catalogue can't describe yet — sketch solids, voxel bodies, instances — emit
+/// nothing.
+fn collect_edge_segments_true_world(slice: &Scene, density: u32, out: &mut Vec<[f32; 3]>) {
+    fn visit(
+        slice: &Scene,
+        node_id: NodeId,
+        offset_voxels: [i64; 3],
+        offset_local: [f32; 3],
+        density: u32,
+        out: &mut Vec<[f32; 3]>,
+    ) {
+        let Some(node) = slice.arena.get(&node_id) else {
+            return;
+        };
+        if !node.enabled {
+            return;
+        }
+        let offset_voxels: [i64; 3] =
+            std::array::from_fn(|axis| offset_voxels[axis] + node.transform.offset_voxels[axis]);
+        let offset_local: [f32; 3] = std::array::from_fn(|axis| {
+            offset_local[axis] + node.transform.offset_local_voxels[axis]
+        });
+        match &node.content {
+            NodeContent::Group(children) => {
+                for &child in children {
+                    visit(slice, child, offset_voxels, offset_local, density, out);
+                }
+            }
+            NodeContent::Tool { shape, .. } => {
+                let grid = shape.grid_dimensions(density);
+                let full = glam::Vec3::new(grid[0] as f32, grid[1] as f32, grid[2] as f32);
+                let placement = LeafPlacement::from_origin_and_local(
+                    node.transform.rotation(),
+                    full,
+                    offset_voxels,
+                    offset_local,
+                );
+                let wall_voxels = (shape.wall_blocks * density) as f32;
+                for polyline in shape_edge_polylines(shape.kind, grid, wall_voxels) {
+                    for pair in polyline.windows(2) {
+                        for point in pair {
+                            out.push(
+                                placement
+                                    .world_of(ProducerLocalVoxelPoint::from_voxels(
+                                        glam::Vec3::from_array(*point),
+                                    ))
+                                    .voxels()
+                                    .to_array(),
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for &root in &slice.roots {
+        visit(slice, root, [0; 3], [0.0; 3], density, out);
+    }
 }
 
 impl AppCore {
@@ -118,6 +247,7 @@ impl AppCore {
         };
         let store = TwoLayerStore::enabled();
         let mut bodies = Vec::new();
+        let mut edge_segments_true_world = Vec::new();
         for &target in targets {
             if has_picked_ancestor(target) {
                 continue;
@@ -130,15 +260,23 @@ impl AppCore {
                 continue;
             }
             bodies.push(chunks);
+            collect_edge_segments_true_world(&slice, density, &mut edge_segments_true_world);
         }
         if bodies.is_empty() {
             return None;
         }
+        let recentre = scene.recentre_voxels_for_resolve(density);
+        let recentre_f32 = recentre.voxels().map(|axis| axis as f32);
+        let edge_segments = edge_segments_true_world
+            .into_iter()
+            .map(|point| std::array::from_fn(|axis| point[axis] - recentre_f32[axis]))
+            .collect();
         Some(SelectedBodyCel {
             bodies,
             grid_dimensions: scene.placed_region_dimensions(density),
-            recentre: scene.recentre_voxels_for_resolve(density),
+            recentre,
             density,
+            edge_segments,
         })
     }
 }
@@ -323,6 +461,115 @@ mod tests {
         let host = scene.roots[0];
         scene.arena.get_mut(&host).unwrap().enabled = false;
         assert!(AppCore::selected_body_cel(&scene, &[host], DENSITY).is_none());
+    }
+
+    /// Analytic edge catalogue (ADR 0032 V1): a box lists its 12 straight edges on
+    /// the `[0, full]` corners; a sphere and a torus are smooth and list nothing.
+    #[test]
+    fn box_catalogues_twelve_edges_and_smooth_kinds_none() {
+        let edges = shape_edge_polylines(ShapeKind::Box, [32, 32, 32], 8.0);
+        assert_eq!(edges.len(), 12);
+        for polyline in &edges {
+            assert_eq!(polyline.len(), 2, "a box edge is one straight segment");
+            for point in polyline {
+                for axis in 0..3 {
+                    assert!(
+                        point[axis] == 0.0 || point[axis] == 32.0,
+                        "box edge endpoints sit on the box corners, got {point:?}"
+                    );
+                }
+            }
+        }
+        assert!(shape_edge_polylines(ShapeKind::Sphere, [32, 32, 32], 8.0).is_empty());
+        assert!(shape_edge_polylines(ShapeKind::Torus, [32, 32, 16], 8.0).is_empty());
+    }
+
+    /// A tube catalogues 4 rim ellipses (outer + inner × top + bottom, axis along Z);
+    /// a wall consuming the whole cross-section closes the hole and drops the inner
+    /// pair. A cylinder is the outer pair alone.
+    #[test]
+    fn tube_catalogues_four_rims_until_the_wall_closes_the_hole() {
+        let rims = shape_edge_polylines(ShapeKind::Tube, [64, 64, 32], 8.0);
+        assert_eq!(rims.len(), 4);
+        for rim in &rims {
+            let z = rim[0][2];
+            assert!(z == 0.0 || z == 32.0, "rims sit on the tube's caps");
+            assert!(rim.iter().all(|point| point[2] == z), "each rim is planar");
+        }
+        // Angle 0 of each rim: centre (32, 32) + radius along +X — outer 32, inner 24.
+        let radii: Vec<f32> = rims.iter().map(|rim| rim[0][0] - 32.0).collect();
+        assert_eq!(radii, vec![32.0, 32.0, 24.0, 24.0]);
+
+        let walled_shut = shape_edge_polylines(ShapeKind::Tube, [32, 32, 32], 16.0);
+        assert_eq!(walled_shut.len(), 2, "no hole, no inner rims");
+        assert_eq!(
+            shape_edge_polylines(ShapeKind::Cylinder, [64, 64, 32], 0.0).len(),
+            2
+        );
+    }
+
+    /// The cel's edge segments land in the RENDER frame: the host box's 12 edges
+    /// (24 endpoints) sit on the `[0, 32]` true-world corners minus the recentre.
+    #[test]
+    fn cel_edge_segments_land_in_the_render_frame() {
+        let scene = host_and_cutter_scene();
+        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0]], DENSITY)
+            .expect("host derives a body");
+        assert_eq!(cel.edge_segments.len(), 24, "12 edges, 2 endpoints each");
+        let recentre = cel.recentre.voxels();
+        for point in &cel.edge_segments {
+            for axis in 0..3 {
+                let true_world = point[axis] + recentre[axis] as f32;
+                assert!(
+                    true_world == 0.0 || true_world == 32.0,
+                    "endpoint {point:?} must be a box corner in true world"
+                );
+            }
+        }
+    }
+
+    /// A rotated node's edges turn with it under the corner-anchor convention: a
+    /// 64×32×32 box turned 90° about Z re-anchors so its edges span 32×64×32 from
+    /// the node's world offset.
+    #[test]
+    fn cel_edges_follow_the_node_rotation() {
+        let mut scene = Scene::from_nodes(vec![box_tool(
+            [8, 4, 4],
+            [0, 0, 0],
+            CombineOp::Union,
+            "Turned",
+        )]);
+        scene.voxels_per_block = DENSITY;
+        scene.ensure_node_ids();
+        let target = scene.roots[0];
+        let quarter_turn = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let node = scene.arena.get_mut(&target).unwrap();
+        node.transform = node.transform.clone().with_rotation(quarter_turn);
+
+        let cel = AppCore::selected_body_cel(&scene, &[target], DENSITY).expect("derives a body");
+        let recentre = cel.recentre.voxels();
+        let mut max = [f32::MIN; 3];
+        let mut min = [f32::MAX; 3];
+        for point in &cel.edge_segments {
+            for axis in 0..3 {
+                let true_world = point[axis] + recentre[axis] as f32;
+                min[axis] = min[axis].min(true_world);
+                max[axis] = max[axis].max(true_world);
+            }
+        }
+        for axis in 0..3 {
+            assert!(
+                min[axis].abs() < 1e-3,
+                "low corner anchors on the world offset, got {min:?}"
+            );
+        }
+        let span: Vec<f32> = (0..3).map(|axis| max[axis] - min[axis]).collect();
+        assert!(
+            (span[0] - 32.0).abs() < 1e-3
+                && (span[1] - 64.0).abs() < 1e-3
+                && (span[2] - 32.0).abs() < 1e-3,
+            "a 64×32×32 box turned 90° about Z spans 32×64×32, got {span:?}"
+        );
     }
 
     /// Selecting the ROOT PART x-rays every boolean in the whole scene (the scene-wide

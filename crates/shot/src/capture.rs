@@ -819,11 +819,16 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             selection_outline_renderer.rebuild(
                 &gpu.device,
                 &cel.bodies,
+                &cel.edge_segments,
                 cel.grid_dimensions,
                 cel.recentre,
                 cel.density,
             );
-            println!("selection outline: {} body(ies)", cel.bodies.len());
+            println!(
+                "selection outline: {} body(ies), {} edge segment(s)",
+                cel.bodies.len(),
+                cel.edge_segments.len() / 2
+            );
         }
         selection_outline_renderer.prepare(&gpu.device, options.width, options.height, &depth_view);
     }
