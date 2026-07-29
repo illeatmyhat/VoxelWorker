@@ -13,8 +13,9 @@
 //! the treatment the design mock gives `sweep`. It is deliberately not hidden: the shape of
 //! the finished set is information, and a verb that silently appears later reads as a bug.
 
+use document::intent::Intent;
 use document::scene::NodeContent;
-use document::sketch::Operation;
+use document::sketch::{Operation, RevolveAxis, SketchSolid};
 use voxel_core::voxel::ShapeKind;
 
 use super::{hairline, region_frame, Edge, RAIL_WIDTH};
@@ -86,8 +87,8 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
 ];
 
 /// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
-/// the SAME fused node, moved here from the deleted right panel). Extrude + Revolve ship;
-/// Sweep is the reserved arm (drawn dimmed). The picker is wired in #97.
+/// the SAME fused node, moved here from the deleted right panel). Extrude + Revolve ship and
+/// switch the edited node's operation on click (#97); Sweep is the reserved arm (drawn dimmed).
 const SKETCH_OPS: &[(Icon, &str, bool)] = &[
     (Icon::Extrude, "Extrude (set operation)", false),
     (Icon::Revolve, "Revolve (set operation)", false),
@@ -114,7 +115,7 @@ pub(super) fn build_rail(
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                     if state.sketch_mode.is_some() {
-                        build_sketch_rail(ui, state);
+                        build_sketch_rail(ui, state, response);
                     } else {
                         rail_heading(ui, "Shape");
                         for &(icon, kind) in SHAPES {
@@ -132,17 +133,19 @@ pub(super) fn build_rail(
 /// The swapped rail while a sketch is being edited (ADR 0028): the accent `SKETCH` head (the
 /// whole-mode indicator), the vertex tools, then an `OP` separator and the set-operation
 /// picker. The armable vertex tools select [`PanelState::sketch_tool`] on click and light the
-/// active one; Polyline / Rectangle read reserved (slice 3), the current operation reads active,
-/// `Sweep` reads reserved (#97 wires the op clicks).
-fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState) {
-    // The current operation of the edited node, to light the matching OP cell.
-    let current_op = state
-        .sketch_mode
+/// active one; Polyline / Rectangle read reserved (slice 3), the current operation reads active
+/// and clicking the other one SWITCHES the edited node's operation (#97); `Sweep` reads
+/// reserved.
+fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+    // The edited node's producer: lights the matching OP cell and seeds an operation switch.
+    let target = state.sketch_mode;
+    let producer = target
         .and_then(|id| state.scene.node_by_id(id))
         .and_then(|node| match &node.content {
-            NodeContent::SketchTool { producer, .. } => Some(producer.operation.clone()),
+            NodeContent::SketchTool { producer, .. } => Some(producer.clone()),
             _ => None,
         });
+    let current_op = producer.as_ref().map(|producer| &producer.operation);
     let op_is_active = |icon: Icon| {
         matches!(
             (&current_op, icon),
@@ -167,7 +170,41 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState) {
     }
     rail_heading(ui, "Op");
     for &(icon, tip, reserved) in SKETCH_OPS {
-        sketch_cell(ui, icon, tip, op_is_active(icon), reserved);
+        let active = op_is_active(icon);
+        if reserved {
+            sketch_cell(ui, icon, tip, active, true);
+            continue;
+        }
+        // A live op cell is armable like a tool cell; clicking the inactive one switches the
+        // node's operation through the SAME `SetSketch` door the inspector's picker uses,
+        // carrying the same switch defaults. Clicking the active one changes nothing.
+        if sketch_tool_cell(ui, icon, tip, active) && !active {
+            if let (Some(target), Some(producer)) = (target, producer.as_ref()) {
+                response.emit_and_frame(Intent::SetSketch {
+                    target,
+                    producer: producer_switched_to(producer, icon),
+                });
+            }
+        }
+    }
+}
+
+/// The edited producer with its operation switched to the clicked OP cell's kind, the profile
+/// preserved. Switch defaults mirror the inspector's Operation picker: Extrude seeds its height
+/// from the rectangle depth span (else 16); Revolve seeds a full 360° turn about the first
+/// in-plane axis.
+fn producer_switched_to(producer: &SketchSolid, icon: Icon) -> SketchSolid {
+    let sketch = producer.sketch.clone();
+    match icon {
+        Icon::Extrude => {
+            let height = producer
+                .rectangle_in_plane_spans()
+                .map(|spans| spans[1])
+                .unwrap_or(16)
+                .max(1);
+            SketchSolid::extrude(sketch, height)
+        }
+        _ => SketchSolid::revolve(sketch, RevolveAxis::InPlane0, 360),
     }
 }
 
@@ -219,9 +256,9 @@ fn sketch_tool_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> b
     cell.clicked()
 }
 
-/// One **inert** sketch-mode rail cell (ADR 0028): a set-operation glyph, or a tool whose verb
-/// is reserved for a later slice — drawn with the active accent bar and the reserved dim
-/// treatment, reporting hover + tooltip but arming nothing (the op clicks land in #97).
+/// One **inert** sketch-mode rail cell (ADR 0028): a glyph whose verb is reserved for a later
+/// slice — drawn with the active accent bar and the reserved dim treatment, reporting hover +
+/// tooltip but arming nothing. Live op cells go through [`sketch_tool_cell`] instead (#97).
 fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved: bool) {
     let (rect, cell) = ui.allocate_exact_size(
         egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
