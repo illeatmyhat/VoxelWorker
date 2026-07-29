@@ -754,11 +754,26 @@ fn exact_occupancy_set(
 /// the surface the truth reports. A mismatch is triaged with the CPU brick-field march
 /// (the f32 mirror of the shader): agreeing with it but not the exact set isolates a
 /// BUILD/frame bug; disagreeing with it isolates a SHADER bug.
+///
+/// **The silhouette concession (ADR 0009 §4).** A driver is free to contract the
+/// unprojection arithmetic (fma), so at a knife-edge grazing ray its hit voxel can
+/// legitimately differ from the CPU mirror by one ulp of ray direction — observed as
+/// exactly one sphere-rim pixel on lavapipe/llvmpipe (CI's software adapter) after the
+/// eye-anchored perspective ray frame (`a06d215`); NVIDIA hardware agrees with the CPU
+/// at the same pixel. A mismatch is therefore CONCEDED iff the exact evaluator is
+/// itself unstable within the pixel (quarter-pixel jitters do not all agree) AND the
+/// GPU's answer is one of those jitter-reachable answers, capped at
+/// [`SILHOUETTE_CONCESSION_MAX`] pixels per case. Stable-pixel divergence stays at
+/// ZERO tolerance, so a build/frame bug (which diverges across whole faces) still
+/// fails the gate.
 #[test]
 fn brick_raymarch_hit_set_matches_exact_evaluator() {
     if skip_without_gpu("brick_raymarch_hit_set_matches_exact_evaluator") {
         return;
     }
+    /// The most silhouette pixels one case may concede (~0.05% of 128×128) — far below
+    /// any real frame/build bug, which diverges across whole faces.
+    const SILHOUETTE_CONCESSION_MAX: usize = 8;
     use voxel_worker::{
         build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
@@ -843,6 +858,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         let gpu_image = renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height);
 
         let mut mismatches = 0usize;
+        let mut conceded = 0usize;
         let mut gpu_hits = 0usize;
         let mut first_report: Option<String> = None;
         for y in 0..height {
@@ -866,6 +882,29 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
                     None => !gpu_hit,
                 };
                 if !agree {
+                    // The silhouette concession: re-march the exact evaluator at the four
+                    // quarter-pixel diagonals. Concede only an UNSTABLE pixel whose GPU
+                    // answer is one of the in-pixel exact answers.
+                    let gpu_answer = gpu_hit.then_some(gpu_voxel);
+                    let jittered: Vec<Option<[i32; 3]>> =
+                        [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)]
+                            .iter()
+                            .map(|(dx, dy)| {
+                                cpu_march_exact_occupancy(
+                                    &frame,
+                                    &occupied_fn,
+                                    pixel + glam::Vec2::new(*dx, *dy),
+                                )
+                                .map(|h| h.absolute_voxel)
+                            })
+                            .collect();
+                    let centre = cpu.map(|h| h.absolute_voxel);
+                    let unstable = jittered.iter().any(|j| *j != centre);
+                    let reachable = jittered.contains(&gpu_answer);
+                    if unstable && reachable && conceded < SILHOUETTE_CONCESSION_MAX {
+                        conceded += 1;
+                        continue;
+                    }
                     mismatches += 1;
                     if first_report.is_none() {
                         let brick =
@@ -873,8 +912,9 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
                         first_report = Some(format!(
                             "    px=({x},{y}) gpu_hit={gpu_hit} gpu_voxel={gpu_voxel:?} \
                              exact={:?} brick_field_cpu={:?} (agree-with-brick isolates a \
-                             BUILD/frame bug; disagree isolates a SHADER bug)",
-                            cpu.map(|h| h.absolute_voxel),
+                             BUILD/frame bug; disagree isolates a SHADER bug) \
+                             [unstable={unstable} reachable={reachable} conceded={conceded}]",
+                            centre,
                             brick.map(|h| h.absolute_voxel),
                         ));
                     }
@@ -891,13 +931,17 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         }
         if mismatches > 0 {
             failures.push(format!(
-                "{}: {mismatches}/{} pixels diverge from the exact evaluator (gpu_hits={gpu_hits})\n{}",
+                "{}: {mismatches}/{} pixels diverge from the exact evaluator \
+                 (gpu_hits={gpu_hits}, conceded={conceded})\n{}",
                 case.name,
                 width * height,
                 first_report.unwrap_or_default()
             ));
         } else {
-            eprintln!("{}: {gpu_hits} hit pixels, exact-parity clean", case.name);
+            eprintln!(
+                "{}: {gpu_hits} hit pixels, exact-parity clean ({conceded} silhouette-conceded)",
+                case.name
+            );
         }
     }
 
