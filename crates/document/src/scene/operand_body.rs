@@ -64,21 +64,29 @@ impl Scene {
         }
 
         // A regular node: descend the id-spine to the target, accumulating the
-        // ANCESTOR world voxel offset (the same descent `node_subtree_extent_voxels`
-        // performs), then walk that node's subtree rooted at it.
-        let Some(path) = self.path_of(target) else {
+        // ANCESTOR world voxel offset, then walk that node's subtree rooted at it.
+        let Some((target_id, ancestor_offset_voxels)) = self.ancestor_offset_of(target) else {
             return Vec::new();
         };
+        self.collect_boolean_operands(
+            std::slice::from_ref(&target_id),
+            ancestor_offset_voxels,
+            &mut slices,
+        );
+        slices
+    }
+
+    /// Descend the id-spine to `target`, accumulating the ancestors' world voxel offset
+    /// (the same descent `node_subtree_extent_voxels` performs). `None` for a stale id or
+    /// a spine broken by a non-Group interior node.
+    fn ancestor_offset_of(&self, target: NodeId) -> Option<(NodeId, [i64; 3])> {
+        let path = self.path_of(target)?;
         let mut siblings: &[NodeId] = &self.roots;
         let mut ancestor_offset_voxels = [0i64; 3];
         let mut target_id: Option<NodeId> = None;
         for (depth, &index) in path.indices.iter().enumerate() {
-            let Some(&child_id) = siblings.get(index) else {
-                return Vec::new();
-            };
-            let Some(node) = self.arena.get(&child_id) else {
-                return Vec::new();
-            };
+            let &child_id = siblings.get(index)?;
+            let node = self.arena.get(&child_id)?;
             if depth + 1 == path.indices.len() {
                 target_id = Some(child_id);
             } else if let NodeContent::Group(children) = &node.content {
@@ -90,18 +98,31 @@ impl Scene {
                 }
                 siblings = children;
             } else {
-                return Vec::new();
+                return None;
             }
         }
-        let Some(target_id) = target_id else {
-            return Vec::new();
-        };
-        self.collect_boolean_operands(
-            std::slice::from_ref(&target_id),
-            ancestor_offset_voxels,
-            &mut slices,
-        );
-        slices
+        target_id.map(|id| (id, ancestor_offset_voxels))
+    }
+
+    /// The standalone body slice of ONE node — the selection-feedback derivation (ADR
+    /// 0032: the cel treatment shades the selected node's derived body in every view
+    /// mode). Same slice mechanics as a boolean operand's ([`Self::operand_body_slice`]):
+    /// re-rooted, absolutely placed, root operation neutralised to Union so the body
+    /// resolves constructively regardless of how it folds in the host scene.
+    ///
+    /// `None` for the root part (the whole scene needs no feedback body — it IS the
+    /// render), a stale id, or a disabled node (it stamps nothing into the composition,
+    /// so a depth-tested overlay has no surface to sit on).
+    pub fn node_body_slice(&self, target: NodeId) -> Option<Scene> {
+        if target == ROOT_NODE_ID {
+            return None;
+        }
+        let (target_id, ancestor_offset_voxels) = self.ancestor_offset_of(target)?;
+        let node = self.arena.get(&target_id)?;
+        if !node.enabled {
+            return None;
+        }
+        Some(self.operand_body_slice(target_id, ancestor_offset_voxels))
     }
 
     /// The recursive walk behind [`boolean_operand_body_slices`](Self::boolean_operand_body_slices):

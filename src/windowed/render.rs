@@ -467,6 +467,31 @@ impl WindowedState {
         if merged_effect.selection_changed || merged_effect.scene_changed {
             self.selected_ghost_dirty = true;
         }
+        // ADR 0032: the selection cel re-derives on the SAME seam (selection / geometry
+        // change), for ALL view modes and the WHOLE pick-ordered node list — reading the
+        // shared dirty flag BEFORE the operand-ghost block below clears it. Bounded per
+        // node by its own covering chunks (`AppCore::selected_body_cel`).
+        {
+            let cel_nodes: Vec<crate::NodeId> = self.panel_state.selection.nodes().collect();
+            if self.selected_ghost_dirty || self.selected_cel_nodes != cel_nodes {
+                let cel = AppCore::selected_body_cel(
+                    &self.panel_state.scene,
+                    &cel_nodes,
+                    self.panel_state.geometry.voxels_per_block,
+                );
+                self.selected_cel_nodes = cel_nodes;
+                match cel {
+                    Some(cel) => self.selected_body_cel_renderer.rebuild(
+                        &self.gpu.device,
+                        &cel.bodies,
+                        cel.grid_dimensions,
+                        cel.recentre,
+                        cel.density,
+                    ),
+                    None => self.selected_body_cel_renderer.clear(),
+                }
+            }
+        }
         if self.selected_ghost_dirty
             || self.selected_ghost_selection != self.panel_state.selection.primary_node_id()
             || self.selected_ghost_view_mode != self.panel_state.view_mode
@@ -750,6 +775,7 @@ impl WindowedState {
             gizmo_placement,
             &self.transform_gizmo_renderer,
             &self.selected_operand_ghost_renderer,
+            &self.selected_body_cel_renderer,
             &self.view_cube_renderer,
         );
 
@@ -764,9 +790,10 @@ impl WindowedState {
         // gizmo, always non-empty) is gated on there being a selection.
         let background: [&dyn display::SceneDraw; 1] = [&self.background_gradient_renderer];
         let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
-        // ADR 0018 Decision 6: the operand x-ray, suppressed in debug-faces mode; self-gates
-        // on an empty ghost otherwise.
+        // ADR 0032: the selection cel first (closest to the model), then the operand x-ray
+        // over it — both suppressed in debug-faces mode; each self-gates when empty.
         if !self.panel_state.debug_face_orientation {
+            over_model.push(&self.selected_body_cel_renderer);
             over_model.push(&self.selected_operand_ghost_renderer);
         }
         // ADR 0022: the armed-tool placement ghost self-gates on being armed.

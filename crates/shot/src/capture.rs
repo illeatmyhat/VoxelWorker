@@ -793,6 +793,28 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             println!("boolean-operand ghost: {} body(ies)", ghost.bodies.len());
         }
     }
+    // ADR 0032: the selection cel — every selected node's derived body, cel-shaded over
+    // the composed model in ANY view mode. Opt-in via `--selection-cel` (goldens stay
+    // byte-identical); derived exactly as the windowed shell derives it.
+    let mut selected_body_cel_renderer =
+        display::mesh::SelectedBodyCelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    if options.selection_cel {
+        let cel_nodes: Vec<_> = panel_state.selection.nodes().collect();
+        if let Some(cel) = AppCore::selected_body_cel(
+            &panel_state.scene,
+            &cel_nodes,
+            options.geometry.voxels_per_block,
+        ) {
+            selected_body_cel_renderer.rebuild(
+                &gpu.device,
+                &cel.bodies,
+                cel.grid_dimensions,
+                cel.recentre,
+                cel.density,
+            );
+            println!("selection cel: {} body(ies)", cel.bodies.len());
+        }
+    }
 
     // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
     // active/selected node at its recentred pivot, screen-stable-sized via the model
@@ -1194,6 +1216,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         gizmo_placement,
         &transform_gizmo_renderer,
         &selected_operand_ghost_renderer,
+        &selected_body_cel_renderer,
         &view_cube_renderer,
     );
 
@@ -1257,8 +1280,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // byte-identical (Points suppressed unless `--points`, gizmo only with a placement, etc.).
     let background: [&dyn display::SceneDraw; 1] = [&background_gradient_renderer];
     let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
-    // ADR 0018 Decision 6: operand x-ray, suppressed in debug-faces; self-gates otherwise.
+    // ADR 0032 cel first (closest to the model), then the ADR 0018 Decision 6 operand
+    // x-ray — both suppressed in debug-faces; each self-gates when empty.
     if !options.debug_face_orientation {
+        over_model.push(&selected_body_cel_renderer);
         over_model.push(&selected_operand_ghost_renderer);
     }
     // ADR 0022: the armed-tool placement ghost (self-gates on being armed).

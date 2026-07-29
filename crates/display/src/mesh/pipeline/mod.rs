@@ -1203,6 +1203,8 @@ impl CuboidMeshRenderer {
                 .source_two_layer_recentre
                 .render_absolute_to_true_world_offset(grid_half_extent),
             _overlay_pad: 0.0,
+            camera_position: [0.0; 3],
+            _cel_pad: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 

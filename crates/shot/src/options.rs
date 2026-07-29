@@ -35,6 +35,10 @@ pub(crate) struct ShotOptions {
     /// view mode applies scene-wide (Show-booleans x-rays every boolean). Takes precedence
     /// over `--select-node`.
     pub(crate) select_root: bool,
+    /// `--selection-cel` (ADR 0032): draw the selection-cel feedback over the selected
+    /// nodes' derived bodies, exactly as the windowed shell does in every view mode.
+    /// Opt-in (like `--gizmo`), so the existing goldens stay byte-identical.
+    pub(crate) selection_cel: bool,
     /// `--view-mode <normal|onion|booleans>` (ADR 0018 Decision 3): the viewer's exclusive
     /// rendering mode. Default Normal (the finished look, no ghosts). Show-booleans x-rays
     /// the selected subtree's boolean operands; Onion-fog keeps its scene-wide band meaning
@@ -336,6 +340,7 @@ impl Default for ShotOptions {
             show_origin_gizmo: false,
             select_node: None,
             select_root: false,
+            selection_cel: false,
             view_mode: ViewMode::Normal,
             view_mode_explicit: false,
             orbit_type: OrbitType::default(),
@@ -630,6 +635,9 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--select-root" => {
                 options.select_root = true;
             }
+            "--selection-cel" => {
+                options.selection_cel = true;
+            }
             "--view-mode" => {
                 options.view_mode =
                     parse_view_mode(&args.next().expect("--view-mode requires a value"));
@@ -899,7 +907,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--synthetic-block] [--two-layer]\n\
                      \x20            [--replay <script.jsonl>]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--stack-folded] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--axes-occluded]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--selection-cel] [--view-mode <normal|onion|booleans>] [--stack-folded] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--axes-occluded]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\

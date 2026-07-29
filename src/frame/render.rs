@@ -137,8 +137,8 @@ pub fn upload_scene_scaffold(
 }
 
 /// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot` (ADR 0031):
-/// the selection-follow transform gizmo, the boolean-operand x-ray ghost, and the corner view
-/// cube. Each is a pure camera upload with no scene rebuild — the drift these previously risked
+/// the selection-follow transform gizmo, the boolean-operand x-ray ghost, the selection cel
+/// (ADR 0032), and the corner view cube. Each is a pure camera upload with no scene rebuild — the drift these previously risked
 /// (a gizmo matrix or cube projection computed two different ways) is made unrepresentable by one
 /// call site.
 ///
@@ -157,6 +157,7 @@ pub fn upload_overlay_uniforms(
     gizmo_placement: Option<([f32; 3], [f32; 3])>,
     transform_gizmo: &TransformGizmoRenderer,
     selected_operand_ghost: &SelectedOperandGhostRenderer,
+    selected_body_cel: &display::mesh::SelectedBodyCelRenderer,
     view_cube: &ViewCubeRenderer,
 ) {
     // The gizmo FOLLOWS the selection: size it screen-stable to its pivot and bake the recentred
@@ -170,6 +171,8 @@ pub fn upload_overlay_uniforms(
     }
     // ADR 0018 Decision 6: the operand ghost + the corner cube ride the scene camera directly.
     selected_operand_ghost.update_uniforms(queue, view_projection);
+    // ADR 0032: the selection cel rides the same camera; the eye drives its silhouette term.
+    selected_body_cel.update_uniforms(queue, view_projection, camera.eye());
     view_cube.update_uniforms(queue, camera.view_cube_view_projection());
 }
 

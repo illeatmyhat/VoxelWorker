@@ -356,7 +356,8 @@ impl SelectedOperandGhostRenderer {
 /// A 1×1 white RGBA texture + nearest sampler filling the atlas bind-group slot the
 /// pipeline layout requires. The ghost branch never samples it (`cuboid.wgsl` returns the
 /// flat tint first), so no real material atlas needs to be packed or resident here.
-fn build_unsampled_atlas_bind_group(
+/// `pub(super)`: the selection-cel renderer (ADR 0032) shares it.
+pub(super) fn build_unsampled_atlas_bind_group(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,

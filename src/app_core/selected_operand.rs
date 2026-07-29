@@ -57,6 +57,24 @@ fn operand_ghost_style_for(operation: CombineOp) -> OperandGhostStyle {
     }
 }
 
+/// Everything the display's [`SelectedBodyCelRenderer`] rebuild needs (ADR 0032 —
+/// viewport selection feedback): the selected nodes' standalone bodies plus the COMPOSED
+/// scene's frame (ADR 0008, same contract as [`SelectedOperandGhost`]).
+///
+/// [`SelectedBodyCelRenderer`]: display::mesh::SelectedBodyCelRenderer
+pub struct SelectedBodyCel {
+    /// One body per surviving selected node (selection-roots filtered: a node whose
+    /// ancestor is also selected contributes nothing — the ancestor's composed body
+    /// already covers it, and drawing both would double the cel alpha).
+    pub bodies: Vec<display::mesh::SelectedBodyChunks>,
+    /// The composed scene's voxel extent (the shader's corner-anchoring scalar).
+    pub grid_dimensions: [u32; 3],
+    /// The composed scene's resolve recentre — the render frame the cel meshes into.
+    pub recentre: RecentreVoxels,
+    /// The document density the bodies were evaluated at.
+    pub density: u32,
+}
+
 impl AppCore {
     /// Derive the boolean-operand ghost for `target`'s subtree (ADR 0018 Decision 6 —
     /// "Show booleans" mode), or `None` when the subtree covers no boolean with
@@ -72,6 +90,56 @@ impl AppCore {
         density: u32,
     ) -> Option<SelectedOperandGhost> {
         evaluate_operand_ghost_slices(scene, scene.boolean_operand_body_slices(target), density)
+    }
+
+    /// Derive the selection-cel bodies for `targets` (ADR 0032 — viewport selection
+    /// feedback, all view modes), or `None` when no target yields a body with geometry.
+    ///
+    /// Selection-roots filtered: a target with a selected ancestor is skipped (the
+    /// ancestor's composed body already covers it — drawing both would double the cel
+    /// alpha). The root part, stale ids and disabled nodes derive nothing
+    /// ([`Scene::node_body_slice`]). Same cost bound as the operand ghost: each body is
+    /// evaluated over its OWN covering chunks only.
+    pub fn selected_body_cel(
+        scene: &Scene,
+        targets: &[NodeId],
+        density: u32,
+    ) -> Option<SelectedBodyCel> {
+        let picked: std::collections::BTreeSet<NodeId> = targets.iter().copied().collect();
+        let has_picked_ancestor = |id: NodeId| {
+            let mut current = id;
+            while let Some((Some(parent), _)) = scene.parent_and_index_of(current) {
+                if picked.contains(&parent) {
+                    return true;
+                }
+                current = parent;
+            }
+            false
+        };
+        let store = TwoLayerStore::enabled();
+        let mut bodies = Vec::new();
+        for &target in targets {
+            if has_picked_ancestor(target) {
+                continue;
+            }
+            let Some(slice) = scene.node_body_slice(target) else {
+                continue;
+            };
+            let chunks = store.build_covering_chunks(&slice, density, 0);
+            if chunks.iter().all(|(_, chunk)| !chunk.has_geometry()) {
+                continue;
+            }
+            bodies.push(chunks);
+        }
+        if bodies.is_empty() {
+            return None;
+        }
+        Some(SelectedBodyCel {
+            bodies,
+            grid_dimensions: scene.placed_region_dimensions(density),
+            recentre: scene.recentre_voxels_for_resolve(density),
+            density,
+        })
     }
 }
 
@@ -219,6 +287,42 @@ mod tests {
             stored > 0,
             "the fully-buried cutter's own body must not be empty"
         );
+    }
+
+    /// ADR 0032 selection cel: every selected node derives its OWN standalone body —
+    /// including a Union host (which never ghosts in Show-booleans) and a Subtract
+    /// cutter (its root op neutralised so the body resolves constructively).
+    #[test]
+    fn cel_derives_a_body_per_selected_node() {
+        let scene = host_and_cutter_scene();
+        let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0], scene.roots[1]], DENSITY)
+            .expect("both nodes derive bodies");
+        assert_eq!(cel.bodies.len(), 2);
+        for chunks in &cel.bodies {
+            let stored: u64 = chunks
+                .iter()
+                .map(|(_, chunk)| chunk.stored_voxel_count())
+                .sum();
+            assert!(stored > 0, "each selected body carries its own geometry");
+        }
+        assert_eq!(cel.grid_dimensions, scene.placed_region_dimensions(DENSITY));
+        assert_eq!(
+            cel.recentre.voxels(),
+            scene.recentre_voxels_for_resolve(DENSITY).voxels()
+        );
+    }
+
+    /// The root part, a stale id, and a disabled node derive no cel body: the root IS
+    /// the render, a stale id names nothing, and a disabled node shows no surface for a
+    /// depth-tested overlay to sit on.
+    #[test]
+    fn cel_skips_root_stale_and_disabled_targets() {
+        let mut scene = host_and_cutter_scene();
+        assert!(AppCore::selected_body_cel(&scene, &[ROOT_NODE_ID], DENSITY).is_none());
+        assert!(AppCore::selected_body_cel(&scene, &[NodeId(9999)], DENSITY).is_none());
+        let host = scene.roots[0];
+        scene.arena.get_mut(&host).unwrap().enabled = false;
+        assert!(AppCore::selected_body_cel(&scene, &[host], DENSITY).is_none());
     }
 
     /// Selecting the ROOT PART x-rays every boolean in the whole scene (the scene-wide

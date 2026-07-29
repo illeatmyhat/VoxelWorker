@@ -54,6 +54,11 @@ pub(crate) struct CuboidUniforms {
     /// so material tiling is unchanged (goldens byte-green while the overlay is off).
     pub(super) overlay_world_offset: [f32; 3],
     pub(super) _overlay_pad: f32,
+    /// ADR 0032: the camera eye (world render frame), read only by the selection-cel
+    /// branch (`ghost_mode = 2`) for its silhouette-emphasis term. Appended so every
+    /// earlier draw's uniform prefix is unchanged; zero for non-cel draws.
+    pub(super) camera_position: [f32; 3],
+    pub(super) _cel_pad: f32,
 }
 
 /// Convert a packed [`MaterialAtlas`]'s per-material sub-rects into the uniform
@@ -109,5 +114,25 @@ pub(crate) fn flat_ghost_uniforms(
         // The ghost branch returns before the overlay, so the anchor is inert here.
         overlay_world_offset: [0.0; 3],
         _overlay_pad: 0.0,
+        camera_position: [0.0; 3],
+        _cel_pad: 0.0,
+    }
+}
+
+/// Build a selection-cel [`CuboidUniforms`] block (ADR 0032 — the selected-body cel
+/// pass): `ghost_mode = 2` selects the cel branch, which bands `ghost_tint` by quantised
+/// Lambert light and brightens toward the silhouette (`camera_position` drives the
+/// facing term). Every other field matches the flat-ghost block.
+pub(crate) fn cel_selection_uniforms(
+    view_projection: glam::Mat4,
+    grid_dimensions: [u32; 3],
+    voxels_per_block: u32,
+    cel_tint: [f32; 4],
+    camera_position: [f32; 3],
+) -> CuboidUniforms {
+    CuboidUniforms {
+        ghost_mode: 2.0,
+        camera_position,
+        ..flat_ghost_uniforms(view_projection, grid_dimensions, voxels_per_block, cel_tint)
     }
 }

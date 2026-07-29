@@ -92,6 +92,14 @@ struct WindowedState {
     selected_ghost_selection: Option<crate::NodeId>,
     /// The view mode the ghost meshes were last derived for (re-derive on a mode change).
     selected_ghost_view_mode: crate::ViewMode,
+    /// The selection cel (ADR 0032): every selected node's derived body, cel-shaded in
+    /// the accent over the composed model — the viewport's selection feedback, in ALL
+    /// view modes. Re-derived only on selection / geometry change.
+    selected_body_cel_renderer: display::mesh::SelectedBodyCelRenderer,
+    /// The pick-ordered node list the cel bodies were last derived for (re-derive when
+    /// it drifts — the belt-and-braces companion to `selected_ghost_dirty`, which the
+    /// cel seam shares).
+    selected_cel_nodes: Vec<crate::NodeId>,
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
     scene_grid_renderer: SceneGridRenderer,
@@ -579,6 +587,13 @@ impl WindowedState {
         // Show-booleans (`selected_ghost_dirty` below).
         let selected_operand_ghost_renderer =
             crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        // The selection cel (ADR 0032): built empty; the first render frame derives it
+        // for the restored selection (same dirty flag as the operand ghost).
+        let selected_body_cel_renderer = display::mesh::SelectedBodyCelRenderer::new(
+            &gpu.device,
+            &gpu.queue,
+            COLOR_TARGET_FORMAT,
+        );
         // Per-object block lattice + floor grid (issue #29 S3): its line batch is
         // (re)built per frame from the grid-enabled nodes, so it starts empty.
         let scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -644,6 +659,8 @@ impl WindowedState {
             selected_ghost_dirty: true,
             selected_ghost_selection: None,
             selected_ghost_view_mode: crate::ViewMode::Normal,
+            selected_body_cel_renderer,
+            selected_cel_nodes: Vec::new(),
             scene_grid_renderer,
             points_renderer,
             points_overlay_renderer,
