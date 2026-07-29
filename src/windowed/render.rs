@@ -797,6 +797,7 @@ impl WindowedState {
             aspect_ratio,
             view_projection,
             scene_matrices.ndc_depth,
+            prepared.viewport_px,
             gizmo_placement,
             &self.transform_gizmo_renderer,
             &self.selected_operand_ghost_renderer,
