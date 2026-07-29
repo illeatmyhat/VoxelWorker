@@ -808,11 +808,11 @@ impl WindowedState {
             depth_view: _,
             msaa_color_view: _,
             // CLASSIFIED state — the only fields the capture seam reads. `panel_state`
-            // is classified field-by-field (ADR 0022); `app_core` carries the camera
-            // (classified on `AppConfig`) plus the resolve store (a derived cache);
-            // `home_view` persists as settings.
+            // is classified field-by-field (ADR 0022); `app_core` files its OWN fields
+            // (the ledger call below — the camera is classified, the rest are caches
+            // plus one named policy loss); `home_view` persists as settings.
             panel_state: _,
-            app_core: _,
+            app_core,
             home_view: _,
             // Renderers: GPU resources rebuilt from classified state; a repro rebuilds
             // them from the dump, so they carry no truth.
@@ -896,6 +896,7 @@ impl WindowedState {
             sketch_drag: _,
             shift_held: _,
         } = self;
+        app_core.every_core_field_has_a_role();
     }
 
     /// Persist the current UI + camera + window state to the platform config

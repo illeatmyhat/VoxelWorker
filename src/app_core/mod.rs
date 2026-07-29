@@ -170,6 +170,32 @@ pub enum RebuildOutcome {
 }
 
 impl AppCore {
+    /// The core's field-role ledger — the shell ledger's reach into the one struct it
+    /// used to file whole (`WindowedState::every_shell_field_has_a_role`, which calls
+    /// this from the capture seam). No `..`: a field added here fails the build until
+    /// somebody files it. The core is the grab-bag between document and shell, which is
+    /// exactly where an unclassified authority would hide next — and the one deliberate
+    /// loss is named where it happens rather than filed silently.
+    pub(crate) fn every_core_field_has_a_role(&self) {
+        let AppCore {
+            // Derived resolve cache: reconstructible from the classified scene; dropping
+            // it changes only how long the next rebuild takes (ADR 0023's admission test).
+            two_layer_cache: _,
+            // CLASSIFIED view state: captured into `AppConfig` (via `as_chart`) at the
+            // very seam this ledger is called from.
+            camera: _,
+            // Rebuild bookkeeping: what the LAST rebuild resolved from/at, kept so the
+            // next one can diff. The next rebuild rewrites all three.
+            previous_leaf_index: _,
+            previous_recentre_voxels: _,
+            previous_density: _,
+            // Undo history: NEITHER rebuildable nor momentary. Dropped on relaunch as
+            // ACCEPTED POLICY — a dump replays the scene, not the edit history — the one
+            // field here that is a decision rather than a cache.
+            command_stack: _,
+        } = self;
+    }
+
     /// Assemble the headless core from a camera (ADR 0010 E5). The two-layer resolve
     /// cache is constructed here (ENABLED — the sole runtime display path); the caller
     /// supplies only the camera (restored orbit/projection).

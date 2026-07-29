@@ -198,6 +198,14 @@ impl SnapTween {
 
     /// Advance by `delta_seconds` and write the eased angles into `camera`.
     /// Returns `true` once the tween has finished (so the caller can drop it).
+    ///
+    /// **Tweens are chart-native**: this writes `theta`/`phi`/`roll` raw, so a tween must
+    /// be started with the seam closed (`ensure_constrained`) — every cube/Home/Fit entry
+    /// does. The sole exemption is [`recenter`](Self::recenter), which may run while Free
+    /// Orbit is live: it holds every angle (`to == from`), so its chart writes are stale
+    /// no-ops the next seam close overwrites, and only `target` (shared by both types)
+    /// actually moves. A future tween with MOVING angles started under Free would silently
+    /// not turn the view — settle the seam first.
     pub fn advance(&mut self, camera: &mut OrbitCamera, delta_seconds: f32) -> bool {
         self.elapsed_seconds += delta_seconds;
         let progress = (self.elapsed_seconds / self.duration_seconds).clamp(0.0, 1.0);

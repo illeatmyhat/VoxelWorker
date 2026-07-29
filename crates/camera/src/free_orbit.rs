@@ -76,6 +76,13 @@ impl OrbitCamera {
     /// Signs match [`OrbitCamera::orbit_by_drag`]: dragging right swings the camera the same way
     /// round the model, dragging down raises it. That equivalence is a pinned test, not a
     /// coincidence — it is the property that makes switching types feel continuous.
+    ///
+    /// The turn composes the two screen axes as an ORDERED pair, which is exact only in the
+    /// small-delta limit. The deltas are per-`CursorMoved` cursor diffs (tens of pixels →
+    /// milliradian commutator error), and a finite trackball drag has no path-independent
+    /// answer anyway, so the ordered form is fine. If input handling ever coalesces deltas
+    /// per FRAME, switch to one `Quat::from_axis_angle` about `(-delta_y, -delta_x, 0)` —
+    /// at a large single delta the two forms visibly diverge.
     pub fn orbit_free_by_drag(&mut self, delta_x: f32, delta_y: f32) {
         self.ensure_free();
         let Some(orientation) = self.free_orientation else {
