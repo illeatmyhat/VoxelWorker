@@ -7,19 +7,27 @@ use voxel_core::voxel::VoxelGrid;
 /// classifier, which needs exact orientation signs well past `f32`'s range). Converted ONCE
 /// per resolve and reused across every per-voxel sample, so the hot loops never re-allocate.
 pub(super) fn to_profile_points(profile: &[SketchPoint]) -> Vec<[f64; 2]> {
-    profile_points_as(profile, |v| v as f64)
+    profile_points_as(profile, |voxels, local| voxels as f64 + local as f64)
 }
 
-/// Map the profile's `[i64; 2]` whole-voxel points through `cast`, one axis at a time.
-/// `cast` takes the `i64` source DIRECTLY (not a narrowed intermediate) — the whole
-/// reason [`to_profile_points`] (f64) and [`to_profile_points_measured`] (f32) are two
-/// conversions rather than one-plus-a-cast: `i64 → f64 → f32` can land a vertex on a
-/// different `f32` than `i64 → f32`, reintroducing the CPU/GPU divergence the direct
-/// narrowing removes. The shared shape lives here; the two casts stay distinct.
-fn profile_points_as<T>(profile: &[SketchPoint], cast: impl Fn(i64) -> T) -> Vec<[T; 2]> {
+/// Map the profile's points through `cast(offset_voxels, offset_local_voxels)`, one axis
+/// at a time. `cast` takes the `i64` + `f32` SOURCE PAIR directly (never a narrowed
+/// intermediate) — the whole reason [`to_profile_points`] (f64) and
+/// [`to_profile_points_measured`] (f32) are two conversions rather than one-plus-a-cast:
+/// `i64 → f64 → f32` can land a vertex on a different `f32` than `i64 → f32`,
+/// reintroducing the CPU/GPU divergence the direct narrowing removes. Each cast widens
+/// the integer in ITS OWN width before adding the fraction (#101); a zero fraction adds
+/// exactly nothing, so a whole-voxel profile is byte-identical to the pre-#101 path. The
+/// shared shape lives here; the two casts stay distinct.
+fn profile_points_as<T>(profile: &[SketchPoint], cast: impl Fn(i64, f32) -> T) -> Vec<[T; 2]> {
     profile
         .iter()
-        .map(|point| [cast(point.offset_voxels[0]), cast(point.offset_voxels[1])])
+        .map(|point| {
+            [
+                cast(point.offset_voxels[0], point.offset_local_voxels[0]),
+                cast(point.offset_voxels[1], point.offset_local_voxels[1]),
+            ]
+        })
         .collect()
 }
 
@@ -33,7 +41,7 @@ fn profile_points_as<T>(profile: &[SketchPoint], cast: impl Fn(i64) -> T) -> Vec
 /// divergence the narrowing exists to remove. Two conversions from one integer truth, not
 /// one conversion and a cast.
 pub(super) fn to_profile_points_measured(profile: &[SketchPoint]) -> Vec<[f32; 2]> {
-    profile_points_as(profile, |v| v as f32)
+    profile_points_as(profile, |voxels, local| voxels as f32 + local)
 }
 
 /// A lower bound on the distance from every point of the sample box (`centre ± half_extent`)

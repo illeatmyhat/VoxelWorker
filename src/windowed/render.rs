@@ -995,7 +995,9 @@ impl WindowedState {
             self.sketch_drag = None;
             return IntentEffect::none();
         };
-        point.offset_voxels = snapped;
+        // A voxel-snapped drag re-authors the whole position (#101): the fraction zeroes
+        // and a stale retained expression drops with it.
+        *point = document::sketch::SketchPoint::new(snapped[0], snapped[1]);
         let new_min = Self::profile_bbox_min(&preview);
         let [in0, in1] = preview.sketch.plane.in_plane_axes();
         let mut new_offset = original_offset;

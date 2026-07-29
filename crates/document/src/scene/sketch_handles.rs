@@ -187,8 +187,12 @@ impl Scene {
             .iter()
             .map(|point| {
                 let mut local = [0.0f32; 3];
-                local[in0] = (point.at.offset_voxels[0] - min[0]) as f32;
-                local[in1] = (point.at.offset_voxels[1] - min[1]) as f32;
+                // Integer part rebased exactly, then the sub-voxel fraction (#101) — so a
+                // handle sits on the vertex's continuous position, not its snapped floor.
+                local[in0] =
+                    (point.at.offset_voxels[0] - min[0]) as f32 + point.at.offset_local_voxels[0];
+                local[in1] =
+                    (point.at.offset_voxels[1] - min[1]) as f32 + point.at.offset_local_voxels[1];
                 // local[normal] stays 0.0 — the profile lives on the plane.
                 let world = placement
                     .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(

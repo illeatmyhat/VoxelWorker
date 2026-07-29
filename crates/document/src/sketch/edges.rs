@@ -8,8 +8,13 @@
 use super::solid::revolve_axes;
 use super::*;
 
-/// Exact tangency at a loop vertex: collinear AND same-direction (i128 over whole-voxel
-/// profile coords — no epsilon; stays exact when sub-voxel coords land as fixed-point).
+/// The catalogue's fixed-point resolution: profile coords quantise to 1/256 voxel so the
+/// tangency test stays EXACT integer arithmetic for sub-voxel vertices (#101). Display
+/// only — the resolve never quantises.
+const EDGE_FIXED_SCALE: f64 = 256.0;
+
+/// Exact tangency at a loop vertex: collinear AND same-direction (i128 over fixed-point
+/// profile coords — no epsilon).
 fn vertex_is_tangent(previous: [i64; 2], vertex: [i64; 2], next: [i64; 2]) -> bool {
     let edge_in = [vertex[0] - previous[0], vertex[1] - previous[1]];
     let edge_out = [next[0] - vertex[0], next[1] - vertex[1]];
@@ -29,11 +34,20 @@ impl SketchSolid {
         let Some((profile_min, _)) = self.profile_bounds() else {
             return Vec::new();
         };
+        // The ring in 1/256-voxel FIXED POINT: sub-voxel coords (#101) quantise onto an
+        // integer lattice so dedup/tangency stay exact; every emitted coordinate divides
+        // back out through `fixed_to_voxels`.
         let mut ring: Vec<[i64; 2]> = self
             .sketch
             .flattened_loop()
             .iter()
-            .map(|point| point.offset_voxels)
+            .map(|point| {
+                let coords = point.in_plane();
+                [
+                    (coords[0] * EDGE_FIXED_SCALE).round() as i64,
+                    (coords[1] * EDGE_FIXED_SCALE).round() as i64,
+                ]
+            })
             .collect();
         ring.dedup();
         while ring.len() > 1 && ring.first() == ring.last() {
@@ -58,8 +72,10 @@ impl SketchSolid {
                 let height = height_voxels as f32;
                 let local_point = |vertex: [i64; 2], along_normal: f32| -> [f32; 3] {
                     let mut point = [0.0f32; 3];
-                    point[in_plane_0] = (vertex[0] - profile_min[0]) as f32;
-                    point[in_plane_1] = (vertex[1] - profile_min[1]) as f32;
+                    point[in_plane_0] =
+                        (vertex[0] as f64 / EDGE_FIXED_SCALE - profile_min[0] as f64) as f32;
+                    point[in_plane_1] =
+                        (vertex[1] as f64 / EDGE_FIXED_SCALE - profile_min[1] as f64) as f32;
                     point[normal] = along_normal;
                     point
                 };
@@ -90,6 +106,7 @@ impl SketchSolid {
                 };
                 let turn_degrees = sweep.turn_degrees.min(360);
                 let turn_radians = (turn_degrees as f32).to_radians();
+                let fixed_to_voxels = |fixed: i64| (fixed as f64 / EDGE_FIXED_SCALE) as f32;
                 let place = |axial: f32, radius: f32, angle: f32| -> [f32; 3] {
                     let mut point = [0.0f32; 3];
                     point[axial_world_axis] = axial - axial_min as f32;
@@ -105,8 +122,8 @@ impl SketchSolid {
                     if vertex_is_tangent(previous, vertex, next) || vertex[radial_coord] == 0 {
                         continue;
                     }
-                    let radius = vertex[radial_coord].unsigned_abs() as f32;
-                    let axial = vertex[axial_coord] as f32;
+                    let radius = fixed_to_voxels(vertex[radial_coord].abs());
+                    let axial = fixed_to_voxels(vertex[axial_coord]);
                     let mut arc: Vec<[f32; 3]> = (0..=steps)
                         .map(|step| place(axial, radius, turn_radians * step as f32 / steps as f32))
                         .collect();
@@ -126,8 +143,8 @@ impl SketchSolid {
                             let vertex = ring[index];
                             let next = ring[(index + 1) % vertex_count];
                             outline.push(place(
-                                vertex[axial_coord] as f32,
-                                vertex[radial_coord].unsigned_abs() as f32,
+                                fixed_to_voxels(vertex[axial_coord]),
+                                fixed_to_voxels(vertex[radial_coord].abs()),
                                 angle,
                             ));
                             let radial_here = vertex[radial_coord];
@@ -139,9 +156,9 @@ impl SketchSolid {
                                 let toward_crossing = radial_here.unsigned_abs() as f32
                                     / (radial_here.unsigned_abs() + radial_next.unsigned_abs())
                                         as f32;
-                                let axial_at_crossing = vertex[axial_coord] as f32
+                                let axial_at_crossing = fixed_to_voxels(vertex[axial_coord])
                                     + toward_crossing
-                                        * (next[axial_coord] - vertex[axial_coord]) as f32;
+                                        * fixed_to_voxels(next[axial_coord] - vertex[axial_coord]);
                                 outline.push(place(axial_at_crossing, 0.0, angle));
                             }
                         }

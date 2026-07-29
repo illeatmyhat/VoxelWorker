@@ -34,6 +34,8 @@ mod tests;
 
 pub use solid::SketchSolid;
 
+use voxel_core::units::Measurement;
+
 /// Which axis the sketch plane's normal points along — i.e. the axis the profile
 /// is EXTRUDED along (ADR 0003 §3i, 2a axis-aligned scope).
 ///
@@ -83,25 +85,120 @@ impl PlaneAxis {
     }
 }
 
-/// One vertex of a sketch profile — a 2D point, voxel-granular at the document's
-/// density `d` (ADR 0003 §3f(0) `offset_voxels` integer-voxel convention, the same
-/// representation as `ShapePoint::Inline` and `NodeTransform.offset_voxels`).
+/// One vertex of a sketch profile — a 2D point on the plane's in-plane axes (see
+/// [`PlaneAxis::in_plane_axes`]), carried as the full node-position representation
+/// (#101, mirroring `NodeTransform`, ADR 0027/0029): a canonical integer voxel
+/// coordinate, a sub-voxel remainder, and an optionally-retained authored
+/// [`Measurement`] per axis.
 ///
-/// The two coordinates are in the plane's in-plane axes (see
-/// [`PlaneAxis::in_plane_axes`]). They may be negative; the producer normalizes the
-/// profile's bounding box to the local grid origin at resolve, so absolute values
-/// only matter relative to the other points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// The in-plane position is `offset_voxels + offset_local_voxels`
+/// ([`in_plane`](Self::in_plane) — integer first, then the fraction, the same
+/// composition rule as `NodeTransform::world_field_position_voxels`). Coordinates may
+/// be negative; the producer normalizes the profile's bounding box (floored) to the
+/// local grid origin at resolve, so absolute values only matter relative to the other
+/// points.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SketchPoint {
     /// In-plane voxel coordinates `[axis0, axis1]` at the document density `d`.
     pub offset_voxels: [i64; 2],
+    /// Sub-voxel remainder per axis, in `[0, 1)` — written by `snap = None`
+    /// authoring; a voxel/block snap zeroes it (#101).
+    #[serde(default)]
+    pub offset_local_voxels: [f32; 2],
+    /// The RETAINED authored `Length` expression per axis (ADR 0029), or `None` for
+    /// a plain snapped point. `SetDensity` re-evaluates a retained expression so a
+    /// measurement-authored profile keeps its physical shape across a density
+    /// re-target; the canonical `offset_voxels` always wins for geometry.
+    #[serde(default)]
+    pub offset_measurements: Option<[Measurement; 2]>,
 }
 
 impl SketchPoint {
-    /// A profile vertex at the given in-plane voxel coordinates.
+    /// A profile vertex at the given whole-voxel in-plane coordinates (no fraction,
+    /// no retained expression).
     pub fn new(axis0: i64, axis1: i64) -> Self {
         Self {
             offset_voxels: [axis0, axis1],
+            offset_local_voxels: [0.0; 2],
+            offset_measurements: None,
+        }
+    }
+
+    /// A profile vertex at a CONTINUOUS in-plane coordinate: floor lands in
+    /// `offset_voxels`, the fraction in `offset_local_voxels` (#101 — the
+    /// `snap = None` authoring door). A non-finite coordinate is sanitised to zero:
+    /// a `NaN` fraction would poison every position-equality the producer guards
+    /// no-op commits with.
+    pub fn from_continuous(axis0: f64, axis1: f64) -> Self {
+        let split = |coord: f64| -> (i64, f32) {
+            if !coord.is_finite() {
+                return (0, 0.0);
+            }
+            let floor = coord.floor();
+            (floor as i64, (coord - floor) as f32)
+        };
+        let (voxels_0, local_0) = split(axis0);
+        let (voxels_1, local_1) = split(axis1);
+        Self {
+            offset_voxels: [voxels_0, voxels_1],
+            offset_local_voxels: [local_0, local_1],
+            offset_measurements: None,
+        }
+    }
+
+    /// The continuous in-plane position: `offset_voxels + offset_local_voxels` per
+    /// axis (integer first, then the fraction — exact for the integer part).
+    pub fn in_plane(&self) -> [f64; 2] {
+        [
+            self.offset_voxels[0] as f64 + self.offset_local_voxels[0] as f64,
+            self.offset_voxels[1] as f64 + self.offset_local_voxels[1] as f64,
+        ]
+    }
+
+    /// Whether two points sit at the SAME in-plane position — the coincidence
+    /// predicate (coincidence IS shared identity, ADR 0030). Position only: a
+    /// retained measurement is provenance, not location, so it never splits two
+    /// coincident points into twins.
+    pub fn coincides(&self, other: &SketchPoint) -> bool {
+        self.offset_voxels == other.offset_voxels
+            && self.offset_local_voxels == other.offset_local_voxels
+    }
+
+    /// This point re-targeted from `old_density` to `new_density` (#101, the
+    /// `SetDensity` arm). A retained measurement RE-EVALUATES at the new density
+    /// (lossless block scaling; a non-dividing axis floors and resynthesises its
+    /// retained form, exactly `NodeTransform::from_measurements`). A plain point
+    /// rescales its continuous position so it keeps its physical place, the way the
+    /// legacy node rescale keeps a non-parametric offset's.
+    pub fn retargeted(&self, old_density: u32, new_density: u32) -> Self {
+        if let Some(measurements) = self.offset_measurements {
+            let resolve_axis = |measurement: Measurement| -> (i64, Measurement) {
+                match measurement.to_voxels(new_density) {
+                    Ok(voxels) => (voxels, measurement),
+                    Err(voxel_core::units::MeasurementError::BlockTermNotWholeVoxels {
+                        nearest_floor_voxels,
+                        ..
+                    }) => (
+                        nearest_floor_voxels,
+                        Measurement::from_voxels(nearest_floor_voxels),
+                    ),
+                    Err(voxel_core::units::MeasurementError::ZeroDensity) => {
+                        let voxels = measurement.voxel_term();
+                        (voxels, Measurement::from_voxels(voxels))
+                    }
+                }
+            };
+            let (voxels_0, retained_0) = resolve_axis(measurements[0]);
+            let (voxels_1, retained_1) = resolve_axis(measurements[1]);
+            Self {
+                offset_voxels: [voxels_0, voxels_1],
+                offset_local_voxels: self.offset_local_voxels,
+                offset_measurements: Some([retained_0, retained_1]),
+            }
+        } else {
+            let scale = new_density.max(1) as f64 / old_density.max(1) as f64;
+            let [axis0, axis1] = self.in_plane();
+            Self::from_continuous(axis0 * scale, axis1 * scale)
         }
     }
 }
@@ -127,7 +224,7 @@ pub enum EntityRole {
 /// A point entity: a first-class, independently add/delete-able vertex on the sketch
 /// plane, referenced by segments (and later arcs) through its stable [`id`](Self::id)
 /// (ADR 0030). A point with no incident edge is a legal FREE point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point {
     /// Stable identity (ADR 0030) — segments reference this, not the point's `Vec` slot.
     pub id: EntityId,
@@ -167,7 +264,7 @@ pub struct Segment {
 /// **Slice-1 scope (issue #98):** a single closed loop, resolving byte-identical to the
 /// former `profile: Vec<SketchPoint>`. Multi-region pick/unpick (#100), sub-voxel /
 /// parametric coordinates (#101), and arcs (#102) build on this store.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sketch {
     /// Which axis the plane normal points along (2a: axis-aligned only).
     pub plane: PlaneAxis,
@@ -433,14 +530,15 @@ impl Sketch {
         Some(self.add_segment(from, to))
     }
 
-    /// The lowest-id point entity sitting EXACTLY at `at`, if any. The drawing tools (#99)
-    /// check this after snapping a click, so a click that lands on an existing point's
-    /// coordinates reuses its id (coincidence = shared identity) instead of minting a twin
-    /// point the region graph would read as a distinct vertex.
+    /// The lowest-id point entity sitting EXACTLY at `at`'s position, if any. The drawing
+    /// tools (#99) check this after snapping a click, so a click that lands on an existing
+    /// point's coordinates reuses its id (coincidence = shared identity) instead of minting
+    /// a twin point the region graph would read as a distinct vertex. Position-only
+    /// ([`SketchPoint::coincides`]) — a retained measurement never splits coincidence.
     pub fn point_at(&self, at: SketchPoint) -> Option<EntityId> {
         self.points
             .iter()
-            .filter(|point| point.at == at)
+            .filter(|point| point.at.coincides(&at))
             .map(|point| point.id)
             .min()
     }
@@ -460,6 +558,15 @@ impl Sketch {
             min[1] = min[1].min(point.at.offset_voxels[1]);
         }
         min
+    }
+
+    /// Re-target every point entity from `old_density` to `new_density` (#101 — the
+    /// `SetDensity` arm). Per point: a retained measurement re-evaluates losslessly; a
+    /// plain point rescales its continuous position ([`SketchPoint::retargeted`]).
+    pub fn retarget_density(&mut self, old_density: u32, new_density: u32) {
+        for point in &mut self.points {
+            point.at = point.at.retargeted(old_density, new_density);
+        }
     }
 
     /// Erase every structurally-invalid segment — one that references a point id not in the

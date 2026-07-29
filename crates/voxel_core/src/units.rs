@@ -23,8 +23,8 @@
 //!
 //! This module is pure logic: it has no UI wiring and depends on nothing else in
 //! the crate. It feeds `SetOffset` (the placement Intent, now landed as
-//! `NodeTransform::from_measurements`); sketch dimensions do not retain a
-//! `Measurement` yet and stay plain voxel-granular integers.
+//! `NodeTransform::from_measurements`) and sketch profile points
+//! (`SketchPoint.offset_measurements`, #101), both re-evaluated on `SetDensity`.
 
 use std::fmt;
 

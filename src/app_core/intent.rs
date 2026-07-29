@@ -989,6 +989,27 @@ impl AppCore {
                                 SdfShape::from_voxels(shape.kind, size_voxels, shape.wall_blocks);
                         }
                     }
+
+                    // A SKETCH's geometry is voxel-granular too (#101): re-target every
+                    // profile point (a retained measurement re-evaluates losslessly; a
+                    // plain point rescales its continuous position) AND the extrude
+                    // height, or the physical shape would warp — a re-targeted profile
+                    // over an un-scaled height turns a cube into a slab. A zero height
+                    // (a profile still being authored) stays zero.
+                    if let NodeContent::SketchTool { producer, .. } = &mut node.content {
+                        producer
+                            .sketch
+                            .retarget_density(old_density as u32, voxels_per_block);
+                        if let document::sketch::Operation::Extrude { height_voxels } =
+                            &mut producer.operation
+                        {
+                            if *height_voxels > 0 {
+                                *height_voxels =
+                                    ((*height_voxels as i64 * new_density / old_density).max(1))
+                                        as u32;
+                            }
+                        }
+                    }
                 }
                 scene.voxels_per_block = voxels_per_block;
                 DispatchOutcome::effect(full_effect)

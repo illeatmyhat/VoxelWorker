@@ -165,7 +165,7 @@ impl RevolveField {
 /// resolve through the same stamp / `CombineOp` / chunk path. [`Operation::Extrude`] (a
 /// prism) and [`Operation::Revolve`] (a solid of revolution) both ship; sweep is the
 /// reserved third lift.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SketchSolid {
     /// The closed 2D profile + its plane.
     pub sketch: Sketch,
@@ -212,13 +212,18 @@ impl SketchSolid {
         if profile.len() < 3 || operation_is_degenerate {
             return None;
         }
-        let first = profile[0].offset_voxels;
+        // Continuous bounds (#101 — a vertex may carry a sub-voxel fraction), floored /
+        // ceiled to the integer grid box so a fractional overhang is never clipped. For a
+        // whole-voxel profile floor and ceil are identities, so the integer path is
+        // byte-identical to the pre-#101 producer.
+        let first = profile[0].in_plane();
         let mut min = first;
         let mut max = first;
         for point in &profile {
+            let coords = point.in_plane();
             for axis in 0..2 {
-                min[axis] = min[axis].min(point.offset_voxels[axis]);
-                max[axis] = max[axis].max(point.offset_voxels[axis]);
+                min[axis] = min[axis].min(coords[axis]);
+                max[axis] = max[axis].max(coords[axis]);
             }
         }
         // A zero-extent span on either in-plane axis is a degenerate (collinear /
@@ -226,7 +231,10 @@ impl SketchSolid {
         if max[0] <= min[0] || max[1] <= min[1] {
             return None;
         }
-        Some((min, max))
+        Some((
+            [min[0].floor() as i64, min[1].floor() as i64],
+            [max[0].ceil() as i64, max[1].ceil() as i64],
+        ))
     }
 
     /// The profile's in-plane bounding-box **minimum** per profile coordinate — `[0, 0]` for an
@@ -305,15 +313,21 @@ impl SketchSolid {
     /// [`Sketch::connect`], so an edge that already exists is not doubled. Unchanged when the
     /// corners are degenerate (zero span on either in-plane axis — no area to enclose). Pure.
     pub fn with_rectangle(&self, a: SketchPoint, b: SketchPoint) -> SketchSolid {
-        if a.offset_voxels[0] == b.offset_voxels[0] || a.offset_voxels[1] == b.offset_voxels[1] {
+        let (a_pos, b_pos) = (a.in_plane(), b.in_plane());
+        if a_pos[0] == b_pos[0] || a_pos[1] == b_pos[1] {
             return self.clone();
         }
-        let corners = [
-            a,
-            SketchPoint::new(b.offset_voxels[0], a.offset_voxels[1]),
-            b,
-            SketchPoint::new(a.offset_voxels[0], b.offset_voxels[1]),
-        ];
+        // The two synthesised corners mix one coordinate from each source point,
+        // fraction included; they carry no retained expression of their own.
+        let mixed = |axis0_of: &SketchPoint, axis1_of: &SketchPoint| SketchPoint {
+            offset_voxels: [axis0_of.offset_voxels[0], axis1_of.offset_voxels[1]],
+            offset_local_voxels: [
+                axis0_of.offset_local_voxels[0],
+                axis1_of.offset_local_voxels[1],
+            ],
+            offset_measurements: None,
+        };
+        let corners = [a, mixed(&b, &a), b, mixed(&a, &b)];
         let mut next = self.clone();
         let ids: Vec<EntityId> = corners
             .iter()
@@ -430,10 +444,10 @@ impl SketchSolid {
             RevolveAxis::InPlane1 => 0,
         };
         let mut profile_straddles_axis = false;
-        let mut radial_max = 0i64;
+        let mut radial_max = 0f64;
         for point in &profile {
-            let radial_coord = point.offset_voxels[radial_profile_coord];
-            if radial_coord < 0 {
+            let radial_coord = point.in_plane()[radial_profile_coord];
+            if radial_coord < 0.0 {
                 profile_straddles_axis = true;
             }
             radial_max = radial_max.max(radial_coord.abs());
@@ -450,7 +464,7 @@ impl SketchSolid {
             half_a: dimensions[radial_a] as f32 / 2.0,
             half_b: dimensions[radial_b] as f32 / 2.0,
             profile_straddles_axis,
-            radial_max: radial_max as f64,
+            radial_max,
         })
     }
 
@@ -551,9 +565,15 @@ impl SketchSolid {
     ///
     /// [`in_plane_axes`]: PlaneAxis::in_plane_axes
     pub fn rectangle_in_plane_spans(&self) -> Option<[u32; 2]> {
-        // Exactly four vertices, spanning a non-degenerate box.
+        // Exactly four vertices, spanning a non-degenerate box. A fractional vertex
+        // (#101) disqualifies: the spans are whole voxels, and the inspector's editable
+        // Width/Depth would clobber the sub-voxel remainder by rewriting the corners.
         let profile = self.sketch.flattened_loop();
-        if profile.len() != 4 {
+        if profile.len() != 4
+            || profile
+                .iter()
+                .any(|point| point.offset_local_voxels != [0.0; 2])
+        {
             return None;
         }
         let (min, max) = self.profile_bounds()?;
