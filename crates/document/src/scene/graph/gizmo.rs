@@ -32,8 +32,7 @@ impl Scene {
         self.gizmo_placement_at_path(&path, voxels_per_block)
     }
 
-    /// Shared body of [`active_gizmo_placement`](Self::active_gizmo_placement) and
-    /// [`gizmo_placement_for_id`](Self::gizmo_placement_for_id): the recentred pivot
+    /// Body of [`gizmo_placement_for_id`](Self::gizmo_placement_for_id): the recentred pivot
     /// (centre of the node subtree's block-aligned AABB) + its extent, in voxels.
     fn gizmo_placement_at_path(
         &self,

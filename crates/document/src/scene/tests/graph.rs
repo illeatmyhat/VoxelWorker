@@ -460,11 +460,11 @@ fn two_material_scene_has_both_material_ids() {
     );
 }
 
-/// Issue #29 S4 (per-object on-face grid): the resolver ORs
-/// [`crate::voxel::GRID_OVERLAY_BIT`] into a node's stamped `material_id`
-/// **iff** that node's `grids.voxel_grid_on_faces` is set — and the masked
-/// material id still round-trips to the real handle (≤2). Parametrized over
-/// density {1, 15, 16} so the bit survives every density's chunk bucketing.
+/// Issue #29 S4 (per-object on-face grid): the resolver sets each voxel's
+/// `grid_overlay` attribute **iff** that node's `grids.voxel_grid_on_faces` is
+/// set — and the colour index still round-trips to the real handle (≤2).
+/// Parametrized over density {1, 15, 16} so the flag survives every density's
+/// chunk bucketing.
 #[test]
 fn voxel_grid_flag_bit_set_iff_node_opts_in() {
     for &voxels_per_block in &[1u32, 15, 16] {

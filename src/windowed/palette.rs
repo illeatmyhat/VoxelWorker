@@ -6,7 +6,7 @@
 use super::*;
 
 impl WindowedState {
-    /// Apply palette interactions from this frame's [`PanelResponse`] (M6):
+    /// Apply palette interactions from this frame's [`PanelResponse`](ui::panel::PanelResponse) (M6):
     /// applying a block loads + binds its texture; "Connect folder…" opens the OS
     /// picker and starts a custom scan; selecting a procedural material clears the
     /// applied block.

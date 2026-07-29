@@ -460,7 +460,7 @@ fn resolve_face_map(
 /// variant's material name (the group PNG's file stem) so a shared base like
 /// `block/wood/treetrunk/{wood}` points at the right per-material texture (this
 /// is what makes a log's end-grain `up`/`down` differ from its bark sides). The
-/// substituted reference is then resolved via [`resolve_path`]; only if that
+/// substituted reference is then resolved via the `resolve_path` callback; only if that
 /// finds no file on disk do we fall back to the group PNG itself.
 fn resolve_reference(
     base: &str,

@@ -5,7 +5,7 @@
 //! scene's composed signed-distance field along the eye ray; it needs the field VALUE at a
 //! world point, and this is that value. [`composed_field_at`] folds the SAME scoped ordered
 //! CSG composition [`classify_chunk_block`](super::classify_chunk_block) folds — reusing
-//! [`scoped_leaf_steps`](super::scoped_leaf_steps) for the step sequence and
+//! [`scoped_leaf_steps`] for the step sequence and
 //! [`LeafAffine`](super::LeafAffine) for the absolute→producer-local frame map — but folds
 //! on FIELD VALUES instead of occupancy intervals. Sharing the classifier's step
 //! reconstruction and affine is deliberate: a second copy of either would be a
@@ -62,7 +62,7 @@ fn fold_operand(accumulator: f32, operand: f32, operation: CombineOp) -> f32 {
 /// surface-raycast.
 ///
 /// `leaves` MUST be a document-order [`Scene::leaf_producers`](document::scene::Scene::leaf_producers)
-/// subsequence (the same precondition [`scoped_leaf_steps`](super::scoped_leaf_steps)
+/// subsequence (the same precondition [`scoped_leaf_steps`]
 /// carries). The fold is the SAME scoped ordered CSG composition
 /// [`classify_chunk_block`](super::classify_chunk_block) uses (ADR 0017 Decision 3), on
 /// FIELD VALUES rather than occupancy intervals, so `composed_field_at(point) <= 0` agrees

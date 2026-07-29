@@ -10,7 +10,7 @@ use super::{LayerRange, PanelState};
 /// onion controls, and the measured-diameter stat line (widest occupied run in the band).
 ///
 /// The band clip is **Onion-fog mode's tool** alone; the STACK mounts this section (tab
-/// included) only in [`ViewMode::OnionFog`], so this body does not re-check the mode.
+/// included) only in [`ViewMode::OnionFog`](super::state::ViewMode::OnionFog), so this body does not re-check the mode.
 /// `grid_z` is the layer-track length: the SELECTED object's Z extent in Onion-fog mode
 /// (the track spans the object, not the scene). The section header is drawn by the stack.
 pub(super) fn build_onion_body(

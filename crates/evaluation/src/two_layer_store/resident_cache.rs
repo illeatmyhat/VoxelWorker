@@ -54,7 +54,7 @@ pub struct TwoLayerResidentCache {
     /// **Mutation discipline (why an `Arc` is safe here).** A dirty chunk is never mutated
     /// through its `Arc` while shell copies are alive: the cache only ever REPLACES a chunk's
     /// entry with a freshly built `Arc` (evict via [`invalidate_aabb`](Self::invalidate_aabb) /
-    /// [`clear`](Self::clear), then re-`insert` in [`resident_two_layer_chunks`]), so an
+    /// [`clear`](Self::clear), then re-`insert` in `resident_two_layer_chunks`), so an
     /// outstanding shared copy keeps seeing the exact chunk it was handed. No `Arc::make_mut` /
     /// in-place edit path exists — the resident chunk is immutable once built.
     resident: BTreeMap<[i32; 3], Arc<TwoLayerChunk>>,

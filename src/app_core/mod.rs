@@ -86,7 +86,7 @@ pub struct AppCore {
     /// `None` before the first rebuild.
     previous_density: Option<u32>,
     /// The linear inverse-command stack behind undo/redo (ADR 0003 Phase C C2). Every
-    /// non-selection-only `apply_intent` pushes a [`RecordedCommand`](command_stack::RecordedCommand)
+    /// non-selection-only `apply_intent` pushes a [`Command`](document::command::Command)
     /// here; `undo`/`redo` shuttle commands between its two Vecs. Empty until the first
     /// undoable edit.
     command_stack: CommandStack,

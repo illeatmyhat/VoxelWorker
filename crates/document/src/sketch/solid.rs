@@ -6,7 +6,8 @@ use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 /// The revolve field, with every per-solid constant hoisted out of the per-voxel loop.
 ///
 /// **This type exists so there is exactly ONE evaluation of the revolve field.** The
-/// conservative cell bound ([`SketchSolid::cell_field_interval`]) brackets this function,
+/// conservative cell bound (`SketchSolid`'s
+/// [`cell_field_interval`](crate::voxel::VoxelProducer::cell_field_interval)) brackets this function,
 /// and the resolve decides occupancy by *calling* it — `signed_distance_at(p) <=
 /// SURFACE_ISOLEVEL` — rather than re-deciding the same question with independent
 /// arithmetic. That is what makes the bound's conservative-never-narrow contract hold by

@@ -12,14 +12,14 @@
 //!     grid, view cube, debug faces).
 //!
 //! It renders on the headless `shot`'s SINGLE frame the same way the side panel does: a
-//! fixed-rect immediate-mode egui child ([`Ui::scope_builder`] at an absolute `max_rect`),
+//! fixed-rect immediate-mode egui child ([`Ui::scope_builder`](egui::Ui::scope_builder) at an absolute `max_rect`),
 //! NOT a floating [`egui::Area`] (which needs a prior frame to settle its size). The
 //! section bodies are ordinary egui widgets restyled through a scoped Signal
 //! [`egui::Style`] override (dark fills, zero corner radius, the onion-haze accent).
 //!
 //! Folded, the whole stack collapses to vertical edge tabs (Blender N-panel style):
 //! rotated glyphs, one per section plus a `«` expander; clicking a tab expands the stack
-//! with that section opened. Folded/open state is [`SignalStackState`] viewer state (never
+//! with that section opened. Folded/open state is [`SignalStackState`](super::state::SignalStackState) viewer state (never
 //! serialized, like [`ViewMode`]). The cube + rail slide with the stack via
 //! [`cube_right_inset_points`], fed back to `view_cube_corner` so the anchor tracks the
 //! stack's current width.

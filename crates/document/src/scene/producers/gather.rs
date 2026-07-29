@@ -57,7 +57,7 @@ pub(super) fn leaf_is_out_of_phase(rotation: glam::Quat, offset_local_voxels: [f
 
 /// The ADR 0027 **inverse-resample gather** for a genuinely out-of-phase (rotated or sub-voxel-
 /// seated) FIELD leaf, writing into the dense oracle's output [`VoxelGrid`]. The single-leaf
-/// occupancy definition BOTH dense paths ([`Scene::resolve_region`] and
+/// occupancy definition BOTH dense paths (the oracle-gated `Scene::resolve_region` and
 /// [`Scene::resolve_chunk_rebased`]) share, and the exact `VoxelGrid` mirror of the two-layer
 /// classifier's `gather_rotated_leaf_into_region` — both fold through substrate's ONE
 /// [`substrate::spatial::LeafPlacement`], so the dense reference can no longer drop the rotation

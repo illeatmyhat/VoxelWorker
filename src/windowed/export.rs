@@ -1,5 +1,5 @@
 //! The shell's `.vox` export dispatch: the save dialog + palette-colour assembly stay on the
-//! main thread, but the multi-second [`TwoLayerStore`] build + streaming resolve + serialise +
+//! main thread, but the multi-second [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build + streaming resolve + serialise +
 //! write move to the background [`VoxExportWorker`]. The `.vox` palette helpers live here beside
 //! their only caller. Split out of `windowed/mod.rs` (ADR 0016).
 
@@ -33,7 +33,7 @@ impl WindowedState {
     /// here on the main thread exactly as before.
     ///
     /// The dialog (a native modal, not the slow part) stays on this thread; everything
-    /// after it — [`TwoLayerStore`] build, streaming resolve, serialise, write — moves to
+    /// after it — [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build, streaming resolve, serialise, write — moves to
     /// the [`VoxExportWorker`]. The button is disabled while `export_outstanding`, so this
     /// can't be re-entered mid-export (the worker carries no supersede generation — an
     /// export is a user-chosen file — so the shell serialises instead; see

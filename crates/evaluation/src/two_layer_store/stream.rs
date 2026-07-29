@@ -160,7 +160,7 @@ pub fn expand_resident_chunks_into_grid(
 
 /// Build ONE covering chunk in the recentred frame and stream its occupancy into a
 /// FRESH `Vec<Voxel>` (coarse `d³` fast-fill + boundary per-voxel), in the EXACT
-/// frame the dense [`Store::resolve_region`](crate::store::Store::resolve_region)
+/// frame the dense oracle-gated `Store::resolve_region`
 /// assembles. Returns `None` when the capability is OFF.
 ///
 /// This is the per-chunk streaming primitive both exact sinks share: the export

@@ -753,7 +753,7 @@ impl AppCore {
         }
     }
 
-    /// The raw dispatch of one [`Intent`] to the matching [`Scene`](document::scene::Scene)
+    /// The raw dispatch of one [`Intent`] to the matching [`Scene`]
     /// edit op / field write (ADR 0003 Phase C — the C1 match, now factored out so both
     /// `apply_intent` and `redo` drive it). The success effect is
     /// [`effect_of`](Self::effect_of) (the single source of truth); a mutation that

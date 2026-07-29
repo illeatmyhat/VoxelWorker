@@ -284,7 +284,7 @@ pub(crate) const FACE_NEIGHBOUR_CHUNK_OFFSETS: [[i32; 3]; 6] = [
 /// no post-hoc mask pass over an O(volume) record array).
 ///
 /// A fully-occluded block is never a ray's first hit: the block-DDA
-/// ([`cpu_march_brick_field`](crate::brick::cpu_march_brick_field)) returns at the
+/// ([`cpu_march_brick_field`]) returns at the
 /// FIRST block carrying a record, and a ray reaching an occluded block must first pass
 /// through the solid neighbour surrounding it (which keeps its record). So never emitting it
 /// is **hit-identical** — proven against the interior-inclusive oracle build in

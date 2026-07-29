@@ -30,7 +30,7 @@ impl Scene {
     /// boxes.
     ///
     /// This is the **producer-true** frame the chunk ownership (`floor(position /
-    /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`] (the
+    /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`](Self::placed_extent_blocks) (the
     /// whole-block size readout). `None` when no leaf has an intrinsic size.
     pub(super) fn placed_extent_voxels(
         &self,

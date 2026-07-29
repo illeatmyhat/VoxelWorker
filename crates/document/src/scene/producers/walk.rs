@@ -22,9 +22,9 @@ impl Scene {
     /// [`walk_nodes`]: Self::walk_nodes
     /// The visitor receives, per enabled leaf: its accumulated world VOXEL
     /// offset, its content, its own `grids.voxel_grid_on_faces` flag (issue
-    /// #29 S4 — the resolver ORs [`crate::voxel::GRID_OVERLAY_BIT`] into the
-    /// leaf's stamped `material_id` when this is set, so the on-face voxel grid
-    /// travels with each voxel through chunk bucketing), its own
+    /// #29 S4 — the resolver stamps it as each voxel's dedicated `grid_overlay`
+    /// attribute, so the on-face voxel grid travels with each voxel through
+    /// chunk bucketing), its own
     /// [`CombineOp`] (ADR 0017: the leaf's role in the ordered document-order
     /// fold — a `Subtract` leaf removes occupancy from everything accumulated
     /// before it *in its scope*), and its **scope path** — the chain of

@@ -25,7 +25,7 @@ const STROKE_SEGMENT_HOVER: f32 = 2.75;
 const STROKE_SEGMENT_SELECTED: f32 = 4.0;
 
 /// A committed profile segment drawn in an interaction [`HandleState`] — the edge analogue of
-/// [`vertex_handle`](super::vertex_handle), so a point and a segment answer the pointer with one
+/// [`vertex_handle`](super::vertex_handle()), so a point and a segment answer the pointer with one
 /// vocabulary. `Idle` is the thin accent edge; `Hover` is a thicker brighter edge (the pointer is
 /// over it and it is selectable); `Selected` is the thickest accent edge (picked); `Marked` is the
 /// Delete-armed warn edge with a `✕`. `Snapped` is unused for edges and reads as `Idle`.

@@ -101,7 +101,7 @@ pub struct BrickGpuRecord {
 
 /// Pack the build's records for the GPU. The record set is already **surface-only** (ADR
 /// 0011 interior elision, fused into
-/// [`build_brick_field`](crate::brick::build_brick_field): a fully-occluded interior
+/// [`build_brick_field`]: a fully-occluded interior
 /// block never emits a record — no second mask pass exists), so this is a plain 1:1 mapping
 /// and the uploaded buffer is ∝ surface, not volume, for a large solid. Hit-identity of the
 /// surface-only set vs the interior-inclusive oracle build is gated in

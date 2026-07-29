@@ -148,7 +148,7 @@ pub(crate) fn build_chunks_parallel(
 /// its box correctly spans every chunk it fills.
 ///
 /// ADR 0027: an oriented leaf's world extent must enclose its **continuously rotated** grid, not
-/// just the discrete lattice turn — so this delegates to [`leaf_world_box`](super::classify::leaf_world_box),
+/// just the discrete lattice turn — so this delegates to [`leaf_world_box`],
 /// the ONE rotation-aware extent the classifier folds through. (It formerly used the lattice
 /// `orientation.turn_extent`, which is blind to the ADR 0027 quaternion: a leaf with an identity
 /// lattice orientation but a non-identity continuous rotation — a tube seated on a curved surface —

@@ -3,12 +3,12 @@
 //! A per-chunk resolve cache (ADR 0002 Decision 3, issue #27 S2): a cache keyed by
 //! `(chunk_coord, lod)` that resolves a chunk **on demand** (lazily) and stores the
 //! result, so a second request for the same chunk is a map lookup instead of a
-//! re-resolve. [`Store::resolve_region`] (the dense whole-region oracle, compile-gated
+//! re-resolve. `Store::resolve_region` (the dense whole-region oracle, compile-gated
 //! behind the `oracle` feature) rebuilds the recentred monolithic grid from cached
 //! chunks; [`Store::invalidate_aabb`] evicts exactly the chunks an edit's world-AABB
 //! intersects (whole-chunk dirty granularity), and [`Store::clear`] is the wholesale
 //! fallback. Out-of-core spill (issue #20 Step 3) moves least-recently-used resident
-//! chunks to the backing [`DiskChunkStore`](crate::disk_chunk_store::DiskChunkStore).
+//! chunks to the backing [`DiskChunkStore`].
 
 use std::collections::HashMap;
 
@@ -481,7 +481,7 @@ impl Store {
     /// composite recentre/floating origin + density for `(scene, voxels_per_block)`
     /// and ensure every covering chunk is resolved + resident, returning the
     /// region's voxel dimensions. This is the shared `&mut self` step the four
-    /// consumer-shaped reads ([`resolve_region`](Self::resolve_region),
+    /// consumer-shaped reads (the oracle-gated `resolve_region`,
     /// [`resident_render_chunks`](Self::resident_render_chunks),
     /// [`widest_run_in_band`](Self::widest_run_in_band),
     /// [`bound_region_occupied`](Self::bound_region_occupied)) are thin wrappers

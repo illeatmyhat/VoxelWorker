@@ -22,7 +22,7 @@ const DOT_RADIUS: f32 = 2.0;
 /// `placing` brightens it to the hover step while a placement is armed and the marker is riding
 /// the cursor, matching every other manipulator's "you are moving this right now" state.
 ///
-/// Deliberately unlike [`vertex_handle`](super::vertex_handle)'s square thumb: a vertex is a
+/// Deliberately unlike [`vertex_handle`](super::vertex_handle())'s square thumb: a vertex is a
 /// thing you grab, and this is a thing you turn around. It is also never occluded — it draws in
 /// the screen-space overlay pass rather than the depth-tested scene, because a pivot placed on
 /// the far side of the model is exactly when you most need to see where it went.

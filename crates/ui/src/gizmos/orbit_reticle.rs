@@ -29,7 +29,7 @@ const STROKE_WIDTH: f32 = 1.0;
 /// verb without lying — the reticle is what says "left now turns and re-centres", so the flipped
 /// verb is visible for as long as it is in force. It is drawn in a single neutral-gray pass at
 /// half alpha ([`color_palette::RETICLE`]), NOT in the accent and NOT double-struck with a dark
-/// backing the way [`orbit_center`](super::orbit_center) is: a mark this large has to sit under
+/// backing the way [`orbit_center`](super::orbit_center()) is: a mark this large has to sit under
 /// the model rather than over it. The shell hides it for the duration of a turn, and only a turn:
 /// a press that might still become the re-centring click keeps it, because that click aims at it.
 pub fn orbit_reticle(painter: &Painter, viewport: Rect) {

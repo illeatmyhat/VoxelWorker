@@ -140,7 +140,8 @@ pub struct DisplayOrchestrator {
     /// does NOT reflect the latest resolve (it is still S0 while the worker builds S1), so an
     /// incremental edit must NOT inline-patch it (that strands every chunk that differs
     /// S0→S1 but isn't in the new dirty set — the Frankenstein mesh). The rebuild is routed
-    /// to a fresh wholesale-async dispatch instead (see [`route_geometry_rebuild`]). Cleared
+    /// to a fresh wholesale-async dispatch instead (see
+    /// [`route_geometry_rebuild`](crate::engagement::routing::route_geometry_rebuild)). Cleared
     /// when `poll_geometry_worker` accepts + installs a result.
     geometry_async_outstanding: bool,
     /// The async wholesale brick-pipeline worker (perf follow-up to epic #64, issue #60
@@ -341,7 +342,7 @@ impl DisplayOrchestrator {
     }
 
     /// Is the ADR 0011 brick raymarch the live voxel display (so the fallback cuboid mesh is
-    /// NOT drawn)? [pure] The SINGLE engagement predicate behind every gate — startup, the
+    /// NOT drawn)? \[pure\] The SINGLE engagement predicate behind every gate — startup, the
     /// rebuild skip, [`Self::ensure_display_mesh_current`], and the per-frame draw gate — so
     /// they can never drift term-for-term. Engaged iff a live brick field is resident AND
     /// debug-face orientation is off.

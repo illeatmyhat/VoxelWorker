@@ -284,7 +284,7 @@ impl Scene {
 /// the producer emitted (a VoxelBody's own per-voxel materials).
 ///
 /// Private helper of the dense [`Scene::resolve_region`] oracle only (the per-chunk
-/// path uses [`stamp_producer_into_chunk`]), so it carries the same `oracle` compile
+/// path uses `stamp_producer_into_chunk`), so it carries the same `oracle` compile
 /// gate — see the proof chapter's "Oracles" section (`docs/architecture/05-proof.md`).
 #[cfg(any(test, feature = "oracle"))]
 fn stamp_producer(

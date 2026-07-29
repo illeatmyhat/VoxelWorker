@@ -16,7 +16,7 @@
 //! [`resolve_placement`] fed a ray rebased into the absolute voxel frame. (Tier 2,
 //! user-created planes, is not wired yet.)
 //!
-//! **The frame (ADR 0008).** [`pick_voxel`] already returns `absolute_voxel` in the
+//! **The frame (ADR 0008).** [`pick_voxel`](AppCore::pick_voxel) already returns `absolute_voxel` in the
 //! absolute lattice, and a node's `offset_voxels` IS that absolute frame (a producer
 //! emits `[offset, offset + grid)` corner-anchored — verified by the end-to-end tests
 //! below, which drop a node and confirm its occupancy lands where the cursor pointed),
@@ -260,7 +260,7 @@ impl AppCore {
     ///
     /// Split out because two callers need it and must not drift: the armed-tool drop
     /// ([`place_primitive`](AppCore::place_primitive)), which asks after geometry misses, and
-    /// [`pick_surface_point`](AppCore::pick_surface_point), which the orbit-center placement
+    /// [`surface_point_absolute`](AppCore::surface_point_absolute), which the orbit-center placement
     /// asks the same way. Both must agree about where "the ground" is, or the same click would
     /// drop a node and place a pivot at two different points.
     fn world_plane_target(

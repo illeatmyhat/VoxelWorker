@@ -20,8 +20,8 @@
 //! not an approximation — it is how grabbable handles must work over a 3D plane. A handle billboards
 //! (constant pixel size, camera-facing) so it stays clickable when the plane tilts edge-on, where a
 //! foreshortened one would collapse to a sliver; a straight profile edge projects to a straight 2D
-//! segment between its projected endpoints, so [`segment`] is exact in perspective. Curved
-//! affordances ([`close_loop_ring`]) are billboards by intent — a fixed-radius ring around the
+//! segment between its projected endpoints, so [`segment()`] is exact in perspective. Curved
+//! affordances ([`close_loop_ring()`]) are billboards by intent — a fixed-radius ring around the
 //! projected vertex, a UI affordance rather than plane geometry.
 //!
 //! The **working plane itself is NOT here**: it is 3D geometry that foreshortens with the camera,

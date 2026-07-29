@@ -86,7 +86,7 @@ where
 
 /// Scan every source, decode each group's first variant, stream the results, then
 /// send [`ScanMessage::Done`]. Used by both the windowed worker and the
-/// synchronous CLI path (`--scan-vs`) via [`run_scan_collect`].
+/// synchronous CLI path (`--scan-vs`) via [`run_auto_scan_blocking`].
 fn run_scan(sources: Vec<Box<dyn BlockSource>>, sender: &Sender<ScanMessage>) {
     let source_name = sources
         .first()

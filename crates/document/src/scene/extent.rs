@@ -603,7 +603,7 @@ impl Scene {
     /// The block-aligned AABB (`min_corner, max_corner`, whole blocks) of the
     /// subtree rooted at `path` — the union of every enabled leaf under that node,
     /// each leaf spanning `[off − floor(size/2), off − floor(size/2) + size)` (the
-    /// same split [`placed_extent_blocks`] uses scene-wide). The accumulated world
+    /// same split [`placed_extent_blocks`](Self::placed_extent_blocks) uses scene-wide). The accumulated world
     /// offset down to `path` seeds the walk so a Group/Instance child is measured at
     /// its world location. `None` when the subtree has no intrinsic-size leaf.
     pub(super) fn node_subtree_extent_blocks(
@@ -710,10 +710,10 @@ impl Scene {
     /// The PRODUCER-TRUE voxel AABB (`min_corner, max_corner`, in voxels) of the
     /// subtree rooted at `path` — the union of every enabled leaf under that node,
     /// each leaf spanning the center-emitted `[off·d − grid/2, off·d + grid/2)` (the
-    /// exact frame [`placed_extent_voxels`] forms scene-wide). This is the frame the
+    /// exact frame [`placed_extent_voxels`](Self::placed_extent_voxels) forms scene-wide). This is the frame the
     /// composite recentre and the resolved voxels live in, so the gizmo pivot derived
     /// from it lands exactly on the object. `None` when the subtree has no
-    /// intrinsic-size leaf. Mirrors [`node_subtree_extent_blocks`] but in voxels with
+    /// intrinsic-size leaf. Mirrors [`node_subtree_extent_blocks`](Self::node_subtree_extent_blocks) but in voxels with
     /// no block-floor split (so odd sizes are centred, not snapped).
     pub(super) fn node_subtree_extent_voxels(
         &self,
@@ -800,7 +800,7 @@ impl Scene {
     /// `size_blocks` is CORNER-ANCHORED at its block-offset (the derived block view of
     /// its voxel placement, ADR 0003 §3f(0)) and so spans `[offset, offset + size]`.
     /// `None` when no leaf has an intrinsic size (a VoxelBody-only scene). Drives
-    /// [`full_extent_blocks`] (the whole-block size readout) and the block-lattice
+    /// [`full_extent_blocks`](Self::full_extent_blocks) (the whole-block size readout) and the block-lattice
     /// overlay extent.
     ///
     /// CORNER-ANCHORING: the offset block is the LOW corner (no `± size/2` split), so

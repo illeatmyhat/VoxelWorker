@@ -6,7 +6,7 @@
 //! than drawn.
 //!
 //! Selecting a row asks for a [`SelectionRequest`](crate::panel::SelectionRequest) on the
-//! [`PanelResponse`](crate::panel::PanelResponse). ADR 0032: selection is WORKSPACE state,
+//! [`PanelResponse`]. ADR 0032: selection is WORKSPACE state,
 //! not a document edit — it re-resolves nothing and never enters undo history — so it takes
 //! the view-action channel, not the intent door.
 

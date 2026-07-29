@@ -492,7 +492,7 @@ pub(crate) fn build_chrome_vertices(
 }
 
 /// Push two triangles for a textured glyph quad. `(cx, cy)` is the centre and
-/// `(half_w, half_h)` the half-extents, ALL in rect fractions [0,1] (origin
+/// `(half_w, half_h)` the half-extents, ALL in rect fractions \[0,1\] (origin
 /// top-left, y down). Converts to NDC (x: f*2-1, y: 1-f*2) for the viewport.
 fn push_glyph_quad(
     verts: &mut Vec<ChromeVertex>,

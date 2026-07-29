@@ -321,7 +321,7 @@ impl Scene {
 /// and stamp only the voxels whose absolute centre falls in the half-open chunk
 /// box `[chunk_min_voxels, chunk_max_voxels)` into `output`.
 ///
-/// This is the chunk-scoped sibling of [`stamp_producer`]: same per-leaf
+/// This is the chunk-scoped sibling of the oracle's `stamp_producer`: same per-leaf
 /// resolution, same material-override rule (a Tool overwrites every voxel's id;
 /// `None` keeps the producer's own ids), but it (a) never recentres and (b)
 /// clips each voxel to one chunk. Ownership is `floor(world_position /
@@ -413,7 +413,7 @@ fn stamp_producer_into_chunk(
 /// Resolve `producer`'s cells inside the chunk window and **occupancy-mask** `output`
 /// with them (ADR 0017 Decision 1). Each already-stamped voxel whose (rebased) index
 /// coincides with one of the mask's cells is *covered*; `keep_if_covered` picks which
-/// side of the mask survives — the chunk-scoped sibling of [`mask_producer`]:
+/// side of the mask survives — the chunk-scoped sibling of the oracle's `mask_producer`:
 ///
 /// * `keep_if_covered = false` → **Subtract** (carve): covered voxels are removed.
 /// * `keep_if_covered = true`  → **Intersect** (issue #75): only covered voxels

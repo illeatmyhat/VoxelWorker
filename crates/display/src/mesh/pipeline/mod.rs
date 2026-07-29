@@ -141,7 +141,8 @@ pub struct CuboidMeshRenderer {
     source_chunk_grids: Vec<([i32; 3], VoxelGrid)>,
     /// The two-layer chunks the mesh was last built from (ADR 0010 #53), retained so a band
     /// reclip (the layer scrubber) can re-mesh DIRECTLY from the two-layer store — no dense
-    /// source grids. Empty on the dense path; populated only by [`new_from_two_layer_chunks`].
+    /// source grids. Empty on the dense path; populated only by
+    /// [`new_from_two_layer_chunks`](Self::new_from_two_layer_chunks).
     /// `recentre`/`density` are the frame + density the two-layer mesher needs to re-emit in
     /// the SAME world frame on every band change.
     source_two_layer_chunks: Vec<([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)>,
@@ -328,8 +329,9 @@ impl CuboidMeshRenderer {
         renderer
     }
 
-    /// Shared GPU-resource assembly for both the dense ([`new_from_chunks`]) and two-layer
-    /// ([`new_from_two_layer_chunks`]) builders: upload the per-chunk meshes, build the
+    /// Shared GPU-resource assembly for both the dense ([`new_from_chunks`](Self::new_from_chunks))
+    /// and two-layer ([`new_from_two_layer_chunks`](Self::new_from_two_layer_chunks)) builders:
+    /// upload the per-chunk meshes, build the
     /// uniform / per-draw-overlay / atlas / loaded bind groups + pipelines, and assemble
     /// the renderer. `source_chunk_grids` is retained for the band reclip on the dense
     /// path (empty on the two-layer path, which reclips instead from its own retained
@@ -975,7 +977,7 @@ impl CuboidMeshRenderer {
     /// Build the per-chunk meshes clipped to `band` + `region` from whichever source the
     /// renderer retains (the two-layer store, else the dense per-chunk grids). `None`
     /// when the renderer has neither source (an empty build). The two-layer analogue of
-    /// the dense apron mesher, kept as ONE helper so [`rebuild_for_band`] and the ghost
+    /// the dense apron mesher, kept as ONE helper so [`rebuild_for_band`](Self::rebuild_for_band) and the ghost
     /// slab build share the exact same clip semantics (ADR 0012: the two ghost slabs are
     /// just this build at the slab bands). `region` carries its own [`RegionRole`], so the
     /// caller passes `solid_region` (finished outside) or `ghost_region` (clipped to inside).

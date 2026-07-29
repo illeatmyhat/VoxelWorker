@@ -108,7 +108,7 @@ fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
 /// clips against — recentre is applied later as a pure index offset, so classification is
 /// frame-independent). Each leaf's interval is taken in its OWN local voxel-index frame by
 /// subtracting the leaf's `world_offset_voxels` (the same map
-/// [`stamp_producer_into_chunk`](crate::scene) uses for its resolve window).
+/// `stamp_producer_into_chunk` (document crate) uses for its resolve window).
 ///
 /// The fold is SCOPED (ADR 0017 Decision 3, issue #74): each leaf's interval folds into
 /// its innermost enclosing Group / definition-body scope, and a closing scope's composed
@@ -564,7 +564,7 @@ fn subtractive_leaves_contain_chunk(
 /// material at each occupied voxel), decompose it to cuboids, and compute its per-face
 /// seam-solidity flags. `block_min_abs` is the block's low corner in absolute voxels.
 ///
-/// Per-voxel resolution reuses each overlapping leaf's [`VoxelProducer::resolve_into`]
+/// Per-voxel resolution reuses each overlapping leaf's `VoxelProducer::resolve_into`
 /// over the block window, composed by the SAME scoped ordered-fold semantics the dense
 /// path uses (ADR 0017 / issue #74: within a scope, a Union leaf stamps later-wins on
 /// overlap and a Subtract leaf CLEARS the cells its body covers; a closing scope's
