@@ -214,6 +214,11 @@ pub(crate) struct ShotOptions {
     /// never stamps material). The CSG tracer-bullet golden. Overrides
     /// --shape/--size/--density.
     pub(crate) demo_subtract: bool,
+    /// `--demo-cylinder-subtract` (ADR 0032 selection feedback): a Stone box drilled by a
+    /// Subtract CYLINDER through its top face — the CURVED junction case: the selection
+    /// cel's traced crease is the circular bore mouth, no straight catalogue edge could
+    /// stand in for it. Overrides --shape/--size/--density.
+    pub(crate) demo_cylinder_subtract: bool,
     /// `--demo-group-subtract` (ADR 0017 Decision 3 / #74): a Group holding a Stone body
     /// plus a Subtract cutter (a corner notch carved INSIDE the group), with a Wood
     /// bystander box BEFORE the group overlapping the cutter's volume — rendered intact,
@@ -380,6 +385,7 @@ impl Default for ShotOptions {
             synthetic_block: false,
             demo_overlap: false,
             demo_subtract: false,
+            demo_cylinder_subtract: false,
             demo_group_subtract: false,
             demo_intersect: false,
             demo_cutter_def: false,
@@ -733,6 +739,9 @@ pub(crate) fn parse_options() -> ShotOptions {
             }
             "--demo-subtract" => {
                 options.demo_subtract = true;
+            }
+            "--demo-cylinder-subtract" => {
+                options.demo_cylinder_subtract = true;
             }
             "--demo-group-subtract" => {
                 options.demo_group_subtract = true;

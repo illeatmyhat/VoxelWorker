@@ -214,6 +214,45 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
+/// Build the `--demo-cylinder-subtract` (ADR 0032 selection feedback): a solid Stone box
+/// DRILLED by a Subtract cylinder standing through its top face — a blind bore. The bore
+/// mouth is a CIRCLE on the top face: the curved junction the selection cel must trace
+/// (no straight catalogue edge could stand in for it), while the cylinder's own rim
+/// circles sit above the box, off the composed surface.
+///
+/// [`CombineOp::Subtract`]: voxel_worker::CombineOp
+pub(crate) fn build_demo_cylinder_subtract(voxels_per_block: u32) -> DemoScene {
+    let make = |kind, size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
+        let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
+        let mut node = Node::new(name, NodeContent::Tool { shape, material });
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.operation = operation;
+        node
+    };
+    let mut scene = with_node_ids(Scene::from_nodes(vec![
+        make(
+            ShapeKind::Box,
+            [4, 4, 4],
+            [0, 0, 0],
+            MaterialChoice::Stone,
+            CombineOp::Union,
+            "Body",
+        ),
+        // The 2-block-wide bore stands on blocks [1,3)² and spans z ∈ [1, 6): its wall
+        // crosses the body's top face z=4 on a circle, its floor stays inside — blind.
+        make(
+            ShapeKind::Cylinder,
+            [2, 2, 5],
+            [1, 1, 1],
+            MaterialChoice::Wood,
+            CombineOp::Subtract,
+            "Bore",
+        ),
+    ]));
+    scene.voxels_per_block = voxels_per_block;
+    DemoScene::first_node(scene)
+}
+
 /// Build the `--demo-buried-cutter` (issue #78): a solid 4³-block Stone host carrying a
 /// 2³-block Subtract cutter placed ENTIRELY inside it (blocks `[1,3)³` within `[0,4)³`) —
 /// an internal void that is invisible by success: the composed render is just the host's

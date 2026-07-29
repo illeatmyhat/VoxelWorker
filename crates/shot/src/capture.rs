@@ -19,11 +19,12 @@ use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 
 use crate::demos::{
     build_demo_buried_cutter, build_demo_child_booleans, build_demo_cutter_def,
-    build_demo_group_subtract, build_demo_groups, build_demo_intersect, build_demo_mixed_material,
-    build_demo_overlap, build_demo_scene, build_demo_sketch_box, build_demo_sketch_extrude,
-    build_demo_sketch_revolve, build_demo_subtract, build_demo_two_material, build_demo_village,
-    build_demo_village_far, build_demo_window_fixture, build_far_offset_scene, file_stem_of,
-    resolve_demo_stem, DemoScene, FAR_OFFSET_BLOCKS, FAR_SCENE_BASE_BLOCKS,
+    build_demo_cylinder_subtract, build_demo_group_subtract, build_demo_groups,
+    build_demo_intersect, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
+    build_demo_sketch_box, build_demo_sketch_extrude, build_demo_sketch_revolve,
+    build_demo_subtract, build_demo_two_material, build_demo_village, build_demo_village_far,
+    build_demo_window_fixture, build_far_offset_scene, file_stem_of, resolve_demo_stem, DemoScene,
+    FAR_OFFSET_BLOCKS, FAR_SCENE_BASE_BLOCKS,
 };
 use crate::options::ShotOptions;
 
@@ -221,6 +222,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         build_demo_overlap(options.geometry.voxels_per_block)
     } else if options.demo_subtract {
         build_demo_subtract(options.geometry.voxels_per_block)
+    } else if options.demo_cylinder_subtract {
+        build_demo_cylinder_subtract(options.geometry.voxels_per_block)
     } else if options.demo_group_subtract {
         build_demo_group_subtract(options.geometry.voxels_per_block)
     } else if options.demo_intersect {
@@ -386,6 +389,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let placed_scene = options.demo_scene
         || options.demo_overlap
         || options.demo_subtract
+        || options.demo_cylinder_subtract
         || options.demo_group_subtract
         || options.demo_intersect
         || options.demo_cutter_def

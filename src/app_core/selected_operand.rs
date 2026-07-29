@@ -126,6 +126,182 @@ fn collect_edge_segments_true_world(slice: &Scene, density: u32, out: &mut Vec<[
     }
 }
 
+/// Hard cap on traced surface pairs per selection change (runaway guard for a
+/// selection overlapping very many bodies — pairs beyond it silently skip, which
+/// costs junction lines, never correctness).
+const JUNCTION_PAIR_CAP: usize = 64;
+
+/// Trace the CSG junction curves of the selection — where a selected leaf's
+/// surface crosses ANOTHER leaf's surface (a cutter's wall meeting the face it
+/// carved) — as segment endpoint pairs in TRUE-WORLD voxels, appended to `out`.
+///
+/// Pairs come from the SAME `leaf_producers` walk the evaluator reads, pruned by
+/// inflated `world_aabb` overlap; a pair traces when at least one side belongs to
+/// the selected subtree (an external cutter's crease on a selected host counts,
+/// and vice versa). Fold order is deliberately NOT consulted: the junction lives
+/// on `F = 0 ∩ G = 0` regardless of which leaf folded first, and the shader's
+/// hull + scene-depth gates discard any span over carved-away or occluded space.
+/// Emboss leaves skip (their resolved surface has moved off the authored field);
+/// a fieldless producer skips by type. The prune brackets are the evaluator's own
+/// `cell_field_interval` — conservative-never-narrow per producer, so the seeding
+/// never silently loses a curve to an optimistic Lipschitz guess.
+fn collect_junction_segments_true_world(
+    scene: &Scene,
+    picked: &std::collections::BTreeSet<NodeId>,
+    density: u32,
+    out: &mut Vec<[f32; 3]>,
+) {
+    let in_selection = |id: NodeId| {
+        if picked.contains(&id) {
+            return true;
+        }
+        let mut current = id;
+        while let Some((Some(parent), _)) = scene.parent_and_index_of(current) {
+            if picked.contains(&parent) {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    };
+    struct PairSide {
+        placement: LeafPlacement,
+        aabb: ([i64; 3], [i64; 3]),
+        producer: Box<dyn document::voxel::VoxelProducer>,
+        selected: bool,
+    }
+    let sides: Vec<PairSide> = scene
+        .leaf_producers(density)
+        .into_iter()
+        .filter(|leaf| !matches!(leaf.operation, CombineOp::Emboss { .. }))
+        .filter(|leaf| leaf.producer.as_field().is_some())
+        .map(|leaf| {
+            let grid = leaf.producer.full_dimensions(density);
+            let placement = LeafPlacement::from_origin_and_local(
+                leaf.rotation,
+                glam::Vec3::new(grid[0] as f32, grid[1] as f32, grid[2] as f32),
+                leaf.world_offset_voxels,
+                leaf.offset_local_voxels,
+            );
+            let aabb = placement.world_aabb();
+            let selected = in_selection(leaf.origin.node)
+                || leaf.origin.instance_host.is_some_and(in_selection);
+            PairSide {
+                placement,
+                aabb,
+                producer: leaf.producer,
+                selected,
+            }
+        })
+        .collect();
+
+    // A field + brackets over one side, in TRUE-WORLD voxels: the field maps the
+    // sample through the placement's inverse; the bracket maps the world cube's
+    // corners to a local enclosing cell and asks the producer's own conservative
+    // interval (an unknown interval keeps the cell — never prunes).
+    fn world_field(side: &PairSide, density: u32) -> impl Fn(glam::Vec3) -> f32 + '_ {
+        let placement = side.placement;
+        let field = side
+            .producer
+            .as_field()
+            .expect("filtered to field-bearing producers");
+        move |point: glam::Vec3| -> f32 {
+            let local = placement
+                .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(point))
+                .voxels();
+            field.signed_distance(local.to_array(), density)
+        }
+    }
+    fn world_bracket(side: &PairSide, density: u32) -> impl Fn(glam::Vec3, f32) -> (f32, f32) + '_ {
+        let placement = side.placement;
+        let producer = &side.producer;
+        move |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
+            let mut local_min = [f32::MAX; 3];
+            let mut local_max = [f32::MIN; 3];
+            for corner in 0..8u8 {
+                let world = cell_min
+                    + glam::Vec3::new(
+                        if corner & 1 != 0 { size } else { 0.0 },
+                        if corner & 2 != 0 { size } else { 0.0 },
+                        if corner & 4 != 0 { size } else { 0.0 },
+                    );
+                let local = placement
+                    .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(world))
+                    .voxels();
+                for axis in 0..3 {
+                    local_min[axis] = local_min[axis].min(local[axis]);
+                    local_max[axis] = local_max[axis].max(local[axis]);
+                }
+            }
+            let cell = voxel_core::spatial_index::VoxelAabb::new(
+                std::array::from_fn(|axis| local_min[axis].floor() as i64),
+                std::array::from_fn(|axis| local_max[axis].ceil() as i64),
+            );
+            match producer.cell_field_interval(cell, density) {
+                Some(interval) => (interval.minimum, interval.maximum),
+                None => (-1.0, 1.0),
+            }
+        }
+    }
+
+    let config = substrate::spatial::SurfaceIntersectionConfig::default();
+    let mut traced_pairs = 0usize;
+    for first in 0..sides.len() {
+        for second in (first + 1)..sides.len() {
+            let (a, b) = (&sides[first], &sides[second]);
+            if !(a.selected || b.selected) {
+                continue;
+            }
+            // Inflated-AABB broadphase: surfaces can only cross inside the overlap.
+            let mut overlap_min = [0f32; 3];
+            let mut overlap_max = [0f32; 3];
+            let mut disjoint = false;
+            for axis in 0..3 {
+                let low = (a.aabb.0[axis].max(b.aabb.0[axis]) - 1) as f32;
+                let high = (a.aabb.1[axis].min(b.aabb.1[axis]) + 1) as f32;
+                if high <= low {
+                    disjoint = true;
+                    break;
+                }
+                overlap_min[axis] = low;
+                overlap_max[axis] = high;
+            }
+            if disjoint {
+                continue;
+            }
+            if traced_pairs >= JUNCTION_PAIR_CAP {
+                return;
+            }
+            traced_pairs += 1;
+            let field_a = world_field(a, density);
+            let field_b = world_field(b, density);
+            let bracket_a = world_bracket(a, density);
+            let bracket_b = world_bracket(b, density);
+            let curves = substrate::spatial::trace_intersection_curves(
+                &substrate::spatial::ImplicitSurfacePair {
+                    field_f: &field_a,
+                    field_g: &field_b,
+                    bracket_f: &bracket_a,
+                    bracket_g: &bracket_b,
+                },
+                glam::Vec3::from_array(overlap_min),
+                glam::Vec3::from_array(overlap_max),
+                &config,
+            );
+            for curve in curves {
+                for pair in curve.points.windows(2) {
+                    out.push(pair[0].to_array());
+                    out.push(pair[1].to_array());
+                }
+                if curve.closed && curve.points.len() > 2 {
+                    out.push(curve.points[curve.points.len() - 1].to_array());
+                    out.push(curve.points[0].to_array());
+                }
+            }
+        }
+    }
+}
+
 impl AppCore {
     /// Derive the boolean-operand ghost for `target`'s subtree (ADR 0018 Decision 6 —
     /// "Show booleans" mode), or `None` when the subtree covers no boolean with
@@ -187,6 +363,12 @@ impl AppCore {
         if bodies.is_empty() {
             return None;
         }
+        collect_junction_segments_true_world(
+            scene,
+            &picked,
+            density,
+            &mut edge_segments_true_world,
+        );
         let recentre = scene.recentre_voxels_for_resolve(density);
         let recentre_f32 = recentre.voxels().map(|axis| axis as f32);
         let edge_segments = edge_segments_true_world
@@ -635,5 +817,213 @@ mod tests {
             .bodies
             .iter()
             .all(|b| b.style == OperandGhostStyle::Subtract));
+    }
+
+    /// A cutter poking through the host's +X face: their surfaces cross on the
+    /// rectangle perimeter at x = 32, y and z on the cutter's walls {8, 24}.
+    fn notch_scene() -> Scene {
+        let mut scene = Scene::from_nodes(vec![
+            box_tool([4, 4, 4], [0, 0, 0], CombineOp::Union, "Host"),
+            box_tool([2, 2, 2], [3, 1, 1], CombineOp::Subtract, "Cutter"),
+        ]);
+        scene.voxels_per_block = DENSITY;
+        scene.ensure_node_ids();
+        scene
+    }
+
+    /// The traced junction lands on BOTH surfaces: every endpoint sits on the host
+    /// face x = 32 AND on a cutter wall, and all four walls of the notch mouth
+    /// appear. Selecting either side of the pair traces the same junction.
+    #[test]
+    fn junction_curves_trace_the_notch_mouth() {
+        let scene = notch_scene();
+        for select in [0usize, 1] {
+            let picked: std::collections::BTreeSet<NodeId> =
+                [scene.roots[select]].into_iter().collect();
+            let mut segments = Vec::new();
+            collect_junction_segments_true_world(&scene, &picked, DENSITY, &mut segments);
+            assert!(
+                !segments.is_empty(),
+                "the cutter's walls cross the host's +X face"
+            );
+            let mut walls_hit = [false; 4];
+            for point in &segments {
+                assert!(
+                    (point[0] - 32.0).abs() < 0.05,
+                    "junction lives on the host face x=32, got {point:?}"
+                );
+                let wall = [
+                    (point[1] - 8.0).abs() < 0.05,
+                    (point[1] - 24.0).abs() < 0.05,
+                    (point[2] - 8.0).abs() < 0.05,
+                    (point[2] - 24.0).abs() < 0.05,
+                ];
+                assert!(
+                    wall.iter().any(|&on| on),
+                    "junction lives on a cutter wall, got {point:?}"
+                );
+                for (hit, on) in walls_hit.iter_mut().zip(wall) {
+                    *hit |= on;
+                }
+            }
+            assert_eq!(
+                walls_hit, [true; 4],
+                "the full notch-mouth perimeter is traced (selected root {select})"
+            );
+        }
+    }
+
+    /// A pair with NEITHER side in the selection traces nothing — the junction
+    /// derivation is selection-scoped, never scene-wide.
+    #[test]
+    fn junctions_skip_pairs_outside_the_selection() {
+        let mut scene = Scene::from_nodes(vec![
+            box_tool([4, 4, 4], [0, 0, 0], CombineOp::Union, "Host"),
+            box_tool([2, 2, 2], [3, 1, 1], CombineOp::Subtract, "Cutter"),
+            box_tool([2, 2, 2], [10, 0, 0], CombineOp::Union, "Bystander"),
+        ]);
+        scene.voxels_per_block = DENSITY;
+        scene.ensure_node_ids();
+        let picked: std::collections::BTreeSet<NodeId> = [scene.roots[2]].into_iter().collect();
+        let mut segments = Vec::new();
+        collect_junction_segments_true_world(&scene, &picked, DENSITY, &mut segments);
+        assert!(
+            segments.is_empty(),
+            "the disjoint bystander shares no junction; the unselected host/cutter pair skips"
+        );
+    }
+
+    /// The `--demo-subtract` corner-octant pair: the cutter is FLUSH with the body on
+    /// three faces, and the flush patches must neither trace (tangency floor) nor
+    /// flood the seed budget (the seed screen regression — the top face's L once
+    /// vanished because flush cells exhausted `max_seeds` first). The junction is
+    /// three open L curves, one per body face the cutter's walls cross.
+    #[test]
+    fn flush_corner_notch_traces_all_three_faces() {
+        let density = 16u32;
+        let body = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, density);
+        let cutter = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, density);
+        let field_body = |p: glam::Vec3| {
+            body.as_field()
+                .unwrap()
+                .signed_distance(p.to_array(), density)
+        };
+        let field_cutter = |p: glam::Vec3| {
+            cutter
+                .as_field()
+                .unwrap()
+                .signed_distance([p.x - 32.0, p.y - 32.0, p.z - 32.0], density)
+        };
+        let bracket_body = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
+            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            substrate::spatial::lipschitz_cell_bracket(
+                field_body(centre),
+                1.5,
+                size * 3f32.sqrt() / 2.0,
+            )
+        };
+        let bracket_cutter = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
+            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            substrate::spatial::lipschitz_cell_bracket(
+                field_cutter(centre),
+                1.5,
+                size * 3f32.sqrt() / 2.0,
+            )
+        };
+        let curves = substrate::spatial::trace_intersection_curves(
+            &substrate::spatial::ImplicitSurfacePair {
+                field_f: &field_body,
+                field_g: &field_cutter,
+                bracket_f: &bracket_body,
+                bracket_g: &bracket_cutter,
+            },
+            glam::Vec3::new(31.0, 31.0, 31.0),
+            glam::Vec3::new(65.0, 65.0, 65.0),
+            &substrate::spatial::SurfaceIntersectionConfig::default(),
+        );
+        assert_eq!(curves.len(), 3, "one L per body face, no flush phantoms");
+        for curve in &curves {
+            assert!(!curve.closed, "each L is open (aborts at the body edges)");
+            assert!(
+                curve.points.len() > 100,
+                "each L covers its two 32-voxel lines"
+            );
+            let flat_axis = (0..3)
+                .find(|&axis| {
+                    curve
+                        .points
+                        .iter()
+                        .all(|point| (point[axis] - 64.0).abs() < 0.05)
+                })
+                .expect("each L lies flat on one body face at 64");
+            for point in &curve.points {
+                let on_wall = (0..3)
+                    .filter(|&axis| axis != flat_axis)
+                    .any(|axis| (point[axis] - 32.0).abs() < 0.05);
+                assert!(on_wall, "every point sits on a cutter wall, got {point:?}");
+            }
+        }
+    }
+
+    /// The bore mouth traces as ONE closed circle — the corrected-point dedup
+    /// regression: bracket-admitted seeds farther out than the consume radius must
+    /// not re-trace the same curve (this pair once yielded it 10 times).
+    #[test]
+    fn bore_junction_traces_one_circle() {
+        let density = 16u32;
+        let body = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, density);
+        let bore = SdfShape::from_blocks(ShapeKind::Cylinder, [2, 2, 5], 1, density);
+        let field_body = |p: glam::Vec3| {
+            body.as_field()
+                .unwrap()
+                .signed_distance(p.to_array(), density)
+        };
+        let field_bore = |p: glam::Vec3| {
+            bore.as_field()
+                .unwrap()
+                .signed_distance([p.x - 16.0, p.y - 16.0, p.z - 16.0], density)
+        };
+        let bracket_body = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
+            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            substrate::spatial::lipschitz_cell_bracket(
+                field_body(centre),
+                1.5,
+                size * 3f32.sqrt() / 2.0,
+            )
+        };
+        let bracket_bore = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
+            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            substrate::spatial::lipschitz_cell_bracket(
+                field_bore(centre),
+                1.5,
+                size * 3f32.sqrt() / 2.0,
+            )
+        };
+        let curves = substrate::spatial::trace_intersection_curves(
+            &substrate::spatial::ImplicitSurfacePair {
+                field_f: &field_body,
+                field_g: &field_bore,
+                bracket_f: &bracket_body,
+                bracket_g: &bracket_bore,
+            },
+            glam::Vec3::new(15.0, 15.0, 15.0),
+            glam::Vec3::new(49.0, 49.0, 65.0),
+            &substrate::spatial::SurfaceIntersectionConfig::default(),
+        );
+        assert_eq!(curves.len(), 1, "one bore mouth, traced once");
+        let circle = &curves[0];
+        assert!(circle.closed);
+        assert!(circle.points.len() > 100, "the full 16-voxel-radius circle");
+        for point in &circle.points {
+            assert!(
+                (point.z - 64.0).abs() < 0.05,
+                "on the top face, got {point:?}"
+            );
+            let radius = ((point.x - 32.0).powi(2) + (point.y - 32.0).powi(2)).sqrt();
+            assert!(
+                (radius - 16.0).abs() < 0.05,
+                "on the bore wall, got {point:?}"
+            );
+        }
     }
 }
