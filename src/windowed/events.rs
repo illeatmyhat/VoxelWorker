@@ -106,7 +106,7 @@ impl ApplicationHandler for App {
                     }
                     state.armed_press = !committed_orbit_center
                         && !in_orbit_mode
-                        && state.armed_tool.is_some()
+                        && state.panel_state.armed_tool.is_some()
                         && !egui_consumed
                         && !in_cube
                         && !in_chrome;
@@ -119,7 +119,7 @@ impl ApplicationHandler for App {
                         && !egui_consumed
                         && !in_cube
                         && !in_chrome
-                        && state.armed_tool.is_none()
+                        && state.panel_state.armed_tool.is_none()
                         && state.panel_state.sketch_mode.is_none();
                     // ADR 0028 (#94/#95): a sketch-mode press, on the live viewport (not egui /
                     // cube). The Select tool grabs a vertex handle; the Add-point / Delete tools
@@ -365,7 +365,7 @@ impl ApplicationHandler for App {
                 }
                 if button_state == ElementState::Pressed
                     && !egui_consumed
-                    && state.armed_tool.is_some()
+                    && state.panel_state.armed_tool.is_some()
                 {
                     state.disarm_placement();
                     return;

@@ -262,7 +262,7 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                     // than adding immediately — the shell then follows the cursor with a
                     // ghost and drops the node on a click. Sketch/Clouds below stay
                     // immediate (they have no cursor-snap placement yet).
-                    response.armed_tool = Some(tool_node_spec(*kind, state));
+                    response.arm_tool = Some(tool_node_spec(*kind, state));
                     ui.close();
                 }
             }

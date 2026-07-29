@@ -118,9 +118,8 @@ struct WindowedState {
     infinite_grid_renderer: InfiniteGridRenderer,
     /// ADR 0022: the armed-tool placement ghost — a translucent analytic SDF drawn where
     /// the armed primitive's voxels would land. Held permanently and armed per-frame from
-    /// `PanelState::placement_ghost`; disarmed (no draw) when nothing is armed. The live
-    /// cursor/click arming is a later slice — for now it renders whatever a loaded config
-    /// (F9 repro) armed.
+    /// the armed tool's pending drop (`PanelState::placement_ghost()`); disarmed (no draw)
+    /// when nothing is armed.
     placement_ghost_renderer: crate::PlacementGhostRenderer,
     view_cube_renderer: ViewCubeRenderer,
     /// The Signal viewport background gradient (issue #91): a fullscreen radial field
@@ -296,12 +295,6 @@ struct WindowedState {
     /// when egui consumed the move. The cube body never highlights (we skip its
     /// raycast for hover), so a body hover is treated as `None`.
     hovered_cube_zone: Option<CubeChromeZone>,
-    /// ADR 0022 live placement: the tool the user armed from "+ Add", or `None`. While
-    /// `Some`, each frame resolves the placement ghost under the cursor and a stationary
-    /// left click drops the node — it STAYS armed so several can be placed; Escape or a
-    /// right-click disarms. A VIEW/session concern (mirroring the panel's `armed_tool`),
-    /// never a document Intent.
-    armed_tool: Option<NodeSpec>,
     /// The last rebuild's resident two-layer chunks, kept so the per-frame placement
     /// resolve has a `PickFrame` to march against (Arc refcount bumps — cheap).
     /// Refreshed in `rebuild_geometry` before the chunks move into the display.
@@ -495,19 +488,6 @@ impl WindowedState {
             Some(config) => config.to_panel_state(),
             None => PanelState::with_view_cube_default(),
         };
-        // ADR 0022: a config saved mid-arm carries the placement ghost (session state), but
-        // the shell's armed tool is not persisted — RE-ARM from the ghost, or the per-frame
-        // arm pass clears it on the first frame and the repro silently loses the pending
-        // drop. The ghost carries no material; the mirror is the same source the original
-        // arm read (`tool_node_spec`).
-        let restored_armed_tool =
-            panel_state
-                .placement_ghost
-                .as_ref()
-                .map(|ghost| NodeSpec::Tool {
-                    shape: ghost.shape.clone(),
-                    material: panel_state.material,
-                });
         let shape = SdfShape::from_geometry(panel_state.geometry.clone());
         // ADR 0011 G5: the startup DOOR constructs NO `VoxelGrid` — it returns only the region
         // dimensions + resolve recentre (the camera auto-frame and layer scrubber
@@ -603,7 +583,7 @@ impl WindowedState {
         let points_overlay_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         // ADR 0022: the armed-tool placement ghost, held permanently (disarmed until a
-        // frame arms it from `PanelState::placement_ghost`).
+        // frame arms it from the armed tool's pending drop).
         let placement_ghost_renderer =
             crate::PlacementGhostRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
@@ -714,9 +694,6 @@ impl WindowedState {
             context_menu_open_at: None,
             viewport_menu_at: None,
             hovered_cube_zone: None,
-            // ADR 0022 live placement: nothing armed until the user picks a "+ Add" chip —
-            // unless the restored config was saved mid-arm (re-armed from its ghost above).
-            armed_tool: restored_armed_tool,
             // Seed the placement pick-set from the STARTUP covering set — the same chunks the
             // display's `first_build` drew (below). Without this, `resident_chunks` stayed empty
             // until the first edit ran `rebuild_geometry`, so on a fresh launch a pick found no
@@ -803,9 +780,128 @@ impl WindowedState {
         )
     }
 
+    /// The shell's field-role ledger — the ADR 0022 classification, extended to the ONE
+    /// struct that sits outside it.
+    ///
+    /// `AppConfig`'s `#[snapshot(...)]` categories cover the classified state, but the
+    /// shell holds everything else, and the F9 armed-tool bug came from exactly there: an
+    /// AUTHORITY (`armed_tool`) living on the shell, unclassified, while its derived
+    /// mirror rode the dump. This destructure carries no `..`, so a field added to
+    /// [`WindowedState`] fails the build here until somebody files it under a role — and
+    /// the rule is in the role names: **authoritative state must not be filed here at
+    /// all.** It belongs in `PanelState` / `AppConfig` (classified, so the capture seam
+    /// forces a persistence decision) or on `app_core` (the camera). Every role below is
+    /// rebuildable or momentary; if a new field is neither, it is in the wrong struct.
+    ///
+    /// Called from [`save_config`](Self::save_config) — the capture seam it guards — so
+    /// it stays live code; the body is a no-op.
+    fn every_shell_field_has_a_role(&self) {
+        let WindowedState {
+            // Platform + GPU plumbing: handles to the window system and device, owned
+            // here because nothing else can own them.
+            window: _,
+            surface: _,
+            surface_config: _,
+            gpu: _,
+            egui_bridge: _,
+            egui_winit_state: _,
+            depth_view: _,
+            msaa_color_view: _,
+            // CLASSIFIED state — the only fields the capture seam reads. `panel_state`
+            // is classified field-by-field (ADR 0022); `app_core` carries the camera
+            // (classified on `AppConfig`) plus the resolve store (a derived cache);
+            // `home_view` persists as settings.
+            panel_state: _,
+            app_core: _,
+            home_view: _,
+            // Renderers: GPU resources rebuilt from classified state; a repro rebuilds
+            // them from the dump, so they carry no truth.
+            display: _,
+            transform_gizmo_renderer: _,
+            selected_operand_ghost_renderer: _,
+            selected_body_cel_renderer: _,
+            scene_grid_renderer: _,
+            points_renderer: _,
+            points_overlay_renderer: _,
+            infinite_grid_renderer: _,
+            placement_ghost_renderer: _,
+            view_cube_renderer: _,
+            background_gradient_renderer: _,
+            // Per-frame caches + dirty flags: derived from classified state each frame
+            // or each rebuild; dropping any of them costs one recompute.
+            selected_ghost_dirty: _,
+            selected_ghost_selection: _,
+            selected_ghost_view_mode: _,
+            selected_cel_nodes: _,
+            region_dimensions: _,
+            recentre_voxels: _,
+            resident_chunks: _,
+            last_pick_band: _,
+            measured_diameter: _,
+            measured_band: _,
+            last_frame_time: _,
+            last_viewport_px: _,
+            last_cube_right_inset: _,
+            last_chrome_rects_px: _,
+            last_ray_unprojection: _,
+            sketch_overlay_points: _,
+            sketch_vertex_px: _,
+            sketch_point_ids: _,
+            sketch_segments: _,
+            sketch_segment_lines: _,
+            sketch_insert_preview: _,
+            orbit_center_overlay: _,
+            // Workers + asset plumbing: background threads, their supersede bookkeeping,
+            // and the scanned-asset pipeline. In-flight work is never dumpable.
+            palette: _,
+            scan_handle: _,
+            pending_groups: _,
+            scan_total: _,
+            scan_source_name: _,
+            loaded_material: _,
+            face_resolver: _,
+            diameter_worker: _,
+            diameter_generation: _,
+            vox_export_worker: _,
+            export_outstanding: _,
+            export_progress: _,
+            export_status: _,
+            close_requested_while_exporting: _,
+            // Input latches + momentary chrome: gesture state that dies with the press,
+            // the frame, or the open menu. A latch that must survive a relaunch is not a
+            // latch — move it to `PanelState` and classify it.
+            snap_tween: _,
+            middle_button_held: _,
+            orbiting_about_center: _,
+            orbiting_in_orbit_mode: _,
+            orbit_mode_recenter_press: _,
+            orbit_type_menu_open: _,
+            active_orbit_type: _,
+            placing_orbit_center: _,
+            last_cursor_position: _,
+            press_position: _,
+            press_in_view_cube: _,
+            view_cube_drag_active: _,
+            context_menu_open_at: _,
+            viewport_menu_at: _,
+            hovered_cube_zone: _,
+            pending_placement: _,
+            armed_press: _,
+            viewport_intents: _,
+            viewport_transactions: _,
+            sketch_edit_press: _,
+            sketch_select_press: _,
+            viewport_select_press: _,
+            pending_viewport_select: _,
+            sketch_drag: _,
+            shift_held: _,
+        } = self;
+    }
+
     /// Persist the current UI + camera + window state to the platform config
     /// (M8). Called on window close / loop exit. Never panics on failure.
     fn save_config(&self) {
+        self.every_shell_field_has_a_role();
         let window_size = [self.surface_config.width, self.surface_config.height];
         let config = AppConfig::capture(
             &self.panel_state,
@@ -848,16 +944,13 @@ impl WindowedState {
         }
     }
 
-    /// ADR 0022 live placement: cancel any armed tool — clear the arm, the pending drop,
-    /// the ghost preview, and the press latch. Escape and a viewport right-click both call
-    /// this; the ghost vanishes on the next frame (nothing armed ⇒ the pass is a no-op).
+    /// ADR 0022 live placement: cancel any armed tool — the tool takes its pending drop
+    /// (the ghost preview) with it, so one clear disarms everything. Escape and a viewport
+    /// right-click both call this; the ghost vanishes on the next frame (nothing armed ⇒
+    /// the pass is a no-op).
     fn disarm_placement(&mut self) {
-        self.armed_tool = None;
+        self.panel_state.armed_tool = None;
         self.pending_placement = None;
-        self.panel_state.placement_ghost = None;
-        // Cleared here too (not only by the per-frame refresh) so the rail cell and the
-        // dialog unlight the same frame the ghost vanishes.
-        self.panel_state.armed_shape = None;
         self.armed_press = false;
     }
 

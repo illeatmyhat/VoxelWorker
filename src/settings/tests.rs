@@ -54,11 +54,11 @@ fn config_round_trips_through_json() {
         },
         debug_face_orientation: true,
         debug_brick_faces: true,
-        placement_ghost: Some(PlacementGhostConfig {
+        armed_tool: Some(ArmedToolConfig {
             shape_kind: ShapeKind::Sphere,
             size_voxels: [24, 16, 32],
             wall_blocks: 2,
-            offset_voxels: [40, -8, 12],
+            pending_offset_voxels: Some([40, -8, 12]),
         }),
         // Non-default so the round-trip actually exercises persistence.
         placement_snap: PlacementSnap {

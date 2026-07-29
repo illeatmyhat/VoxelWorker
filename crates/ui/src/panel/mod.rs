@@ -44,7 +44,7 @@ pub(crate) use nodes::tool_node_spec;
 pub use selection::{Selection, SelectionRequest, SelectionTarget};
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use state::{
-    AngleSnap, ExportPanelState, LayerRange, ModeCommand, OrbitCenterRequest, OrbitMode,
+    AngleSnap, ArmedTool, ExportPanelState, LayerRange, ModeCommand, OrbitCenterRequest, OrbitMode,
     PanelResponse, PanelState, PlacementGhost, PlacementPivot, PlacementSnap, PositionSnap,
     SignalStackState, SketchExit, SketchTool, ViewMode,
 };

@@ -259,7 +259,7 @@ fn shape_cell(
 ) {
     let reserved = kind.is_none();
     // Armed, not selected-node shape: the accent means "this is in your hand".
-    let armed = kind.is_some() && state.armed_shape == kind;
+    let armed = kind.is_some() && state.armed_shape() == kind;
 
     let sense = if reserved {
         egui::Sense::hover()
@@ -291,7 +291,7 @@ fn shape_cell(
         if armed {
             response.disarm_tool = true;
         } else {
-            response.armed_tool = Some(crate::panel::tool_node_spec(kind, state));
+            response.arm_tool = Some(crate::panel::tool_node_spec(kind, state));
         }
     }
 }

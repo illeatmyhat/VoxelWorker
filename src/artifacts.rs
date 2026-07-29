@@ -73,7 +73,7 @@ use document::scene::Scene;
 use ui::panel::{OrbitMode, SignalStackState, SketchTool, ViewMode};
 use voxel_core::core_geom::MaterialChoice;
 
-use crate::settings::{AppConfig, PlacementGhostConfig, SelectionConfig};
+use crate::settings::{AppConfig, ArmedToolConfig, SelectionConfig};
 
 /// serde remote-derive shim for the `camera` crate's [`ProjectionMode`], which carries no
 /// serde dependency of its own (the graphics-crate boundary law keeps it to glam +
@@ -298,11 +298,13 @@ pub struct SessionArtifact {
     /// different picture than the one the bug was seen in.
     #[serde(default)]
     pub debug_brick_faces: bool,
-    /// The armed-tool placement ghost (ADR 0022), `None` when nothing is armed. A dump
-    /// taken mid-gesture replays the pending drop; `PlacementGhostConfig` derives its own
-    /// serde (it lives in a serde-aware crate), so no remote shim is needed here.
+    /// The armed tool (ADR 0022) with its pending drop nested inside, `None` when nothing
+    /// is armed. A dump taken mid-gesture re-arms the tool and replays the drop — the
+    /// authority travels, so a restore can never carry a ghost without the tool that
+    /// derives it. `ArmedToolConfig` derives its own serde (it lives in a serde-aware
+    /// crate), so no remote shim is needed here.
     #[serde(default)]
-    pub placement_ghost: Option<PlacementGhostConfig>,
+    pub armed_tool: Option<ArmedToolConfig>,
     /// The armed-tool placement snap settings (position + orientation, owner ruling
     /// 2026-07-21). Durable across adds and relaunch; `PlacementSnap` derives its own serde.
     #[serde(default)]
@@ -395,9 +397,9 @@ impl DocumentArtifact {
             stack: _,
             debug_face_orientation: _,
             debug_brick_faces: _,
-            // Declined — session state. An armed drop is where somebody stopped, not part
-            // of the model a collaborator would open.
-            placement_ghost: _,
+            // Declined — session state. An armed tool and its pending drop are where
+            // somebody stopped, not part of the model a collaborator would open.
+            armed_tool: _,
             // Declined — session state. Which sketch someone was editing is where they
             // stopped, not part of the shared model.
             sketch_mode: _,
@@ -465,7 +467,7 @@ impl Dump {
             stack,
             debug_face_orientation,
             debug_brick_faces,
-            placement_ghost,
+            armed_tool,
             placement_snap,
             sketch_mode,
             sketch_tool,
@@ -506,7 +508,7 @@ impl Dump {
                 stack: *stack,
                 debug_face_orientation: *debug_face_orientation,
                 debug_brick_faces: *debug_brick_faces,
-                placement_ghost: placement_ghost.clone(),
+                armed_tool: armed_tool.clone(),
                 placement_snap: *placement_snap,
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
@@ -557,7 +559,7 @@ impl Dump {
             stack: session.stack,
             debug_face_orientation: session.debug_face_orientation,
             debug_brick_faces: session.debug_brick_faces,
-            placement_ghost: session.placement_ghost,
+            armed_tool: session.armed_tool,
             placement_snap: session.placement_snap,
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
@@ -730,13 +732,13 @@ mod tests {
             },
             debug_face_orientation: true,
             debug_brick_faces: true,
-            // Off its default (Some, not None) so a capture that dropped it fails the
-            // round-trip rather than coinciding with a default restore.
-            placement_ghost: Some(PlacementGhostConfig {
+            // Off its default (Some, not None) — WITH a pending drop, so a capture that
+            // carried the tool but dropped the drop fails the round-trip too.
+            armed_tool: Some(ArmedToolConfig {
                 shape_kind: voxel_core::voxel::ShapeKind::Box,
                 size_voxels: [16, 16, 16],
                 wall_blocks: 1,
-                offset_voxels: [7, -3, 5],
+                pending_offset_voxels: Some([7, -3, 5]),
             }),
             // Off its default so a dropped capture fails the round-trip.
             placement_snap: ui::panel::PlacementSnap {

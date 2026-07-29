@@ -148,12 +148,6 @@ impl WindowedState {
         // Read before the call: `run_egui_frame` borrows `self` mutably.
         let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
         let orbit_reticle = self.orbit_reticle_visible();
-        // Refresh the armed-shape mirror from the shell's armed tool (the truth) — the one
-        // reader path the rail's shape cells and the `Add <shape>` dialog share.
-        self.panel_state.armed_shape = self.armed_tool.as_ref().and_then(|spec| match spec {
-            document::intent::NodeSpec::Tool { shape, .. } => Some(shape.kind),
-            _ => None,
-        });
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -297,8 +291,12 @@ impl WindowedState {
         // (leaving it otherwise intact for the `render_frame` call below).
         // ADR 0022 live placement: adopt a tool the panel armed this frame (a VIEW
         // action carried on the response, like `focus_node`, not a document Intent).
-        if let Some(spec) = prepared.panel_response.armed_tool.take() {
-            self.armed_tool = Some(spec);
+        // Freshly armed = no pending drop yet; the arm pass below resolves one.
+        if let Some(spec) = prepared.panel_response.arm_tool.take() {
+            self.panel_state.armed_tool = Some(ui::panel::ArmedTool {
+                spec,
+                pending_drop: None,
+            });
         }
         // The rail's armed-cell second click. Handled AFTER the adoption above so an explicit
         // disarm wins if a future second source ever sets both in one frame; the rail itself
@@ -345,7 +343,7 @@ impl WindowedState {
         let mut sketch_effect = crate::IntentEffect::none();
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
             self.panel_state.sketch_mode = Some(node);
-            self.armed_tool = None;
+            self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
             self.app_core.begin_sketch_group();
         }
@@ -677,17 +675,22 @@ impl WindowedState {
         );
         // ADR 0022 live placement: while a tool is armed and the cursor is over the
         // viewport, resolve where it would drop (via the headless `place_primitive`) and
-        // arm the ghost + the pending click intent. Anything else — nothing armed, a
-        // non-Tool spec, or no cursor — clears both, so a stale preview never lingers.
+        // write the pending drop + the pending click intent onto the armed tool. Armed
+        // with NO cursor keeps a restored drop untouched (an F9 repro replays it until
+        // the first motion re-resolves); a non-Tool spec clears it, so a stale preview
+        // never lingers.
         // NO resident-geometry guard: `place_primitive`'s tier 1 (`pick_voxel`) returns
         // `None` on an empty scene and falls through to the world-plane tier, which needs
         // no chunks — so the ghost must preview on an empty scene (the ground plane), not
         // only once something is built. This runs before the ghost's uniform upload below,
-        // which reads `self.panel_state.placement_ghost`.
-        match (&self.armed_tool, self.last_cursor_position) {
+        // which reads the armed tool's pending drop.
+        let armed_spec = self
+            .panel_state
+            .armed_tool
+            .as_ref()
+            .map(|armed| armed.spec.clone());
+        match (armed_spec, self.last_cursor_position) {
             (Some(NodeSpec::Tool { shape, material }), Some((cursor_x, cursor_y))) => {
-                let shape = shape.clone();
-                let material = *material;
                 let vp = prepared.viewport_px;
                 // Same physical-pixel viewport/cursor space `pick_voxel` marches in.
                 let viewport = [vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32];
@@ -710,7 +713,7 @@ impl WindowedState {
                     self.panel_state.placement_snap,
                 );
                 self.pending_placement = outcome.intent.clone();
-                self.panel_state.placement_ghost = match &outcome.intent {
+                let pending_drop = match &outcome.intent {
                     Some(crate::Intent::PlaceNode {
                         offset_voxels,
                         offset_local,
@@ -735,17 +738,31 @@ impl WindowedState {
                     // does nothing (the pending intent is None).
                     _ => None,
                 };
+                if let Some(armed) = &mut self.panel_state.armed_tool {
+                    armed.pending_drop = pending_drop;
+                }
             }
-            _ => {
+            // Armed, cursor not over the viewport yet: keep a restored pending drop for
+            // display, but no click can land it (the pending intent stays cleared).
+            (Some(NodeSpec::Tool { .. }), None) => {
                 self.pending_placement = None;
-                self.panel_state.placement_ghost = None;
+            }
+            // A non-Tool spec has no drop resolve; clear any stale one.
+            (Some(_), _) => {
+                self.pending_placement = None;
+                if let Some(armed) = &mut self.panel_state.armed_tool {
+                    armed.pending_drop = None;
+                }
+            }
+            (None, _) => {
+                self.pending_placement = None;
             }
         }
-        // ADR 0022: the armed-tool placement ghost. Arm it from `PanelState::placement_ghost`
-        // (populated live above, or from a loaded config F9 repro), resolving the
-        // render-frame field centre from THIS rebuild's recentre so the ghost sits in the
-        // exact frame the solid voxels are drawn in (ADR 0008). Disarmed → the pass is a no-op.
-        if let Some(ghost) = &self.panel_state.placement_ghost {
+        // ADR 0022: the armed-tool placement ghost. Arm it from the armed tool's pending
+        // drop (resolved live above, or restored from a loaded config F9 repro), resolving
+        // the render-frame field centre from THIS rebuild's recentre so the ghost sits in
+        // the exact frame the solid voxels are drawn in (ADR 0008). Disarmed → no-op.
+        if let Some(ghost) = self.panel_state.placement_ghost() {
             let voxels_per_block = self.panel_state.geometry.voxels_per_block;
             let recentre = self.recentre_voxels.voxels();
             self.placement_ghost_renderer.update_uniforms(
@@ -796,8 +813,8 @@ impl WindowedState {
             over_model.push(&self.selected_body_cel_renderer);
             over_model.push(&self.selected_operand_ghost_renderer);
         }
-        // ADR 0022: the armed-tool placement ghost self-gates on being armed.
-        if self.panel_state.placement_ghost.is_some() {
+        // ADR 0022: the armed-tool placement ghost self-gates on a pending drop.
+        if self.panel_state.placement_ghost().is_some() {
             over_model.push(&self.placement_ghost_renderer);
         }
         // Behind-model: the occluded axes' paint-order pass (depth-off overlay), drawn before the

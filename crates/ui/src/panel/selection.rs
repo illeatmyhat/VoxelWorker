@@ -63,7 +63,7 @@ impl SelectionTarget {
 /// How a click asked the selection to change (ADR 0032). A VIEW action, not an
 /// [`Intent`](document::intent::Intent): selecting is not an edit, so it rides on
 /// [`PanelResponse`](super::PanelResponse) and the shell applies it — the same route
-/// `focus_node` and `armed_tool` take.
+/// `focus_node` and `arm_tool` take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionRequest {
     /// A plain click: replace the whole selection with this target.

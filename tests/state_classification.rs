@@ -91,10 +91,6 @@ fn the_escape_hatches_are_exactly_these() {
             ("coordinate_limit_warning", StateCategory::Derived),
             // The camera target, rounded to whole blocks, refreshed each frame.
             ("point_add_position_blocks", StateCategory::Derived),
-            // The shell's armed tool, mirrored each frame so the rail cell and the
-            // `Add <shape>` dialog share one reader path. The armed GHOST is session
-            // state and rides the dump; this is just its kind, recomputed for free.
-            ("armed_shape", StateCategory::Derived),
         ],
         "the set of fields excused from both persistence artifacts changed"
     );
@@ -237,8 +233,10 @@ fn the_session_is_the_workspace_and_nothing_else() {
             "stack",
             "debug_face_orientation",
             "debug_brick_faces",
-            // ADR 0022: the armed-tool placement ghost survives a mid-gesture relaunch.
-            "placement_ghost",
+            // ADR 0022: the armed tool — WITH its pending drop nested inside, so the
+            // authority and the ghost survive a mid-gesture relaunch together or not at
+            // all (the F9 mirror-without-authority bug, closed by construction).
+            "armed_tool",
             // ADR 0024/0026: the armed-tool snap settings persist across adds and relaunch.
             "placement_snap",
             // ADR 0028: the sketch under edit, and the tool armed in it, re-enter on a

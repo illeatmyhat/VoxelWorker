@@ -10,8 +10,9 @@ use voxel_core::core_geom::MaterialChoice;
 
 /// The armed-tool **placement ghost** (ADR 0022): the translucent analytic-SDF preview of
 /// where a primitive's voxels will land, drawn without recomposing the scene ("render a
-/// coloured transparent SDF where the voxels will be"). `PanelState::placement_ghost` is
-/// `Some` while a tool is armed and pointed at a valid drop, `None` otherwise.
+/// coloured transparent SDF where the voxels will be"). Lives INSIDE [`ArmedTool`] as its
+/// [`pending_drop`](ArmedTool::pending_drop) — `Some` while the armed tool is pointed at a
+/// valid drop, `None` otherwise — so a ghost cannot exist without the tool that derives it.
 ///
 /// It carries the armed [`SdfShape`] and the ABSOLUTE, corner-anchored voxel offset the
 /// node would take — the SAME frame `Intent::PlaceNode { offset_voxels }` uses
@@ -111,6 +112,22 @@ impl PlacementGhost {
     pub fn wall_voxels(&self, voxels_per_block: u32) -> f32 {
         (self.shape.wall_blocks * voxels_per_block) as f32
     }
+}
+
+/// The **armed tool** and everything it carries: the [`NodeSpec`] a stationary viewport
+/// click drops, plus the pending-drop [`PlacementGhost`] the per-frame arm pass derives
+/// from it. One field, nested by construction, so the F9 bug class — a dump carrying the
+/// ghost (the mirror) without the tool (its authority), leaving frame 1 to re-derive from
+/// nothing and clobber the restored drop — is unrepresentable: the ghost cannot outlive,
+/// precede, or travel without its tool.
+#[derive(Debug, Clone)]
+pub struct ArmedTool {
+    /// What a stationary click places — the authority the arm pass re-derives
+    /// [`pending_drop`](Self::pending_drop) from every frame.
+    pub spec: NodeSpec,
+    /// The resolved drop under the current cursor (`Some` over a valid surface), or the
+    /// restored drop from a dump/config until the first cursor motion re-resolves it.
+    pub pending_drop: Option<PlacementGhost>,
 }
 
 /// How a placed node's **position** snaps to the lattice (owner ruling 2026-07-21). A
@@ -278,7 +295,7 @@ pub enum ModeCommand {
 /// drag, #95 add-point / delete); the Polyline / Rectangle tools are drawn **reserved** on the
 /// rail until slice 3, so they are not variants here yet.
 ///
-/// **Session** state on the same footing as [`PanelState::placement_ghost`] and
+/// **Session** state on the same footing as [`PanelState::armed_tool`] and
 /// [`PanelState::sketch_mode`]: which tool was armed is how the workspace was left, never
 /// document state, and it rides into the dump so a mid-edit repro re-enters the mode with the
 /// same tool in hand (the ADR 0024 route the armed ghost and the sketch mode itself take).
@@ -546,26 +563,17 @@ pub struct PanelState {
     /// admission test, met exactly.
     #[snapshot(derived)]
     pub point_add_position_blocks: [i64; 3],
-    /// The armed-tool placement ghost (ADR 0022): the translucent SDF preview of where a
-    /// primitive would drop, or `None` when no tool is armed. The renderer draws it when
-    /// `Some` and nothing when `None`.
+    /// The **armed tool** (ADR 0022): the [`NodeSpec`] a stationary viewport click drops
+    /// plus its pending-drop ghost, or `None` when nothing is armed. See [`ArmedTool`].
     ///
     /// **Session** state, on the same footing as [`view_mode`](Self::view_mode): an armed
     /// tool is how the workspace was left, not what the model is and not a preference. A
-    /// dump taken mid-gesture and replayed must show the same pending drop — so the ghost
-    /// travels into the dump (and never the shared document), the ADR 0024 route the
-    /// viewer mode blazed. This phase populates it from config; the live cursor/click
-    /// arming is a later slice.
+    /// dump taken mid-gesture and replayed must show the same pending drop — so the tool
+    /// (WITH its drop) travels into the dump (and never the shared document), the ADR 0024
+    /// route the viewer mode blazed. The authority and its derived ghost are ONE field, so
+    /// the capture cannot carry one without the other.
     #[snapshot(session)]
-    pub placement_ghost: Option<PlacementGhost>,
-    /// The ARMED primitive's kind, or `None` when nothing is armed — what lights the rail's
-    /// shape cell and shows the `Add <shape>` dialog. NOT [`placement_ghost`](Self::placement_ghost),
-    /// which is `None` whenever the cursor is off a valid drop (including over the rail itself).
-    ///
-    /// **Derived**: the shell refreshes it every frame from its own armed tool (the truth),
-    /// so dropping it costs one recompute and nothing else.
-    #[snapshot(derived)]
-    pub armed_shape: Option<voxel_core::voxel::ShapeKind>,
+    pub armed_tool: Option<ArmedTool>,
     /// The armed-tool placement snap settings (owner ruling 2026-07-21): position (no snap /
     /// block / voxel) and orientation (no snap / surface). **Session** state — durable across
     /// adds and relaunch (ADR 0024), edited in the `Add <shape>` dialog, read by
@@ -578,7 +586,7 @@ pub struct PanelState {
     /// the floating `CANCEL | FINISH SKETCH` exit control.
     ///
     /// **Session** state, on the same footing as [`view_mode`](Self::view_mode) and
-    /// [`placement_ghost`](Self::placement_ghost): the mode follows what you are editing, is
+    /// [`armed_tool`](Self::armed_tool): the mode follows what you are editing, is
     /// never document state (ADR 0022 — a saved document is byte-identical whether or not a
     /// sketch was being edited), and rides into the dump so a mid-edit repro re-enters the same
     /// sketch. Cleared when the id leaves the scene (a stale node can never trap the mode).
@@ -590,7 +598,7 @@ pub struct PanelState {
     /// armed. Defaults to [`SketchTool::Select`].
     ///
     /// **Session** state alongside [`sketch_mode`](Self::sketch_mode) and
-    /// [`placement_ghost`](Self::placement_ghost): the armed tool is where the author left the
+    /// [`armed_tool`](Self::armed_tool): the armed tool is where the author left the
     /// workspace, never document state, and rides into the dump so a mid-edit repro re-enters
     /// with the same tool in hand.
     #[snapshot(session)]
@@ -732,6 +740,23 @@ impl PanelState {
         }
     }
 
+    /// The ARMED primitive's kind, or `None` when nothing is armed (or the armed spec is
+    /// not a primitive Tool) — what lights the rail's shape cell and shows the
+    /// `Add <shape>` dialog. Read straight off [`armed_tool`](Self::armed_tool), never
+    /// mirrored.
+    pub fn armed_shape(&self) -> Option<voxel_core::voxel::ShapeKind> {
+        match &self.armed_tool.as_ref()?.spec {
+            NodeSpec::Tool { shape, .. } => Some(shape.kind),
+            _ => None,
+        }
+    }
+
+    /// The armed tool's pending-drop ghost, or `None` when nothing is armed or the cursor
+    /// is off a valid drop. Read straight off [`armed_tool`](Self::armed_tool).
+    pub fn placement_ghost(&self) -> Option<&PlacementGhost> {
+        self.armed_tool.as_ref()?.pending_drop.as_ref()
+    }
+
     /// The primary selected node (ADR 0032) — the successor of `Scene::active_node()`, now
     /// resolved against the workspace [`selection`](Self::selection) rather than a document
     /// field. `None` when no node is picked, or when the picked id has left the scene.
@@ -829,10 +854,10 @@ pub struct PanelResponse {
     /// the node). A VIEW action, NOT a document `Intent` (arming places nothing until a
     /// click), so it rides on the response rather than `intents`. `None` when nothing
     /// was armed this frame.
-    pub armed_tool: Option<NodeSpec>,
+    pub arm_tool: Option<NodeSpec>,
     /// The user clicked the rail's ARMED shape cell again this frame → the shell disarms
     /// the placement flow (the same full disarm Escape and a viewport right-click perform).
-    /// A VIEW action like [`armed_tool`](Self::armed_tool); the two are emitted mutually
+    /// A VIEW action like [`arm_tool`](Self::arm_tool); the two are emitted mutually
     /// exclusively at the source (the cell reads the armed mirror), and the shell lets an
     /// explicit disarm win if a future second source ever sets both in one frame.
     pub disarm_tool: bool,

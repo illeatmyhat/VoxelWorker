@@ -22,23 +22,24 @@ use camera::{HomeView, OrbitCamera, OrbitType, ProjectionMode};
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 use ui::panel::{
-    LayerRange, OrbitMode, PanelState, PlacementGhost, PlacementSnap, Selection, SelectionTarget,
-    SignalStackState, SketchTool, ViewMode,
+    ArmedTool, LayerRange, OrbitMode, PanelState, PlacementGhost, PlacementSnap, Selection,
+    SelectionTarget, SignalStackState, SketchTool, ViewMode,
 };
 use ui::shortcuts::{ShortcutCommand, Shortcuts};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-/// The serde-able mirror of the armed-tool [`PlacementGhost`] (ADR 0022), carried in the
-/// session dump so a repro taken mid-gesture replays the pending drop.
+/// The serde-able mirror of the armed tool [`ArmedTool`] (ADR 0022) — the AUTHORITY, with
+/// its pending drop nested inside — carried in the session dump so a repro taken
+/// mid-gesture re-arms the same tool and replays the pending drop.
 ///
-/// [`PlacementGhost`] lives in the `ui` crate, which links no serde (ADR 0016's crate
-/// law), so — like [`ViewMode`] and the Signal stack — it is persisted from out here. It
-/// stores the armed primitive's kind/size/wall plus the ABSOLUTE corner-anchored offset
-/// the node would take (`Intent::PlaceNode`'s frame); the render-frame centre is re-derived
-/// from the live recentre at draw time, never stored.
+/// [`ArmedTool`] lives in the `ui` crate, which links no serde (ADR 0016's crate law), so —
+/// like [`ViewMode`] and the Signal stack — it is persisted from out here. It stores the
+/// armed primitive's kind/size/wall plus (when a drop was pending) the ABSOLUTE
+/// corner-anchored offset the node would take (`Intent::PlaceNode`'s frame); the
+/// render-frame centre is re-derived from the live recentre at draw time, never stored.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PlacementGhostConfig {
+pub struct ArmedToolConfig {
     /// The armed primitive kind (`ShapeKind` carries its own serde).
     pub shape_kind: ShapeKind,
     /// Bounding-box size in voxels at the document density.
@@ -46,8 +47,9 @@ pub struct PlacementGhostConfig {
     /// Tube wall thickness in whole blocks (Tube only).
     #[serde(default = "default_wall_blocks")]
     pub wall_blocks: u32,
-    /// Absolute, corner-anchored voxel offset the node would drop at.
-    pub offset_voxels: [i64; 3],
+    /// The pending drop's absolute, corner-anchored voxel offset, or `None` when the tool
+    /// was armed with the cursor off a valid drop.
+    pub pending_offset_voxels: Option<[i64; 3]>,
 }
 
 /// Default wall thickness for a partial config missing the key (mirrors `SdfShape`'s).
@@ -114,30 +116,42 @@ impl SelectionConfig {
     }
 }
 
-impl PlacementGhostConfig {
-    /// Capture the config mirror from the live [`PlacementGhost`].
-    pub fn from_ghost(ghost: &PlacementGhost) -> Self {
-        Self {
-            shape_kind: ghost.shape.kind,
-            size_voxels: ghost.shape.size_voxels,
-            wall_blocks: ghost.shape.wall_blocks,
-            offset_voxels: ghost.offset_voxels,
+impl ArmedToolConfig {
+    /// Capture the config mirror from the live [`ArmedTool`]. `None` for a non-primitive
+    /// spec (nothing beyond `NodeSpec::Tool` arms today; a future armable spec must decide
+    /// its own persistence here — this match is where the build breaks).
+    pub fn from_armed(armed: &ArmedTool) -> Option<Self> {
+        match &armed.spec {
+            document::intent::NodeSpec::Tool { shape, .. } => Some(Self {
+                shape_kind: shape.kind,
+                size_voxels: shape.size_voxels,
+                wall_blocks: shape.wall_blocks,
+                pending_offset_voxels: armed.pending_drop.as_ref().map(|drop| drop.offset_voxels),
+            }),
+            _ => None,
         }
     }
 
-    /// Rebuild the runtime [`PlacementGhost`] this config describes. The shape is rebuilt
-    /// from pure voxels (a ghost is a geometry preview; the authored size expression is
-    /// not needed to trace its surface).
-    pub fn to_ghost(&self) -> PlacementGhost {
-        PlacementGhost {
-            shape: SdfShape::from_voxels(self.shape_kind, self.size_voxels, self.wall_blocks),
-            offset_voxels: self.offset_voxels,
-            // The persisted ghost config does not carry the sub-voxel remainder or rotation (ADR
-            // 0027); an F9 repro of an armed tilted / off-block ghost previews it upright and
-            // voxel-aligned. The placed nodes it captures keep their full transform in the scene
-            // tree — only the transient armed-ghost tilt/fraction is dropped.
-            offset_local: [0.0, 0.0, 0.0],
-            rotation: glam::Quat::IDENTITY,
+    /// Rebuild the runtime [`ArmedTool`] this config describes. The shape is rebuilt from
+    /// pure voxels (the authored size expression is not needed to trace a preview surface);
+    /// the material comes from the caller because the config never carried one — the same
+    /// panel-material source the original arm read.
+    pub fn to_armed(&self, material: MaterialChoice) -> ArmedTool {
+        let shape = SdfShape::from_voxels(self.shape_kind, self.size_voxels, self.wall_blocks);
+        ArmedTool {
+            pending_drop: self
+                .pending_offset_voxels
+                .map(|offset_voxels| PlacementGhost {
+                    shape: shape.clone(),
+                    offset_voxels,
+                    // The config does not carry the sub-voxel remainder or rotation (ADR 0027); an
+                    // F9 repro of an armed tilted / off-block drop previews it upright and
+                    // voxel-aligned until the first cursor motion re-resolves it. The placed nodes
+                    // it captures keep their full transform in the scene tree.
+                    offset_local: [0.0, 0.0, 0.0],
+                    rotation: glam::Quat::IDENTITY,
+                }),
+            spec: document::intent::NodeSpec::Tool { shape, material },
         }
     }
 }
@@ -416,13 +430,13 @@ pub struct AppConfig {
     /// the diagnostic the fault was visible under is not a repro.
     #[snapshot(session)]
     pub debug_brick_faces: bool,
-    /// The armed-tool placement ghost (ADR 0022), `None` when no tool is armed. Session
-    /// state on the same footing as [`view_mode`](Self::view_mode): an armed drop is how
-    /// the workspace was left, so a mid-gesture dump replays it. Named `placement_ghost` to
-    /// match the [`PanelState`] field it routes to (the ADR 0024 seam guard keys on the
-    /// name).
+    /// The armed tool (ADR 0022) with its pending drop nested inside, `None` when no tool
+    /// is armed. Session state on the same footing as [`view_mode`](Self::view_mode): an
+    /// armed tool is how the workspace was left, so a mid-gesture dump re-arms and replays
+    /// it. Named `armed_tool` to match the [`PanelState`] field it routes to (the ADR 0024
+    /// seam guard keys on the name).
     #[snapshot(session)]
-    pub placement_ghost: Option<PlacementGhostConfig>,
+    pub armed_tool: Option<ArmedToolConfig>,
 
     /// The armed-tool placement snap settings (owner ruling 2026-07-21): position (no snap /
     /// block / voxel) and orientation (no snap / surface). Session state — durable across adds
@@ -432,7 +446,7 @@ pub struct AppConfig {
     pub placement_snap: PlacementSnap,
 
     /// The sketch node being edited in sketch mode (ADR 0028), `None` in the normal chrome.
-    /// Session state on the same footing as [`placement_ghost`](Self::placement_ghost): the
+    /// Session state on the same footing as [`armed_tool`](Self::armed_tool): the
     /// mode is how the workspace was left, so a mid-edit dump (an F9 repro) re-enters the same
     /// sketch. Named `sketch_mode` to match the [`PanelState`] field it routes to. `NodeId` is
     /// serde-able, so it needs no `Config` mirror. The `SessionArtifact` serde default
@@ -509,7 +523,7 @@ impl Default for AppConfig {
             stack: SignalStackState::default(),
             debug_face_orientation: false,
             debug_brick_faces: false,
-            placement_ghost: None,
+            armed_tool: None,
             sketch_mode: None,
             sketch_tool: SketchTool::default(),
             default_orbit_type: OrbitType::default(),
@@ -564,12 +578,12 @@ impl AppConfig {
             stack: panel.stack,
             debug_face_orientation: panel.debug_face_orientation,
             debug_brick_faces: panel.debug_brick_faces,
-            // ADR 0022: the armed placement ghost, captured as its serde-able mirror so a
-            // mid-gesture dump replays the pending drop.
-            placement_ghost: panel
-                .placement_ghost
+            // ADR 0022: the armed tool with its pending drop, captured as its serde-able
+            // mirror so a mid-gesture dump re-arms and replays it.
+            armed_tool: panel
+                .armed_tool
                 .as_ref()
-                .map(PlacementGhostConfig::from_ghost),
+                .and_then(ArmedToolConfig::from_armed),
             sketch_tool: panel.sketch_tool,
             default_orbit_type: panel.default_orbit_type,
             orbit_mode: panel.orbit_mode,
@@ -665,14 +679,14 @@ impl AppConfig {
             // Issue #29 S5: refreshed each frame from the camera target by the windowed
             // caller; defaults to the world origin (the headless harness keeps it 0).
             point_add_position_blocks: [0, 0, 0],
-            // ADR 0022: restore the armed placement ghost (session state), so a mid-gesture
-            // repro replays the pending drop rather than resetting to no armed tool.
-            placement_ghost: self
-                .placement_ghost
+            // ADR 0022: restore the armed tool (session state) WITH its pending drop, so a
+            // mid-gesture repro re-arms and replays it rather than resetting to no armed
+            // tool. The material comes from this config's own material field — the same
+            // source the original arm read.
+            armed_tool: self
+                .armed_tool
                 .as_ref()
-                .map(PlacementGhostConfig::to_ghost),
-            // Derived: the shell refreshes it every frame from its armed tool.
-            armed_shape: None,
+                .map(|armed| armed.to_armed(self.material)),
             // ADR 0028: re-enter sketch mode on the same node a mid-edit dump was taken in.
             // Cleared to `None` below if the id no longer resolves in the restored scene, so a
             // stale sketch node can never trap the mode.

@@ -9,11 +9,11 @@ use voxel_worker::frame::{
 };
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, AppCore,
-    CuboidMeshRenderer, GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource,
-    Node, NodeContent, NodePath, OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer,
-    Point, PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape,
-    SelectedOperandGhostRenderer, TransformGizmoRenderer, ViewCubeRenderer, ViewMode, VoxExport,
-    VoxelBody, VoxelGrid, COLOR_TARGET_FORMAT, PLACEMENT_GHOST_TINT,
+    ArmedTool, CuboidMeshRenderer, GpuContext, InfiniteGridRenderer, LayerBand, LayerRange,
+    MaterialSource, Node, NodeContent, NodePath, OrbitCamera, PanelState, PlacementGhost,
+    PlacementGhostRenderer, Point, PointsRenderer, RegionBlocks, Scene, SceneGridRenderer,
+    SdfShape, SelectedOperandGhostRenderer, TransformGizmoRenderer, ViewCubeRenderer, ViewMode,
+    VoxExport, VoxelBody, VoxelGrid, COLOR_TARGET_FORMAT, PLACEMENT_GHOST_TINT,
 };
 use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 
@@ -177,9 +177,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.debug_face_orientation =
             restored.debug_face_orientation || options.debug_face_orientation;
         panel_state.debug_brick_faces = restored.debug_brick_faces;
-        // ADR 0022: adopt the armed placement ghost the dump carried (session state), so a
-        // mid-gesture F9 repro renders the pending drop.
-        panel_state.placement_ghost = restored.placement_ghost;
+        // ADR 0022: adopt the armed tool the dump carried (session state) — the authority
+        // WITH its pending drop — so a mid-gesture F9 repro renders the pending drop.
+        panel_state.armed_tool = restored.armed_tool;
     }
 
     // ADR 0032: a demo carries its own arriving selection alongside the scene, since the
@@ -342,8 +342,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // COINCIDE with an equivalent solid node at the same offset?). Overrides any ghost a
     // `--from-config` dump adopted above.
     if options.placement_ghost {
-        panel_state.placement_ghost = Some(PlacementGhost {
-            shape: SdfShape::from_geometry(options.geometry.clone()),
+        let shape = SdfShape::from_geometry(options.geometry.clone());
+        let ghost = PlacementGhost {
+            shape: shape.clone(),
             offset_voxels: options.ghost_offset,
             // The headless verification places on whole-voxel `--ghost-offset`, so no sub-voxel
             // remainder (ADR 0027 `NoSnap`); the coincidence check runs at integer offsets.
@@ -360,6 +361,15 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                     )
                 })
                 .unwrap_or(glam::Quat::IDENTITY),
+        };
+        // The ghost travels only as a pending drop on its armed tool (the F9 authority
+        // nesting) — the harness arms the same spec a live "+ Add" would.
+        panel_state.armed_tool = Some(ArmedTool {
+            spec: document::intent::NodeSpec::Tool {
+                shape,
+                material: panel_state.material,
+            },
+            pending_drop: Some(ghost),
         });
     }
     // The resolve region: for a placed multi-node scene this is the whole
@@ -1099,13 +1109,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         loaded_material = Some(material);
     }
 
-    // The armed "Add <shape>" dialog shows when a ghost is armed. Headless has no shell
-    // armed-tool, so the ghost in the dump IS the armed evidence — seed the mirror from it
-    // (the `--placement-ghost` verification path); otherwise off, so the goldens are unchanged.
-    panel_state.armed_shape = panel_state
-        .placement_ghost
-        .as_ref()
-        .map(|ghost| ghost.shape.kind);
+    // The armed "Add <shape>" dialog reads `panel_state.armed_shape()` straight off the
+    // armed tool — the dump/`--placement-ghost` seed above already armed it, so no mirror
+    // needs seeding here; unarmed, the dialog stays off and the goldens are unchanged.
     let prepared = run_egui_frame(
         &mut egui_bridge,
         &gpu.device,
@@ -1178,11 +1184,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &mut points_overlay_renderer,
         &mut infinite_grid_renderer,
     );
-    // ADR 0022: arm the placement ghost from `panel_state.placement_ghost`. The
+    // ADR 0022: arm the placement ghost from the armed tool's pending drop. The
     // render-frame field centre is resolved from THIS grid's recentre (`grid.recentre_voxels`)
     // via the frame law — the same recentre the solid voxels were resolved in — so a ghost
     // at offset P coincides with a solid node at P (the frame-error guard the shot verifies).
-    if let Some(ghost) = &panel_state.placement_ghost {
+    if let Some(ghost) = panel_state.placement_ghost() {
         let voxels_per_block = options.geometry.voxels_per_block;
         let recentre = grid.recentre_voxels;
         let center_world = ghost.center_world(recentre, voxels_per_block);
@@ -1286,8 +1292,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         over_model.push(&selected_body_cel_renderer);
         over_model.push(&selected_operand_ghost_renderer);
     }
-    // ADR 0022: the armed-tool placement ghost (self-gates on being armed).
-    if panel_state.placement_ghost.is_some() {
+    // ADR 0022: the armed-tool placement ghost (self-gates on a pending drop).
+    if panel_state.placement_ghost().is_some() {
         over_model.push(&placement_ghost_renderer);
     }
     // Behind-model: the occluded axes' paint-order pass (overlay instance, depth off), under `--points`.

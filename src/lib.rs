@@ -108,7 +108,7 @@ pub use evaluation::two_layer_store::{
 pub use gpu::GpuContext;
 pub use settings::AppConfig;
 pub use ui::panel::{
-    build_add_shape_dialog, build_panel, build_signal_stack, cube_right_inset_points,
+    build_add_shape_dialog, build_panel, build_signal_stack, cube_right_inset_points, ArmedTool,
     ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost, Selection,
     SelectionTarget, SignalStackState, ViewMode,
 };

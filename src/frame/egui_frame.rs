@@ -539,9 +539,9 @@ pub fn run_egui_frame(
         // Owner ruling 2026-07-21: the armed-tool `Add <shape>` dialog, pinned top-left of the
         // central viewport while a primitive is armed. Same absolute-child idiom as the stack,
         // so it renders on the shot capture and counts as chrome (its clicks don't orbit).
-        // The armed kind is read off the `PanelState` mirror — the one reader path the rail's
-        // shape cells and this dialog share (the shell refreshes it each frame).
-        if let Some(kind) = panel_state.armed_shape {
+        // The armed kind is read off the armed tool itself — the one reader path the rail's
+        // shape cells and this dialog share.
+        if let Some(kind) = panel_state.armed_shape() {
             let dialog_rect = build_add_shape_dialog(ui, panel_state, central_rect_points, kind);
             chrome_rects_points.push(dialog_rect);
         }
