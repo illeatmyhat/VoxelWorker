@@ -291,10 +291,9 @@ pub enum ModeCommand {
 }
 
 /// The armed **sketch-mode tool** (ADR 0028) — which direct-manipulation verb a viewport
-/// click performs while a sketch is being edited (#94 vertex drag, #95 add-point); the
-/// Polyline / Rectangle tools are drawn **reserved** on the rail until slice 3, so they are
-/// not variants here yet. Delete is an ACTION on the selection (Delete key / context menu),
-/// not a tool — `docs/design/sketch-selection.md` retired the Delete mode.
+/// click performs while a sketch is being edited (#94 vertex drag, #95 add-point, #99
+/// polyline / rectangle drawing). Delete is an ACTION on the selection (Delete key / context
+/// menu), not a tool — `docs/design/sketch-selection.md` retired the Delete mode.
 ///
 /// **Session** state on the same footing as [`PanelState::armed_tool`] and
 /// [`PanelState::sketch_mode`]: which tool was armed is how the workspace was left, never
@@ -309,6 +308,14 @@ pub enum SketchTool {
     /// Add a point: click a profile **segment** to insert a new vertex there, splitting the
     /// edge at the grid-snapped click (owner ruling 2026-07-22, #95).
     AddPoint,
+    /// Draw a polyline (#99): each click places a grid-snapped point chained to the previous
+    /// one by a segment; a click on an existing point joins it (coincidence = shared id);
+    /// clicking the chain's first point closes the loop and ends the chain; clicking the
+    /// last point again ends it open.
+    Polyline,
+    /// Draw a rectangle (#99): press one corner, drag, release at the opposite corner to
+    /// append the closed four-segment loop. A degenerate (zero-span) drag draws nothing.
+    Rectangle,
 }
 
 /// The floating Signal **display stack**'s viewer state (issue #88; ADR 0018 Decision 8,

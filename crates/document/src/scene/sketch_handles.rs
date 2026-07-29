@@ -73,6 +73,28 @@ impl SketchHandles {
     /// components and add the profile minimum back. `render_hit` need not lie exactly on
     /// the plane — the normal component is simply discarded by reading only the in-plane
     /// axes — but a ray/plane intersection keeps it on-plane so the drag tracks the cursor.
+    /// Map a CONTINUOUS profile coordinate `(c0, c1)` back into the render frame — the
+    /// forward twin of [`render_hit_to_profile`](Self::render_hit_to_profile), through the
+    /// same placement, so a drawing tool's preview (#99: the snapped polyline endpoint, the
+    /// rectangle ghost corners) lands exactly where the committed vertex will.
+    pub fn profile_to_render(&self, coord: [f64; 2]) -> [f32; 3] {
+        let [in0, in1] = self.in_plane_axes;
+        let mut local = [0.0f32; 3];
+        local[in0] = (coord[0] - self.profile_min[0] as f64) as f32;
+        local[in1] = (coord[1] - self.profile_min[1] as f64) as f32;
+        let world = self
+            .placement
+            .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(
+                local,
+            )))
+            .voxels();
+        [
+            world.x - self.recentre[0] as f32,
+            world.y - self.recentre[1] as f32,
+            world.z - self.recentre[2] as f32,
+        ]
+    }
+
     pub fn render_hit_to_profile(&self, render_hit: [f32; 3]) -> [f64; 2] {
         let world = Vec3::new(
             render_hit[0] + self.recentre[0] as f32,
@@ -94,12 +116,13 @@ impl SketchHandles {
 impl Scene {
     /// The [`SketchHandles`] for the sketch node `node_id` — EVERY point entity placed into
     /// the render frame with its stable id, the segment connectivity, and the inverse
-    /// cursor-to-profile map. `None` when the id is not an enabled `SketchTool` node, or the
-    /// sketch has no points (nothing to handle).
+    /// cursor-to-profile map. `None` only when the id is not an enabled `SketchTool` node.
     ///
     /// Independent of the operation's degeneracy AND of whether a closed loop exists: an open
     /// or not-yet-extruded sketch STILL returns handles, so every vertex stays draggable and
     /// deletable while the sketch is authored (ADR 0030 — entities, not a loop, are the truth).
+    /// A totally EMPTY sketch returns handles with no vertices: the plane frame and inverse
+    /// map still stand, which is what lets a drawing tool place the FIRST point (#99).
     pub fn sketch_handles(&self, node_id: NodeId, voxels_per_block: u32) -> Option<SketchHandles> {
         let node = self.node_by_id(node_id)?;
         if !node.enabled {
@@ -109,15 +132,16 @@ impl Scene {
             return None;
         };
         let points = producer.sketch.points();
-        if points.is_empty() {
-            return None;
-        }
         let point_ids: Vec<EntityId> = points.iter().map(|point| point.id).collect();
 
         // The in-plane bounding box over ALL points anchors the overlay frame. For a closed
         // loop this equals the resolve's `profile_bbox_min`, so the handles sit on the resolved
-        // geometry; for an open graph (which resolves to nothing) it just places every vertex.
-        let mut min = points[0].at.offset_voxels;
+        // geometry; for an open graph (which resolves to nothing) it just places every vertex;
+        // for an empty sketch the frame anchors on `[0, 0]` (the node origin).
+        let mut min = points
+            .first()
+            .map(|point| point.at.offset_voxels)
+            .unwrap_or([0, 0]);
         let mut max = min;
         for point in points {
             for axis in 0..2 {
@@ -185,7 +209,14 @@ impl Scene {
             .collect();
 
         let plane_normal = (node.transform.rotation() * unit_axis(normal)).to_array();
-        let plane_point = vertices[0];
+        // ANY on-plane point anchors the ray intersection; the producer-local origin (the
+        // profile bbox-min corner, normal component 0) works for every sketch including an
+        // empty one, where there is no vertex to borrow.
+        let plane_point = (placement
+            .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::ZERO))
+            .voxels()
+            - recentre_vec)
+            .to_array();
 
         Some(SketchHandles {
             vertices,
@@ -325,12 +356,18 @@ mod tests {
 
     #[test]
     fn empty_sketch_has_no_handles_but_a_two_point_sketch_does() {
-        // No points ⇒ nothing to handle.
+        // No points ⇒ no vertices, but the plane frame stands so a drawing tool can place
+        // the first point (#99): the inverse map answers at the node origin.
         let empty = Sketch::empty(PlaneAxis::Z);
         let (scene, id) = scene_with_sketch(empty, 3, [0, 0, 0]);
+        let handles = scene
+            .sketch_handles(id, DENSITY)
+            .expect("an empty sketch still carries its plane frame");
+        assert!(handles.vertices.is_empty(), "no vertices to handle");
+        let profile = handles.render_hit_to_profile(handles.plane_point);
         assert!(
-            scene.sketch_handles(id, DENSITY).is_none(),
-            "an empty sketch has no handles"
+            profile[0].abs() < 1e-3 && profile[1].abs() < 1e-3,
+            "the plane anchor inverts to the profile origin, got {profile:?}"
         );
 
         // Two points do not form a closed loop, but every point is still a draggable / deletable

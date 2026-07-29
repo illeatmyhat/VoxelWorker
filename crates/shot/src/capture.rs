@@ -1160,6 +1160,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &[],
         // ADR 0028 (#95): likewise no add-point insert preview in the headless goldens.
         None,
+        // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.
+        &[],
         // ADR 0032: no orbit-center marker — it shows only during a placement or a Shift+MMB
         // orbit, both windowed-only gestures.
         None,

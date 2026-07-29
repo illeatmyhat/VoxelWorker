@@ -231,6 +231,10 @@ pub fn run_egui_frame(
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
     sketch_insert_preview: Option<egui::Pos2>,
+    // #99: the drawing tools' dashed preview polyline (egui points) — the polyline rubber
+    // line to the snapped cursor, or the rectangle ghost's five closing corners. Empty when
+    // no drawing gesture is live, and always empty on the headless `shot` path.
+    sketch_draw_preview: &[egui::Pos2],
     // ADR 0032: the orbit center's projected position (egui points) plus whether a placement is
     // armed, or `None` when the pivot should not be drawn — it shows while a placement rides the
     // cursor and while Shift+MMB is turning about it, and is hidden otherwise. Registers no chrome
@@ -688,6 +692,11 @@ pub fn run_egui_frame(
             // chrome (a passive marker), so a click passes through to the stationary-release insert.
             if let Some(center) = sketch_insert_preview {
                 ui::chrome::sketch_insert_marker(ui, center);
+            }
+            // #99: the drawing tools' dashed preview — the uncommitted polyline rubber line /
+            // rectangle ghost. Passive like the insert marker.
+            if !sketch_draw_preview.is_empty() {
+                ui::chrome::sketch_draw_preview(ui, sketch_draw_preview);
             }
         }
 

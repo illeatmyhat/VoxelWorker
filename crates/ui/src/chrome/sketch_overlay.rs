@@ -101,6 +101,20 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
     gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
 }
 
+/// Draw a drawing-tool preview (#99): dashed segments through `points` in order — the
+/// polyline's rubber line to the cursor, or the rectangle ghost (five points closing the
+/// box). Dashed is the family's "uncommitted" read; the release is what commits. Not chrome —
+/// a passive preview, so the press/release passes through to the shell.
+pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_draw_preview"),
+    ));
+    for pair in points.windows(2) {
+        gizmos::dashed_segment(&painter, pair[0], pair[1]);
+    }
+}
+
 /// Draw the committed segment lines between their projected endpoints. Idle edges first, then the
 /// single hovered/marked one on top so its brighter line (or warn line + ✕) is never clipped.
 pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, gizmos::HandleState)]) {

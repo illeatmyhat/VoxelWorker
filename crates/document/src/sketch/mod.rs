@@ -407,6 +407,44 @@ impl Sketch {
         });
     }
 
+    /// Add a FREE point entity at `at` — no incident segment — returning its fresh id
+    /// (ADR 0030: a free point is legal geometry; #99 polyline places one per click and
+    /// then connects them). The public door to [`add_point`](Self::add_point).
+    pub fn add_free_point(&mut self, at: SketchPoint) -> EntityId {
+        self.add_point(at)
+    }
+
+    /// Connect two existing points with a fresh segment, returning its id (ADR 0030 —
+    /// coincidence is shared point identity, so drawing to an existing point means naming
+    /// its id here, never minting a coordinate twin). `None` — and no mutation — for a
+    /// self-loop, an unknown endpoint, or a pair already joined by a segment in either
+    /// direction (a duplicate edge would double the region graph's boundary).
+    pub fn connect(&mut self, from: EntityId, to: EntityId) -> Option<EntityId> {
+        if from == to
+            || self.point_index(from).is_none()
+            || self.point_index(to).is_none()
+            || self
+                .segments
+                .iter()
+                .any(|seg| (seg.from == from && seg.to == to) || (seg.from == to && seg.to == from))
+        {
+            return None;
+        }
+        Some(self.add_segment(from, to))
+    }
+
+    /// The lowest-id point entity sitting EXACTLY at `at`, if any. The drawing tools (#99)
+    /// check this after snapping a click, so a click that lands on an existing point's
+    /// coordinates reuses its id (coincidence = shared identity) instead of minting a twin
+    /// point the region graph would read as a distinct vertex.
+    pub fn point_at(&self, at: SketchPoint) -> Option<EntityId> {
+        self.points
+            .iter()
+            .filter(|point| point.at == at)
+            .map(|point| point.id)
+            .min()
+    }
+
     /// The in-plane bbox-minimum over ALL point entities (per coordinate), `[0, 0]` when the
     /// sketch is empty. Unlike [`profile_bbox_min`](SketchSolid::profile_bbox_min) — the loop's
     /// bbox, which the resolve anchors — this covers every point (including free points and the

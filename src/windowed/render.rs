@@ -181,6 +181,8 @@ impl WindowedState {
                 &self.sketch_segment_lines,
                 // ADR 0028 (#95): the add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
+                // #99: the drawing tools' dashed preview, projected last frame.
+                &self.sketch_draw_preview,
                 // ADR 0032: the orbit-center marker — live under the cursor while a placement is
                 // armed, projected-last-frame while Shift+MMB turns about it.
                 orbit_center_marker,
@@ -1242,6 +1244,98 @@ impl WindowedState {
         Some(producer.with_point_on_segment(seg_id, point))
     }
 
+    /// The grid-snapped profile coordinate under the cursor (physical px), through the cached
+    /// ray frame — the shared entry the drawing tools (#99) resolve a press or release with.
+    /// `None` when the cursor misses the plane or no sketch is being edited.
+    pub(super) fn sketch_snapped_coord_at(&self, cursor_x: f64, cursor_y: f64) -> Option<[i64; 2]> {
+        let target = self.panel_state.sketch_mode?;
+        let handles = self
+            .panel_state
+            .scene
+            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+        let coord = self.cursor_to_profile_coord(
+            cursor_x,
+            cursor_y,
+            self.last_ray_unprojection?,
+            self.last_viewport_px,
+            &handles,
+        )?;
+        Some([coord[0].round() as i64, coord[1].round() as i64])
+    }
+
+    /// #99: one polyline click. Resolves the cursor to a point — an existing vertex under it
+    /// (coincidence, by screen grab radius) or a fresh grid-snapped free point — then chains:
+    /// no open chain starts one at that point; an open chain connects `last → clicked` and
+    /// advances; clicking the chain's FIRST point closes the loop and ends the chain; clicking
+    /// its LAST point again ends it open. Each click that changes the store commits as one
+    /// entry in the open sketch undo group.
+    pub(super) fn sketch_polyline_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        // A chain endpoint deleted mid-gesture (Delete key, undo) leaves a dangling id —
+        // drop the chain rather than connect to a ghost.
+        if let Some((start, last)) = self.sketch_chain {
+            let alive = |id| producer.sketch.points().iter().any(|point| point.id == id);
+            if !alive(start) || !alive(last) {
+                self.sketch_chain = None;
+            }
+        }
+        let existing = self
+            .sketch_vertex_at(cursor_x, cursor_y)
+            .and_then(|index| self.sketch_point_ids.get(index).copied());
+        let (mut next, clicked) = match existing {
+            Some(id) => (producer.clone(), id),
+            None => {
+                let Some(snapped) = self.sketch_snapped_coord_at(cursor_x, cursor_y) else {
+                    return;
+                };
+                producer
+                    .with_point_placed(document::sketch::SketchPoint::new(snapped[0], snapped[1]))
+            }
+        };
+        self.sketch_chain = match self.sketch_chain {
+            None => Some((clicked, clicked)),
+            Some((_, last)) if clicked == last => None,
+            Some((start, last)) => {
+                next = next.with_segment_between(last, clicked);
+                (clicked != start).then_some((start, clicked))
+            }
+        };
+        if next != producer {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// #99: the rectangle tool's release. Takes the press-time anchor corner; a release whose
+    /// snapped opposite corner spans both in-plane axes appends the closed four-segment loop
+    /// as one undo entry — a degenerate (zero-span) or off-plane release draws nothing. Either
+    /// way the anchor is consumed: each rectangle is one press-drag-release gesture.
+    pub(super) fn sketch_rectangle_release(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(anchor) = self.sketch_rect_anchor.take() else {
+            return;
+        };
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(corner) = self.sketch_snapped_coord_at(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let next = producer.with_rectangle(
+            document::sketch::SketchPoint::new(anchor[0], anchor[1]),
+            document::sketch::SketchPoint::new(corner[0], corner[1]),
+        );
+        if next != producer {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
     /// ADR 0030: resolve a stationary Select-tool click into the sketch selection. A vertex under
     /// the cursor takes priority (it already answers as a handle), then a segment, else empty
     /// space. Plain click **replaces** the selection with that one entity; `shift` **toggles** it
@@ -1750,8 +1844,12 @@ impl WindowedState {
         self.sketch_segments.clear();
         self.sketch_segment_lines.clear();
         self.sketch_insert_preview = None;
+        self.sketch_draw_preview.clear();
 
         let Some(target) = self.panel_state.sketch_mode else {
+            // #99: a drawing gesture dies with the mode.
+            self.sketch_chain = None;
+            self.sketch_rect_anchor = None;
             return;
         };
         let Some(handles) = self
@@ -1763,6 +1861,13 @@ impl WindowedState {
         };
 
         let tool = self.panel_state.sketch_tool;
+        // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
+        if tool != ui::panel::SketchTool::Polyline {
+            self.sketch_chain = None;
+        }
+        if tool != ui::panel::SketchTool::Rectangle {
+            self.sketch_rect_anchor = None;
+        }
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
         let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
@@ -1828,7 +1933,11 @@ impl WindowedState {
         let hovered_segment: Option<(document::sketch::EntityId, ui::gizmos::HandleState)> =
             match tool {
                 ui::panel::SketchTool::Select => Some(ui::gizmos::HandleState::Hover),
-                ui::panel::SketchTool::AddPoint => None,
+                // Add-point has its own insert diamond; the drawing tools (#99) target
+                // points and empty plane, never an edge.
+                ui::panel::SketchTool::AddPoint
+                | ui::panel::SketchTool::Polyline
+                | ui::panel::SketchTool::Rectangle => None,
             }
             .and_then(|state| {
                 self.last_cursor_position.and_then(|(cx, cy)| {
@@ -1882,6 +1991,65 @@ impl WindowedState {
                     ));
                 }
             }
+        }
+
+        // Drawing-tool previews (#99): the uncommitted geometry, snapped exactly as the click
+        // will commit it, so the dashed line never lies about where the point lands.
+        let snapped_screen = |coord: [i64; 2]| {
+            let render = handles.profile_to_render([coord[0] as f64, coord[1] as f64]);
+            project_to_screen(
+                glam::Vec3::from_array(render),
+                view_projection,
+                viewport_px,
+                pixels_per_point,
+            )
+        };
+        match tool {
+            ui::panel::SketchTool::Polyline => {
+                // Rubber line: the chain's live end to the snapped cursor.
+                if let (Some((_, last)), Some((cursor_x, cursor_y))) =
+                    (self.sketch_chain, self.last_cursor_position)
+                {
+                    let chain_end = self
+                        .sketch_point_ids
+                        .iter()
+                        .position(|&id| id == last)
+                        .and_then(|idx| self.sketch_vertex_px.get(idx).copied().flatten())
+                        .map(|px| {
+                            egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point)
+                        });
+                    let cursor = self
+                        .sketch_snapped_coord_at(cursor_x, cursor_y)
+                        .and_then(snapped_screen);
+                    if let (Some(a), Some(b)) = (chain_end, cursor) {
+                        self.sketch_draw_preview.extend([a, b]);
+                    }
+                }
+            }
+            ui::panel::SketchTool::Rectangle => {
+                // The four edges the release will commit, closed back to the anchor.
+                if let (Some(anchor), Some((cursor_x, cursor_y))) =
+                    (self.sketch_rect_anchor, self.last_cursor_position)
+                {
+                    if let Some(corner) = self.sketch_snapped_coord_at(cursor_x, cursor_y) {
+                        let ring = [
+                            anchor,
+                            [corner[0], anchor[1]],
+                            corner,
+                            [anchor[0], corner[1]],
+                            anchor,
+                        ];
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        // A behind-camera corner culls the whole preview rather than
+                        // drawing a broken ring.
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::Select | ui::panel::SketchTool::AddPoint => {}
         }
     }
 }

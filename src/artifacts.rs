@@ -121,16 +121,18 @@ enum ViewModeConfig {
     ShowBooleans,
 }
 
-/// The same shim for the `ui` crate's [`SketchTool`] (ADR 0028, #95) — the armed sketch-mode
-/// verb. `ui` carries no serde (the crate law), so the tool is persisted from out here exactly
-/// as the viewer mode is. Mirrors both variants; a dump naming a variant this build lacks
-/// (e.g. the retired `Delete` tool) falls back to the default (`Select`), the same tolerance
-/// every other key gets.
+/// The same shim for the `ui` crate's [`SketchTool`] (ADR 0028, #95/#99) — the armed
+/// sketch-mode verb. `ui` carries no serde (the crate law), so the tool is persisted from out
+/// here exactly as the viewer mode is. Mirrors every variant; a dump naming a variant this
+/// build lacks (e.g. the retired `Delete` tool) falls back to the default (`Select`), the
+/// same tolerance every other key gets.
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "SketchTool")]
 enum SketchToolConfig {
     Select,
     AddPoint,
+    Polyline,
+    Rectangle,
 }
 
 /// And for the Signal display stack's fold state. A struct rather than an enum, which

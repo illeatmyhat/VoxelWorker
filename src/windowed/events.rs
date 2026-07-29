@@ -121,10 +121,11 @@ impl ApplicationHandler for App {
                         && !in_chrome
                         && state.panel_state.armed_tool.is_none()
                         && state.panel_state.sketch_mode.is_none();
-                    // ADR 0028 (#94/#95): a sketch-mode press, on the live viewport (not egui /
-                    // cube). The Select tool grabs a vertex handle; the Add-point tool ARMS a
-                    // stationary-release edit. The view stays freely rotatable throughout
-                    // via Shift+MMB, which is gated on neither sketch mode nor the armed tool.
+                    // ADR 0028 (#94/#95) / #99: a sketch-mode press, on the live viewport (not
+                    // egui / cube). The Select tool grabs a vertex handle; Add-point and
+                    // Polyline ARM a stationary-release edit; Rectangle pins its anchor corner.
+                    // The view stays freely rotatable throughout via Shift+MMB, which is gated
+                    // on neither sketch mode nor the armed tool.
                     if state.panel_state.sketch_mode.is_some()
                         && !in_orbit_mode
                         && !egui_consumed
@@ -141,8 +142,15 @@ impl ApplicationHandler for App {
                                         state.begin_sketch_vertex_drag(cursor_x, cursor_y);
                                 }
                                 // Arm the edit; a stationary release performs it.
-                                ui::panel::SketchTool::AddPoint => {
+                                ui::panel::SketchTool::AddPoint
+                                | ui::panel::SketchTool::Polyline => {
                                     state.sketch_edit_press = true;
+                                }
+                                // #99: the rectangle is a press-drag-release gesture — the
+                                // press pins the anchor corner; the release commits.
+                                ui::panel::SketchTool::Rectangle => {
+                                    state.sketch_rect_anchor =
+                                        state.sketch_snapped_coord_at(cursor_x, cursor_y);
                                 }
                             }
                         }
@@ -211,11 +219,11 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0028 (#95): a STATIONARY release with a sketch add-point edit armed
+                    // ADR 0028 (#95) / #99: a STATIONARY release with a sketch edit armed
                     // performs it (the same click-vs-drag threshold placement uses; a drag
                     // no longer orbits, but a twitchy press must still not edit).
                     // Runs BEFORE `last_cursor_position` is cleared below, since
-                    // the insert hit-test needs the release cursor. The tool stays armed.
+                    // the hit-tests need the release cursor. The tool stays armed.
                     if state.sketch_edit_press {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
                             (state.press_position, state.last_cursor_position)
@@ -226,16 +234,29 @@ impl ApplicationHandler for App {
                             if let (true, Some(target)) =
                                 (stationary, state.panel_state.sketch_mode)
                             {
-                                let edit = match state.panel_state.sketch_tool {
+                                match state.panel_state.sketch_tool {
                                     ui::panel::SketchTool::AddPoint => {
-                                        state.sketch_insert_at(up_x, up_y)
+                                        if let Some(producer) = state.sketch_insert_at(up_x, up_y) {
+                                            state.commit_sketch_profile_edit(target, producer);
+                                        }
                                     }
-                                    ui::panel::SketchTool::Select => None,
-                                };
-                                if let Some(producer) = edit {
-                                    state.commit_sketch_profile_edit(target, producer);
+                                    // #99: place / chain the clicked point; commits internally.
+                                    ui::panel::SketchTool::Polyline => {
+                                        state.sketch_polyline_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::Select
+                                    | ui::panel::SketchTool::Rectangle => {}
                                 }
                             }
+                        }
+                    }
+                    // #99: a rectangle release commits at ANY drag distance (it is the drag
+                    // gesture); a degenerate release just consumes the anchor. Runs BEFORE
+                    // `last_cursor_position` is cleared below.
+                    if state.sketch_rect_anchor.is_some() {
+                        match state.last_cursor_position {
+                            Some((up_x, up_y)) => state.sketch_rectangle_release(up_x, up_y),
+                            None => state.sketch_rect_anchor = None,
                         }
                     }
                     // ADR 0030: a STATIONARY release of a viewport Select press resolves the sketch

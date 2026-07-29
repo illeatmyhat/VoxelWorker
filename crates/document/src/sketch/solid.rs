@@ -269,15 +269,63 @@ impl SketchSolid {
         offset
     }
 
-    /// This producer with `point` inserted just **after** profile index `after`, splitting the
-    /// edge `after → after+1` (ADR 0028, #95 add-point). `after` past the profile's end clamps to
-    /// the end (an append). Pure — returns a new producer, leaving `self` untouched.
     /// This producer with `point` inserted on the segment `seg_id`, splitting it (ADR 0030
     /// add-point). The two halves inherit the split segment's `origin`. No-op if `seg_id` is
-    /// unknown. Pure — returns a new producer.
+    /// unknown. Pure — returns a new producer, leaving `self` untouched.
     pub fn with_point_on_segment(&self, seg_id: EntityId, point: SketchPoint) -> SketchSolid {
         let mut next = self.clone();
         next.sketch.split_segment(seg_id, point);
+        next
+    }
+
+    /// This producer with a free point added at `at` — or, when a point already sits exactly
+    /// there, the untouched producer and that point's id (coincidence, ADR 0030). Returns the
+    /// producer and the id the polyline chain continues from (#99). Pure.
+    pub fn with_point_placed(&self, at: SketchPoint) -> (SketchSolid, EntityId) {
+        if let Some(existing) = self.sketch.point_at(at) {
+            return (self.clone(), existing);
+        }
+        let mut next = self.clone();
+        let id = next.sketch.add_free_point(at);
+        (next, id)
+    }
+
+    /// This producer with a segment joining the existing points `from → to` (#99 polyline).
+    /// Unchanged for a self-loop, an unknown endpoint, or an already-joined pair
+    /// ([`Sketch::connect`]). Pure.
+    pub fn with_segment_between(&self, from: EntityId, to: EntityId) -> SketchSolid {
+        let mut next = self.clone();
+        next.sketch.connect(from, to);
+        next
+    }
+
+    /// This producer with a closed axis-aligned rectangle appended between opposite corners
+    /// `a` and `b` (#99 — the rectangle tool draws a whole loop in one gesture). Corner points
+    /// that coincide with existing points reuse their ids; the four edges go through
+    /// [`Sketch::connect`], so an edge that already exists is not doubled. Unchanged when the
+    /// corners are degenerate (zero span on either in-plane axis — no area to enclose). Pure.
+    pub fn with_rectangle(&self, a: SketchPoint, b: SketchPoint) -> SketchSolid {
+        if a.offset_voxels[0] == b.offset_voxels[0] || a.offset_voxels[1] == b.offset_voxels[1] {
+            return self.clone();
+        }
+        let corners = [
+            a,
+            SketchPoint::new(b.offset_voxels[0], a.offset_voxels[1]),
+            b,
+            SketchPoint::new(a.offset_voxels[0], b.offset_voxels[1]),
+        ];
+        let mut next = self.clone();
+        let ids: Vec<EntityId> = corners
+            .iter()
+            .map(|&corner| {
+                next.sketch
+                    .point_at(corner)
+                    .unwrap_or_else(|| next.sketch.add_free_point(corner))
+            })
+            .collect();
+        for i in 0..4 {
+            next.sketch.connect(ids[i], ids[(i + 1) % 4]);
+        }
         next
     }
 

@@ -350,6 +350,11 @@ struct WindowedState {
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
     /// Refreshed alongside the handles; drawn as a diamond on the next frame.
     sketch_insert_preview: Option<egui::Pos2>,
+    /// The drawing tools' dashed preview polyline for THIS frame (egui points), drawn on the
+    /// next (#99): the polyline's rubber line from the chain's last vertex to the snapped
+    /// cursor, or the rectangle ghost's five closing corners. Empty when no drawing tool is
+    /// mid-gesture. Refreshed alongside the handles.
+    sketch_draw_preview: Vec<egui::Pos2>,
     /// The orbit-center marker for THIS frame: its projected screen position (egui points) and
     /// whether a placement is armed (the marker is riding the cursor), or `None` when the pivot
     /// should not be drawn. Refreshed alongside the sketch overlay, from
@@ -360,11 +365,21 @@ struct WindowedState {
     /// add-point insert — the same frame `render` fed the overlay refresh, WITHOUT the wide-baseline
     /// `/w` melt the full-VP inverse suffers (a06d215). `None` before the first frame.
     last_ray_unprojection: Option<glam::Mat4>,
-    /// Whether the most recent left-press armed a sketch add-point / delete edit (sketch mode,
-    /// an edit tool, on the live viewport). A STATIONARY release with this set performs the
-    /// edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so a
-    /// click edits and a drag still rotates the view.
+    /// Whether the most recent left-press armed a sketch add-point / polyline edit (sketch
+    /// mode, an edit tool, on the live viewport). A STATIONARY release with this set performs
+    /// the edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so
+    /// a click edits and a drag still rotates the view.
     sketch_edit_press: bool,
+    /// The open polyline chain (#99) as `(first point id, last point id)`, or `None` when no
+    /// chain is being drawn. Each polyline click connects `last → clicked` and advances;
+    /// clicking `first` closes the loop and ends the chain; clicking `last` again ends it
+    /// open. Cleared when the armed tool leaves Polyline or sketch mode exits — a chain is a
+    /// gesture, not workspace state.
+    sketch_chain: Option<(document::sketch::EntityId, document::sketch::EntityId)>,
+    /// The rectangle tool's press-time corner (#99) as a snapped profile coordinate, or
+    /// `None`. The release at the opposite corner commits the loop and clears this; a
+    /// degenerate (zero-span) release just clears it.
+    sketch_rect_anchor: Option<[i64; 2]>,
     /// Whether the most recent left-press armed a sketch **selection** resolve (sketch mode, the
     /// Select tool, on the live viewport — NOT egui chrome or the cube). A STATIONARY release with
     /// this set resolves the click into the selection; a drag leaves it (the vertex move happens
@@ -710,9 +725,12 @@ impl WindowedState {
             sketch_segments: Vec::new(),
             sketch_segment_lines: Vec::new(),
             sketch_insert_preview: None,
+            sketch_draw_preview: Vec::new(),
             orbit_center_overlay: None,
             last_ray_unprojection: None,
             sketch_edit_press: false,
+            sketch_chain: None,
+            sketch_rect_anchor: None,
             sketch_select_press: false,
             viewport_select_press: false,
             pending_viewport_select: None,
@@ -848,6 +866,7 @@ impl WindowedState {
             sketch_segments: _,
             sketch_segment_lines: _,
             sketch_insert_preview: _,
+            sketch_draw_preview: _,
             orbit_center_overlay: _,
             // Workers + asset plumbing: background threads, their supersede bookkeeping,
             // and the scanned-asset pipeline. In-flight work is never dumpable.
@@ -888,6 +907,8 @@ impl WindowedState {
             viewport_intents: _,
             viewport_transactions: _,
             sketch_edit_press: _,
+            sketch_chain: _,
+            sketch_rect_anchor: _,
             sketch_select_press: _,
             viewport_select_press: _,
             pending_viewport_select: _,
