@@ -75,6 +75,29 @@ const fn bare(key: Key) -> KeyboardShortcut {
     KeyboardShortcut::new(Modifiers::NONE, key)
 }
 
+/// `Ctrl+<key>` — the Windows/Linux spelling, naming `ctrl` because that is the key that is
+/// actually pressed there.
+const fn ctrl(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(
+        Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        },
+        key,
+    )
+}
+
+/// `⌘<key>` — the macOS spelling, naming `mac_cmd` for the same reason.
+const fn command(key: Key) -> KeyboardShortcut {
+    KeyboardShortcut::new(
+        Modifiers {
+            mac_cmd: true,
+            ..Modifiers::NONE
+        },
+        key,
+    )
+}
+
 /// `Ctrl+Shift+<key>` — the Windows/Linux spelling, naming `ctrl` because that is the key that is
 /// actually pressed there.
 const fn ctrl_shift(key: Key) -> KeyboardShortcut {
@@ -137,6 +160,10 @@ pub enum ShortcutCommand {
     CancelCommand,
     /// Remove what is picked.
     DeleteSelection,
+    /// Reverse the newest edit on the undo stack.
+    Undo,
+    /// Re-apply the newest undone edit.
+    Redo,
     /// Arm the orbit-center placement.
     PlaceOrbitCenter,
     /// Send the orbit center back to the world origin.
@@ -149,10 +176,12 @@ pub enum ShortcutCommand {
 
 impl ShortcutCommand {
     /// Every command, in settings-list order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::AcceptCommand,
         Self::CancelCommand,
         Self::DeleteSelection,
+        Self::Undo,
+        Self::Redo,
         Self::PlaceOrbitCenter,
         Self::ResetOrbitCenter,
         Self::EnterConstrainedOrbit,
@@ -165,6 +194,8 @@ impl ShortcutCommand {
             Self::AcceptCommand => "Accept command",
             Self::CancelCommand => "Cancel command",
             Self::DeleteSelection => "Delete selection",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
             Self::PlaceOrbitCenter => "Place orbit center",
             Self::ResetOrbitCenter => "Reset orbit center",
             Self::EnterConstrainedOrbit => "Constrained orbit",
@@ -191,6 +222,18 @@ impl ShortcutCommand {
             Self::DeleteSelection => match platform {
                 ShortcutPlatform::WindowsAndLinux => Some(bare(Key::Delete)),
                 ShortcutPlatform::MacOs => Some(bare(Key::Backspace)),
+            },
+
+            // Undo agrees across platforms up to the application modifier; Redo is the case the
+            // platform law exists for again — Windows' convention (and Fusion's) is `Ctrl+Y`, the
+            // Mac's is `⌘⇧Z`, and neither is a modifier-substitution of the other.
+            Self::Undo => match platform {
+                ShortcutPlatform::WindowsAndLinux => Some(ctrl(Key::Z)),
+                ShortcutPlatform::MacOs => Some(command(Key::Z)),
+            },
+            Self::Redo => match platform {
+                ShortcutPlatform::WindowsAndLinux => Some(ctrl(Key::Y)),
+                ShortcutPlatform::MacOs => Some(command_shift(Key::Z)),
             },
 
             // Unbound on both. These are viewport verbs with no cross-application convention, and

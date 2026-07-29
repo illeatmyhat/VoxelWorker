@@ -152,6 +152,10 @@ pub enum ShortcutCommandConfig {
     CancelCommand,
     /// [`ShortcutCommand::DeleteSelection`].
     DeleteSelection,
+    /// [`ShortcutCommand::Undo`].
+    Undo,
+    /// [`ShortcutCommand::Redo`].
+    Redo,
     /// [`ShortcutCommand::PlaceOrbitCenter`].
     PlaceOrbitCenter,
     /// [`ShortcutCommand::ResetOrbitCenter`].
@@ -201,6 +205,8 @@ impl ShortcutsConfig {
                         ShortcutCommand::AcceptCommand => ShortcutCommandConfig::AcceptCommand,
                         ShortcutCommand::CancelCommand => ShortcutCommandConfig::CancelCommand,
                         ShortcutCommand::DeleteSelection => ShortcutCommandConfig::DeleteSelection,
+                        ShortcutCommand::Undo => ShortcutCommandConfig::Undo,
+                        ShortcutCommand::Redo => ShortcutCommandConfig::Redo,
                         ShortcutCommand::PlaceOrbitCenter => {
                             ShortcutCommandConfig::PlaceOrbitCenter
                         }
@@ -232,6 +238,8 @@ impl ShortcutsConfig {
                 ShortcutCommandConfig::AcceptCommand => ShortcutCommand::AcceptCommand,
                 ShortcutCommandConfig::CancelCommand => ShortcutCommand::CancelCommand,
                 ShortcutCommandConfig::DeleteSelection => ShortcutCommand::DeleteSelection,
+                ShortcutCommandConfig::Undo => ShortcutCommand::Undo,
+                ShortcutCommandConfig::Redo => ShortcutCommand::Redo,
                 ShortcutCommandConfig::PlaceOrbitCenter => ShortcutCommand::PlaceOrbitCenter,
                 ShortcutCommandConfig::ResetOrbitCenter => ShortcutCommand::ResetOrbitCenter,
                 ShortcutCommandConfig::EnterConstrainedOrbit => {

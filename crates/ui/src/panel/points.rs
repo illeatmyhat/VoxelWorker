@@ -210,14 +210,16 @@ pub(super) fn build_points_section(
     } else if let Some(index) = select {
         // The row is index-addressed (it IS a row), but the selection keys by the
         // stable id (ADR 0033). Ctrl-click (Cmd on mac — egui's command modifier)
-        // toggles membership in the set (ADR 0032 multi-select).
+        // toggles membership in the set (ADR 0032 multi-select), as does Shift.
         if let Some(point) = state.scene.points.get(index) {
             let target = crate::panel::SelectionTarget::ReferencePoint(point.id);
-            response.select = Some(if ui.input(|input| input.modifiers.command) {
-                crate::panel::SelectionRequest::Toggle(target)
-            } else {
-                crate::panel::SelectionRequest::Only(target)
-            });
+            response.select = Some(
+                if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
+                    crate::panel::SelectionRequest::Toggle(target)
+                } else {
+                    crate::panel::SelectionRequest::Only(target)
+                },
+            );
         }
     }
 

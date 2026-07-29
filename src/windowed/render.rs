@@ -387,8 +387,8 @@ impl WindowedState {
             self.end_modal_command(command);
         }
         // The keyboard half of the same doors. Read AFTER the pass, so a focused text field has
-        // already eaten its own keys.
-        self.run_shortcut_commands();
+        // already eaten its own keys. Returns the Undo/Redo effect, folded into the merge below.
+        let shortcut_effect = self.run_shortcut_commands();
         // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
         // re-resolves the volume and records ONE coalesced command in the open group. Uses
         // this frame's viewport (from `prepared`) to build the cursor→plane ray; its effect
@@ -411,7 +411,8 @@ impl WindowedState {
         intents.extend(std::mem::take(&mut self.viewport_intents));
         let mut merged_effect = sketch_effect
             .merged_with(drag_effect)
-            .merged_with(selection_effect);
+            .merged_with(selection_effect)
+            .merged_with(shortcut_effect);
         for intent in intents {
             let effect = self.app_core.apply_intent(
                 &mut self.panel_state.scene,
@@ -1339,8 +1340,11 @@ impl WindowedState {
     /// `consume_shortcut` says which of them fired, and this match says what each one DOES — so a
     /// rebind moves one settings entry and both the menu's right-hand column and this dispatch
     /// follow it. Called after the egui pass, which is what makes a focused text field swallow its
-    /// own Escape instead of cancelling the running viewport command.
-    fn run_shortcut_commands(&mut self) {
+    /// own Escape instead of cancelling the running viewport command (and its own Ctrl+Z instead
+    /// of undoing a document edit). Returns the Undo/Redo [`crate::IntentEffect`], which the
+    /// caller folds into the frame's merged effect so the display rebuilds like any other edit.
+    fn run_shortcut_commands(&mut self) -> crate::IntentEffect {
+        let mut effect = crate::IntentEffect::none();
         for command in self
             .panel_state
             .shortcuts
@@ -1348,6 +1352,20 @@ impl WindowedState {
             .consume(&self.egui_bridge.context)
         {
             match command {
+                // The document history. `AppCore::undo`/`redo` route into an open sketch
+                // group's fine-grained session stacks by themselves (ADR 0028 §4).
+                ui::shortcuts::ShortcutCommand::Undo => {
+                    effect = effect.merged_with(
+                        self.app_core
+                            .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
+                    );
+                }
+                ui::shortcuts::ShortcutCommand::Redo => {
+                    effect = effect.merged_with(
+                        self.app_core
+                            .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
+                    );
+                }
                 // Dump the scene + LIVE camera to the repro file (`shot --from-config`), so an
                 // exact live-view bug reproduces headlessly.
                 ui::shortcuts::ShortcutCommand::ExportRepro => self.export_repro(),
@@ -1380,6 +1398,7 @@ impl WindowedState {
                 | ui::shortcuts::ShortcutCommand::EnterConstrainedOrbit => {}
             }
         }
+        effect
     }
 
     /// Where the orbit-center gizmo draws in WORLD space, and whether it draws at all: the

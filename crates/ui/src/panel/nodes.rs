@@ -166,10 +166,11 @@ pub(super) fn build_node_list_section(
         // ADR 0003 Phase B4: a clicked row reports its node's stable NodeId; select
         // THAT, so the highlight and inspector follow the node through later
         // structural edits. Ctrl-click (Cmd on mac — egui's command modifier) toggles
-        // membership in the set (ADR 0032 multi-select); a plain click replaces, and
-        // only when it actually changes the selection (the old guard) — a selection
-        // click is selection-only (no re-resolve, no auto-frame).
-        if ui.input(|input| input.modifiers.command) {
+        // membership in the set (ADR 0032 multi-select), as does Shift (matching the
+        // viewport's Shift-accumulate, until row range-select claims it); a plain click
+        // replaces, and only when it actually changes the selection (the old guard) — a
+        // selection click is selection-only (no re-resolve, no auto-frame).
+        if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
             response.select = Some(crate::panel::SelectionRequest::Toggle(
                 crate::panel::SelectionTarget::Node(clicked_id),
             ));

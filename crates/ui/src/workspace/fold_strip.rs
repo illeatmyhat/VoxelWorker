@@ -145,9 +145,10 @@ fn card(
         .galley(egui::pos2(rect.left() + 10.0, rect.top() + 30.0), name, ink);
 
     // Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in the set
-    // (ADR 0032 multi-select); a plain click replaces.
+    // (ADR 0032 multi-select); a plain click replaces. Shift toggles too, matching the
+    // viewport's Shift-accumulate — until row range-select claims it.
     if hit.clicked() {
-        if ui.input(|input| input.modifiers.command) {
+        if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
             response.select = Some(crate::panel::SelectionRequest::Toggle(
                 crate::panel::SelectionTarget::Node(id),
             ));
