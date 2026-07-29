@@ -92,10 +92,6 @@ struct CuboidUniforms {
     // local `absolute`, so tiling is unchanged.
     overlay_world_offset: vec3<f32>,
     _overlay_pad: f32,
-    // ADR 0032: the camera eye (render frame), read only by the selection-cel branch
-    // (`ghost_mode = 2`) for its silhouette-emphasis facing term.
-    camera_position: vec3<f32>,
-    _cel_pad: f32,
 };
 
 @group(0) @binding(0)
@@ -215,28 +211,6 @@ fn fragment_main(
             debug_color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.0, 0.0, 0.0), stripe);
         }
         return vec4<f32>(debug_color, 1.0);
-    }
-
-    // --- Selection cel pass (ADR 0032) ---
-    // The selected node's derived body, cel-shaded in the Signal accent: the Lambert
-    // term quantised into three flat bands, and fragments grazing the silhouette
-    // (facing ≈ 0) lifted to a near-opaque outline band — emphasis lives at the body's
-    // screen-space rim, not in an x-ray. Depth-tested LessEqual by the cel pipeline, so
-    // only the surface the composed model actually shows takes the treatment.
-    if (uniforms.ghost_mode > 1.5) {
-        let bands = 3.0;
-        let lit = lambert_lighting(input.world_normal);
-        // `lambert_lighting` spans [0.45, 1]; normalise, quantise to {0, 1/2, 1}.
-        let lit_normalized = clamp((lit - 0.45) / 0.55, 0.0, 0.999);
-        let band = floor(lit_normalized * bands) / (bands - 1.0);
-        let cel_rgb = uniforms.ghost_tint.rgb * mix(0.55, 1.0, band);
-        let world_position = input.voxel_absolute_position - uniforms.grid_half_extent;
-        let view_direction = normalize(uniforms.camera_position - world_position);
-        let facing = abs(dot(normalize(input.world_normal), view_direction));
-        // One hard rim band (cel, not a gradient): grazing faces jump to outline alpha.
-        let rim = step(facing, 0.45);
-        let alpha = mix(uniforms.ghost_tint.a, min(uniforms.ghost_tint.a * 2.4, 0.92), rim);
-        return vec4<f32>(cel_rgb, alpha);
     }
 
     // --- Onion ghost pass (ADR 0012 H1) ---

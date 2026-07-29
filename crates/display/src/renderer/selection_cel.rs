@@ -1,12 +1,11 @@
-//! Selection-cel tint (ADR 0032 — viewport selection feedback).
+//! Selection tint (ADR 0032 — viewport selection feedback, reworked 2026-07-29).
 //!
-//! A selected node renders its derived body under the cel branch of `cuboid.wgsl`
-//! (`ghost_mode = 2`): the Signal accent quantised into flat Lambert bands, with a hard
-//! near-opaque band at the screen-space silhouette (outline-emphasis). Depth-tested
-//! against the composed model — feedback shows the surface the model actually shows,
-//! never an x-ray — and applies in ALL view modes (owner-resolved 2026-07-26): showing
-//! what is selected is a property of having selected it, not a way of displaying the
-//! document.
+//! A selected node shows as a screen-space WASH + 1px OUTLINE built from a depth map
+//! of its derived body (`mesh::SelectionOutlineRenderer` + `selection_outline.wgsl`),
+//! replacing the rejected cel re-draw. Still depth-coincident with the composed model
+//! — feedback shows the surface the model actually shows, never an x-ray — and applies
+//! in ALL view modes (owner-resolved 2026-07-26): showing what is selected is a
+//! property of having selected it, not a way of displaying the document.
 
 use super::*;
 
@@ -14,14 +13,13 @@ use super::*;
 /// the chrome speaks; the viewport's selection mark speaks it too.
 const SELECTION_CEL_COLOR_HEX: u32 = 0x9c_b4_d8;
 
-/// Base (camera-facing band) src alpha. Deliberately below the operand ghost's quiet
-/// 0.32: the cel is on in EVERY mode, so its resting weight must leave the material
-/// readable; the shader's rim band multiplies this up (×2.4, capped 0.92) at the
-/// silhouette, where the emphasis lives.
+/// The wash's src alpha. Deliberately below the operand ghost's quiet 0.32: the wash is
+/// on in EVERY mode, so its resting weight must leave the material readable; the
+/// emphasis lives in the near-opaque outline ring, not here.
 const SELECTION_CEL_ALPHA: f32 = 0.28;
 
-/// The selection-cel tint as linear `[r, g, b, a]` — the ONE uniform colour the cel
-/// branch bands and rims in-shader.
+/// The selection tint as linear `[r, g, b, a]` — the ONE colour the outline+wash
+/// composite speaks (the outline reuses the rgb at its own alpha).
 pub fn selection_cel_tint() -> [f32; 4] {
     let [r, g, b] = srgb_hex_to_linear(SELECTION_CEL_COLOR_HEX);
     [r, g, b, SELECTION_CEL_ALPHA]

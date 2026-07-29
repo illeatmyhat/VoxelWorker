@@ -101,6 +101,5 @@ impl_scene_draw!(
     renderer::PointsRenderer,
     renderer::TransformGizmoRenderer,
     renderer::PlacementGhostRenderer,
-    mesh::SelectedBodyCelRenderer,
     mesh::SelectedOperandGhostRenderer,
 );

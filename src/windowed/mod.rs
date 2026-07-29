@@ -92,10 +92,10 @@ struct WindowedState {
     selected_ghost_selection: Option<crate::NodeId>,
     /// The view mode the ghost meshes were last derived for (re-derive on a mode change).
     selected_ghost_view_mode: crate::ViewMode,
-    /// The selection cel (ADR 0032): every selected node's derived body, cel-shaded in
-    /// the accent over the composed model — the viewport's selection feedback, in ALL
-    /// view modes. Re-derived only on selection / geometry change.
-    selected_body_cel_renderer: display::mesh::SelectedBodyCelRenderer,
+    /// The selection outline + wash (ADR 0032, reworked): a screen-space depth-map
+    /// treatment of every selected node's derived body — the viewport's selection
+    /// feedback, in ALL view modes. Re-derived only on selection / geometry change.
+    selection_outline_renderer: display::mesh::SelectionOutlineRenderer,
     /// The pick-ordered node list the cel bodies were last derived for (re-derive when
     /// it drifts — the belt-and-braces companion to `selected_ghost_dirty`, which the
     /// cel seam shares).
@@ -567,13 +567,11 @@ impl WindowedState {
         // Show-booleans (`selected_ghost_dirty` below).
         let selected_operand_ghost_renderer =
             crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-        // The selection cel (ADR 0032): built empty; the first render frame derives it
-        // for the restored selection (same dirty flag as the operand ghost).
-        let selected_body_cel_renderer = display::mesh::SelectedBodyCelRenderer::new(
-            &gpu.device,
-            &gpu.queue,
-            COLOR_TARGET_FORMAT,
-        );
+        // The selection outline + wash (ADR 0032, reworked): built empty; the first
+        // render frame derives it for the restored selection (same dirty flag as the
+        // operand ghost) and sizes its depth map to the target.
+        let selection_outline_renderer =
+            display::mesh::SelectionOutlineRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         // Per-object block lattice + floor grid (issue #29 S3): its line batch is
         // (re)built per frame from the grid-enabled nodes, so it starts empty.
         let scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -639,7 +637,7 @@ impl WindowedState {
             selected_ghost_dirty: true,
             selected_ghost_selection: None,
             selected_ghost_view_mode: crate::ViewMode::Normal,
-            selected_body_cel_renderer,
+            selection_outline_renderer,
             selected_cel_nodes: Vec::new(),
             scene_grid_renderer,
             points_renderer,
@@ -819,7 +817,7 @@ impl WindowedState {
             display: _,
             transform_gizmo_renderer: _,
             selected_operand_ghost_renderer: _,
-            selected_body_cel_renderer: _,
+            selection_outline_renderer: _,
             scene_grid_renderer: _,
             points_renderer: _,
             points_overlay_renderer: _,

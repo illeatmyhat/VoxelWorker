@@ -803,11 +803,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             println!("boolean-operand ghost: {} body(ies)", ghost.bodies.len());
         }
     }
-    // ADR 0032: the selection cel — every selected node's derived body, cel-shaded over
-    // the composed model in ANY view mode. Opt-in via `--selection-cel` (goldens stay
-    // byte-identical); derived exactly as the windowed shell derives it.
-    let mut selected_body_cel_renderer =
-        display::mesh::SelectedBodyCelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    // ADR 0032 (reworked): the selection outline+wash — a screen-space depth-map
+    // treatment of every selected node's derived body, in ANY view mode. Opt-in via
+    // `--selection-cel` (goldens stay byte-identical); derived exactly as the windowed
+    // shell derives it.
+    let mut selection_outline_renderer =
+        display::mesh::SelectionOutlineRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     if options.selection_cel {
         let cel_nodes: Vec<_> = panel_state.selection.nodes().collect();
         if let Some(cel) = AppCore::selected_body_cel(
@@ -815,15 +816,16 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             &cel_nodes,
             options.geometry.voxels_per_block,
         ) {
-            selected_body_cel_renderer.rebuild(
+            selection_outline_renderer.rebuild(
                 &gpu.device,
                 &cel.bodies,
                 cel.grid_dimensions,
                 cel.recentre,
                 cel.density,
             );
-            println!("selection cel: {} body(ies)", cel.bodies.len());
+            println!("selection outline: {} body(ies)", cel.bodies.len());
         }
+        selection_outline_renderer.prepare(&gpu.device, options.width, options.height, &depth_view);
     }
 
     // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
@@ -1219,10 +1221,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &app_core.camera,
         aspect_ratio,
         view_projection,
+        scene_matrices.ndc_depth,
         gizmo_placement,
         &transform_gizmo_renderer,
         &selected_operand_ghost_renderer,
-        &selected_body_cel_renderer,
+        &selection_outline_renderer,
         &view_cube_renderer,
     );
 
@@ -1286,10 +1289,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // byte-identical (Points suppressed unless `--points`, gizmo only with a placement, etc.).
     let background: [&dyn display::SceneDraw; 1] = [&background_gradient_renderer];
     let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
-    // ADR 0032 cel first (closest to the model), then the ADR 0018 Decision 6 operand
-    // x-ray — both suppressed in debug-faces; each self-gates when empty.
+    // ADR 0018 Decision 6: the operand x-ray — suppressed in debug-faces; self-gates when
+    // empty. (The ADR 0032 selection feedback is the screen-space outline+wash composite,
+    // wired below as `selection_outline`.)
     if !options.debug_face_orientation {
-        over_model.push(&selected_body_cel_renderer);
         over_model.push(&selected_operand_ghost_renderer);
     }
     // ADR 0022: the armed-tool placement ghost (self-gates on a pending drop).
@@ -1330,6 +1333,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         brick_raymarch: brick_raymarch_renderer.as_ref(),
         // ADR 0012: onion ghost when the band is a real onion slab (`onion_depth > 0`).
         onion_ghost_active: band.onion_depth > 0,
+        // ADR 0032: the selection outline+wash — suppressed in debug-faces like the
+        // operand x-ray; self-gates on an empty selection (goldens never pass
+        // `--selection-cel`, so their frames record no extra pass work).
+        selection_outline: if options.debug_face_orientation {
+            None
+        } else {
+            Some(&selection_outline_renderer)
+        },
         // The view cube is always drawn.
         view_cube: Some(&view_cube_renderer),
         cube_hovered_zone: options.cube_hover,

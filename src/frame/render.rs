@@ -66,6 +66,10 @@ pub struct FramePhases<'a> {
     /// surface shows; the solid, drawn first, still occludes it. The ghost uniforms/geometry
     /// must already be prepared by the renderers' `update_uniforms`.
     pub onion_ghost_active: bool,
+    /// ADR 0032 (reworked): the screen-space selection outline + wash. Records its own
+    /// two passes — the depth-only G-buffer before the MSAA pass, the composite onto the
+    /// resolved target after it (before the view cube). Self-gating on an empty selection.
+    pub selection_outline: Option<&'a display::mesh::SelectionOutlineRenderer>,
     /// The corner view cube (its own scissored pass). `None` when its Display toggle is off.
     pub view_cube: Option<&'a display::renderer::ViewCubeRenderer>,
     /// The ViewCube chrome zone under the cursor (#13 Step 2). Drives which hover
@@ -137,10 +141,10 @@ pub fn upload_scene_scaffold(
 }
 
 /// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot` (ADR 0031):
-/// the selection-follow transform gizmo, the boolean-operand x-ray ghost, the selection cel
-/// (ADR 0032), and the corner view cube. Each is a pure camera upload with no scene rebuild — the drift these previously risked
-/// (a gizmo matrix or cube projection computed two different ways) is made unrepresentable by one
-/// call site.
+/// the selection-follow transform gizmo, the boolean-operand x-ray ghost, the selection
+/// outline+wash (ADR 0032), and the corner view cube. Each is a pure camera upload with no scene
+/// rebuild — the drift these previously risked (a gizmo matrix or cube projection computed two
+/// different ways) is made unrepresentable by one call site.
 ///
 /// The gizmo uploads ONLY when `gizmo_placement` is `Some` (the selection has an extent); both
 /// paths already gate the gizmo DRAW on the same condition, so skipping the upload on `None` is
@@ -154,10 +158,11 @@ pub fn upload_overlay_uniforms(
     camera: &camera::OrbitCamera,
     aspect_ratio: f32,
     view_projection: glam::Mat4,
+    ndc_depth: camera::NdcDepthMapping,
     gizmo_placement: Option<([f32; 3], [f32; 3])>,
     transform_gizmo: &TransformGizmoRenderer,
     selected_operand_ghost: &SelectedOperandGhostRenderer,
-    selected_body_cel: &display::mesh::SelectedBodyCelRenderer,
+    selection_outline: &display::mesh::SelectionOutlineRenderer,
     view_cube: &ViewCubeRenderer,
 ) {
     // The gizmo FOLLOWS the selection: size it screen-stable to its pivot and bake the recentred
@@ -171,8 +176,10 @@ pub fn upload_overlay_uniforms(
     }
     // ADR 0018 Decision 6: the operand ghost + the corner cube ride the scene camera directly.
     selected_operand_ghost.update_uniforms(queue, view_projection);
-    // ADR 0032: the selection cel rides the same camera; the eye drives its silhouette term.
-    selected_body_cel.update_uniforms(queue, view_projection, camera.eye());
+    // ADR 0032: the selection outline's G-buffer records the SAME scene matrix (the wash
+    // compares its hardware depth against the scene's), and its epsilon rides the matching
+    // NDC-depth mapping.
+    selection_outline.update_uniforms(queue, view_projection, ndc_depth);
     view_cube.update_uniforms(queue, camera.view_cube_view_projection());
 }
 
@@ -273,6 +280,13 @@ pub fn render_frame(
         &prepared.paint_jobs,
         &prepared.screen_descriptor,
     );
+
+    // === Pass 0: the selection outline's depth-only G-buffer (ADR 0032) — the selected
+    // bodies rasterised under the scene camera into the renderer's private depth map,
+    // read back by the composite pass after the voxel pass below.
+    if let Some(selection_outline) = phases.selection_outline {
+        selection_outline.draw_gbuffer(&mut encoder, prepared.viewport_px);
+    }
 
     // === Pass 1: 3D voxel pass at 4× MSAA, resolved into the single-sample target.
     {
@@ -389,6 +403,13 @@ pub fn render_frame(
         for draw in phases.on_top {
             draw.draw(&mut voxel_pass);
         }
+    }
+
+    // === Pass 1a: the selection outline + wash composite (ADR 0032) — full-screen onto
+    // the RESOLVED target, sampling its G-buffer against the voxel pass's stored MSAA
+    // depth. Before the view cube, so the corner chrome stays on top.
+    if let Some(selection_outline) = phases.selection_outline {
+        selection_outline.draw_composite(&mut encoder, target_view, prepared.viewport_px);
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).

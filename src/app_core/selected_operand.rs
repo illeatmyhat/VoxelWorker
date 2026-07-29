@@ -57,15 +57,15 @@ fn operand_ghost_style_for(operation: CombineOp) -> OperandGhostStyle {
     }
 }
 
-/// Everything the display's [`SelectedBodyCelRenderer`] rebuild needs (ADR 0032 —
+/// Everything the display's [`SelectionOutlineRenderer`] rebuild needs (ADR 0032 —
 /// viewport selection feedback): the selected nodes' standalone bodies plus the COMPOSED
 /// scene's frame (ADR 0008, same contract as [`SelectedOperandGhost`]).
 ///
-/// [`SelectedBodyCelRenderer`]: display::mesh::SelectedBodyCelRenderer
+/// [`SelectionOutlineRenderer`]: display::mesh::SelectionOutlineRenderer
 pub struct SelectedBodyCel {
     /// One body per surviving selected node (selection-roots filtered: a node whose
     /// ancestor is also selected contributes nothing — the ancestor's composed body
-    /// already covers it, and drawing both would double the cel alpha).
+    /// already covers it; the bodies union in the outline's shared depth map).
     pub bodies: Vec<display::mesh::SelectedBodyChunks>,
     /// The composed scene's voxel extent (the shader's corner-anchoring scalar).
     pub grid_dimensions: [u32; 3],

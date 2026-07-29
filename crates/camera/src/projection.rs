@@ -55,6 +55,36 @@ pub struct SceneMatrices {
     /// PERSPECTIVE, zero under ORTHOGRAPHIC. Consumers add it back outside the
     /// matrix math.
     pub ray_eye: Vec3,
+    /// The projection's NDC-depth mapping, for passes that compare two HARDWARE
+    /// depth values with a world-length tolerance (the selection outline+wash).
+    pub ndc_depth: NdcDepthMapping,
+}
+
+/// The two z-row coefficients of the projection matrix, exposed so a screen-space
+/// pass can convert a world-length tolerance into an NDC-depth tolerance AT a
+/// sampled depth — comparing hardware z against hardware z directly. Never
+/// linearize a hardware depth to compare in view space: the inverse map amplifies
+/// quantisation noise by `view_depth² / near`, exploding at wide baselines; the
+/// forward slope below degrades gracefully instead.
+///
+/// With `d` = view depth (distance along the forward axis, positive in front) and
+/// the glam `_rh` wgpu convention (z ∈ [0, 1], NOT reversed):
+///
+/// * perspective:  `ndc(d) = depth_offset / d − depth_scale`, so
+///   `|∂ndc/∂d| = |depth_offset| / d²` and `d = depth_offset / (ndc + depth_scale)`.
+/// * orthographic: `ndc(d) = depth_scale · (−d) + depth_offset`, so
+///   `|∂ndc/∂d| = |depth_scale|` (constant).
+///
+/// An NDC tolerance for a world half-width `h` at a sampled `ndc` is then
+/// `h · |∂ndc/∂d|`, floored by a few depth-buffer ULPs.
+#[derive(Debug, Clone, Copy)]
+pub struct NdcDepthMapping {
+    /// The projection matrix's `z_axis.z` (the view-z multiplier of clip z).
+    pub depth_scale: f32,
+    /// The projection matrix's `w_axis.z` (the constant term of clip z).
+    pub depth_offset: f32,
+    /// Which branch of the mapping applies (`clip_w` is 1 vs `−view_z`).
+    pub orthographic: bool,
 }
 
 impl OrbitCamera {
@@ -119,6 +149,14 @@ impl OrbitCamera {
         scene_radius: f32,
     ) -> SceneMatrices {
         let view_projection = self.view_projection(aspect_ratio, scene_centre, scene_radius);
+        // The SAME projection the view_projection above composed (identical args →
+        // identical near/far), so the mapping can never drift from the matrix.
+        let projection = self.projection_enclosing_sphere(aspect_ratio, scene_centre, scene_radius);
+        let ndc_depth = NdcDepthMapping {
+            depth_scale: projection.z_axis.z,
+            depth_offset: projection.w_axis.z,
+            orthographic: self.projection_mode == ProjectionMode::Orthographic,
+        };
         match self.projection_mode {
             ProjectionMode::Perspective => SceneMatrices {
                 view_projection,
@@ -136,6 +174,7 @@ impl OrbitCamera {
                     (self.orbit_distance * 2.0).max(1.0),
                 ),
                 ray_eye: self.eye(),
+                ndc_depth,
             },
             // Ortho: the plain render frame, bit-identical to the historical path.
             ProjectionMode::Orthographic => SceneMatrices {
@@ -143,6 +182,7 @@ impl OrbitCamera {
                 ray_view_projection: view_projection,
                 ray_unprojection: view_projection,
                 ray_eye: Vec3::ZERO,
+                ndc_depth,
             },
         }
     }
@@ -341,5 +381,65 @@ mod tests {
     #[test]
     fn unproject_degenerate_matrix_is_none() {
         assert!(unproject_screen_point_to_ray(Mat4::ZERO, 0.0, 0.0).is_none());
+    }
+
+    /// `NdcDepthMapping` reproduces the depth the full `view_projection` assigns:
+    /// project points at several view depths through the matrix and through the
+    /// mapping's closed form — they must agree in both projection modes. Also pins
+    /// the perspective inverse (`d = depth_offset / (ndc + depth_scale)`) and the
+    /// analytic slope against a numeric derivative, since the selection outline's
+    /// epsilon is built from exactly those forms.
+    #[test]
+    fn ndc_depth_mapping_matches_the_matrix_in_both_modes() {
+        for mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
+            let camera = OrbitCamera {
+                projection_mode: mode,
+                ..OrbitCamera::default()
+            };
+            let matrices = camera.scene_matrices(1.5, Vec3::new(2.0, -3.0, 1.0), 25.0);
+            let mapping = matrices.ndc_depth;
+            assert_eq!(mapping.orthographic, mode == ProjectionMode::Orthographic);
+            let forward = -camera.direction();
+            for fraction in [0.2f32, 0.5, 0.9] {
+                // A point on the view axis at a depth inside the scene bracket.
+                let depth = camera.orbit_distance * (0.5 + fraction);
+                let point = camera.eye() + forward * depth;
+                let clip = matrices.view_projection * point.extend(1.0);
+                let matrix_ndc = clip.z / clip.w;
+                let mapping_ndc = if mapping.orthographic {
+                    mapping.depth_scale * (-depth) + mapping.depth_offset
+                } else {
+                    mapping.depth_offset / depth - mapping.depth_scale
+                };
+                assert!(
+                    (matrix_ndc - mapping_ndc).abs() < 1e-4,
+                    "{mode:?} depth {depth}: matrix ndc {matrix_ndc} vs mapping {mapping_ndc}"
+                );
+                // Slope: analytic |∂ndc/∂d| vs a central numeric derivative.
+                let analytic_slope = if mapping.orthographic {
+                    mapping.depth_scale.abs()
+                } else {
+                    // The inverse the shader runs: recover d from the sampled ndc.
+                    let recovered = mapping.depth_offset / (mapping_ndc + mapping.depth_scale);
+                    assert!(
+                        (recovered - depth).abs() < 1e-2,
+                        "{mode:?}: recovered depth {recovered} vs {depth}"
+                    );
+                    mapping.depth_offset.abs() / (depth * depth)
+                };
+                let step = 0.01;
+                let ndc_at = |d: f32| {
+                    let p = camera.eye() + forward * d;
+                    let c = matrices.view_projection * p.extend(1.0);
+                    c.z / c.w
+                };
+                let numeric_slope =
+                    ((ndc_at(depth + step) - ndc_at(depth - step)) / (2.0 * step)).abs();
+                assert!(
+                    (analytic_slope - numeric_slope).abs() < numeric_slope * 0.01 + 1e-6,
+                    "{mode:?} depth {depth}: analytic slope {analytic_slope} vs numeric {numeric_slope}"
+                );
+            }
+        }
     }
 }

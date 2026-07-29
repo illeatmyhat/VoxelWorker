@@ -465,10 +465,10 @@ impl WindowedState {
         if merged_effect.selection_changed || merged_effect.scene_changed {
             self.selected_ghost_dirty = true;
         }
-        // ADR 0032: the selection cel re-derives on the SAME seam (selection / geometry
-        // change), for ALL view modes and the WHOLE pick-ordered node list — reading the
-        // shared dirty flag BEFORE the operand-ghost block below clears it. Bounded per
-        // node by its own covering chunks (`AppCore::selected_body_cel`).
+        // ADR 0032: the selection outline+wash re-derives on the SAME seam (selection /
+        // geometry change), for ALL view modes and the WHOLE pick-ordered node list —
+        // reading the shared dirty flag BEFORE the operand-ghost block below clears it.
+        // Bounded per node by its own covering chunks (`AppCore::selected_body_cel`).
         {
             let cel_nodes: Vec<crate::NodeId> = self.panel_state.selection.nodes().collect();
             if self.selected_ghost_dirty || self.selected_cel_nodes != cel_nodes {
@@ -479,14 +479,14 @@ impl WindowedState {
                 );
                 self.selected_cel_nodes = cel_nodes;
                 match cel {
-                    Some(cel) => self.selected_body_cel_renderer.rebuild(
+                    Some(cel) => self.selection_outline_renderer.rebuild(
                         &self.gpu.device,
                         &cel.bodies,
                         cel.grid_dimensions,
                         cel.recentre,
                         cel.density,
                     ),
-                    None => self.selected_body_cel_renderer.clear(),
+                    None => self.selection_outline_renderer.clear(),
                 }
             }
         }
@@ -784,15 +784,23 @@ impl WindowedState {
         // Overlay uniforms shared with `shot` (ADR 0031): the selection-follow gizmo, the
         // boolean-operand x-ray ghost, and the corner view cube — one orchestration point so the
         // two paths cannot drift.
+        // The outline's target-sized depth map (a cheap no-op unless the target resized).
+        self.selection_outline_renderer.prepare(
+            &self.gpu.device,
+            self.surface_config.width,
+            self.surface_config.height,
+            &self.depth_view,
+        );
         crate::frame::render::upload_overlay_uniforms(
             &self.gpu.queue,
             &self.app_core.camera,
             aspect_ratio,
             view_projection,
+            scene_matrices.ndc_depth,
             gizmo_placement,
             &self.transform_gizmo_renderer,
             &self.selected_operand_ghost_renderer,
-            &self.selected_body_cel_renderer,
+            &self.selection_outline_renderer,
             &self.view_cube_renderer,
         );
 
@@ -807,10 +815,10 @@ impl WindowedState {
         // gizmo, always non-empty) is gated on there being a selection.
         let background: [&dyn display::SceneDraw; 1] = [&self.background_gradient_renderer];
         let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
-        // ADR 0032: the selection cel first (closest to the model), then the operand x-ray
-        // over it — both suppressed in debug-faces mode; each self-gates when empty.
+        // ADR 0018 D6: the operand x-ray — suppressed in debug-faces mode; self-gates when
+        // empty. (The ADR 0032 selection feedback is no longer an over-model draw: it is
+        // the screen-space outline+wash composite, wired below as `selection_outline`.)
         if !self.panel_state.debug_face_orientation {
-            over_model.push(&self.selected_body_cel_renderer);
             over_model.push(&self.selected_operand_ghost_renderer);
         }
         // ADR 0022: the armed-tool placement ghost self-gates on a pending drop.
@@ -854,6 +862,13 @@ impl WindowedState {
             },
             // ADR 0012: ghost the onion slabs after the solid draw (uniforms/geometry prepared above).
             onion_ghost_active,
+            // ADR 0032: the selection outline+wash — suppressed in debug-faces mode (like
+            // the operand x-ray); self-gates on an empty selection.
+            selection_outline: if self.panel_state.debug_face_orientation {
+                None
+            } else {
+                Some(&self.selection_outline_renderer)
+            },
             // The view cube is always drawn.
             view_cube: Some(&self.view_cube_renderer),
             // #13 Step 4: live hover — the chrome zone under the cursor so the hovered arrow brightens.
