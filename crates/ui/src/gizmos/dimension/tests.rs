@@ -1,0 +1,306 @@
+//! The layout rules, gated without a painter.
+//!
+//! Everything asserted here is a decision the design sheet argues for and that a rewrite could
+//! silently undo: the three span states, the radial derivation, the upright fold, and the
+//! parenthesis wrapping the whole indication.
+
+use egui::{Pos2, Vec2};
+
+use super::*;
+
+/// Count the arrowheads, and answer whether they point toward each other or away.
+fn heads(drawing: &Drawing) -> Vec<[Pos2; 3]> {
+    drawing
+        .pieces
+        .iter()
+        .filter_map(|piece| match piece {
+            Piece::Head(points) => Some(*points),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A head's direction: tip minus base midpoint, normalised.
+fn aim(head: [Pos2; 3]) -> Vec2 {
+    let base = head[1] + (head[2] - head[1]) / 2.0;
+    (head[0] - base).normalized()
+}
+
+#[test]
+fn a_roomy_span_keeps_everything_inside() {
+    let drawing = span(
+        Pos2::new(44.0, 28.0),
+        Pos2::new(216.0, 28.0),
+        0.0,
+        "172",
+        Rank::Driving,
+    );
+    assert_eq!(drawing.labels.len(), 1);
+    let label = &drawing.labels[0];
+    assert_eq!(label.anchor, Anchor::Middle, "the value sits on the line");
+    assert_eq!(label.at, Pos2::new(130.0, 28.0), "at the span's middle");
+
+    let arrows = heads(&drawing);
+    assert_eq!(arrows.len(), 2);
+    // Tips at the extension lines, pointing outward at each other's origin.
+    assert_eq!(arrows[0][0], Pos2::new(44.0, 28.0));
+    assert_eq!(arrows[1][0], Pos2::new(216.0, 28.0));
+    assert!(
+        aim(arrows[0]).x < 0.0 && aim(arrows[1]).x > 0.0,
+        "pointing out"
+    );
+}
+
+/// The state a single fit test loses, and the reason there are two.
+#[test]
+fn a_span_can_hold_its_arrows_and_still_evict_its_value() {
+    let drawing = span(
+        Pos2::new(115.0, 28.0),
+        Pos2::new(145.0, 28.0),
+        0.0,
+        "30",
+        Rank::Driving,
+    );
+    // 30 units clears 2 * 9 + 2 = 20, so the arrows stay in and still point outward...
+    let arrows = heads(&drawing);
+    assert!(
+        aim(arrows[0]).x < 0.0 && aim(arrows[1]).x > 0.0,
+        "the arrows did not flip: the span holds them",
+    );
+    // ...but the value needs 2 * 9 + width("30") + 2 * 5 = 41.2, which 30 does not clear.
+    let label = &drawing.labels[0];
+    assert_eq!(
+        label.anchor,
+        Anchor::Start,
+        "the value left on an extension"
+    );
+    assert!(label.at.x > 145.0, "and it left past the far end");
+}
+
+#[test]
+fn a_span_too_short_for_its_arrows_flips_them_outward() {
+    let drawing = span(
+        Pos2::new(123.0, 28.0),
+        Pos2::new(137.0, 28.0),
+        0.0,
+        "14",
+        Rank::Driving,
+    );
+    let arrows = heads(&drawing);
+    assert!(
+        aim(arrows[0]).x > 0.0 && aim(arrows[1]).x < 0.0,
+        "outside, pointing in",
+    );
+    assert_eq!(drawing.labels[0].anchor, Anchor::Start);
+}
+
+/// There is no fourth state: the value test is strictly the stronger of the two, so a span that
+/// fails the arrow test cannot pass the value one at any width.
+#[test]
+fn the_value_test_is_never_the_looser_of_the_two() {
+    for length in 1..200 {
+        let length = length as f32;
+        let drawing = span(Pos2::ZERO, Pos2::new(length, 0.0), 0.0, "8", Rank::Driving);
+        let arrows = heads(&drawing);
+        let arrows_fit = aim(arrows[0]).x < 0.0;
+        let value_inside = drawing.labels[0].anchor == Anchor::Middle;
+        assert!(
+            arrows_fit || !value_inside,
+            "at length {length} the value stayed in a span its own arrows do not fit",
+        );
+    }
+}
+
+#[test]
+fn a_span_lays_out_in_its_own_frame_not_the_screens() {
+    // The same span, turned a quarter turn: the value's anchor must ride round with it.
+    let drawing = span(
+        Pos2::new(50.0, 200.0),
+        Pos2::new(50.0, 40.0),
+        12.0,
+        "160",
+        Rank::Driving,
+    );
+    let label = &drawing.labels[0];
+    assert_eq!(label.anchor, Anchor::Middle);
+    assert!(
+        (label.at.x - 38.0).abs() < 1e-4,
+        "the dimension line sits 12 off along the normal, not along +x: {:?}",
+        label.at,
+    );
+    assert!((label.at.y - 120.0).abs() < 1e-4, "{:?}", label.at);
+}
+
+/// The module's central claim: the arc point is on the anchor's ray, whatever the anchor.
+#[test]
+fn the_radial_leader_cannot_be_made_non_radial() {
+    let center = Pos2::new(92.0, 80.0);
+    let radius_length = 21.0;
+    for anchor in [
+        Pos2::new(156.0, 44.0),
+        Pos2::new(20.0, 150.0),
+        Pos2::new(92.0, 12.0),
+        Pos2::new(95.0, 82.0),
+    ] {
+        let drawing = radius(center, radius_length, anchor, "21", Rank::Driving);
+        let head = heads(&drawing)[0];
+        let touch = head[0];
+        // The arrow's tip is the arc point: it must be exactly `radius` from the centre, and
+        // exactly on the ray through the anchor.
+        assert!(
+            ((touch - center).length() - radius_length).abs() < 1e-3,
+            "the leader met the curve at the wrong distance for anchor {anchor:?}",
+        );
+        let ray = (anchor - center).normalized();
+        let along = (touch - center).normalized();
+        assert!(
+            (ray.x - along.x).abs() < 1e-3 && (ray.y - along.y).abs() < 1e-3,
+            "the arc point left the anchor's ray for anchor {anchor:?}",
+        );
+    }
+}
+
+#[test]
+fn an_anchor_inside_the_curve_points_the_arrow_outward() {
+    let center = Pos2::new(130.0, 74.0);
+    let inside = radius(center, 46.0, Pos2::new(152.0, 56.0), "46", Rank::Driving);
+    let outward = aim(heads(&inside)[0]);
+    let ray = (Pos2::new(152.0, 56.0) - center).normalized();
+    assert!(
+        outward.dot(ray) > 0.9,
+        "inside: the arrow points out at the curve"
+    );
+
+    let outside = radius(center, 21.0, Pos2::new(196.0, 24.0), "21", Rank::Driving);
+    let inward = aim(heads(&outside)[0]);
+    let ray = (Pos2::new(196.0, 24.0) - center).normalized();
+    assert!(inward.dot(ray) < -0.9, "outside: it reverses to point back");
+}
+
+#[test]
+fn a_wide_angle_puts_its_value_on_the_arc() {
+    let drawing = angle(
+        Pos2::new(70.0, 106.0),
+        -std::f32::consts::FRAC_PI_2,
+        -0.5,
+        54.0,
+        80.0,
+        "62°",
+        Rank::Driving,
+    );
+    assert_eq!(drawing.labels[0].anchor, Anchor::Middle);
+    let on_arc = (drawing.labels[0].at - Pos2::new(70.0, 106.0)).length();
+    assert!(
+        (on_arc - 54.0).abs() < 1e-3,
+        "the value rides the arc itself"
+    );
+}
+
+#[test]
+fn a_tight_angle_makes_the_same_reversal_the_span_does() {
+    let vertex = Pos2::new(96.0, 108.0);
+    let (from, to) = (-1.78, -1.36);
+    let drawing = angle(vertex, from, to, 34.0, 60.0, "24°", Rank::Driving);
+    // Arc length 34 * 0.42 = 14.3, under 2 * 9 + 2.
+    let arrows = heads(&drawing);
+    let outward_tangent = Vec2::new(-from.sin(), from.cos());
+    assert!(
+        aim(arrows[0]).dot(outward_tangent) > 0.9,
+        "the first arrow swung outside pointing in",
+    );
+    assert_ne!(
+        drawing.labels[0].anchor,
+        Anchor::Middle,
+        "the value left too"
+    );
+}
+
+#[test]
+fn a_leg_that_already_reaches_the_arc_grows_no_extension() {
+    let vertex = Pos2::new(120.0, 116.0);
+    let (from, to) = (-2.7, -0.7);
+    let short = angle(vertex, from, to, 46.0, 40.0, "115°", Rank::Driving);
+    let long = angle(vertex, from, to, 46.0, 90.0, "115°", Rank::Driving);
+    let lines = |d: &Drawing| {
+        d.pieces
+            .iter()
+            .filter(|p| matches!(p, Piece::Polyline(_)))
+            .count()
+    };
+    assert_eq!(
+        lines(&short) - lines(&long),
+        2,
+        "the virtual-intersection case carries each leg out; the reaching one does not",
+    );
+}
+
+#[test]
+fn a_reference_dimension_parenthesises_the_whole_indication() {
+    assert_eq!(Rank::Driving.indication("R", "21"), "R21");
+    assert_eq!(
+        Rank::Reference.indication("R", "21"),
+        "(R21)",
+        "ASME Y14.5 §5.9 wraps the prefix too — never R(21)",
+    );
+    assert_eq!(Rank::Reference.indication("", "62°"), "(62°)");
+    assert_ne!(
+        Rank::Driving.color(),
+        Rank::Reference.color(),
+        "and it is one rank quieter, so the two channels are independent",
+    );
+}
+
+/// Total, not a special case: every bearing folds into a readable one.
+#[test]
+fn text_is_never_upside_down_from_any_quadrant() {
+    let mut degrees = -720.0_f32;
+    while degrees <= 720.0 {
+        let folded = upright_radians(degrees.to_radians()).to_degrees();
+        assert!(
+            folded > -90.5 && folded <= 90.5,
+            "{degrees}° folded to {folded}°, which reads upside-down",
+        );
+        // Folding may only turn the text by a half turn — never point it somewhere else.
+        let turned = (degrees - folded).rem_euclid(180.0);
+        assert!(
+            !(0.5..=179.5).contains(&turned),
+            "{degrees}° folded to {folded}°, which is not the same line",
+        );
+        degrees += 0.5;
+    }
+}
+
+#[test]
+fn every_piece_is_finite_at_a_degenerate_input() {
+    // A zero-length span and a zero-radius anchor are both reachable by dragging, and a NaN here
+    // would reach the painter as an invisible gizmo rather than a crash.
+    let drawings = [
+        span(Pos2::ZERO, Pos2::ZERO, 10.0, "0", Rank::Driving),
+        radius(Pos2::ZERO, 10.0, Pos2::ZERO, "10", Rank::Driving),
+        angle(Pos2::ZERO, 1.0, 1.0, 20.0, 30.0, "0°", Rank::Driving),
+    ];
+    for drawing in &drawings {
+        for piece in &drawing.pieces {
+            match piece {
+                Piece::Polyline(points) => {
+                    assert!(points.iter().all(|p| p.x.is_finite() && p.y.is_finite()))
+                }
+                Piece::Head(points) => {
+                    assert!(points.iter().all(|p| p.x.is_finite() && p.y.is_finite()))
+                }
+                Piece::Arc {
+                    center,
+                    radius,
+                    from,
+                    to,
+                } => assert!(
+                    center.x.is_finite()
+                        && radius.is_finite()
+                        && from.is_finite()
+                        && to.is_finite()
+                ),
+            }
+        }
+        assert!(drawing.labels.iter().all(|l| l.radians.is_finite()));
+    }
+}

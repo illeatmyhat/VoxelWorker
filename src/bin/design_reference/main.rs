@@ -28,6 +28,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+mod dimensions;
 mod sheet;
 
 /// Everything the reference window owns once it exists.

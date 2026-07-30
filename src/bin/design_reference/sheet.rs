@@ -104,6 +104,9 @@ impl Sheet {
                     section(ui, "Sketch gizmos", "on-canvas manipulators over the 3D plane — screen-space billboards at projected vertices (ADR 0028)");
                     self.sketch_gizmos(ui);
                     ui.add_space(22.0);
+                    section(ui, "Dimension gizmos", "authored quantities on the canvas (ADR 0029) — a layout, not a shape: what is drawn depends on whether it fits");
+                    self.dimension_gizmos(ui);
+                    ui.add_space(22.0);
                     section(ui, "Sketch cursors", "the pointer's feedback while a sketch tool tracks — four distinct states");
                     self.sketch_cursors(ui);
                     ui.add_space(20.0);
@@ -335,18 +338,9 @@ impl Sheet {
 
     /// The icon catalogue: every glyph at both sizes, with its meaning.
     fn icons(&mut self, ui: &mut Ui) {
-        let groups = [
-            Group::Navigation,
-            Group::ViewerModes,
-            Group::Combine,
-            Group::Fields,
-            Group::Producers,
-            Group::Structure,
-            Group::Tools,
-            Group::Sketch,
-            Group::Chrome,
-        ];
-        for group in groups {
+        // `Group::ALL`, never a list of the sheet's own: a shelf the set has and the sheet does
+        // not is a shelf nobody can see.
+        for group in Group::ALL.iter().copied() {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.label(
@@ -753,7 +747,7 @@ impl Sheet {
     /// One specimen row: a flat plane-grid stage with the gizmo composed on it, then its name and
     /// meaning. The stage is a FLAT reference of the working plane — the sheet has no camera, so it
     /// stands in for the 3D plane the live gizmos billboard over (see [`ui::gizmos`]).
-    fn specimen_row(
+    pub(crate) fn specimen_row(
         &mut self,
         ui: &mut Ui,
         name: &str,

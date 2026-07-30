@@ -601,6 +601,28 @@ pub enum Group {
 }
 
 impl Group {
+    /// Every shelf, in catalogue order.
+    ///
+    /// The design_reference sheet walks THIS rather than a list of its own. A sheet that kept its
+    /// own list is how five shipped shelves stayed off it: the glyphs were authored, gated and
+    /// committed, and the one place anybody looks at them never mentioned them.
+    pub const ALL: &'static [Group] = &[
+        Group::Navigation,
+        Group::ViewerModes,
+        Group::Combine,
+        Group::Fields,
+        Group::Producers,
+        Group::Structure,
+        Group::Tools,
+        Group::Sketch,
+        Group::SketchCreate,
+        Group::SketchModify,
+        Group::SketchConstraint,
+        Group::SketchDimension,
+        Group::SketchOperator,
+        Group::Chrome,
+    ];
+
     /// The shelf's display name.
     pub fn title(self) -> &'static str {
         match self {
@@ -1279,8 +1301,8 @@ impl Icon {
             | Icon::ConstraintEqual
             | Icon::ConstraintSymmetry
             | Icon::ConstraintCurvature
-            | Icon::ConstraintQuantize
-            | Icon::SketchDimension => Group::SketchConstraint,
+            | Icon::ConstraintQuantize => Group::SketchConstraint,
+            Icon::SketchDimension => Group::SketchDimension,
             Icon::Mirror | Icon::RectangularPattern | Icon::CircularPattern => {
                 Group::SketchOperator
             }

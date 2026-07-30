@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use super::design_reference::REFERENCE;
 use super::large::LargeIcon;
-use super::{Icon, Ink, Mark};
+use super::{Group, Icon, Ink, Mark};
 
 /// How far a transposed coordinate may sit from the sheet's, on the 18-unit grid.
 ///
@@ -30,6 +30,47 @@ fn glyphs_are_data() {
             "{}: marks() is {}, which is not what this glyph's form allows",
             icon.name(),
             if expected_empty { "non-empty" } else { "empty" },
+        );
+    }
+}
+
+/// No shelf can be added to the set and left off the catalogue.
+///
+/// [`Group::ALL`] is what the design_reference sheet walks, so a variant missing from it is a
+/// shelf of glyphs that exist, gate green, and are invisible to the only reader of the set. Both
+/// halves are checked: the match names every variant, so a new one stops this compiling, and
+/// every shelf is asserted to actually hold a glyph, because an empty header says nothing.
+#[test]
+fn every_shelf_is_on_the_catalogue_and_holds_a_glyph() {
+    for group in Group::ALL {
+        // Naming each variant is the compile-time half — a new shelf breaks this arm.
+        let named = match group {
+            Group::Navigation
+            | Group::ViewerModes
+            | Group::Combine
+            | Group::Fields
+            | Group::Producers
+            | Group::Structure
+            | Group::Tools
+            | Group::Sketch
+            | Group::SketchCreate
+            | Group::SketchModify
+            | Group::SketchConstraint
+            | Group::SketchDimension
+            | Group::SketchOperator
+            | Group::Chrome => group,
+        };
+        assert!(
+            Icon::ALL.iter().any(|icon| icon.group() == *named),
+            "{} is on the catalogue with nothing under it",
+            named.title(),
+        );
+    }
+    for icon in Icon::ALL {
+        assert!(
+            Group::ALL.contains(&icon.group()),
+            "{} sits on a shelf the catalogue never walks",
+            icon.name(),
         );
     }
 }
