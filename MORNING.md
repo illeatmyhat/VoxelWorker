@@ -305,13 +305,36 @@ each glyph adds its row when it lands.
 
 ---
 
-## The one thing I did not decide
+## The one thing I did not decide · `5f47e51`
 
-`arc_sweep_is_valid` still refuses the full turn. Your slice-B wording said to relax it; Decision 7
-says a closed curve is a `Circle`, and relaxing it would admit an arc whose chord has shrunk to
-nothing. **Changing it changes an ADR 0035 decision, so I left it alone and wrote it down** rather
-than redesigning. If Decision 7 is what you meant, this needs no action and the ADR's wording could
-absorb it.
+`arc_sweep_is_valid` still refuses the full turn, which is the one line of slice B I did not do as
+worded. I went back and took the guard apart rather than leaving it at "Decision 7 says so", and it
+splits in two:
+
+```rust
+sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
+```
+
+1. **The `< 360.0` clause is arithmetic, not policy.** The endpoint-plus-bulge form has a *pole* at
+   the full turn: as the sweep approaches it the derived radius diverges a hundredfold per decade
+   (57 → 5 729 → 572 957 → 57 295 777 for a unit chord), because the chord subtends less and less
+   of the circle it is meant to determine. At 360° exactly the value is **finite but nonsense** —
+   `sin(PI)` is 1.22e-16, not zero, so an unguarded call returns a radius near **4e15 voxels** that
+   passes every downstream finite check. That is worse than a `NaN`, which is why relaxing this
+   clause is not a design choice.
+2. **Decision 7 is enforced somewhere else entirely** — by `connect_arc` refusing `from == to`.
+   That is the clause that says "a closed curve is a `Circle`, not an arc closed onto one point".
+   I had conflated the two yesterday; they are independent.
+
+So the honest version of my earlier note: relaxing `< 360.0` does not change Decision 7, it just
+puts a divergent number in the store. `the_full_turn_is_where_the_radius_diverges` in
+`crates/document/src/sketch/tests/arcs.rs` now pins that in measurements instead of in prose.
+
+**Check it** (~40 s): `cargo test -p document arcs` — expect **21 passed**.
+
+**If you disagree**, the change is one clause on `crates/document/src/sketch/mod.rs:1491`, and what
+you would be buying is an arc tool that does not need a Circle branch, paid for with an entity whose
+radius is 4e15. I do not think that is what you meant, but it is your call and it is one line.
 
 ## The decision I need
 
