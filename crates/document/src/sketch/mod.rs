@@ -788,7 +788,7 @@ impl Sketch {
     }
 
     /// The SIMPLE-profile door: the sole boundary when the region is exactly one picked face,
-    /// flattened at the resolved tolerance, and empty otherwise (no face, an unpicked one, or
+    /// flattened at the default tolerance, and empty otherwise (no face, an unpicked one, or
     /// several — those are questions only [`region`](Self::region) can answer). Callers that reason
     /// about a single closed outline (rectangle detection, most tests) want this; anything that
     /// resolves occupancy wants the region.
@@ -1164,14 +1164,14 @@ pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> 
     arc_interior_points_within(from, to, sweep_degrees, ARC_SAGITTA_TOLERANCE_VOXELS)
 }
 
-/// [`arc_interior_points`] at a caller-chosen sagitta tolerance — the DISPLAY door.
+/// [`arc_interior_points`] at a caller-chosen sagitta tolerance.
 ///
-/// The resolve's tolerance is measured in voxels, so an arc's chord count follows its
-/// radius-in-voxels and not its size on screen: a 15-voxel arc earns nine chords whatever the
-/// zoom, which reads as a visible polygon. A viewer that knows how many pixels a voxel is
-/// currently worth can ask for a tolerance that keeps the sagitta well under a pixel instead.
-/// Only the pinned [`ARC_SAGITTA_TOLERANCE_VOXELS`] is the resolved MEANING (ADR 0019); a
-/// finer one is a smoother drawing of the same curve, never a different profile.
+/// The default is measured in voxels, so a chord count follows radius-in-voxels and not size on
+/// screen: a 15-voxel arc earns nine chords whatever the zoom, which reads as a visible polygon.
+/// A screen-space painter that knows what a voxel is currently worth in pixels asks for a
+/// tolerance keeping the sagitta under a pixel instead. Neither is the curve's meaning — the
+/// region carries its arcs and the field measures them (ADR 0034). Every caller here is a
+/// terminal adapter, so no tolerance chosen at one reaches anything downstream of it.
 pub fn arc_interior_points_within(
     from: [f64; 2],
     to: [f64; 2],
