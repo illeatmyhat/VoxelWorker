@@ -29,6 +29,7 @@
 mod edges;
 mod faces;
 mod produce;
+mod region_memo;
 mod solid;
 #[cfg(test)]
 mod tests;
@@ -716,6 +717,11 @@ pub struct Sketch {
     unpicked_points: Vec<FaceKey>,
     /// The next id to hand out. Ids are monotonic and never reused, so this only grows.
     next_id: EntityId,
+    /// The derived region, remembered between queries — see [`region_memo`]. Not document
+    /// state: it is skipped by serde, clones empty, and compares equal, so a sketch is the
+    /// same sketch whether or not it has derived itself yet.
+    #[serde(skip)]
+    region_memo: region_memo::RegionMemo,
 }
 
 impl Sketch {
@@ -733,6 +739,7 @@ impl Sketch {
             circles: Vec::new(),
             unpicked_points: Vec::new(),
             next_id: 0,
+            region_memo: region_memo::RegionMemo::default(),
         };
         let ids: Vec<EntityId> = profile.iter().map(|&at| sketch.add_point(at)).collect();
         let n = ids.len();
@@ -772,6 +779,7 @@ impl Sketch {
             circles: Vec::new(),
             unpicked_points: Vec::new(),
             next_id: 0,
+            region_memo: region_memo::RegionMemo::default(),
         }
     }
 
@@ -887,10 +895,13 @@ impl Sketch {
     /// CPU, the overlay asks it per pixel on the GPU. Curves arrive as curves, so neither is
     /// drawing a polygon the other chose the resolution of.
     pub fn region_field_loops(&self) -> Vec<(LoopRole, Vec<substrate::geom2d::RegionEdge>)> {
-        self.region()
-            .iter()
-            .map(|profile_loop| (profile_loop.role, profile_loop.measured()))
-            .collect()
+        self.derived().region_field_loops.clone()
+    }
+
+    /// The `Fill` loops' bounding box in voxels — the profile's FOOTPRINT, and what the producer
+    /// sizes its grid from. `None` when nothing is filled.
+    pub(super) fn filled_extent(&self) -> Option<([f64; 2], [f64; 2])> {
+        self.derived().filled_extent
     }
 
     /// Whether the face containing this key's point contributes solid. Faces default to PICKED —
@@ -1013,6 +1024,19 @@ impl Sketch {
     /// global crossing parity, so two fills that touch or share an edge both count where even-odd
     /// would cancel them.
     pub fn region(&self) -> Vec<ProfileLoop> {
+        self.derived().region.clone()
+    }
+
+    /// The derived region, its measurement-width twin, and the filled extent, from the cache when
+    /// the entity store has not moved — the door every per-voxel path goes through
+    /// (see [`region_memo`]).
+    pub(super) fn derived(&self) -> std::sync::Arc<region_memo::Derived> {
+        self.region_memo.derived(self)
+    }
+
+    /// The region derived from scratch. Only [`region_memo`] calls this; everything else asks
+    /// [`region`](Self::region) and gets the same answer without re-deriving it.
+    fn region_uncached(&self) -> Vec<ProfileLoop> {
         let faces = self.nested_faces();
         let picked = self.pick_flags(&faces);
         faces

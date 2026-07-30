@@ -1,7 +1,4 @@
-use super::produce::{
-    revolve_box_within_sweep_arc, to_region_curve_bounds, to_region_edges_measured,
-    to_region_points,
-};
+use super::produce::{revolve_box_within_sweep_arc, to_region_curve_bounds, to_region_points};
 use super::*;
 use rayon::prelude::*;
 use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
@@ -31,13 +28,16 @@ use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 /// `SdfShape` never had the bug: its resolve is already `signed_distance(..) <=
 /// SURFACE_ISOLEVEL` over one field function. This brings the sketch producer to the same
 /// discipline.
-pub(super) struct RevolveField {
+pub(super) struct RevolveField<'region> {
     /// The tagged region in the measurement width (#100): a hole in the profile is a hollow in
     /// the lathed body, so the field folds every loop rather than measuring one polygon.
-    region_edges: Vec<(
+    ///
+    /// BORROWED from the sketch's derived region, because `signed_distance` builds a field per
+    /// sample and copying the curves there is the whole cost of the call.
+    region_edges: &'region [(
         substrate::geom2d::LoopRole,
         Vec<substrate::geom2d::RegionEdge>,
-    )>,
+    )],
     axis: RevolveAxis,
     turn_degrees: u32,
     /// World axis carrying the profile's AXIAL coordinate (un-centred, profile-space).
@@ -100,7 +100,7 @@ fn build_voxel(index: [u32; 3], density: u32) -> Voxel {
     }
 }
 
-impl RevolveField {
+impl RevolveField<'_> {
     /// The signed distance at a point in the producer's own `[0, full_dim)` voxel frame.
     /// Negative/zero is inside (occupancy is `field <= SURFACE_ISOLEVEL`).
     pub(super) fn signed_distance_at(&self, point_local_voxels: [f32; 3]) -> f32 {
@@ -117,7 +117,7 @@ impl RevolveField {
                 RevolveAxis::InPlane1 => (signed_radius, profile_axial),
             };
             substrate::geom2d::signed_distance_to_region(
-                &self.region_edges,
+                self.region_edges,
                 [sample_0, sample_1],
                 substrate::geom2d::Metric::Euclidean,
             )
@@ -254,20 +254,7 @@ impl SketchSolid {
     /// A hole sits inside a fill and adds no footprint, and an unpicked face on its own is not
     /// occupancy at all (#100).
     fn filled_extent(&self) -> Option<([f64; 2], [f64; 2])> {
-        let mut extent: Option<([f64; 2], [f64; 2])> = None;
-        for profile_loop in self.sketch.filled_loops() {
-            for edge in &profile_loop.edges {
-                let (low, high) = edge.bounds();
-                extent = Some(match extent {
-                    None => (low, high),
-                    Some((min, max)) => (
-                        [min[0].min(low[0]), min[1].min(low[1])],
-                        [max[0].max(high[0]), max[1].max(high[1])],
-                    ),
-                });
-            }
-        }
-        extent
+        self.sketch.filled_extent()
     }
 
     /// The node offset that keeps every **un-edited** profile vertex fixed in world after this
@@ -468,13 +455,16 @@ impl SketchSolid {
     /// Build the hoisted revolve field — the ONE evaluation both the bound and the
     /// resolve go through (see [`RevolveField`]). `None` for a degenerate profile, which
     /// is empty everywhere.
-    pub(super) fn revolve_field(
+    pub(super) fn revolve_field<'region>(
         &self,
+        region_edges: &'region [(
+            substrate::geom2d::LoopRole,
+            Vec<substrate::geom2d::RegionEdge>,
+        )],
         axis: RevolveAxis,
         sweep: RevolveSweep,
-    ) -> Option<RevolveField> {
+    ) -> Option<RevolveField<'region>> {
         let (profile_min, _profile_max) = self.profile_bounds()?;
-        let region = self.sketch.region();
         // The straddle / reach measurements below are about how far the SOLID reaches from the
         // lathe axis, so they read the filled loops' EXTENT; a hole never extends the body, and a
         // bulge reaches past the chord that used to stand in for it.
@@ -501,7 +491,7 @@ impl SketchSolid {
             .max(radial_high[radial_profile_coord].abs());
 
         Some(RevolveField {
-            region_edges: to_region_edges_measured(&region),
+            region_edges,
             axis,
             turn_degrees: sweep.turn_degrees,
             axial_world_axis,
@@ -530,7 +520,7 @@ impl SketchSolid {
                     profile_min[1] as f32 + point_local_voxels[in_plane_1],
                 ];
                 let to_profile = substrate::geom2d::signed_distance_to_region(
-                    &to_region_edges_measured(&self.sketch.region()),
+                    &self.sketch.derived().region_field_loops,
                     in_profile,
                     substrate::geom2d::Metric::Chebyshev,
                 );
@@ -545,7 +535,8 @@ impl SketchSolid {
                 // resolve decides occupancy by calling this same function, so the bound
                 // brackets exactly what the resolve computed rather than a parallel
                 // reimplementation that rounds differently.
-                match self.revolve_field(axis, sweep) {
+                let derived = self.sketch.derived();
+                match self.revolve_field(&derived.region_field_loops, axis, sweep) {
                     Some(field) => field.signed_distance_at(point_local_voxels),
                     None => f32::INFINITY,
                 }
@@ -844,13 +835,14 @@ impl SketchSolid {
         // The region test is on `min + cell`, which is FULL-derived;
         // only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
-        let region_edges = to_region_edges_measured(&self.sketch.region());
+        let derived = self.sketch.derived();
+        let region_edges = &derived.region_field_loops;
         let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
         for cell_1 in cell_1_lo..cell_1_hi {
             let sample_1 = min[1] as f32 + cell_1 as f32 + 0.5;
             for cell_0 in cell_0_lo..cell_0_hi {
                 let sample_0 = min[0] as f32 + cell_0 as f32 + 0.5;
-                if substrate::geom2d::point_in_region(&region_edges, [sample_0, sample_1]) {
+                if substrate::geom2d::point_in_region(region_edges, [sample_0, sample_1]) {
                     filled_in_plane.push([cell_0, cell_1]);
                 }
             }
@@ -931,7 +923,8 @@ impl SketchSolid {
         // used a cos/sin half-plane and a polygon DISTANCE. Same sets, different rounding,
         // which broke the bound's conservative-never-narrow contract on samples landing
         // exactly on the surface.
-        let Some(field) = self.revolve_field(axis, sweep) else {
+        let derived = self.sketch.derived();
+        let Some(field) = self.revolve_field(&derived.region_field_loops, axis, sweep) else {
             // Degenerate (no profile / zero turn / zero radial extent): empty, no panic.
             return;
         };
