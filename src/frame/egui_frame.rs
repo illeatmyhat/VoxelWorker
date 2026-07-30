@@ -233,6 +233,10 @@ pub fn run_egui_frame(
     // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
     // headless `shot` path.
     sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
+    // ADR 0030 §5: each arc's DERIVED centre (egui points) with its two projected endpoints —
+    // the datum that makes an arc's radius readable. Empty unless a sketch is being edited,
+    // always empty on the headless `shot` path.
+    sketch_arc_centers: &[(egui::Pos2, [egui::Pos2; 2])],
     // ADR 0030 §3 (#100): the derived faces' badges for THIS frame — a projected centre (egui
     // points) and whether the face is PICKED (contributes solid) or unpicked (a hole). Drawn as
     // the region affordance; empty unless a sketch is being edited, always empty on the headless
@@ -732,6 +736,7 @@ pub fn run_egui_frame(
             // passive under-layer.
             ui::chrome::sketch_segment_lines(ui, sketch_segment_lines);
             // ADR 0030 §5: the committed arc curves, on the same under-layer as the straight edges.
+            ui::chrome::sketch_arc_centers(ui, sketch_arc_centers);
             ui::chrome::sketch_arc_curves(ui, sketch_arc_lines);
             // #100: the region badges, under the vertex handles — a face is a derived thing the
             // edges already describe, so its mark stays quieter than an entity's.

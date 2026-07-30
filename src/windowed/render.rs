@@ -183,6 +183,8 @@ impl WindowedState {
                 // ADR 0030 §5 (#102): the committed arc curves, projected last frame — the same
                 // under-layer as the straight edges.
                 &self.sketch_arc_lines,
+                // ADR 0030 §5: each arc's centre datum + its radii, projected last frame.
+                &self.sketch_arc_centers,
                 // ADR 0030 §3 (#100): the derived regions' pick badges, projected last frame.
                 &self.sketch_face_badges,
                 // #100: the pick state of the region the open menu was raised inside, so the
@@ -436,7 +438,8 @@ impl WindowedState {
             );
             merged_effect = merged_effect.merged_with(effect);
         }
-        // Batched intents that must land as ONE undo step (multi-node Delete, ADR 0033).
+        // Batched intents that must land as ONE undo step: a multi-node Delete (ADR 0033), and
+        // every sketch commit — one authoring act, one press of Ctrl+Z (owner 2026-07-29).
         for transaction in std::mem::take(&mut self.viewport_transactions) {
             let effect = self.app_core.apply_transaction(
                 &mut self.panel_state.scene,
@@ -1052,14 +1055,15 @@ impl WindowedState {
         }
 
         // Queue the final state through the intent door (drained + applied by the next render's
-        // loop, the same door as any placement drop) so it lands in the open group. The
-        // `SetOffset` is emitted only when the anchor compensation actually moved the node.
-        self.viewport_intents.push(crate::Intent::SetSketch {
+        // loop, the same door as any placement drop) so it lands in the open group. ONE
+        // transaction, so the drag is ONE in-mode undo step even when the anchor compensation
+        // moved the node too — the `SetOffset` is emitted only when it actually did.
+        let mut transaction = vec![crate::Intent::SetSketch {
             target,
             producer: final_producer,
-        });
+        }];
         if final_offset != drag.original_offset {
-            self.viewport_intents.push(crate::Intent::SetOffset {
+            transaction.push(crate::Intent::SetOffset {
                 target,
                 offset_measurements: [
                     voxel_core::units::Measurement::from_voxels(final_offset[0]),
@@ -1068,6 +1072,7 @@ impl WindowedState {
                 ],
             });
         }
+        self.viewport_transactions.push(transaction);
     }
 
     /// Whether the sketch node `target` currently holds exactly `producer` + `offset_voxels` —
@@ -1394,8 +1399,7 @@ impl WindowedState {
     /// end endpoint — each an existing vertex under the cursor or a fresh snapped free point —
     /// and click 3 names a coordinate the curve passes through, which the included angle is
     /// solved from and then discarded (a through-point is an input, never an entity). Picking the
-    /// start twice, or a pair already joined, drops the gesture rather than storing a degenerate
-    /// arc. Each click that changes the store commits one entry in the open sketch undo group.
+    /// start twice drops the gesture rather than storing a degenerate arc. Each click that changes the store commits one entry in the open sketch undo group.
     pub(super) fn sketch_arc_click(&mut self, cursor_x: f64, cursor_y: f64) {
         let Some(target) = self.panel_state.sketch_mode else {
             return;
@@ -1457,10 +1461,11 @@ impl WindowedState {
         };
         self.sketch_arc_gesture = match self.sketch_arc_gesture {
             None => Some((clicked, None)),
-            // A zero-length arc, or a pair the store already joins, cannot be held (ADR 0030 §5).
-            Some((start, _)) if start == clicked || next.sketch.pair_is_joined(start, clicked) => {
-                None
-            }
+            // A zero-length arc cannot be held (ADR 0030 §5). An already-joined pair CAN: the
+            // curve is not known until the third click, and arcing over a chord (or over another
+            // arc that bulges elsewhere) is legal geometry. A true duplicate is refused at the
+            // commit, where the sweep exists to compare.
+            Some((start, _)) if start == clicked => None,
             Some((start, _)) => Some((start, Some(clicked))),
         };
         if next != producer {
@@ -1665,6 +1670,40 @@ impl WindowedState {
         std::mem::take(&mut self.placing_orbit_center)
     }
 
+    /// Escape's first sketch rung: drop whatever half-finished gesture the armed tool is holding
+    /// — the polyline chain, the rectangle's press corner, the marquee's anchor, the arc's
+    /// endpoints. Reports whether anything was actually put back, so the cancel chain can fall
+    /// through when there was nothing mid-stroke. The tool stays armed: dropping a stroke is not
+    /// the same act as putting the tool down.
+    pub(super) fn cancel_sketch_gesture(&mut self) -> bool {
+        if self.panel_state.sketch_mode.is_none() {
+            return false;
+        }
+        let live = self.sketch_chain.is_some()
+            || self.sketch_rect_anchor.is_some()
+            || self.sketch_marquee_anchor.is_some()
+            || self.sketch_arc_gesture.is_some();
+        self.sketch_chain = None;
+        self.sketch_rect_anchor = None;
+        self.sketch_marquee_anchor = None;
+        self.sketch_arc_gesture = None;
+        live
+    }
+
+    /// Escape's second sketch rung: put the armed sketch tool down, back to Select — the arrow is
+    /// the mode's rest state, the way no-tool-armed is the viewport's. Reports whether a tool was
+    /// actually armed, so Escape on the bare Select tool falls through to the rest of the chain
+    /// rather than swallowing the key.
+    pub(super) fn disarm_sketch_tool(&mut self) -> bool {
+        if self.panel_state.sketch_mode.is_none()
+            || self.panel_state.sketch_tool == ui::panel::SketchTool::Select
+        {
+            return false;
+        }
+        self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
+        true
+    }
+
     /// End the running **modal command** — the OK / Cancel pair the viewport menu offers and
     /// Return / Escape drive. Returns whether a command was running, so Escape can fall through
     /// to the tool ghost when none was.
@@ -1730,9 +1769,17 @@ impl WindowedState {
                 // performs); with no command running it disarms the tool ghost (ADR 0022).
                 // Leaving never writes the DEFAULT orbit type: a session override dies with the
                 // mode rather than outliving it.
+                //
+                // Inside a sketch the chain gains two rungs, innermost first (owner
+                // 2026-07-29): a half-drawn polyline / rectangle / arc goes back before
+                // anything else the mode is holding, and an armed sketch TOOL falls back to
+                // Select before the placement ghost is touched. Escape never leaves sketch
+                // mode — that is what the mode's own Cancel button is for.
                 ui::shortcuts::ShortcutCommand::CancelCommand => {
                     if !self.cancel_orbit_center_placement()
+                        && !self.cancel_sketch_gesture()
                         && !self.end_modal_command(ui::panel::ModeCommand::Cancel)
+                        && !self.disarm_sketch_tool()
                     {
                         self.disarm_placement();
                     }
@@ -2071,12 +2118,15 @@ impl WindowedState {
         };
         let new_offset = new_producer.anchor_preserving_offset(&old_producer, old_offset);
 
-        self.viewport_intents.push(crate::Intent::SetSketch {
+        // ONE transaction: an authoring act is one in-mode undo step, and the anchor
+        // compensation is part of the act rather than an edit of its own (owner 2026-07-29).
+        // Undoing half of it would leave the profile somewhere the author never put it.
+        let mut transaction = vec![crate::Intent::SetSketch {
             target,
             producer: new_producer,
-        });
+        }];
         if new_offset != old_offset {
-            self.viewport_intents.push(crate::Intent::SetOffset {
+            transaction.push(crate::Intent::SetOffset {
                 target,
                 offset_measurements: [
                     voxel_core::units::Measurement::from_voxels(new_offset[0]),
@@ -2085,6 +2135,7 @@ impl WindowedState {
                 ],
             });
         }
+        self.viewport_transactions.push(transaction);
     }
 
     /// ADR 0028 (#94): if the cursor (physical px) is over a profile-vertex handle, build the
@@ -2131,6 +2182,7 @@ impl WindowedState {
         self.sketch_segment_lines.clear();
         self.sketch_arc_lines.clear();
         self.sketch_arc_chords.clear();
+        self.sketch_arc_centers.clear();
         self.sketch_face_polygons.clear();
         self.sketch_face_badges.clear();
         self.sketch_insert_preview = None;
@@ -2318,6 +2370,69 @@ impl WindowedState {
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
             self.sketch_arc_lines.push((curve, state));
+        }
+
+        // Each arc's derived centre (ADR 0030 §5 stores endpoints + included angle; the centre and
+        // the radius fall out of those). Drawn as a datum with a dashed radius to each endpoint, so
+        // an arc's radius is legible without a dimension — the owner's read of a bare curve.
+        let arc_geometry: Vec<(document::sketch::EntityId, [f64; 2], [f64; 2], f64)> = self
+            .panel_state
+            .scene
+            .node_by_id(target)
+            .and_then(|node| match &node.content {
+                document::scene::NodeContent::SketchTool { producer, .. } => Some(&producer.sketch),
+                _ => None,
+            })
+            .map(|sketch| {
+                let position_of = |id| {
+                    sketch
+                        .points()
+                        .iter()
+                        .find(|point| point.id == id)
+                        .map(|point| point.at.in_plane())
+                };
+                sketch
+                    .arcs()
+                    .iter()
+                    .filter_map(|arc| {
+                        Some((
+                            arc.id,
+                            position_of(arc.from)?,
+                            position_of(arc.to)?,
+                            arc.bulge.to_degrees_f64(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (arc_id, from, to, sweep) in arc_geometry {
+            // The chord polyline is already culled and projected — reuse its ends rather than
+            // projecting the endpoints a second time, so the datum can never disagree with the
+            // curve it belongs to.
+            let Some((_, chords)) = self.sketch_arc_chords.iter().find(|(id, _)| *id == arc_id)
+            else {
+                continue;
+            };
+            let (Some(&head), Some(&tail)) = (chords.first(), chords.last()) else {
+                continue;
+            };
+            let Some((center, _radius)) = document::sketch::arc_center_radius(from, to, sweep)
+            else {
+                continue;
+            };
+            let render = handles.profile_to_render(center);
+            let Some(center_pt) = project_to_screen(
+                glam::Vec3::from_array(render),
+                view_projection,
+                viewport_px,
+                pixels_per_point,
+            ) else {
+                continue;
+            };
+            let to_points =
+                |px: egui::Pos2| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point);
+            self.sketch_arc_centers
+                .push((center_pt, [to_points(head), to_points(tail)]));
         }
 
         // The derived regions (#100): each face's boundary in physical px for the right-press

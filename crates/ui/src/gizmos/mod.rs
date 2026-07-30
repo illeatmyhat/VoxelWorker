@@ -40,6 +40,7 @@ use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 use crate::theme::color_palette;
 
+mod arc_center;
 mod axis_guide;
 mod close_loop_ring;
 mod crosshair;
@@ -54,6 +55,7 @@ mod segment;
 mod snap_ticks;
 mod vertex_handle;
 
+pub use arc_center::arc_center;
 pub use axis_guide::axis_guide;
 pub use close_loop_ring::close_loop_ring;
 pub use crosshair::crosshair;

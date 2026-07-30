@@ -571,15 +571,18 @@ impl Sketch {
     /// Connect two existing points with a fresh segment, returning its id (ADR 0030 —
     /// coincidence is shared point identity, so drawing to an existing point means naming
     /// its id here, never minting a coordinate twin). `None` — and no mutation — for a
-    /// self-loop, an unknown endpoint, or a pair already joined by any edge (segment OR
-    /// arc, #102) in either direction — a second edge over one pair would double the
-    /// region graph's boundary (and a chord-plus-arc D-shape is a region the slice-1 loop
-    /// walk cannot orient).
+    /// self-loop, an unknown endpoint, or a pair a SEGMENT already joins: a straight edge
+    /// between two points is unique geometry, so a second one is a duplicate.
+    ///
+    /// A pair an ARC joins is fine, and is the D-shape (a chord closing a curve). It was
+    /// refused until #100 because the single-loop walk of the time could not orient two
+    /// edges over one pair; the face derivation that replaced it traces the two-edge cycle
+    /// like any other, so the restriction went with the walk it was protecting.
     pub fn connect(&mut self, from: EntityId, to: EntityId) -> Option<EntityId> {
         if from == to
             || self.point_index(from).is_none()
             || self.point_index(to).is_none()
-            || self.pair_is_joined(from, to)
+            || self.segment_joins(from, to)
         {
             return None;
         }
@@ -588,10 +591,13 @@ impl Sketch {
 
     /// Connect two existing points with a fresh arc of the given signed included angle
     /// (#102), returning its id. `None` — and no mutation — for a self-loop, an unknown
-    /// endpoint, a degenerate bulge (zero or a full turn or more), or a pair already
-    /// joined by ANY edge in either direction: two edges over one point pair (a D-shape)
-    /// is a region the slice-1 loop walk cannot orient, so it is rejected at the door
-    /// rather than authored into an ambiguous store.
+    /// endpoint, a degenerate bulge (zero or a full turn or more), or an arc that would
+    /// trace a curve the store already holds.
+    ///
+    /// A pair already joined by a segment, or by an arc bulging differently, is legal: a
+    /// chord plus its arc is a D, and two arcs over one pair are a lens. Both are ordinary
+    /// bounded faces to the derivation (see [`connect`](Self::connect) for why this was
+    /// once refused).
     pub fn connect_arc(
         &mut self,
         from: EntityId,
@@ -603,7 +609,7 @@ impl Sketch {
             || self.point_index(from).is_none()
             || self.point_index(to).is_none()
             || !arc_sweep_is_valid(sweep)
-            || self.pair_is_joined(from, to)
+            || self.arc_traces(from, to, sweep)
         {
             return None;
         }
@@ -619,11 +625,23 @@ impl Sketch {
         Some(id)
     }
 
-    /// Whether any edge — segment or arc — already joins `a` and `b` in either direction.
-    pub fn pair_is_joined(&self, a: EntityId, b: EntityId) -> bool {
-        let joins = |from: EntityId, to: EntityId| (from == a && to == b) || (from == b && to == a);
-        self.segments.iter().any(|seg| joins(seg.from, seg.to))
-            || self.arcs.iter().any(|arc| joins(arc.from, arc.to))
+    /// Whether a straight segment already joins `a` and `b` in either direction.
+    pub fn segment_joins(&self, a: EntityId, b: EntityId) -> bool {
+        self.segments
+            .iter()
+            .any(|seg| (seg.from == a && seg.to == b) || (seg.from == b && seg.to == a))
+    }
+
+    /// Whether some stored arc already traces the CURVE `from → to` sweeping `sweep_degrees`.
+    /// Reversing an arc's direction mirrors it about the chord unless the sweep's sign flips
+    /// too, so the reversed match is against the negated sweep — an arc bulging the other way
+    /// over the same pair is a different curve, and legal.
+    pub fn arc_traces(&self, from: EntityId, to: EntityId, sweep_degrees: f64) -> bool {
+        self.arcs.iter().any(|arc| {
+            let stored = arc.bulge.to_degrees_f64();
+            (arc.from == from && arc.to == to && stored == sweep_degrees)
+                || (arc.from == to && arc.to == from && stored == -sweep_degrees)
+        })
     }
 
     /// Delete just the arc with id `arc_id`, its endpoints left as free points (ADR 0030

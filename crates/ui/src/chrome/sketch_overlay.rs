@@ -189,6 +189,19 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleStat
     }
 }
 
+/// Draw each arc's DERIVED centre datum (ADR 0030 §5): a dashed radius out to each endpoint and a
+/// small cross where they meet, so an arc's radius is readable off the canvas. Under the curves
+/// and handles, and not chrome — a datum is never grabbable.
+pub fn sketch_arc_centers(ui: &egui::Ui, centers: &[(Pos2, [Pos2; 2])]) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_arc_centers"),
+    ));
+    for &(center, endpoints) in centers {
+        gizmos::arc_center(&painter, center, endpoints);
+    }
+}
+
 /// Draw one pick-state badge per derived region at its projected centroid (ADR 0030 §3, #100):
 /// filled = the face resolves as material, hollow ring = the author carved it into a hole. Not
 /// chrome — a passive readout, so a press still reaches the camera or the marquee; the pick verb

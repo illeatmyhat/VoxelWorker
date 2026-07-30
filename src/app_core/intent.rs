@@ -179,7 +179,7 @@ impl AppCore {
         // review flagged). Finish batches the whole session onto the main stack as one
         // transaction; outside a group each edit is its own singleton transaction.
         if let Some(group) = self.command_stack.open_group.as_mut() {
-            group.session_undo.push(command);
+            group.session_undo.push(vec![command]);
             group.session_redo.clear();
         } else {
             self.command_stack.undo.push(vec![command]);
@@ -219,7 +219,8 @@ impl AppCore {
         // (Finish folds the whole session into one step anyway), otherwise the batch
         // lands whole.
         if let Some(group) = self.command_stack.open_group.as_mut() {
-            group.session_undo.extend(transaction);
+            // PUSH, not extend: the batch is one authoring act, so it is one in-mode step.
+            group.session_undo.push(transaction);
             group.session_redo.clear();
         } else {
             self.command_stack.undo.push(transaction);
@@ -529,7 +530,7 @@ impl AppCore {
         // reverse the last coalesced vertex edit without leaving the mode — routed through the
         // group's own `session_undo`/`session_redo`, never the main stack.
         if self.command_stack.open_group.is_some() {
-            let Some(command) = self
+            let Some(transaction) = self
                 .command_stack
                 .open_group
                 .as_mut()
@@ -539,13 +540,18 @@ impl AppCore {
             else {
                 return IntentEffect::none();
             };
-            let effect = self.reverse_command(scene, selection, &command);
+            // Reverse order, exactly as the main stack does: each command restores its own
+            // captured counter, so the last reversed lands the pre-transaction state.
+            let mut effect = IntentEffect::none();
+            for command in transaction.iter().rev() {
+                effect = effect.merged_with(self.reverse_command(scene, selection, command));
+            }
             self.command_stack
                 .open_group
                 .as_mut()
                 .expect("group is Some")
                 .session_redo
-                .push(command);
+                .push(transaction);
             return effect;
         }
         let Some(transaction) = self.command_stack.undo.pop() else {
@@ -623,7 +629,7 @@ impl AppCore {
         // ADR 0028 §4: in an OPEN sketch group, redo re-applies the last in-mode-undone edit
         // through the group's own session stacks, never the main stack.
         if self.command_stack.open_group.is_some() {
-            let Some(command) = self
+            let Some(transaction) = self
                 .command_stack
                 .open_group
                 .as_mut()
@@ -633,13 +639,16 @@ impl AppCore {
             else {
                 return IntentEffect::none();
             };
-            let effect = self.replay_command(scene, selection, &command);
+            let mut effect = IntentEffect::none();
+            for command in &transaction {
+                effect = effect.merged_with(self.replay_command(scene, selection, command));
+            }
             self.command_stack
                 .open_group
                 .as_mut()
                 .expect("group is Some")
                 .session_undo
-                .push(command);
+                .push(transaction);
             return effect;
         }
         let Some(transaction) = self.command_stack.redo.pop() else {
@@ -679,7 +688,10 @@ impl AppCore {
     pub fn finish_sketch_group(&mut self) -> IntentEffect {
         if let Some(group) = self.command_stack.open_group.take() {
             if !group.session_undo.is_empty() {
-                self.command_stack.undo.push(group.session_undo);
+                // Flattened: the session's in-mode steps become one main-stack transaction, so a
+                // single undo past the sketch still reverses the whole thing.
+                let flattened: Vec<_> = group.session_undo.into_iter().flatten().collect();
+                self.command_stack.undo.push(flattened);
                 // A committed transaction invalidates the redo future (the linear-stack rule).
                 self.command_stack.redo.clear();
             }
@@ -701,7 +713,7 @@ impl AppCore {
             return IntentEffect::none();
         };
         let mut effect = IntentEffect::none();
-        for command in group.session_undo.iter().rev() {
+        for command in group.session_undo.iter().flatten().rev() {
             effect = effect.merged_with(self.reverse_command(scene, selection, command));
         }
         effect

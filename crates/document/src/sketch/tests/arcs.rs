@@ -128,9 +128,8 @@ fn an_arc_closed_profile_extrudes_a_rounded_shape() {
 
 #[test]
 fn arc_edges_join_the_region_graph() {
-    // A closed loop of one segment and one arc via distinct point pairs is NOT possible
-    // (two points, two edges is the rejected D-shape) — so close a triangle: two straight
-    // edges and one arc.
+    // A triangle of two straight edges and one arc — the multi-vertex case. The two-vertex
+    // D-shape has its own test below.
     let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
     let a = sketch.add_free_point(SketchPoint::new(0, 0));
     let b = sketch.add_free_point(SketchPoint::new(4, 0));
@@ -170,15 +169,82 @@ fn connect_rejects_what_the_store_cannot_hold() {
     );
     sketch.connect_arc(a, b, quarter).expect("first edge lands");
     assert_eq!(
-        sketch.connect_arc(b, a, quarter),
+        sketch.connect_arc(a, b, quarter),
         None,
-        "second arc over the pair (either direction) is the D-shape"
+        "the identical curve twice is a duplicate"
     );
     assert_eq!(
-        sketch.connect(a, b),
+        sketch.connect_arc(b, a, AngleMeasurement::from_degrees(-90)),
         None,
-        "a segment over an arced pair is the same D-shape"
+        "reversed direction AND negated sweep is the same curve"
     );
+    let chord = sketch
+        .connect(a, b)
+        .expect("a chord closes the arc into a D");
+    assert_eq!(
+        sketch.connect(b, a),
+        None,
+        "but a SECOND straight edge over the pair is a duplicate"
+    );
+    sketch.delete_segment(chord);
+}
+
+/// The bug the owner hit (2026-07-29): the polyline tool silently refused to close an arc with
+/// its own chord, and the arc tool refused to bulge over a polyline segment. Both were the same
+/// guard — a pair joined by ANY edge was rejected, a restriction that existed only because the
+/// pre-#100 single-loop walk could not orient two edges over one pair. The face derivation traces
+/// that cycle like any other, so both directions are legal now and both resolve.
+#[test]
+fn a_chord_and_its_arc_bound_a_d_shape() {
+    let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
+    let a = sketch.add_free_point(SketchPoint::new(0, 0));
+    let b = sketch.add_free_point(SketchPoint::new(4, 0));
+
+    // Arc first, then the polyline's chord across it — the owner's first report.
+    sketch
+        .connect_arc(a, b, AngleMeasurement::from_degrees(180))
+        .expect("the half-circle lands");
+    sketch.connect(a, b).expect("the chord closes it");
+    let faces = sketch.faces();
+    assert_eq!(faces.len(), 1, "two edges over one pair bound ONE face");
+    // Half a radius-2 disc. The tessellation INSCRIBES the curve, so the derived area sits just
+    // under the analytic one — never over, which is what pins the chords to the right side.
+    let half_disc = std::f64::consts::PI * 2.0;
+    let area = faces[0].area_voxels;
+    assert!(
+        area < half_disc && area > half_disc - 0.25,
+        "inscribed half-disc, got {area} against {half_disc}"
+    );
+    assert!(!sketch.flattened_region().is_empty(), "and it resolves");
+
+    // The other direction — an arc over a pair a segment already joins (the owner's second
+    // report) — reaches the same store.
+    let mut reversed = Sketch::new(PlaneAxis::Z, vec![]);
+    let c = reversed.add_free_point(SketchPoint::new(0, 0));
+    let d = reversed.add_free_point(SketchPoint::new(4, 0));
+    reversed.connect(c, d).expect("the polyline segment lands");
+    reversed
+        .connect_arc(c, d, AngleMeasurement::from_degrees(180))
+        .expect("arcing over it is legal");
+    assert_eq!(reversed.faces().len(), 1);
+}
+
+/// Two arcs bulging opposite ways over one pair are a LENS, not a duplicate — the sign of the
+/// sweep is what distinguishes them, so the duplicate check cannot be a bare pair test.
+#[test]
+fn two_arcs_over_one_pair_bound_a_lens() {
+    let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
+    let a = sketch.add_free_point(SketchPoint::new(0, 0));
+    let b = sketch.add_free_point(SketchPoint::new(4, 0));
+    sketch
+        .connect_arc(a, b, AngleMeasurement::from_degrees(120))
+        .expect("one side");
+    sketch
+        .connect_arc(a, b, AngleMeasurement::from_degrees(-120))
+        .expect("the other side is a different curve");
+    let faces = sketch.faces();
+    assert_eq!(faces.len(), 1, "the lens is one bounded face");
+    assert!(faces[0].area_voxels > 0.0);
 }
 
 #[test]

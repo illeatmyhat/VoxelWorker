@@ -55,12 +55,16 @@ pub struct CommandStack {
 /// [`CommandStack::open_group`].
 #[derive(Default)]
 pub struct SketchGroup {
-    /// The session's applied edits, oldest first — in-mode `undo` pops the back; on Finish the
-    /// whole `Vec` becomes one main-stack [`Transaction`].
-    pub session_undo: Vec<Command>,
+    /// The session's applied edits, oldest first, each a [`Transaction`] — in-mode `undo` pops
+    /// the back; on Finish the whole session flattens into one main-stack transaction.
+    ///
+    /// Transactions and not bare [`Command`]s because ONE authoring act is one in-mode undo step
+    /// (owner 2026-07-29): a click that both places a vertex and re-anchors the node emits two
+    /// intents, and reversing half of it leaves the profile somewhere the author never put it.
+    pub session_undo: Vec<Transaction>,
     /// The session's in-mode-undone edits — in-mode `redo` pops the back; cleared on a fresh
     /// edit, and discarded on Finish/Cancel.
-    pub session_redo: Vec<Command>,
+    pub session_redo: Vec<Transaction>,
 }
 
 impl CommandStack {

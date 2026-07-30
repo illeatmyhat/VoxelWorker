@@ -354,3 +354,69 @@ fn a_fresh_in_mode_edit_clears_the_in_mode_redo() {
         "a fresh in-mode edit invalidates the in-mode redo future"
     );
 }
+
+/// One authoring act is ONE press of Ctrl+Z in the mode (owner 2026-07-29). A sketch click that
+/// both edits the profile and re-anchors the node emits two intents through
+/// `apply_transaction`; before this they became two in-mode steps, so the first undo left the
+/// profile at its new shape but the node at its old offset — a state the author never authored.
+#[test]
+fn one_authoring_act_is_one_in_mode_undo_step() {
+    let mut core = test_core();
+    let (mut scene, target) = single_sketch_scene();
+    let enter = producer_of(&scene, target);
+    let enter_offset = scene
+        .node_by_id(target)
+        .expect("live node")
+        .transform
+        .offset_voxels;
+    core.begin_sketch_group();
+
+    let mut selection = selection_of_first_root(&scene);
+    core.apply_transaction(
+        &mut scene,
+        &mut selection,
+        vec![
+            Intent::SetSketch {
+                target,
+                producer: box_sketch(48, 32, 32),
+            },
+            Intent::SetOffset {
+                target,
+                offset_measurements: [
+                    voxel_core::units::Measurement::from_voxels(5),
+                    voxel_core::units::Measurement::from_voxels(0),
+                    voxel_core::units::Measurement::from_voxels(0),
+                ],
+            },
+        ],
+    );
+    assert_ne!(producer_of(&scene, target), enter);
+
+    core.undo(&mut scene, &mut selection);
+    assert_eq!(
+        producer_of(&scene, target),
+        enter,
+        "one undo reverses the whole act, not its first half"
+    );
+    assert_eq!(
+        scene
+            .node_by_id(target)
+            .expect("live node")
+            .transform
+            .offset_voxels,
+        enter_offset,
+        "including the anchor compensation that rode with it"
+    );
+
+    core.redo(&mut scene, &mut selection);
+    assert_eq!(producer_of(&scene, target), box_sketch(48, 32, 32));
+    assert_eq!(
+        scene
+            .node_by_id(target)
+            .expect("live node")
+            .transform
+            .offset_voxels[0],
+        5,
+        "and one redo puts the whole act back"
+    );
+}

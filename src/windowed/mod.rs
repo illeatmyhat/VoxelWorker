@@ -355,6 +355,10 @@ struct WindowedState {
     /// [`sketch_arc_lines`](Self::sketch_arc_lines) because that one is drawing state in egui
     /// points and this one is hit-test state in physical px, exactly as the segment pair splits.
     sketch_arc_chords: Vec<(document::sketch::EntityId, Vec<egui::Pos2>)>,
+    /// Each arc's DERIVED centre for THIS frame (egui points) with its two projected endpoints —
+    /// the datum that makes an arc's radius readable (ADR 0030 §5, owner 2026-07-29). An arc whose
+    /// centre or either endpoint projects behind the camera is culled, as its curve is.
+    sketch_arc_centers: Vec<(egui::Pos2, [egui::Pos2; 2])>,
     /// Each derived region as `(its key, its boundary polygon in PHYSICAL px)` for this frame
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.
@@ -769,6 +773,7 @@ impl WindowedState {
             sketch_segment_lines: Vec::new(),
             sketch_arc_lines: Vec::new(),
             sketch_arc_chords: Vec::new(),
+            sketch_arc_centers: Vec::new(),
             sketch_face_polygons: Vec::new(),
             sketch_face_badges: Vec::new(),
             sketch_menu_face: None,
@@ -918,6 +923,7 @@ impl WindowedState {
             sketch_segment_lines: _,
             sketch_arc_lines: _,
             sketch_arc_chords: _,
+            sketch_arc_centers: _,
             sketch_face_polygons: _,
             sketch_face_badges: _,
             sketch_menu_face: _,
