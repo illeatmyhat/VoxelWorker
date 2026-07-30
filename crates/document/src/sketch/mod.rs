@@ -27,12 +27,15 @@
 //! (fewer than 3 points, or zero area) resolves to nothing rather than panicking.
 
 mod edges;
+mod faces;
 mod produce;
 mod solid;
 #[cfg(test)]
 mod tests;
 
+pub use faces::{Face, FaceKey};
 pub use solid::SketchSolid;
+pub use substrate::geom2d::LoopRole;
 
 use voxel_core::units::{AngleMeasurement, Measurement};
 
@@ -221,6 +224,16 @@ pub enum EntityRole {
     Construction,
 }
 
+/// One loop of the flattened profile: a simple closed polygon plus how it contributes to the
+/// region (ADR 0030 §4). The unit the 2D CSG folds and the unit the overlay draws.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileLoop {
+    /// Whether the loop's interior is added or carved out.
+    pub role: LoopRole,
+    /// The closed boundary, counter-clockwise, arcs already tessellated.
+    pub points: Vec<SketchPoint>,
+}
+
 /// A point entity: a first-class, independently add/delete-able vertex on the sketch
 /// plane, referenced by segments (and later arcs) through its stable [`id`](Self::id)
 /// (ADR 0030). A point with no incident edge is a legal FREE point.
@@ -302,6 +315,12 @@ pub struct Sketch {
     /// document loads with none.
     #[serde(default)]
     arcs: Vec<Arc>,
+    /// The faces the author has UNPICKED, by boundary origin-set key (ADR 0030 §3, #100).
+    /// Every derived face is picked by default, so this holds only the exceptions and is
+    /// usually empty. A key that matches no current face is inert, not an error: it costs
+    /// nothing and lets an unpick survive an edit that temporarily breaks its boundary.
+    #[serde(default)]
+    unpicked: std::collections::BTreeSet<FaceKey>,
     /// The next id to hand out. Ids are monotonic and never reused, so this only grows.
     next_id: EntityId,
 }
@@ -318,6 +337,7 @@ impl Sketch {
             points: Vec::with_capacity(profile.len()),
             segments: Vec::with_capacity(profile.len()),
             arcs: Vec::new(),
+            unpicked: std::collections::BTreeSet::new(),
             next_id: 0,
         };
         let ids: Vec<EntityId> = profile.iter().map(|&at| sketch.add_point(at)).collect();
@@ -355,6 +375,7 @@ impl Sketch {
             points: Vec::new(),
             segments: Vec::new(),
             arcs: Vec::new(),
+            unpicked: std::collections::BTreeSet::new(),
             next_id: 0,
         }
     }
@@ -425,125 +446,79 @@ impl Sketch {
         self.points.iter().position(|point| point.id == id)
     }
 
-    /// The DERIVED single closed loop, as point ids in traversal order (ADR 0030). A
-    /// deterministic walk of the point-segment graph: start at the incident point of
-    /// lowest id, then at each step follow the lowest-id neighbour that is not the one
-    /// just left. Empty if there are no segments. Slice-1 assumes one simple loop; the
-    /// general planar-face derivation is #100.
-    fn loop_order(&self) -> Vec<EntityId> {
-        if self.points.is_empty() {
-            return Vec::new();
-        }
-        // Neighbour point-ids per point (segments AND arcs — both are region-graph edges,
-        // ADR 0030 §2), in ascending-id order for determinism.
-        let neighbours = |point_id: EntityId| -> Vec<EntityId> {
-            let other = |from: EntityId, to: EntityId| {
-                if from == point_id {
-                    Some(to)
-                } else if to == point_id {
-                    Some(from)
-                } else {
-                    None
-                }
-            };
-            let mut ns: Vec<EntityId> = self
-                .segments
-                .iter()
-                .filter_map(|seg| other(seg.from, seg.to))
-                .chain(self.arcs.iter().filter_map(|arc| other(arc.from, arc.to)))
-                .collect();
-            ns.sort_unstable();
-            ns
-        };
-        // Start at the lowest-id point that has at least one incident edge.
-        let Some(start) = self
-            .points
-            .iter()
-            .map(|point| point.id)
-            .filter(|&id| !neighbours(id).is_empty())
-            .min()
-        else {
-            return Vec::new();
-        };
-        let mut order = vec![start];
-        let mut previous = None;
-        let mut current = start;
-        let mut closed = false;
-        // Follow the graph, never stepping back the way we came. A simple loop returns to
-        // `start`; an OPEN path dead-ends (no forward neighbour). Cap the walk at the point
-        // count so a malformed graph cannot spin forever. Only a walk that actually returns
-        // to `start` is a closed region — an open graph yields NO loop (empty), so the resolve
-        // produces nothing rather than an arbitrarily-closed phantom polygon.
-        for _ in 0..self.points.len() {
-            let next = neighbours(current)
-                .into_iter()
-                .find(|&n| Some(n) != previous);
-            let Some(next) = next else { break }; // dead end ⇒ open path, no closed loop
-            if next == start {
-                closed = true;
-                break;
-            }
-            order.push(next);
-            previous = Some(current);
-            current = next;
-        }
-        if closed {
-            order
+    /// The DERIVED bounded faces of the sketch's planar graph (ADR 0030 §2, #100), in a
+    /// deterministic order. Every face is a candidate region; whether it contributes solid or
+    /// void is [`face_is_picked`](Self::face_is_picked).
+    pub fn faces(&self) -> Vec<Face> {
+        faces::derive(self)
+    }
+
+    /// Whether the face with this boundary key contributes solid. Faces default to PICKED — the
+    /// document stores only the unpicked exceptions (ADR 0030 §3).
+    pub fn face_is_picked(&self, key: &FaceKey) -> bool {
+        !self.unpicked.contains(key)
+    }
+
+    /// Pick or unpick the face with this boundary key, carving or filling a pocket. Storing the
+    /// key rather than the face means the intent survives re-derivation: a vertex drag leaves the
+    /// key untouched, and so does splitting a boundary edge (both children keep the parent's
+    /// origin), while restructuring the boundary makes it a different face that reverts to picked.
+    pub fn set_face_picked(&mut self, key: FaceKey, picked: bool) {
+        if picked {
+            self.unpicked.remove(&key);
         } else {
-            Vec::new()
+            self.unpicked.insert(key);
         }
     }
 
-    /// The DERIVED flattened profile: the closed loop's vertices in traversal order (ADR
-    /// 0030), with each arc edge tessellated into sub-voxel chords (#102 —
-    /// [`ARC_SAGITTA_TOLERANCE_VOXELS`]). This is what the producer resolves; the
-    /// tessellated polygon IS the resolved meaning (ADR 0019), and `point_in_polygon` is
-    /// winding-agnostic, so the traversal direction does not matter.
+    /// The unpicked boundary keys, ascending — the whole of the pick state the document carries.
+    pub fn unpicked_faces(&self) -> impl Iterator<Item = &FaceKey> {
+        self.unpicked.iter()
+    }
+
+    /// The DERIVED flattened profile: one tagged loop per derived face, `Fill` where the face is
+    /// picked and `Hole` where it is not (ADR 0030 §4), each a simple closed polygon with its
+    /// arcs tessellated into sub-voxel chords ([`ARC_SAGITTA_TOLERANCE_VOXELS`]).
+    ///
+    /// This is what the producer resolves, and the tessellated polygons ARE the resolved meaning
+    /// (ADR 0019). The combination is an explicit 2D boolean — union the fills, subtract the
+    /// holes — never a global crossing parity, so two fills that touch or share an edge both
+    /// count where even-odd would cancel them.
+    pub fn flattened_region(&self) -> Vec<ProfileLoop> {
+        self.faces()
+            .into_iter()
+            .map(|face| ProfileLoop {
+                role: if self.face_is_picked(&face.key) {
+                    LoopRole::Fill
+                } else {
+                    LoopRole::Hole
+                },
+                points: face.boundary,
+            })
+            .collect()
+    }
+
+    /// The flattened profile's `Fill` loops only — what the region's EXTENT is measured from (a
+    /// hole adds no footprint, and an unpicked face with nothing around it is not occupancy).
+    pub fn filled_loops(&self) -> Vec<Vec<SketchPoint>> {
+        self.flattened_region()
+            .into_iter()
+            .filter(|profile_loop| profile_loop.role == LoopRole::Fill)
+            .map(|profile_loop| profile_loop.points)
+            .collect()
+    }
+
+    /// The SIMPLE-profile door: the sole boundary when the region is exactly one picked face,
+    /// and empty otherwise (no face, an unpicked one, or several — those are questions only
+    /// [`flattened_region`](Self::flattened_region) can answer). Callers that reason about a
+    /// single closed outline (rectangle detection, most tests) want this; anything that resolves
+    /// occupancy wants the region.
     pub fn flattened_loop(&self) -> Vec<SketchPoint> {
-        let order = self.loop_order();
-        let position = |id: EntityId| self.point_index(id).map(|i| self.points[i].at);
-        let count = order.len();
-        let mut flattened = Vec::with_capacity(count);
-        for (index, &id) in order.iter().enumerate() {
-            let Some(at) = position(id) else { continue };
-            flattened.push(at);
-            // The edge to the NEXT loop point: an arc interpolates its chord fan here; a
-            // segment contributes nothing between its endpoints.
-            let next_id = order[(index + 1) % count];
-            let Some(arc) = self.arc_joining(id, next_id) else {
-                continue;
-            };
-            let (Some(from_at), Some(to_at)) = (position(arc.from), position(arc.to)) else {
-                continue;
-            };
-            let mut chord_fan = arc_interior_points(
-                from_at.in_plane(),
-                to_at.in_plane(),
-                arc.bulge.to_degrees_f64(),
-            );
-            if arc.from != id {
-                // Traversed head→tail: the same geometric points, walked backwards.
-                chord_fan.reverse();
-            }
-            flattened.extend(chord_fan);
+        let mut loops = self.flattened_region();
+        match (loops.len(), loops.first().map(|first| first.role)) {
+            (1, Some(LoopRole::Fill)) => loops.remove(0).points,
+            _ => Vec::new(),
         }
-        flattened
-    }
-
-    /// The arc joining points `a` and `b` in either direction, if any. Unambiguous by
-    /// construction: [`connect`](Self::connect) / [`connect_arc`](Self::connect_arc)
-    /// reject a second edge over an already-joined pair.
-    fn arc_joining(&self, a: EntityId, b: EntityId) -> Option<&Arc> {
-        self.arcs
-            .iter()
-            .find(|arc| (arc.from == a && arc.to == b) || (arc.from == b && arc.to == a))
-    }
-
-    /// The point ids of the flattened loop, in the SAME order as
-    /// [`flattened_loop`](Self::flattened_loop) — so the UI can map a loop-vertex index
-    /// back to the entity it must mutate (drag / add-point / delete).
-    pub fn flattened_loop_ids(&self) -> Vec<EntityId> {
-        self.loop_order()
     }
 
     /// Mutable access to a point's position by id (the drag write path).

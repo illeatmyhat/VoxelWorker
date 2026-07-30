@@ -189,6 +189,20 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleStat
     }
 }
 
+/// Draw one pick-state badge per derived region at its projected centroid (ADR 0030 §3, #100):
+/// filled = the face resolves as material, hollow ring = the author carved it into a hole. Not
+/// chrome — a passive readout, so a press still reaches the camera or the marquee; the pick verb
+/// itself lives on the viewport context menu.
+pub fn sketch_face_badges(ui: &egui::Ui, badges: &[(Pos2, bool)]) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_face_badges"),
+    ));
+    for &(center, picked) in badges {
+        gizmos::region_badge(&painter, center, picked);
+    }
+}
+
 /// Draw the profile vertex handles at their projected positions and register each grab rect as
 /// chrome so a press drags the vertex instead of orbiting.
 pub fn sketch_vertex_handles(

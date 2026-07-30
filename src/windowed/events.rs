@@ -433,6 +433,12 @@ impl ApplicationHandler for App {
                     // A cube right-press opens the cube's own menu; a right-press anywhere else in
                     // the live viewport (not the Signal chrome) opens the general viewport menu.
                     // The two are mutually exclusive so only one is ever up.
+                    // #100: the region the menu will act on — resolved at the PRESS, from the
+                    // overlay the frame just projected, so the verb cannot drift to another face
+                    // while the menu is up.
+                    state.sketch_menu_face = (!in_cube && !in_chrome)
+                        .then(|| position.and_then(|(x, y)| state.sketch_face_at(x, y)))
+                        .flatten();
                     if in_cube {
                         state.context_menu_open_at = at;
                         state.viewport_menu_at = None;

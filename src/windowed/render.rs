@@ -148,6 +148,7 @@ impl WindowedState {
         // Read before the call: `run_egui_frame` borrows `self` mutably.
         let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
         let orbit_reticle = self.orbit_reticle_visible();
+        let sketch_face_at_menu = self.sketch_menu_face_is_picked();
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -182,6 +183,11 @@ impl WindowedState {
                 // ADR 0030 §5 (#102): the committed arc curves, projected last frame — the same
                 // under-layer as the straight edges.
                 &self.sketch_arc_lines,
+                // ADR 0030 §3 (#100): the derived regions' pick badges, projected last frame.
+                &self.sketch_face_badges,
+                // #100: the pick state of the region the open menu was raised inside, so the
+                // menu can label its row "carve" or "fill".
+                sketch_face_at_menu,
                 // ADR 0028 (#95): the add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
                 // #99: the drawing tools' dashed preview, projected last frame.
@@ -370,6 +376,10 @@ impl WindowedState {
         // after.
         if prepared.panel_response.delete_selection {
             self.delete_selection();
+        }
+        // #100: the context menu's carve / fill row, acting on the region the press resolved.
+        if prepared.panel_response.toggle_sketch_face {
+            self.toggle_sketch_menu_face();
         }
         // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
         // is not the document (ADR 0022's classification: this is view state).
@@ -1740,6 +1750,9 @@ impl WindowedState {
                 ui::shortcuts::ShortcutCommand::PlaceOrbitCenter
                 | ui::shortcuts::ShortcutCommand::ResetOrbitCenter
                 | ui::shortcuts::ShortcutCommand::EnterConstrainedOrbit => {}
+                // #100: the carve / fill verb needs the region the RIGHT-PRESS resolved, so a
+                // keyboard binding has nothing to act on until the menu has been raised.
+                ui::shortcuts::ShortcutCommand::ToggleSketchFace => self.toggle_sketch_menu_face(),
             }
         }
         effect
@@ -1994,6 +2007,53 @@ impl WindowedState {
         self.panel_state.selection.clear_sketch_entities();
     }
 
+    /// The derived region under the physical-px cursor (#100), or `None`. The SMALLEST containing
+    /// face wins, so a click inside a pocket carves the pocket rather than the shape around it —
+    /// the same "most specific thing under the cursor" rule the vertex-over-edge priority uses.
+    pub(super) fn sketch_face_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<document::sketch::FaceKey> {
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        self.sketch_face_polygons
+            .iter()
+            .filter(|(_, boundary)| point_in_screen_polygon(boundary, cursor))
+            .min_by(|(_, a), (_, b)| {
+                polygon_double_area(a)
+                    .abs()
+                    .total_cmp(&polygon_double_area(b).abs())
+            })
+            .map(|(key, _)| key.clone())
+    }
+
+    /// Whether the region the open viewport menu is acting on is picked (#100), or `None` when the
+    /// menu has no region under it — what decides whether the menu offers "carve" or "fill".
+    pub(super) fn sketch_menu_face_is_picked(&self) -> Option<bool> {
+        let target = self.panel_state.sketch_mode?;
+        let key = self.sketch_menu_face.as_ref()?;
+        let (producer, _) = self.sketch_node_state(target)?;
+        Some(producer.sketch.face_is_picked(key))
+    }
+
+    /// Flip the pick state of the region the viewport menu is acting on (#100) — the one edit that
+    /// carves a hole, committed through the same profile-edit path every other sketch edit uses so
+    /// it coalesces into the open undo group. No-op when no region is under the menu.
+    pub(super) fn toggle_sketch_menu_face(&mut self) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(key) = self.sketch_menu_face.take() else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let picked = producer.sketch.face_is_picked(&key);
+        let next = producer.with_face_picked(key, !picked);
+        self.commit_sketch_profile_edit(target, next);
+    }
+
     /// ADR 0028 (#95): queue an add/delete profile edit as ONE entry in the open sketch undo
     /// group. Recomputes the bbox-min anchor compensation exactly like the vertex drag — the
     /// producer re-anchors its bbox-min to the node origin, so a vertex inserted or removed at
@@ -2071,6 +2131,8 @@ impl WindowedState {
         self.sketch_segment_lines.clear();
         self.sketch_arc_lines.clear();
         self.sketch_arc_chords.clear();
+        self.sketch_face_polygons.clear();
+        self.sketch_face_badges.clear();
         self.sketch_insert_preview = None;
         self.sketch_draw_preview.clear();
         self.sketch_marquee_band = None;
@@ -2081,6 +2143,8 @@ impl WindowedState {
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
+            // #100: so does the region a closed menu was acting on.
+            self.sketch_menu_face = None;
             return;
         };
         let Some(handles) = self
@@ -2254,6 +2318,56 @@ impl WindowedState {
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
             self.sketch_arc_lines.push((curve, state));
+        }
+
+        // The derived regions (#100): each face's boundary in physical px for the right-press
+        // hit-test, plus its centroid badge in egui points. Derivation is a graph walk over the
+        // sketch's own entities, so it re-runs here with the rest of the overlay rather than
+        // being cached against an edit counter.
+        let regions: Vec<(document::sketch::FaceKey, Vec<[f64; 2]>, bool)> = self
+            .panel_state
+            .scene
+            .node_by_id(target)
+            .and_then(|node| match &node.content {
+                document::scene::NodeContent::SketchTool { producer, .. } => Some(&producer.sketch),
+                _ => None,
+            })
+            .map(|sketch| {
+                sketch
+                    .faces()
+                    .into_iter()
+                    .map(|face| {
+                        let picked = sketch.face_is_picked(&face.key);
+                        let boundary = face.boundary.iter().map(|point| point.in_plane()).collect();
+                        (face.key, boundary, picked)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (key, boundary, picked) in regions {
+            let projected: Option<Vec<egui::Pos2>> = boundary
+                .iter()
+                .map(|coord| {
+                    let render = handles.profile_to_render(*coord);
+                    let clip =
+                        view_projection * glam::Vec4::new(render[0], render[1], render[2], 1.0);
+                    (clip.w > 0.0).then(|| {
+                        egui::Pos2::new(
+                            vx + (clip.x / clip.w * 0.5 + 0.5) * vw,
+                            vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh,
+                        )
+                    })
+                })
+                .collect();
+            // A behind-camera boundary vertex culls the whole face, as it culls an arc.
+            let Some(projected) = projected else { continue };
+            if let Some(centroid) = polygon_centroid(&projected) {
+                self.sketch_face_badges.push((
+                    egui::Pos2::new(centroid.x / pixels_per_point, centroid.y / pixels_per_point),
+                    picked,
+                ));
+            }
+            self.sketch_face_polygons.push((key, projected));
         }
 
         // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
@@ -2507,11 +2621,64 @@ fn point_to_segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32
     (p - closest_point_on_segment(p, a, b)).length()
 }
 
+/// Twice the signed area of the closed polygon through `boundary` — the shoelace, unhalved,
+/// because the region hit-test only ever compares magnitudes.
+fn polygon_double_area(boundary: &[egui::Pos2]) -> f32 {
+    let Some(&last) = boundary.last() else {
+        return 0.0;
+    };
+    let mut previous = last;
+    let mut sum = 0.0;
+    for &point in boundary {
+        sum += previous.x * point.y - point.x * previous.y;
+        previous = point;
+    }
+    sum
+}
+
+/// The area centroid of the closed polygon through `boundary`, or `None` when it encloses
+/// nothing. Where a region's badge sits (#100).
+fn polygon_centroid(boundary: &[egui::Pos2]) -> Option<egui::Pos2> {
+    let double_area = polygon_double_area(boundary);
+    if double_area.abs() <= f32::EPSILON {
+        return None;
+    }
+    let last = *boundary.last()?;
+    let mut previous = last;
+    let mut sum = egui::Vec2::ZERO;
+    for &point in boundary {
+        let cross = previous.x * point.y - point.x * previous.y;
+        sum += egui::Vec2::new(previous.x + point.x, previous.y + point.y) * cross;
+        previous = point;
+    }
+    Some(egui::Pos2::ZERO + sum / (3.0 * double_area))
+}
+
+/// Whether `point` lies inside the closed polygon through `boundary` — the even-odd crossing
+/// count. Screen space, so the f32 the projection already produced is the right width; the
+/// f64 predicates in `substrate::geom2d` guard voxel-space classification, not a cursor test.
+fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
+    let mut inside = false;
+    let count = boundary.len();
+    for index in 0..count {
+        let a = boundary[index];
+        let b = boundary[(index + 1) % count];
+        if (a.y > point.y) != (b.y > point.y) {
+            let x = a.x + (point.y - a.y) / (b.y - a.y) * (b.x - a.x);
+            if point.x < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_sketch_snap, closest_point_on_segment, point_to_segment_distance,
-        segment_touches_rect, segments_intersect,
+        apply_sketch_snap, closest_point_on_segment, point_in_screen_polygon,
+        point_to_segment_distance, polygon_centroid, polygon_double_area, segment_touches_rect,
+        segments_intersect,
     };
     use egui::{pos2, Rect};
     use ui::panel::PositionSnap;
@@ -2639,5 +2806,52 @@ mod tests {
             pos2(0.0, 10.0),
             pos2(10.0, 0.0)
         ));
+    }
+
+    /// The region hit-test's two primitives, on a concave face — the shape the badge and the
+    /// smallest-wins rule both have to survive (#100). An L is the cheapest concave polygon.
+    #[test]
+    fn the_region_hit_test_handles_a_concave_face() {
+        let ell = [
+            pos2(0.0, 0.0),
+            pos2(6.0, 0.0),
+            pos2(6.0, 2.0),
+            pos2(2.0, 2.0),
+            pos2(2.0, 6.0),
+            pos2(0.0, 6.0),
+        ];
+        assert!(
+            point_in_screen_polygon(&ell, pos2(1.0, 5.0)),
+            "inside the tall arm"
+        );
+        assert!(
+            point_in_screen_polygon(&ell, pos2(5.0, 1.0)),
+            "inside the wide arm"
+        );
+        assert!(
+            !point_in_screen_polygon(&ell, pos2(5.0, 5.0)),
+            "the notch is outside"
+        );
+        // Winding must not change the answer: a face traced the other way is the same face.
+        let reversed: Vec<_> = ell.iter().rev().copied().collect();
+        assert!(point_in_screen_polygon(&reversed, pos2(1.0, 5.0)));
+        assert_eq!(
+            polygon_double_area(&ell).abs(),
+            polygon_double_area(&reversed).abs()
+        );
+    }
+
+    /// A badge sits at the face's area centroid, and a degenerate face has none to sit at.
+    #[test]
+    fn a_region_badge_sits_at_the_area_centroid() {
+        let square = [
+            pos2(0.0, 0.0),
+            pos2(4.0, 0.0),
+            pos2(4.0, 4.0),
+            pos2(0.0, 4.0),
+        ];
+        let centroid = polygon_centroid(&square).expect("a square encloses something");
+        assert!((centroid.x - 2.0).abs() < 1e-4 && (centroid.y - 2.0).abs() < 1e-4);
+        assert_eq!(polygon_centroid(&[pos2(0.0, 0.0), pos2(4.0, 4.0)]), None);
     }
 }

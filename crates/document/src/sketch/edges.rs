@@ -34,12 +34,34 @@ impl SketchSolid {
         let Some((profile_min, _)) = self.profile_bounds() else {
             return Vec::new();
         };
+        // EVERY loop of the region creases, holes included (#100): the wall of a pocket is as
+        // much a feature edge as the outside of the shape.
+        let mut polylines = Vec::new();
+        for profile_loop in self.sketch.flattened_region() {
+            self.ring_edge_polylines(
+                &profile_loop.points,
+                profile_min,
+                circle_segments,
+                &mut polylines,
+            );
+        }
+        polylines
+    }
+
+    /// The catalogue contribution of ONE closed boundary, appended to `polylines`. Split out so
+    /// a multi-loop region reuses one definition per loop rather than duplicating the crease
+    /// rules (#100).
+    fn ring_edge_polylines(
+        &self,
+        boundary: &[SketchPoint],
+        profile_min: [i64; 2],
+        circle_segments: u32,
+        polylines: &mut Vec<Vec<[f32; 3]>>,
+    ) {
         // The ring in 1/256-voxel FIXED POINT: sub-voxel coords (#101) quantise onto an
         // integer lattice so dedup/tangency stay exact; every emitted coordinate divides
         // back out through `fixed_to_voxels`.
-        let mut ring: Vec<[i64; 2]> = self
-            .sketch
-            .flattened_loop()
+        let mut ring: Vec<[i64; 2]> = boundary
             .iter()
             .map(|point| {
                 let coords = point.in_plane();
@@ -54,7 +76,7 @@ impl SketchSolid {
             ring.pop();
         }
         if ring.len() < 3 {
-            return Vec::new();
+            return;
         }
         let vertex_count = ring.len();
         let neighbours = |index: usize| {
@@ -66,7 +88,6 @@ impl SketchSolid {
         };
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
-        let mut polylines = Vec::new();
         match self.operation {
             Operation::Extrude { height_voxels } => {
                 let height = height_voxels as f32;
@@ -168,6 +189,5 @@ impl SketchSolid {
                 }
             }
         }
-        polylines
     }
 }

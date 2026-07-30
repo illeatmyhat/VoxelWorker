@@ -170,13 +170,15 @@ pub enum ShortcutCommand {
     ResetOrbitCenter,
     /// Enter the explicit orbit mode, naming the constrained type.
     EnterConstrainedOrbit,
+    /// Carve or fill the sketch region under the cursor.
+    ToggleSketchFace,
     /// Dump the live scene + camera to the repro file.
     ExportRepro,
 }
 
 impl ShortcutCommand {
     /// Every command, in settings-list order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::AcceptCommand,
         Self::CancelCommand,
         Self::DeleteSelection,
@@ -185,6 +187,7 @@ impl ShortcutCommand {
         Self::PlaceOrbitCenter,
         Self::ResetOrbitCenter,
         Self::EnterConstrainedOrbit,
+        Self::ToggleSketchFace,
         Self::ExportRepro,
     ];
 
@@ -199,6 +202,7 @@ impl ShortcutCommand {
             Self::PlaceOrbitCenter => "Place orbit center",
             Self::ResetOrbitCenter => "Reset orbit center",
             Self::EnterConstrainedOrbit => "Constrained orbit",
+            Self::ToggleSketchFace => "Carve / fill sketch region",
             Self::ExportRepro => "Dump repro",
         }
     }
@@ -239,7 +243,10 @@ impl ShortcutCommand {
             // Unbound on both. These are viewport verbs with no cross-application convention, and
             // one that claimed a letter key would be taking it from every future mode at once.
             // They are listed anyway so they can BE bound — the inventory is the point.
-            Self::PlaceOrbitCenter | Self::ResetOrbitCenter | Self::EnterConstrainedOrbit => None,
+            Self::PlaceOrbitCenter
+            | Self::ResetOrbitCenter
+            | Self::EnterConstrainedOrbit
+            | Self::ToggleSketchFace => None,
 
             // The repro dump: a developer affordance, so it wants a chord nothing else claims
             // rather than a key a modeller might hit by accident. `Shift` plus the platform's own

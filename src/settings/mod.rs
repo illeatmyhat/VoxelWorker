@@ -178,6 +178,8 @@ pub enum ShortcutCommandConfig {
     EnterConstrainedOrbit,
     /// [`ShortcutCommand::ExportRepro`].
     ExportRepro,
+    /// [`ShortcutCommand::ToggleSketchFace`].
+    ToggleSketchFace,
 }
 
 /// One overridden binding.
@@ -231,6 +233,9 @@ impl ShortcutsConfig {
                             ShortcutCommandConfig::EnterConstrainedOrbit
                         }
                         ShortcutCommand::ExportRepro => ShortcutCommandConfig::ExportRepro,
+                        ShortcutCommand::ToggleSketchFace => {
+                            ShortcutCommandConfig::ToggleSketchFace
+                        }
                     },
                     shortcut,
                 })
@@ -260,6 +265,7 @@ impl ShortcutsConfig {
                     ShortcutCommand::EnterConstrainedOrbit
                 }
                 ShortcutCommandConfig::ExportRepro => ShortcutCommand::ExportRepro,
+                ShortcutCommandConfig::ToggleSketchFace => ShortcutCommand::ToggleSketchFace,
             };
             shortcuts.bind(command, binding.shortcut);
         }

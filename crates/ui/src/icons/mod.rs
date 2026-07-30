@@ -48,6 +48,7 @@ mod axes_gizmo;
 mod box_solid;
 mod cancel;
 mod carve;
+mod carve_region;
 mod chevron_down;
 mod chevron_right;
 mod close_loop;
@@ -60,6 +61,7 @@ mod drawer;
 mod emboss;
 mod emboss_recess;
 mod extrude;
+mod fill_region;
 mod fit;
 mod flip;
 mod fold_cursor;
@@ -587,6 +589,8 @@ pub enum Icon {
     Rectangle,
     ThreePointArc,
     CloseLoop,
+    FillRegion,
+    CarveRegion,
     SnapNone,
     SnapVoxel,
     SnapBlock,
@@ -656,6 +660,8 @@ impl Icon {
         Icon::Rectangle,
         Icon::ThreePointArc,
         Icon::CloseLoop,
+        Icon::FillRegion,
+        Icon::CarveRegion,
         Icon::SnapNone,
         Icon::SnapVoxel,
         Icon::SnapBlock,
@@ -725,6 +731,8 @@ impl Icon {
             Icon::Rectangle => g.marks(rectangle::DRAW),
             Icon::ThreePointArc => g.marks(three_point_arc::DRAW),
             Icon::CloseLoop => g.marks(close_loop::DRAW),
+            Icon::FillRegion => g.marks(fill_region::DRAW),
+            Icon::CarveRegion => g.marks(carve_region::DRAW),
             Icon::SnapNone => g.marks(snap_none::DRAW),
             Icon::SnapVoxel => g.marks(snap_voxel::DRAW),
             Icon::SnapBlock => g.marks(snap_block::DRAW),
@@ -794,6 +802,8 @@ impl Icon {
             Icon::Rectangle => "rectangle",
             Icon::ThreePointArc => "three-point-arc",
             Icon::CloseLoop => "close-loop",
+            Icon::FillRegion => "fill-region",
+            Icon::CarveRegion => "carve-region",
             Icon::SnapNone => "snap-none",
             Icon::SnapVoxel => "snap-voxel",
             Icon::SnapBlock => "snap-block",
@@ -857,6 +867,8 @@ impl Icon {
             | Icon::Rectangle
             | Icon::ThreePointArc
             | Icon::CloseLoop
+            | Icon::FillRegion
+            | Icon::CarveRegion
             | Icon::SnapNone
             | Icon::SnapVoxel
             | Icon::SnapBlock => Group::Sketch,
@@ -963,6 +975,12 @@ impl Icon {
             Icon::CloseLoop => {
                 "Sketch: join the open polyline back to its start vertex; the closing run is dashed \
                  until the click commits it."
+            }
+            Icon::FillRegion => {
+                "Sketch: pick this region back — the face inside the boundary resolves as material                  again. Every face starts picked."
+            }
+            Icon::CarveRegion => {
+                "Sketch: unpick this region — the face becomes a hole the profile CSG subtracts,                  keyed by its boundary edges' origins so a drag or a split keeps it."
             }
             Icon::SnapNone => {
                 "Sketch position snap — none: the vertex rides sub-voxel under the cursor, the \

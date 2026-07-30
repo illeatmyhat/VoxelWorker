@@ -233,6 +233,15 @@ pub fn run_egui_frame(
     // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
     // headless `shot` path.
     sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
+    // ADR 0030 §3 (#100): the derived faces' badges for THIS frame — a projected centre (egui
+    // points) and whether the face is PICKED (contributes solid) or unpicked (a hole). Drawn as
+    // the region affordance; empty unless a sketch is being edited, always empty on the headless
+    // `shot` path.
+    sketch_face_badges: &[(egui::Pos2, bool)],
+    // #100: whether the open viewport context menu was raised INSIDE a derived face, and if so
+    // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
+    // `None` when the menu is closed or was raised over no face.
+    sketch_face_at_menu: Option<bool>,
     // ADR 0028 (#95): the add-point insert-preview marker for THIS frame (egui points), or
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
@@ -443,6 +452,34 @@ pub fn run_egui_frame(
                             // keyboard binding for the same command arrives with no menu at all.
                             panel_response.delete_selection = true;
                             close = true;
+                        }
+
+                        // #100: the REGION row, offered only when the right-click landed inside a
+                        // derived face. The context menu is the affordance the sketch-selection
+                        // design reserved for face pick/unpick, so carving a hole costs no new
+                        // click semantics: the left-click laws (pick an entity, clear on empty,
+                        // marquee on drag) all keep meaning exactly what they meant.
+                        if let Some(picked) = sketch_face_at_menu {
+                            if context_menu_row(
+                                ui,
+                                &shortcuts,
+                                if picked {
+                                    ui::icons::Icon::CarveRegion
+                                } else {
+                                    ui::icons::Icon::FillRegion
+                                },
+                                if picked {
+                                    "Carve hole here"
+                                } else {
+                                    "Fill this region"
+                                },
+                                ui::shortcuts::ShortcutCommand::ToggleSketchFace,
+                                true,
+                                None,
+                            ) {
+                                panel_response.toggle_sketch_face = true;
+                                close = true;
+                            }
                         }
 
                         // The ORBIT CENTER rows (docs/design/tool-modes-and-navigation.md).
@@ -696,6 +733,9 @@ pub fn run_egui_frame(
             ui::chrome::sketch_segment_lines(ui, sketch_segment_lines);
             // ADR 0030 §5: the committed arc curves, on the same under-layer as the straight edges.
             ui::chrome::sketch_arc_curves(ui, sketch_arc_lines);
+            // #100: the region badges, under the vertex handles — a face is a derived thing the
+            // edges already describe, so its mark stays quieter than an entity's.
+            ui::chrome::sketch_face_badges(ui, sketch_face_badges);
             // ADR 0028 (#94): the draggable profile-vertex handles, drawn at the shell's
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).

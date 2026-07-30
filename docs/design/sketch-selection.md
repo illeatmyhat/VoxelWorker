@@ -22,9 +22,12 @@ memory and burns a rail slot. So Delete stops being a tool; its warn-`✕` visua
 A **selection set** of mixed entities held on the sketch editing session:
 
 - **Points** and **segments** — first-class, directly selectable (ADR 0030 entities with stable ids).
-- **Faces** — a *derived* entity (graph → faces, ADR 0030 §region). First-class **pickable**, so the
-  same selection machinery drives face pick/unpick for extrusion (#100). Deferred, but the model
-  treats a face as a selectable from the start so #100 is a data addition, not a rewrite.
+- **Faces** — a *derived* entity (graph → faces, ADR 0030 §region). **Pickable, but NOT a member of
+  the selection set** — the one place #100 departed from this spec when it shipped (2026-07-29). A
+  face's identity is a SET of boundary-edge origin ids, and `SelectionTarget` is a `Copy` value
+  passed by value everywhere; a `Vec`-carrying payload would break that across the whole shell.
+  Since a region's only verb is pick/unpick, and that verb was always going to live on the context
+  menu, the face never needed to enter the set to be operated on.
 
 Selecting a point and selecting the segment between two points are different: a segment in the set
 carries its own id; deleting it removes only the line, while deleting a point cascades its incident
@@ -112,7 +115,9 @@ No viewport context menu exists today (only the ViewCube's own right-click menu)
   deletes the **selected scene node**; in sketch mode it deletes the **selected sketch entities**
   (points cascade). One verb, one glyph, one place in the menu — the target is whatever "the
   selection" means in the current mode.
-- **Sketch mode adds** its own entries beyond Delete later (face pick/unpick, add-arc, …).
+- **Sketch mode adds** its own entries beyond Delete: **Carve hole here / Fill this region**, shown
+  only when the right-click landed inside a derived face (#100). The row's label and glyph follow
+  the face's current state, so it is one row and not two.
 
 This is the surface #100 (region pick/unpick) and future sketch verbs hang off, so it is built as a
 mode-dispatched menu, not a sketch-only widget.
@@ -126,7 +131,9 @@ mode-dispatched menu, not a sketch-only widget.
    remove the Delete tool from the rail; retire the now-dead delete-hover trigger.
 3. **Directional marquee** — window/crossing predicates + the two-style rubber band; resolve the
    window-segment predicate first.
-4. **Faces as derived selectables** — later, feeds #100 extrusion pick/unpick.
+4. **Faces as derived regions** — SHIPPED as #100 (2026-07-29), with the departure noted above:
+   faces are derived by a DCEL walk, badged at their centroids (filled = picked, hollow = a hole),
+   and carved / filled from the context menu's own row. Not selection-set members.
 
 ## What this reuses / retires
 

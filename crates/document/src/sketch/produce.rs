@@ -44,6 +44,34 @@ pub(super) fn to_profile_points_measured(profile: &[SketchPoint]) -> Vec<[f32; 2
     profile_points_as(profile, |voxels, local| voxels as f32 + local)
 }
 
+/// The whole tagged region in the **predicate** width — one converted polygon per loop, keeping
+/// each loop's `Fill`/`Hole` role (#100). Converted ONCE per resolve and handed to the region
+/// predicates by reference, so the per-cell hot loop neither re-derives faces nor re-allocates.
+pub(super) fn to_region_points(
+    region: &[ProfileLoop],
+) -> Vec<(substrate::geom2d::LoopRole, Vec<[f64; 2]>)> {
+    region
+        .iter()
+        .map(|profile_loop| (profile_loop.role, to_profile_points(&profile_loop.points)))
+        .collect()
+}
+
+/// The same region in the **measurement** width. Two conversions from one integer truth, for the
+/// same reason [`to_profile_points_measured`] is not a narrowing of [`to_profile_points`].
+pub(super) fn to_region_points_measured(
+    region: &[ProfileLoop],
+) -> Vec<(substrate::geom2d::LoopRole, Vec<[f32; 2]>)> {
+    region
+        .iter()
+        .map(|profile_loop| {
+            (
+                profile_loop.role,
+                to_profile_points_measured(&profile_loop.points),
+            )
+        })
+        .collect()
+}
+
 /// A lower bound on the distance from every point of the sample box (`centre ± half_extent`)
 /// to the producer's grid extent `[0, dimensions]`, in `metric`.
 ///

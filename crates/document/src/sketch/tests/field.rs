@@ -23,12 +23,21 @@ fn extrude_field_cases() -> Vec<(&'static str, SketchSolid)> {
         SketchPoint::new(4, 3),
         SketchPoint::new(0, 6),
     ];
-    let bowtie = vec![
-        SketchPoint::new(0, 0),
-        SketchPoint::new(6, 6),
-        SketchPoint::new(0, 6),
-        SketchPoint::new(6, 0),
-    ];
+    // Two triangles meeting at ONE shared point — the bowtie the crossing rule (ADR 0030 §2)
+    // says is only a region once the crossing is a real vertex. It derives TWO faces, so one
+    // producer resolves DISJOINT occupancy (§4).
+    let mut figure_eight = Sketch::empty(PlaneAxis::Z);
+    let waist = figure_eight.add_point(SketchPoint::new(3, 3));
+    for corners in [
+        [SketchPoint::new(0, 0), SketchPoint::new(6, 0)],
+        [SketchPoint::new(0, 6), SketchPoint::new(6, 6)],
+    ] {
+        let left = figure_eight.add_point(corners[0]);
+        let right = figure_eight.add_point(corners[1]);
+        figure_eight.connect(left, right);
+        figure_eight.connect(right, waist);
+        figure_eight.connect(waist, left);
+    }
     vec![
         (
             "rectangle/Z",
@@ -42,10 +51,7 @@ fn extrude_field_cases() -> Vec<(&'static str, SketchSolid)> {
             "notched/Y",
             SketchSolid::extrude(Sketch::new(PlaneAxis::Y, notched), 2),
         ),
-        (
-            "bowtie/Z",
-            SketchSolid::extrude(Sketch::new(PlaneAxis::Z, bowtie), 3),
-        ),
+        ("figure-eight/Z", SketchSolid::extrude(figure_eight, 3)),
     ]
 }
 

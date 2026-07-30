@@ -896,6 +896,12 @@ pub struct PanelResponse {
     /// (`ui::shortcuts::ShortcutCommand::DeleteSelection`), which a menu-built intent could not.
     /// `false` when no delete was requested.
     pub delete_selection: bool,
+    /// The user chose **Carve hole / Fill region** from the viewport menu this frame → the shell
+    /// flips the pick state of the face the menu opened over (#100, ADR 0030 §3). A flag rather
+    /// than a key, for the same reason `delete_selection` is: WHICH face the right-click landed
+    /// in is a screen-space hit-test only the shell can answer, and it already answered it to
+    /// decide whether to offer the row at all. `false` when the row was not chosen.
+    pub toggle_sketch_face: bool,
     /// How the user asked to move the **orbit center** this frame from the general viewport
     /// context menu (`docs/design/tool-modes-and-navigation.md`) — the deliberate act that is
     /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW

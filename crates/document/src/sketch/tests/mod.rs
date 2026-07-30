@@ -11,6 +11,7 @@ mod edits;
 mod extrude;
 mod field;
 mod parametric;
+mod regions;
 mod revolve;
 
 /// Collect a producer's occupied voxels as a sorted set of
