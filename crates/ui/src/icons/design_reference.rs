@@ -103,4 +103,117 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Line { points: &[(16.0, 2.0), (16.0, 6.0)], ink: Ink::SOLID },
         Mark::Cubic { p0: (2.0, 10.0), p1: (2.0, 4.0), p2: (16.0, 12.0), p3: (16.0, 6.0), ink: Ink::ACCENT },
     ]),
+    // Coincident — 2 DOF
+    ("constraint-coincident", &[
+        Mark::Line { points: &[(3.0, 4.5), (9.0, 12.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(15.0, 4.5), (9.0, 12.0)], ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 12.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Collinear — 2 DOF
+    ("constraint-collinear", &[
+        Mark::Line { points: &[(3.0, 15.0), (7.75, 10.25)], ink: Ink::SOLID },
+        Mark::Line { points: &[(10.25, 7.75), (15.0, 3.0)], ink: Ink::ACCENT },
+    ]),
+    // Concentric — 2 DOF
+    ("constraint-concentric", &[
+        Mark::Circle { center: (9.0, 9.0), radius: 6.5, ink: Ink::SOLID },
+        Mark::Circle { center: (9.0, 9.0), radius: 3.25, ink: Ink::ACCENT },
+    ]),
+    // Midpoint — 2 DOF
+    ("constraint-midpoint", &[
+        Mark::Line { points: &[(2.5, 9.0), (15.5, 9.0)], ink: Ink::DASHED },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Fix — all remaining
+    ("constraint-fix", &[
+        Mark::Line { points: &[(6.5, 10.0), (6.5, 7.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (9.0, 7.0), rx: 2.5, ry: 2.5, from: 3.141593, to: 6.283185, ink: Ink::SOLID },
+        Mark::Line { points: &[(11.5, 7.0), (11.5, 10.0)], ink: Ink::SOLID },
+        Mark::Rect { a: (5.5, 10.0), b: (12.5, 15.5), ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 12.75), size: 1.7, ink: Ink::SOLID },
+    ]),
+    // Parallel — 1 DOF
+    ("constraint-parallel", &[
+        Mark::Line { points: &[(4.5, 13.0), (8.5, 5.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(9.5, 13.0), (13.5, 5.0)], ink: Ink::ACCENT },
+    ]),
+    // Perpendicular — 1 DOF
+    ("constraint-perpendicular", &[
+        Mark::Line { points: &[(3.0, 7.0), (9.0, 14.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 14.0), (15.0, 7.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(6.7, 11.85), (9.0, 9.7), (11.3, 11.85)], ink: Ink::SOLID },
+    ]),
+    // Horizontal — 1 DOF
+    ("constraint-horizontal", &[
+        Mark::Line { points: &[(3.5, 9.0), (14.5, 9.0)], ink: Ink::ACCENT },
+        Mark::Node { center: (3.5, 9.0), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (14.5, 9.0), size: 2.6, ink: Ink::SOLID },
+    ]),
+    // Vertical — 1 DOF
+    ("constraint-vertical", &[
+        Mark::Line { points: &[(9.0, 3.5), (9.0, 14.5)], ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 3.5), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 14.5), size: 2.6, ink: Ink::SOLID },
+    ]),
+    // Tangent — 1 DOF
+    ("constraint-tangent", &[
+        Mark::Circle { center: (8.0, 11.0), radius: 4.5, ink: Ink::ACCENT },
+        Mark::Line { points: &[(2.0, 6.5), (16.0, 6.5)], ink: Ink::SOLID },
+    ]),
+    // Equal — 1 DOF
+    ("constraint-equal", &[
+        Mark::Line { points: &[(4.0, 7.0), (14.0, 7.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(4.0, 11.0), (14.0, 11.0)], ink: Ink::SOLID },
+    ]),
+    // Symmetry — 2 DOF
+    ("constraint-symmetry", &[
+        Mark::Line { points: &[(9.0, 2.0), (9.0, 16.0)], ink: Ink::DASHED },
+        Mark::Line { points: &[(5.5, 5.5), (3.0, 9.0), (5.5, 12.5)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(12.5, 5.5), (15.0, 9.0), (12.5, 12.5)], ink: Ink::ACCENT },
+    ]),
+    // Curvature — +1 on tangency
+    ("constraint-curvature", &[
+        Mark::Cubic { p0: (3.0, 15.0), p1: (5.0, 7.6667), p2: (9.3333, 5.0), p3: (16.0, 7.0), ink: Ink::ACCENT },
+        Mark::Line { points: &[(4.94, 10.375), (3.06, 9.185)], ink: Ink::SOLID },
+        Mark::Line { points: &[(7.75, 7.5), (5.915, 4.52)], ink: Ink::SOLID },
+        Mark::Line { points: &[(11.44, 6.375), (11.27, 3.62)], ink: Ink::SOLID },
+        Mark::Node { center: (7.75, 7.5), size: 2.2, ink: Ink::SOLID },
+    ]),
+    // Quantize — 1 → integer
+    ("constraint-quantize", &[
+        Mark::Disc { center: (4.0, 4.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Disc { center: (4.0, 9.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Disc { center: (4.0, 14.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Disc { center: (9.0, 4.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Disc { center: (9.0, 14.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Disc { center: (14.0, 4.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Disc { center: (14.0, 9.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Disc { center: (14.0, 14.0), radius: 0.75, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Mirror — generator
+    ("mirror", &[
+        Mark::Line { points: &[(9.0, 2.0), (9.0, 16.0)], ink: Ink::DASHED },
+        Mark::Line { points: &[(6.0, 5.0), (2.5, 9.0), (6.0, 13.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(12.0, 5.0), (15.5, 9.0), (12.0, 13.0)], ink: Ink::ACCENT },
+    ]),
+    // Rectangular pattern — generator
+    ("rectangular-pattern", &[
+        Mark::Line { points: &[(7.25, 4.5), (10.75, 4.5)], ink: Ink::SOLID },
+        Mark::Line { points: &[(4.5, 7.25), (4.5, 10.75)], ink: Ink::SOLID },
+        Mark::Node { center: (4.5, 4.5), size: 4.0, ink: Ink::SOLID },
+        Mark::Node { center: (13.5, 4.5), size: 4.0, ink: Ink::ACCENT },
+        Mark::Node { center: (4.5, 13.5), size: 4.0, ink: Ink::ACCENT },
+        Mark::Node { center: (13.5, 13.5), size: 4.0, ink: Ink::ACCENT },
+    ]),
+    // Circular pattern — generator
+    ("circular-pattern", &[
+        Mark::Line { points: &[(6.5, 9.0), (11.5, 9.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 6.5), (9.0, 11.5)], ink: Ink::SOLID },
+        Mark::Disc { center: (9.0, 2.5), radius: 1.3, ink: Ink::SOLID },
+        Mark::Disc { center: (15.18, 6.99), radius: 1.3, ink: Ink::ACCENT },
+        Mark::Disc { center: (12.82, 14.26), radius: 1.3, ink: Ink::ACCENT },
+        Mark::Disc { center: (5.18, 14.26), radius: 1.3, ink: Ink::ACCENT },
+        Mark::Disc { center: (2.82, 6.99), radius: 1.3, ink: Ink::ACCENT },
+    ]),
 ];

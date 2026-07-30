@@ -37,5 +37,6 @@ pub(super) const DRAW: &[Mark] = &[
     Mark::Disc {
         center: (9.0, 9.0),
         radius: 1.4,
+        ink: Ink::SOLID,
     },
 ];

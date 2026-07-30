@@ -125,6 +125,18 @@ fn same(a: &Mark, b: &Mark) -> bool {
                 radius: v,
                 ink: ink_b,
             },
+        )
+        | (
+            Mark::Disc {
+                center: p,
+                radius: u,
+                ink: i,
+            },
+            Mark::Disc {
+                center: q,
+                radius: v,
+                ink: ink_b,
+            },
         ) => path(&[*p], &[*q]) && near(*u, *v) && ink(*i, *ink_b),
         (
             Mark::Ellipse {

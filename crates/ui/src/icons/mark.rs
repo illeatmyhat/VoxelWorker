@@ -141,7 +141,11 @@ pub enum Mark {
     },
     /// A solid disc — a mark too small to be a ring. At 15 pt a two-pixel ring is mush where a
     /// two-pixel dot is crisp.
-    Disc { center: (f32, f32), radius: f32 },
+    Disc {
+        center: (f32, f32),
+        radius: f32,
+        ink: Ink,
+    },
     /// A filled square centred on a grid point: an authored VERTEX.
     ///
     /// The sketch set draws a vertex as a square and never as a disc — a disc is reserved for a
@@ -221,7 +225,11 @@ impl Mark {
                     g.circle_with(center, radius, ink.stroke(g));
                 }
             }
-            Mark::Disc { center, radius } => g.filled_circle(center, radius),
+            Mark::Disc {
+                center,
+                radius,
+                ink,
+            } => g.filled_circle_with(center, radius, ink.stroke(g).color),
             Mark::Node { center, size, ink } => {
                 let h = size / 2.0;
                 let (x, y) = center;

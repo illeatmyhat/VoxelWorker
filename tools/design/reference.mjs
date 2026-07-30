@@ -32,6 +32,25 @@ const IDS = {
   'Sketch scale|uniform': 'sketch-scale',
   'Blend curve|tangent join': 'blend-curve',
 
+  'Coincident|2 DOF': 'constraint-coincident',
+  'Collinear|2 DOF': 'constraint-collinear',
+  'Concentric|2 DOF': 'constraint-concentric',
+  'Midpoint|2 DOF': 'constraint-midpoint',
+  'Fix|all remaining': 'constraint-fix',
+  'Parallel|1 DOF': 'constraint-parallel',
+  'Perpendicular|1 DOF': 'constraint-perpendicular',
+  'Horizontal|1 DOF': 'constraint-horizontal',
+  'Vertical|1 DOF': 'constraint-vertical',
+  'Tangent|1 DOF': 'constraint-tangent',
+  'Equal|1 DOF': 'constraint-equal',
+  'Symmetry|2 DOF': 'constraint-symmetry',
+  'Curvature|+1 on tangency': 'constraint-curvature',
+  'Quantize|1 → integer': 'constraint-quantize',
+
+  'Mirror|generator': 'mirror',
+  'Rectangular pattern|generator': 'rectangular-pattern',
+  'Circular pattern|generator': 'circular-pattern',
+
   // Sketch · create, still to transpose.
   // 'Midpoint line|centre · end': 'midpoint-line',
   // 'Circle|centre · diameter': 'circle-center-diameter',
@@ -61,6 +80,7 @@ const IDS = {
 
   // Drawn on the sheet under names the shipped glyphs predate — transposing these RE-DRAWS an
   // existing icon, so each needs its own look before it can join the gate.
+  // 'Snap to voxel|modal': 'snap-voxel',
   // 'Select|entity pick': 'select-entity',
   // 'Add point|free vertex': 'add-point',
   // 'Rectangle|2-point': 'rectangle-2-point',
@@ -68,9 +88,27 @@ const IDS = {
 };
 
 const SCALE = 0.5;                       // the sheet draws on 36 units, the glyph grid is 18
-const INK = { '#f2f6fa': 'LineArt', '#9cb4d8': 'Accent', '#dda06a': 'Construction' };
 
-function load(file) {
+// The sheets draw in four colours; `Mark` has three ink ROLES. The collapse is deliberate and it
+// is lossless, because no single mark uses both of the two that merge:
+//
+//   #f2f6fa  white       the reference entity          -> LineArt
+//   #9cb4d8  tool blue   a generator, or a mode        -> Accent
+//   #e2564b  constraint  the DRIVEN entity             -> Accent
+//   #dda06a  amber       construction geometry         -> Construction
+//
+// Blue appears only on the operators and red only on the constraints, so within a glyph the two
+// never have to be told apart. Keeping them apart in the rail would mean a fourth ink role and a
+// second accent, which the Signal language does not have — the reading that survives, and the one
+// the sheets actually argue for, is "line art is the reference, the accent is what moves".
+const INK = {
+  '#f2f6fa': 'LineArt',
+  '#9cb4d8': 'Accent',
+  '#e2564b': 'Accent',
+  '#dda06a': 'Construction',
+};
+
+function load(file, exports) {
   const src = fs.readFileSync(path.join(ROOT, file), 'utf8');
   const body = src.slice(src.lastIndexOf('<script>') + 8, src.lastIndexOf('</script>'));
   const sandbox = {
@@ -78,8 +116,24 @@ function load(file) {
     document: { getElementById: () => ({ appendChild() {} }), createElement: () => ({ set innerHTML(_) {} }) },
   };
   vm.createContext(sandbox);
-  vm.runInContext(body + '\n;globalThis.__X = { CREATE, MODIFY, SHIPPED, chosen };', sandbox);
+  vm.runInContext(`${body}\n;globalThis.__X = { ${exports.join(', ')} };`, sandbox);
   return sandbox.__X;
+}
+
+// A mark authored on a non-square canvas is CENTRED on the glyph grid rather than stretched: the
+// sheet draws Horizontal 36x22 and Vertical 22x36 on purpose, so that the pair reads as a
+// quarter-turn of each other, and padding either back to a square would break exactly that.
+function centred(list, w, h) {
+  const dx = (Math.max(w, h) - w) / 2, dy = (Math.max(w, h) - h) / 2;
+  if (!dx && !dy) return list;
+  const p = ([x, y]) => [x + dx, y + dy];
+  return list.map(m => ({
+    ...m,
+    ...(m.pts ? { pts: m.pts.map(p) } : {}),
+    ...(m.c ? { c: p(m.c) } : {}),
+    ...(m.a ? { a: p(m.a), b: p(m.b) } : {}),
+    ...(m.p ? { p: m.p.map(p) } : {}),
+  }));
 }
 
 // ---- SVG elliptical-arc endpoint form -> centre form (SVG 1.1 F.6.5) -------
@@ -127,7 +181,9 @@ function parse(svg, name) {
       continue;
     }
     if (tag === 'circle') {
-      out.push({ k: 'Circle', c: [Number(a.cx), Number(a.cy)], r: Number(a.r), ink });
+      // Same filled/stroked split the rects get: a filled circle is a disc, a stroked one a ring.
+      const k = a.stroke === 'none' ? 'Disc' : 'Circle';
+      out.push({ k, c: [Number(a.cx), Number(a.cy)], r: Number(a.r), ink });
       continue;
     }
     if (tag === 'ellipse') {
@@ -200,6 +256,7 @@ function emit(p) {
     case 'Rect': return `Mark::Rect { a: (${f(p.a[0])}, ${f(p.a[1])}), b: (${f(p.b[0])}, ${f(p.b[1])}), ink: ${ink(p.ink)} }`;
     case 'Node': return `Mark::Node { center: (${f(p.c[0])}, ${f(p.c[1])}), size: ${f(p.size)}, ink: ${ink(p.ink)} }`;
     case 'Circle': return `Mark::Circle { center: (${f(p.c[0])}, ${f(p.c[1])}), radius: ${f(p.r)}, ink: ${ink(p.ink)} }`;
+    case 'Disc': return `Mark::Disc { center: (${f(p.c[0])}, ${f(p.c[1])}), radius: ${f(p.r)}, ink: ${ink(p.ink)} }`;
     case 'Ellipse': return `Mark::Ellipse { center: (${f(p.c[0])}, ${f(p.c[1])}), rx: ${f(p.rx)}, ry: ${f(p.ry)}, ink: ${ink(p.ink)} }`;
     case 'Arc': return `Mark::Arc { center: (${f(p.c[0])}, ${f(p.c[1])}), rx: ${f(p.rx)}, ry: ${f(p.ry)}, ` +
       `from: ${rad(p.from)}, to: ${rad(p.to)}, ink: ${ink(p.ink)} }`;
@@ -209,20 +266,31 @@ function emit(p) {
   throw new Error('unknown primitive ' + p.k);
 }
 
-const { CREATE, MODIFY, SHIPPED, chosen } = load('tool-marks.html');
-const MARKS = CREATE.concat(MODIFY, SHIPPED);
+// Both sheets, flattened to one list of `{ key, hint, w, h, svg }`. The tool sheet carries several
+// candidate drawings per mark and `chosen` picks the shipped one; the constraint sheet has one
+// drawing per mark and sizes its own canvas.
+const tools = load('tool-marks.html', ['CREATE', 'MODIFY', 'SHIPPED', 'chosen']);
+const relations = load('constraint-marks.html', ['MARKS', 'TOOLS']);
+
+const SHEET = [
+  ...tools.CREATE.concat(tools.MODIFY, tools.SHIPPED).map(m => ({
+    key: `${m.name}|${m.hint}`, hint: m.hint, w: 36, h: 36, svg: () => tools.chosen(m).draw(),
+  })),
+  ...relations.MARKS.concat(relations.TOOLS).map(m => ({
+    key: `${m.name}|${m.dof}`, hint: m.dof, w: m.w, h: m.h, svg: () => m.draw(),
+  })),
+];
 
 const rows = [];
-for (const m of MARKS) {
-  const key = `${m.name}|${m.hint}`;
-  const id = IDS[key];
+for (const m of SHEET) {
+  const id = IDS[m.key];
   if (!id) continue;
-  const parsed = parse(chosen(m).draw(), key);
-  rows.push(`    // ${m.name} — ${m.hint}\n    ("${id}", &[\n` +
+  const parsed = centred(parse(m.svg(), m.key), m.w, m.h);
+  rows.push(`    // ${m.key.replace('|', ' — ')}\n    ("${id}", &[\n` +
     parsed.map(p => `        ${emit(p)},`).join('\n') + '\n    ]),');
 }
 
-const missing = Object.keys(IDS).filter(k => !MARKS.some(m => `${m.name}|${m.hint}` === k));
+const missing = Object.keys(IDS).filter(k => !SHEET.some(m => m.key === k));
 if (missing.length) { console.error('IDS names no such mark: ' + missing.join(', ')); process.exit(1); }
 
 fs.writeFileSync(OUT, `//! The design sheet's resolved geometry, as data. GENERATED — do not hand-edit.

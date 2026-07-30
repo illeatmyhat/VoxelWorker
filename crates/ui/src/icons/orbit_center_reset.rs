@@ -42,6 +42,7 @@ pub(super) const DRAW: &[Mark] = &[
     Mark::Disc {
         center: (9.0, 9.0),
         radius: 1.4,
+        ink: Ink::SOLID,
     },
     // FILLED, like every other arrowhead in the set: a stroked chevron this size closes into a
     // blob at rail size. Tip on the arc's lower end, pointing the way the sweep travels.

@@ -58,9 +58,24 @@ mod chamfer_equal;
 mod chamfer_two_distance;
 mod chevron_down;
 mod chevron_right;
+mod circular_pattern;
 mod close_loop;
 mod commit;
 mod composed_part;
+mod constraint_coincident;
+mod constraint_collinear;
+mod constraint_concentric;
+mod constraint_curvature;
+mod constraint_equal;
+mod constraint_fix;
+mod constraint_horizontal;
+mod constraint_midpoint;
+mod constraint_parallel;
+mod constraint_perpendicular;
+mod constraint_quantize;
+mod constraint_symmetry;
+mod constraint_tangent;
+mod constraint_vertical;
 mod cylinder;
 mod density;
 /// Generated fixture, read only by [`tests::glyphs_match_the_design_sheet`] — it carries no
@@ -89,6 +104,7 @@ mod link;
 mod mark;
 mod material;
 mod measure;
+mod mirror;
 mod mode_booleans;
 mod mode_normal;
 mod mode_onion;
@@ -106,6 +122,7 @@ mod part;
 mod polyline;
 mod probe;
 mod rectangle;
+mod rectangular_pattern;
 mod revolve;
 mod root_part;
 mod rotate;
@@ -405,9 +422,17 @@ impl<'a> IconPainter<'a> {
     /// rail size is the *distinction* between a disc and a ring — which is why the tile
     /// `sketch` can say "grabbable handle" with a filled endpoint and its rail twin cannot.
     pub fn filled_circle(&self, center: (f32, f32), radius: f32) {
+        self.filled_circle_with(center, radius, self.stroke.color);
+    }
+
+    /// A solid disc in a given colour — [`filled_circle`](Self::filled_circle) off the line art.
+    ///
+    /// The constraint set needs it: a pattern's seed and its generated copies are both discs, and
+    /// which is which is the entire content of the mark.
+    pub fn filled_circle_with(&self, center: (f32, f32), radius: f32, color: Color32) {
         let scaled = (radius / self.grid) * self.rect.width();
         self.painter
-            .circle_filled(self.at(center.0, center.1), scaled, self.stroke.color);
+            .circle_filled(self.at(center.0, center.1), scaled, color);
     }
 
     /// Trace a cubic Bézier through its four control points, sampled as a polyline.
@@ -674,6 +699,25 @@ pub enum Icon {
     MoveCopy,
     SketchScale,
     BlendCurve,
+    // Sketch · constraints. Line art is the reference, the accent is what moves.
+    ConstraintCoincident,
+    ConstraintCollinear,
+    ConstraintConcentric,
+    ConstraintMidpoint,
+    ConstraintFix,
+    ConstraintParallel,
+    ConstraintPerpendicular,
+    ConstraintHorizontal,
+    ConstraintVertical,
+    ConstraintTangent,
+    ConstraintEqual,
+    ConstraintSymmetry,
+    ConstraintCurvature,
+    ConstraintQuantize,
+    // Sketch · operators. Generators, not relations.
+    Mirror,
+    RectangularPattern,
+    CircularPattern,
     CloseLoop,
     FillRegion,
     CarveRegion,
@@ -757,6 +801,23 @@ impl Icon {
         Icon::MoveCopy,
         Icon::SketchScale,
         Icon::BlendCurve,
+        Icon::ConstraintCoincident,
+        Icon::ConstraintCollinear,
+        Icon::ConstraintConcentric,
+        Icon::ConstraintMidpoint,
+        Icon::ConstraintFix,
+        Icon::ConstraintParallel,
+        Icon::ConstraintPerpendicular,
+        Icon::ConstraintHorizontal,
+        Icon::ConstraintVertical,
+        Icon::ConstraintTangent,
+        Icon::ConstraintEqual,
+        Icon::ConstraintSymmetry,
+        Icon::ConstraintCurvature,
+        Icon::ConstraintQuantize,
+        Icon::Mirror,
+        Icon::RectangularPattern,
+        Icon::CircularPattern,
         Icon::CloseLoop,
         Icon::FillRegion,
         Icon::CarveRegion,
@@ -856,6 +917,23 @@ impl Icon {
             Icon::MoveCopy => move_copy::DRAW,
             Icon::SketchScale => sketch_scale::DRAW,
             Icon::BlendCurve => blend_curve::DRAW,
+            Icon::ConstraintCoincident => constraint_coincident::DRAW,
+            Icon::ConstraintCollinear => constraint_collinear::DRAW,
+            Icon::ConstraintConcentric => constraint_concentric::DRAW,
+            Icon::ConstraintMidpoint => constraint_midpoint::DRAW,
+            Icon::ConstraintFix => constraint_fix::DRAW,
+            Icon::ConstraintParallel => constraint_parallel::DRAW,
+            Icon::ConstraintPerpendicular => constraint_perpendicular::DRAW,
+            Icon::ConstraintHorizontal => constraint_horizontal::DRAW,
+            Icon::ConstraintVertical => constraint_vertical::DRAW,
+            Icon::ConstraintTangent => constraint_tangent::DRAW,
+            Icon::ConstraintEqual => constraint_equal::DRAW,
+            Icon::ConstraintSymmetry => constraint_symmetry::DRAW,
+            Icon::ConstraintCurvature => constraint_curvature::DRAW,
+            Icon::ConstraintQuantize => constraint_quantize::DRAW,
+            Icon::Mirror => mirror::DRAW,
+            Icon::RectangularPattern => rectangular_pattern::DRAW,
+            Icon::CircularPattern => circular_pattern::DRAW,
             Icon::CloseLoop => close_loop::DRAW,
             Icon::FillRegion => fill_region::DRAW,
             Icon::CarveRegion => carve_region::DRAW,
@@ -939,6 +1017,23 @@ impl Icon {
             Icon::MoveCopy => "move-copy",
             Icon::SketchScale => "sketch-scale",
             Icon::BlendCurve => "blend-curve",
+            Icon::ConstraintCoincident => "constraint-coincident",
+            Icon::ConstraintCollinear => "constraint-collinear",
+            Icon::ConstraintConcentric => "constraint-concentric",
+            Icon::ConstraintMidpoint => "constraint-midpoint",
+            Icon::ConstraintFix => "constraint-fix",
+            Icon::ConstraintParallel => "constraint-parallel",
+            Icon::ConstraintPerpendicular => "constraint-perpendicular",
+            Icon::ConstraintHorizontal => "constraint-horizontal",
+            Icon::ConstraintVertical => "constraint-vertical",
+            Icon::ConstraintTangent => "constraint-tangent",
+            Icon::ConstraintEqual => "constraint-equal",
+            Icon::ConstraintSymmetry => "constraint-symmetry",
+            Icon::ConstraintCurvature => "constraint-curvature",
+            Icon::ConstraintQuantize => "constraint-quantize",
+            Icon::Mirror => "mirror",
+            Icon::RectangularPattern => "rectangular-pattern",
+            Icon::CircularPattern => "circular-pattern",
             Icon::CloseLoop => "close-loop",
             Icon::FillRegion => "fill-region",
             Icon::CarveRegion => "carve-region",
@@ -1022,6 +1117,23 @@ impl Icon {
             | Icon::MoveCopy
             | Icon::SketchScale
             | Icon::BlendCurve => Group::SketchModify,
+            Icon::ConstraintCoincident
+            | Icon::ConstraintCollinear
+            | Icon::ConstraintConcentric
+            | Icon::ConstraintMidpoint
+            | Icon::ConstraintFix
+            | Icon::ConstraintParallel
+            | Icon::ConstraintPerpendicular
+            | Icon::ConstraintHorizontal
+            | Icon::ConstraintVertical
+            | Icon::ConstraintTangent
+            | Icon::ConstraintEqual
+            | Icon::ConstraintSymmetry
+            | Icon::ConstraintCurvature
+            | Icon::ConstraintQuantize => Group::SketchConstraint,
+            Icon::Mirror | Icon::RectangularPattern | Icon::CircularPattern => {
+                Group::SketchOperator
+            }
             Icon::ChevronRight
             | Icon::ChevronDown
             | Icon::Commit
@@ -1161,6 +1273,62 @@ impl Icon {
             Icon::BlendCurve => {
                 "Sketch: a curve joining two others tangentially. The S rather than a C — a blend \
                  between curves pointing the same way has an inflection."
+            }
+            Icon::ConstraintCoincident => {
+                "Constraint: two points become one point. The accent is the one that moves — a \
+                 dimensioned member wins, else the first selected."
+            }
+            Icon::ConstraintCollinear => {
+                "Constraint: two segments share one infinite carrier. The gap is what makes them \
+                 two."
+            }
+            Icon::ConstraintConcentric => "Constraint: shared centre, radii free.",
+            Icon::ConstraintMidpoint => {
+                "Constraint: a point sits at the parametric middle. The carrier is dashed so this \
+                 cannot be read as Horizontal."
+            }
+            Icon::ConstraintFix => {
+                "Constraint: position frozen in sketch space. Fundamental and authorable like any \
+                 other — it pins a point's remaining freedoms."
+            }
+            Icon::ConstraintParallel => "Constraint: equal direction.",
+            Icon::ConstraintPerpendicular => {
+                "Constraint: directions differ by 90°. A chevron, not an L — perpendicularity is \
+                 symmetric."
+            }
+            Icon::ConstraintHorizontal => {
+                "Constraint: level in the SKETCH PLANE, never the world. Applies to a pair of \
+                 points, not only to a segment."
+            }
+            Icon::ConstraintVertical => "Constraint: the exact quarter turn of Horizontal.",
+            Icon::ConstraintTangent => "Constraint: touch with a common direction.",
+            Icon::ConstraintEqual => {
+                "Constraint: equal length, or equal radius. The accent takes the other's size, by \
+                 the same rule Coincident uses."
+            }
+            Icon::ConstraintSymmetry => {
+                "Constraint: two entities mirrored about an axis. Both are driven, so both carry \
+                 the accent; it binds the curves, not their endpoints."
+            }
+            Icon::ConstraintCurvature => {
+                "Constraint: curvature matches across a joint (G2). A comb — hairs normal to the \
+                 curve, lengths proportional to κ."
+            }
+            Icon::ConstraintQuantize => {
+                "Constraint: the value is an integer multiple of a voxel. Stored and \
+                 solver-visible, unlike snap, which is modal and leaves no record."
+            }
+            Icon::Mirror => {
+                "Sketch operator: generate the reflection of a selection. Mirror MAKES entities; \
+                 Symmetry relates ones that already exist."
+            }
+            Icon::RectangularPattern => {
+                "Sketch operator: copies along two directions. Line art is the seed, the accent \
+                 the copies, and the floating bars the pitch."
+            }
+            Icon::CircularPattern => {
+                "Sketch operator: copies swept about an axis. The cross IS the axis — the ring of \
+                 elements already describes the path."
             }
             Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
             Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",
