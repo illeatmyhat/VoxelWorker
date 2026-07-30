@@ -365,7 +365,7 @@ const ORANGE = '#dda06a';
   // The ruling, restated independently of the page: exactly these take A, one takes orange.
   const WANT_A = ['Spline|fit point', 'Spline|control point', 'Text|profile from glyphs',
                   'Trim|to nearest crossing', 'Sketch scale|uniform', 'Add point|free vertex',
-                  'Rectangle|2-point', 'Chamfer|equal distance'];
+                  'Rectangle|2-point'];
   for (const m of MARKS) {
     const k = `${m.name}|${m.hint}`, v = chosen(m);
     // Same precedence as the page: an A-override outranks a D redraw, D outranks the B default.
@@ -743,51 +743,6 @@ const ORANGE = '#dda06a';
        'Sketch dimension: the measured points are accented — on this mark the accent is the dimension');
     ok(d.split(BLUE).length - 1 === 3,
        'Sketch dimension: the accent is not exactly the dimension line plus its two heads');
-  }
-
-  // The three chamfers are one drawing and the ticks are the only thing telling them apart, so
-  // the ghost corner has to be there to hang them on and the counts have to say what they claim.
-  {
-    const bevelOf = (d) => [...d.matchAll(/<path d="M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+)" stroke="([^"]+)"/g)]
-      .filter(g => g[5] === BLUE).map(g => g.slice(1, 5).map(Number))[0];
-    const ghostOf = (d) => {
-      const g = d.match(/M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+)" stroke="[^"]+" stroke-width="[\d.]+" fill="none" stroke-dasharray/);
-      return g && g.slice(1).map(Number);
-    };
-    const stubs = (g) => [Math.hypot(g[2] - g[0], g[3] - g[1]), Math.hypot(g[4] - g[2], g[5] - g[3])];
-    const ticks = (d) => segs(d).filter(t => Math.hypot(t[2] - t[0], t[3] - t[1]) <= 6.5 + 1e-9);
-
-    for (const hint of ['equal distance', 'distance and angle', 'two distance']) {
-      const d = R('Chamfer', hint);
-      const g = ghostOf(d);
-      ok(g, `Chamfer ${hint}: no dashed ghost corner — the ticks would measure from nothing`);
-      const b = bevelOf(d);
-      ok(b, `Chamfer ${hint}: no accented bevel`);
-      near(Math.hypot(b[0] - g[0], b[1] - g[1]), 0, 1e-6, `Chamfer ${hint}: bevel misses the first stub end`);
-      near(Math.hypot(b[2] - g[4], b[3] - g[5]), 0, 1e-6, `Chamfer ${hint}: bevel misses the second stub end`);
-    }
-
-    const eq = stubs(ghostOf(R('Chamfer', 'equal distance')));
-    near(eq[0], eq[1], 1e-6, 'Chamfer equal distance: the two stubs are NOT equal');
-    const two = stubs(ghostOf(R('Chamfer', 'two distance')));
-    ok(Math.abs(two[0] - two[1]) > 2, `Chamfer two distance: stubs ${two} differ too little to read`);
-    const da = stubs(ghostOf(R('Chamfer', 'distance and angle')));
-    ok(Math.abs(da[0] - da[1]) > 0.5, 'Chamfer distance and angle: its stubs read as equal distance');
-
-    ok(ticks(R('Chamfer', 'equal distance')).length === 2, 'Chamfer equal distance: not one tick per stub');
-    ok(ticks(R('Chamfer', 'two distance')).length === 3, 'Chamfer two distance: not two ticks against one');
-    const dad = R('Chamfer', 'distance and angle');
-    ok(ticks(dad).length === 1, 'Chamfer distance and angle: more than one tick, so it says two distances');
-    const arc = [...dad.matchAll(/M ([\d.]+) ([\d.]+) A ([\d.]+) [\d.]+ 0 (\d) (\d) ([\d.]+) ([\d.]+)/g)][0];
-    ok(arc, 'Chamfer distance and angle: no angle arc, so nothing in it says "angle"');
-    if (arc) {
-      const a = arc.slice(1).map(Number);
-      const b = bevelOf(dad), corner = [b[2], b[3]];
-      near(Math.hypot(a[0] - corner[0], a[1] - corner[1]), a[2], 5e-3,
-           'Chamfer distance and angle: the arc is not struck about the bevel far end');
-      near(Math.hypot(a[5] - corner[0], a[6] - corner[1]), a[2], 5e-3,
-           'Chamfer distance and angle: the arc is not a constant radius about that corner');
-    }
   }
 }
 

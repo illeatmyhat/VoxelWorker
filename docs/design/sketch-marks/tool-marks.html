@@ -550,11 +550,8 @@
 
     { name: 'Chamfer', hint: 'equal distance', w: 36, h: 32,
       draw: () => ln([[6, 16], [6, 26], [16, 26]], W, DASH) + ln([[6, 5], [6, 16]], W) +
-                  ln([[16, 26], [31, 26]], W) + ln([[6, 16], [16, 26]], B) +
-                  ln([[3, 21], [9, 21]], W) + ln([[11, 23], [11, 29]], W),
-      role: 'Same drawing as Fillet with one element swapped — two answers to one situation. The ' +
-            'ticks sit on the two DOOMED stubs, one each, equal: that is the drafting mark for ' +
-            '"these runs are the same", and it is what separates this chamfer from its two siblings.',
+                  ln([[16, 26], [31, 26]], W) + ln([[6, 16], [16, 26]], B),
+      role: 'Same drawing as Fillet with one element swapped — two answers to one situation.',
       b: { draw: () => ln([[6, 4], [6, 15]], W) + ln([[17, 26], [31, 26]], W) + ln([[6, 16], [16, 26]], B),
         note: 'Fusion has <b>three</b> sketch chamfers — Equal Distance, Distance And Angle, Two ' +
               'Distance — drawn identically but for the bevel\'s slope. This is the equal one, at 45°.' },
@@ -563,22 +560,15 @@
               'line</b> and nothing else, which is exactly the decision the user is making.' } },
 
     { name: 'Chamfer', hint: 'distance and angle', w: 36, h: 32, fresh: true,
-      draw: () => ln([[6, 12], [6, 26], [21, 26]], W, DASH) + ln([[6, 4], [6, 12]], W) +
-                  ln([[21, 26], [31, 26]], W) + ln([[6, 12], [21, 26]], B) +
-                  ln([[3, 19], [9, 19]], W) + arcTo(28, 26, 7, 15.883, 21.224, 0, 0, W),
-      role: 'One tick and one arc, because the tool takes one <b>length</b> and one <b>angle</b>. ' +
-            'The arc is struck at the bevel\'s far end, between the cut and the leg it leaves at — ' +
-            'which is the angle actually typed. The slope is deliberately off 45° so the mark ' +
-            'cannot be mistaken for equal distance when the ticks are too small to read.' },
+      draw: () => ln([[6, 4], [6, 11]], W) + ln([[22, 26], [31, 26]], W) + ln([[6, 12], [21, 26]], B),
+      role: 'Its siblings\' drawing at a <b>shallower slope</b> — Fusion\'s own treatment, which is ' +
+            'that the three chamfers are one icon and the bevel\'s angle is the difference.',
+      },
 
     { name: 'Chamfer', hint: 'two distance', w: 36, h: 32, fresh: true,
-      draw: () => ln([[6, 11], [6, 26], [18, 26]], W, DASH) + ln([[6, 4], [6, 11]], W) +
-                  ln([[18, 26], [31, 26]], W) + ln([[6, 11], [18, 26]], B) +
-                  ln([[3, 16], [9, 16]], W) + ln([[3, 20], [9, 20]], W) +
-                  ln([[12, 23], [12, 29]], W),
-      role: 'Two ticks against one. Drafting says equal runs carry equal marks, so <b>unequal ' +
-            'marks say unequal runs</b> — the same convention equal distance uses, read backwards, ' +
-            'which is why the three chamfers can share a drawing and still be told apart.' },
+      draw: () => ln([[6, 4], [6, 10]], W) + ln([[19, 26], [31, 26]], W) + ln([[6, 11], [18, 26]], B),
+      role: 'The third slope. Legs of <b>15 and 12</b> against equal distance\'s 10 and 10, so the ' +
+            'bevel leans where neither sibling\'s does.' },
 
     { name: 'Trim', hint: 'to nearest crossing', w: 36, h: 32,
       draw: () => ln([[10, 30], [26, 6]], W) + ln([[16.67, 20], [32, 20]], W) +
@@ -782,12 +772,7 @@
     'Add point|free vertex': 'B is monochrome — confirmed against the shipped PNG, whose only ' +
       'colour is <code>#666666</code>. A is the same composition with the node accented, which is ' +
       'what the app needs to tell "place a vertex" from "select one".',
-    'Chamfer|equal distance': 'B was resolved when the set had ONE chamfer. There are three, and ' +
-      'Fusion draws them identically but for the bevel\'s slope — which is not a difference at ' +
-      '16 px. The distances are measured from a vertex the chamfer deletes, so the discriminating ' +
-      'ticks have nothing to sit on unless the ghost corner is drawn, and only A draws it. Same ' +
-      'shape of ruling as the splines: <b>invent the cue rather than port the omission</b>.',
-    'Rectangle|2-point': 'Their gap-the-outline-at-the-picked-corners is the most authored detail ' +
+    'Rectangle|2-point':'Their gap-the-outline-at-the-picked-corners is the most authored detail ' +
       'in their set, so B was never safe to take. A sidesteps it without inventing anything: an ' +
       'unbroken outline with two plain corner picks. <b>D\'s registration brackets solved the same ' +
       'problem by adding a second vocabulary</b> — the cheaper answer wins.',
