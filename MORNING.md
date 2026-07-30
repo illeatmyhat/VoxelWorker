@@ -291,17 +291,59 @@ each glyph adds its row when it lands.
 - **The unpick MIGRATES** when its face is cut in two (your call, 2026-07-30). Already the shipped
   behaviour and pinned by `cutting_an_unpicked_face_in_two_migrates_the_unpick`; nothing to change.
 
+## Slice E has a caller now · SHIPPED · `4c48782`
+
+I had this listed as the ADR's largest debt and as the decision I needed from you. On reflection
+that was me stalling until morning over a call the brief tells me to make, so I made it and built
+it. **Decisions 2, 3 and 4.**
+
+`Constraint` joins points, segments and arcs in the stable-id space — selectable, individually
+deletable, and the delete cascade reaches it when the geometry it names dies. Four kinds to start:
+`Fix`, `Horizontal`, `Vertical`, `Distance`. Tangent, Perpendicular, Equal and `Quantize` are more
+residuals on the same path.
+
+**Check it** (~40 s): `cargo test -p document constraints` — expect **11 passed**. The two to read
+are `horizontal_levels_a_segment_by_meeting_in_the_middle` and
+`a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone`.
+
+Three things worth knowing:
+
+1. **A solve is a nudge, not a rearrangement.** The least-squares solution is the one nearest the
+   guess, and the guess is your drawing — so levelling a slanted line brings both ends to the
+   middle instead of snapping one to the other. That is asserted, not hoped for.
+2. **Parameters are every point's coordinates**, not just the constrained ones. That is what makes
+   `degrees_of_freedom` mean "how many ways can this drawing still move". An unconstrained point is
+   a real freedom, and a sketch is fully constrained only when there are none left.
+3. **Adding trial-solves on a copy.** Unsatisfiable is refused and nothing moves; redundant is
+   accepted and flagged. The system is therefore always solvable, which downstream gets to assume.
+
+**Decisions you might disagree with**
+
+1. **`Fix` stores the position it pins**, rather than reading the point at solve time. Otherwise any
+   other constraint that dragged the point would silently redefine what "fixed" meant.
+2. **Adding a constraint keeps the solve.** The trial that decides whether to accept it is also the
+   solve whose result is kept, so applying a constraint moves the drawing immediately.
+3. **A refused constraint burns no id** — the id is minted after the trial passes, not before.
+4. `crates/document/src/sketch/mod.rs` is now 1893 lines, over the 1000-line guard. It was already
+   over; I did not carve it up mid-slice.
+
+**What I skipped:** the integer outer loop (Decision 2's second tier), the remaining constraint
+kinds, and any UI. `degrees_of_freedom` is a method nothing displays yet.
+
+---
+
 ## What ADR 0035 still owes
 
-1. **Slice E has no caller.** The solver core is real and tested and drives nothing. The smallest
-   useful slice: constraint entities (coincident, horizontal/vertical, distance), a residual system
-   built from them, and `SolveReport`'s DOF surfaced in the UI. This is the ADR's whole point.
+1. **The integer outer loop** — Decision 2's second tier: solve continuously, round the quantized
+   freedoms, fix them, re-solve the rest. The continuous half is done and called; this is what makes
+   `Quantize` (Decision 14) mean anything.
 2. **~60 glyphs and the dimension gizmos** — #36–#40. The sheet and the gate are done; this is
    transposition against a test that catches the slips.
-3. **The expression text parser.** The AST and evaluator ship; nothing parses `2*width + 3mm`.
+3. **DOF in the UI.** `Sketch::degrees_of_freedom()` is real and nothing shows it. "Fully
+   constrained" is the indicator Decision 4 bought and it is not on screen.
+4. **The expression text parser.** The AST and evaluator ship; nothing parses `2*width + 3mm`.
    Belongs to the parameters panel.
-4. **Kani harnesses** for `curve_intersection` and `deepest_interior_point`.
-5. **The inspector reads "Custom profile (1 points)"** for a circle. Cosmetic.
+5. **Kani harnesses** for `curve_intersection` and `deepest_interior_point`.
 
 ---
 
@@ -377,11 +419,21 @@ cargo test -p document circles     # 18 passed
 
 ## The decision I need
 
-**All five slices are complete, including slice B's last line** — which was implemented in `376c5a7`
-and which I twice mis-reported as skipped before finding it. Nothing in A–E is waiting on you. The
-one thing I cannot pick for you:
+**All five slices are complete**, including slice B's last line, which was implemented in `376c5a7`
+and which I twice mis-reported as skipped before finding it. Slice E now has a caller. Nothing in
+A–E is waiting on you.
 
-**Slice E's caller, or the icon workstream?** Constraint entities (coincident, horizontal/vertical,
-distance) feeding the solver core is the ADR's actual point — the solver drives nothing until it
-exists. #36–#40 is ~60 glyphs of transposition against a green gate: safe, mechanical, unblocks the
-rail. I would take the solver's caller, because a tested solver with no caller is the larger debt.
+I twice ended this file asking you to pick the next workstream. That was the wrong shape of
+question — it stops the night on something your own rules say I should decide — so I took my own
+recommendation and built the constraint slice instead. Both of those framings are recorded above.
+
+**The one thing I genuinely cannot pick for you: does `Fix` belong in the first constraint set?**
+
+Decision 5 lists it as **not inferable** — "asserting immovability by accident is the worst failure
+mode" — but says nothing about whether it is authorable, and I have shipped it as authorable. It is
+the sharpest tool in the set: two constraints and a `Fix` can make a drawing unsolvable in a way
+that reads as a bug. Everything else I built (`Horizontal`, `Vertical`, `Distance`) fails softly.
+
+If you want it out, it is one variant and its residual arm. If you want it in, the next thing is
+either the integer outer loop or DOF on screen, and I would take DOF on screen — it is small, and
+"fully constrained" is the whole reason Decision 4 bought a rank check.
