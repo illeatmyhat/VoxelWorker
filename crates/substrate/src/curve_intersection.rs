@@ -130,6 +130,109 @@ impl PlanarCurve {
         }
     }
 
+    /// How long the curve is, in the units its coordinates are in.
+    pub fn length(&self) -> f64 {
+        match *self {
+            PlanarCurve::Segment { start, end } => length([end[0] - start[0], end[1] - start[1]]),
+            PlanarCurve::Arc {
+                radius,
+                sweep_radians,
+                ..
+            } => radius * sweep_radians.abs(),
+        }
+    }
+
+    /// The stretch of this curve between two parameters, as a curve in its own right.
+    ///
+    /// An arc keeps its circle and narrows its sweep — it does not become a chord, and it does not
+    /// get re-solved from the new endpoints. That is the whole point: cutting a curve produces
+    /// pieces of the SAME curve, so nothing is approximated by being split.
+    pub fn sub_curve(&self, from: f64, to: f64) -> PlanarCurve {
+        match *self {
+            PlanarCurve::Segment { .. } => PlanarCurve::Segment {
+                start: self.point_at(from),
+                end: self.point_at(to),
+            },
+            PlanarCurve::Arc {
+                centre,
+                radius,
+                start_radians,
+                sweep_radians,
+            } => PlanarCurve::Arc {
+                centre,
+                radius,
+                start_radians: start_radians + sweep_radians * from,
+                sweep_radians: sweep_radians * (to - from),
+            },
+        }
+    }
+
+    /// This curve cut at each of `parameters`, in order along it.
+    ///
+    /// Cuts outside `(0, 1)`, cuts too close together to separate, and cuts at the ends are all
+    /// dropped — a zero-length piece is not a piece, and an arrangement that grew one would derive
+    /// a face with a degenerate edge in its boundary.
+    ///
+    /// A CLOSED curve with no cuts comes back whole, as one closed piece. That case cannot be
+    /// expressed as a chain of pieces between vertices, because it has no vertex; it is a loop
+    /// already, and its caller treats it as one.
+    pub fn split_at(&self, parameters: &[f64]) -> Vec<PlanarCurve> {
+        let curve_length = self.length();
+        let slack = if curve_length > CROSSING_EPSILON {
+            CROSSING_EPSILON / curve_length
+        } else {
+            1.0
+        };
+        // On an OPEN curve the ends are already vertices, so a cut there is not a cut. On a CLOSED
+        // one there are no ends: parameter zero is an ordinary place on the curve, and dropping a
+        // cut that lands on the seam would leave a circle uncut by a line that plainly crosses it.
+        let mut cuts: Vec<f64> = if self.is_closed() {
+            parameters
+                .iter()
+                .map(|parameter| {
+                    let wrapped = parameter.rem_euclid(1.0);
+                    if wrapped >= 1.0 - slack {
+                        0.0
+                    } else {
+                        wrapped
+                    }
+                })
+                .collect()
+        } else {
+            parameters
+                .iter()
+                .copied()
+                .filter(|parameter| *parameter > slack && *parameter < 1.0 - slack)
+                .collect()
+        };
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|later, earlier| (*later - *earlier).abs() <= slack);
+        if cuts.is_empty() {
+            return vec![*self];
+        }
+        if self.is_closed() {
+            // A closed curve's seam is an artefact of how it was written down, not a place on it.
+            // So the pieces run between consecutive cuts and the last one WRAPS through the seam
+            // back to the first — otherwise the seam would become a spurious degree-two vertex in
+            // the arrangement, splitting one piece into two for no geometric reason. One cut
+            // leaves the curve closed; it is merely re-seamed there.
+            let first = cuts[0];
+            let mut pieces = Vec::with_capacity(cuts.len());
+            for window in cuts.windows(2) {
+                pieces.push(self.sub_curve(window[0], window[1]));
+            }
+            pieces.push(self.sub_curve(cuts[cuts.len() - 1], first + 1.0));
+            return pieces;
+        }
+        let mut pieces = Vec::with_capacity(cuts.len() + 1);
+        let mut previous = 0.0;
+        for cut in cuts.into_iter().chain(std::iter::once(1.0)) {
+            pieces.push(self.sub_curve(previous, cut));
+            previous = cut;
+        }
+        pieces
+    }
+
     /// Every place this curve meets `other`, ascending by parameter on `self`.
     ///
     /// A transverse crossing is one entry. A tangency is one entry (the two roots have collapsed).
@@ -163,6 +266,33 @@ impl PlanarCurve {
         found.sort_by(|a, b| a.parameter_on_first.total_cmp(&b.parameter_on_first));
         found
     }
+}
+
+/// Every curve cut at every crossing with every other, each returned as its ordered pieces.
+///
+/// This is the arrangement's first half: after it, no two pieces cross anywhere but at a shared
+/// endpoint, which is the precondition a planar-graph face walk needs. The second half — matching
+/// those endpoints up into vertices and tracing the faces — belongs to whoever owns the graph,
+/// because that is where identity lives.
+///
+/// Quadratic in the number of curves. A sketch is drawn by hand, so the count is small and the
+/// constant matters more than the exponent; a sweep-line would be the answer if that ever stopped
+/// being true.
+pub fn cut_at_crossings(curves: &[PlanarCurve]) -> Vec<Vec<PlanarCurve>> {
+    let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); curves.len()];
+    for first in 0..curves.len() {
+        for second in (first + 1)..curves.len() {
+            for crossing in curves[first].crossings(&curves[second]) {
+                cuts[first].push(crossing.parameter_on_first);
+                cuts[second].push(crossing.parameter_on_second);
+            }
+        }
+    }
+    curves
+        .iter()
+        .zip(cuts)
+        .map(|(curve, parameters)| curve.split_at(&parameters))
+        .collect()
 }
 
 /// One place two curves meet, located on both of them.
@@ -723,6 +853,98 @@ mod tests {
         let crossings = segment([0.0, 0.0], [0.0, 10.0]).crossings(&circle);
         assert_eq!(crossings.len(), 1);
         assert!((crossings[0].parameter_on_second - 0.25).abs() < 1e-9);
+    }
+
+    /// Cutting an arc gives back arcs of the SAME circle, not chords. If it did not, splitting a
+    /// curve would be a lossy operation and the arrangement would flatten everything it touched.
+    #[test]
+    fn a_cut_arc_is_still_an_arc_of_its_circle() {
+        let half = arc([1.0, 2.0], 5.0, 0.0, 180.0);
+        let pieces = half.split_at(&[0.5]);
+        assert_eq!(pieces.len(), 2);
+        for piece in &pieces {
+            let PlanarCurve::Arc { centre, radius, .. } = piece else {
+                panic!("a cut arc became {piece:?}");
+            };
+            assert_eq!(*centre, [1.0, 2.0]);
+            assert_eq!(*radius, 5.0);
+        }
+        assert_near(pieces[0].start(), half.start());
+        assert_near(pieces[0].end(), half.point_at(0.5));
+        assert_near(pieces[1].end(), half.end());
+    }
+
+    #[test]
+    fn cuts_at_the_ends_and_on_top_of_each_other_are_dropped() {
+        let span = segment([0.0, 0.0], [10.0, 0.0]);
+        assert_eq!(span.split_at(&[0.0, 1.0]).len(), 1, "the ends are not cuts");
+        assert_eq!(
+            span.split_at(&[0.5, 0.5 + 1.0e-15]).len(),
+            2,
+            "two cuts at one place are one cut"
+        );
+        assert_eq!(span.split_at(&[-0.5, 1.5]).len(), 1, "off the curve");
+    }
+
+    /// The flagship: two overlapping circles cut each other into four pieces, two apiece — the
+    /// decomposition three regions are traced from.
+    #[test]
+    fn two_overlapping_circles_cut_each_other_in_two() {
+        let pieces = cut_at_crossings(&[
+            PlanarCurve::circle([0.0, 0.0], 5.0),
+            PlanarCurve::circle([6.0, 0.0], 5.0),
+        ]);
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].len(), 2, "the first circle, cut twice");
+        assert_eq!(pieces[1].len(), 2, "and so is the second");
+        for arcs in &pieces {
+            for piece in arcs {
+                assert!(!piece.is_closed(), "a cut circle is no longer closed");
+            }
+        }
+        // The pieces wrap through the seam rather than stopping at it: together they cover the
+        // whole circle, and neither ends where the circle happened to be written down from.
+        let total: f64 = pieces[0].iter().map(PlanarCurve::length).sum();
+        assert!(
+            (total - TAU * 5.0).abs() < 1e-9,
+            "the pieces cover the circle"
+        );
+    }
+
+    /// One cut on a closed curve leaves it closed — a tangency does not open a circle up, it only
+    /// moves where the loop is written from.
+    #[test]
+    fn a_single_cut_leaves_a_closed_curve_closed() {
+        let pieces = PlanarCurve::circle([0.0, 0.0], 4.0).split_at(&[0.25]);
+        assert_eq!(pieces.len(), 1);
+        assert!(pieces[0].is_closed());
+        assert_near(pieces[0].start(), [0.0, 4.0]);
+    }
+
+    /// A circle nothing crosses stays whole. It has no vertex, so it cannot be expressed as a chain
+    /// of pieces — it is a loop already.
+    #[test]
+    fn an_uncrossed_closed_curve_comes_back_whole() {
+        let pieces = cut_at_crossings(&[
+            PlanarCurve::circle([0.0, 0.0], 5.0),
+            segment([20.0, 0.0], [30.0, 0.0]),
+        ]);
+        assert_eq!(pieces[0].len(), 1);
+        assert!(pieces[0][0].is_closed());
+    }
+
+    /// A line through a circle cuts BOTH: the circle into two arcs, the line into three spans.
+    /// Every piece then meets its neighbours only at endpoints, which is what the face walk needs.
+    #[test]
+    fn a_line_through_a_circle_cuts_both_of_them() {
+        let pieces = cut_at_crossings(&[
+            PlanarCurve::circle([0.0, 0.0], 4.0),
+            segment([-10.0, 0.0], [10.0, 0.0]),
+        ]);
+        assert_eq!(pieces[0].len(), 2, "two arcs");
+        assert_eq!(pieces[1].len(), 3, "outside, across, outside");
+        assert_near(pieces[1][0].end(), [-4.0, 0.0]);
+        assert_near(pieces[1][1].end(), [4.0, 0.0]);
     }
 
     /// A tiny curve and a huge one are held to the same DISTANCE tolerance, not the same parameter
