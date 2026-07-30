@@ -13,12 +13,34 @@
 
 use super::{IconPainter, Stroke};
 
-/// How a mark is inked: whether it dashes, and how far it is faded back.
+/// Which of the set's inks a mark is drawn in.
 ///
-/// Dashing and fading are independent — a receding operand edge is both — so this is a product
-/// and not an enum of the four combinations.
+/// A glyph does not name colours — it names ROLES, and the painter resolves them against the
+/// colour the host passed plus the theme. That is what lets one glyph be idle, hovered and armed
+/// without three copies of it, which is the property the whole set is built on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum InkRole {
+    /// The glyph's line art — whatever colour the host passed. Every mark that is not making a
+    /// point about a pick or a linetype is this.
+    #[default]
+    LineArt,
+    /// The accent: what you clicked, or what the tool produced. Resolved so it stays legible
+    /// even when the host has already painted the glyph in the accent because its button is armed.
+    Accent,
+    /// The sketch construction linetype. Not a state and not a theme step — it QUOTES the ink
+    /// construction geometry already has in the viewport, which is the only reason a third
+    /// colour is allowed in this set at all.
+    Construction,
+}
+
+/// How a mark is inked: which ink, whether it dashes, and how far it is faded back.
+///
+/// The three are independent — a receding operand edge is faint and dashed at once — so this is
+/// a product and not an enum of the combinations.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ink {
+    /// Which of the set's inks this mark is drawn in.
+    pub role: InkRole,
     /// Whether the mark follows the set's dash rhythm (2.2 on, 1.8 off, in grid units).
     pub dashed: bool,
     /// Opacity multiplier, 1.0 being the glyph's full stroke.
@@ -28,6 +50,7 @@ pub struct Ink {
 impl Ink {
     /// The glyph's own stroke, at full weight.
     pub const SOLID: Ink = Ink {
+        role: InkRole::LineArt,
         dashed: false,
         opacity: 1.0,
     };
@@ -35,6 +58,22 @@ impl Ink {
     /// The set's dash rhythm: "authored, but not what you are looking at" — an operand, an
     /// envelope, a fold entry that lost.
     pub const DASHED: Ink = Ink {
+        role: InkRole::LineArt,
+        dashed: true,
+        opacity: 1.0,
+    };
+
+    /// The accent, solid: a pick, or the thing the tool made.
+    pub const ACCENT: Ink = Ink {
+        role: InkRole::Accent,
+        dashed: false,
+        opacity: 1.0,
+    };
+
+    /// The construction linetype. Always dashed — it is never drawn solid anywhere, in the
+    /// viewport or here, so there is deliberately no solid form of it to reach for.
+    pub const CONSTRUCTION: Ink = Ink {
+        role: InkRole::Construction,
         dashed: true,
         opacity: 1.0,
     };
@@ -43,6 +82,7 @@ impl Ink {
     /// a datum that must not compete with the subject.
     pub const fn faint(opacity: f32) -> Ink {
         Ink {
+            role: InkRole::LineArt,
             dashed: false,
             opacity,
         }
@@ -51,18 +91,19 @@ impl Ink {
     /// Dashed and faded at once.
     pub const fn faint_dashed(opacity: f32) -> Ink {
         Ink {
+            role: InkRole::LineArt,
             dashed: true,
             opacity,
         }
     }
 
-    /// Resolve against a painter. Full opacity takes the painter's own stroke rather than a
-    /// `gamma_multiply(1.0)` of it, so a solid mark is bit-for-bit what it always was.
+    /// Resolve against a painter. Line art at full opacity takes the painter's own stroke rather
+    /// than rebuilding it, so every glyph authored before roles existed is bit-for-bit unchanged.
     fn stroke(self, g: &IconPainter) -> Stroke {
-        if self.opacity >= 1.0 {
+        if self.role == InkRole::LineArt && self.opacity >= 1.0 {
             g.stroke()
         } else {
-            g.faint(self.opacity)
+            g.inked(self.role, self.opacity)
         }
     }
 }
@@ -101,6 +142,17 @@ pub enum Mark {
     /// A solid disc — a mark too small to be a ring. At 15 pt a two-pixel ring is mush where a
     /// two-pixel dot is crisp.
     Disc { center: (f32, f32), radius: f32 },
+    /// A filled square centred on a grid point: an authored VERTEX.
+    ///
+    /// The sketch set draws a vertex as a square and never as a disc — a disc is reserved for a
+    /// pick that is consumed at creation and never becomes an entity (ADR 0030 §5). Naming the
+    /// concept rather than spelling it as a 2-unit `Rect` is what lets the accent role attach to
+    /// it, and what keeps every vertex in the set the same size by construction.
+    Node {
+        center: (f32, f32),
+        size: f32,
+        ink: Ink,
+    },
     /// An axis-aligned ellipse outline — the set's roundness mark.
     Ellipse {
         center: (f32, f32),
@@ -170,6 +222,19 @@ impl Mark {
                 }
             }
             Mark::Disc { center, radius } => g.filled_circle(center, radius),
+            Mark::Node { center, size, ink } => {
+                let h = size / 2.0;
+                let (x, y) = center;
+                g.fill_with(
+                    &[
+                        (x - h, y - h),
+                        (x + h, y - h),
+                        (x + h, y + h),
+                        (x - h, y + h),
+                    ],
+                    ink.stroke(g).color,
+                );
+            }
             Mark::Ellipse {
                 center,
                 rx,

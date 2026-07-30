@@ -40,6 +40,7 @@
 //!     a ridge glyph would lie the moment the amount goes negative, so the footprint mark is
 //!     the primary and [`Icon::EmbossRecess`] is its negative-amount variant.
 
+use crate::theme;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 mod add_point;
@@ -71,6 +72,7 @@ mod home;
 mod inset;
 mod intersect;
 pub mod large;
+mod line;
 mod link;
 mod mark;
 mod material;
@@ -110,7 +112,7 @@ mod union;
 mod view_cube;
 mod zoom;
 
-pub use mark::{Ink, Mark};
+pub use mark::{Ink, InkRole, Mark};
 
 /// The authoring grid every RAIL glyph is traced on: 18 × 18 units. The large tile family
 /// ([`large`]) is traced on its own coarser grid — see [`large::GRID`].
@@ -132,6 +134,8 @@ pub struct IconPainter<'a> {
     rect: Rect,
     stroke: Stroke,
     grid: f32,
+    accent: Color32,
+    construction: Color32,
 }
 
 impl<'a> IconPainter<'a> {
@@ -162,7 +166,34 @@ impl<'a> IconPainter<'a> {
             rect,
             stroke: Stroke::new(stroke_width * scale.max(0.55), color),
             grid,
+            // When the host has ALREADY painted the glyph in the accent — an armed rail button —
+            // an accent mark drawn in the accent would vanish into the line art and the glyph
+            // would lose exactly the distinction it was drawn to make. Stepping up to the hover
+            // tone keeps the two inks apart in the one state where it matters most.
+            accent: if color == theme::ACCENT {
+                theme::HANDLE_HOVER
+            } else {
+                theme::ACCENT
+            },
+            construction: theme::SKETCH_CONSTRUCTION,
         }
+    }
+
+    /// The stroke for an ink role at an opacity — how [`Ink`] resolves itself.
+    pub(super) fn inked(&self, role: mark::InkRole, opacity: f32) -> Stroke {
+        let color = match role {
+            mark::InkRole::LineArt => self.stroke.color,
+            mark::InkRole::Accent => self.accent,
+            mark::InkRole::Construction => self.construction,
+        };
+        Stroke::new(
+            self.stroke.width,
+            if opacity >= 1.0 {
+                color
+            } else {
+                color.gamma_multiply(opacity)
+            },
+        )
     }
 
     /// Map a point on the authoring grid onto the glyph box.
@@ -484,6 +515,15 @@ pub enum Group {
     Tools,
     /// The sketch-mode rail: the profile-vertex tools and their position snap (ADR 0028).
     Sketch,
+    /// Sketch tools that ADD an entity to the sketch (ADR 0035).
+    SketchCreate,
+    /// Sketch tools that change entities already there — every one needs curve–curve
+    /// intersection, which is why they land as one group and not scattered through the rail.
+    SketchModify,
+    /// The constraint palette: what the solver is told, rather than what is drawn.
+    SketchConstraint,
+    /// Dimension gizmos — the authored quantities a constraint is driven by (ADR 0029).
+    SketchDimension,
     /// Interface furniture.
     Chrome,
 }
@@ -500,6 +540,10 @@ impl Group {
             Group::Structure => "Structure",
             Group::Tools => "Tools",
             Group::Sketch => "Sketch mode",
+            Group::SketchCreate => "Sketch · create",
+            Group::SketchModify => "Sketch · modify",
+            Group::SketchConstraint => "Sketch · constraints",
+            Group::SketchDimension => "Sketch · dimensions",
             Group::Chrome => "Chrome",
         }
     }
@@ -515,6 +559,10 @@ impl Group {
             Group::Structure => "parts, the root part, and the fold itself",
             Group::Tools => "what the pointer is currently doing",
             Group::Sketch => "the sketch scope's rail: vertex tools + profile position snap (extrude/revolve reuse Producers)",
+            Group::SketchCreate => "adds an entity: the picks carry the accent, so a glyph says what it will ask you for",
+            Group::SketchModify => "changes what is already drawn — each one needs curve–curve intersection",
+            Group::SketchConstraint => "what the solver is told; a constraint produces no geometry of its own",
+            Group::SketchDimension => "authored quantities (ADR 0029) — the parametric handles a solver drives",
             Group::Chrome => "furniture: disclosure, commit, drawer, search",
         }
     }
@@ -588,6 +636,8 @@ pub enum Icon {
     Polyline,
     Rectangle,
     ThreePointArc,
+    /// The Line tool: a segment, and the tangent arc it drags into.
+    Line,
     CloseLoop,
     FillRegion,
     CarveRegion,
@@ -659,6 +709,7 @@ impl Icon {
         Icon::Polyline,
         Icon::Rectangle,
         Icon::ThreePointArc,
+        Icon::Line,
         Icon::CloseLoop,
         Icon::FillRegion,
         Icon::CarveRegion,
@@ -730,6 +781,7 @@ impl Icon {
             Icon::Polyline => g.marks(polyline::DRAW),
             Icon::Rectangle => g.marks(rectangle::DRAW),
             Icon::ThreePointArc => g.marks(three_point_arc::DRAW),
+            Icon::Line => g.marks(line::DRAW),
             Icon::CloseLoop => g.marks(close_loop::DRAW),
             Icon::FillRegion => g.marks(fill_region::DRAW),
             Icon::CarveRegion => g.marks(carve_region::DRAW),
@@ -801,6 +853,7 @@ impl Icon {
             Icon::Polyline => "polyline",
             Icon::Rectangle => "rectangle",
             Icon::ThreePointArc => "three-point-arc",
+            Icon::Line => "line",
             Icon::CloseLoop => "close-loop",
             Icon::FillRegion => "fill-region",
             Icon::CarveRegion => "carve-region",
@@ -872,6 +925,7 @@ impl Icon {
             | Icon::SnapNone
             | Icon::SnapVoxel
             | Icon::SnapBlock => Group::Sketch,
+            Icon::Line => Group::SketchCreate,
             Icon::ChevronRight
             | Icon::ChevronDown
             | Icon::Commit
@@ -966,6 +1020,10 @@ impl Icon {
             Icon::AddPoint => {
                 "Sketch: click a profile edge to insert a vertex there, splitting the segment at \
                  the grid-snapped click."
+            }
+            Icon::Line => {
+                "Sketch: click two points for a segment, or drag from an end for an arc tangent \
+                 to it; the seam inherits the run's direction, so the join has no kink."
             }
             Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
             Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",
