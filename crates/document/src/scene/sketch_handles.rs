@@ -141,12 +141,25 @@ impl Scene {
         let points = producer.sketch.points();
         let point_ids: Vec<EntityId> = points.iter().map(|point| point.id).collect();
 
-        // The in-plane bounding box over the REAL points anchors the overlay frame. For a closed
-        // loop this equals the resolve's `profile_bbox_min`, so the handles sit on the resolved
-        // geometry; for an open graph (which resolves to nothing) it just places every vertex;
-        // for an empty sketch the frame anchors on `[0, 0]` (the node origin). Construction
-        // points are excluded on purpose: an arc's centre can sit well outside the profile, and
-        // letting a DERIVED point move the anchor would slide every handle off the solid.
+        // The overlay frame anchors on the RESOLVE's anchor — the filled region's bbox-min, the
+        // same `profile_bbox_min` the producer re-seats to the node origin. One anchor, so a
+        // handle is on the solid by construction rather than by the two definitions agreeing.
+        //
+        // It used to anchor on the bbox over the real POINTS, which is equal only while every
+        // point is on the filled boundary. Draw a line reaching past the fill — a free polyline,
+        // a vertex outside it — and the points-min moved while the resolve's did not, so the
+        // whole drawing slid off the solid it belongs to. Worse, the anchor compensation on every
+        // edit (`SketchSolid::anchor_preserving_offset`) corrects for a change in the RESOLVE's
+        // anchor, so a points-min move was a shift nothing was cancelling.
+        //
+        // A sketch with nothing filled anchors on `[0, 0]`: it resolves to nothing, so there is
+        // no solid to sit on and every point draws at its own offset from the node origin — where
+        // the author put it, and where it stays as further points are placed around it.
+        let anchor = producer.profile_bbox_min();
+
+        // The extent of the box the HANDLES occupy, which is theirs and not the resolve's — it
+        // covers free points and open chains that no face contains. Construction points are
+        // excluded: an arc's centre can sit well outside the profile.
         let mut real = points
             .iter()
             .filter(|point| point.role == EntityRole::Real)
@@ -197,8 +210,8 @@ impl Scene {
         // arc chord goes through, so a drawn curve and a dragged vertex share one frame.
         let to_render = |coord: [f64; 2]| {
             let mut local = [0.0f32; 3];
-            local[in0] = (coord[0] - min[0] as f64) as f32;
-            local[in1] = (coord[1] - min[1] as f64) as f32;
+            local[in0] = (coord[0] - anchor[0] as f64) as f32;
+            local[in1] = (coord[1] - anchor[1] as f64) as f32;
             // local[normal] stays 0.0 — the profile lives on the plane.
             let world = placement
                 .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(
@@ -263,7 +276,7 @@ impl Scene {
             plane_normal,
             placement,
             recentre,
-            profile_min: min,
+            profile_min: anchor,
             in_plane_axes: [in0, in1],
         })
     }
@@ -475,6 +488,77 @@ mod tests {
         assert!(
             pivot[0].abs() < 1e-4 && pivot[1].abs() < 1e-4,
             "lone node pivots on the origin"
+        );
+    }
+
+    /// Placing an entity that reaches past the filled region must not move what is already
+    /// drawn. The overlay anchors on the RESOLVE's anchor, so extending the drawing extends it —
+    /// it does not drag the drawing.
+    ///
+    /// This is the bug the owner hit: the frame used to anchor on the bbox over the real points,
+    /// so a point outside the fill moved the anchor, and every handle, segment, arc and the
+    /// region wash with it. Nothing cancelled it, because the anchor compensation applied on
+    /// every edit corrects for a change in the resolve's anchor, which had not moved.
+    #[test]
+    fn a_point_reaching_past_the_fill_does_not_move_the_drawing() {
+        let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
+        let (scene, id) = scene_with_sketch(sketch.clone(), 3, [0, 0, 0]);
+        let before = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+
+        let mut grown = sketch;
+        grown.add_free_point(SketchPoint::new(-20, -20));
+        let (scene, id) = scene_with_sketch(grown, 3, [0, 0, 0]);
+        let after = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+
+        assert_eq!(after.vertices.len(), 5, "the placed point is drawn too");
+        for (index, corner) in before.vertices.iter().enumerate() {
+            assert_eq!(
+                &after.vertices[index], corner,
+                "corner {index} moved when a point was placed outside the fill"
+            );
+        }
+    }
+
+    /// The same, for the gesture that found it: a line drawn from a corner out past the profile.
+    /// The chain dangles, so it encloses nothing and the resolved solid is unchanged — which is
+    /// exactly why the drawing must not move either.
+    #[test]
+    fn a_line_drawn_past_the_fill_does_not_move_the_drawing() {
+        let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
+        let (scene, id) = scene_with_sketch(sketch.clone(), 3, [0, 0, 0]);
+        let before = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+
+        let mut grown = sketch;
+        let corner = grown.points()[0].id;
+        let reached = grown.add_free_point(SketchPoint::new(-30, 12));
+        grown.connect(corner, reached);
+        let (scene, id) = scene_with_sketch(grown, 3, [0, 0, 0]);
+        let after = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+
+        for (index, corner) in before.vertices.iter().enumerate() {
+            assert_eq!(
+                &after.vertices[index], corner,
+                "corner {index} moved when a line was drawn past the fill"
+            );
+        }
+    }
+
+    /// The overlay and the resolve share ONE anchor. Stated directly, because the two agreeing is
+    /// the property every test above depends on and the property that regressed.
+    #[test]
+    fn the_overlay_anchors_where_the_resolve_does() {
+        let mut sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
+        sketch.add_free_point(SketchPoint::new(-20, -20));
+        let producer = SketchSolid::extrude(sketch, 3);
+        let (scene, id) = scene_with_sketch(producer.sketch.clone(), 3, [0, 0, 0]);
+        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+        // The profile origin maps to producer-local zero exactly when the two anchors agree.
+        let anchor = producer.profile_bbox_min();
+        assert_eq!(
+            handles.render_hit_to_profile(
+                handles.profile_to_render([anchor[0] as f64, anchor[1] as f64])
+            ),
+            [anchor[0] as f64, anchor[1] as f64],
         );
     }
 
