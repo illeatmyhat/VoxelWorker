@@ -152,36 +152,55 @@ Both ways a sketch is wrong converge, so "solved" says nothing on its own.
 
 ## What I skipped, and why
 
-1. **A region cache.** `SketchSolid::signed_distance` calls `sketch.region()` — and therefore
-   `faces::derive()` — **once per voxel sample**. That was already true before tonight; the
-   arrangement made each derive more expensive, so the `document` sketch suite went from **17.9 s
-   to 28 s** (it was 78 s before I heap-ordered the pole search and coarsened its precision).
-   Fixing it properly means interior mutability inside `Sketch` (a `OnceLock` region, cleared by
-   every mutator) or a `Field` adapter that precomputes the region the way `RevolveField` already
-   does. Both are real architecture in a document type and I was not going to add one while you
-   were asleep. **This is the decision I need from you.**
-2. **Kani harnesses** for `curve_intersection`, `deepest_interior_point`, and the solver. The
+1. **Kani harnesses** for `curve_intersection`, `deepest_interior_point`, and the solver. The
    first two are plausible targets; a float solver is not.
-3. **Nothing is wired to Slice E.** There are no constraint entities yet, so the solver core has
+2. **Nothing is wired to Slice E.** There are no constraint entities yet, so the solver core has
    no caller. That is the next slice, not an omission from this one.
-4. **The inspector still reads "Custom profile (N points)"** for a circle — it counts document
+3. **The inspector still reads "Custom profile (N points)"** for a circle — it counts document
    points, and a circle has one (its centre). Cosmetic; belongs to the tool-suite UI slice.
-5. `shots/morning/` is **gitignored**, so the three PNGs are on disk only and not in the commits.
+4. `shots/morning/` is **gitignored**, so the three PNGs are on disk only and not in the commits.
+
+---
+
+## The lag you reported · FIXED · `e11aafd`
+
+You said adding lines had gone laggy. It had, and not where this file first guessed.
+
+Measured, on a 128×96×16 sketch field (a rectangle, a pocket, a circle, extruded):
+
+| path | before | after |
+| --- | --- | --- |
+| the solid's own resolve | 2 ms | 2 ms |
+| **one `signed_distance` per voxel** — what a composite/boolean fold does | **1315 ms** | **46 ms** |
+
+`SketchSolid::signed_distance` ran the whole arrangement on every call, twice — once directly and
+once through `profile_bounds`. Rasterising a sketch on its own never touched that path, which is
+why the resolve looked fine and anything folded with it did not.
+
+`Sketch` now carries a `RegionMemo`. It validates by **comparing the entity store the region was
+derived from**, not by a flag every mutator has to remember to clear — the failure mode of option
+A below is a stale-geometry bug that does not look like a cache bug, and this makes that
+unreachable rather than merely unlikely. The cell is skipped by serde, clones empty, compares
+equal, and is boxed, so `Sketch` grows by two words and the document is unchanged.
+`crates/document/src/sketch/tests/region_memo.rs` pins one test per way the store can move.
+
+**Check it** (~40 s): `cargo test -p document region_memo` — expect **6 passed**.
+
+**Decisions you might disagree with**
+
+1. This is **option A**, which I had leant away from, with the discipline it needed replaced by a
+   comparison. I took it over B because B fixes the resolve path only, and the measurement says
+   the resolve path was never the slow one.
+2. The cache compares entities rather than hashing them. `f32` is not `Hash`, and a comparison
+   that a `NaN` fails is a miss — slow and correct, where a hash would have to invent an answer.
+3. **`RevolveField` now borrows its region.** Owning a copy was the whole per-sample cost once
+   the derive was cached, so the type grew a lifetime.
 
 ---
 
 ## The one decision I need
 
-**Do I add a region cache to `Sketch`?** The honest options:
-
-- **A.** `#[serde(skip)] OnceLock<Vec<ProfileLoop>>` on `Sketch`, cleared by every `&mut` method.
-  Fastest, and needs a hand-written `PartialEq` (a cache is not identity). Risk: one mutator that
-  forgets to clear it is a stale-geometry bug that will not look like a cache bug.
-- **B.** An `ExtrudeField` precomputed once per resolve, mirroring the `RevolveField` that already
-  exists for the other operation. Symmetric with what is there, no interior mutability, and it
-  only fixes the resolve path — the picking and overlay paths keep re-deriving.
-- **C.** Leave it. 28 s of test suite and an unmeasured cost in the live app, paid down later when
-  sculpt forces the issue anyway.
-
-I lean **B**: it is the shape the codebase already chose for revolve, and it buys the hot path
-without putting a cache inside a serialisable document type.
+**Should an unpick MIGRATE or RESET when its face is cut in two?** (Slice D, decision 1 above.)
+Today it follows whichever half still holds the stored point. ADR 0035 lists that as an accepted
+failure mode; I have pinned it as behaviour in a test, which turns it into a promise. Reverting it
+later costs more than deciding now.
