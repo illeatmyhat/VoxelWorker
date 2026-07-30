@@ -51,32 +51,32 @@ const IDS = {
   'Rectangular pattern|generator': 'rectangular-pattern',
   'Circular pattern|generator': 'circular-pattern',
 
-  // Sketch · create, still to transpose.
-  // 'Midpoint line|centre · end': 'midpoint-line',
-  // 'Circle|centre · diameter': 'circle-center-diameter',
-  // 'Circle|2-point': 'circle-2-point',
-  // 'Circle|3-point': 'circle-3-point',
-  // 'Circle|2-tangent': 'circle-2-tangent',
-  // 'Circle|3-tangent': 'circle-3-tangent',
-  // 'Arc|centre · endpoints': 'arc-center-endpoints',
-  // 'Arc|tangent': 'arc-tangent',
-  // 'Ellipse|centre · 2 axes': 'ellipse-sketch',
-  // 'Slot|centre-to-centre': 'slot-center-to-center',
-  // 'Slot|overall': 'slot-overall',
-  // 'Slot|centre-point': 'slot-center-point',
-  // 'Slot|centre-point arc': 'slot-center-point-arc',
-  // 'Slot|3-point arc': 'slot-3-point-arc',
-  // 'Spline|fit point': 'spline-fit-point',
-  // 'Spline|control point': 'spline-control-point',
-  // 'Conic|apex · rho': 'conic',
-  // 'Polygon|inscribed': 'polygon-inscribed',
-  // 'Polygon|circumscribed': 'polygon-circumscribed',
-  // 'Polygon|edge': 'polygon-edge',
-  // 'Rectangle|3-point': 'rectangle-3-point',
-  // 'Rectangle|centre · corner': 'rectangle-center-corner',
-  // 'Sketch dimension|drive a distance': 'sketch-dimension',
-  // 'Text|profile from glyphs': 'sketch-text',
-  // 'Construction|role toggle': 'construction-toggle',
+  // Sketch · create.
+  'Midpoint line|centre · end': 'midpoint-line',
+  'Circle|centre · diameter': 'circle-center-diameter',
+  'Circle|2-point': 'circle-2-point',
+  'Circle|3-point': 'circle-3-point',
+  'Circle|2-tangent': 'circle-2-tangent',
+  'Circle|3-tangent': 'circle-3-tangent',
+  'Arc|centre · endpoints': 'arc-center-endpoints',
+  'Arc|tangent': 'arc-tangent',
+  'Ellipse|centre · 2 axes': 'ellipse-sketch',
+  'Slot|centre-to-centre': 'slot-center-to-center',
+  'Slot|overall': 'slot-overall',
+  'Slot|centre-point': 'slot-center-point',
+  'Slot|centre-point arc': 'slot-center-point-arc',
+  'Slot|3-point arc': 'slot-3-point-arc',
+  'Spline|fit point': 'spline-fit-point',
+  'Spline|control point': 'spline-control-point',
+  'Conic|apex · rho': 'conic',
+  'Polygon|inscribed': 'polygon-inscribed',
+  'Polygon|circumscribed': 'polygon-circumscribed',
+  'Polygon|edge': 'polygon-edge',
+  'Rectangle|3-point': 'rectangle-3-point',
+  'Rectangle|centre · corner': 'rectangle-center-corner',
+  'Sketch dimension|drive a distance': 'sketch-dimension',
+  'Text|profile from glyphs': 'sketch-text',
+  'Construction|role toggle': 'construction-toggle',
 
   // Drawn on the sheet under names the shipped glyphs predate — transposing these RE-DRAWS an
   // existing icon, so each needs its own look before it can join the gate.
@@ -194,7 +194,14 @@ function parse(svg, name) {
     // path: walk the commands in order, flushing the polyline buffer whenever a curve interrupts
     const toks = a.d.match(/[MLHVACQZ]|-?\d+(?:\.\d+)?/g) || [];
     let i = 0, cmd = null, x = 0, y = 0, start = null, run = [], closed = false, curved = false;
-    const flush = () => { if (run.length >= 2) out.push({ k: 'Line', pts: run, ink }); run = []; };
+    // A `Z` after an arc closes back onto the point the arc already ended at, which leaves a
+    // zero-length run. It is a fact about the path syntax, not a mark, so it is dropped here
+    // rather than transposed into a glyph that draws nothing.
+    const flush = () => {
+      const moved = run.some(p => p[0] !== run[0][0] || p[1] !== run[0][1]);
+      if (run.length >= 2 && moved) out.push({ k: 'Line', pts: run, ink });
+      run = [];
+    };
     while (i < toks.length) {
       if (/^[A-Z]$/.test(toks[i])) { cmd = toks[i++]; if (cmd === 'Z') { closed = true; } continue; }
       const n = () => Number(toks[i++]);

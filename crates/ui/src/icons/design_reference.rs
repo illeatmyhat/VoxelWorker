@@ -30,6 +30,207 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (11.8785, 4.2115), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (13.2233, 9.2306), size: 2.6, ink: Ink::ACCENT },
     ]),
+    // Midpoint line — centre · end
+    ("midpoint-line", &[
+        Mark::Line { points: &[(3.0, 3.0), (15.0, 15.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(4.9394, 7.0606), (7.0606, 4.9394)], ink: Ink::SOLID },
+        Mark::Line { points: &[(10.9393, 13.0607), (13.0607, 10.9393)], ink: Ink::SOLID },
+        Mark::Node { center: (3.0, 3.0), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (15.0, 15.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Circle — centre · diameter
+    ("circle-center-diameter", &[
+        Mark::Circle { center: (9.0, 9.0), radius: 6.0, ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 9.0), (13.2425, 13.2425)], ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (13.2425, 13.2425), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Circle — 2-point
+    ("circle-2-point", &[
+        Mark::Circle { center: (9.0, 9.0), radius: 6.0, ink: Ink::SOLID },
+        Mark::Line { points: &[(4.7573, 13.2426), (13.2426, 4.7573)], ink: Ink::SOLID },
+        Mark::Node { center: (4.7573, 13.2426), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (13.2426, 4.7573), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Circle — 3-point
+    ("circle-3-point", &[
+        Mark::Circle { center: (9.0, 9.0), radius: 6.0, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 3.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (15.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 15.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Circle — 2-tangent
+    ("circle-2-tangent", &[
+        Mark::Line { points: &[(2.0, 2.0), (2.0, 16.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(2.0, 16.0), (16.0, 16.0)], ink: Ink::ACCENT },
+        Mark::Circle { center: (7.5, 10.5), radius: 5.5, ink: Ink::SOLID },
+        Mark::Line { points: &[(7.5, 10.5), (11.39, 6.61)], ink: Ink::SOLID },
+    ]),
+    // Circle — 3-tangent
+    ("circle-3-tangent", &[
+        Mark::Line { points: &[(1.0, 15.0), (17.0, 15.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(2.0, 3.5), (2.0, 16.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(1.2, 3.9), (16.8, 15.6)], ink: Ink::ACCENT },
+        Mark::Circle { center: (5.5, 11.5), radius: 3.5, ink: Ink::SOLID },
+    ]),
+    // Arc — centre · endpoints
+    ("arc-center-endpoints", &[
+        Mark::Arc { center: (5.0, 14.0), rx: 10.0, ry: 10.0, from: -1.570796, to: 0.000000, ink: Ink::SOLID },
+        Mark::Line { points: &[(5.0, 14.0), (15.0, 14.0)], ink: Ink::SOLID },
+        Mark::Node { center: (5.0, 4.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (15.0, 14.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (5.0, 14.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Arc — tangent
+    ("arc-tangent", &[
+        Mark::Line { points: &[(2.0, 13.0), (9.0, 13.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (9.0, 8.0), rx: 5.0, ry: 5.0, from: 1.570796, to: 0.000000, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 13.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (14.0, 8.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Ellipse — centre · 2 axes
+    ("ellipse-sketch", &[
+        Mark::Ellipse { center: (9.0, 7.5), rx: 7.0, ry: 4.5, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 7.5), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 3.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (16.5, 7.5), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Slot — centre-to-centre
+    ("slot-center-to-center", &[
+        Mark::Line { points: &[(5.5, 3.0), (12.5, 3.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (12.5, 6.0), rx: 3.0, ry: 3.0, from: -1.570796, to: 1.570796, ink: Ink::SOLID },
+        Mark::Line { points: &[(12.5, 9.0), (5.5, 9.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (5.5, 6.0), rx: 3.0, ry: 3.0, from: 1.570796, to: 4.712389, ink: Ink::SOLID },
+        Mark::Node { center: (5.5, 6.0), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (12.5, 6.0), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (12.5, 3.0), size: 2.2, ink: Ink::ACCENT },
+    ]),
+    // Slot — overall
+    ("slot-overall", &[
+        Mark::Line { points: &[(5.5, 3.0), (12.5, 3.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (12.5, 6.0), rx: 3.0, ry: 3.0, from: -1.570796, to: 1.570796, ink: Ink::SOLID },
+        Mark::Line { points: &[(12.5, 9.0), (5.5, 9.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (5.5, 6.0), rx: 3.0, ry: 3.0, from: 1.570796, to: 4.712389, ink: Ink::SOLID },
+        Mark::Node { center: (2.5, 6.0), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (15.5, 6.0), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (12.5, 3.0), size: 2.2, ink: Ink::ACCENT },
+    ]),
+    // Slot — centre-point
+    ("slot-center-point", &[
+        Mark::Line { points: &[(5.5, 3.0), (12.5, 3.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (12.5, 6.0), rx: 3.0, ry: 3.0, from: -1.570796, to: 1.570796, ink: Ink::SOLID },
+        Mark::Line { points: &[(12.5, 9.0), (5.5, 9.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (5.5, 6.0), rx: 3.0, ry: 3.0, from: 1.570796, to: 4.712389, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 6.0), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (12.5, 6.0), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (12.5, 3.0), size: 2.2, ink: Ink::ACCENT },
+    ]),
+    // Slot — centre-point arc
+    ("slot-center-point-arc", &[
+        Mark::Arc { center: (9.0, 11.0), rx: 9.0, ry: 9.0, from: -2.617999, to: -0.523594, ink: Ink::SOLID },
+        Mark::Arc { center: (15.0614, 7.4986), rx: 2.0, ry: 2.0, from: -0.522763, to: 2.617157, ink: Ink::SOLID },
+        Mark::Arc { center: (9.0, 11.0), rx: 5.0, ry: 5.0, from: -0.523590, to: -2.618003, ink: Ink::SOLID },
+        Mark::Arc { center: (2.9386, 7.4986), rx: 2.0, ry: 2.0, from: 0.524435, to: 3.664355, ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 11.0), (2.9378, 7.5)], ink: Ink::DASHED },
+        Mark::Line { points: &[(9.0, 11.0), (15.0622, 7.5)], ink: Ink::DASHED },
+        Mark::Node { center: (9.0, 11.0), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (2.9378, 7.5), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (15.0622, 7.5), size: 2.2, ink: Ink::ACCENT },
+    ]),
+    // Slot — 3-point arc
+    ("slot-3-point-arc", &[
+        Mark::Arc { center: (9.0, 13.0), rx: 9.0, ry: 9.0, from: -2.617999, to: -0.523594, ink: Ink::SOLID },
+        Mark::Arc { center: (15.0614, 9.4986), rx: 2.0, ry: 2.0, from: -0.522763, to: 2.617157, ink: Ink::SOLID },
+        Mark::Arc { center: (9.0, 13.0), rx: 5.0, ry: 5.0, from: -0.523590, to: -2.618003, ink: Ink::SOLID },
+        Mark::Arc { center: (2.9386, 9.4986), rx: 2.0, ry: 2.0, from: 0.524435, to: 3.664355, ink: Ink::SOLID },
+        Mark::Node { center: (2.9378, 9.5), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (15.0622, 9.5), size: 2.2, ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 6.0), size: 2.2, ink: Ink::ACCENT },
+    ]),
+    // Spline — fit point
+    ("spline-fit-point", &[
+        Mark::Cubic { p0: (2.5, 12.0), p1: (5.5, 2.0), p2: (9.5, 13.0), p3: (15.5, 4.0), ink: Ink::ACCENT },
+        Mark::Node { center: (2.5, 12.0), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (7.875, 7.625), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (15.5, 4.0), size: 2.6, ink: Ink::SOLID },
+    ]),
+    // Spline — control point
+    ("spline-control-point", &[
+        Mark::Line { points: &[(2.5, 12.0), (5.5, 2.0), (9.5, 13.0), (15.5, 4.0)], ink: Ink::DASHED },
+        Mark::Cubic { p0: (2.5, 12.0), p1: (5.5, 2.0), p2: (9.5, 13.0), p3: (15.5, 4.0), ink: Ink::ACCENT },
+        Mark::Node { center: (5.5, 2.0), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (9.5, 13.0), size: 2.6, ink: Ink::SOLID },
+    ]),
+    // Conic — apex · rho
+    ("conic", &[
+        Mark::Line { points: &[(2.5, 13.0), (9.0, 2.0), (15.5, 13.0)], ink: Ink::SOLID },
+        Mark::Cubic { p0: (2.5, 13.0), p1: (6.8333, 5.6667), p2: (11.1667, 5.6667), p3: (15.5, 13.0), ink: Ink::SOLID },
+        Mark::Node { center: (2.5, 13.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (15.5, 13.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 2.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 7.5), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Polygon — inscribed
+    ("polygon-inscribed", &[
+        Mark::Circle { center: (9.0, 9.0), radius: 6.5, ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 2.5), (15.18, 6.99), (12.82, 14.26), (5.18, 14.26), (2.82, 6.99), (9.0, 2.5)], ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (9.0, 2.5), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Polygon — circumscribed
+    ("polygon-circumscribed", &[
+        Mark::Circle { center: (9.0, 9.0), radius: 5.0, ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 2.82), (14.88, 7.09), (12.635, 14.0), (5.365, 14.0), (3.12, 7.09), (9.0, 2.82)], ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (11.94, 4.955), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Polygon — edge
+    ("polygon-edge", &[
+        Mark::Line { points: &[(5.18, 13.76), (2.82, 6.49), (9.0, 2.0), (15.18, 6.49), (12.82, 13.76)], ink: Ink::SOLID },
+        Mark::Line { points: &[(4.0, 13.76), (14.0, 13.76)], ink: Ink::SOLID },
+        Mark::Node { center: (5.18, 13.76), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (12.82, 13.76), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Rectangle — 3-point
+    ("rectangle-3-point", &[
+        Mark::Line { points: &[(2.5, 12.0), (11.5, 15.0), (14.346, 6.462), (5.346, 3.462), (2.5, 12.0)], ink: Ink::SOLID },
+        Mark::Node { center: (2.5, 12.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (11.5, 15.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (14.346, 6.462), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Rectangle — centre · corner
+    ("rectangle-center-corner", &[
+        Mark::Rect { a: (3.0, 4.5), b: (15.0, 13.5), ink: Ink::SOLID },
+        Mark::Node { center: (3.0, 4.5), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (15.0, 4.5), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (3.0, 13.5), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (15.0, 13.5), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Sketch dimension — drive a distance
+    ("sketch-dimension", &[
+        Mark::Line { points: &[(2.5, 11.5), (15.5, 11.5)], ink: Ink::SOLID },
+        Mark::Node { center: (2.5, 11.5), size: 2.6, ink: Ink::SOLID },
+        Mark::Node { center: (15.5, 11.5), size: 2.6, ink: Ink::SOLID },
+        Mark::Line { points: &[(2.5, 9.5), (2.5, 3.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(15.5, 9.5), (15.5, 3.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(5.75, 4.5), (12.25, 4.5)], ink: Ink::ACCENT },
+        Mark::Closed { points: &[(2.5, 4.5), (5.75, 3.3), (5.75, 5.7)], ink: Ink::ACCENT },
+        Mark::Closed { points: &[(15.5, 4.5), (12.25, 5.7), (12.25, 3.3)], ink: Ink::ACCENT },
+    ]),
+    // Text — profile from glyphs
+    ("sketch-text", &[
+        Mark::Line { points: &[(4.5, 12.0), (9.0, 2.5), (13.5, 12.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(6.4, 8.0), (11.6, 8.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(2.5, 14.0), (15.5, 14.0)], ink: Ink::SOLID },
+    ]),
+    // Construction — role toggle
+    ("construction-toggle", &[
+        Mark::Rect { a: (2.5, 2.0), b: (15.5, 12.0), ink: Ink::SOLID },
+        Mark::Line { points: &[(2.5, 2.0), (15.5, 12.0)], ink: Ink::CONSTRUCTION },
+        Mark::Node { center: (9.0, 7.0), size: 2.6, ink: Ink::SOLID },
+    ]),
     // Fillet — rounds a corner
     ("fillet", &[
         Mark::Line { points: &[(3.0, 2.0), (3.0, 7.5)], ink: Ink::SOLID },

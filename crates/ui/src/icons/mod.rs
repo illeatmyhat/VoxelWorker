@@ -45,6 +45,8 @@ use crate::theme;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 mod add_point;
+mod arc_center_endpoints;
+mod arc_tangent;
 mod array;
 mod axes_gizmo;
 mod blend_curve;
@@ -58,10 +60,16 @@ mod chamfer_equal;
 mod chamfer_two_distance;
 mod chevron_down;
 mod chevron_right;
+mod circle_2_point;
+mod circle_2_tangent;
+mod circle_3_point;
+mod circle_3_tangent;
+mod circle_center_diameter;
 mod circular_pattern;
 mod close_loop;
 mod commit;
 mod composed_part;
+mod conic;
 mod constraint_coincident;
 mod constraint_collinear;
 mod constraint_concentric;
@@ -76,6 +84,7 @@ mod constraint_quantize;
 mod constraint_symmetry;
 mod constraint_tangent;
 mod constraint_vertical;
+mod construction_toggle;
 mod cylinder;
 mod density;
 /// Generated fixture, read only by [`tests::glyphs_match_the_design_sheet`] — it carries no
@@ -84,6 +93,7 @@ mod density;
 mod design_reference;
 mod displace;
 mod drawer;
+mod ellipse_sketch;
 mod emboss;
 mod emboss_recess;
 mod extend;
@@ -104,6 +114,7 @@ mod link;
 mod mark;
 mod material;
 mod measure;
+mod midpoint_line;
 mod mirror;
 mod mode_booleans;
 mod mode_normal;
@@ -119,9 +130,14 @@ mod orbit_free;
 mod outset;
 mod pan;
 mod part;
+mod polygon_circumscribed;
+mod polygon_edge;
+mod polygon_inscribed;
 mod polyline;
 mod probe;
 mod rectangle;
+mod rectangle_3_point;
+mod rectangle_center_corner;
 mod rectangular_pattern;
 mod revolve;
 mod root_part;
@@ -130,11 +146,20 @@ mod sculpt_add;
 mod search;
 mod select_vertex;
 mod sketch;
+mod sketch_dimension;
 mod sketch_scale;
+mod sketch_text;
+mod slot_3_point_arc;
+mod slot_center_point;
+mod slot_center_point_arc;
+mod slot_center_to_center;
+mod slot_overall;
 mod snap_block;
 mod snap_none;
 mod snap_voxel;
 mod sphere;
+mod spline_control_point;
+mod spline_fit_point;
 mod subtract;
 mod sweep;
 mod three_point_arc;
@@ -687,6 +712,29 @@ pub enum Icon {
     ThreePointArc,
     /// The Line tool: a segment, and the tangent arc it drags into.
     Line,
+    MidpointLine,
+    CircleCenterDiameter,
+    Circle2Point,
+    Circle3Point,
+    Circle2Tangent,
+    Circle3Tangent,
+    ArcCenterEndpoints,
+    ArcTangent,
+    EllipseSketch,
+    SlotCenterToCenter,
+    SlotOverall,
+    SlotCenterPoint,
+    SlotCenterPointArc,
+    Slot3PointArc,
+    SplineFitPoint,
+    SplineControlPoint,
+    Conic,
+    PolygonInscribed,
+    PolygonCircumscribed,
+    PolygonEdge,
+    Rectangle3Point,
+    RectangleCenterCorner,
+    SketchText,
     // Sketch · modify. Fillet and the three chamfers are one composition with four bridges.
     Fillet,
     ChamferEqual,
@@ -699,6 +747,7 @@ pub enum Icon {
     MoveCopy,
     SketchScale,
     BlendCurve,
+    ConstructionToggle,
     // Sketch · constraints. Line art is the reference, the accent is what moves.
     ConstraintCoincident,
     ConstraintCollinear,
@@ -714,6 +763,7 @@ pub enum Icon {
     ConstraintSymmetry,
     ConstraintCurvature,
     ConstraintQuantize,
+    SketchDimension,
     // Sketch · operators. Generators, not relations.
     Mirror,
     RectangularPattern,
@@ -790,6 +840,29 @@ impl Icon {
         Icon::Rectangle,
         Icon::ThreePointArc,
         Icon::Line,
+        Icon::MidpointLine,
+        Icon::CircleCenterDiameter,
+        Icon::Circle2Point,
+        Icon::Circle3Point,
+        Icon::Circle2Tangent,
+        Icon::Circle3Tangent,
+        Icon::ArcCenterEndpoints,
+        Icon::ArcTangent,
+        Icon::EllipseSketch,
+        Icon::SlotCenterToCenter,
+        Icon::SlotOverall,
+        Icon::SlotCenterPoint,
+        Icon::SlotCenterPointArc,
+        Icon::Slot3PointArc,
+        Icon::SplineFitPoint,
+        Icon::SplineControlPoint,
+        Icon::Conic,
+        Icon::PolygonInscribed,
+        Icon::PolygonCircumscribed,
+        Icon::PolygonEdge,
+        Icon::Rectangle3Point,
+        Icon::RectangleCenterCorner,
+        Icon::SketchText,
         Icon::Fillet,
         Icon::ChamferEqual,
         Icon::ChamferDistanceAngle,
@@ -801,6 +874,7 @@ impl Icon {
         Icon::MoveCopy,
         Icon::SketchScale,
         Icon::BlendCurve,
+        Icon::ConstructionToggle,
         Icon::ConstraintCoincident,
         Icon::ConstraintCollinear,
         Icon::ConstraintConcentric,
@@ -815,6 +889,7 @@ impl Icon {
         Icon::ConstraintSymmetry,
         Icon::ConstraintCurvature,
         Icon::ConstraintQuantize,
+        Icon::SketchDimension,
         Icon::Mirror,
         Icon::RectangularPattern,
         Icon::CircularPattern,
@@ -906,6 +981,31 @@ impl Icon {
             Icon::Rectangle => rectangle::DRAW,
             Icon::ThreePointArc => three_point_arc::DRAW,
             Icon::Line => line::DRAW,
+            Icon::MidpointLine => midpoint_line::DRAW,
+            Icon::CircleCenterDiameter => circle_center_diameter::DRAW,
+            Icon::Circle2Point => circle_2_point::DRAW,
+            Icon::Circle3Point => circle_3_point::DRAW,
+            Icon::Circle2Tangent => circle_2_tangent::DRAW,
+            Icon::Circle3Tangent => circle_3_tangent::DRAW,
+            Icon::ArcCenterEndpoints => arc_center_endpoints::DRAW,
+            Icon::ArcTangent => arc_tangent::DRAW,
+            Icon::EllipseSketch => ellipse_sketch::DRAW,
+            Icon::SlotCenterToCenter => slot_center_to_center::DRAW,
+            Icon::SlotOverall => slot_overall::DRAW,
+            Icon::SlotCenterPoint => slot_center_point::DRAW,
+            Icon::SlotCenterPointArc => slot_center_point_arc::DRAW,
+            Icon::Slot3PointArc => slot_3_point_arc::DRAW,
+            Icon::SplineFitPoint => spline_fit_point::DRAW,
+            Icon::SplineControlPoint => spline_control_point::DRAW,
+            Icon::Conic => conic::DRAW,
+            Icon::PolygonInscribed => polygon_inscribed::DRAW,
+            Icon::PolygonCircumscribed => polygon_circumscribed::DRAW,
+            Icon::PolygonEdge => polygon_edge::DRAW,
+            Icon::Rectangle3Point => rectangle_3_point::DRAW,
+            Icon::RectangleCenterCorner => rectangle_center_corner::DRAW,
+            Icon::SketchText => sketch_text::DRAW,
+            Icon::ConstructionToggle => construction_toggle::DRAW,
+            Icon::SketchDimension => sketch_dimension::DRAW,
             Icon::Fillet => fillet::DRAW,
             Icon::ChamferEqual => chamfer_equal::DRAW,
             Icon::ChamferDistanceAngle => chamfer_distance_angle::DRAW,
@@ -1006,6 +1106,31 @@ impl Icon {
             Icon::Rectangle => "rectangle",
             Icon::ThreePointArc => "three-point-arc",
             Icon::Line => "line",
+            Icon::MidpointLine => "midpoint-line",
+            Icon::CircleCenterDiameter => "circle-center-diameter",
+            Icon::Circle2Point => "circle-2-point",
+            Icon::Circle3Point => "circle-3-point",
+            Icon::Circle2Tangent => "circle-2-tangent",
+            Icon::Circle3Tangent => "circle-3-tangent",
+            Icon::ArcCenterEndpoints => "arc-center-endpoints",
+            Icon::ArcTangent => "arc-tangent",
+            Icon::EllipseSketch => "ellipse-sketch",
+            Icon::SlotCenterToCenter => "slot-center-to-center",
+            Icon::SlotOverall => "slot-overall",
+            Icon::SlotCenterPoint => "slot-center-point",
+            Icon::SlotCenterPointArc => "slot-center-point-arc",
+            Icon::Slot3PointArc => "slot-3-point-arc",
+            Icon::SplineFitPoint => "spline-fit-point",
+            Icon::SplineControlPoint => "spline-control-point",
+            Icon::Conic => "conic",
+            Icon::PolygonInscribed => "polygon-inscribed",
+            Icon::PolygonCircumscribed => "polygon-circumscribed",
+            Icon::PolygonEdge => "polygon-edge",
+            Icon::Rectangle3Point => "rectangle-3-point",
+            Icon::RectangleCenterCorner => "rectangle-center-corner",
+            Icon::SketchText => "sketch-text",
+            Icon::ConstructionToggle => "construction-toggle",
+            Icon::SketchDimension => "sketch-dimension",
             Icon::Fillet => "fillet",
             Icon::ChamferEqual => "chamfer-equal",
             Icon::ChamferDistanceAngle => "chamfer-distance-angle",
@@ -1105,7 +1230,30 @@ impl Icon {
             | Icon::SnapNone
             | Icon::SnapVoxel
             | Icon::SnapBlock => Group::Sketch,
-            Icon::Line => Group::SketchCreate,
+            Icon::Line
+            | Icon::MidpointLine
+            | Icon::CircleCenterDiameter
+            | Icon::Circle2Point
+            | Icon::Circle3Point
+            | Icon::Circle2Tangent
+            | Icon::Circle3Tangent
+            | Icon::ArcCenterEndpoints
+            | Icon::ArcTangent
+            | Icon::EllipseSketch
+            | Icon::SlotCenterToCenter
+            | Icon::SlotOverall
+            | Icon::SlotCenterPoint
+            | Icon::SlotCenterPointArc
+            | Icon::Slot3PointArc
+            | Icon::SplineFitPoint
+            | Icon::SplineControlPoint
+            | Icon::Conic
+            | Icon::PolygonInscribed
+            | Icon::PolygonCircumscribed
+            | Icon::PolygonEdge
+            | Icon::Rectangle3Point
+            | Icon::RectangleCenterCorner
+            | Icon::SketchText => Group::SketchCreate,
             Icon::Fillet
             | Icon::ChamferEqual
             | Icon::ChamferDistanceAngle
@@ -1116,7 +1264,8 @@ impl Icon {
             | Icon::OffsetCurve
             | Icon::MoveCopy
             | Icon::SketchScale
-            | Icon::BlendCurve => Group::SketchModify,
+            | Icon::BlendCurve
+            | Icon::ConstructionToggle => Group::SketchModify,
             Icon::ConstraintCoincident
             | Icon::ConstraintCollinear
             | Icon::ConstraintConcentric
@@ -1130,7 +1279,8 @@ impl Icon {
             | Icon::ConstraintEqual
             | Icon::ConstraintSymmetry
             | Icon::ConstraintCurvature
-            | Icon::ConstraintQuantize => Group::SketchConstraint,
+            | Icon::ConstraintQuantize
+            | Icon::SketchDimension => Group::SketchConstraint,
             Icon::Mirror | Icon::RectangularPattern | Icon::CircularPattern => {
                 Group::SketchOperator
             }
@@ -1232,6 +1382,75 @@ impl Icon {
             Icon::Line => {
                 "Sketch: click two points for a segment, or drag from an end for an arc tangent \
                  to it; the seam inherits the run's direction, so the join has no kink."
+            }
+            Icon::MidpointLine => {
+                "Sketch: a segment placed by its centre and one end. The ticks say the middle is \
+                 measured, not eyeballed."
+            }
+            Icon::CircleCenterDiameter => "Sketch: click the centre, drag the radius.",
+            Icon::Circle2Point => {
+                "Sketch: two points that are the ends of a DIAMETER — the chord runs through the \
+                 centre, which is what separates this from the 3-point circle."
+            }
+            Icon::Circle3Point => "Sketch: three points the ring passes through. No chord, because there is no diameter relation.",
+            Icon::Circle2Tangent => {
+                "Sketch: a circle of a typed radius touching two picked curves. Two tangencies \
+                 leave one freedom, so the radius line stays."
+            }
+            Icon::Circle3Tangent => {
+                "Sketch: the incircle of three picked curves. Three tangencies use every freedom, \
+                 so there is no radius to type and no radius line."
+            }
+            Icon::ArcCenterEndpoints => {
+                "Sketch: centre first, then the two ends. The tool where the centre IS a pick."
+            }
+            Icon::ArcTangent => {
+                "Sketch: an arc leaving an existing curve along its direction — the centre sits \
+                 square to the seam, so the join has no kink."
+            }
+            Icon::EllipseSketch => "Sketch: centre, then the two semi-axes.",
+            Icon::SlotCenterToCenter => "Sketch: a slot given the distance between its arc centres — the caps are excluded.",
+            Icon::SlotOverall => "Sketch: a slot given its full length, caps included.",
+            Icon::SlotCenterPoint => "Sketch: a slot grown symmetrically from its own middle.",
+            Icon::SlotCenterPointArc => {
+                "Sketch: a curved slot swept about a centre. The dashed radii say the path is a \
+                 circle, not an arbitrary curve."
+            }
+            Icon::Slot3PointArc => {
+                "Sketch: a curved slot through two ends and a point between them. The centre is \
+                 solved for, so it is never drawn."
+            }
+            Icon::SplineFitPoint => "Sketch: a spline through points placed ON it.",
+            Icon::SplineControlPoint => {
+                "Sketch: a spline shaped by handles OFF the curve. A control point pulls; it does \
+                 not pass through."
+            }
+            Icon::Conic => {
+                "Sketch: a conic through two ends, an apex and a rho point. The legs are drawn so \
+                 the apex reads as a control the curve misses."
+            }
+            Icon::PolygonInscribed => "Sketch: a polygon whose VERTICES touch the construction circle.",
+            Icon::PolygonCircumscribed => "Sketch: a polygon whose EDGES touch the construction circle.",
+            Icon::PolygonEdge => {
+                "Sketch: a polygon built from one edge outwards. No construction circle, because \
+                 this is the polygon tool with no centre."
+            }
+            Icon::Rectangle3Point => {
+                "Sketch: a rectangle at an arbitrary angle — two clicks set an edge and its \
+                 direction, the third the depth."
+            }
+            Icon::RectangleCenterCorner => "Sketch: a rectangle grown symmetrically from its middle.",
+            Icon::SketchText => {
+                "Sketch: text converted to PROFILE geometry — outlines that fold like any other \
+                 boundary, not a label."
+            }
+            Icon::ConstructionToggle => {
+                "Sketch: flip an entity between real and construction. The one glyph that spends \
+                 the construction linetype, because it quotes what the viewport already shows."
+            }
+            Icon::SketchDimension => {
+                "Sketch: a distance that DRIVES the geometry — a stored, solver-visible \
+                 Measurement, not the readout Measure gives."
             }
             Icon::Fillet => {
                 "Sketch: round a corner. The legs stop short and an arc bridges them tangentially — \
