@@ -14,10 +14,57 @@ const REPO = path.resolve(HERE, '..', '..');
 const ROOT = path.join(REPO, 'docs', 'design', 'sketch-marks');
 const OUT = path.join(REPO, 'crates', 'ui', 'src', 'icons', 'design_reference.rs');
 
-// Sheet name -> the kebab id the Rust `Icon` answers to. Only marks listed here are exported;
-// anything absent is either already shipped under an older drawing or not yet authored.
+// Sheet name -> the kebab id the Rust `Icon` answers to. Only marks listed here are exported, and
+// the parity test panics on an id no glyph answers to, so an entry here is a claim that the glyph
+// is authored. The queue below it is the transposition backlog: uncomment a line as its shelf
+// lands. Anything in neither list is shipped under an older drawing.
 const IDS = {
   'Line|2 points': 'line',
+  'Fillet|rounds a corner': 'fillet',
+  'Chamfer|equal distance': 'chamfer-equal',
+  'Chamfer|distance and angle': 'chamfer-distance-angle',
+  'Chamfer|two distance': 'chamfer-two-distance',
+  'Trim|to nearest crossing': 'trim',
+  'Extend|to nearest boundary': 'extend',
+  'Break|split at a point': 'break-curve',
+  'Offset|parallel copy': 'offset-curve',
+  'Move / copy|free transform': 'move-copy',
+  'Sketch scale|uniform': 'sketch-scale',
+  'Blend curve|tangent join': 'blend-curve',
+
+  // Sketch · create, still to transpose.
+  // 'Midpoint line|centre · end': 'midpoint-line',
+  // 'Circle|centre · diameter': 'circle-center-diameter',
+  // 'Circle|2-point': 'circle-2-point',
+  // 'Circle|3-point': 'circle-3-point',
+  // 'Circle|2-tangent': 'circle-2-tangent',
+  // 'Circle|3-tangent': 'circle-3-tangent',
+  // 'Arc|centre · endpoints': 'arc-center-endpoints',
+  // 'Arc|tangent': 'arc-tangent',
+  // 'Ellipse|centre · 2 axes': 'ellipse-sketch',
+  // 'Slot|centre-to-centre': 'slot-center-to-center',
+  // 'Slot|overall': 'slot-overall',
+  // 'Slot|centre-point': 'slot-center-point',
+  // 'Slot|centre-point arc': 'slot-center-point-arc',
+  // 'Slot|3-point arc': 'slot-3-point-arc',
+  // 'Spline|fit point': 'spline-fit-point',
+  // 'Spline|control point': 'spline-control-point',
+  // 'Conic|apex · rho': 'conic',
+  // 'Polygon|inscribed': 'polygon-inscribed',
+  // 'Polygon|circumscribed': 'polygon-circumscribed',
+  // 'Polygon|edge': 'polygon-edge',
+  // 'Rectangle|3-point': 'rectangle-3-point',
+  // 'Rectangle|centre · corner': 'rectangle-center-corner',
+  // 'Sketch dimension|drive a distance': 'sketch-dimension',
+  // 'Text|profile from glyphs': 'sketch-text',
+  // 'Construction|role toggle': 'construction-toggle',
+
+  // Drawn on the sheet under names the shipped glyphs predate — transposing these RE-DRAWS an
+  // existing icon, so each needs its own look before it can join the gate.
+  // 'Select|entity pick': 'select-entity',
+  // 'Add point|free vertex': 'add-point',
+  // 'Rectangle|2-point': 'rectangle-2-point',
+  // 'Three-point arc|ends + through': 'three-point-arc',
 };
 
 const SCALE = 0.5;                       // the sheet draws on 36 units, the glyph grid is 18
@@ -114,9 +161,16 @@ function parse(svg, name) {
         out.push({ k: 'Cubic', p: [[x, y], p1, p2, p3], ink });
         x = p3[0]; y = p3[1]; run = [[x, y]];
       } else if (cmd === 'Q') {
-        // Mark has no quadratic; a Q would have to be raised to a cubic by hand, so refuse it
-        // rather than export a shape the glyph cannot actually be.
-        throw new Error(`${name}: quadratic segment — Mark has no Q, so this one cannot be exported`);
+        // `Mark` has no quadratic, but every quadratic IS a cubic: degree elevation is exact,
+        // not an approximation, so the glyph draws the same curve rather than a fitted one.
+        // C1 = P0 + 2/3(Q1 - P0), C2 = P2 + 2/3(Q1 - P2).
+        curved = true;
+        const q1 = [n(), n()], p2 = [n(), n()];
+        const lift = (a, b) => [a[0] + (2 / 3) * (b[0] - a[0]), a[1] + (2 / 3) * (b[1] - a[1])];
+        const p0 = [x, y];
+        flush();
+        out.push({ k: 'Cubic', p: [p0, lift(p0, q1), lift(p2, q1), p2], ink });
+        x = p2[0]; y = p2[1]; run = [[x, y]];
       } else { i++; }
     }
     if (closed && !curved && run.length >= 2) { out.push({ k: 'Closed', pts: run, ink }); run = []; }
@@ -188,7 +242,12 @@ use super::{Ink, Mark};
 ///
 /// Left unformatted on purpose: the layout is the generator's, so a rustfmt pass would make
 /// regeneration and formatting two steps that have to be run in the right order.
+///
+/// Angles are literal radians rather than \`consts::PI\` expressions: the sheet resolves them
+/// numerically and the glyph is free to name them however it reads best, so the two agree to a
+/// tolerance rather than by sharing a symbol.
 #[rustfmt::skip]
+#[allow(clippy::approx_constant)]
 pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
 ${rows.join('\n')}
 ];

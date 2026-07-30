@@ -15,7 +15,12 @@ use super::{Ink, Mark};
 ///
 /// Left unformatted on purpose: the layout is the generator's, so a rustfmt pass would make
 /// regeneration and formatting two steps that have to be run in the right order.
+///
+/// Angles are literal radians rather than `consts::PI` expressions: the sheet resolves them
+/// numerically and the glyph is free to name them however it reads best, so the two agree to a
+/// tolerance rather than by sharing a symbol.
 #[rustfmt::skip]
+#[allow(clippy::approx_constant)]
 pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
     // Line — 2 points
     ("line", &[
@@ -24,5 +29,78 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (2.3, 13.79), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (11.8785, 4.2115), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (13.2233, 9.2306), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Fillet — rounds a corner
+    ("fillet", &[
+        Mark::Line { points: &[(3.0, 2.0), (3.0, 7.5)], ink: Ink::SOLID },
+        Mark::Line { points: &[(8.5, 13.0), (15.5, 13.0)], ink: Ink::SOLID },
+        Mark::Arc { center: (8.0, 8.0), rx: 5.0, ry: 5.0, from: 3.141593, to: 1.570796, ink: Ink::ACCENT },
+    ]),
+    // Chamfer — equal distance
+    ("chamfer-equal", &[
+        Mark::Line { points: &[(3.0, 2.0), (3.0, 7.5)], ink: Ink::SOLID },
+        Mark::Line { points: &[(8.5, 13.0), (15.5, 13.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(3.0, 8.0), (8.0, 13.0)], ink: Ink::ACCENT },
+    ]),
+    // Chamfer — distance and angle
+    ("chamfer-distance-angle", &[
+        Mark::Line { points: &[(3.0, 2.0), (3.0, 5.5)], ink: Ink::SOLID },
+        Mark::Line { points: &[(11.0, 13.0), (15.5, 13.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(3.0, 6.0), (10.5, 13.0)], ink: Ink::ACCENT },
+    ]),
+    // Chamfer — two distance
+    ("chamfer-two-distance", &[
+        Mark::Line { points: &[(3.0, 2.0), (3.0, 5.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(9.5, 13.0), (15.5, 13.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(3.0, 5.5), (9.0, 13.0)], ink: Ink::ACCENT },
+    ]),
+    // Trim — to nearest crossing
+    ("trim", &[
+        Mark::Line { points: &[(5.0, 15.0), (13.0, 3.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(8.335, 10.0), (16.0, 10.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(2.0, 10.0), (8.335, 10.0)], ink: Ink::ACCENT },
+    ]),
+    // Extend — to nearest boundary
+    ("extend", &[
+        Mark::Line { points: &[(1.5, 11.0), (6.0, 11.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(6.0, 11.0), (14.0, 11.0)], ink: Ink::ACCENT },
+        Mark::Line { points: &[(14.0, 3.0), (14.0, 15.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(4.0, 6.5), (11.5, 6.5)], ink: Ink::SOLID },
+        Mark::Closed { points: &[(13.0, 6.5), (9.75, 7.7), (9.75, 5.3)], ink: Ink::SOLID },
+    ]),
+    // Break — split at a point
+    ("break-curve", &[
+        Mark::Line { points: &[(2.0, 9.0), (16.0, 9.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 3.0), (9.0, 15.0)], ink: Ink::SOLID },
+        Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
+    ]),
+    // Offset — parallel copy
+    ("offset-curve", &[
+        Mark::Line { points: &[(4.0, 3.0), (4.0, 12.0), (15.0, 12.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(1.0, 3.0), (1.0, 12.0)], ink: Ink::ACCENT },
+        Mark::Arc { center: (4.0, 12.0), rx: 3.0, ry: 3.0, from: 3.141593, to: 1.570796, ink: Ink::ACCENT },
+        Mark::Line { points: &[(4.0, 15.0), (15.0, 15.0)], ink: Ink::ACCENT },
+    ]),
+    // Move / copy — free transform
+    ("move-copy", &[
+        Mark::Line { points: &[(2.0, 8.0), (16.0, 8.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(9.0, 1.0), (9.0, 15.0)], ink: Ink::SOLID },
+        Mark::Closed { points: &[(16.5, 8.0), (13.25, 9.2), (13.25, 6.8)], ink: Ink::SOLID },
+        Mark::Closed { points: &[(1.5, 8.0), (4.75, 6.8), (4.75, 9.2)], ink: Ink::SOLID },
+        Mark::Closed { points: &[(9.0, 0.5), (10.2, 3.75), (7.8, 3.75)], ink: Ink::SOLID },
+        Mark::Closed { points: &[(9.0, 15.5), (7.8, 12.25), (10.2, 12.25)], ink: Ink::SOLID },
+    ]),
+    // Sketch scale — uniform
+    ("sketch-scale", &[
+        Mark::Rect { a: (1.5, 9.0), b: (7.0, 14.5), ink: Ink::SOLID },
+        Mark::Rect { a: (1.5, 4.5), b: (11.5, 14.5), ink: Ink::ACCENT },
+        Mark::Line { points: &[(12.5, 3.5), (14.0, 2.0)], ink: Ink::ACCENT },
+        Mark::Closed { points: &[(15.0, 1.0), (13.5504, 4.1466), (11.8534, 2.4496)], ink: Ink::ACCENT },
+    ]),
+    // Blend curve — tangent join
+    ("blend-curve", &[
+        Mark::Line { points: &[(2.0, 14.0), (2.0, 10.0)], ink: Ink::SOLID },
+        Mark::Line { points: &[(16.0, 2.0), (16.0, 6.0)], ink: Ink::SOLID },
+        Mark::Cubic { p0: (2.0, 10.0), p1: (2.0, 4.0), p2: (16.0, 12.0), p3: (16.0, 6.0), ink: Ink::ACCENT },
     ]),
 ];

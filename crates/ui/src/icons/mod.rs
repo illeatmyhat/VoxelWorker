@@ -47,10 +47,15 @@ use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 mod add_point;
 mod array;
 mod axes_gizmo;
+mod blend_curve;
 mod box_solid;
+mod break_curve;
 mod cancel;
 mod carve;
 mod carve_region;
+mod chamfer_distance_angle;
+mod chamfer_equal;
+mod chamfer_two_distance;
 mod chevron_down;
 mod chevron_right;
 mod close_loop;
@@ -66,8 +71,10 @@ mod displace;
 mod drawer;
 mod emboss;
 mod emboss_recess;
+mod extend;
 mod extrude;
 mod fill_region;
+mod fillet;
 mod fit;
 mod flip;
 mod fold_cursor;
@@ -85,6 +92,8 @@ mod measure;
 mod mode_booleans;
 mod mode_normal;
 mod mode_onion;
+mod move_copy;
+mod offset_curve;
 mod onion_scrub;
 mod orbit;
 mod orbit_center_place;
@@ -104,6 +113,7 @@ mod sculpt_add;
 mod search;
 mod select_vertex;
 mod sketch;
+mod sketch_scale;
 mod snap_block;
 mod snap_none;
 mod snap_voxel;
@@ -112,6 +122,7 @@ mod subtract;
 mod sweep;
 mod three_point_arc;
 mod torus;
+mod trim;
 mod tube;
 mod union;
 mod view_cube;
@@ -651,6 +662,18 @@ pub enum Icon {
     ThreePointArc,
     /// The Line tool: a segment, and the tangent arc it drags into.
     Line,
+    // Sketch · modify. Fillet and the three chamfers are one composition with four bridges.
+    Fillet,
+    ChamferEqual,
+    ChamferDistanceAngle,
+    ChamferTwoDistance,
+    Trim,
+    Extend,
+    BreakCurve,
+    OffsetCurve,
+    MoveCopy,
+    SketchScale,
+    BlendCurve,
     CloseLoop,
     FillRegion,
     CarveRegion,
@@ -723,6 +746,17 @@ impl Icon {
         Icon::Rectangle,
         Icon::ThreePointArc,
         Icon::Line,
+        Icon::Fillet,
+        Icon::ChamferEqual,
+        Icon::ChamferDistanceAngle,
+        Icon::ChamferTwoDistance,
+        Icon::Trim,
+        Icon::Extend,
+        Icon::BreakCurve,
+        Icon::OffsetCurve,
+        Icon::MoveCopy,
+        Icon::SketchScale,
+        Icon::BlendCurve,
         Icon::CloseLoop,
         Icon::FillRegion,
         Icon::CarveRegion,
@@ -811,6 +845,17 @@ impl Icon {
             Icon::Rectangle => rectangle::DRAW,
             Icon::ThreePointArc => three_point_arc::DRAW,
             Icon::Line => line::DRAW,
+            Icon::Fillet => fillet::DRAW,
+            Icon::ChamferEqual => chamfer_equal::DRAW,
+            Icon::ChamferDistanceAngle => chamfer_distance_angle::DRAW,
+            Icon::ChamferTwoDistance => chamfer_two_distance::DRAW,
+            Icon::Trim => trim::DRAW,
+            Icon::Extend => extend::DRAW,
+            Icon::BreakCurve => break_curve::DRAW,
+            Icon::OffsetCurve => offset_curve::DRAW,
+            Icon::MoveCopy => move_copy::DRAW,
+            Icon::SketchScale => sketch_scale::DRAW,
+            Icon::BlendCurve => blend_curve::DRAW,
             Icon::CloseLoop => close_loop::DRAW,
             Icon::FillRegion => fill_region::DRAW,
             Icon::CarveRegion => carve_region::DRAW,
@@ -883,6 +928,17 @@ impl Icon {
             Icon::Rectangle => "rectangle",
             Icon::ThreePointArc => "three-point-arc",
             Icon::Line => "line",
+            Icon::Fillet => "fillet",
+            Icon::ChamferEqual => "chamfer-equal",
+            Icon::ChamferDistanceAngle => "chamfer-distance-angle",
+            Icon::ChamferTwoDistance => "chamfer-two-distance",
+            Icon::Trim => "trim",
+            Icon::Extend => "extend",
+            Icon::BreakCurve => "break-curve",
+            Icon::OffsetCurve => "offset-curve",
+            Icon::MoveCopy => "move-copy",
+            Icon::SketchScale => "sketch-scale",
+            Icon::BlendCurve => "blend-curve",
             Icon::CloseLoop => "close-loop",
             Icon::FillRegion => "fill-region",
             Icon::CarveRegion => "carve-region",
@@ -955,6 +1011,17 @@ impl Icon {
             | Icon::SnapVoxel
             | Icon::SnapBlock => Group::Sketch,
             Icon::Line => Group::SketchCreate,
+            Icon::Fillet
+            | Icon::ChamferEqual
+            | Icon::ChamferDistanceAngle
+            | Icon::ChamferTwoDistance
+            | Icon::Trim
+            | Icon::Extend
+            | Icon::BreakCurve
+            | Icon::OffsetCurve
+            | Icon::MoveCopy
+            | Icon::SketchScale
+            | Icon::BlendCurve => Group::SketchModify,
             Icon::ChevronRight
             | Icon::ChevronDown
             | Icon::Commit
@@ -1053,6 +1120,47 @@ impl Icon {
             Icon::Line => {
                 "Sketch: click two points for a segment, or drag from an end for an arc tangent \
                  to it; the seam inherits the run's direction, so the join has no kink."
+            }
+            Icon::Fillet => {
+                "Sketch: round a corner. The legs stop short and an arc bridges them tangentially — \
+                 the corner is replaced, not decorated."
+            }
+            Icon::ChamferEqual => {
+                "Sketch: cut a corner off, the same distance along each leg. A 45° bevel."
+            }
+            Icon::ChamferDistanceAngle => {
+                "Sketch: chamfer given one distance and the angle the bevel leaves at."
+            }
+            Icon::ChamferTwoDistance => {
+                "Sketch: chamfer given a distance along each leg, set independently."
+            }
+            Icon::Trim => {
+                "Sketch: delete a curve back to its nearest crossing. The accent is on what GOES — \
+                 the only way a still mark can name a deletion."
+            }
+            Icon::Extend => {
+                "Sketch: grow a curve to its nearest boundary. Trim's inverse, and drawn as its \
+                 mirror: the accent is the stretch that appears."
+            }
+            Icon::BreakCurve => {
+                "Sketch: split a curve in two at a point. Nothing moves — one entity becomes two \
+                 lying exactly where the one did, so the accent is the new vertex."
+            }
+            Icon::OffsetCurve => {
+                "Sketch: a parallel copy at a fixed distance. The outer corner rounds, because \
+                 that is what an offset produces."
+            }
+            Icon::MoveCopy => {
+                "Sketch: free transform of the selection. The glyph draws the handle, not a shape, \
+                 because the tool has no opinion about what it moves."
+            }
+            Icon::SketchScale => {
+                "Sketch: resize the selection uniformly about a fixed corner. The shared corner \
+                 IS the anchor."
+            }
+            Icon::BlendCurve => {
+                "Sketch: a curve joining two others tangentially. The S rather than a C — a blend \
+                 between curves pointing the same way has an inflection."
             }
             Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
             Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",
