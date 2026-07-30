@@ -86,11 +86,11 @@ fn an_unpicked_circle_inside_a_square_is_a_hole() {
     );
 
     let disc = sketch
-        .faces()
+        .identified_faces()
         .into_iter()
-        .min_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels))
+        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
         .expect("a face")
-        .key;
+        .1;
     sketch.set_face_picked(disc, false);
     let donut = sketch.region_field_loops();
     assert!(!point_in_region(&donut, [10.0, 10.0]), "the hole is carved");

@@ -584,6 +584,6 @@ fn a_curved_face_keeps_its_arc() {
     );
 
     // Faces are identified by lineage, not geometry.
-    let key = sketch.faces().first().expect("a face").key;
+    let key = sketch.identified_faces().first().expect("a face").1;
     assert!(sketch.face_is_picked(&key));
 }

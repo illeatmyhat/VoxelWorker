@@ -892,11 +892,11 @@ pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
     );
     // The disc is the smaller face; unpicking it is what turns the square into a ring.
     let disc = sketch
-        .faces()
+        .identified_faces()
         .into_iter()
-        .min_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels))
+        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
         .expect("the square and the disc")
-        .key;
+        .1;
     sketch.set_face_picked(disc, false);
     let producer = SketchSolid::extrude(sketch, block as u32);
     let node = Node::new(
@@ -930,11 +930,11 @@ pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
     );
     // The lens is the smallest of the three faces; unpicking it splits the pair into crescents.
     let lens = sketch
-        .faces()
+        .identified_faces()
         .into_iter()
-        .min_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels))
+        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
         .expect("two crescents and a lens")
-        .key;
+        .1;
     sketch.set_face_picked(lens, false);
     let producer = SketchSolid::extrude(sketch, block as u32);
     let node = Node::new(

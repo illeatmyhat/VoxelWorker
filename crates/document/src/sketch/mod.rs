@@ -903,6 +903,45 @@ impl Sketch {
         }
     }
 
+    /// The identity of the face at `index` in [`faces`](Self::faces), or `None` when the index is
+    /// past the end or the face is too thin to hold an interior point.
+    ///
+    /// The door for a caller holding a face by POSITION — the viewport keeps its hit-test polygons
+    /// that way, because minting a key for every face on every frame is the search this whole
+    /// arrangement is careful not to run.
+    pub fn face_key_at(&self, index: usize) -> Option<FaceKey> {
+        let faces = faces::derive(self);
+        if index >= faces.len() {
+            return None;
+        }
+        let nested: Vec<Face> = faces.iter().rev().cloned().collect();
+        let mut keys = faces::identify(&nested);
+        keys.reverse();
+        keys[index]
+    }
+
+    /// The derived faces WITH their identities, in the same order as [`faces`](Self::faces) — for
+    /// the callers that have to name a face to something outside the sketch (the viewport's carve
+    /// menu, a test). Faces too thin to hold an interior point are dropped.
+    ///
+    /// This is the expensive door and the other one is not: minting an identity is a search
+    /// costing some twenty times the arrangement that produced the face. Use
+    /// [`faces`](Self::faces) for anything on a per-voxel or per-frame path, and reach for this
+    /// only where a `FaceKey` is genuinely about to be stored or compared.
+    pub fn identified_faces(&self) -> Vec<(Face, FaceKey)> {
+        let faces = faces::derive(self);
+        // `identify` wants nesting order — smallest first — and `faces()` is largest first, so the
+        // reverse IS that order and reversing the answer puts it back.
+        let nested: Vec<Face> = faces.iter().rev().cloned().collect();
+        let mut keys = faces::identify(&nested);
+        keys.reverse();
+        faces
+            .into_iter()
+            .zip(keys)
+            .filter_map(|(face, key)| key.map(|key| (face, key)))
+            .collect()
+    }
+
     /// Pick or unpick the face containing this key's point, carving or filling a pocket. Storing a
     /// point inside the face rather than its boundary's lineage means the intent survives
     /// re-derivation: a vertex drag, an edge split, and a curve drawn elsewhere all leave the same
@@ -923,7 +962,11 @@ impl Sketch {
         self.unpicked_points
             .retain(|stored| innermost_face_at(&faces, stored.interior_point) != Some(index));
         if !picked {
-            self.unpicked_points.push(faces[index].key);
+            // Store the face's OWN deepest point, not the one the caller happened to name it by —
+            // the caller's may be a cursor position a hair from an edge, which the next edit walks
+            // out of the face.
+            let minted = faces::identify(&faces)[index];
+            self.unpicked_points.push(minted.unwrap_or(key));
         }
     }
 

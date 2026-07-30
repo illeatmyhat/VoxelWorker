@@ -40,7 +40,11 @@ use super::{EntityId, EntityRole, ProfileArc, ProfileEdge, Sketch, SketchPoint};
 /// the same ground under a different set of pieces.
 ///
 /// The point is the face's DEEPEST interior point ([`deepest_interior_point`]), the one with the
-/// most room to survive an edit rather than merely the first one found.
+/// most room to survive an edit rather than merely the first one found. Finding it is a SEARCH,
+/// and a costly one next to the arrangement it identifies — some twenty times, measured — so a
+/// key is minted on demand by [`identify`] rather than carried by every derived face. Nothing on
+/// the per-voxel resolve path needs one: the region fold reads boundaries and areas, and an
+/// unpick is resolved by containment ([`Face::contains`]), never by comparing keys.
 ///
 /// Two failure modes are accepted rather than defended against. A face that shrinks past its own
 /// sample point resets to picked — the author's carve is forgotten by an edit that made the face
@@ -61,10 +65,10 @@ impl FaceKey {
 }
 
 /// One derived bounded face of the sketch arrangement.
+///
+/// Its IDENTITY is deliberately not a field: see [`FaceKey`] and [`identify`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Face {
-    /// The face's identity across re-derivation (ADR 0035 Decision 9).
-    pub key: FaceKey,
     /// The boundary as a closed loop of edges, counter-clockwise, **with its arcs intact** —
     /// exactly what the region CSG and the overlay consume.
     pub boundary: Vec<ProfileEdge>,
@@ -185,60 +189,89 @@ pub fn derive(sketch: &Sketch) -> Vec<Face> {
             faces.push(face);
         }
     }
-    key_by_own_ground(&mut faces);
-    faces.sort_by(|a, b| {
-        a.key.interior_point[0]
-            .total_cmp(&b.key.interior_point[0])
-            .then(a.key.interior_point[1].total_cmp(&b.key.interior_point[1]))
-            .then(b.area_voxels.total_cmp(&a.area_voxels))
-    });
+    faces.sort_by(order);
     faces
 }
 
-/// Re-key every face that has other faces nested inside it, so its point sits in the ground it
-/// actually governs.
+/// The deterministic order derived faces come back in: largest first, ties broken by where the
+/// boundary starts. Two derivations of the same sketch must agree, because a caller holding an
+/// INDEX into this list (the viewport's hit-test polygons) is holding it across frames.
+fn order(first: &Face, second: &Face) -> std::cmp::Ordering {
+    second
+        .area_voxels
+        .total_cmp(&first.area_voxels)
+        .then_with(|| {
+            let (a, b) = (anchor(first), anchor(second));
+            a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
+        })
+}
+
+/// Where a face's boundary starts, or the origin for an empty one.
+fn anchor(face: &Face) -> [f64; 2] {
+    face.boundary
+        .first()
+        .map_or([0.0, 0.0], |edge| edge.from.in_plane())
+}
+
+/// The identity of each of `faces`, in the same order — `None` for a face with no interior point
+/// to name it by (a sliver thinner than the search can resolve).
 ///
-/// A face's boundary is its OUTER loop alone — nesting is not in it — so the deepest point of that
-/// loop can easily land inside a face nested within, which would make the key name the wrong face.
-/// A ring's identity has to be in the ring. The nested faces are the ones whose (provisional)
-/// point is inside this loop, and they enter the search as `Hole`s.
+/// `faces` must be in NESTING order (smallest area first): a face's point has to sit in the ground
+/// it actually governs, and its boundary is its OUTER loop alone, so the deepest point of that loop
+/// can easily land inside a face nested within — which would make the key name the wrong face. A
+/// ring's identity has to be in the ring, so anything nested inside enters the search as a `Hole`.
 ///
-/// Two passes rather than one because deciding what is nested inside what needs a point known to
-/// be inside each face, which is the very thing the first pass produces. Only faces that turn out
-/// to have something nested inside them pay for the second search.
-fn key_by_own_ground(faces: &mut [Face]) {
-    faces.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
+/// The nested faces are found by their own points, which is why this is two passes and not one:
+/// deciding what is inside what needs a point known to be inside each face, and that is the very
+/// thing the first pass produces. Only a face with something nested inside it pays for the second
+/// search.
+pub fn identify(faces: &[Face]) -> Vec<Option<FaceKey>> {
+    let mut keys: Vec<Option<FaceKey>> = faces
+        .iter()
+        .map(|face| pole(&[(substrate::geom2d::LoopRole::Fill, measured(&face.boundary))]))
+        .collect();
     for index in 0..faces.len() {
-        // Innermost-first, which for `point_in_region` means area-ascending — and only faces
-        // SMALLER than this one can be nested inside it.
+        // Only faces SMALLER than this one can be nested inside it, and `faces` is nesting-ordered.
         let mut loops: Vec<(
             substrate::geom2d::LoopRole,
             Vec<substrate::geom2d::RegionEdge>,
         )> = faces[..index]
             .iter()
-            .filter(|inner| faces[index].contains(inner.key.interior_point))
-            .map(|inner| {
-                (
-                    substrate::geom2d::LoopRole::Hole,
-                    inner.boundary.iter().map(ProfileEdge::measured).collect(),
-                )
+            .zip(&keys)
+            .filter(|(inner, key)| {
+                key.is_some_and(|key| faces[index].contains(key.interior_point))
+                    && !inner.boundary.is_empty()
             })
+            .map(|(inner, _)| (substrate::geom2d::LoopRole::Hole, measured(&inner.boundary)))
             .collect();
         if loops.is_empty() {
             continue;
         }
         loops.push((
             substrate::geom2d::LoopRole::Fill,
-            faces[index]
-                .boundary
-                .iter()
-                .map(ProfileEdge::measured)
-                .collect(),
+            measured(&faces[index].boundary),
         ));
-        if let Some((point, _)) = deepest_interior_point(&loops, INTERIOR_POINT_PRECISION_VOXELS) {
-            faces[index].key = FaceKey::at(point);
+        if let Some(key) = pole(&loops) {
+            keys[index] = Some(key);
         }
     }
+    keys
+}
+
+/// A boundary in the measurement width, which is what the region queries read.
+fn measured(boundary: &[ProfileEdge]) -> Vec<substrate::geom2d::RegionEdge> {
+    boundary.iter().map(ProfileEdge::measured).collect()
+}
+
+/// The deepest interior point of a region, as a key.
+fn pole(
+    loops: &[(
+        substrate::geom2d::LoopRole,
+        Vec<substrate::geom2d::RegionEdge>,
+    )],
+) -> Option<FaceKey> {
+    deepest_interior_point(loops, INTERIOR_POINT_PRECISION_VOXELS)
+        .map(|(point, _)| FaceKey::at(point))
 }
 
 /// The real (non-construction) curves the author has drawn, each as a
@@ -376,25 +409,15 @@ fn push_half_edges(into: &mut Vec<HalfEdge>, ends: (usize, usize), geometry: Pro
 }
 
 /// Turn a traced half-edge cycle into a bounded face, or `None` when the cycle is a component's
-/// unbounded face (clockwise ⇒ non-positive area), degenerate (a whisker walked out and back,
-/// which encloses nothing), or too thin to hold an interior point to name it by.
+/// unbounded face (clockwise ⇒ non-positive area) or degenerate (a whisker walked out and back,
+/// which encloses nothing).
 fn face_from_cycle(half_edges: &[HalfEdge], cycle: &[usize]) -> Option<Face> {
     let boundary: Vec<ProfileEdge> = cycle
         .iter()
         .map(|&index| half_edges[index].geometry)
         .collect();
     let area = signed_area(&boundary);
-    if area <= AREA_EPSILON_SQUARE_VOXELS {
-        return None;
-    }
-    let measured: Vec<substrate::geom2d::RegionEdge> =
-        boundary.iter().map(ProfileEdge::measured).collect();
-    let (interior_point, _) = deepest_interior_point(
-        &[(substrate::geom2d::LoopRole::Fill, measured)],
-        INTERIOR_POINT_PRECISION_VOXELS,
-    )?;
-    Some(Face {
-        key: FaceKey::at(interior_point),
+    (area > AREA_EPSILON_SQUARE_VOXELS).then_some(Face {
         boundary,
         area_voxels: area,
     })

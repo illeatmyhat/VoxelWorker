@@ -29,9 +29,9 @@ fn nested_squares() -> Sketch {
 
 /// The face of `sketch` whose area is smallest — the inner one in every fixture here.
 fn innermost(sketch: &Sketch) -> FaceKey {
-    let mut faces = sketch.faces();
-    faces.sort_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels));
-    faces.first().expect("a face").key
+    let mut faces = sketch.identified_faces();
+    faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
+    faces.first().expect("a face").1
 }
 
 /// Derivation enumerates every bounded face, and only bounded ones: a component's unbounded
@@ -70,7 +70,10 @@ fn a_chord_splits_one_face_into_two() {
 fn unpicking_the_inner_face_carves_a_hole_through_the_extrude() {
     let mut sketch = nested_squares();
     assert!(
-        sketch.faces().iter().all(|f| sketch.face_is_picked(&f.key)),
+        sketch
+            .identified_faces()
+            .iter()
+            .all(|f| sketch.face_is_picked(&f.1)),
         "every derived face starts picked"
     );
     let solid = SketchSolid::extrude(sketch.clone(), 2);
@@ -169,21 +172,21 @@ fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
     let high = sketch.add_free_point(SketchPoint::new(8, 5));
     sketch.connect(low, high).expect("the chord");
 
-    let mut faces = sketch.faces();
-    faces.sort_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels));
-    let holes: Vec<&Face> = faces
+    let mut faces = sketch.identified_faces();
+    faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
+    let holes: Vec<&(Face, FaceKey)> = faces
         .iter()
-        .filter(|face| !sketch.face_is_picked(&face.key))
+        .filter(|(_, key)| !sketch.face_is_picked(key))
         .collect();
     assert_eq!(holes.len(), 1, "the unpick names ONE face, not both halves");
     assert!(
-        holes[0].contains(carved.interior_point),
+        holes[0].0.contains(carved.interior_point),
         "and it is the half the stored point landed in"
     );
     assert!(
-        holes[0].area_voxels < 16.0,
+        holes[0].0.area_voxels < 16.0,
         "which is smaller than the pocket it was cut from: {}",
-        holes[0].area_voxels
+        holes[0].0.area_voxels
     );
 }
 
@@ -236,7 +239,10 @@ fn the_pick_state_round_trips_and_an_older_document_loads_picked() {
         .expect("the key was written");
     let older: Sketch = serde_json::from_value(value).expect("a pre-#100 document");
     assert!(
-        older.faces().iter().all(|f| older.face_is_picked(&f.key)),
+        older
+            .identified_faces()
+            .iter()
+            .all(|f| older.face_is_picked(&f.1)),
         "no unpicked list means everything is picked"
     );
 }
@@ -327,9 +333,9 @@ fn a_picked_island_inside_a_void_survives_the_carve() {
     square(&mut sketch, 4, 12);
     square(&mut sketch, 8, 4);
     let middle = {
-        let mut faces = sketch.faces();
-        faces.sort_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels));
-        faces[1].key
+        let mut faces = sketch.identified_faces();
+        faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
+        faces[1].1
     };
     sketch.set_face_picked(middle, false);
     let field = sketch.region_field_loops();

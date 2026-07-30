@@ -2106,7 +2106,8 @@ impl WindowedState {
         cursor_y: f64,
     ) -> Option<document::sketch::FaceKey> {
         let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
-        self.sketch_face_polygons
+        let index = self
+            .sketch_face_polygons
             .iter()
             .filter(|(_, boundary)| point_in_screen_polygon(boundary, cursor))
             .min_by(|(_, a), (_, b)| {
@@ -2114,7 +2115,13 @@ impl WindowedState {
                     .abs()
                     .total_cmp(&polygon_double_area(b).abs())
             })
-            .map(|(key, _)| *key)
+            .map(|(index, _)| *index)?;
+        // The hit-test polygons are kept by POSITION and the identity is minted only here, on the
+        // click that is about to store one — the search is far too dear to run every frame for
+        // faces nobody points at.
+        let target = self.panel_state.sketch_mode?;
+        let (producer, _) = self.sketch_node_state(target)?;
+        producer.sketch.face_key_at(index)
     }
 
     /// Whether the region the open viewport menu is acting on is picked (#100), or `None` when the
@@ -2463,7 +2470,7 @@ impl WindowedState {
                 .collect()
         };
         if let Some(sketch) = sketch {
-            for face in sketch.faces() {
+            for (index, face) in sketch.faces().into_iter().enumerate() {
                 // A hit-test polygon IS discrete, so this is a terminal adapter: it flattens here
                 // rather than asking the region for a coarser boundary.
                 let boundary = document::sketch::flatten_edges(
@@ -2471,7 +2478,7 @@ impl WindowedState {
                     document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
                 );
                 if let Some(projected) = project(&boundary) {
-                    self.sketch_face_polygons.push((face.key, projected));
+                    self.sketch_face_polygons.push((index, projected));
                 }
             }
         }
