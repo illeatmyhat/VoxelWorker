@@ -66,7 +66,11 @@ let variantCount = 0;
 for (const m of MARKS) {
   const vs = variantsOf(m);
   // Every mark has A/B/C; the seven redrawn ones add a D.
-  ok(vs.length === (m.d ? 4 : 3), `${m.name} (${m.hint}): ${vs.length} variants`);
+  // A mark carries a variant per PASS it actually went through. The four-pass provenance was a
+  // critique of a ported set; a mark drawn fresh for this app never had a B to argue with, and
+  // inventing two rivals to reject would be theatre. `fresh` is that claim, made explicitly.
+  const wantVariants = m.fresh ? 1 : m.d ? 4 : 3;
+  ok(vs.length === wantVariants, `${m.name} (${m.hint}): ${vs.length} variants, expected ${wantVariants}`);
   for (const v of vs) {
     variantCount++;
     const tag = `${m.name} (${m.hint}) ${v.key}`;
@@ -89,8 +93,9 @@ for (const m of MARKS) {
     }
   }
 
-  // The variants must actually differ — a pass that renders identically is not a pass.
-  const [A, Bv, Cv] = vs.map(v => v.draw());
+  // The variants must actually differ — a pass that renders identically is not a pass. A fresh
+  // mark has no rivals to differ from, so the whole comparison is skipped rather than faked.
+  const [A, Bv, Cv] = m.fresh ? ['a', 'b', 'c'] : vs.map(v => v.draw());
   // A declared convergence is a finding, not a defect — but it must be DECLARED.
   if (A === Bv && m.converges !== 'B') bad(`${m.name} (${m.hint}): A and B identical, undeclared`);
   if (A === Cv && m.converges !== 'C') bad(`${m.name} (${m.hint}): A and C identical, undeclared`);
@@ -360,11 +365,12 @@ const ORANGE = '#dda06a';
   // The ruling, restated independently of the page: exactly these take A, one takes orange.
   const WANT_A = ['Spline|fit point', 'Spline|control point', 'Text|profile from glyphs',
                   'Trim|to nearest crossing', 'Sketch scale|uniform', 'Add point|free vertex',
-                  'Rectangle|2-point'];
+                  'Rectangle|2-point', 'Chamfer|equal distance'];
   for (const m of MARKS) {
     const k = `${m.name}|${m.hint}`, v = chosen(m);
     // Same precedence as the page: an A-override outranks a D redraw, D outranks the B default.
-    const want = WANT_A.includes(k) ? 'A' : m.d ? 'D' : 'B';
+    // A fresh mark has only an A, so it resolves there by having nowhere else to go.
+    const want = WANT_A.includes(k) || m.fresh ? 'A' : m.d ? 'D' : 'B';
     ok(v.key === want, `${k}: resolved to ${v.key}, expected ${want}`);
     ok(typeof v.note === 'string' && v.note.length > 20, `${k}: resolved mark has no note`);
 
@@ -383,6 +389,13 @@ const ORANGE = '#dda06a';
     const m = MARKS.find(x => `${x.name}|${x.hint}` === k);
     ok(m.b && m.draw() !== m.b.draw(), `${k}: overridden to A but A and B are identical`);
   }
+  // A fresh mark must NOT be in OVERRIDE: it has no B to be overridden away from, so an entry
+  // there would be a reason given for a choice that was never available.
+  for (const m of MARKS.filter(x => x.fresh)) {
+    const k = `${m.name}|${m.hint}`;
+    ok(!OVERRIDE[k], `${k}: fresh, so an OVERRIDE entry argues against a variant it never had`);
+    ok(!m.b && !m.c && !m.d, `${k}: flagged fresh but carries a rival variant`);
+  }
 
   // Orange is confined to exactly one mark, and that mark spends no blue.
   const orange = MARKS.filter(m => chosen(m).draw().includes(ORANGE));
@@ -396,7 +409,33 @@ const ORANGE = '#dda06a';
   for (const gone of ['Polyline', 'Close loop']) {
     ok(!MARKS.some(m => m.name === gone), `${gone} was cut but is still in the set`);
   }
-  ok(MARKS.length === 33, `expected 33 marks after the cuts, found ${MARKS.length}`);
+  // 33 after the two cuts, plus the 8 the owner's authoritative list named and the sheet had
+  // never drawn: Midpoint line, Rectangle 3-point and centre, Circle 2-point, the centre-point
+  // arc slot, Sketch dimension, and the two chamfers past equal distance.
+  ok(MARKS.length === 41, `expected 41 marks, found ${MARKS.length}`);
+  ok(MARKS.filter(m => m.fresh).length === 8,
+     `expected 8 fresh marks, found ${MARKS.filter(m => m.fresh).length}`);
+  // Every command on the owner's list is drawn, under the hint the list implies.
+  for (const need of ['Line|2 points', 'Midpoint line|centre · end',
+                      'Rectangle|2-point', 'Rectangle|3-point', 'Rectangle|centre · corner',
+                      'Circle|centre · diameter', 'Circle|2-point', 'Circle|3-point',
+                      'Circle|2-tangent', 'Circle|3-tangent',
+                      'Arc|centre · endpoints', 'Arc|tangent', 'Three-point arc|ends + through',
+                      'Polygon|circumscribed', 'Polygon|inscribed', 'Polygon|edge',
+                      'Ellipse|centre · 2 axes',
+                      'Slot|centre-to-centre', 'Slot|overall', 'Slot|centre-point',
+                      'Slot|3-point arc', 'Slot|centre-point arc',
+                      'Spline|fit point', 'Spline|control point',
+                      'Add point|free vertex', 'Text|profile from glyphs',
+                      'Sketch dimension|drive a distance',
+                      'Fillet|rounds a corner', 'Chamfer|equal distance',
+                      'Chamfer|distance and angle', 'Chamfer|two distance',
+                      'Blend curve|tangent join', 'Offset|parallel copy',
+                      'Trim|to nearest crossing', 'Extend|to nearest boundary',
+                      'Break|split at a point', 'Sketch scale|uniform',
+                      'Move / copy|free transform']) {
+    ok(MARKS.some(m => `${m.name}|${m.hint}` === need), `the owner's list names "${need}", which is not drawn`);
+  }
 }
 
 // ---- pass D: the redraws, and the claims their notes make -----------------
@@ -560,6 +599,194 @@ const ORANGE = '#dda06a';
       // An L, not a straight line: the two legs must be perpendicular.
       const v1 = [p[0] - p[2], p[1] - p[3]], v2 = [p[4] - p[2], p[5] - p[3]];
       near(v1[0] * v2[0] + v1[1] * v2[1], 0, 1e-9, 'rectangle D: bracket legs are not perpendicular');
+    }
+  }
+}
+
+// ---- the eight fresh marks: their notes make claims, so the claims get proved --------------
+{
+  const R = (n, h) => chosen(MARKS.find(m => m.name === n && m.hint === h)).draw();
+  const segs = (d) => [...d.matchAll(/<path d="M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+)"/g)]
+    .map(g => g.slice(1).map(Number));
+  const sqs = (d) => [...d.matchAll(/<rect x="([\d.-]+)" y="([\d.-]+)" width="([\d.-]+)"[^>]*fill="([^"]+)"/g)]
+    .map(g => [Number(g[1]), Number(g[2]), Number(g[3]), g[4]])
+    .filter(r => r[3] !== 'none');   // an outline box is a rect too, and it is not a vertex
+  const centres = (d, tint) => sqs(d).filter(r => !tint || r[3] === tint)
+    .map(r => [r[0] + r[2] / 2, r[1] + r[2] / 2]);
+  const has = (list, p, tol = 1e-6) => list.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol);
+
+  // Midpoint line: the accented node really is the MIDPOINT, the ticks really are equal and
+  // really are perpendicular, and the run leans the opposite way to Line so the pair separates.
+  {
+    const d = R('Midpoint line', 'centre · end');
+    const [x0, y0, x1, y1] = segs(d)[0];
+    const mid = [(x0 + x1) / 2, (y0 + y1) / 2];
+    ok(has(centres(d, BLUE), mid), 'Midpoint line: no accent on the segment midpoint');
+    ok(has(centres(d, BLUE), [x1, y1]), 'Midpoint line: the picked end is not accented');
+    ok(has(centres(d, WHITE), [x0, y0]), 'Midpoint line: the produced end is not line art');
+    const ticks = segs(d).slice(1);
+    ok(ticks.length === 2, `Midpoint line: ${ticks.length} ticks, expected 2`);
+    const len = (t) => Math.hypot(t[2] - t[0], t[3] - t[1]);
+    near(len(ticks[0]), len(ticks[1]), 1e-6, 'Midpoint line: the "equal" ticks are unequal');
+    const run = [x1 - x0, y1 - y0];
+    for (const [i, t] of ticks.entries()) {
+      const v = [t[2] - t[0], t[3] - t[1]];
+      near((run[0] * v[0] + run[1] * v[1]) / (Math.hypot(...run) * Math.hypot(...v)), 0, 1e-6,
+           `Midpoint line: tick ${i} is not perpendicular to the run`);
+      const c = [(t[0] + t[2]) / 2, (t[1] + t[3]) / 2];
+      const along = ((c[0] - x0) * run[0] + (c[1] - y0) * run[1]) / (run[0] ** 2 + run[1] ** 2);
+      near(along, i === 0 ? 0.25 : 0.75, 1e-6, `Midpoint line: tick ${i} is off its half's centre`);
+    }
+    const line = segs(R('Line', '2 points'))[0];
+    const other = [line[2] - line[0], line[3] - line[1]];
+    ok(run[1] * other[1] < 0, 'Midpoint line leans the same way as Line — the pair is one drawing twice');
+  }
+
+  // Circle 2-point: the chord is a true DIAMETER (through the centre, length 2r) and the centre
+  // itself carries no square, which is the whole difference from centre-diameter.
+  {
+    const d = R('Circle', '2-point');
+    const [, cx, cy, r] = d.match(/<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"/).map(Number);
+    const [x0, y0, x1, y1] = segs(d)[0];
+    near(Math.hypot(x1 - x0, y1 - y0), 2 * r, 5e-3, 'Circle 2-point: the chord is not a diameter');
+    near(Math.hypot((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy), 0, 5e-3,
+         'Circle 2-point: the chord does not pass through the centre');
+    for (const p of [[x0, y0], [x1, y1]]) {
+      near(Math.hypot(p[0] - cx, p[1] - cy), r, 5e-3, 'Circle 2-point: a pick is off the circle');
+      ok(has(centres(d, BLUE), p), 'Circle 2-point: a diameter end is not accented');
+    }
+    ok(!has(centres(d), [cx, cy]), 'Circle 2-point: the centre is marked, which is its sibling');
+  }
+
+  // Centre-point arc slot: the accented centre is genuinely equidistant from both cap centres,
+  // and the two radii it draws are that same distance — otherwise the fan is decoration.
+  {
+    const d = R('Slot', 'centre-point arc');
+    const radii = segs(d);
+    ok(radii.length === 2, `centre-point arc slot: ${radii.length} radii, expected 2`);
+    const c = [radii[0][0], radii[0][1]];
+    near(radii[1][0], c[0], 1e-6, 'centre-point arc slot: the two radii start from different points');
+    near(radii[1][1], c[1], 1e-6, 'centre-point arc slot: the two radii start from different points');
+    const r0 = Math.hypot(radii[0][2] - c[0], radii[0][3] - c[1]);
+    const r1 = Math.hypot(radii[1][2] - c[0], radii[1][3] - c[1]);
+    near(r0, r1, 5e-3, 'centre-point arc slot: the centre is not equidistant from the two caps');
+    near(r0, 14, 5e-3, 'centre-point arc slot: the radii are not the family spine radius of 14');
+    for (const p of [c, [radii[0][2], radii[0][3]], [radii[1][2], radii[1][3]]]) {
+      ok(has(centres(d, BLUE), p), 'centre-point arc slot: a pick is not accented');
+    }
+    ok(/stroke-dasharray/.test(d), 'centre-point arc slot: the radii are not dashed');
+  }
+
+  // Rectangle 3-point: a RECTANGLE, not a lozenge — adjacent edges dot to zero — and no edge is
+  // axis-aligned, which is the only thing separating it from 2-point at a glance.
+  {
+    const d = R('Rectangle', '3-point');
+    const m4 = d.match(/M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+)/);
+    const n = m4.slice(1).map(Number);
+    const P = [[n[0], n[1]], [n[2], n[3]], [n[4], n[5]], [n[6], n[7]]];
+    for (let i = 0; i < 4; i++) {
+      const a = [P[(i + 1) % 4][0] - P[i][0], P[(i + 1) % 4][1] - P[i][1]];
+      const b = [P[(i + 2) % 4][0] - P[(i + 1) % 4][0], P[(i + 2) % 4][1] - P[(i + 1) % 4][1]];
+      near((a[0] * b[0] + a[1] * b[1]) / (Math.hypot(...a) * Math.hypot(...b)), 0, 5e-4,
+           `Rectangle 3-point: corner ${i} is not square — this is a lozenge`);
+    }
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      ok(Math.abs(P[i][0] - P[j][0]) > 1e-6 && Math.abs(P[i][1] - P[j][1]) > 1e-6,
+         `Rectangle 3-point: edge ${i} is axis-aligned, which is the 2-point mark`);
+    }
+    const blue = centres(d, BLUE);
+    ok(blue.length === 3, `Rectangle 3-point: ${blue.length} accents, expected 3 picks`);
+    ok(P.filter(p => has(blue, p)).length === 3, 'Rectangle 3-point: the accents are not on corners');
+  }
+
+  // Centre rectangle: five squares, and the fifth is the true centre of the other four.
+  {
+    const d = R('Rectangle', 'centre · corner');
+    const all = centres(d);
+    ok(all.length === 5, `Centre rectangle: ${all.length} squares, expected 5`);
+    const b = d.match(/<rect x="([\d.-]+)" y="([\d.-]+)" width="([\d.-]+)" height="([\d.-]+)" stroke="#/);
+    const [x, y, w, h] = b.slice(1).map(Number);
+    const mid = [x + w / 2, y + h / 2];
+    ok(has(all, mid), 'Centre rectangle: no square on the box centre');
+    for (const c of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+      ok(has(all, c), 'Centre rectangle: a corner carries no square');
+    }
+    const blue = centres(d, BLUE);
+    ok(blue.length === 2 && has(blue, mid),
+       'Centre rectangle: the accent is not the centre plus one corner');
+  }
+
+  // Sketch dimension: witness lines stand off the feature and overrun the dimension line, and the
+  // two arrowheads sit on it pointing out. That is the drafting figure, or it is a bracket.
+  {
+    const d = R('Sketch dimension', 'drive a distance');
+    const [feature, wL, wR, dim] = segs(d);
+    near(feature[1], feature[3], 1e-9, 'Sketch dimension: the measured feature is not level');
+    for (const [i, w] of [wL, wR].entries()) {
+      near(w[0], w[2], 1e-9, `Sketch dimension: witness ${i} is not perpendicular to the feature`);
+      near(w[0], i === 0 ? feature[0] : feature[2], 1e-9,
+           `Sketch dimension: witness ${i} does not rise from its end of the feature`);
+      ok(w[1] < feature[1] - 1, `Sketch dimension: witness ${i} touches the feature — it must stand off`);
+      ok(w[3] < dim[1], `Sketch dimension: witness ${i} stops short of the dimension line`);
+    }
+    near(dim[1], dim[3], 1e-9, 'Sketch dimension: the dimension line is not parallel to the feature');
+    const heads = [...d.matchAll(/<path d="M ([\d.-]+) ([\d.-]+) L [^"]+" fill="([^"]+)"/g)]
+      .map(g => [Number(g[1]), Number(g[2]), g[3]]);
+    ok(heads.length === 2, `Sketch dimension: ${heads.length} arrowheads, expected 2`);
+    ok(heads.every(h => h[2] === BLUE), 'Sketch dimension: an arrowhead is not the accent');
+    for (const [i, h] of heads.entries()) {
+      near(h[1], dim[1], 1e-9, `Sketch dimension: arrowhead ${i} is off the dimension line`);
+      near(h[0], i === 0 ? wL[0] : wR[0], 1e-9, `Sketch dimension: arrowhead ${i} misses its witness line`);
+    }
+    ok(centres(d, BLUE).length === 0,
+       'Sketch dimension: the measured points are accented — on this mark the accent is the dimension');
+    ok(d.split(BLUE).length - 1 === 3,
+       'Sketch dimension: the accent is not exactly the dimension line plus its two heads');
+  }
+
+  // The three chamfers are one drawing and the ticks are the only thing telling them apart, so
+  // the ghost corner has to be there to hang them on and the counts have to say what they claim.
+  {
+    const bevelOf = (d) => [...d.matchAll(/<path d="M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+)" stroke="([^"]+)"/g)]
+      .filter(g => g[5] === BLUE).map(g => g.slice(1, 5).map(Number))[0];
+    const ghostOf = (d) => {
+      const g = d.match(/M ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+) L ([\d.-]+) ([\d.-]+)" stroke="[^"]+" stroke-width="[\d.]+" fill="none" stroke-dasharray/);
+      return g && g.slice(1).map(Number);
+    };
+    const stubs = (g) => [Math.hypot(g[2] - g[0], g[3] - g[1]), Math.hypot(g[4] - g[2], g[5] - g[3])];
+    const ticks = (d) => segs(d).filter(t => Math.hypot(t[2] - t[0], t[3] - t[1]) <= 6.5 + 1e-9);
+
+    for (const hint of ['equal distance', 'distance and angle', 'two distance']) {
+      const d = R('Chamfer', hint);
+      const g = ghostOf(d);
+      ok(g, `Chamfer ${hint}: no dashed ghost corner — the ticks would measure from nothing`);
+      const b = bevelOf(d);
+      ok(b, `Chamfer ${hint}: no accented bevel`);
+      near(Math.hypot(b[0] - g[0], b[1] - g[1]), 0, 1e-6, `Chamfer ${hint}: bevel misses the first stub end`);
+      near(Math.hypot(b[2] - g[4], b[3] - g[5]), 0, 1e-6, `Chamfer ${hint}: bevel misses the second stub end`);
+    }
+
+    const eq = stubs(ghostOf(R('Chamfer', 'equal distance')));
+    near(eq[0], eq[1], 1e-6, 'Chamfer equal distance: the two stubs are NOT equal');
+    const two = stubs(ghostOf(R('Chamfer', 'two distance')));
+    ok(Math.abs(two[0] - two[1]) > 2, `Chamfer two distance: stubs ${two} differ too little to read`);
+    const da = stubs(ghostOf(R('Chamfer', 'distance and angle')));
+    ok(Math.abs(da[0] - da[1]) > 0.5, 'Chamfer distance and angle: its stubs read as equal distance');
+
+    ok(ticks(R('Chamfer', 'equal distance')).length === 2, 'Chamfer equal distance: not one tick per stub');
+    ok(ticks(R('Chamfer', 'two distance')).length === 3, 'Chamfer two distance: not two ticks against one');
+    const dad = R('Chamfer', 'distance and angle');
+    ok(ticks(dad).length === 1, 'Chamfer distance and angle: more than one tick, so it says two distances');
+    const arc = [...dad.matchAll(/M ([\d.]+) ([\d.]+) A ([\d.]+) [\d.]+ 0 (\d) (\d) ([\d.]+) ([\d.]+)/g)][0];
+    ok(arc, 'Chamfer distance and angle: no angle arc, so nothing in it says "angle"');
+    if (arc) {
+      const a = arc.slice(1).map(Number);
+      const b = bevelOf(dad), corner = [b[2], b[3]];
+      near(Math.hypot(a[0] - corner[0], a[1] - corner[1]), a[2], 5e-3,
+           'Chamfer distance and angle: the arc is not struck about the bevel far end');
+      near(Math.hypot(a[5] - corner[0], a[6] - corner[1]), a[2], 5e-3,
+           'Chamfer distance and angle: the arc is not a constant radius about that corner');
     }
   }
 }

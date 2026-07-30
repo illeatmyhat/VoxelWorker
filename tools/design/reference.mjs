@@ -185,6 +185,10 @@ fs.writeFileSync(OUT, `//! The design sheet's resolved geometry, as data. GENERA
 use super::{Ink, Mark};
 
 /// Kebab id -> the marks that id's glyph must draw, in order.
+///
+/// Left unformatted on purpose: the layout is the generator's, so a rustfmt pass would make
+/// regeneration and formatting two steps that have to be run in the right order.
+#[rustfmt::skip]
 pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
 ${rows.join('\n')}
 ];

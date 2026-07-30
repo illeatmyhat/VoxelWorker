@@ -12,38 +12,17 @@
 use super::{Ink, Mark};
 
 /// Kebab id -> the marks that id's glyph must draw, in order.
+///
+/// Left unformatted on purpose: the layout is the generator's, so a rustfmt pass would make
+/// regeneration and formatting two steps that have to be run in the right order.
+#[rustfmt::skip]
 pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
     // Line — 2 points
-    (
-        "line",
-        &[
-            Mark::Line {
-                points: &[(2.3, 13.79), (11.8785, 4.2115)],
-                ink: Ink::SOLID,
-            },
-            Mark::Arc {
-                center: (13.9998, 6.3328),
-                rx: 3.0,
-                ry: 3.0,
-                from: -2.356192,
-                to: 1.832599,
-                ink: Ink::SOLID,
-            },
-            Mark::Node {
-                center: (2.3, 13.79),
-                size: 2.6,
-                ink: Ink::ACCENT,
-            },
-            Mark::Node {
-                center: (11.8785, 4.2115),
-                size: 2.6,
-                ink: Ink::ACCENT,
-            },
-            Mark::Node {
-                center: (13.2233, 9.2306),
-                size: 2.6,
-                ink: Ink::ACCENT,
-            },
-        ],
-    ),
+    ("line", &[
+        Mark::Line { points: &[(2.3, 13.79), (11.8785, 4.2115)], ink: Ink::SOLID },
+        Mark::Arc { center: (13.9998, 6.3328), rx: 3.0, ry: 3.0, from: -2.356192, to: 1.832599, ink: Ink::SOLID },
+        Mark::Node { center: (2.3, 13.79), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (11.8785, 4.2115), size: 2.6, ink: Ink::ACCENT },
+        Mark::Node { center: (13.2233, 9.2306), size: 2.6, ink: Ink::ACCENT },
+    ]),
 ];

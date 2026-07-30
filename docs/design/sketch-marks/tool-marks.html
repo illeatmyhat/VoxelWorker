@@ -200,6 +200,10 @@
   const SLOT = 'M 11 6 H 25 A 6 6 0 0 1 25 18 H 11 A 6 6 0 0 1 11 6 Z';
   const ARCSLOT = 'M 2.4115 17 A 18 18 0 0 1 33.5885 17 A 4 4 0 0 1 26.6603 21 ' +
                   'A 10 10 0 0 0 9.3397 21 A 4 4 0 0 1 2.4115 17 Z';
+  // The same slot lifted 4 units, for the one variant whose defining pick is the arc CENTRE —
+  // at the family's own radii that centre lands at y = 26, past the bottom of a 25-unit canvas.
+  const ARCSLOT_LOW = 'M 2.4115 13 A 18 18 0 0 1 33.5885 13 A 4 4 0 0 1 26.6603 17 ' +
+                      'A 10 10 0 0 0 9.3397 17 A 4 4 0 0 1 2.4115 13 Z';
   const SPLINE = 'M 5 24 C 11 4, 19 26, 31 8';
   const PENT = poly(18, 17, 13, 5, -90);        // open-at-bottom pentagon, for Edge Polygon
   const INSC = poly(18, 18, 13, 5, -90);        // vertices on a circle of r=13
@@ -233,6 +237,16 @@
               'seam and end squares 1.732r apart, so under about r=5 the two merge into a lozenge ' +
               'and the third pick stops being readable.' } },
 
+    { name: 'Midpoint line', hint: 'centre · end', w: 36, h: 36, fresh: true,
+      draw: () => ln([[6, 6], [30, 30]], W) +
+                  ln([[9.8787, 14.1213], [14.1213, 9.8787]], W) +
+                  ln([[21.8787, 26.1213], [26.1213, 21.8787]], W) +
+                  sq(6, 6, N, W) + marks([[18, 18], [30, 30]], N, B),
+      role: 'Runs DOWN-right where Line runs up-right, because the pair is otherwise one drawing: ' +
+            'both are a plain 45° segment. The two picks are the <b>midpoint and one end</b>, so ' +
+            'the far end is line art — it is produced, not clicked. The equal ticks are the ' +
+            'drafting mark for "these two runs are the same length", which is the whole tool.' },
+
     { name: 'Circle', hint: 'centre · diameter', w: 36, h: 36,
       draw: () => ring(18, 18, 12, B) + ln([[18, 18], [26.49, 26.49]], W) + sq(18, 18, N, W),
       role: 'Blue circle, white centre and radius.',
@@ -248,6 +262,14 @@
               'Their full diameter is a line straight through a circle — which is also the ' +
               'universal <em>prohibited</em> sign, colliding with our own disabled state. Half the ' +
               'line, none of the collision, and the rim pick is where you actually click.' } },
+
+    { name: 'Circle', hint: '2-point', w: 36, h: 36, fresh: true,
+      draw: () => ring(18, 18, 12, W) + ln([[9.5147, 26.4853], [26.4853, 9.5147]], W) +
+                  marks([[9.5147, 26.4853], [26.4853, 9.5147]], N, B),
+      role: 'The two picks are the ends of a <b>diameter</b>, so the chord is drawn full width and ' +
+            'the centre is not marked at all — that is exactly what separates this from ' +
+            'centre · diameter, whose accent sits on the centre and whose stub is a radius. ' +
+            'Against 3-point the difference is the chord: three rim picks carry none.' },
 
     { name: 'Circle', hint: '3-point', w: 36, h: 36,
       draw: () => ring(18, 18, 12, B) + marks([[18, 6], [28.39, 24], [7.61, 24]], N, W),
@@ -355,6 +377,15 @@
         note: 'Half a spine, because the tool only takes half. The <b>unequal square sizes</b> say ' +
               'which pick is the centre and which is the end.' } },
 
+    { name: 'Slot', hint: 'centre-point arc', w: 36, h: 29, fresh: true,
+      draw: () => curve(ARCSLOT_LOW, W) +
+                  ln([[18, 22], [5.8756, 15]], W, DASH) + ln([[18, 22], [30.1244, 15]], W, DASH) +
+                  marks([[18, 22], [5.8756, 15], [30.1244, 15]], 4.4, B),
+      role: 'The pick this tool has and its 3-point sibling does not is the <b>arc centre</b>, and ' +
+            'in the family\'s own construction that centre sits 26 units below the crown — off the ' +
+            'canvas. So this one mark is drawn on the same outline lifted 4 units, and the two ' +
+            'dashed radii fill what would otherwise be dead space between the slot and its centre.' },
+
     { name: 'Slot', hint: '3-point arc', w: 36, h: 25,
       draw: () => curve(ARCSLOT, B) + arcTo(5.8756, 19, 14, 30.1244, 19, 0, 1, W, DASH) +
                   marks([[5.8756, 19], [18, 12], [30.1244, 19]], 4.4, W),
@@ -443,6 +474,31 @@
         note: 'The difference is <b>an edge, not a centre</b>. So the accent is a line rather than ' +
               'squares — the only mark on the sheet where the accent is a stroke.' } },
 
+    { name: 'Rectangle', hint: '3-point', w: 36, h: 36, fresh: true,
+      draw: () => closed([[5, 24], [23, 30], [28.692, 12.924], [10.692, 6.924]], W) +
+                  marks([[5, 24], [23, 30], [28.692, 12.924]], N, B),
+      role: 'The only rectangle in the set that is <b>not axis-aligned</b>, and it has to be: the ' +
+            'first two picks set an edge AND its direction, which is the whole difference from ' +
+            '2-point. Three accents, three picks — the fourth corner is solved, so it is bare. ' +
+            'A true rectangle, not a lozenge: the two edge vectors dot to zero.' },
+
+    { name: 'Rectangle', hint: 'centre · corner', w: 36, h: 36, fresh: true,
+      draw: () => box(6, 9, 30, 27, W) +
+                  marks([[6, 9], [30, 9], [6, 27]], N, W) +
+                  marks([[18, 18], [30, 27]], N, B),
+      role: 'Five squares, which is the tell: its siblings have four corners and this one has a ' +
+            '<b>middle</b>. The accent falls on the centre and the dragged corner, in pick order; ' +
+            'the other three corners are line art because they are mirrored, not clicked.' },
+
+    { name: 'Sketch dimension', hint: 'drive a distance', w: 36, h: 32, fresh: true,
+      draw: () => ln([[5, 23], [31, 23]], W) + marks([[5, 23], [31, 23]], N, W) +
+                  ln([[5, 19], [5, 6]], W) + ln([[31, 19], [31, 6]], W) +
+                  ln([[11.5, 9], [24.5, 9]], B) + head(5, 9, -1, 0, B) + head(31, 9, 1, 0, B),
+      role: 'The one create tool whose product is a <b>number</b> rather than geometry, so the ' +
+            'accent sits on the dimension and the measured segment stays line art — the reverse ' +
+            'of every other mark on this shelf. Witness lines stand off the feature and overrun ' +
+            'the dimension line, which is what ISO 129 asks for and what makes it read as drafting.' },
+
     { name: 'Text', hint: 'profile from glyphs', w: 36, h: 30,
       draw: () => ln([[9, 24], [18, 5], [27, 24]], B) + ln([[12.8, 16], [23.2, 16]], B) +
                   ln([[5, 28], [31, 28]], W),
@@ -492,16 +548,37 @@
         note: 'The sharp corner is drawn <b>whole</b> and the arc cuts across it. Reads as "this ' +
               'corner becomes this", and it pairs with Chamfer as one drawing with one swapped part.' } },
 
-    { name: 'Chamfer', hint: 'cuts a corner', w: 36, h: 32,
+    { name: 'Chamfer', hint: 'equal distance', w: 36, h: 32,
       draw: () => ln([[6, 16], [6, 26], [16, 26]], W, DASH) + ln([[6, 5], [6, 16]], W) +
-                  ln([[16, 26], [31, 26]], W) + ln([[6, 16], [16, 26]], B),
-      role: 'Same drawing as Fillet with one element swapped — two answers to one situation.',
+                  ln([[16, 26], [31, 26]], W) + ln([[6, 16], [16, 26]], B) +
+                  ln([[3, 21], [9, 21]], W) + ln([[11, 23], [11, 29]], W),
+      role: 'Same drawing as Fillet with one element swapped — two answers to one situation. The ' +
+            'ticks sit on the two DOOMED stubs, one each, equal: that is the drafting mark for ' +
+            '"these runs are the same", and it is what separates this chamfer from its two siblings.',
       b: { draw: () => ln([[6, 4], [6, 15]], W) + ln([[17, 26], [31, 26]], W) + ln([[6, 16], [16, 26]], B),
         note: 'Fusion has <b>three</b> sketch chamfers — Equal Distance, Distance And Angle, Two ' +
               'Distance — drawn identically but for the bevel\'s slope. This is the equal one, at 45°.' },
       c: { draw: () => ln([[6, 4], [6, 26], [31, 26]], W) + ln([[6, 16], [16, 26]], B),
         note: 'Whole corner, straight cut. Set beside Fillet C the two differ by <b>arc versus ' +
               'line</b> and nothing else, which is exactly the decision the user is making.' } },
+
+    { name: 'Chamfer', hint: 'distance and angle', w: 36, h: 32, fresh: true,
+      draw: () => ln([[6, 12], [6, 26], [21, 26]], W, DASH) + ln([[6, 4], [6, 12]], W) +
+                  ln([[21, 26], [31, 26]], W) + ln([[6, 12], [21, 26]], B) +
+                  ln([[3, 19], [9, 19]], W) + arcTo(28, 26, 7, 15.883, 21.224, 0, 0, W),
+      role: 'One tick and one arc, because the tool takes one <b>length</b> and one <b>angle</b>. ' +
+            'The arc is struck at the bevel\'s far end, between the cut and the leg it leaves at — ' +
+            'which is the angle actually typed. The slope is deliberately off 45° so the mark ' +
+            'cannot be mistaken for equal distance when the ticks are too small to read.' },
+
+    { name: 'Chamfer', hint: 'two distance', w: 36, h: 32, fresh: true,
+      draw: () => ln([[6, 11], [6, 26], [18, 26]], W, DASH) + ln([[6, 4], [6, 11]], W) +
+                  ln([[18, 26], [31, 26]], W) + ln([[6, 11], [18, 26]], B) +
+                  ln([[3, 16], [9, 16]], W) + ln([[3, 20], [9, 20]], W) +
+                  ln([[12, 23], [12, 29]], W),
+      role: 'Two ticks against one. Drafting says equal runs carry equal marks, so <b>unequal ' +
+            'marks say unequal runs</b> — the same convention equal distance uses, read backwards, ' +
+            'which is why the three chamfers can share a drawing and still be told apart.' },
 
     { name: 'Trim', hint: 'to nearest crossing', w: 36, h: 32,
       draw: () => ln([[10, 30], [26, 6]], W) + ln([[16.67, 20], [32, 20]], W) +
@@ -705,6 +782,11 @@
     'Add point|free vertex': 'B is monochrome — confirmed against the shipped PNG, whose only ' +
       'colour is <code>#666666</code>. A is the same composition with the node accented, which is ' +
       'what the app needs to tell "place a vertex" from "select one".',
+    'Chamfer|equal distance': 'B was resolved when the set had ONE chamfer. There are three, and ' +
+      'Fusion draws them identically but for the bevel\'s slope — which is not a difference at ' +
+      '16 px. The distances are measured from a vertex the chamfer deletes, so the discriminating ' +
+      'ticks have nothing to sit on unless the ghost corner is drawn, and only A draws it. Same ' +
+      'shape of ruling as the splines: <b>invent the cue rather than port the omission</b>.',
     'Rectangle|2-point': 'Their gap-the-outline-at-the-picked-corners is the most authored detail ' +
       'in their set, so B was never safe to take. A sidesteps it without inventing anything: an ' +
       'unbroken outline with two plain corner picks. <b>D\'s registration brackets solved the same ' +
