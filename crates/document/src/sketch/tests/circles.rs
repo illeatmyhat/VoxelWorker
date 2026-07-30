@@ -118,6 +118,52 @@ fn concentric_circles_are_two_faces() {
     );
 }
 
+/// Two circles that cross bound THREE faces — two crescents and the lens between them. Nothing was
+/// drawn at the crossings; the arrangement cut both curves there. Without slice D this is two
+/// overlapping discs and one region, which is the picture that motivated the whole slice.
+#[test]
+fn two_overlapping_circles_bound_three_faces() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch.add_circle(SketchPoint::new(0, 0), SketchLength::new(10));
+    sketch.add_circle(SketchPoint::new(12, 0), SketchLength::new(10));
+
+    let faces = sketch.faces();
+    assert_eq!(faces.len(), 3, "two crescents and the lens");
+
+    // Equal circles, r=10 at a centre distance of 12: the lens is
+    // 2r^2*acos(d/2r) - (d/2)*sqrt(4r^2 - d^2), and a crescent is a disc less the lens.
+    let lens = 200.0 * (0.6f64).acos() - 6.0 * (400.0f64 - 144.0).sqrt();
+    let crescent = std::f64::consts::PI * 100.0 - lens;
+    let mut areas: Vec<f64> = faces.iter().map(|face| face.area_voxels).collect();
+    areas.sort_by(f64::total_cmp);
+    for (got, want) in areas.iter().zip([lens, crescent, crescent]) {
+        assert!(
+            (got - want).abs() < 1e-6,
+            "face areas are {areas:?}, want the lens {lens} and two crescents {crescent}"
+        );
+    }
+
+    // The crossings are at (6, +-8), so the lens spans x in 2..10 on the axis.
+    let region = sketch.region_field_loops();
+    for inside in [[-5.0, 0.0], [6.0, 0.0], [17.0, 0.0]] {
+        assert!(point_in_region(&region, inside), "{inside:?} is solid");
+    }
+
+    // The lens is a face like any other, so unpicking it carves a slot neither circle drew — the
+    // proof that the three faces are separately addressable and not one region reported thrice.
+    let lens_face = sketch
+        .identified_faces()
+        .into_iter()
+        .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
+        .expect("a face")
+        .1;
+    sketch.set_face_picked(lens_face, false);
+    let carved = sketch.region_field_loops();
+    assert!(!point_in_region(&carved, [6.0, 0.0]), "the lens is gone");
+    assert!(point_in_region(&carved, [-5.0, 0.0]), "the left crescent");
+    assert!(point_in_region(&carved, [17.0, 0.0]), "the right one");
+}
+
 /// A circle IS its centre plus a radius, so deleting the centre deletes the circle — and deleting
 /// the circle takes its minted centre with it, since nothing else was ever named there.
 #[test]
