@@ -63,6 +63,11 @@
 //!   crossing changes the topology of the answer rather than its precision.
 //! - [`noise`] — a procedural-generation kit: the [`SmallRng`](noise::SmallRng) LCG and
 //!   [`PerlinNoise`](noise::PerlinNoise) gradient noise with fBm.
+//! - [`nonlinear_least_squares`] — Powell's Dog Leg with a Levenberg–Marquardt fallback:
+//!   [`solve`](nonlinear_least_squares::solve) drives a
+//!   [`ResidualSystem`](nonlinear_least_squares::ResidualSystem) to its nearest solution, and the
+//!   [`SolveReport`](nonlinear_least_squares::SolveReport) carries the Jacobian's rank as degrees
+//!   of freedom and redundant residuals — the numerical core a constraint solver runs on.
 //! - [`interval`] — [`FieldInterval`](interval::FieldInterval),
 //!   [`DisjointIntervalSet`](interval::DisjointIntervalSet), and [`Rational`](interval::Rational).
 //! - [`occupancy`] — the bit/atlas kit: [`BitCube`](occupancy::BitCube) and its payload sibling
@@ -89,6 +94,7 @@ pub mod curve_intersection;
 pub mod geom2d;
 pub mod interval;
 pub mod noise;
+pub mod nonlinear_least_squares;
 pub mod occupancy;
 pub mod solids;
 pub mod spatial;
