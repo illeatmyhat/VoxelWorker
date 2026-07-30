@@ -305,11 +305,11 @@ each glyph adds its row when it lands.
 
 ---
 
-## The one thing I did not decide · `5f47e51`
+## Slice B's last line — `arc_sweep_is_valid` · DECIDED, NOT ESCALATED · `5f47e51` + `130d425`
 
-`arc_sweep_is_valid` still refuses the full turn, which is the one line of slice B I did not do as
-worded. I went back and took the guard apart rather than leaving it at "Decision 7 says so", and it
-splits in two:
+"Relax `arc_sweep_is_valid` for the closed case" is the one line of slice B I did not do as worded.
+I first called it an ADR-changing decision and stopped, which was wrong on the facts. Taking the
+guard apart properly, it splits in two, and neither half is a design call:
 
 ```rust
 sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
@@ -326,18 +326,41 @@ sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
    That is the clause that says "a closed curve is a `Circle`, not an arc closed onto one point".
    I had conflated the two yesterday; they are independent.
 
-So the honest version of my earlier note: relaxing `< 360.0` does not change Decision 7, it just
-puts a divergent number in the store. `the_full_turn_is_where_the_radius_diverges` in
-`crates/document/src/sketch/tests/arcs.rs` now pins that in measurements instead of in prose.
+**And then the part I had missed: the closed case is already relaxed, in the layer that has one.**
+`substrate::curve_intersection::PlanarCurve::circle` IS a full-turn arc — `sweep_radians: TAU` —
+because substrate's form is centre + radius + start + sweep, which has **no pole at the full turn**.
+`split_at` produces one on every single-cut: a tangency cuts a circle at exactly one parameter, and
+one cut re-seams a loop rather than opening it.
 
-**Check it** (~40 s): `cargo test -p document arcs` — expect **21 passed**.
+So the two layers differ on purpose, and correctly:
 
-**If you disagree**, the change is one clause on `crates/document/src/sketch/mod.rs:1491`, and what
-you would be buying is an arc tool that does not need a Circle branch, paid for with an entity whose
-radius is 4e15. I do not think that is what you meant, but it is your call and it is one line.
+| | form | full turn |
+| --- | --- | --- |
+| the store (`document`) | endpoints + bulge | **refused** — the radius diverges there |
+| the arrangement (`substrate`) | centre + radius + sweep | **legal, and load-bearing** |
+
+**The call I made:** the clause stays. Slice B's intent is satisfied where the closed case actually
+lives, and editing `arc_sweep_is_valid` would only let a radius of 4e15 into the store. Recording it
+here per your "small calls: decide, and record the call" rule rather than waking you for it.
+
+What was genuinely missing was a **sketch-level** test of that path — substrate had one, the
+document did not. `a_tangent_line_re_seams_the_circle_without_opening_it` (`130d425`) draws a line
+tangent to a circle and asserts the disc survives whole, with the secant case beside it, so one cut
+and two cuts can never quietly behave alike.
+
+**Check it** (~40 s each):
+
+```
+cargo test -p document arcs        # 21 passed
+cargo test -p document circles     # 17 passed
+```
 
 ## The decision I need
 
-**Finish the icon workstream, or park it?** #36–#40 is a few sessions of transposition against a
-green gate — safe, mechanical, and it unblocks the rail. Slice E's caller (constraint entities) is
-the ADR's actual point and is the harder, more valuable work. I can only do one next.
+All five slices are shipped, and slice B's last line is closed above by a decision rather than a
+question. Nothing in A–E is waiting on you. The one thing I cannot pick for you:
+
+**Slice E's caller, or the icon workstream?** Constraint entities (coincident, horizontal/vertical,
+distance) feeding the solver core is the ADR's actual point — the solver drives nothing until it
+exists. #36–#40 is ~60 glyphs of transposition against a green gate: safe, mechanical, unblocks the
+rail. I would take the solver's caller, because a tested solver with no caller is the larger debt.
