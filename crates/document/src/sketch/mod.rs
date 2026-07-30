@@ -703,12 +703,17 @@ pub struct Sketch {
     /// document loads with none.
     #[serde(default)]
     circles: Vec<Circle>,
-    /// The faces the author has UNPICKED, by boundary origin-set key (ADR 0030 §3, #100).
-    /// Every derived face is picked by default, so this holds only the exceptions and is
-    /// usually empty. A key that matches no current face is inert, not an error: it costs
-    /// nothing and lets an unpick survive an edit that temporarily breaks its boundary.
+    /// The faces the author has UNPICKED, each named by a point inside it (ADR 0035
+    /// Decision 9). Every derived face is picked by default, so this holds only the
+    /// exceptions and is usually empty. A point inside no current face is inert, not an
+    /// error: it costs nothing and lets an unpick survive an edit that temporarily breaks
+    /// its boundary.
+    ///
+    /// It is a `Vec` and not a set because `f32` is not `Ord`, and the field is renamed from
+    /// the origin-set `unpicked` it replaces so a pre-arrangement document loads with every
+    /// face picked rather than failing on a key it cannot parse.
     #[serde(default)]
-    unpicked: std::collections::BTreeSet<FaceKey>,
+    unpicked_points: Vec<FaceKey>,
     /// The next id to hand out. Ids are monotonic and never reused, so this only grows.
     next_id: EntityId,
 }
@@ -726,7 +731,7 @@ impl Sketch {
             segments: Vec::with_capacity(profile.len()),
             arcs: Vec::new(),
             circles: Vec::new(),
-            unpicked: std::collections::BTreeSet::new(),
+            unpicked_points: Vec::new(),
             next_id: 0,
         };
         let ids: Vec<EntityId> = profile.iter().map(|&at| sketch.add_point(at)).collect();
@@ -765,7 +770,7 @@ impl Sketch {
             segments: Vec::new(),
             arcs: Vec::new(),
             circles: Vec::new(),
-            unpicked: std::collections::BTreeSet::new(),
+            unpicked_points: Vec::new(),
             next_id: 0,
         }
     }
@@ -888,27 +893,66 @@ impl Sketch {
             .collect()
     }
 
-    /// Whether the face with this boundary key contributes solid. Faces default to PICKED — the
-    /// document stores only the unpicked exceptions (ADR 0030 §3).
+    /// Whether the face containing this key's point contributes solid. Faces default to PICKED —
+    /// the document stores only the unpicked exceptions (ADR 0030 §3, ADR 0035 Decision 9).
     pub fn face_is_picked(&self, key: &FaceKey) -> bool {
-        !self.unpicked.contains(key)
-    }
-
-    /// Pick or unpick the face with this boundary key, carving or filling a pocket. Storing the
-    /// key rather than the face means the intent survives re-derivation: a vertex drag leaves the
-    /// key untouched, and so does splitting a boundary edge (both children keep the parent's
-    /// origin), while restructuring the boundary makes it a different face that reverts to picked.
-    pub fn set_face_picked(&mut self, key: FaceKey, picked: bool) {
-        if picked {
-            self.unpicked.remove(&key);
-        } else {
-            self.unpicked.insert(key);
+        let faces = self.nested_faces();
+        match innermost_face_at(&faces, key.interior_point) {
+            Some(index) => self.pick_flags(&faces)[index],
+            None => true,
         }
     }
 
-    /// The unpicked boundary keys, ascending — the whole of the pick state the document carries.
+    /// Pick or unpick the face containing this key's point, carving or filling a pocket. Storing a
+    /// point inside the face rather than its boundary's lineage means the intent survives
+    /// re-derivation: a vertex drag, an edge split, and a curve drawn elsewhere all leave the same
+    /// ground under the point, while a face that shrinks past it reverts to picked
+    /// (ADR 0035 Decision 9).
+    pub fn set_face_picked(&mut self, key: FaceKey, picked: bool) {
+        let faces = self.nested_faces();
+        let Some(index) = innermost_face_at(&faces, key.interior_point) else {
+            // Nothing is there to carve. An unpick still records the intent — it is inert until
+            // an edit puts a face under it — but a pick has nothing to clear.
+            if !picked {
+                self.unpicked_points.push(key);
+            }
+            return;
+        };
+        // Whatever already names this face goes, so a pick clears it and an unpick replaces it
+        // with the face's own current deepest point rather than accumulating near-duplicates.
+        self.unpicked_points
+            .retain(|stored| innermost_face_at(&faces, stored.interior_point) != Some(index));
+        if !picked {
+            self.unpicked_points.push(faces[index].key);
+        }
+    }
+
+    /// The points naming the unpicked faces — the whole of the pick state the document carries.
     pub fn unpicked_faces(&self) -> impl Iterator<Item = &FaceKey> {
-        self.unpicked.iter()
+        self.unpicked_points.iter()
+    }
+
+    /// The derived faces in nesting order: smallest area first, so the FIRST face containing a
+    /// point is the innermost one that does. [`substrate::geom2d::point_in_region`] takes the
+    /// same order for the same reason.
+    fn nested_faces(&self) -> Vec<Face> {
+        let mut faces = faces::derive(self);
+        // Ties keep `derive`'s deterministic order, so the region is stable across derivations.
+        faces.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
+        faces
+    }
+
+    /// Whether each of `faces` (in nesting order) is picked. An unpick point resolves to exactly
+    /// one face — the innermost containing it — so an unpick inside a pocket never reads as an
+    /// unpick of the shape around it.
+    fn pick_flags(&self, faces: &[Face]) -> Vec<bool> {
+        let mut picked = vec![true; faces.len()];
+        for stored in &self.unpicked_points {
+            if let Some(index) = innermost_face_at(faces, stored.interior_point) {
+                picked[index] = false;
+            }
+        }
+        picked
     }
 
     /// The DERIVED profile: one tagged loop per derived face, `Fill` where the face is picked and
@@ -926,13 +970,13 @@ impl Sketch {
     /// global crossing parity, so two fills that touch or share an edge both count where even-odd
     /// would cancel them.
     pub fn region(&self) -> Vec<ProfileLoop> {
-        let mut faces = faces::derive(self);
-        // Ties keep `faces`' deterministic order, so the region is stable across derivations.
-        faces.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
+        let faces = self.nested_faces();
+        let picked = self.pick_flags(&faces);
         faces
             .into_iter()
-            .map(|face| ProfileLoop {
-                role: if self.face_is_picked(&face.key) {
+            .zip(picked)
+            .map(|(face, picked)| ProfileLoop {
+                role: if picked {
                     LoopRole::Fill
                 } else {
                     LoopRole::Hole
@@ -1378,6 +1422,15 @@ const ARC_MAX_CHORDS: u32 = 512;
 /// tool one branch.
 fn arc_sweep_is_valid(sweep_degrees: f64) -> bool {
     sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
+}
+
+/// The index in `faces` of the innermost one containing `point`, or `None` when nothing does.
+///
+/// `faces` must be in nesting order (smallest area first), which is exactly what makes "innermost"
+/// a matter of taking the first hit rather than a containment analysis: a face strictly inside
+/// another has strictly less area.
+fn innermost_face_at(faces: &[Face], point: [f32; 2]) -> Option<usize> {
+    faces.iter().position(|face| face.contains(point))
 }
 
 /// Whether a radius is a legal [`Circle`]: finite and strictly positive. A zero radius is a point

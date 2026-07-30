@@ -31,7 +31,7 @@ fn nested_squares() -> Sketch {
 fn innermost(sketch: &Sketch) -> FaceKey {
     let mut faces = sketch.faces();
     faces.sort_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels));
-    faces.first().expect("a face").key.clone()
+    faces.first().expect("a face").key
 }
 
 /// Derivation enumerates every bounded face, and only bounded ones: a component's unbounded
@@ -109,14 +109,14 @@ fn a_revolve_lifts_the_hole_as_well() {
     );
 }
 
-/// The point of the origin-set key: an unpick survives the edits that leave a face the same
-/// face. Dragging a vertex touches no origin, and splitting a boundary edge gives both children
-/// the parent's origin — so the SET is unchanged either way (an explicit owner requirement).
+/// The point of the interior-point key (ADR 0035 Decision 9): an unpick survives the edits that
+/// leave the same ground under the point. Dragging a vertex and splitting a boundary edge both do
+/// — neither moves the pocket out from under its own deepest point (an explicit owner
+/// requirement, restated for the arrangement).
 #[test]
 fn an_unpick_survives_a_vertex_drag_and_an_edge_split() {
     let mut sketch = nested_squares();
-    let inner = innermost(&sketch);
-    sketch.set_face_picked(inner.clone(), false);
+    sketch.set_face_picked(innermost(&sketch), false);
 
     let moved = sketch.points().last().expect("a point").id;
     assert!(
@@ -125,58 +125,73 @@ fn an_unpick_survives_a_vertex_drag_and_an_edge_split() {
     );
     assert!(
         !sketch.face_is_picked(&innermost(&sketch)),
-        "a drag re-derives the same key"
+        "a drag leaves the pocket under its own point"
     );
 
+    let inner_corners = inner_corner_ids(&sketch);
     let inner_edge = sketch
         .segments()
         .iter()
-        .find(|segment| inner.origins().contains(&segment.origin))
+        .find(|segment| {
+            inner_corners.contains(&segment.from) && inner_corners.contains(&segment.to)
+        })
         .expect("a boundary edge of the unpicked face")
         .id;
     sketch.split_segment(inner_edge, SketchPoint::new(6, 4));
-    let after_split = innermost(&sketch);
-    assert_eq!(
-        after_split.origins(),
-        inner.origins(),
-        "both split children carry the parent's origin, so the SET is unchanged"
-    );
     assert!(
-        !sketch.face_is_picked(&after_split),
+        !sketch.face_is_picked(&innermost(&sketch)),
         "the hole is still a hole"
     );
 }
 
-/// The other half of the contract: RESTRUCTURING the boundary makes a genuinely different face,
-/// which reverts to picked rather than inheriting someone else's intent.
-#[test]
-fn restructuring_the_boundary_resets_the_face_to_picked() {
-    let mut sketch = nested_squares();
-    sketch.set_face_picked(innermost(&sketch), false);
-    let inner_corners: Vec<EntityId> = sketch
+/// The corner point ids of the inner square in [`nested_squares`], however it has been nudged.
+fn inner_corner_ids(sketch: &Sketch) -> Vec<EntityId> {
+    sketch
         .points()
         .iter()
         .filter(|point| point.at.offset_voxels.iter().all(|&c| (4..=8).contains(&c)))
         .map(|point| point.id)
+        .collect()
+}
+
+/// The other half of the contract, and the failure mode ADR 0035 Decision 9 ACCEPTS: cutting the
+/// pocket in two does not reset both halves to picked, it migrates the unpick into whichever half
+/// still holds the stored point. Exactly one hole survives, and it is the half the point is in.
+#[test]
+fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
+    let mut sketch = nested_squares();
+    let carved = innermost(&sketch);
+    sketch.set_face_picked(carved, false);
+
+    // A chord across the pocket, well off its centre so the stored point is unambiguously on one
+    // side. Its ends are free points on the boundary — the arrangement cuts at the crossings.
+    let low = sketch.add_free_point(SketchPoint::new(4, 5));
+    let high = sketch.add_free_point(SketchPoint::new(8, 5));
+    sketch.connect(low, high).expect("the chord");
+
+    let mut faces = sketch.faces();
+    faces.sort_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels));
+    let holes: Vec<&Face> = faces
+        .iter()
+        .filter(|face| !sketch.face_is_picked(&face.key))
         .collect();
-    assert_eq!(inner_corners.len(), 4);
-    // A diagonal across the pocket: a new distinct origin joins the boundary, so neither half
-    // is the face that was unpicked.
-    sketch.connect(inner_corners[0], inner_corners[2]);
+    assert_eq!(holes.len(), 1, "the unpick names ONE face, not both halves");
     assert!(
-        sketch
-            .faces()
-            .iter()
-            .all(|face| sketch.face_is_picked(&face.key)),
-        "every face of the restructured pocket is picked again"
+        holes[0].contains(carved.interior_point),
+        "and it is the half the stored point landed in"
+    );
+    assert!(
+        holes[0].area_voxels < 16.0,
+        "which is smaller than the pocket it was cut from: {}",
+        holes[0].area_voxels
     );
 }
 
-/// A crossing without a shared point bounds nothing (ADR 0030 §2) — the rule that keeps
-/// derivation a graph walk instead of an intersection solver. Snapping a point at the crossing
-/// is what creates the regions.
+/// A crossing needs NO shared point (ADR 0035 Decision 8, retiring ADR 0030 §2): the bowtie's
+/// two segments cross in mid-air, and the arrangement cuts both there, so the two triangles are
+/// two regions without the author snapping a vertex at the crossing first.
 #[test]
-fn a_crossing_needs_a_snapped_point_to_bound_anything() {
+fn a_crossing_bounds_faces_with_no_snapped_point() {
     let bowtie = Sketch::new(
         PlaneAxis::Z,
         vec![
@@ -186,11 +201,20 @@ fn a_crossing_needs_a_snapped_point_to_bound_anything() {
             SketchPoint::new(6, 0),
         ],
     );
-    assert!(
-        bowtie.faces().is_empty(),
-        "the two halves cancel: no bounded face without a real vertex at the crossing"
+    let faces = bowtie.faces();
+    assert_eq!(faces.len(), 2, "one triangle either side of the crossing");
+    for face in &faces {
+        assert!(
+            (face.area_voxels - 9.0).abs() < 1e-6,
+            "each is half the 6x6 square's diagonal split: {}",
+            face.area_voxels
+        );
+    }
+    assert_eq!(
+        bowtie.points().len(),
+        4,
+        "and no vertex was minted at the crossing"
     );
-    assert!(bowtie.region().is_empty());
 }
 
 /// The unpicked set is document state: it round-trips, and a pre-#100 document loads with every
@@ -208,12 +232,12 @@ fn the_pick_state_round_trips_and_an_older_document_loads_picked() {
     value
         .as_object_mut()
         .expect("object")
-        .remove("unpicked")
+        .remove("unpicked_points")
         .expect("the key was written");
     let older: Sketch = serde_json::from_value(value).expect("a pre-#100 document");
     assert!(
         older.faces().iter().all(|f| older.face_is_picked(&f.key)),
-        "no unpicked set means everything is picked"
+        "no unpicked list means everything is picked"
     );
 }
 
@@ -305,7 +329,7 @@ fn a_picked_island_inside_a_void_survives_the_carve() {
     let middle = {
         let mut faces = sketch.faces();
         faces.sort_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels));
-        faces[1].key.clone()
+        faces[1].key
     };
     sketch.set_face_picked(middle, false);
     let field = sketch.region_field_loops();

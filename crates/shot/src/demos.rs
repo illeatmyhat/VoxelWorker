@@ -911,6 +911,44 @@ pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
+/// Build the `--demo-sketch-lens` (ADR 0035 Decision 8): two overlapping circles, whose LENS —
+/// the almond of overlap — is unpicked.
+///
+/// The headline of the arrangement. Nothing here shares a point: the circles simply cross, and the
+/// arrangement cuts each of them at the two crossings, so the drawing is three separately pickable
+/// regions rather than two. Carving the middle one is what makes that visible — the render is two
+/// crescents with a gap between them, which no pair of whole circles could produce.
+pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
+    let block = voxels_per_block.max(1) as i64;
+    let radius = 4 * block;
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    // Centres 1.5 radii apart, so the lens is a substantial third of the drawing.
+    sketch.add_circle(SketchPoint::new(0, 0), SketchLength::new(radius));
+    sketch.add_circle(
+        SketchPoint::new(radius + radius / 2, 0),
+        SketchLength::new(radius),
+    );
+    // The lens is the smallest of the three faces; unpicking it splits the pair into crescents.
+    let lens = sketch
+        .faces()
+        .into_iter()
+        .min_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels))
+        .expect("two crescents and a lens")
+        .key;
+    sketch.set_face_picked(lens, false);
+    let producer = SketchSolid::extrude(sketch, block as u32);
+    let node = Node::new(
+        "Sketch lens",
+        NodeContent::SketchTool {
+            producer,
+            material: MaterialChoice::Wood,
+        },
+    );
+    let mut scene = with_node_ids(Scene::from_nodes(vec![node]));
+    scene.voxels_per_block = voxels_per_block;
+    DemoScene::first_node(scene)
+}
+
 /// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
 /// exercises the indented TREE in the panel. A top-level `Group` ("Cluster") holds
 /// two child Tools (a Sphere + a Box at a small offset); a sibling top-level Box

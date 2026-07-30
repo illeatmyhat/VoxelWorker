@@ -775,6 +775,147 @@ pub fn signed_distance_to_region(
     }
 }
 
+/// The point of the region's interior FARTHEST from its boundary — its pole of inaccessibility —
+/// together with that clearance. `None` when the region encloses nothing.
+///
+/// # Why the deepest point and not the centroid
+///
+/// This is an identity, not a display position: something names a face by a point inside it and
+/// must still name the same face after the boundary moves a little. A centroid leaves the interior
+/// entirely for any crescent or L-shape, and even where it stays inside it can sit a hair from an
+/// edge, so a small edit walks it out. The deepest point is the one with the most room to survive,
+/// and `clearance` is exactly how much of an edit it can absorb.
+///
+/// # The search
+///
+/// Garcia-Castellanos & Lombardo's pole of inaccessibility (2007), by the quadtree refinement
+/// Mapbox's *polylabel* (2016) popularised: cover the bounds in square cells, and repeatedly
+/// subdivide whichever cell has the best *possible* answer left in it — its centre's clearance
+/// plus its own half-diagonal, since the field is 1-Lipschitz and cannot climb faster than the
+/// distance travelled. That bound is what makes the search exhaustive rather than lucky: a sliver
+/// no coarse sample lands in still has a cell whose optimistic bound outranks the current best, so
+/// it gets subdivided rather than missed. It stops once no cell can beat the best by more than
+/// `precision`.
+///
+/// Unlike the published algorithm this measures to CURVES, not to a flattened polygon
+/// ([`signed_distance_to_region`] over [`RegionEdge`]s), so a disc's pole is its centre exactly
+/// rather than the centre of a chord approximation. It also takes a REGION and not a single loop,
+/// for the same reason the identity wants the deepest point in the first place: the pole of a ring
+/// has to be in the ring, not in the hole the ring is drawn around. `loops` is innermost-first,
+/// the order [`point_in_region`] states.
+pub fn deepest_interior_point(
+    loops: &[(LoopRole, Vec<RegionEdge>)],
+    precision: f32,
+) -> Option<([f32; 2], f32)> {
+    let (low, high) = region_bounds(loops)?;
+    let (width, height) = (high[0] - low[0], high[1] - low[1]);
+    let side = width.min(height);
+    // NaN bounds and a degenerate span alike: there is no interior to search.
+    if side.is_nan() || side <= 0.0 {
+        return None;
+    }
+    let depth = |point: [f32; 2]| -signed_distance_to_region(loops, point, Metric::Euclidean);
+    // Seed with the bounds' centre so a convex loop is answered before any subdivision, and so
+    // there is always a best to compare optimistic bounds against.
+    let mut best = [low[0] + width / 2.0, low[1] + height / 2.0];
+    let mut best_depth = depth(best);
+    // Each cell carries the depth at its centre, measured once when it is created — the search
+    // spends its whole cost in `depth`, so re-reading it while ranking would square that.
+    let cell = |centre: [f32; 2], half: f32| Cell {
+        centre,
+        half,
+        bound: depth(centre) + half * std::f32::consts::SQRT_2,
+    };
+    let mut queue: std::collections::BinaryHeap<Cell> = std::collections::BinaryHeap::new();
+    let mut x = low[0];
+    while x < high[0] {
+        let mut y = low[1];
+        while y < high[1] {
+            queue.push(cell([x + side / 2.0, y + side / 2.0], side / 2.0));
+            y += side;
+        }
+        x += side;
+    }
+    // A budget, not a convergence criterion: the loop below terminates on its own because every
+    // subdivision halves `half`. This only bounds the cost of a pathological boundary.
+    for _ in 0..MAXIMUM_POLE_CELLS {
+        let Some(popped) = queue.pop() else {
+            break;
+        };
+        // The heap's head is the best any surviving cell could do, so once IT cannot beat the
+        // incumbent by `precision`, nothing can and the search is over.
+        if popped.bound - best_depth <= precision {
+            break;
+        }
+        let here = popped.bound - popped.half * std::f32::consts::SQRT_2;
+        if here > best_depth {
+            best_depth = here;
+            best = popped.centre;
+        }
+        let quarter = popped.half / 2.0;
+        for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            queue.push(cell(
+                [
+                    popped.centre[0] + dx * quarter,
+                    popped.centre[1] + dy * quarter,
+                ],
+                quarter,
+            ));
+        }
+    }
+    (best_depth > 0.0).then_some((best, best_depth))
+}
+
+/// One square of the [`deepest_interior_point`] search, ordered by the best clearance it could
+/// still hold: its centre's, plus how far its corner reaches. That ordering is the whole point —
+/// the search always subdivides the most promising square left, so it is a max-heap of `bound`
+/// and nothing else participates in the comparison.
+struct Cell {
+    centre: [f32; 2],
+    half: f32,
+    bound: f32,
+}
+
+impl PartialEq for Cell {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Cell {}
+
+impl PartialOrd for Cell {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Cell {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.bound.total_cmp(&other.bound)
+    }
+}
+
+/// The cost ceiling on one [`deepest_interior_point`] search.
+const MAXIMUM_POLE_CELLS: usize = 4096;
+
+/// The union of every edge's [`RegionEdge::bounds`] across every loop, or `None` for an empty
+/// region.
+fn region_bounds(loops: &[(LoopRole, Vec<RegionEdge>)]) -> Option<([f32; 2], [f32; 2])> {
+    let mut bounds: Option<([f32; 2], [f32; 2])> = None;
+    for edge in loops.iter().flat_map(|(_, edges)| edges) {
+        let (low, high) = edge.bounds();
+        bounds = Some(match bounds {
+            None => (low, high),
+            Some((was_low, was_high)) => (
+                [was_low[0].min(low[0]), was_low[1].min(low[1])],
+                [was_high[0].max(high[0]), was_high[1].max(high[1])],
+            ),
+        });
+    }
+    bounds
+}
+
 /// Whether the CLOSED axis-aligned rectangle lies ENTIRELY inside the region — the innermost loop
 /// that touches it is a `Fill` that contains it whole. Takes the same innermost-first `loops`
 /// [`point_in_region`] does.
@@ -1384,6 +1525,106 @@ mod tests {
         assert_eq!(
             signed_distance_to_polygon(&[[1.0, 1.0]], [0.0, 0.0], Metric::Chebyshev),
             f32::INFINITY
+        );
+    }
+
+    /// A vertex list as a one-loop region — what a pole is asked for most of the time.
+    fn fill(points: &[[f32; 2]]) -> Vec<(LoopRole, Vec<RegionEdge>)> {
+        vec![(LoopRole::Fill, closed_loop(points))]
+    }
+
+    /// The square's pole is its centre, and the clearance is the inradius.
+    #[test]
+    fn a_squares_pole_is_its_centre() {
+        let (pole, clearance) =
+            deepest_interior_point(&fill(&UNIT_SQUARE_MEASURED), 1e-3).expect("a pole");
+        assert!(
+            (pole[0] - 2.0).abs() < 1e-2 && (pole[1] - 2.0).abs() < 1e-2,
+            "{pole:?}"
+        );
+        assert!((clearance - 2.0).abs() < 1e-2, "{clearance}");
+    }
+
+    /// A disc's pole is its centre measured to the CURVE, so the clearance is the radius exactly
+    /// rather than the apothem of some chord approximation.
+    #[test]
+    fn a_discs_pole_reads_the_curve_not_a_chord() {
+        let radius = 8.0;
+        let circle = vec![RegionEdge::Arc {
+            start: [radius, 0.0],
+            end: [radius, 0.0],
+            centre: [0.0, 0.0],
+            radius,
+            start_radians: 0.0,
+            sweep_radians: std::f32::consts::TAU,
+        }];
+        let (pole, clearance) =
+            deepest_interior_point(&[(LoopRole::Fill, circle)], 1e-3).expect("a pole");
+        assert!(pole[0].hypot(pole[1]) < 1e-2, "{pole:?}");
+        assert!((clearance - radius).abs() < 1e-2, "{clearance}");
+    }
+
+    /// The case a centroid gets wrong: a C whose centroid sits in the notch, outside the shape.
+    /// The pole is in one of the arms, and it is genuinely inside.
+    #[test]
+    fn a_crescents_pole_is_inside_it() {
+        let c = closed_loop(&[
+            [0.0, 0.0],
+            [12.0, 0.0],
+            [12.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 9.0],
+            [12.0, 9.0],
+            [12.0, 12.0],
+            [0.0, 12.0],
+        ]);
+        let centroid = [6.0, 6.0];
+        assert!(
+            !point_in_edge_loop(&c, centroid),
+            "the centroid is in the notch"
+        );
+        let (pole, clearance) =
+            deepest_interior_point(&[(LoopRole::Fill, c.clone())], 1e-3).expect("a pole");
+        assert!(point_in_edge_loop(&c, pole), "{pole:?} is outside");
+        assert!(
+            clearance > 1.4,
+            "the deepest point has real room: {clearance}"
+        );
+    }
+
+    /// A sliver no coarse sample lands in is still found — the optimistic bound keeps its cells
+    /// alive until they are small enough to sample it.
+    #[test]
+    fn a_sliver_is_found_not_missed() {
+        let sliver = closed_loop(&[[0.0, 0.0], [64.0, 0.0], [64.0, 0.4], [0.0, 0.4]]);
+        let (pole, clearance) =
+            deepest_interior_point(&[(LoopRole::Fill, sliver.clone())], 1e-3).expect("a pole");
+        assert!(point_in_edge_loop(&sliver, pole), "{pole:?}");
+        assert!((clearance - 0.2).abs() < 1e-2, "{clearance}");
+    }
+
+    /// The case the identity actually needs the REGION for: a ring's pole is in the ring, not in
+    /// the hole it is drawn around, even though the hole is the roomiest place inside the outer
+    /// loop.
+    #[test]
+    fn a_rings_pole_is_in_the_ring() {
+        let ring = vec![
+            (LoopRole::Hole, closed_loop(&INNER_MEASURED)),
+            (LoopRole::Fill, closed_loop(&OUTER_MEASURED)),
+        ];
+        let (pole, clearance) = deepest_interior_point(&ring, 1e-3).expect("a pole");
+        assert!(point_in_region(&ring, pole), "{pole:?} is in the hole");
+        // Comfortably more than the 2 the plain 4-wide band offers: the roomiest spot backs away
+        // DIAGONALLY from one of the hole's corners, where the clearance is the corner distance.
+        assert!((clearance - 2.343).abs() < 0.05, "{clearance}");
+    }
+
+    /// A loop that encloses nothing has no interior to name.
+    #[test]
+    fn a_degenerate_loop_has_no_pole() {
+        assert!(deepest_interior_point(&[], 1e-3).is_none());
+        assert!(
+            deepest_interior_point(&fill(&[[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]]), 1e-3).is_none()
         );
     }
 }

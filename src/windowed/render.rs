@@ -2114,7 +2114,7 @@ impl WindowedState {
                     .abs()
                     .total_cmp(&polygon_double_area(b).abs())
             })
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| *key)
     }
 
     /// Whether the region the open viewport menu is acting on is picked (#100), or `None` when the

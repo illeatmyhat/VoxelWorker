@@ -22,10 +22,10 @@ use crate::demos::{
     build_demo_cylinder_subtract, build_demo_group_subtract, build_demo_groups,
     build_demo_intersect, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
     build_demo_sketch_box, build_demo_sketch_circle, build_demo_sketch_donut,
-    build_demo_sketch_extrude, build_demo_sketch_revolve, build_demo_subtract,
-    build_demo_two_material, build_demo_village, build_demo_village_far, build_demo_window_fixture,
-    build_far_offset_scene, file_stem_of, resolve_demo_stem, DemoScene, FAR_OFFSET_BLOCKS,
-    FAR_SCENE_BASE_BLOCKS,
+    build_demo_sketch_extrude, build_demo_sketch_lens, build_demo_sketch_revolve,
+    build_demo_subtract, build_demo_two_material, build_demo_village, build_demo_village_far,
+    build_demo_window_fixture, build_far_offset_scene, file_stem_of, resolve_demo_stem, DemoScene,
+    FAR_OFFSET_BLOCKS, FAR_SCENE_BASE_BLOCKS,
 };
 use crate::options::ShotOptions;
 
@@ -219,6 +219,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         build_demo_sketch_circle(options.geometry.voxels_per_block)
     } else if options.demo_sketch_donut {
         build_demo_sketch_donut(options.geometry.voxels_per_block)
+    } else if options.demo_sketch_lens {
+        build_demo_sketch_lens(options.geometry.voxels_per_block)
     } else if options.demo_village_far {
         build_demo_village_far(options.geometry.voxels_per_block)
     } else if options.demo_village {
