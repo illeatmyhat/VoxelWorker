@@ -417,7 +417,7 @@ cargo test -p document arcs        # 21 passed
 cargo test -p document circles     # 18 passed
 ```
 
-## The decision I need
+## The decision, since RULED
 
 **All five slices are complete**, including slice B's last line, which was implemented in `376c5a7`
 and which I twice mis-reported as skipped before finding it. Slice E now has a caller. Nothing in
@@ -427,13 +427,15 @@ I twice ended this file asking you to pick the next workstream. That was the wro
 question — it stops the night on something your own rules say I should decide — so I took my own
 recommendation and built the constraint slice instead. Both of those framings are recorded above.
 
-**The one thing I genuinely cannot pick for you: does `Fix` belong in the first constraint set?**
+**Does `Fix` belong in the first constraint set? — RULED 2026-07-29: yes, `Fix` is authorable.**
+
+> "Fix is authorable. Naturally, it's one of the fundamental constraints."
 
 Decision 5 lists it as **not inferable** — "asserting immovability by accident is the worst failure
-mode" — but says nothing about whether it is authorable, and I have shipped it as authorable. It is
-the sharpest tool in the set: two constraints and a `Fix` can make a drawing unsolvable in a way
-that reads as a bug. Everything else I built (`Horizontal`, `Vertical`, `Distance`) fails softly.
+mode" — and the ruling settles the other half: not inferable and authorable are different questions,
+and only the first was ever in doubt. `ConstraintKind::Fix` stays exactly as shipped; no code
+changed. That two constraints and a `Fix` can make a drawing unsolvable is not an argument against
+the constraint, it is the reason the rank check exists.
 
-If you want it out, it is one variant and its residual arm. If you want it in, the next thing is
-either the integer outer loop or DOF on screen, and I would take DOF on screen — it is small, and
-"fully constrained" is the whole reason Decision 4 bought a rank check.
+Next after the icon work: either the integer outer loop or DOF on screen, and I would take DOF on
+screen — it is small, and "fully constrained" is the whole reason Decision 4 bought a rank check.
