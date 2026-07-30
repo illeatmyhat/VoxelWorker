@@ -3,7 +3,9 @@
 //! along its two cap outlines and at every non-tangent profile vertex; a revolve
 //! creases on a latitude circle per non-tangent off-axis vertex, plus the profile
 //! outline at both sweep ends of a partial turn. A tangent vertex (collinear,
-//! same-direction neighbours — e.g. a `split_segment` midpoint) creases nothing.
+//! same-direction neighbours — e.g. a `split_segment` midpoint) creases nothing, and neither
+//! does a vertex the author never placed: an arc reaches the boundary as a run of tessellation
+//! samples, and those are steps around a smooth curve, not corners.
 
 use super::solid::revolve_axes;
 use super::*;
@@ -12,6 +14,14 @@ use super::*;
 /// tangency test stays EXACT integer arithmetic for sub-voxel vertices (#101). Display
 /// only — the resolve never quantises.
 const EDGE_FIXED_SCALE: f64 = 256.0;
+
+/// A profile coordinate on the 1/256-voxel lattice the tangency test works over.
+fn to_fixed(coords: [f64; 2]) -> [i64; 2] {
+    [
+        (coords[0] * EDGE_FIXED_SCALE).round() as i64,
+        (coords[1] * EDGE_FIXED_SCALE).round() as i64,
+    ]
+}
 
 /// Exact tangency at a loop vertex: collinear AND same-direction (i128 over fixed-point
 /// profile coords — no epsilon).
@@ -63,13 +73,7 @@ impl SketchSolid {
         // back out through `fixed_to_voxels`.
         let mut ring: Vec<[i64; 2]> = boundary
             .iter()
-            .map(|point| {
-                let coords = point.in_plane();
-                [
-                    (coords[0] * EDGE_FIXED_SCALE).round() as i64,
-                    (coords[1] * EDGE_FIXED_SCALE).round() as i64,
-                ]
-            })
+            .map(|point| to_fixed(point.in_plane()))
             .collect();
         ring.dedup();
         while ring.len() > 1 && ring.first() == ring.last() {
@@ -78,6 +82,17 @@ impl SketchSolid {
         if ring.len() < 3 {
             return;
         }
+        // Where the author actually put a point. An arc's interior samples are DERIVED — a chord
+        // joint is a step around a smooth curve, not a corner — so creasing at each one draws a
+        // facet fan where the author drew one arc, and the fan gets denser as the tessellation
+        // refines. A vertex creases only when it stands on an authored point: exact equality on
+        // the same lattice, no tolerance.
+        let authored: std::collections::BTreeSet<[i64; 2]> = self
+            .sketch
+            .points()
+            .iter()
+            .map(|point| to_fixed(point.at.in_plane()))
+            .collect();
         let vertex_count = ring.len();
         let neighbours = |index: usize| {
             (
@@ -110,7 +125,7 @@ impl SketchSolid {
                 }
                 for index in 0..vertex_count {
                     let (previous, vertex, next) = neighbours(index);
-                    if !vertex_is_tangent(previous, vertex, next) {
+                    if authored.contains(&vertex) && !vertex_is_tangent(previous, vertex, next) {
                         polylines.push(vec![local_point(vertex, 0.0), local_point(vertex, height)]);
                     }
                 }
@@ -140,7 +155,10 @@ impl SketchSolid {
                 let steps = (circle_segments * turn_degrees).div_ceil(360).max(1);
                 for index in 0..vertex_count {
                     let (previous, vertex, next) = neighbours(index);
-                    if vertex_is_tangent(previous, vertex, next) || vertex[radial_coord] == 0 {
+                    if !authored.contains(&vertex)
+                        || vertex_is_tangent(previous, vertex, next)
+                        || vertex[radial_coord] == 0
+                    {
                         continue;
                     }
                     let radius = fixed_to_voxels(vertex[radial_coord].abs());

@@ -168,3 +168,48 @@ fn degenerate_solids_catalogue_nothing() {
     );
     assert!(unswept.profile_edge_polylines_local(96).is_empty());
 }
+
+/// An arc reaches the boundary as a run of tessellation samples. Those are steps around a
+/// smooth curve, so they crease nothing: the rounded-bottom profile catalogues laterals at
+/// its four AUTHORED corners and not one per chord, however finely the arc is tessellated.
+#[test]
+fn an_arc_creases_only_at_its_authored_ends() {
+    let mut sketch = Sketch::new(
+        PlaneAxis::Z,
+        vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(0, 3),
+            SketchPoint::new(4, 3),
+            SketchPoint::new(4, 0),
+        ],
+    );
+    let bottom = sketch
+        .segments()
+        .iter()
+        .find(|seg| {
+            let ends = [seg.from, seg.to];
+            ends.contains(&sketch.points()[3].id) && ends.contains(&sketch.points()[0].id)
+        })
+        .expect("the bottom edge")
+        .id;
+    sketch.delete_segment(bottom);
+    sketch
+        .connect_arc(
+            sketch.points()[3].id,
+            sketch.points()[0].id,
+            voxel_core::units::AngleMeasurement::from_degrees(180),
+        )
+        .expect("a half turn under the box");
+
+    let solid = SketchSolid::extrude(sketch, 3);
+    let polylines = solid.profile_edge_polylines_local(96);
+    let laterals = polylines.iter().filter(|p| p.len() == 2).count();
+    assert_eq!(laterals, 4, "one per authored corner, none per chord");
+    // The caps still trace the FULL tessellated outline — the curve is drawn, just not creased.
+    let caps: Vec<_> = polylines.iter().filter(|p| p.len() > 2).collect();
+    assert_eq!(caps.len(), 2);
+    assert!(
+        caps[0].len() > 8,
+        "the cap outline follows the arc, not its chord"
+    );
+}
