@@ -552,31 +552,62 @@ impl Sketch {
 
     /// Move the point `id` to `at` — the drag write path. Reports whether the point exists.
     ///
-    /// An arc's centre is DERIVED, so dragging one cannot re-author its coordinates: it
-    /// TRANSLATES the arc instead. Both endpoints shift by the same delta, the bulge is
-    /// untouched, and the centre re-derives exactly where it was dragged — a rigid move, the
-    /// one centre edit the canonical form can hold. Every other point simply takes `at`.
+    /// Dragging an arc's CENTRE moves only the centre: the endpoints hold still and the arc's
+    /// radius follows the cursor ([`resweep_arc_to_center`](Self::resweep_arc_to_center)). Every
+    /// other point simply takes `at`.
     pub fn move_point(&mut self, id: EntityId, at: SketchPoint) -> bool {
         let Some(index) = self.point_index(id) else {
             return false;
         };
-        match self.arcs.iter().copied().find(|arc| arc.center == id) {
-            Some(arc) => {
-                let was = self.points[index].at.in_plane();
-                let now = at.in_plane();
-                let delta = [now[0] - was[0], now[1] - was[1]];
-                for endpoint in [arc.from, arc.to] {
-                    if let Some(slot) = self.point_index(endpoint) {
-                        let here = self.points[slot].at.in_plane();
-                        self.points[slot].at =
-                            SketchPoint::from_continuous(here[0] + delta[0], here[1] + delta[1]);
-                    }
-                }
-            }
+        match self.arcs.iter().position(|arc| arc.center == id) {
+            Some(arc_index) => self.resweep_arc_to_center(arc_index, at.in_plane()),
             None => self.points[index].at = at,
         }
         self.sync_arc_centers();
         true
+    }
+
+    /// Re-solve the arc at `arc_index` so its centre sits as close to `target` as the canonical
+    /// form allows, its endpoints unmoved.
+    ///
+    /// For a fixed chord a centre has ONE degree of freedom, not two: it lives on the chord's
+    /// perpendicular bisector, and where it sits along that line IS the sweep — far out for a
+    /// shallow arc, on the chord for a half turn, across to the other side for the major one.
+    /// So the drag projects onto the bisector and inverts `arc_center_radius`: the signed
+    /// apothem `a` and the half-chord `h` give `sweep / 2 = atan2(h, a)`, which covers every
+    /// positive sweep in `(0°, 360°)` as `a` runs over the reals. The existing sweep's SIGN is
+    /// preserved — it says which way round the arc goes, and a drag of the centre is not a
+    /// request to reverse it. A degenerate chord or a sweep that quantises to nothing leaves
+    /// the arc alone rather than erasing it.
+    fn resweep_arc_to_center(&mut self, arc_index: usize, target: [f64; 2]) {
+        let arc = self.arcs[arc_index];
+        let (Some(tail), Some(head)) = (self.point_index(arc.from), self.point_index(arc.to))
+        else {
+            return;
+        };
+        let (from, to) = (
+            self.points[tail].at.in_plane(),
+            self.points[head].at.in_plane(),
+        );
+        let chord = [to[0] - from[0], to[1] - from[1]];
+        let chord_length = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
+        if chord_length <= f64::EPSILON {
+            return;
+        }
+        let mid = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
+        let left = [-chord[1] / chord_length, chord[0] / chord_length];
+        let apothem = (target[0] - mid[0]) * left[0] + (target[1] - mid[1]) * left[1];
+        let half_sweep = (chord_length / 2.0).atan2(apothem);
+        let mut degrees = 2.0 * half_sweep.to_degrees();
+        if arc.bulge.to_degrees_f64() < 0.0 {
+            degrees -= 360.0;
+        }
+        let Some(bulge) = AngleMeasurement::from_degrees_f64(degrees) else {
+            return;
+        };
+        if arc_sweep_is_valid(bulge.to_degrees_f64()) {
+            self.arcs[arc_index].bulge = bulge;
+        }
     }
 
     /// Delete a point by id and every segment/arc incident to it (ADR 0030 §6). The

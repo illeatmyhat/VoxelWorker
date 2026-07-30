@@ -50,6 +50,7 @@ color_token! {
     SKETCH_PLANE_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x0f), "sketch working-plane fill — accent at low alpha, so the profile stays primary (ADR 0028)";
     SKETCH_PLANE_GRID = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x24), "sketch plane fine grid lines — accent, quiet";
     SKETCH_PLANE_GRID_BLOCK = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x55), "sketch plane block grid lines — accent, brighter, reads through the fine grid";
+    SKETCH_REGION_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x2b), "a PICKED sketch region's wash — accent at low alpha, the 2D read of the 3D selection wash: what resolves as material (ADR 0030 §3)";
     ACCENT_FAINT = Color32::from_rgba_premultiplied(0x2f, 0x37, 0x43, 0x4d), "a faint accent tint — the rail's lit-cell glow / the DISPLAY-stack accent wash (premultiplied)";
     MARQUEE_WINDOW_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x1e), "marquee WINDOW box fill (drag left→right, fully-enclosed semantic) — the stronger of the pair";
     MARQUEE_CROSSING_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x0c), "marquee CROSSING box fill (drag right→left, any-intersection) — lighter, under a dashed outline";

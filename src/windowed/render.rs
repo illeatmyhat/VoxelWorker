@@ -188,10 +188,8 @@ impl WindowedState {
                 // ADR 0030 §5 (#102): the committed arc curves, projected last frame — the same
                 // under-layer as the straight edges.
                 &self.sketch_arc_lines,
-                // ADR 0030 §5: each arc's centre datum + its radii, projected last frame.
-                &self.sketch_arc_centers,
-                // ADR 0030 §3 (#100): the derived regions' pick badges, projected last frame.
-                &self.sketch_face_badges,
+                // ADR 0030 §3 (#100): the picked regions' wash, projected last frame.
+                &self.sketch_face_washes,
                 // #100: the pick state of the region the open menu was raised inside, so the
                 // menu can label its row "carve" or "fill".
                 sketch_face_at_menu,
@@ -2186,9 +2184,8 @@ impl WindowedState {
         self.sketch_segment_lines.clear();
         self.sketch_arc_lines.clear();
         self.sketch_arc_chords.clear();
-        self.sketch_arc_centers.clear();
         self.sketch_face_polygons.clear();
-        self.sketch_face_badges.clear();
+        self.sketch_face_washes.clear();
         self.sketch_insert_preview = None;
         self.sketch_draw_preview.clear();
         self.sketch_marquee_band = None;
@@ -2394,43 +2391,10 @@ impl WindowedState {
             self.sketch_arc_lines.push((curve, state));
         }
 
-        // Each arc's derived centre (ADR 0030 §5 stores endpoints + included angle; the centre and
-        // the radius fall out of those). Drawn as a datum with a dashed radius to each endpoint, so
-        // an arc's radius is legible without a dimension — the owner's read of a bare curve.
-        for &(arc_id, from, to, sweep) in &handles.arcs {
-            // The chord polyline is already culled and projected — reuse its ends rather than
-            // projecting the endpoints a second time, so the datum can never disagree with the
-            // curve it belongs to.
-            let Some((_, chords)) = self.sketch_arc_chords.iter().find(|(id, _)| *id == arc_id)
-            else {
-                continue;
-            };
-            let (Some(&head), Some(&tail)) = (chords.first(), chords.last()) else {
-                continue;
-            };
-            let Some((center, _radius)) = document::sketch::arc_center_radius(from, to, sweep)
-            else {
-                continue;
-            };
-            let render = handles.profile_to_render(center);
-            let Some(center_pt) = project_to_screen(
-                glam::Vec3::from_array(render),
-                view_projection,
-                viewport_px,
-                pixels_per_point,
-            ) else {
-                continue;
-            };
-            let to_points =
-                |px: egui::Pos2| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point);
-            self.sketch_arc_centers
-                .push((center_pt, [to_points(head), to_points(tail)]));
-        }
-
         // The derived regions (#100): each face's boundary in physical px for the right-press
-        // hit-test, plus its centroid badge in egui points. Derivation is a graph walk over the
-        // sketch's own entities, so it re-runs here with the rest of the overlay rather than
-        // being cached against an edit counter.
+        // hit-test, plus a wash boundary in egui points when it is picked. Derivation is a graph
+        // walk over the sketch's own entities, so it re-runs here with the rest of the overlay
+        // rather than being cached against an edit counter.
         let regions: Vec<(document::sketch::FaceKey, Vec<[f64; 2]>, bool)> = self
             .panel_state
             .scene
@@ -2468,11 +2432,19 @@ impl WindowedState {
                 .collect();
             // A behind-camera boundary vertex culls the whole face, as it culls an arc.
             let Some(projected) = projected else { continue };
-            if let Some(centroid) = polygon_centroid(&projected) {
-                self.sketch_face_badges.push((
-                    egui::Pos2::new(centroid.x / pixels_per_point, centroid.y / pixels_per_point),
-                    picked,
-                ));
+            // A PICKED face is washed — the 2D read of the 3D selection wash, saying "this
+            // resolves as material". An unpicked face is a hole and gets nothing; the centroid
+            // badge this replaced put a round mark beside every arc's own centre point, where the
+            // two read as one confusing pair.
+            if picked {
+                self.sketch_face_washes.push(
+                    projected
+                        .iter()
+                        .map(|point| {
+                            egui::Pos2::new(point.x / pixels_per_point, point.y / pixels_per_point)
+                        })
+                        .collect(),
+                );
             }
             self.sketch_face_polygons.push((key, projected));
         }
@@ -2743,24 +2715,6 @@ fn polygon_double_area(boundary: &[egui::Pos2]) -> f32 {
     sum
 }
 
-/// The area centroid of the closed polygon through `boundary`, or `None` when it encloses
-/// nothing. Where a region's badge sits (#100).
-fn polygon_centroid(boundary: &[egui::Pos2]) -> Option<egui::Pos2> {
-    let double_area = polygon_double_area(boundary);
-    if double_area.abs() <= f32::EPSILON {
-        return None;
-    }
-    let last = *boundary.last()?;
-    let mut previous = last;
-    let mut sum = egui::Vec2::ZERO;
-    for &point in boundary {
-        let cross = previous.x * point.y - point.x * previous.y;
-        sum += egui::Vec2::new(previous.x + point.x, previous.y + point.y) * cross;
-        previous = point;
-    }
-    Some(egui::Pos2::ZERO + sum / (3.0 * double_area))
-}
-
 /// Whether `point` lies inside the closed polygon through `boundary` — the even-odd crossing
 /// count. Screen space, so the f32 the projection already produced is the right width; the
 /// f64 predicates in `substrate::geom2d` guard voxel-space classification, not a cursor test.
@@ -2784,8 +2738,7 @@ fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
 mod tests {
     use super::{
         apply_sketch_snap, closest_point_on_segment, point_in_screen_polygon,
-        point_to_segment_distance, polygon_centroid, polygon_double_area, segment_touches_rect,
-        segments_intersect,
+        point_to_segment_distance, polygon_double_area, segment_touches_rect, segments_intersect,
     };
     use egui::{pos2, Rect};
     use ui::panel::PositionSnap;
@@ -2946,19 +2899,5 @@ mod tests {
             polygon_double_area(&ell).abs(),
             polygon_double_area(&reversed).abs()
         );
-    }
-
-    /// A badge sits at the face's area centroid, and a degenerate face has none to sit at.
-    #[test]
-    fn a_region_badge_sits_at_the_area_centroid() {
-        let square = [
-            pos2(0.0, 0.0),
-            pos2(4.0, 0.0),
-            pos2(4.0, 4.0),
-            pos2(0.0, 4.0),
-        ];
-        let centroid = polygon_centroid(&square).expect("a square encloses something");
-        assert!((centroid.x - 2.0).abs() < 1e-4 && (centroid.y - 2.0).abs() < 1e-4);
-        assert_eq!(polygon_centroid(&[pos2(0.0, 0.0), pos2(4.0, 4.0)]), None);
     }
 }

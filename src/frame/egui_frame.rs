@@ -233,15 +233,10 @@ pub fn run_egui_frame(
     // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
     // headless `shot` path.
     sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
-    // ADR 0030 §5: each arc's DERIVED centre (egui points) with its two projected endpoints —
-    // the datum that makes an arc's radius readable. Empty unless a sketch is being edited,
-    // always empty on the headless `shot` path.
-    sketch_arc_centers: &[(egui::Pos2, [egui::Pos2; 2])],
-    // ADR 0030 §3 (#100): the derived faces' badges for THIS frame — a projected centre (egui
-    // points) and whether the face is PICKED (contributes solid) or unpicked (a hole). Drawn as
-    // the region affordance; empty unless a sketch is being edited, always empty on the headless
-    // `shot` path.
-    sketch_face_badges: &[(egui::Pos2, bool)],
+    // ADR 0030 §3 (#100): the PICKED derived faces for THIS frame, each a projected boundary in
+    // egui points, washed to show what resolves as material. Empty unless a sketch is being
+    // edited, always empty on the headless `shot` path.
+    sketch_face_washes: &[Vec<egui::Pos2>],
     // #100: whether the open viewport context menu was raised INSIDE a derived face, and if so
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.
@@ -731,16 +726,14 @@ pub fn run_egui_frame(
             {
                 panel_response.exit_sketch = Some(exit);
             }
+            // #100: the picked regions' wash, BEFORE the edges so the outline reads over the fill.
+            ui::chrome::sketch_face_washes(ui, sketch_face_washes);
             // ADR 0030: the committed segment lines, drawn FIRST so the vertex dots sit on top.
             // Not chrome — a segment press is handled by the shell's hit-test, and these are a
             // passive under-layer.
             ui::chrome::sketch_segment_lines(ui, sketch_segment_lines);
             // ADR 0030 §5: the committed arc curves, on the same under-layer as the straight edges.
-            ui::chrome::sketch_arc_centers(ui, sketch_arc_centers);
             ui::chrome::sketch_arc_curves(ui, sketch_arc_lines);
-            // #100: the region badges, under the vertex handles — a face is a derived thing the
-            // edges already describe, so its mark stays quieter than an entity's.
-            ui::chrome::sketch_face_badges(ui, sketch_face_badges);
             // ADR 0028 (#94): the draggable profile-vertex handles, drawn at the shell's
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).

@@ -189,30 +189,17 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleStat
     }
 }
 
-/// Draw each arc's DERIVED centre datum (ADR 0030 §5): a dashed radius out to each endpoint and a
-/// small cross where they meet, so an arc's radius is readable off the canvas. Under the curves
-/// and handles, and not chrome — a datum is never grabbable.
-pub fn sketch_arc_centers(ui: &egui::Ui, centers: &[(Pos2, [Pos2; 2])]) {
+/// Wash each PICKED region over its projected boundary (ADR 0030 §3, #100). The shell passes only
+/// the picked faces — an unpicked one is a hole and carries no wash. Not chrome: a passive readout,
+/// so a press still reaches the camera or the marquee; the pick verb lives on the viewport context
+/// menu. Call this BEFORE the segment and arc painters so the outline reads over the fill.
+pub fn sketch_face_washes(ui: &egui::Ui, faces: &[Vec<Pos2>]) {
     let painter = ui.ctx().layer_painter(LayerId::new(
         Order::Foreground,
-        Id::new("sketch_arc_centers"),
+        Id::new("sketch_face_washes"),
     ));
-    for &(center, endpoints) in centers {
-        gizmos::arc_center(&painter, center, endpoints);
-    }
-}
-
-/// Draw one pick-state badge per derived region at its projected centroid (ADR 0030 §3, #100):
-/// filled = the face resolves as material, hollow ring = the author carved it into a hole. Not
-/// chrome — a passive readout, so a press still reaches the camera or the marquee; the pick verb
-/// itself lives on the viewport context menu.
-pub fn sketch_face_badges(ui: &egui::Ui, badges: &[(Pos2, bool)]) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_face_badges"),
-    ));
-    for &(center, picked) in badges {
-        gizmos::region_badge(&painter, center, picked);
+    for boundary in faces {
+        gizmos::region_wash(&painter, boundary);
     }
 }
 

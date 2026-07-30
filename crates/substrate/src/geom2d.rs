@@ -88,6 +88,90 @@ pub fn orient2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
+/// Twice the signed area of the closed polygon through `points` — the shoelace sum. Positive ⇒
+/// counter-clockwise, negative ⇒ clockwise, zero ⇒ degenerate (collinear or empty).
+pub fn polygon_signed_area(points: &[[f64; 2]]) -> f64 {
+    let mut sum = 0.0;
+    for index in 0..points.len() {
+        let here = points[index];
+        let next = points[(index + 1) % points.len()];
+        sum += here[0] * next[1] - next[0] * here[1];
+    }
+    sum
+}
+
+/// Whether `sample` is inside or on the boundary of triangle `(a, b, c)`, which must be
+/// counter-clockwise.
+#[inline]
+fn point_in_ccw_triangle(sample: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
+    orient2d(a, b, sample) >= 0.0 && orient2d(b, c, sample) >= 0.0 && orient2d(c, a, sample) >= 0.0
+}
+
+/// Whether `(previous, ear, next)` is a clippable EAR of the polygon whose live vertices are
+/// `remaining`: a counter-clockwise (convex) corner no other live vertex sits in.
+fn is_ear(points: &[[f64; 2]], remaining: &[usize], corner: [usize; 3]) -> bool {
+    let [previous, ear, next] = corner;
+    let (a, b, c) = (points[previous], points[ear], points[next]);
+    if orient2d(a, b, c) <= 0.0 {
+        return false; // reflex, or a collinear sliver worth no triangle
+    }
+    !remaining.iter().any(|&index| {
+        index != previous
+            && index != ear
+            && index != next
+            && point_in_ccw_triangle(points[index], a, b, c)
+    })
+}
+
+/// Fan a SIMPLE polygon into triangles by ear clipping, as index triples into `points`.
+///
+/// Simple means the boundary does not cross itself — which every face of a planar graph is by
+/// construction. Input winding may run either way; the emitted triangles are always
+/// counter-clockwise, so a renderer needs no face-culling decision. An `n`-vertex simple polygon
+/// yields exactly `n - 2` triangles.
+///
+/// Clipping STOPS when no ear remains rather than emitting a triangle outside the boundary, so a
+/// self-crossing or degenerate input yields a partial fan instead of a wrong one. This is a
+/// display primitive: it answers "what triangles cover this outline", not "is this point inside"
+/// — that is [`point_in_polygon`], which needs no triangulation and stays the predicate of record.
+pub fn triangulate_simple_polygon(points: &[[f64; 2]]) -> Vec<[usize; 3]> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    // Walk counter-clockwise so convexity is one sign test rather than two cases.
+    let mut remaining: Vec<usize> = (0..points.len()).collect();
+    if polygon_signed_area(points) < 0.0 {
+        remaining.reverse();
+    }
+    let mut triangles = Vec::with_capacity(points.len() - 2);
+    while remaining.len() > 3 {
+        let before = remaining.len();
+        let mut cursor = 0;
+        while cursor < remaining.len() && remaining.len() > 3 {
+            let live = remaining.len();
+            let corner = [
+                remaining[(cursor + live - 1) % live],
+                remaining[cursor],
+                remaining[(cursor + 1) % live],
+            ];
+            if is_ear(points, &remaining, corner) {
+                triangles.push(corner);
+                remaining.remove(cursor);
+            } else {
+                cursor += 1;
+            }
+        }
+        if remaining.len() == before {
+            return triangles; // a full pass found no ear: the input is not a simple polygon
+        }
+    }
+    let last = [remaining[0], remaining[1], remaining[2]];
+    if orient2d(points[last[0]], points[last[1]], points[last[2]]) > 0.0 {
+        triangles.push(last);
+    }
+    triangles
+}
+
 #[inline]
 fn orientation_sign(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> i32 {
     let value = orient2d(a, b, c);
@@ -853,5 +937,66 @@ mod tests {
             signed_distance_to_polygon(&[[1.0, 1.0]], [0.0, 0.0], Metric::Chebyshev),
             f32::INFINITY
         );
+    }
+
+    /// Twice the area of a fan, summed — the invariant that catches an ear clipped outside the
+    /// boundary or a vertex covered twice.
+    fn fan_area(points: &[[f64; 2]], triangles: &[[usize; 3]]) -> f64 {
+        triangles
+            .iter()
+            .map(|&[a, b, c]| orient2d(points[a], points[b], points[c]))
+            .sum()
+    }
+
+    #[test]
+    fn a_convex_polygon_fans_into_n_minus_two_triangles() {
+        let square = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+        let fan = triangulate_simple_polygon(&square);
+        assert_eq!(fan.len(), 2);
+        assert_eq!(fan_area(&square, &fan), polygon_signed_area(&square));
+    }
+
+    #[test]
+    fn a_concave_polygon_fans_without_covering_the_notch() {
+        // An L: the reflex corner at [2, 2] is what a convex fill would swallow.
+        let l_shape = [
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 2.0],
+            [2.0, 2.0],
+            [2.0, 4.0],
+            [0.0, 4.0],
+        ];
+        let fan = triangulate_simple_polygon(&l_shape);
+        assert_eq!(fan.len(), 4, "six vertices, four triangles");
+        assert!((fan_area(&l_shape, &fan) - polygon_signed_area(&l_shape)).abs() < 1.0e-9);
+        // The notch is OUTSIDE the shape, so no triangle may contain it.
+        assert!(!fan.iter().any(|&[a, b, c]| {
+            let (x, y, z) = (l_shape[a], l_shape[b], l_shape[c]);
+            let ccw = orient2d(x, y, z) > 0.0;
+            let (x, y, z) = if ccw { (x, y, z) } else { (x, z, y) };
+            point_in_ccw_triangle([3.0, 3.0], x, y, z)
+        }));
+    }
+
+    #[test]
+    fn winding_does_not_change_the_fan() {
+        let clockwise = [[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0]];
+        let fan = triangulate_simple_polygon(&clockwise);
+        assert_eq!(fan.len(), 2);
+        for &[a, b, c] in &fan {
+            assert!(
+                orient2d(clockwise[a], clockwise[b], clockwise[c]) > 0.0,
+                "every emitted triangle is counter-clockwise whatever the input winding"
+            );
+        }
+    }
+
+    #[test]
+    fn a_degenerate_outline_fans_into_nothing() {
+        assert!(triangulate_simple_polygon(&[]).is_empty());
+        assert!(triangulate_simple_polygon(&[[0.0, 0.0], [1.0, 1.0]]).is_empty());
+        // Collinear: no corner is ever convex, so clipping stops rather than inventing area.
+        assert!(triangulate_simple_polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]).is_empty());
     }
 }

@@ -393,11 +393,14 @@ fn an_arc_reifies_its_centre_as_a_selectable_point() {
 }
 
 #[test]
-fn dragging_a_centre_translates_its_arc() {
+fn dragging_a_centre_changes_the_radius_and_nothing_else() {
     let (mut sketch, from, to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
 
-    assert!(sketch.move_point(center, SketchPoint::new(2, 5)));
+    // The half turn's centre sits ON the chord, its arc bulging DOWN to axis1 = -2. Pushing the
+    // centre up, away from the bulge, makes a shallower arc: apothem 2 with half-chord 2 halves
+    // the sweep to 90°.
+    assert!(sketch.move_point(center, SketchPoint::new(2, 2)));
 
     let position = |id| {
         sketch
@@ -408,14 +411,41 @@ fn dragging_a_centre_translates_its_arc() {
             .at
             .in_plane()
     };
-    assert_near(position(from), [0.0, 5.0]);
-    assert_near(position(to), [4.0, 5.0]);
-    assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, 5.0]);
-    assert_eq!(
-        sketch.arcs()[0].bulge,
-        AngleMeasurement::from_degrees(180),
-        "a rigid move never touches the sweep"
+    assert_near(position(from), [0.0, 0.0]);
+    assert_near(position(to), [4.0, 0.0]);
+    assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, 2.0]);
+    assert!(
+        (sketch.arcs()[0].bulge.to_degrees_f64() - 90.0).abs() < 1.0e-3,
+        "the sweep follows the centre: {:?}",
+        sketch.arcs()[0].bulge
     );
+}
+
+/// A centre has ONE degree of freedom — the chord's perpendicular bisector. A drag with a
+/// component along the chord projects onto that line rather than shearing the arc.
+#[test]
+fn a_centre_drag_projects_onto_the_bisector() {
+    let (mut sketch, _from, _to, arc) = half_turn();
+    let center = center_of(&sketch, arc).id;
+    // The chord runs along axis 0, so its bisector is the vertical through the midpoint: the
+    // axis-0 component of this drag is discarded and only the -2 lands.
+    assert!(sketch.move_point(center, SketchPoint::new(9, -2)));
+    assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
+}
+
+/// Dragging the centre INTO the bulge flips minor to major without reversing the arc: the sweep
+/// keeps its sign and grows past 180°.
+#[test]
+fn a_centre_dragged_into_the_bulge_makes_the_major_arc() {
+    let (mut sketch, _from, _to, arc) = half_turn();
+    let center = center_of(&sketch, arc).id;
+    assert!(sketch.move_point(center, SketchPoint::new(2, -2)));
+    let sweep = sketch.arcs()[0].bulge.to_degrees_f64();
+    assert!(
+        (sweep - 270.0).abs() < 1.0e-3,
+        "apothem -2 with half-chord 2 is the 270 major arc, still positive: {sweep}"
+    );
+    assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
 }
 
 #[test]

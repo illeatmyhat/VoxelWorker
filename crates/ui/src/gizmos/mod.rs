@@ -40,7 +40,6 @@ use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 use crate::theme::color_palette;
 
-mod arc_center;
 mod axis_guide;
 mod close_loop_ring;
 mod crosshair;
@@ -50,12 +49,11 @@ mod label_chip;
 mod open_segment;
 mod orbit_center;
 mod orbit_reticle;
-mod region_badge;
+mod region_wash;
 mod segment;
 mod snap_ticks;
 mod vertex_handle;
 
-pub use arc_center::arc_center;
 pub use axis_guide::axis_guide;
 pub use close_loop_ring::close_loop_ring;
 pub use crosshair::crosshair;
@@ -65,7 +63,7 @@ pub use label_chip::label_chip;
 pub use open_segment::open_segment;
 pub use orbit_center::{orbit_center, orbit_center_overlay, ORBIT_CENTER_RADIUS};
 pub use orbit_reticle::{orbit_reticle, orbit_reticle_overlay};
-pub use region_badge::{region_badge, REGION_BADGE_RADIUS};
+pub use region_wash::region_wash;
 pub use segment::{
     dashed_segment, marked_segment, segment, styled_segment, warn_cross, warn_segment,
 };
