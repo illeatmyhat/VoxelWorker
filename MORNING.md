@@ -198,9 +198,35 @@ equal, and is boxed, so `Sketch` grows by two words and the document is unchange
 
 ---
 
-## The one decision I need
+## The drawing moved when you drew past its fill · FIXED · `985ffe6`
 
-**Should an unpick MIGRATE or RESET when its face is cut in two?** (Slice D, decision 1 above.)
-Today it follows whichever half still holds the stored point. ADR 0035 lists that as an accepted
-failure mode; I have pinned it as behaviour in a test, which turns it into a promise. Reverting it
-later costs more than deciding now.
+Separate bug, same session. The overlay frame anchored on the bbox over the sketch's real
+**points**; the resolve anchors the solid on the **filled region's** bbox-min. Equal only while
+every point sits on the filled boundary — so a line reaching past the fill moved one anchor and
+not the other, and the whole drawing walked. From your dump: points-min `-42 → -72` while the
+resolve's anchor held at `-42`. Thirty voxels.
+
+Nothing was cancelling it: `anchor_preserving_offset` runs on every profile edit, but it corrects
+for a change in the *resolve's* anchor, which had not moved.
+
+The overlay now anchors where the resolve does — one anchor, so a handle is on the solid by
+construction. Both new tests fail under the old anchor.
+
+**Check it** (~40 s): `cargo test -p document sketch_handles` — expect **9 passed**.
+
+---
+
+## Decisions settled
+
+- **The unpick MIGRATES** when its face is cut in two (your call, 2026-07-30). Already the shipped
+  behaviour and pinned by `cutting_an_unpicked_face_in_two_migrates_the_unpick`; nothing to change.
+
+## What ADR 0035 still owes
+
+1. **Slice E has no caller.** The solver core is real and tested and drives nothing. The smallest
+   useful slice: constraint entities (coincident, horizontal/vertical, distance), a residual system
+   built from them, and `SolveReport`'s DOF surfaced in the UI. This is the ADR's whole point.
+2. **The expression text parser.** The AST and evaluator ship; nothing parses `2*width + 3mm`.
+   Belongs to the parameters panel.
+3. **Kani harnesses** for `curve_intersection` and `deepest_interior_point`.
+4. **The inspector reads "Custom profile (1 points)"** for a circle. Cosmetic.
