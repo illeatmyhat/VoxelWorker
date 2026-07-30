@@ -247,6 +247,49 @@ fn two_arcs_over_one_pair_bound_a_lens() {
     assert!(faces[0].area_voxels > 0.0);
 }
 
+/// The full turn is a POLE of the endpoint-plus-bulge form, not a policy line. As the sweep
+/// approaches 360° the derived radius diverges — a decade closer is a decade larger, without
+/// bound — because the chord subtends less and less of the circle it is meant to determine. The
+/// guard sits exactly where the arithmetic stops having an answer.
+///
+/// This matters because the value at 360° itself is FINITE: `sin(PI)` is 1.22e-16 rather than
+/// zero, so an unguarded call returns a radius near 4e15 voxels. That would pass every downstream
+/// finite check while being nonsense, which is the failure mode the guard exists to make
+/// impossible.
+///
+/// Decision 7 — that a closed curve is a `Circle` with no on-curve vertex — is enforced separately,
+/// by `connect_arc` refusing `from == to`. The two are independent, and this one is arithmetic.
+#[test]
+fn the_full_turn_is_where_the_radius_diverges() {
+    let (from, to) = ([0.0, 0.0], [1.0, 0.0]);
+    let mut previous = 0.0;
+    for shortfall in [1.0, 1e-2, 1e-4, 1e-6] {
+        let (center, radius) =
+            arc_center_radius(from, to, 360.0 - shortfall).expect("still short of the turn");
+        assert!(
+            radius > previous * 50.0,
+            "a hundredfold closer to the turn is a hundredfold larger radius — \
+             {shortfall} gave {radius}, after {previous}"
+        );
+        assert!(
+            center[1].abs() > radius / 2.0,
+            "the centre runs away with it, to {center:?}"
+        );
+        previous = radius;
+    }
+    assert!(
+        previous > 1e6,
+        "the last one is already unusable: {previous}"
+    );
+
+    for sweep in [360.0, -360.0, 720.0] {
+        assert!(
+            arc_center_radius(from, to, sweep).is_none(),
+            "{sweep}° has no arc to derive"
+        );
+    }
+}
+
 #[test]
 fn delete_cascades_and_repair_cover_arcs() {
     let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
