@@ -1,0 +1,231 @@
+<!-- @dsCard group="E · Sketch suite (ADR 0035)" name="Constraint marks" -->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>E · Sketch suite — constraint marks</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { width: 880px; background: #0b0d0f; font: 11px "Cascadia Code", Consolas, monospace; padding: 20px 24px 28px; }
+  h1 { color: #dfe7ef; font-size: 12px; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 2px; }
+  p.sub { color: #4d565f; font-size: 10px; margin-bottom: 4px; letter-spacing: .5px; line-height: 1.7; }
+  p.sub b { color: #e2564b; font-weight: normal; }
+  p.sub i { color: #9cb4d8; font-style: normal; }
+  h2 { color: #78828c; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; margin: 24px 0 8px; }
+  h2 span { color: #3f474e; letter-spacing: .5px; text-transform: none; font-size: 9.5px; }
+  .note { color: #6f7d8c; font-size: 9.5px; line-height: 1.7; letter-spacing: .3px; margin: 8px 0 0; padding: 8px 10px; border-left: 2px solid #2b3238; background: #101317; }
+  .note b { color: #e2564b; font-weight: normal; }
+  .note i { color: #9cb4d8; font-style: normal; }
+  .note em { color: #dfe7ef; font-style: normal; }
+  .note code { color: #9aa6b2; }
+  table.marks { border-collapse: collapse; width: 100%; margin-top: 2px; }
+  table.marks td, table.marks th { border: 1px solid #2b3238; padding: 7px 9px; vertical-align: top; }
+  table.marks th { color: #9cb4d8; font-weight: normal; font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; text-align: left; }
+  td.nm { color: #dfe7ef; font-size: 10px; letter-spacing: .5px; width: 96px; }
+  td.nm em { display: block; color: #4d565f; font-style: normal; font-size: 8.5px; margin-top: 3px; letter-spacing: .3px; }
+  td.gl { width: 176px; white-space: nowrap; }
+  td.gl svg { vertical-align: bottom; margin-right: 12px; }
+  td.rl { color: #6f7d8c; font-size: 9px; line-height: 1.65; letter-spacing: .3px; }
+  td.rl b { color: #c98a80; font-weight: normal; }
+  td.rl i { color: #8a94a0; font-style: normal; }
+  .sz { color: #3f474e; font-size: 8px; letter-spacing: 1px; margin-top: 3px; }
+</style>
+</head>
+<body>
+  <h1>Constraint marks</h1>
+  <p class="sub">
+    Constraints are <b>red and white</b>; tools are <i>blue and white</i>. No plate, no badge — the
+    two-tone glyph is the category. Drawn on a <b>36-unit canvas, not necessarily square</b>: each
+    mark gets the box its own shape wants.<br>
+    Two-tone rule, taken from Fusion's own constraint icons:
+    <b>red is the driven entity</b> (the first selection, the thing that moves), white is the
+    reference it is driven against.
+  </p>
+
+  <div class="note">
+    <b>Mirror and the patterns are not constraints.</b> They generate sketch entities, so they are
+    <i>blue</i> tools and live with the tool set — see the second table. This settles two collisions
+    that had no other cheap fix: <i>Flip</i> vs Symmetry, and <i>Snap-to-voxel</i> vs Quantize. Both
+    pairs are near-identical constructions, and both are now separated by the colour family rather
+    than by redrawing one of them into something worse. Hue is doing real work a plate could not:
+    it says <em>which kind of thing this is</em> before the shape is read.
+  </div>
+
+  <h2>The set <span>— each mark at 36 / 24 / 16 px, the three sizes it actually renders at</span></h2>
+  <table class="marks" id="set">
+    <tr><th>constraint</th><th>mark</th><th>what it asserts · what is red</th></tr>
+  </table>
+
+  <h2>The other family <span>— generators and modes, for contrast</span></h2>
+  <table class="marks" id="tools">
+    <tr><th>tool</th><th>mark</th><th>why it is not a constraint</th></tr>
+  </table>
+
+  <div class="note">
+    <b>Quantize is not a smooth equation, and that is an architectural problem, not a glyph one.</b>
+    "This value is an integer multiple of a voxel" cannot be handed to the Dog Leg solver as a
+    residual — there is no continuous derivative to descend. It has to be a projection applied after
+    the solve, or an integer the solver holds fixed between edits. Worth settling before slice E
+    grows its first caller, because it decides whether <code>Constraint</code> is one trait or two.
+    <br><b>Collinear only exists because we are Fusion-shaped.</b> Onshape deletes it — its Coincident
+    acts on the infinite underlying geometry, so coincident-on-two-lines <em>is</em> collinear.
+    Keeping it is right for transfer, but it is a choice, and it is why Collinear and Coincident have
+    to look unrelated.
+  </div>
+
+<script>
+  const R = '#e2564b';   // constraint red — the driven entity
+  const W = '#f2f6fa';   // white — the reference entity
+  const B = '#9cb4d8';   // tool blue — generators and modes
+  const SW = 2.0;        // stroke on the 36-unit canvas: 18:1, ~2px at 36, ~0.9px at 16
+
+  const ln = (pts, ink, dash) =>
+    `<path d="M ${pts.map(p => p.join(' ')).join(' L ')}" stroke="${ink}" stroke-width="${SW}" ` +
+    `fill="none"${dash ? ` stroke-dasharray="${dash}"` : ''}/>`;
+  const sq = (x, y, s, ink) =>
+    `<rect x="${x - s / 2}" y="${y - s / 2}" width="${s}" height="${s}" fill="${ink}" stroke="none"/>`;
+  const ring = (x, y, r, ink) =>
+    `<circle cx="${x}" cy="${y}" r="${r}" stroke="${ink}" stroke-width="${SW}" fill="none"/>`;
+  const dot = (x, y, r, ink) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${ink}" stroke="none"/>`;
+  const arc = (x0, y0, r, x1, y1, sweep, ink) =>
+    `<path d="M ${x0} ${y0} A ${r} ${r} 0 0 ${sweep} ${x1} ${y1}" stroke="${ink}" stroke-width="${SW}" fill="none"/>`;
+  const NODE = 5.2;      // this app draws an authored vertex as a SQUARE, never a disc
+
+  const MARKS = [
+    { name: 'Coincident', dof: '2 DOF', w: 36, h: 36,
+      draw: () => ln([[6, 9], [18, 24]], W) + ln([[30, 9], [18, 24]], R) + sq(18, 24, NODE, R),
+      role: 'Two points become <i>one point</i>. Red is the point that moves onto the other — ' +
+            '<b>dimensioned member wins, else first selected</b>. The square node is this app\'s own ' +
+            'vertex mark; a disc means a through-point, which is a different thing.' },
+
+    { name: 'Collinear', dof: '2 DOF', w: 36, h: 36,
+      draw: () => ln([[6, 30], [15.5, 20.5]], W) + ln([[20.5, 15.5], [30, 6]], R),
+      role: 'Two segments share one infinite carrier. The gap is what makes them <i>two</i> — close ' +
+            'it and this is a line, not a relation.' },
+
+    { name: 'Concentric', dof: '2 DOF', w: 36, h: 36,
+      draw: () => ring(18, 18, 13, W) + ring(18, 18, 6.5, R),
+      role: 'Shared centre, radii free. No centre dot: at 16px a dot inside the inner ring closes ' +
+            'the gap and the mark becomes a disc.' },
+
+    { name: 'Midpoint', dof: '2 DOF', w: 36, h: 36,
+      draw: () => ln([[5, 18], [31, 18]], W, '4.4 3.6') + sq(18, 18, NODE, R),
+      role: 'A point sits at the parametric middle. The carrier is <i>dashed</i> so this cannot be ' +
+            'read as Horizontal, which is a solid bar with its nodes at the ends.' },
+
+    { name: 'Fix', dof: 'all remaining', w: 36, h: 36,
+      draw: () => `<path d="M 13 20 V 14 A 5 5 0 0 1 23 14 V 20" stroke="${W}" stroke-width="${SW}" fill="none"/>` +
+                  `<rect x="11" y="20" width="14" height="11" stroke="${R}" stroke-width="${SW}" fill="none"/>` +
+                  sq(18, 25.5, 3.4, W),
+      role: 'Position frozen in sketch space. A padlock, following Fusion — SolidWorks\' anchor and ' +
+            'Onshape\'s hatched ground symbol both collide with things this app already has, and a ' +
+            'ground line over a viewport that <b>contains a ground plane</b> is a real misread.' },
+
+    { name: 'Parallel', dof: '1 DOF', w: 36, h: 26,
+      draw: () => ln([[9, 21], [17, 5]], W) + ln([[19, 21], [27, 5]], R),
+      role: 'Equal direction. The box is wider than tall because the mark is; nothing is gained by ' +
+            'padding it back to a square.' },
+
+    { name: 'Perpendicular', dof: '1 DOF', w: 36, h: 32,
+      draw: () => ln([[6, 12], [18, 26]], W) + ln([[18, 26], [30, 12]], R) +
+                  ln([[13.4, 21.7], [18, 17.4], [22.6, 21.7]], W),
+      role: 'Directions differ by 90°. A chevron, not an L — an L makes one arm the base and the ' +
+            'other dependent, and perpendicularity is symmetric.' },
+
+    { name: 'Horizontal', dof: '1 DOF', w: 36, h: 22,
+      draw: () => ln([[7, 11], [29, 11]], R) + sq(7, 11, NODE, W) + sq(29, 11, NODE, W),
+      role: 'Level in the <b>sketch plane</b>. The two end nodes are drawn because it applies to a ' +
+            'pair of points, not only to a segment.' },
+
+    { name: 'Vertical', dof: '1 DOF', w: 22, h: 36,
+      draw: () => ln([[11, 7], [11, 29]], R) + sq(11, 7, NODE, W) + sq(11, 29, NODE, W),
+      role: 'The exact 90° rotation of Horizontal, so the pair reads as a pair. Both get their own ' +
+            'non-square box rather than being padded to match.' },
+
+    { name: 'Tangent', dof: '1 DOF', w: 36, h: 36,
+      draw: () => ring(16, 22, 9, R) + ln([[4, 13], [32, 13]], W),
+      role: 'Touch with a common direction. The line sits at y=13 and the circle\'s top is 22−9=13 — ' +
+            'really tangent, not nearly.' },
+
+    { name: 'Equal', dof: '1 DOF', w: 36, h: 24,
+      draw: () => ln([[8, 8], [28, 8]], R) + ln([[8, 16], [28, 16]], W),
+      role: 'Equal length, or equal radius. Red is the one that takes the other\'s size. ' +
+            '<b>RULED: a member that already carries a dimension wins</b> (Onshape\'s rule — it ' +
+            'respects work already done); with no dimensioned member, the first selected wins ' +
+            '(Fusion\'s). Same rule governs Coincident.' },
+
+    { name: 'Symmetry', dof: '2 DOF', w: 36, h: 36,
+      draw: () => ln([[18, 4], [18, 32]], W, '4.4 3.6') +
+                  ln([[11, 11], [6, 18], [11, 25]], R) + ln([[25, 11], [30, 18], [25, 25]], R),
+      role: 'Two entities mirrored about an axis. The axis is white because it is the reference; ' +
+            'both mirrored entities are driven, so both are red. Note Onshape\'s warning: symmetry ' +
+            'binds the <i>underlying curves</i>, not their endpoints.' },
+
+    { name: 'Curvature', dof: '+1 on tangency', w: 36, h: 36,
+      draw: () => `<path d="M 6 30 Q 12 8 32 14" stroke="${R}" stroke-width="${SW}" fill="none"/>` +
+                  ln([[9.88, 20.75], [6.12, 18.37]], W) + ln([[15.5, 15.0], [11.83, 9.04]], W) +
+                  ln([[22.88, 12.75], [22.54, 7.24]], W) + sq(15.5, 15.0, 4.4, W),
+      role: 'Curvature matches across a joint (G2). A <b>comb</b> — what Alias, Rhino and Onshape all ' +
+            'use. Hairs are <i>normal to the curve</i> (verified to 0.4°) on its convex side, with ' +
+            'lengths <i>proportional to actual κ</i> — so the comb peaks where the curve is tightest ' +
+            'and reads as continuous through the node. Drawn vertical, or over an inflection, a comb ' +
+            'says the opposite of what it means.' },
+
+    { name: 'Quantize', dof: '1 → integer', w: 36, h: 36,
+      draw: () => [8, 18, 28].flatMap(x => [8, 18, 28].map(y =>
+                    (x === 18 && y === 18) ? '' : dot(x, y, 1.5, W))).join('') + sq(18, 18, NODE, R),
+      role: 'The value is an integer multiple of a voxel. A <b>dot lattice</b>, after AutoCAD — the ' +
+            'only prior art anywhere. A magnet would say "assistive while dragging"; this is ' +
+            'persistent and the solver can see it.' },
+  ];
+
+  const TOOLS = [
+    { name: 'Mirror', dof: 'generator', w: 36, h: 36,
+      draw: () => ln([[18, 4], [18, 32]], W, '4.4 3.6') +
+                  ln([[12, 10], [5, 18], [12, 26]], B) + ln([[24, 10], [31, 18], [24, 26]], B),
+      role: 'Nearly Symmetry\'s construction, and that is now safe. Mirror <b>generates entities</b>; ' +
+            'Symmetry asserts a relation between entities that already exist. Blue against red ' +
+            'carries the whole difference.' },
+
+    { name: 'Rectangular pattern', dof: 'generator', w: 36, h: 36,
+      draw: () => ln([[14.5, 9], [21.5, 9]], W) + ln([[9, 14.5], [9, 21.5]], W) +
+                  sq(9, 9, 8, W) +
+                  [[27, 9], [9, 27], [27, 27]].map(p => sq(p[0], p[1], 8, B)).join(''),
+      role: 'Copies laid out on two directions. <b>White is the seed</b>, blue are the copies it ' +
+            'generates, and the two floating white lines are the pitch it steps by — one per ' +
+            'direction. Same white-is-the-reference rule the constraints use, so one reading ' +
+            'carries across both families.' },
+
+    { name: 'Circular pattern', dof: 'generator', w: 36, h: 36,
+      draw: () => ln([[13, 18], [23, 18]], W) + ln([[18, 13], [18, 23]], W) +
+                  dot(18, 5, 2.6, W) +
+                  [[30.36, 13.98], [25.64, 28.52], [10.36, 28.52], [5.64, 13.98]]
+                    .map(p => dot(p[0], p[1], 2.6, B)).join(''),
+      role: 'Copies swept about an axis. Five elements at 72°, and the white cross <i>is</i> the ' +
+            'axis — no path circle, because the ring of elements already describes it and drawing ' +
+            'it twice only costs legibility. Seed white, copies blue, as in the rectangular case.' },
+
+    { name: 'Snap to voxel', dof: 'modal', w: 36, h: 36,
+      draw: () => ln([[18, 5], [18, 31]], B) + ln([[5, 18], [31, 18]], B) + sq(18, 18, 6.4, B),
+      role: 'Quantize\'s near-twin, and the reason the split matters. Snapping is <b>modal and leaves ' +
+            'no record</b>; Quantize is stored and solver-visible. ADR 0035 D1 insists on that ' +
+            'distinction, and blue-against-red is what now enforces it in ink.' },
+  ];
+
+  function row(m, table) {
+    const tr = document.createElement('tr');
+    const svg = (px) => {
+      const k = px / Math.max(m.w, m.h);
+      return `<svg width="${Math.round(m.w * k)}" height="${Math.round(m.h * k)}" ` +
+             `viewBox="0 0 ${m.w} ${m.h}" stroke-linecap="butt" stroke-linejoin="miter">${m.draw()}</svg>`;
+    };
+    tr.innerHTML = `<td class="nm">${m.name}<em>${m.dof}</em></td>` +
+      `<td class="gl">${svg(36)}${svg(24)}${svg(16)}<div class="sz">36 · 24 · 16 px</div></td>` +
+      `<td class="rl">${m.role}</td>`;
+    table.appendChild(tr);
+  }
+  MARKS.forEach(m => row(m, document.getElementById('set')));
+  TOOLS.forEach(m => row(m, document.getElementById('tools')));
+</script>
+</body>
+</html>

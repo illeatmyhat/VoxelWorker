@@ -1,0 +1,343 @@
+<!-- @dsCard group="E · Sketch suite (ADR 0035)" name="Dimension gizmos" -->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>E · Sketch suite — dimension gizmos</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { width: 880px; background: #0b0d0f; font: 11px "Cascadia Code", Consolas, monospace; padding: 20px 24px 28px; }
+  h1 { color: #dfe7ef; font-size: 12px; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 2px; }
+  p.sub { color: #4d565f; font-size: 10px; margin-bottom: 4px; letter-spacing: .5px; line-height: 1.7; }
+  p.sub b { color: #dfe7ef; font-weight: normal; }
+  h2 { color: #78828c; font-size: 10px; letter-spacing: 2px; text-transform: uppercase; margin: 24px 0 8px; }
+  h2 span { color: #3f474e; letter-spacing: .5px; text-transform: none; font-size: 9.5px; }
+  .note { color: #6f7d8c; font-size: 9.5px; line-height: 1.7; letter-spacing: .3px; margin: 8px 0 0; padding: 8px 10px; border-left: 2px solid #2b3238; background: #101317; }
+  .note b { color: #9cb4d8; font-weight: normal; }
+  .note code { color: #9aa6b2; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: #2b3238; border: 1px solid #2b3238; }
+  .grid.three { grid-template-columns: repeat(3, 1fr); }
+  .cell { background: #0b0d0f; padding: 8px 8px 10px; }
+  .cap { color: #78828c; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 3px; }
+  .why { color: #4d565f; font-size: 9px; line-height: 1.6; margin-top: 4px; letter-spacing: .3px; }
+  .why b { color: #7d8b99; font-weight: normal; }
+  table.rule { border-collapse: collapse; margin-top: 8px; width: 100%; }
+  table.rule td, table.rule th { border: 1px solid #2b3238; padding: 4px 8px; font-size: 9.5px; color: #6f7d8c; text-align: left; letter-spacing: .3px; }
+  table.rule th { color: #9cb4d8; font-weight: normal; }
+  table.rule td.s { color: #dfe7ef; }
+</style>
+</head>
+<body>
+  <h1>Dimension gizmos</h1>
+  <p class="sub">
+    Spans, radii and angles, drawn in the viewport at true scale. Terminators are <b>always filled
+    arrowheads</b>, 3:1, screen-stable. Ink is <b>not red</b> — it is the theme's high-contrast
+    foreground, carried over any ground by a halo. A <b>non-driving</b> dimension is parenthesised
+    whole: <b>(R21)</b>, not R (21).
+  </p>
+
+  <h2>Ink and ground <span>— the dark-theme-plus-bright-blocks problem</span></h2>
+  <div class="grid three" id="grounds"></div>
+  <div class="note">
+    <b>The halo is the answer to the ground problem.</b> Over the dark viewport it is invisible;
+    over a bright block it is the only thing keeping the dimension readable. It costs one extra
+    pass and no colour decision, and it inverts with the theme for free — so no dimension colour
+    has to be chosen per material.
+    <br><b>Every halo is painted before any ink</b>, as two passes over the whole gizmo — not
+    halo-then-ink per element, which is what let an arrowhead's halo bite into the dimension line
+    it terminates. Layer order is: geometry, all halos, all ink, then values.
+    <br><b>The value is the one exception</b>, and deliberately: its halo <i>is</i> painted over the
+    dimension line, because a dimension line is supposed to break where the number sits.
+  </div>
+
+  <h2>Span <span>— two independent tests, three states</span></h2>
+  <table class="rule">
+    <tr><th>arrows fit?</th><th>value fits?</th><th>drawing</th></tr>
+    <tr><td class="s">yes</td><td class="s">yes</td><td>everything inside</td></tr>
+    <tr><td class="s">yes</td><td>no</td><td>arrows stay in, value moves out onto the extension</td></tr>
+    <tr><td>no</td><td>no</td><td>arrows flip outside pointing in, value on the extension</td></tr>
+  </table>
+  <div class="grid three" id="spans"></div>
+
+  <h2>Radius <span>— the leader is radial by construction</span></h2>
+  <div class="grid" id="radii"></div>
+  <div class="note">
+    <b>The arc point is derived from the anchor, never stored beside it.</b>
+    <code>a = atan2(anchor − centre)</code>, then the arc point is <code>centre + r·(cos a, sin a)</code>
+    and the jog is the anchor projected onto that same ray. A radius is only a radius because the
+    leader points at the centre; deriving it means no anchor can break that. Same discipline as
+    ADR 0008 and the anchored-DDA law — carry the frame, never re-derive a value that must agree
+    with another.
+    <br><b>Text rides the leader at its angle</b>, above it, flipped 180° whenever it would
+    otherwise read upside-down.
+  </div>
+
+  <h2>Angle <span>— between two lines</span></h2>
+  <div class="grid three" id="angles"></div>
+
+  <h2>Driving vs reference</h2>
+  <div class="grid" id="driving"></div>
+
+<script>
+  // ---- theme ------------------------------------------------------------
+  const FG    = '#f2f6fa';   // the theme's high-contrast foreground — the dimension ink
+  const BG    = '#0b0d0f';   // the theme's background — the halo ink
+  const GEOM  = '#aeb9c4';   // the sketch's own geometry
+  const REF   = '#9aa6b2';   // reference dimensions: same family, lower rank (NOT "disabled" grey)
+
+  const LINE  = 0.8;         // dimension line, extension line, leader — one weight, per ISO 128-20
+  const GEOMW = 1.3;         // the visible outline, ~2x the chrome
+  const HALO  = 2.4;         // added to a stroke to make its halo
+  const FS    = 11;          // value type size
+  const ADV   = FS * 0.6;    // monospace advance
+
+  const textWidth = (s) => s.length * ADV;
+
+  // ---- layers -----------------------------------------------------------
+  // Pieces are bucketed, never emitted inline, so that EVERY halo can be painted before ANY ink.
+  // Painting halo-then-ink per element is what let an arrowhead bite into its own dimension line.
+  const layers = () => ({ geom: [], line: [], head: [], text: [] });
+
+  function compose(k) {
+    const lines = k.line.join(''), heads = k.head.join('');
+    return k.geom.join('') +
+      // halo pass — round caps/joins so the outline is smooth, whatever the ink underneath does
+      `<g stroke="${BG}" fill="none" stroke-width="${LINE + HALO}" stroke-linecap="round" stroke-linejoin="round">${lines}</g>` +
+      `<g stroke="${BG}" fill="${BG}" stroke-width="${HALO}" stroke-linecap="round" stroke-linejoin="round">${heads}</g>` +
+      // ink pass — butt caps, miter joins, house rule
+      `<g stroke="currentColor" fill="none" stroke-width="${LINE}" stroke-linecap="butt" stroke-linejoin="miter">${lines}</g>` +
+      `<g stroke="none" fill="currentColor">${heads}</g>` +
+      k.text.join('');
+  }
+
+  const P = (d) => `<path d="${d}"/>`;
+
+  // ---- arrowhead: 3:1, tip at (x,y), body back along -(dx,dy) -----------
+  const L = 9, W = 1.5;      // W is the HALF-width, so the base is 3.0 and L:base = 3:1
+  function arrow(k, x, y, dx, dy) {
+    const bx = x - dx * L, by = y - dy * L;
+    const px = -dy * W, py = dx * W;
+    k.head.push(P(`M ${x} ${y} L ${bx + px} ${by + py} L ${bx - px} ${by - py} Z`));
+  }
+
+  // ---- the pieces -------------------------------------------------------
+  const GAP = 5, OVER = 8;   // ISO 129-1: gap off the feature, overrun past the dimension line
+  function witness(k, x, featureY, dimY) {
+    const dir = Math.sign(dimY - featureY);
+    k.line.push(P(`M ${x} ${featureY + dir * GAP} V ${dimY + dir * OVER}`));
+  }
+  const geomSeg = (k, x, y1, y2) =>
+    k.geom.push(`<path d="M ${x} ${y1} V ${y2}" stroke="${GEOM}" stroke-width="${GEOMW}" fill="none"/>`);
+  const centreMark = (k, cx, cy) =>
+    k.line.push(P(`M ${cx - 4} ${cy} H ${cx + 4} M ${cx} ${cy - 4} V ${cy + 4}`));
+
+  // A value with its own halo, painted last — so it breaks the line it sits on, by design.
+  function label(k, x, y, text, opt) {
+    const o = opt || {};
+    const t = o.rot ? ` transform="translate(${x} ${y}) rotate(${o.rot})" x="0" y="${o.dy || 0}"`
+                    : ` x="${x}" y="${y}"`;
+    k.text.push(`<text${t} fill="currentColor" stroke="${BG}" stroke-width="${HALO}" ` +
+      `paint-order="stroke" stroke-linejoin="round" text-anchor="${o.anchor || 'middle'}" ` +
+      `font-family="Cascadia Code, Consolas, monospace" font-size="${FS}">${text}</text>`);
+  }
+  // A reference dimension parenthesises the WHOLE indication, prefix included (ASME Y14.5 §5.9).
+  const value = (prefix, v, driving) => driving ? prefix + v : `(${prefix}${v})`;
+
+  // Aligned text is never upside-down: fold ANY angle into (-90, 90]. Total, not a special case —
+  // the caller may hand this a bearing from any quadrant and it stays readable.
+  function upright(deg) {
+    let d = ((deg % 360) + 360) % 360;      // [0, 360)
+    if (d > 90 && d <= 270) return d - 180; // the inverted half, flipped
+    if (d > 270) return d - 360;            // (270, 360) -> (-90, 0)
+    return d;                               // [0, 90]
+  }
+
+  // ---- span -------------------------------------------------------------
+  // The two tests are independent, so they are computed, never assumed.
+  function span(x1, x2, txt, driving) {
+    const k = layers(), dy = 28, fy = 52;
+    const s = x2 - x1, tw = textWidth(txt);
+    const arrowsFit = s >= 2 * L + 2;
+    // The value sits BETWEEN the arrow bases, so it must clear both of them — not just the span.
+    const valueFits = s >= 2 * L + tw + 2 * GAP;
+
+    geomSeg(k, x1, fy, 112); geomSeg(k, x2, fy, 112);
+    witness(k, x1, fy, dy);  witness(k, x2, fy, dy);
+
+    if (arrowsFit) {
+      // Arrows inside, tips at the extension lines, line stopping at the arrow BASES.
+      k.line.push(P(`M ${x1 + L} ${dy} H ${x2 - L}`));
+      arrow(k, x1, dy, -1, 0); arrow(k, x2, dy, 1, 0);
+    } else {
+      // Arrows outside pointing in; the line stays continuous between the extension lines.
+      k.line.push(P(`M ${x1} ${dy} H ${x2}`), P(`M ${x1 - 2 * L} ${dy} H ${x1}`));
+      arrow(k, x1, dy, 1, 0); arrow(k, x2, dy, -1, 0);
+    }
+    if (valueFits && arrowsFit) {
+      label(k, (x1 + x2) / 2, dy - GAP, txt);
+    } else {
+      // The value leaves on an extension whose length IS the text advance — no naked line.
+      k.line.push(P(`M ${x2} ${dy} H ${x2 + tw + 2 * GAP}`));
+      label(k, x2 + GAP, dy - GAP, txt, { anchor: 'start' });
+    }
+    return compose(k);
+  }
+
+  // ---- radius -----------------------------------------------------------
+  // The anchor is the input. Everything else is derived from it, so the leader cannot go non-radial.
+  function radius(cx, cy, r, anchor, txt, driving) {
+    const k = layers();
+    const a = Math.atan2(anchor[1] - cy, anchor[0] - cx);
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const ax = cx + r * ux, ay = cy + r * uy;              // the arc point, on the anchor's ray
+    const inside = Math.hypot(anchor[0] - cx, anchor[1] - cy) < r;
+    const text = value('R', txt, driving);
+    const tw = textWidth(text);
+
+    k.geom.push(`<circle cx="${cx}" cy="${cy}" r="${r}" stroke="${GEOM}" stroke-width="${GEOMW}" fill="none"/>`);
+    centreMark(k, cx, cy);
+
+    if (inside) {
+      // Leader runs centre → arc, one arrow at the arc pointing OUT. Text rides the leader.
+      k.line.push(P(`M ${cx} ${cy} L ${ax - ux * L} ${ay - uy * L}`));
+      arrow(k, ax, ay, ux, uy);
+      label(k, cx + ux * r * 0.55, cy + uy * r * 0.55, text,
+            { rot: upright(a * 180 / Math.PI), dy: -GAP });
+    } else {
+      // Leader leaves the arc along the SAME ray, jogs at the anchor, lands under the text.
+      const jx = anchor[0], jy = anchor[1], side = jx >= cx ? 1 : -1;
+      k.line.push(P(`M ${ax + ux * L} ${ay + uy * L} L ${jx} ${jy} H ${jx + side * (tw + 2 * GAP)}`));
+      arrow(k, ax, ay, -ux, -uy);
+      label(k, jx + side * GAP, jy - GAP, text, { anchor: side > 0 ? 'start' : 'end' });
+    }
+    return compose(k);
+  }
+
+  // ---- angle ------------------------------------------------------------
+  // Two lines, an arc centred on their (possibly virtual) intersection.
+  function angle(vx, vy, a1, a2, r, txt, driving, opt) {
+    const k = layers(), o = opt || {};
+    const t1 = a1 * Math.PI / 180, t2 = a2 * Math.PI / 180;
+    const text = value('', txt, driving), tw = textWidth(text);
+    const legFar = o.reach || r + 26, legNear = o.gap || 0;
+    const at = (t, d) => [vx + Math.cos(t) * d, vy + Math.sin(t) * d];
+
+    for (const t of [t1, t2]) {
+      const s = at(t, legNear), e = at(t, legFar);
+      k.geom.push(`<path d="M ${s[0]} ${s[1]} L ${e[0]} ${e[1]}" stroke="${GEOM}" stroke-width="${GEOMW}" fill="none"/>`);
+    }
+    // Extension lines, drawn only where a leg does not already reach the arc.
+    if (legFar < r + OVER) {
+      for (const t of [t1, t2]) {
+        const s = at(t, legFar), e = at(t, r + OVER);
+        k.line.push(P(`M ${s[0]} ${s[1]} L ${e[0]} ${e[1]}`));
+      }
+    }
+
+    const A = at(t1, r), B = at(t2, r);
+    const tan = (t) => [-Math.sin(t), Math.cos(t)];
+    const sgn = Math.sign(t2 - t1), sweepFlag = t2 > t1 ? 1 : 0;
+    const big = Math.abs(a2 - a1) > 180 ? 1 : 0;
+    const arcLen = r * Math.abs(t2 - t1);
+    const arrowsFit = arcLen >= 2 * L + 2;
+    const valueFits = arcLen >= 2 * L + tw + 2 * GAP;
+    const s1 = tan(t1), s2 = tan(t2);
+
+    if (arrowsFit) {
+      // Arc runs between the arrow bases; arrows sit ON the arc pointing outward along it.
+      const C = at(t1 + (L / r) * sgn, r), D = at(t2 - (L / r) * sgn, r);
+      k.line.push(P(`M ${C[0]} ${C[1]} A ${r} ${r} 0 ${big} ${sweepFlag} ${D[0]} ${D[1]}`));
+      arrow(k, A[0], A[1], -s1[0] * sgn, -s1[1] * sgn);
+      arrow(k, B[0], B[1], s2[0] * sgn, s2[1] * sgn);
+    } else {
+      // Too tight: the arc still spans the legs, but the arrows swing outside pointing in.
+      const E = at(t1 - (2 * L / r) * sgn, r), F = at(t2 + (2 * L / r) * sgn, r);
+      k.line.push(
+        P(`M ${A[0]} ${A[1]} A ${r} ${r} 0 ${big} ${sweepFlag} ${B[0]} ${B[1]}`),
+        P(`M ${E[0]} ${E[1]} A ${r} ${r} 0 0 ${sweepFlag} ${A[0]} ${A[1]}`),
+        P(`M ${B[0]} ${B[1]} A ${r} ${r} 0 0 ${sweepFlag} ${F[0]} ${F[1]}`));
+      arrow(k, A[0], A[1], s1[0] * sgn, s1[1] * sgn);
+      arrow(k, B[0], B[1], -s2[0] * sgn, -s2[1] * sgn);
+    }
+
+    const tm = (t1 + t2) / 2;
+    if (valueFits && arrowsFit) {
+      const M = at(tm, r);
+      // Tangent to the arc at the midpoint, folded upright.
+      label(k, M[0], M[1], text, { rot: upright(tm * 180 / Math.PI + 90), dy: -GAP });
+    } else {
+      // Value leaves on a leader along the bisector.
+      const M = at(tm, r), J = at(tm, r + 30), side = J[0] >= vx ? 1 : -1;
+      k.line.push(P(`M ${M[0]} ${M[1]} L ${J[0]} ${J[1]} H ${J[0] + side * (tw + 2 * GAP)}`));
+      label(k, J[0] + side * GAP, J[1] - GAP, text, { anchor: side > 0 ? 'start' : 'end' });
+    }
+    return compose(k);
+  }
+
+  // ---- frame ------------------------------------------------------------
+  function svg(inner, ink, ground) {
+    const bg = ground ? `<rect x="0" y="0" width="260" height="130" fill="${ground}"/>` : '';
+    return `<svg width="100%" viewBox="0 0 260 130" fill="none" ` +
+           `style="color:${ink || FG}">${bg}${inner}</svg>`;
+  }
+  function render(target, cells) {
+    const grid = document.getElementById(target);
+    for (const c of cells) {
+      const el = document.createElement('div');
+      el.className = 'cell';
+      el.innerHTML = `<div class="cap">${c.cap}</div>` + svg(c.svg, c.ink, c.ground) +
+                     `<div class="why">${c.why}</div>`;
+      grid.appendChild(el);
+    }
+  }
+
+  // ---- the sheet --------------------------------------------------------
+  const demo = () => span(44, 216, '172', true);
+
+  render('grounds', [
+    { cap: 'Over the viewport', svg: demo(),
+      why: 'The halo is present and invisible. Nothing is spent when nothing is needed.' },
+    { cap: 'Over a bright block', svg: demo(), ground: '#c9b98a',
+      why: '<b>This is the case that decides the ink.</b> Foreground-on-halo survives it; a single flat colour — red included — does not.' },
+    { cap: 'Over a mid block', svg: demo(), ground: '#5d6b4f',
+      why: 'The mid-tone is the genuinely hard ground: it is close to both inks. The halo is what separates them.' },
+  ]);
+
+  render('spans', [
+    { cap: 'Arrows fit · value fits', svg: span(44, 216, '172', true),
+      why: 'Everything inside. Dimension line stops at the arrow <b>bases</b>, not the tips, so nothing pokes past a tip.' },
+    { cap: 'Arrows fit · value does not', svg: span(115, 145, '30', true),
+      why: '<b>The state the old sheet was missing.</b> Span 30 holds two 9-unit arrows with room to spare, but the value has to clear <i>both arrow bases</i>, not just the span — so it moves out while the arrows stay in. Two independent tests, not one.' },
+    { cap: 'Neither fits', svg: span(123, 137, '14', true),
+      why: 'Span 14 &lt; 2L. Arrows flip outside pointing in, the line stays continuous between the extension lines, and the value rides an extension whose length <b>is</b> the text advance.' },
+  ]);
+
+  render('radii', [
+    { cap: 'Anchor inside — text rides the leader', svg: radius(130, 74, 46, [152, 56], '46', true),
+      why: 'Leader centre → arc, one arrow at the arc pointing out, text <b>aligned to the leader</b> and sitting above it. Centre drawn as a cross in dimension ink — not a filled dot in geometry ink, which is what a sketch point looks like.' },
+    { cap: 'Anchor outside — leader jogs', svg: radius(92, 80, 21, [156, 44], '21', true),
+      why: 'Anchor outside the arc, so the leader leaves along the same ray, jogs where the anchor is, and lands under the text. <b>Radial by construction</b> — the arc point is computed from the anchor, so no anchor can put it off-centre.' },
+  ]);
+
+  render('angles', [
+    { cap: 'Wide — everything inside', svg: angle(70, 106, -90, -28, 54, '62°', true),
+      why: 'Arc centred on the vertex, arrows <b>tangent to the arc</b> at each leg, value at the arc midpoint aligned to the tangent. The arc runs between the arrow bases.' },
+    { cap: 'Tight — arrows outside', svg: angle(96, 108, -102, -78, 34, '24°', true),
+      why: 'Arc length below 2L, so the arrows swing outside the legs pointing in — the same reversal the span makes. The value leaves on a leader along the <b>bisector</b>.' },
+    { cap: 'Virtual intersection', svg: angle(120, 116, -155, -40, 46, '115°', true, { gap: 22, reach: 40 }),
+      why: 'The two lines do not meet. Thin extension lines carry each leg out to the arc; the vertex itself is never drawn, because it is not an entity the sketch contains.' },
+  ]);
+
+  render('driving', [
+    { cap: 'Driving', svg: span(44, 216, '172', true),
+      why: 'Full-weight foreground ink, bare value. The solver holds it; editing the number moves geometry.' },
+    { cap: 'Reference', svg: span(44, 216, '172', false), ink: REF,
+      why: 'Parenthesised <b>whole</b>, and one rank quieter — same hue family, not a "disabled" grey, because a reference dimension is fully live and updates every solve. Two channels: the parenthesis survives greyscale, the weight works in peripheral vision.' },
+    { cap: 'Driving · radius', svg: radius(92, 80, 21, [156, 44], '21', true),
+      why: 'The anchor rule and the driving rule are independent. Any anchor drawing can be either.' },
+    { cap: 'Reference · radius', svg: radius(92, 80, 21, [156, 44], '21', false), ink: REF,
+      why: '<b>(R21)</b> — the parenthesis wraps the whole indication, prefix included. ASME Y14.5 §5.9: it does not deny the measurement, it declares the indication derived. A consequence worth pinning now: an auxiliary dimension may never carry a tolerance, so make that unrepresentable rather than merely discouraged.' },
+  ]);
+</script>
+</body>
+</html>

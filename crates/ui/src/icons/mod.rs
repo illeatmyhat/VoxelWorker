@@ -12,13 +12,14 @@
 //! a white window. Data cannot loop, so the property becomes a fact about the type rather than
 //! something anyone has to remember.
 //!
-//! **`orbit` is the one exception**, and it is a principled one rather than unfinished work.
-//! Its path is a TILTED ellipse the kit has no rotation for, and its moon sits at
-//! `on_orbit(MOON_ANGLE)` — a trigonometric position. `f32::cos` is not a `const fn`, so the
-//! only way to make `orbit` data is to freeze that position as a literal, which would decouple
-//! the number from the `MOON_ANGLE` this module explains. A glyph whose constants no longer
-//! match its own reasoning is worse than a glyph that traces. It carries no unbounded loop: its
-//! sampling is a fixed `0..=32`.
+//! **The three orbit glyphs are the exception**, and it is a principled one rather than
+//! unfinished work. Their paths are TILTED ellipses the kit has no rotation for, and `orbit`'s
+//! moon sits at `on_orbit(MOON_ANGLE)` — a trigonometric position. `f32::cos` is not a
+//! `const fn`, so the only way to make them data is to freeze those positions as literals, which
+//! would decouple the numbers from the `MOON_ANGLE` the module explains. A glyph whose constants
+//! no longer match its own reasoning is worse than a glyph that traces. They carry no unbounded
+//! loop: the sampling is a fixed `0..=32`. [`Icon::marks`] answers an empty slice for these
+//! three and for nothing else, which `glyphs_are_data` gates.
 //!
 //! **One glyph per file**, under `icons/`. The file is the unit a designer edits, the module
 //! name is the glyph name, and [`Icon`] is the only index — a glyph that is not in the enum
@@ -57,6 +58,10 @@ mod commit;
 mod composed_part;
 mod cylinder;
 mod density;
+/// Generated fixture, read only by [`tests::glyphs_match_the_design_sheet`] — it carries no
+/// glyph the app paints, so it stays out of the shipped binary.
+#[cfg(test)]
+mod design_reference;
 mod displace;
 mod drawer;
 mod emboss;
@@ -736,72 +741,88 @@ impl Icon {
     pub fn draw(self, painter: &Painter, rect: Rect, color: Color32) {
         let g = IconPainter::new(painter, rect, color);
         match self {
-            Icon::Home => g.marks(home::DRAW),
-            Icon::Fit => g.marks(fit::DRAW),
+            // The three orbit marks compose ROTATED ellipses at paint time, which `Mark` cannot
+            // describe, so they stay imperative and answer an empty slice from `marks`.
             Icon::Orbit => orbit::draw(&g),
             Icon::OrbitConstrained => orbit_constrained::draw(&g),
             Icon::OrbitFree => orbit_free::draw(&g),
-            Icon::OrbitCenterPlace => g.marks(orbit_center_place::DRAW),
-            Icon::OrbitCenterReset => g.marks(orbit_center_reset::DRAW),
-            Icon::Pan => g.marks(pan::DRAW),
-            Icon::Zoom => g.marks(zoom::DRAW),
-            Icon::AxesGizmo => g.marks(axes_gizmo::DRAW),
-            Icon::ViewCube => g.marks(view_cube::DRAW),
-            Icon::ModeNormal => g.marks(mode_normal::DRAW),
-            Icon::ModeOnion => g.marks(mode_onion::DRAW),
-            Icon::ModeBooleans => g.marks(mode_booleans::DRAW),
-            Icon::OnionScrub => g.marks(onion_scrub::DRAW),
-            Icon::Union => g.marks(union::DRAW),
-            Icon::Subtract => g.marks(subtract::DRAW),
-            Icon::Intersect => g.marks(intersect::DRAW),
-            Icon::Emboss => g.marks(emboss::DRAW),
-            Icon::EmbossRecess => g.marks(emboss_recess::DRAW),
-            Icon::Outset => g.marks(outset::DRAW),
-            Icon::Inset => g.marks(inset::DRAW),
-            Icon::Displace => g.marks(displace::DRAW),
-            Icon::Array => g.marks(array::DRAW),
-            Icon::Sketch => g.marks(sketch::DRAW),
-            Icon::Extrude => g.marks(extrude::DRAW),
-            Icon::Revolve => g.marks(revolve::DRAW),
-            Icon::Sweep => g.marks(sweep::DRAW),
-            Icon::BoxSolid => g.marks(box_solid::DRAW),
-            Icon::Sphere => g.marks(sphere::DRAW),
-            Icon::Cylinder => g.marks(cylinder::DRAW),
-            Icon::Tube => g.marks(tube::DRAW),
-            Icon::Torus => g.marks(torus::DRAW),
-            Icon::HalfSpace => g.marks(half_space::DRAW),
-            Icon::Part => g.marks(part::DRAW),
-            Icon::ComposedPart => g.marks(composed_part::DRAW),
-            Icon::RootPart => g.marks(root_part::DRAW),
-            Icon::FoldStack => g.marks(fold_stack::DRAW),
-            Icon::FoldCursor => g.marks(fold_cursor::DRAW),
-            Icon::Link => g.marks(link::DRAW),
-            Icon::SculptAdd => g.marks(sculpt_add::DRAW),
-            Icon::Carve => g.marks(carve::DRAW),
-            Icon::Measure => g.marks(measure::DRAW),
-            Icon::Probe => g.marks(probe::DRAW),
-            Icon::Material => g.marks(material::DRAW),
-            Icon::Rotate => g.marks(rotate::DRAW),
-            Icon::Flip => g.marks(flip::DRAW),
-            Icon::Density => g.marks(density::DRAW),
-            Icon::SelectVertex => g.marks(select_vertex::DRAW),
-            Icon::AddPoint => g.marks(add_point::DRAW),
-            Icon::Polyline => g.marks(polyline::DRAW),
-            Icon::Rectangle => g.marks(rectangle::DRAW),
-            Icon::ThreePointArc => g.marks(three_point_arc::DRAW),
-            Icon::Line => g.marks(line::DRAW),
-            Icon::CloseLoop => g.marks(close_loop::DRAW),
-            Icon::FillRegion => g.marks(fill_region::DRAW),
-            Icon::CarveRegion => g.marks(carve_region::DRAW),
-            Icon::SnapNone => g.marks(snap_none::DRAW),
-            Icon::SnapVoxel => g.marks(snap_voxel::DRAW),
-            Icon::SnapBlock => g.marks(snap_block::DRAW),
-            Icon::ChevronRight => g.marks(chevron_right::DRAW),
-            Icon::ChevronDown => g.marks(chevron_down::DRAW),
-            Icon::Commit => g.marks(commit::DRAW),
-            Icon::Cancel => g.marks(cancel::DRAW),
-            Icon::Drawer => g.marks(drawer::DRAW),
-            Icon::Search => g.marks(search::DRAW),
+            other => g.marks(other.marks()),
+        }
+    }
+
+    /// The glyph's marks, as data.
+    ///
+    /// Empty for the three imperative orbit marks and for nothing else — `glyphs_are_data`
+    /// gates that, so an empty answer here is a test failure rather than a blank icon.
+    ///
+    /// Splitting this out of [`Icon::draw`] is what lets the design sheet's geometry be diffed
+    /// against the glyph without painting anything: see `design_reference`.
+    pub(super) fn marks(self) -> &'static [Mark] {
+        match self {
+            Icon::Orbit | Icon::OrbitConstrained | Icon::OrbitFree => &[],
+            Icon::Home => home::DRAW,
+            Icon::Fit => fit::DRAW,
+            Icon::OrbitCenterPlace => orbit_center_place::DRAW,
+            Icon::OrbitCenterReset => orbit_center_reset::DRAW,
+            Icon::Pan => pan::DRAW,
+            Icon::Zoom => zoom::DRAW,
+            Icon::AxesGizmo => axes_gizmo::DRAW,
+            Icon::ViewCube => view_cube::DRAW,
+            Icon::ModeNormal => mode_normal::DRAW,
+            Icon::ModeOnion => mode_onion::DRAW,
+            Icon::ModeBooleans => mode_booleans::DRAW,
+            Icon::OnionScrub => onion_scrub::DRAW,
+            Icon::Union => union::DRAW,
+            Icon::Subtract => subtract::DRAW,
+            Icon::Intersect => intersect::DRAW,
+            Icon::Emboss => emboss::DRAW,
+            Icon::EmbossRecess => emboss_recess::DRAW,
+            Icon::Outset => outset::DRAW,
+            Icon::Inset => inset::DRAW,
+            Icon::Displace => displace::DRAW,
+            Icon::Array => array::DRAW,
+            Icon::Sketch => sketch::DRAW,
+            Icon::Extrude => extrude::DRAW,
+            Icon::Revolve => revolve::DRAW,
+            Icon::Sweep => sweep::DRAW,
+            Icon::BoxSolid => box_solid::DRAW,
+            Icon::Sphere => sphere::DRAW,
+            Icon::Cylinder => cylinder::DRAW,
+            Icon::Tube => tube::DRAW,
+            Icon::Torus => torus::DRAW,
+            Icon::HalfSpace => half_space::DRAW,
+            Icon::Part => part::DRAW,
+            Icon::ComposedPart => composed_part::DRAW,
+            Icon::RootPart => root_part::DRAW,
+            Icon::FoldStack => fold_stack::DRAW,
+            Icon::FoldCursor => fold_cursor::DRAW,
+            Icon::Link => link::DRAW,
+            Icon::SculptAdd => sculpt_add::DRAW,
+            Icon::Carve => carve::DRAW,
+            Icon::Measure => measure::DRAW,
+            Icon::Probe => probe::DRAW,
+            Icon::Material => material::DRAW,
+            Icon::Rotate => rotate::DRAW,
+            Icon::Flip => flip::DRAW,
+            Icon::Density => density::DRAW,
+            Icon::SelectVertex => select_vertex::DRAW,
+            Icon::AddPoint => add_point::DRAW,
+            Icon::Polyline => polyline::DRAW,
+            Icon::Rectangle => rectangle::DRAW,
+            Icon::ThreePointArc => three_point_arc::DRAW,
+            Icon::Line => line::DRAW,
+            Icon::CloseLoop => close_loop::DRAW,
+            Icon::FillRegion => fill_region::DRAW,
+            Icon::CarveRegion => carve_region::DRAW,
+            Icon::SnapNone => snap_none::DRAW,
+            Icon::SnapVoxel => snap_voxel::DRAW,
+            Icon::SnapBlock => snap_block::DRAW,
+            Icon::ChevronRight => chevron_right::DRAW,
+            Icon::ChevronDown => chevron_down::DRAW,
+            Icon::Commit => commit::DRAW,
+            Icon::Cancel => cancel::DRAW,
+            Icon::Drawer => drawer::DRAW,
+            Icon::Search => search::DRAW,
         }
     }
 
