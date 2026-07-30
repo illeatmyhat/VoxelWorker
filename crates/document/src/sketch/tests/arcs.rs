@@ -207,15 +207,15 @@ fn a_chord_and_its_arc_bound_a_d_shape() {
     sketch.connect(a, b).expect("the chord closes it");
     let faces = sketch.faces();
     assert_eq!(faces.len(), 1, "two edges over one pair bound ONE face");
-    // Half a radius-2 disc. The tessellation INSCRIBES the curve, so the derived area sits just
-    // under the analytic one — never over, which is what pins the chords to the right side.
+    // Half a radius-2 disc, EXACTLY: the area integrates the arc itself (Green's theorem over the
+    // circle), where a tessellated boundary could only inscribe it and land just under.
     let half_disc = std::f64::consts::PI * 2.0;
     let area = faces[0].area_voxels;
     assert!(
-        area < half_disc && area > half_disc - 0.25,
-        "inscribed half-disc, got {area} against {half_disc}"
+        (area - half_disc).abs() < 1e-9,
+        "the exact half-disc, got {area} against {half_disc}"
     );
-    assert!(!sketch.flattened_region().is_empty(), "and it resolves");
+    assert!(!sketch.region().is_empty(), "and it resolves");
 
     // The other direction — an arc over a pair a segment already joins (the owner's second
     // report) — reaches the same store.
@@ -513,14 +513,15 @@ fn a_pre_centre_document_gains_its_centres_on_load() {
     assert_near(center_of(&loaded, arc).at.in_plane(), [2.0, 0.0]);
 }
 
-/// The DISPLAY door tessellates the same face more finely without changing it: the boundary gains
-/// chords, the face keys and the pick state do not move, and the profile it describes is the same
-/// one to within the finer tolerance.
+/// A face bounded by an arc keeps the ARC. Its boundary is two straight sides, one more, and the
+/// curve — not a fan of chords — and the curve's own circle is what the field measures.
 ///
-/// This is what keeps the wash from reading as a polygon inside its own smooth outline — the
-/// resolved tolerance is measured in voxels, so a curve earns the same chord count at every zoom.
+/// This is what keeps the wash from reading as a polygon inside its own smooth outline. There is no
+/// tolerance to get right here because there is no tessellation: the region is a curve all the way
+/// to the measurement, and the only thing that ever flattens is a consumer producing something
+/// discrete.
 #[test]
-fn the_display_door_smooths_a_face_without_moving_it() {
+fn a_curved_face_keeps_its_arc() {
     let mut sketch = Sketch::new(
         PlaneAxis::Z,
         vec![
@@ -541,34 +542,48 @@ fn the_display_door_smooths_a_face_without_moving_it() {
         .connect_arc(0, 3, AngleMeasurement::from_degrees(180))
         .expect("a fresh arc");
 
-    let resolved = sketch.region_field_loops();
-    let smooth = sketch.region_field_loops_within(ARC_SAGITTA_TOLERANCE_VOXELS / 16.0);
-    assert_eq!(resolved.len(), 1);
-    assert_eq!(smooth.len(), 1);
-    assert_eq!(resolved[0].0, smooth[0].0, "the same role");
-    // Chord count goes as 1/sqrt(sagitta), so 16x finer is ~4x the ARC's chords — a little less
-    // over the whole boundary, which carries three straight corners as well.
-    assert!(
-        smooth[0].1.len() > resolved[0].1.len() * 2,
-        "a 16x finer sagitta is ~4x the chords: {} vs {}",
-        smooth[0].1.len(),
-        resolved[0].1.len()
+    let region = sketch.region();
+    assert_eq!(region.len(), 1);
+    let edges = &region[0].edges;
+    assert_eq!(
+        edges.len(),
+        4,
+        "three straight sides and one arc, not a chord fan"
     );
-    // The finer boundary describes the same profile: every one of its vertices is within the
-    // COARSE tolerance of the coarse boundary, so no chord wandered off the curve.
-    for vertex in &smooth[0].1 {
-        let gap = substrate::geom2d::signed_distance_to_polygon(
-            &resolved[0].1,
-            *vertex,
-            substrate::geom2d::Metric::Euclidean,
-        )
-        .abs();
-        assert!(
-            gap <= ARC_SAGITTA_TOLERANCE_VOXELS as f32 + 1e-5,
-            "a smoothed vertex {vertex:?} sits {gap} off the resolved boundary"
-        );
-    }
-    // Faces are identified by lineage, not geometry, so the pick state survives the door.
+    let curved: Vec<_> = edges.iter().filter(|edge| edge.arc.is_some()).collect();
+    assert_eq!(curved.len(), 1, "exactly one edge carries a circle");
+    let arc = curved[0].arc.expect("the circle");
+    // The replaced side spans (0, 0) → (4, 0), so a half turn over it has radius 2 about (2, 0)
+    // and bulges a full radius below the rectangle.
+    assert!(
+        (arc.radius - 2.0).abs() < 1e-9,
+        "a half turn across a 4-voxel chord has radius 2, measured {}",
+        arc.radius
+    );
+    assert!(
+        (arc.sweep_radians.abs() - std::f64::consts::PI).abs() < 1e-9,
+        "a half turn"
+    );
+
+    // The bulge is material, and the field measures it against the CIRCLE: a point one voxel in
+    // from the curve reads exactly one voxel deep, which a chord approximation cannot say.
+    let field = sketch.region_field_loops();
+    let under_the_bulge = [arc.centre[0] as f32, (arc.centre[1] - 1.0) as f32];
+    assert!(
+        substrate::geom2d::point_in_region(&field, under_the_bulge),
+        "under the bulge at {under_the_bulge:?}"
+    );
+    let gap = substrate::geom2d::signed_distance_to_region(
+        &field,
+        under_the_bulge,
+        substrate::geom2d::Metric::Euclidean,
+    );
+    assert!(
+        (gap + 1.0).abs() < 1e-4,
+        "one voxel in from the curve, measured {gap}"
+    );
+
+    // Faces are identified by lineage, not geometry.
     let key = sketch.faces().first().expect("a face").key.clone();
     assert!(sketch.face_is_picked(&key));
 }

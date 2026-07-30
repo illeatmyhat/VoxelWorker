@@ -7,6 +7,11 @@
   stay sealed scopes, fixtures stay def-level flags with positional hosts, and
   `Subtract`/`Intersect` stay occupancy-only masks. Confirms and depends on ADR 0011's
   display boundary. Supplies the field contract ADR 0009/0010's classifier already assumed.
+  **Decision 2 is superseded by [ADR 0034](0034-curves-stay-curves.md)** — the flattened polygon
+  is no longer the meaning; a region is a field over curve primitives and flattening is a
+  terminal adapter. Decisions 3 and 4's tolerance obligations move with it. Everything else here
+  — the layer split, the metrics, outset-as-combinator, predicates-classify/fields-measure —
+  stands.
 - **Date:** 2026-07-18
 - **Layer:** document model + evaluation semantics, with one substrate extraction. The
   foundation the remaining boolean affordances attach to.

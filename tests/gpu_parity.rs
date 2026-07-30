@@ -2892,7 +2892,10 @@ fn render_sketch_region_wash(
     gpu: &voxel_worker::GpuContext,
     size: u32,
     plane: display::renderer::SketchPlaneFrame,
-    region: &[(substrate::geom2d::LoopRole, Vec<[f32; 2]>)],
+    region: &[(
+        substrate::geom2d::LoopRole,
+        Vec<substrate::geom2d::RegionEdge>,
+    )],
     tint: [f32; 4],
     ray_inverse_unprojection: glam::Mat4,
 ) -> Vec<[u8; 4]> {
@@ -3021,14 +3024,34 @@ fn overhead_ortho_ray_frame(span: f32) -> glam::Mat4 {
     (projection * view).inverse()
 }
 
-/// A `side × side` square loop from `(origin, origin)`, counter-clockwise.
-fn wash_square(origin: f32, side: f32) -> Vec<[f32; 2]> {
-    vec![
+/// A `side × side` square loop from `(origin, origin)`, counter-clockwise, as straight edges.
+fn wash_square(origin: f32, side: f32) -> Vec<substrate::geom2d::RegionEdge> {
+    let corners = [
         [origin, origin],
         [origin + side, origin],
         [origin + side, origin + side],
         [origin, origin + side],
-    ]
+    ];
+    (0..4)
+        .map(|index| substrate::geom2d::RegionEdge::Segment {
+            start: corners[index],
+            end: corners[(index + 1) % 4],
+        })
+        .collect()
+}
+
+/// A full circle as ONE arc edge — the shape that has no polygon at all, and the one the wash used
+/// to draw as a visible chord fan.
+fn wash_circle(centre: [f32; 2], radius: f32) -> Vec<substrate::geom2d::RegionEdge> {
+    let seam = [centre[0] + radius, centre[1]];
+    vec![substrate::geom2d::RegionEdge::Arc {
+        start: seam,
+        end: seam,
+        centre,
+        radius,
+        start_radians: 0.0,
+        sweep_radians: std::f32::consts::TAU,
+    }]
 }
 
 /// The wash plane for the harness: the XY plane, profile coordinate == world `xy`.
@@ -3171,4 +3194,81 @@ fn nested_picked_regions_wash_to_one_alpha() {
         "a doubly-enclosed pixel composited differently"
     );
     assert_eq!(nested, one, "the nested fill changed the wash");
+}
+
+/// **A curved boundary is shaded as a CURVE.** The wash used to fold a chord polygon, so a circle
+/// came out a visible fan of triangles whose edge fell short of its own smooth outline by the
+/// sagitta. The region now carries the arc, and this asserts the consequence at the pixel level:
+/// every pixel the GPU calls material is inside the true circle, and every pixel it calls air is
+/// outside it, with only the antialiasing band excused.
+///
+/// A chord approximation cannot pass this. Midway between two chords the polygon's boundary sits a
+/// full sagitta inside the circle, which at this scale is several pixels wide — far outside the
+/// band the test excuses.
+#[test]
+fn a_curved_region_washes_the_curve_and_not_its_chords() {
+    if skip_without_gpu("a_curved_region_washes_the_curve_and_not_its_chords") {
+        return;
+    }
+    use substrate::geom2d::LoopRole;
+
+    let gpu = common::shared_gpu();
+    let size = 128u32;
+    let span = 32.0f32;
+    let voxels_per_pixel = span / size as f32;
+    let centre = [16.0f32, 16.0];
+    let radius = 12.0f32;
+    let tint = [0.2, 0.4, 0.8, 0.54];
+
+    let pixels = render_sketch_region_wash(
+        gpu,
+        size,
+        WASH_PLANE,
+        &[(LoopRole::Fill, wash_circle(centre, radius))],
+        tint,
+        overhead_ortho_ray_frame(span),
+    );
+
+    let expected_alpha = (tint[3] * 255.0).round() as i32;
+    let clear_of_the_edge = 2.0 * voxels_per_pixel;
+    let mut inside_pixels = 0usize;
+    let mut outside_pixels = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for y in 0..size {
+        for x in 0..size {
+            // The framebuffer's +y runs DOWN; the plane's second axis runs up.
+            let profile = [
+                (x as f32 + 0.5) * voxels_per_pixel,
+                span - (y as f32 + 0.5) * voxels_per_pixel,
+            ];
+            // The analytic truth, owing nothing to the shader or to geom2d: distance to the circle.
+            let distance = (profile[0] - centre[0]).hypot(profile[1] - centre[1]) - radius;
+            if distance.abs() <= clear_of_the_edge {
+                continue;
+            }
+            let alpha = pixels[(y * size + x) as usize][3] as i32;
+            let (expected, what) = if distance < 0.0 {
+                inside_pixels += 1;
+                (expected_alpha, "inside the circle")
+            } else {
+                outside_pixels += 1;
+                (0, "outside it")
+            };
+            if (alpha - expected).abs() > 1 && failures.len() < 8 {
+                failures.push(format!(
+                    "px=({x},{y}) profile={profile:?} is {what} (d={distance}) but alpha={alpha}, \
+                     expected {expected}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the wash does not follow the circle:\n{}",
+        failures.join("\n")
+    );
+    assert!(
+        inside_pixels > 800 && outside_pixels > 800,
+        "the fixture must cover both readings: {inside_pixels} material, {outside_pixels} air"
+    );
 }

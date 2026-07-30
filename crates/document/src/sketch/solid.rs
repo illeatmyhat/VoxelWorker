@@ -1,4 +1,7 @@
-use super::produce::{revolve_box_within_sweep_arc, to_region_points, to_region_points_measured};
+use super::produce::{
+    revolve_box_within_sweep_arc, to_region_curve_bounds, to_region_edges_measured,
+    to_region_points,
+};
 use super::*;
 use rayon::prelude::*;
 use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
@@ -31,7 +34,10 @@ use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 pub(super) struct RevolveField {
     /// The tagged region in the measurement width (#100): a hole in the profile is a hollow in
     /// the lathed body, so the field folds every loop rather than measuring one polygon.
-    region_points: Vec<(substrate::geom2d::LoopRole, Vec<[f32; 2]>)>,
+    region_edges: Vec<(
+        substrate::geom2d::LoopRole,
+        Vec<substrate::geom2d::RegionEdge>,
+    )>,
     axis: RevolveAxis,
     turn_degrees: u32,
     /// World axis carrying the profile's AXIAL coordinate (un-centred, profile-space).
@@ -111,7 +117,7 @@ impl RevolveField {
                 RevolveAxis::InPlane1 => (signed_radius, profile_axial),
             };
             substrate::geom2d::signed_distance_to_region(
-                &self.region_points,
+                &self.region_edges,
                 [sample_0, sample_1],
                 substrate::geom2d::Metric::Euclidean,
             )
@@ -210,26 +216,10 @@ impl SketchSolid {
             Operation::Extrude { height_voxels } => height_voxels == 0,
             Operation::Revolve { sweep, .. } => sweep.turn_degrees == 0,
         };
-        // The extent is the FILLED loops' (#100): a hole sits inside a fill and adds no
-        // footprint, and an unpicked face on its own is not occupancy at all.
-        let profile: Vec<_> = self.sketch.filled_loops().concat();
-        if profile.len() < 3 || operation_is_degenerate {
+        if operation_is_degenerate {
             return None;
         }
-        // Continuous bounds (#101 — a vertex may carry a sub-voxel fraction), floored /
-        // ceiled to the integer grid box so a fractional overhang is never clipped. For a
-        // whole-voxel profile floor and ceil are identities, so the integer path is
-        // byte-identical to the pre-#101 producer.
-        let first = profile[0].in_plane();
-        let mut min = first;
-        let mut max = first;
-        for point in &profile {
-            let coords = point.in_plane();
-            for axis in 0..2 {
-                min[axis] = min[axis].min(coords[axis]);
-                max[axis] = max[axis].max(coords[axis]);
-            }
-        }
+        let (min, max) = self.filled_extent()?;
         // A zero-extent span on either in-plane axis is a degenerate (collinear /
         // zero-area) profile: no cell can be inside it.
         if max[0] <= min[0] || max[1] <= min[1] {
@@ -246,16 +236,38 @@ impl SketchSolid {
     /// is the authoring anchor the producer re-seats to the node origin, needed while a profile is
     /// still being built (fewer than three points, zero height) and its vertices are being edited.
     pub fn profile_bbox_min(&self) -> [i64; 2] {
-        let profile: Vec<_> = self.sketch.filled_loops().concat();
-        let mut min = profile
-            .first()
-            .map(|point| point.offset_voxels)
-            .unwrap_or([0, 0]);
-        for point in &profile {
-            min[0] = min[0].min(point.offset_voxels[0]);
-            min[1] = min[1].min(point.offset_voxels[1]);
+        match self.filled_extent() {
+            Some((min, _max)) => [min[0].floor() as i64, min[1].floor() as i64],
+            None => [0, 0],
         }
-        min
+    }
+
+    /// The FILLED region's exact continuous in-plane extent — the one measurement both
+    /// [`profile_bounds`](Self::profile_bounds) and [`profile_bbox_min`](Self::profile_bbox_min)
+    /// read, so the resolve's anchor and the authoring anchor cannot drift apart. `None` when
+    /// nothing is filled.
+    ///
+    /// Taken from each edge's own bounds, so an arc contributes the reach of its BULGE. Measured
+    /// off the chords instead, a producer sized from this would clip the curve it was asked to
+    /// build by up to the sagitta.
+    ///
+    /// A hole sits inside a fill and adds no footprint, and an unpicked face on its own is not
+    /// occupancy at all (#100).
+    fn filled_extent(&self) -> Option<([f64; 2], [f64; 2])> {
+        let mut extent: Option<([f64; 2], [f64; 2])> = None;
+        for profile_loop in self.sketch.filled_loops() {
+            for edge in &profile_loop.edges {
+                let (low, high) = edge.bounds();
+                extent = Some(match extent {
+                    None => (low, high),
+                    Some((min, max)) => (
+                        [min[0].min(low[0]), min[1].min(low[1])],
+                        [max[0].max(high[0]), max[1].max(high[1])],
+                    ),
+                });
+            }
+        }
+        extent
     }
 
     /// The node offset that keeps every **un-edited** profile vertex fixed in world after this
@@ -462,10 +474,11 @@ impl SketchSolid {
         sweep: RevolveSweep,
     ) -> Option<RevolveField> {
         let (profile_min, _profile_max) = self.profile_bounds()?;
-        let region = self.sketch.flattened_region();
+        let region = self.sketch.region();
         // The straddle / reach measurements below are about how far the SOLID reaches from the
-        // lathe axis, so they read the filled loops; a hole never extends the body.
-        let profile: Vec<_> = self.sketch.filled_loops().concat();
+        // lathe axis, so they read the filled loops' EXTENT; a hole never extends the body, and a
+        // bulge reaches past the chord that used to stand in for it.
+        let (radial_low, radial_high) = self.filled_extent()?;
         let dimensions = self.grid_dimensions();
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
@@ -482,18 +495,13 @@ impl SketchSolid {
             RevolveAxis::InPlane0 => 1,
             RevolveAxis::InPlane1 => 0,
         };
-        let mut profile_straddles_axis = false;
-        let mut radial_max = 0f64;
-        for point in &profile {
-            let radial_coord = point.in_plane()[radial_profile_coord];
-            if radial_coord < 0.0 {
-                profile_straddles_axis = true;
-            }
-            radial_max = radial_max.max(radial_coord.abs());
-        }
+        let profile_straddles_axis = radial_low[radial_profile_coord] < 0.0;
+        let radial_max = radial_low[radial_profile_coord]
+            .abs()
+            .max(radial_high[radial_profile_coord].abs());
 
         Some(RevolveField {
-            region_points: to_region_points_measured(&region),
+            region_edges: to_region_edges_measured(&region),
             axis,
             turn_degrees: sweep.turn_degrees,
             axial_world_axis,
@@ -522,7 +530,7 @@ impl SketchSolid {
                     profile_min[1] as f32 + point_local_voxels[in_plane_1],
                 ];
                 let to_profile = substrate::geom2d::signed_distance_to_region(
-                    &to_region_points_measured(&self.sketch.flattened_region()),
+                    &to_region_edges_measured(&self.sketch.region()),
                     in_profile,
                     substrate::geom2d::Metric::Chebyshev,
                 );
@@ -676,8 +684,13 @@ impl SketchSolid {
         let c0_hi = (min[0] + cell.max[in_plane_0]) as f64 - 0.5;
         let c1_lo = (min[1] + cell.min[in_plane_1]) as f64 + 0.5;
         let c1_hi = (min[1] + cell.max[in_plane_1]) as f64 - 0.5;
-        let region_points = to_region_points(&self.sketch.flattened_region());
-        substrate::geom2d::rectangle_inside_region(&region_points, [c0_lo, c1_lo], [c0_hi, c1_hi])
+        let region = self.sketch.region();
+        substrate::geom2d::rectangle_inside_region(
+            &to_region_points(&region),
+            &to_region_curve_bounds(&region),
+            [c0_lo, c1_lo],
+            [c0_hi, c1_hi],
+        )
     }
 
     /// Whether a revolve cell (PROVEN fully inside `[0, full_dim)` by the caller) is
@@ -764,9 +777,10 @@ impl SketchSolid {
             RevolveAxis::InPlane0 => (axial_lo, axial_hi, r_lo, r_hi),
             RevolveAxis::InPlane1 => (r_lo, r_hi, axial_lo, axial_hi),
         };
-        let region_points = to_region_points(&self.sketch.flattened_region());
+        let region = self.sketch.region();
         if !substrate::geom2d::rectangle_inside_region(
-            &region_points,
+            &to_region_points(&region),
+            &to_region_curve_bounds(&region),
             [c0_lo, c1_lo],
             [c0_hi, c1_hi],
         ) {
@@ -830,13 +844,13 @@ impl SketchSolid {
         // The region test is on `min + cell`, which is FULL-derived;
         // only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
-        let region_points = to_region_points_measured(&self.sketch.flattened_region());
+        let region_edges = to_region_edges_measured(&self.sketch.region());
         let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
         for cell_1 in cell_1_lo..cell_1_hi {
             let sample_1 = min[1] as f32 + cell_1 as f32 + 0.5;
             for cell_0 in cell_0_lo..cell_0_hi {
                 let sample_0 = min[0] as f32 + cell_0 as f32 + 0.5;
-                if substrate::geom2d::point_in_region(&region_points, [sample_0, sample_1]) {
+                if substrate::geom2d::point_in_region(&region_edges, [sample_0, sample_1]) {
                     filled_in_plane.push([cell_0, cell_1]);
                 }
             }

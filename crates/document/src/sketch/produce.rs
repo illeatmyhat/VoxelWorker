@@ -12,13 +12,12 @@ pub(super) fn to_profile_points(profile: &[SketchPoint]) -> Vec<[f64; 2]> {
 
 /// Map the profile's points through `cast(offset_voxels, offset_local_voxels)`, one axis
 /// at a time. `cast` takes the `i64` + `f32` SOURCE PAIR directly (never a narrowed
-/// intermediate) — the whole reason [`to_profile_points`] (f64) and
-/// [`to_profile_points_measured`] (f32) are two conversions rather than one-plus-a-cast:
-/// `i64 → f64 → f32` can land a vertex on a different `f32` than `i64 → f32`,
-/// reintroducing the CPU/GPU divergence the direct narrowing removes. Each cast widens
-/// the integer in ITS OWN width before adding the fraction (#101); a zero fraction adds
-/// exactly nothing, so a whole-voxel profile is byte-identical to the pre-#101 path. The
-/// shared shape lives here; the two casts stay distinct.
+/// intermediate) — the same discipline
+/// [`SketchPoint::in_plane_measured`](super::SketchPoint::in_plane_measured) keeps on the
+/// measurement side: `i64 → f64 → f32` can land a vertex on a different `f32` than
+/// `i64 → f32`, reintroducing the CPU/GPU divergence the direct narrowing removes. Each cast
+/// widens the integer in ITS OWN width before adding the fraction (#101); a zero fraction adds
+/// exactly nothing, so a whole-voxel profile is byte-identical to the pre-#101 path.
 fn profile_points_as<T>(profile: &[SketchPoint], cast: impl Fn(i64, f32) -> T) -> Vec<[T; 2]> {
     profile
         .iter()
@@ -31,44 +30,52 @@ fn profile_points_as<T>(profile: &[SketchPoint], cast: impl Fn(i64, f32) -> T) -
         .collect()
 }
 
-/// The same profile as `[f32; 2]` points — the polygon the [`substrate::geom2d`]
-/// **measurement** half consumes (distances, and the `point_in_polygon` sign), which is
-/// `f32` because a WGSL preview mirrors it and WGSL has no `f64`.
-///
-/// This converts from the `i64` whole-voxel source DIRECTLY, never by narrowing the `f64`
-/// vector above. Rounding `i64 → f64 → f32` can land a vertex on a different `f32` than
-/// `i64 → f32` does, and a double-rounded vertex would reintroduce precisely the CPU/GPU
-/// divergence the narrowing exists to remove. Two conversions from one integer truth, not
-/// one conversion and a cast.
-pub(super) fn to_profile_points_measured(profile: &[SketchPoint]) -> Vec<[f32; 2]> {
-    profile_points_as(profile, |voxels, local| voxels as f32 + local)
-}
-
-/// The whole tagged region in the **predicate** width — one converted polygon per loop, keeping
+/// The whole tagged region FLATTENED into the **predicate** width — one polygon per loop, keeping
 /// each loop's `Fill`/`Hole` role (#100). Converted ONCE per resolve and handed to the region
 /// predicates by reference, so the per-cell hot loop neither re-derives faces nor re-allocates.
+///
+/// This is the one terminal adapter inside the resolve. The coarse cell classifier is exact-`f64`
+/// over straight edges (ADR 0019's predicate half), so it wants vertices; everything else in the
+/// resolve reads the field and keeps the curve. Pair it with [`to_region_curve_bounds`] —
+/// [`substrate::geom2d::rectangle_inside_region`] needs both to stay sound where an arc was cut.
 pub(super) fn to_region_points(
     region: &[ProfileLoop],
 ) -> Vec<(substrate::geom2d::LoopRole, Vec<[f64; 2]>)> {
     region
         .iter()
-        .map(|profile_loop| (profile_loop.role, to_profile_points(&profile_loop.points)))
-        .collect()
-}
-
-/// The same region in the **measurement** width. Two conversions from one integer truth, for the
-/// same reason [`to_profile_points_measured`] is not a narrowing of [`to_profile_points`].
-pub(super) fn to_region_points_measured(
-    region: &[ProfileLoop],
-) -> Vec<(substrate::geom2d::LoopRole, Vec<[f32; 2]>)> {
-    region
-        .iter()
         .map(|profile_loop| {
             (
                 profile_loop.role,
-                to_profile_points_measured(&profile_loop.points),
+                to_profile_points(&profile_loop.flatten(ARC_SAGITTA_TOLERANCE_VOXELS)),
             )
         })
+        .collect()
+}
+
+/// The bounds of every CURVED edge in the region, in the predicate width — the guard that keeps
+/// [`to_region_points`]'s flattening from ever reaching a claim the classifier makes.
+pub(super) fn to_region_curve_bounds(region: &[ProfileLoop]) -> Vec<([f64; 2], [f64; 2])> {
+    region
+        .iter()
+        .flat_map(|profile_loop| profile_loop.edges.iter())
+        .filter(|edge| edge.arc.is_some())
+        .map(|edge| edge.bounds())
+        .collect()
+}
+
+/// The whole tagged region in the **measurement** width, arcs intact — what the field folds. Two
+/// conversions from one integer truth, for the same reason
+/// [`SketchPoint::in_plane_measured`](super::SketchPoint::in_plane_measured) is not a narrowing of
+/// [`to_profile_points`].
+pub(super) fn to_region_edges_measured(
+    region: &[ProfileLoop],
+) -> Vec<(
+    substrate::geom2d::LoopRole,
+    Vec<substrate::geom2d::RegionEdge>,
+)> {
+    region
+        .iter()
+        .map(|profile_loop| (profile_loop.role, profile_loop.measured()))
         .collect()
 }
 

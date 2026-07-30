@@ -158,6 +158,19 @@ impl SketchPoint {
         ]
     }
 
+    /// The same position in the **measurement** width, narrowed from the `i64` source DIRECTLY
+    /// rather than by casting [`in_plane`](Self::in_plane).
+    ///
+    /// `i64 → f64 → f32` can land a vertex on a different `f32` than `i64 → f32` does, and a
+    /// double-rounded vertex reintroduces exactly the CPU/GPU divergence the narrowing exists to
+    /// remove (#101). Two conversions from one integer truth, not one conversion and a cast.
+    pub fn in_plane_measured(&self) -> [f32; 2] {
+        [
+            self.offset_voxels[0] as f32 + self.offset_local_voxels[0],
+            self.offset_voxels[1] as f32 + self.offset_local_voxels[1],
+        ]
+    }
+
     /// Whether two points sit at the SAME in-plane position — the coincidence
     /// predicate (coincidence IS shared identity, ADR 0030). Position only: a
     /// retained measurement is provenance, not location, so it never splits two
@@ -224,14 +237,229 @@ pub enum EntityRole {
     Construction,
 }
 
-/// One loop of the flattened profile: a simple closed polygon plus how it contributes to the
+/// One loop of the profile: a closed boundary of [`ProfileEdge`]s plus how it contributes to the
 /// region (ADR 0030 §4). The unit the 2D CSG folds and the unit the overlay draws.
+///
+/// The boundary keeps its **curves**. Flattening happens at [`flatten`](Self::flatten), which only
+/// the consumers that genuinely produce something discrete call — a voxel grid, a crease polyline,
+/// the exact-`f64` cell classifier.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileLoop {
     /// Whether the loop's interior is added or carved out.
     pub role: LoopRole,
-    /// The closed boundary, counter-clockwise, arcs already tessellated.
-    pub points: Vec<SketchPoint>,
+    /// The closed boundary, counter-clockwise. The last edge's head is the first edge's tail.
+    pub edges: Vec<ProfileEdge>,
+}
+
+impl ProfileLoop {
+    /// The loop as a closed polygon, each chord's sagitta within `sagitta_tolerance_voxels`.
+    ///
+    /// **A terminal adapter, not a stage.** Every caller of this is producing something discrete
+    /// and has nowhere to put a curve; anything that merely wants to know where the boundary is
+    /// asks the field instead.
+    pub fn flatten(&self, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+        flatten_edges(&self.edges, sagitta_tolerance_voxels)
+    }
+
+    /// The loop's corners — every edge's tail, and nothing an arc passes through in between.
+    pub fn corners(&self) -> impl Iterator<Item = SketchPoint> + '_ {
+        self.edges.iter().map(|edge| edge.from)
+    }
+
+    /// The loop's boundary in the **measurement** width, for the region field.
+    pub fn measured(&self) -> Vec<substrate::geom2d::RegionEdge> {
+        self.edges.iter().map(ProfileEdge::measured).collect()
+    }
+}
+
+/// A closed edge loop as a closed polygon, each chord's sagitta within `sagitta_tolerance_voxels`.
+///
+/// **A terminal adapter, not a stage.** Reach for it only where something discrete is being
+/// produced and there is nowhere to put a curve — a crease polyline, a screen-space hit-test
+/// polygon, the exact-`f64` cell classifier. Anything that merely wants to know where the boundary
+/// is asks the field ([`substrate::geom2d::signed_distance_to_region`]) instead.
+pub fn flatten_edges(edges: &[ProfileEdge], sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+    let mut points = Vec::with_capacity(edges.len());
+    for edge in edges {
+        points.push(edge.from);
+        points.extend(edge.interior_points(sagitta_tolerance_voxels));
+    }
+    points
+}
+
+/// One boundary edge of a [`ProfileLoop`]: a straight span from `from` to `to`, or — when `arc` is
+/// present — the circular arc joining them.
+///
+/// This is the sketch's half of the contract [`substrate::geom2d::RegionEdge`] states: a curve
+/// stays a curve from derivation all the way to the measurement, and no consumer inherits a chord
+/// count somebody upstream chose for it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProfileEdge {
+    /// The tail.
+    pub from: SketchPoint,
+    /// The head.
+    pub to: SketchPoint,
+    /// The circle this edge follows, or `None` for a straight span.
+    pub arc: Option<ProfileArc>,
+}
+
+/// The circle a curved [`ProfileEdge`] follows, solved once from the canonical endpoints-plus-bulge
+/// form (ADR 0030 §5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProfileArc {
+    /// The circle's centre, in profile voxels.
+    pub centre: [f64; 2],
+    /// The circle's radius, in voxels.
+    pub radius: f64,
+    /// The bearing of the edge's tail from the centre.
+    pub start_radians: f64,
+    /// The signed angle travelled tail → head; positive counter-clockwise.
+    pub sweep_radians: f64,
+}
+
+impl ProfileEdge {
+    /// A straight span.
+    pub fn straight(from: SketchPoint, to: SketchPoint) -> Self {
+        ProfileEdge {
+            from,
+            to,
+            arc: None,
+        }
+    }
+
+    /// An arc through the signed `sweep_degrees`, or the plain chord when the sweep is degenerate
+    /// — the same fallback [`arc_interior_points`] makes by returning nothing.
+    pub fn curved(from: SketchPoint, to: SketchPoint, sweep_degrees: f64) -> Self {
+        let Some((centre, radius)) =
+            arc_center_radius(from.in_plane(), to.in_plane(), sweep_degrees)
+        else {
+            return ProfileEdge::straight(from, to);
+        };
+        let tail = from.in_plane();
+        ProfileEdge {
+            from,
+            to,
+            arc: Some(ProfileArc {
+                centre,
+                radius,
+                start_radians: (tail[1] - centre[1]).atan2(tail[0] - centre[0]),
+                sweep_radians: sweep_degrees.to_radians(),
+            }),
+        }
+    }
+
+    /// The same edge walked the other way — what a half-edge traversal against the stored direction
+    /// gets. An arc keeps its circle and reverses its sweep.
+    pub fn reversed(&self) -> Self {
+        ProfileEdge {
+            from: self.to,
+            to: self.from,
+            arc: self.arc.map(|arc| ProfileArc {
+                start_radians: arc.start_radians + arc.sweep_radians,
+                sweep_radians: -arc.sweep_radians,
+                ..arc
+            }),
+        }
+    }
+
+    /// The direction the edge LEAVES its tail in, as an angle in `(-pi, pi]`. An arc departs along
+    /// its tangent — a quarter turn off the radius, on the side it curves toward — which is what
+    /// makes two arcs sharing an endpoint order correctly around that vertex.
+    pub fn departure_radians(&self) -> f64 {
+        match self.arc {
+            Some(arc) => {
+                let quarter = std::f64::consts::FRAC_PI_2 * arc.sweep_radians.signum();
+                let tangent = arc.start_radians + quarter;
+                tangent.sin().atan2(tangent.cos())
+            }
+            None => {
+                let (from, to) = (self.from.in_plane(), self.to.in_plane());
+                (to[1] - from[1]).atan2(to[0] - from[0])
+            }
+        }
+    }
+
+    /// The edge's contribution to the enclosed signed area, by Green's theorem
+    /// `½∮(x dy − y dx)`. **Exact for an arc**: integrating the parameterised circle gives
+    /// `½[r²·sweep + cx·Δy − cy·Δx]`, so a bulge contributes the area it really encloses rather
+    /// than the area of the chords that used to stand in for it.
+    pub fn signed_area_term(&self) -> f64 {
+        let (from, to) = (self.from.in_plane(), self.to.in_plane());
+        match self.arc {
+            Some(arc) => {
+                0.5 * (arc.radius * arc.radius * arc.sweep_radians
+                    + arc.centre[0] * (to[1] - from[1])
+                    - arc.centre[1] * (to[0] - from[0]))
+            }
+            None => 0.5 * (from[0] * to[1] - to[0] * from[1]),
+        }
+    }
+
+    /// The edge's tessellated INTERIOR points (both endpoints exclusive), empty for a straight
+    /// span. The one place a tolerance enters, reached only through [`ProfileLoop::flatten`].
+    pub fn interior_points(&self, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+        match self.arc {
+            Some(arc) => arc_interior_points_within(
+                self.from.in_plane(),
+                self.to.in_plane(),
+                arc.sweep_radians.to_degrees(),
+                sagitta_tolerance_voxels,
+            ),
+            None => Vec::new(),
+        }
+    }
+
+    /// The edge in the **measurement** width — what the region field folds, on the CPU and in the
+    /// wash's WGSL mirror alike.
+    ///
+    /// Endpoints narrow from the `i64` whole-voxel source directly
+    /// ([`SketchPoint::in_plane_measured`]), so a vertex lands on the same `f32` here as it does
+    /// everywhere else.
+    pub fn measured(&self) -> substrate::geom2d::RegionEdge {
+        let start = self.from.in_plane_measured();
+        let end = self.to.in_plane_measured();
+        match self.arc {
+            Some(arc) => substrate::geom2d::RegionEdge::Arc {
+                start,
+                end,
+                centre: [arc.centre[0] as f32, arc.centre[1] as f32],
+                radius: arc.radius as f32,
+                start_radians: arc.start_radians as f32,
+                sweep_radians: arc.sweep_radians as f32,
+            },
+            None => substrate::geom2d::RegionEdge::Segment { start, end },
+        }
+    }
+
+    /// The TIGHT bounds of the edge in profile voxels — an arc's own extent, which reaches past
+    /// its chord at every bulge. What a profile's EXTENT must be measured from.
+    pub fn bounds(&self) -> ([f64; 2], [f64; 2]) {
+        let (from, to) = (self.from.in_plane(), self.to.in_plane());
+        let mut low = [from[0].min(to[0]), from[1].min(to[1])];
+        let mut high = [from[0].max(to[0]), from[1].max(to[1])];
+        if let Some(arc) = self.arc {
+            for quarter in 0..4 {
+                let bearing = quarter as f64 * std::f64::consts::FRAC_PI_2;
+                let travelled = if arc.sweep_radians < 0.0 {
+                    (arc.start_radians - bearing).rem_euclid(std::f64::consts::TAU)
+                } else {
+                    (bearing - arc.start_radians).rem_euclid(std::f64::consts::TAU)
+                };
+                if travelled > arc.sweep_radians.abs() {
+                    continue;
+                }
+                let reach = [
+                    arc.centre[0] + arc.radius * bearing.cos(),
+                    arc.centre[1] + arc.radius * bearing.sin(),
+                ];
+                for axis in 0..2 {
+                    low[axis] = low[axis].min(reach[axis]);
+                    high[axis] = high[axis].max(reach[axis]);
+                }
+            }
+        }
+        (low, high)
+    }
 }
 
 /// A point entity: a first-class, independently add/delete-able vertex on the sketch
@@ -482,32 +710,18 @@ impl Sketch {
         faces::derive(self)
     }
 
-    /// The flattened region in the **measurement** width — the exact value
+    /// The region in the **measurement** width — the exact value
     /// [`substrate::geom2d::signed_distance_to_region`] folds, and the exact value the wash's
     /// WGSL mirror is handed (ADR 0030 §3).
     ///
     /// One definition of the region, two evaluators of it: the resolve asks it per voxel on the
-    /// CPU, the overlay asks it per pixel on the GPU. The overlay used to triangulate the faces
-    /// instead, which made nesting the overlay's own problem to solve — a fill inside a fill
-    /// composited twice — where the region predicate already answers it.
-    pub fn region_field_loops(&self) -> Vec<(LoopRole, Vec<[f32; 2]>)> {
-        self.region_field_loops_within(ARC_SAGITTA_TOLERANCE_VOXELS)
-    }
-
-    /// [`region_field_loops`](Self::region_field_loops) with a caller-chosen arc sagitta tolerance
-    /// — the DISPLAY door, for a viewer that knows what a voxel is worth in pixels.
-    ///
-    /// The resolved tolerance is measured in voxels, so a curved boundary carries the same chord
-    /// count however far the view has zoomed in: a circle of radius six voxels is a 22-gon on
-    /// screen at every scale, and past a few pixels per voxel the wash reads as a polygon inside its
-    /// own smooth outline (the outline painter already asks for a screen tolerance, which is exactly
-    /// how the two came to disagree). A finer tolerance is a smoother drawing of the same profile,
-    /// never a different one.
-    pub fn region_field_loops_within(
-        &self,
-        arc_tolerance_voxels: f64,
-    ) -> Vec<(LoopRole, Vec<[f32; 2]>)> {
-        produce::to_region_points_measured(&self.flattened_region_within(arc_tolerance_voxels))
+    /// CPU, the overlay asks it per pixel on the GPU. Curves arrive as curves, so neither is
+    /// drawing a polygon the other chose the resolution of.
+    pub fn region_field_loops(&self) -> Vec<(LoopRole, Vec<substrate::geom2d::RegionEdge>)> {
+        self.region()
+            .iter()
+            .map(|profile_loop| (profile_loop.role, profile_loop.measured()))
+            .collect()
     }
 
     /// Whether the face with this boundary key contributes solid. Faces default to PICKED — the
@@ -533,10 +747,9 @@ impl Sketch {
         self.unpicked.iter()
     }
 
-    /// The DERIVED flattened profile: one tagged loop per derived face, `Fill` where the face is
-    /// picked and `Hole` where it is not (ADR 0030 §4), each a simple closed polygon with its
-    /// arcs tessellated into sub-voxel chords ([`ARC_SAGITTA_TOLERANCE_VOXELS`]), ordered
-    /// SMALLEST-AREA-FIRST.
+    /// The DERIVED profile: one tagged loop per derived face, `Fill` where the face is picked and
+    /// `Hole` where it is not (ADR 0030 §4), each a closed loop of edges **with its arcs intact**,
+    /// ordered SMALLEST-AREA-FIRST.
     ///
     /// That order is [`substrate::geom2d::point_in_region`]'s contract: innermost-first, so each
     /// face decides its own area and nothing nested inside it. A face strictly inside another has
@@ -545,17 +758,11 @@ impl Sketch {
     /// state of a face governs that face, and a face is the ground its own boundary encloses minus
     /// whatever sits within.
     ///
-    /// This is what the producer resolves, and the tessellated polygons ARE the resolved meaning
-    /// (ADR 0019). The combination is an ordered fold over nesting, never a global crossing parity,
-    /// so two fills that touch or share an edge both count where even-odd would cancel them.
-    pub fn flattened_region(&self) -> Vec<ProfileLoop> {
-        self.flattened_region_within(ARC_SAGITTA_TOLERANCE_VOXELS)
-    }
-
-    /// [`flattened_region`](Self::flattened_region) with a caller-chosen arc sagitta tolerance — the
-    /// DISPLAY door. See [`region_field_loops_within`](Self::region_field_loops_within).
-    pub fn flattened_region_within(&self, arc_tolerance_voxels: f64) -> Vec<ProfileLoop> {
-        let mut faces = faces::derive_within(self, arc_tolerance_voxels);
+    /// This is what the producer resolves. The combination is an ordered fold over nesting, never a
+    /// global crossing parity, so two fills that touch or share an edge both count where even-odd
+    /// would cancel them.
+    pub fn region(&self) -> Vec<ProfileLoop> {
+        let mut faces = faces::derive(self);
         // Ties keep `faces`' deterministic order, so the region is stable across derivations.
         faces.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
         faces
@@ -566,30 +773,29 @@ impl Sketch {
                 } else {
                     LoopRole::Hole
                 },
-                points: face.boundary,
+                edges: face.boundary,
             })
             .collect()
     }
 
-    /// The flattened profile's `Fill` loops only — what the region's EXTENT is measured from (a
-    /// hole adds no footprint, and an unpicked face with nothing around it is not occupancy).
-    pub fn filled_loops(&self) -> Vec<Vec<SketchPoint>> {
-        self.flattened_region()
+    /// The profile's `Fill` loops only — what the region's EXTENT is measured from (a hole adds no
+    /// footprint, and an unpicked face with nothing around it is not occupancy).
+    pub fn filled_loops(&self) -> Vec<ProfileLoop> {
+        self.region()
             .into_iter()
             .filter(|profile_loop| profile_loop.role == LoopRole::Fill)
-            .map(|profile_loop| profile_loop.points)
             .collect()
     }
 
     /// The SIMPLE-profile door: the sole boundary when the region is exactly one picked face,
-    /// and empty otherwise (no face, an unpicked one, or several — those are questions only
-    /// [`flattened_region`](Self::flattened_region) can answer). Callers that reason about a
-    /// single closed outline (rectangle detection, most tests) want this; anything that resolves
-    /// occupancy wants the region.
+    /// flattened at the resolved tolerance, and empty otherwise (no face, an unpicked one, or
+    /// several — those are questions only [`region`](Self::region) can answer). Callers that reason
+    /// about a single closed outline (rectangle detection, most tests) want this; anything that
+    /// resolves occupancy wants the region.
     pub fn flattened_loop(&self) -> Vec<SketchPoint> {
-        let mut loops = self.flattened_region();
+        let loops = self.region();
         match (loops.len(), loops.first().map(|first| first.role)) {
-            (1, Some(LoopRole::Fill)) => loops.remove(0).points,
+            (1, Some(LoopRole::Fill)) => loops[0].flatten(ARC_SAGITTA_TOLERANCE_VOXELS),
             _ => Vec::new(),
         }
     }
@@ -899,10 +1105,14 @@ impl Sketch {
     }
 }
 
-/// Arc tessellation tolerance (#102): the maximum sagitta (chord-to-arc deviation), in
-/// voxels, of one tessellated chord. **Versioned**: the flattened polygon is the resolved
-/// meaning (ADR 0019), so changing this value changes what an arc-bounded profile
-/// occupies — treat an edit like a document-format change, not a tuning knob.
+/// Default arc flattening tolerance (#102): the maximum sagitta (chord-to-arc deviation), in
+/// voxels, of one chord.
+///
+/// This is no longer the resolved meaning of a curve — the region carries its arcs, and the field
+/// measures them ([`ProfileEdge`]). It is the default a **terminal adapter** flattens at when it
+/// has to produce something discrete and has nowhere to put a curve: a crease polyline, the
+/// exact-`f64` cell classifier's polygon, a test's outline. Nothing downstream of one of those
+/// inherits it, so it is a tuning knob again rather than a document-format constant.
 pub const ARC_SAGITTA_TOLERANCE_VOXELS: f64 = 1.0 / 16.0;
 
 /// Hard cap on chords per arc, so a huge-radius near-collinear arc cannot degenerate

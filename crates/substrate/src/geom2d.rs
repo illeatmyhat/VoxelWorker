@@ -59,6 +59,11 @@
 //!   test: cast a ray in the `+axis1` direction and count edge crossings; odd ⇒
 //!   inside (Franklin's PNPOLY; Shimrat 1962; Preparata & Shamos 1985; Ericson
 //!   2005). The polygon is implicitly closed (last vertex → first).
+//! - [`RegionEdge`] — a region's boundary is a loop of these: a straight span or a
+//!   circular arc that stays an arc all the way down to the measurement. Distance to an
+//!   arc is analytic, and containment splits it at its own turning points so a curved
+//!   edge obeys the same crossing rule a straight one does. A polygon is a *drawing* of a
+//!   region; this is the region.
 //! - [`rectangle_inside_polygon`] — whether a closed axis-aligned rectangle lies
 //!   wholly inside a polygon. Exact by connectedness: if no polygon edge crosses
 //!   the rectangle it holds no piece of the boundary, so it is wholly in or out,
@@ -397,6 +402,318 @@ pub enum LoopRole {
     Hole,
 }
 
+/// One boundary edge of a region: a straight span, or a circular arc that **stays** a circular arc.
+///
+/// # Why the region is edges and not vertices
+///
+/// A polygon is a drawing of a region at some chosen resolution; it is not the region. Once a
+/// boundary has been flattened into vertices, every consumer downstream inherits whatever tolerance
+/// the flattener happened to pick, and the only way to ask for something better is to pass a
+/// tolerance back up — which is how a rendering concern ends up as an argument to a query.
+///
+/// Carrying the arc instead removes the question. [`signed_distance_to_region`] measures to the
+/// true curve, [`point_in_region`] classifies against the true curve, and a length scale enters
+/// only where something discrete is actually produced (a voxel grid, a crease polyline). It is also
+/// cheaper: one arc replaces the twenty-odd chords that used to stand in for it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RegionEdge {
+    /// A straight span from `start` to `end`.
+    Segment {
+        /// The tail.
+        start: [f32; 2],
+        /// The head.
+        end: [f32; 2],
+    },
+    /// A circular arc from `start` to `end`, travelling `sweep_radians` about `centre` —
+    /// counter-clockwise when the sweep is positive, clockwise when it is negative.
+    ///
+    /// The endpoints are carried alongside the centre/radius/angle solve rather than recomputed
+    /// from it: an endpoint shared with the next edge must be the SAME value on both sides, or the
+    /// crossing parity at that vertex can count twice or not at all.
+    Arc {
+        /// The tail.
+        start: [f32; 2],
+        /// The head.
+        end: [f32; 2],
+        /// The circle's centre.
+        centre: [f32; 2],
+        /// The circle's radius.
+        radius: f32,
+        /// The bearing of `start` from `centre`, in radians.
+        start_radians: f32,
+        /// The signed angle travelled from `start` to `end`.
+        sweep_radians: f32,
+    },
+}
+
+impl RegionEdge {
+    /// The edge's tail.
+    #[inline]
+    pub fn start(&self) -> [f32; 2] {
+        match self {
+            RegionEdge::Segment { start, .. } | RegionEdge::Arc { start, .. } => *start,
+        }
+    }
+
+    /// The edge's head.
+    #[inline]
+    pub fn end(&self) -> [f32; 2] {
+        match self {
+            RegionEdge::Segment { end, .. } | RegionEdge::Arc { end, .. } => *end,
+        }
+    }
+
+    /// The TIGHT axis-aligned bounds of the edge — for an arc the extent of the curve itself,
+    /// which reaches past its chord by the sagitta at every bulge.
+    ///
+    /// This is what an extent measured from a curved profile must use. Bounds taken from a chord
+    /// approximation understate the reach, and a producer sized from them clips the bulge it was
+    /// asked to build.
+    pub fn bounds(&self) -> ([f32; 2], [f32; 2]) {
+        let (start, end) = (self.start(), self.end());
+        let mut low = [start[0].min(end[0]), start[1].min(end[1])];
+        let mut high = [start[0].max(end[0]), start[1].max(end[1])];
+        if let RegionEdge::Arc {
+            centre,
+            radius,
+            start_radians,
+            sweep_radians,
+            ..
+        } = self
+        {
+            // The four compass extremes of the circle, each counted only where the arc reaches it.
+            for quarter in 0..4 {
+                let bearing = quarter as f32 * std::f32::consts::FRAC_PI_2;
+                if travel_to_bearing(*start_radians, *sweep_radians, bearing).is_none() {
+                    continue;
+                }
+                let reach = [
+                    centre[0] + radius * bearing.cos(),
+                    centre[1] + radius * bearing.sin(),
+                ];
+                for axis in 0..2 {
+                    low[axis] = low[axis].min(reach[axis]);
+                    high[axis] = high[axis].max(reach[axis]);
+                }
+            }
+        }
+        (low, high)
+    }
+
+    /// Distance from `point` to the edge under `metric`. Never negative; zero exactly on it.
+    ///
+    /// A segment defers to [`distance_point_to_segment`]. An arc whose bearing from `point` falls
+    /// within the sweep is `‖point − centre‖ − radius` in magnitude under **Euclidean**; otherwise
+    /// the nearer endpoint is the closest thing on the curve. **Chebyshev** has no such closed
+    /// form and is solved by candidate angles (`chebyshev_distance_to_arc`, private).
+    pub fn distance(&self, point: [f32; 2], metric: Metric) -> f32 {
+        match self {
+            RegionEdge::Segment { start, end } => {
+                distance_point_to_segment(*start, *end, point, metric)
+            }
+            RegionEdge::Arc {
+                start,
+                end,
+                centre,
+                radius,
+                start_radians,
+                sweep_radians,
+            } => {
+                let to_ends = metric
+                    .distance(*start, point)
+                    .min(metric.distance(*end, point));
+                match metric {
+                    Metric::Euclidean => {
+                        let offset = [point[0] - centre[0], point[1] - centre[1]];
+                        let bearing = offset[1].atan2(offset[0]);
+                        if travel_to_bearing(*start_radians, *sweep_radians, bearing).is_some() {
+                            (metric.length(offset) - radius).abs()
+                        } else {
+                            to_ends
+                        }
+                    }
+                    Metric::Chebyshev => to_ends.min(chebyshev_distance_to_arc(
+                        *centre,
+                        *radius,
+                        *start_radians,
+                        *sweep_radians,
+                        point,
+                    )),
+                }
+            }
+        }
+    }
+
+    /// How many times a ray cast from `sample` in the `+axis0` direction crosses this edge — the
+    /// per-edge term of the crossing-number test [`point_in_polygon`] runs over a vertex list.
+    ///
+    /// A segment uses the textbook half-open rule (an edge counts when exactly one endpoint is
+    /// strictly above the sample), which is what makes a vertex shared by two edges count once. An
+    /// arc can cross the ray's line twice, so it is first cut at its own top and bottom — the only
+    /// places where the tangent turns horizontal — leaving pieces that are `axis1`-monotone and
+    /// obey that SAME rule. The cut points are the arc's, not the sampler's, so the parity is
+    /// independent of where the ray happens to sit.
+    fn crossings(&self, sample: [f32; 2]) -> u32 {
+        match self {
+            RegionEdge::Segment { start, end } => segment_crossings(*start, *end, sample),
+            RegionEdge::Arc {
+                start,
+                end,
+                centre,
+                radius,
+                start_radians,
+                sweep_radians,
+            } => {
+                let span = sweep_radians.abs();
+                let mut cuts = [0.0, span, span, span];
+                let mut count = 2;
+                for extreme in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2] {
+                    if let Some(travel) = travel_to_bearing(*start_radians, *sweep_radians, extreme)
+                    {
+                        if travel > 0.0 && travel < span {
+                            cuts[count] = travel;
+                            count += 1;
+                        }
+                    }
+                }
+                let cuts = &mut cuts[..count];
+                cuts.sort_by(f32::total_cmp);
+                let direction = if *sweep_radians < 0.0 { -1.0 } else { 1.0 };
+                let at = |travel: f32| {
+                    let bearing = start_radians + direction * travel;
+                    [
+                        centre[0] + radius * bearing.cos(),
+                        centre[1] + radius * bearing.sin(),
+                    ]
+                };
+                let mut crossings = 0;
+                for piece in cuts.windows(2) {
+                    let (entry, exit) = (piece[0], piece[1]);
+                    if exit <= entry {
+                        continue;
+                    }
+                    // The outer ends are the STORED endpoints, so a vertex shared with the next
+                    // edge is the same value on both sides of the join.
+                    let low = if entry == 0.0 { *start } else { at(entry) };
+                    let high = if exit == span { *end } else { at(exit) };
+                    if (low[1] > sample[1]) == (high[1] > sample[1]) {
+                        continue;
+                    }
+                    // The piece is monotone, so its half of the circle decides which root of
+                    // `axis0 = centre ± √(r² − dy²)` it crosses at.
+                    let rise = sample[1] - centre[1];
+                    let half_chord = (radius * radius - rise * rise).max(0.0).sqrt();
+                    let middle = start_radians + direction * (entry + exit) * 0.5;
+                    let crossing_0 = if middle.cos() >= 0.0 {
+                        centre[0] + half_chord
+                    } else {
+                        centre[0] - half_chord
+                    };
+                    if sample[0] < crossing_0 {
+                        crossings += 1;
+                    }
+                }
+                crossings
+            }
+        }
+    }
+}
+
+/// How far along a sweep the bearing `bearing` sits, in radians of travel from the start, or `None`
+/// when the bearing is off the arc. Direction-agnostic: travel is always non-negative and compares
+/// against `|sweep|`, so a clockwise arc is the mirror of a counter-clockwise one rather than a
+/// second set of comparisons to keep in step.
+fn travel_to_bearing(start_radians: f32, sweep_radians: f32, bearing: f32) -> Option<f32> {
+    let turn = std::f32::consts::TAU;
+    let travelled = if sweep_radians < 0.0 {
+        (start_radians - bearing).rem_euclid(turn)
+    } else {
+        (bearing - start_radians).rem_euclid(turn)
+    };
+    (travelled <= sweep_radians.abs()).then_some(travelled)
+}
+
+/// The Chebyshev (L∞) distance from `point` to the arc's CURVE, ignoring its endpoints (the caller
+/// folds those in).
+///
+/// Writing the arc as `centre + radius·(cos t, sin t)`, the distance is
+///
+/// ```text
+/// f(t) = max(|gx(t)|, |gy(t)|)   gx(t) = cx + r·cos t − px,  gy(t) = cy + r·sin t − py
+/// ```
+///
+/// which is smooth except where a term changes sign or the two swap dominance. Its minimum over the
+/// sweep is therefore attained at an end of the sweep or at one of those breakpoints: `gy` turns at
+/// `t ∈ {0, π}`, `gx` at `t ∈ {π/2, 3π/2}`, and the swap `|gx| = |gy|` solves in closed form as
+/// `√2·r·cos(t ± π/4) = (px − cx) ∓ (py − cy)`. Evaluating those candidates is **exact**, in the
+/// same way [`distance_point_to_segment`]'s Chebyshev branch is.
+///
+/// CPU-only, like the rest of the Chebyshev branch: it is the lattice metric an outset measures in,
+/// and the WGSL mirror only ever wants the round one.
+fn chebyshev_distance_to_arc(
+    centre: [f32; 2],
+    radius: f32,
+    start_radians: f32,
+    sweep_radians: f32,
+    point: [f32; 2],
+) -> f32 {
+    let offset = [point[0] - centre[0], point[1] - centre[1]];
+    let mut nearest = f32::INFINITY;
+    let mut consider = |bearing: f32| {
+        if travel_to_bearing(start_radians, sweep_radians, bearing).is_none() {
+            return;
+        }
+        nearest = nearest.min(Metric::Chebyshev.length([
+            radius * bearing.cos() - offset[0],
+            radius * bearing.sin() - offset[1],
+        ]));
+    };
+    for quarter in 0..4 {
+        consider(quarter as f32 * std::f32::consts::FRAC_PI_2);
+    }
+    let amplitude = radius * std::f32::consts::SQRT_2;
+    if amplitude > 0.0 {
+        for sign in [1.0, -1.0] {
+            let ratio = (offset[0] - sign * offset[1]) / amplitude;
+            if ratio.abs() > 1.0 {
+                continue;
+            }
+            let base = ratio.acos();
+            for direction in [1.0, -1.0] {
+                consider(direction * base - sign * std::f32::consts::FRAC_PI_4);
+            }
+        }
+    }
+    nearest
+}
+
+/// Whether a ray cast from `sample` in the `+axis0` direction crosses the segment `a → b`. The
+/// per-edge term [`point_in_polygon`] inlines over a vertex list, kept identical here so a region
+/// of edges and a polygon of vertices classify a shared boundary the same way.
+fn segment_crossings(a: [f32; 2], b: [f32; 2], sample: [f32; 2]) -> u32 {
+    if (b[1] > sample[1]) == (a[1] > sample[1]) {
+        return 0;
+    }
+    let crossing_0 = (a[0] - b[0]) * (sample[1] - b[1]) / (a[1] - b[1]) + b[0];
+    u32::from(sample[0] < crossing_0)
+}
+
+/// Whether `sample` is inside the closed loop of edges — the crossing-number test of
+/// [`point_in_polygon`], over edges that may curve. The loop is explicitly closed (the last edge's
+/// head is the first edge's tail).
+pub fn point_in_edge_loop(edges: &[RegionEdge], sample: [f32; 2]) -> bool {
+    let crossings: u32 = edges.iter().map(|edge| edge.crossings(sample)).sum();
+    crossings % 2 == 1
+}
+
+/// The UNSIGNED distance to the loop's nearest edge. `f32::INFINITY` for an empty loop.
+pub fn nearest_boundary_distance(edges: &[RegionEdge], point: [f32; 2], metric: Metric) -> f32 {
+    edges
+        .iter()
+        .map(|edge| edge.distance(point, metric))
+        .fold(f32::INFINITY, f32::min)
+}
+
 /// Whether `sample` is inside the region `loops` — decided by the FIRST loop that contains it.
 ///
 /// # The ordering is the contract
@@ -416,9 +733,9 @@ pub enum LoopRole {
 /// own area, where even-odd would cancel them.
 ///
 /// A sample in no loop at all is outside, so an empty region contains nothing.
-pub fn point_in_region(loops: &[(LoopRole, Vec<[f32; 2]>)], sample: [f32; 2]) -> bool {
-    for (role, polygon) in loops {
-        if point_in_polygon(polygon, sample) {
+pub fn point_in_region(loops: &[(LoopRole, Vec<RegionEdge>)], sample: [f32; 2]) -> bool {
+    for (role, edges) in loops {
+        if point_in_edge_loop(edges, sample) {
             return *role == LoopRole::Fill;
         }
     }
@@ -438,16 +755,16 @@ pub fn point_in_region(loops: &[(LoopRole, Vec<[f32; 2]>)], sample: [f32; 2]) ->
 /// An empty region is `f32::INFINITY` (everywhere outside), matching the composite fold's empty
 /// accumulator.
 pub fn signed_distance_to_region(
-    loops: &[(LoopRole, Vec<[f32; 2]>)],
+    loops: &[(LoopRole, Vec<RegionEdge>)],
     point: [f32; 2],
     metric: Metric,
 ) -> f32 {
     let mut nearest = f32::INFINITY;
     let mut inside = None;
-    for (role, polygon) in loops {
-        nearest = nearest.min(nearest_edge_distance(polygon, point, metric));
+    for (role, edges) in loops {
+        nearest = nearest.min(nearest_boundary_distance(edges, point, metric));
         // The innermost containing loop decides, so only the first one to answer counts.
-        if inside.is_none() && point_in_polygon(polygon, point) {
+        if inside.is_none() && point_in_edge_loop(edges, point) {
             inside = Some(*role == LoopRole::Fill);
         }
     }
@@ -465,11 +782,33 @@ pub fn signed_distance_to_region(
 /// **Conservative**: it never claims a rectangle that is not wholly solid, but it declines
 /// rectangles that are (one spanning two adjacent `Fill` loops, say), because the coarse
 /// classifier's contract is to narrow work, never to narrow truth.
+///
+/// # Why this half still takes a polygon
+///
+/// This is the one consumer that genuinely wants vertices: it is the exact-`f64` cell classifier
+/// (see the module docs on the width split), and its exactness rests on [`orient2d`] signs over
+/// straight edges. So the caller flattens for it — the terminal-adapter case, where a discrete
+/// artifact is actually being produced — and hands over `curve_bounds`, the bounds of every edge
+/// the flattening approximated. **Any rectangle meeting one of those is declined outright.** The
+/// chord/curve discrepancy lives strictly inside those bounds, so it can never sit inside a
+/// rectangle this claims, and the connectedness argument holds unchanged everywhere else. Without
+/// that guard a chord cutting to the void side of a concave curve would let the classifier fill a
+/// cell that is not wholly solid, which is unsound rather than merely coarse.
 pub fn rectangle_inside_region(
     loops: &[(LoopRole, Vec<[f64; 2]>)],
+    curve_bounds: &[([f64; 2], [f64; 2])],
     rect_min: [f64; 2],
     rect_max: [f64; 2],
 ) -> bool {
+    let overlaps = |low: &[f64; 2], high: &[f64; 2]| {
+        low[0] <= rect_max[0]
+            && high[0] >= rect_min[0]
+            && low[1] <= rect_max[1]
+            && high[1] >= rect_min[1]
+    };
+    if curve_bounds.iter().any(|(low, high)| overlaps(low, high)) {
+        return false;
+    }
     for (role, polygon) in loops {
         if !rectangle_meets_polygon(polygon, rect_min, rect_max) {
             continue;
@@ -529,13 +868,37 @@ mod tests {
     const OUTER: [[f64; 2]; 4] = [[0.0, 0.0], [12.0, 0.0], [12.0, 12.0], [0.0, 12.0]];
     const INNER: [[f64; 2]; 4] = [[4.0, 4.0], [8.0, 4.0], [8.0, 8.0], [4.0, 8.0]];
 
+    /// A vertex list as a closed loop of straight edges — the shape a region takes now that its
+    /// boundary is edges. Only the tests that are ABOUT curvature build arcs.
+    fn closed_loop(points: &[[f32; 2]]) -> Vec<RegionEdge> {
+        (0..points.len())
+            .map(|index| RegionEdge::Segment {
+                start: points[index],
+                end: points[(index + 1) % points.len()],
+            })
+            .collect()
+    }
+
+    /// A full circle as ONE arc edge — degenerate as a polygon, exact as a curve.
+    fn circle(centre: [f32; 2], radius: f32) -> Vec<RegionEdge> {
+        let seam = [centre[0] + radius, centre[1]];
+        vec![RegionEdge::Arc {
+            start: seam,
+            end: seam,
+            centre,
+            radius,
+            start_radians: 0.0,
+            sweep_radians: std::f32::consts::TAU,
+        }]
+    }
+
     /// A hole is carved, not parity-cancelled: the ring is inside and the pocket is not. Loops run
     /// innermost-first, so the pocket gets its say before the square it sits in.
     #[test]
     fn a_hole_is_carved_out_of_its_fill() {
         let region = [
-            (LoopRole::Hole, INNER_MEASURED.to_vec()),
-            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
+            (LoopRole::Hole, closed_loop(&INNER_MEASURED)),
+            (LoopRole::Fill, closed_loop(&OUTER_MEASURED)),
         ];
         assert!(point_in_region(&region, [1.0, 1.0]), "the ring is solid");
         assert!(!point_in_region(&region, [6.0, 6.0]), "the pocket is not");
@@ -547,8 +910,8 @@ mod tests {
     #[test]
     fn nested_fills_do_not_cancel_each_other() {
         let region = [
-            (LoopRole::Fill, INNER_MEASURED.to_vec()),
-            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
+            (LoopRole::Fill, closed_loop(&INNER_MEASURED)),
+            (LoopRole::Fill, closed_loop(&OUTER_MEASURED)),
         ];
         assert!(point_in_region(&region, [6.0, 6.0]));
         // The even-odd rule over the same loop soup says the opposite.
@@ -565,8 +928,8 @@ mod tests {
     #[test]
     fn the_region_field_signs_match_the_predicate() {
         let region = [
-            (LoopRole::Hole, INNER_MEASURED.to_vec()),
-            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
+            (LoopRole::Hole, closed_loop(&INNER_MEASURED)),
+            (LoopRole::Fill, closed_loop(&OUTER_MEASURED)),
         ];
         let at = |point| signed_distance_to_region(&region, point, Metric::Euclidean);
         assert!(at([1.0, 6.0]) < 0.0, "in the ring");
@@ -591,21 +954,161 @@ mod tests {
             (LoopRole::Fill, OUTER.to_vec()),
         ];
         assert!(
-            rectangle_inside_region(&region, [1.0, 1.0], [3.0, 3.0]),
+            rectangle_inside_region(&region, &[], [1.0, 1.0], [3.0, 3.0]),
             "wholly in the ring"
         );
         assert!(
-            !rectangle_inside_region(&region, [5.0, 5.0], [7.0, 7.0]),
+            !rectangle_inside_region(&region, &[], [5.0, 5.0], [7.0, 7.0]),
             "wholly in the pocket"
         );
         assert!(
-            !rectangle_inside_region(&region, [3.0, 3.0], [5.0, 5.0]),
+            !rectangle_inside_region(&region, &[], [3.0, 3.0], [5.0, 5.0]),
             "straddling the hole wall"
         );
         assert!(
-            !rectangle_inside_region(&[(LoopRole::Hole, INNER.to_vec())], [5.0, 5.0], [7.0, 7.0]),
+            !rectangle_inside_region(
+                &[(LoopRole::Hole, INNER.to_vec())],
+                &[],
+                [5.0, 5.0],
+                [7.0, 7.0]
+            ),
             "a region with no fill claims nothing"
         );
+    }
+
+    /// The classifier reads a flattened polygon, so anywhere a curve was approximated it must
+    /// decline outright — that is what keeps a chord cutting to the void side of a concave arc from
+    /// filling a cell that is not wholly solid.
+    #[test]
+    fn the_coarse_region_claim_declines_anything_a_curve_reaches() {
+        let region = [(LoopRole::Fill, OUTER.to_vec())];
+        let near_the_corner = [([0.0, 0.0], [3.0, 3.0])];
+        assert!(
+            rectangle_inside_region(&region, &near_the_corner, [5.0, 5.0], [7.0, 7.0]),
+            "far from the approximated edge"
+        );
+        assert!(
+            !rectangle_inside_region(&region, &near_the_corner, [1.0, 1.0], [2.0, 2.0]),
+            "inside the polygon, but where a curve was flattened"
+        );
+    }
+
+    /// An arc is measured as a curve: every point one voxel outside a circle of radius four is one
+    /// voxel from the boundary, wherever on the circle it sits. A chord approximation cannot say
+    /// that — its error is largest exactly midway between two vertices.
+    #[test]
+    fn the_arc_field_measures_the_curve_and_not_its_chords() {
+        let region = [(LoopRole::Fill, circle([0.0, 0.0], 4.0))];
+        for step in 0..16 {
+            let bearing = step as f32 / 16.0 * std::f32::consts::TAU;
+            let outside = [5.0 * bearing.cos(), 5.0 * bearing.sin()];
+            let distance = signed_distance_to_region(&region, outside, Metric::Euclidean);
+            assert!(
+                (distance - 1.0).abs() < 1e-4,
+                "a voxel outside the circle at {bearing} measured {distance}"
+            );
+        }
+        assert!(
+            signed_distance_to_region(&region, [0.0, 0.0], Metric::Euclidean) < 0.0,
+            "the centre is inside"
+        );
+    }
+
+    /// The crossing count over a curved edge: a full circle is entered once and left once from any
+    /// interior point, whatever direction the ray leaves in. The arc is cut at its own top and
+    /// bottom, so a ray grazing either one still counts a boundary exactly once.
+    #[test]
+    fn a_curved_loop_classifies_by_the_curve() {
+        let region = [(LoopRole::Fill, circle([6.0, 6.0], 4.0))];
+        assert!(point_in_region(&region, [6.0, 6.0]), "the centre");
+        assert!(point_in_region(&region, [9.0, 6.0]), "inside, off-centre");
+        assert!(!point_in_region(&region, [11.0, 6.0]), "past the rim");
+        assert!(!point_in_region(&region, [6.0, 12.0]), "above it");
+        // A ray leaving exactly at the circle's topmost point — the cut the monotone split makes.
+        assert!(!point_in_region(&region, [0.0, 10.0]), "grazing the top");
+        // The bulge reaches past its chord: a point the chord of a half-circle would call outside.
+        let half = [(
+            LoopRole::Fill,
+            vec![
+                RegionEdge::Arc {
+                    start: [10.0, 6.0],
+                    end: [2.0, 6.0],
+                    centre: [6.0, 6.0],
+                    radius: 4.0,
+                    start_radians: 0.0,
+                    sweep_radians: std::f32::consts::PI,
+                },
+                RegionEdge::Segment {
+                    start: [2.0, 6.0],
+                    end: [10.0, 6.0],
+                },
+            ],
+        )];
+        assert!(point_in_region(&half, [6.0, 9.0]), "under the bulge");
+        assert!(!point_in_region(&half, [6.0, 3.0]), "below the chord");
+    }
+
+    /// The Chebyshev branch is a real distance, not a Euclidean one with a different name: on the
+    /// axis a square and a disc agree, and on the diagonal the square reaches further.
+    #[test]
+    fn the_arc_field_has_an_exact_chebyshev_branch() {
+        let arc = RegionEdge::Arc {
+            start: [4.0, 0.0],
+            end: [4.0, 0.0],
+            centre: [0.0, 0.0],
+            radius: 4.0,
+            start_radians: 0.0,
+            sweep_radians: std::f32::consts::TAU,
+        };
+        assert!(
+            (arc.distance([6.0, 0.0], Metric::Chebyshev) - 2.0).abs() < 1e-4,
+            "straight out along an axis, the two metrics agree"
+        );
+        // The nearest point on the circle to (6, 6) is at 45°, i.e. (2√2, 2√2) ≈ (2.83, 2.83), and
+        // L∞ measures the larger axis gap: 6 − 2.83.
+        let diagonal = arc.distance([6.0, 6.0], Metric::Chebyshev);
+        let expected = 6.0 - 4.0 * std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (diagonal - expected).abs() < 1e-3,
+            "on the diagonal expected {expected}, measured {diagonal}"
+        );
+        // From the centre, the L∞ ball is a square whose CORNER reaches the circle first, so the
+        // distance is `radius/√2` and not the radius. Getting this wrong is how a Euclidean
+        // measurement wearing the Chebyshev name goes unnoticed.
+        let from_centre = arc.distance([0.0, 0.0], Metric::Chebyshev);
+        assert!(
+            (from_centre - 4.0 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,
+            "from the centre, measured {from_centre}"
+        );
+    }
+
+    /// An arc's bounds are the curve's, not its chord's: a half-turn bulges a full radius past the
+    /// line joining its ends, and an extent measured from the chord would clip it.
+    #[test]
+    fn arc_bounds_follow_the_bulge() {
+        let half = RegionEdge::Arc {
+            start: [4.0, 0.0],
+            end: [-4.0, 0.0],
+            centre: [0.0, 0.0],
+            radius: 4.0,
+            start_radians: 0.0,
+            sweep_radians: std::f32::consts::PI,
+        };
+        let (low, high) = half.bounds();
+        // The compass extremes come out of `cos`/`sin`, so they land a few ulps off the axis.
+        assert!(
+            (low[0] + 4.0).abs() < 1e-5 && low[1].abs() < 1e-5,
+            "{low:?}"
+        );
+        assert!(
+            (high[0] - 4.0).abs() < 1e-5 && (high[1] - 4.0).abs() < 1e-5,
+            "{high:?}"
+        );
+        let straight = RegionEdge::Segment {
+            start: [4.0, 0.0],
+            end: [-4.0, 0.0],
+        };
+        assert_eq!(straight.bounds(), ([-4.0, 0.0], [4.0, 0.0]));
     }
 
     #[test]

@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use super::{arc_interior_points_within, EntityId, EntityRole, Sketch, SketchPoint};
+use super::{EntityId, EntityRole, ProfileEdge, Sketch};
 
 /// A derived face's identity: the sorted set of the `origin` ids of its boundary edges (ADR 0030
 /// §3). It survives the edits that leave a face the same face — dragging a vertex touches no
@@ -49,9 +49,9 @@ impl FaceKey {
 pub struct Face {
     /// The face's identity across re-derivation (ADR 0030 §3).
     pub key: FaceKey,
-    /// The boundary as a closed simple polygon, counter-clockwise, with arcs tessellated —
+    /// The boundary as a closed loop of edges, counter-clockwise, **with its arcs intact** —
     /// exactly what the region CSG and the overlay consume.
-    pub boundary: Vec<SketchPoint>,
+    pub boundary: Vec<ProfileEdge>,
     /// The enclosed area in square voxels. Positive by construction (a clockwise cycle is an
     /// unbounded face and never becomes a `Face`); used to order nested faces smallest-first so
     /// a click inside a pocket picks the pocket, not the shape around it.
@@ -61,31 +61,23 @@ pub struct Face {
 /// One directed traversal of an edge, tagged with the lineage the face key is built from.
 struct HalfEdge {
     from: EntityId,
-    /// The entity id of the edge itself — half-edges are keyed by `(edge, forward)`.
-    edge: EntityId,
     origin: EntityId,
     /// The outgoing direction at `from`, as an angle in `(-pi, pi]`. An arc leaves along its
     /// TANGENT, not its chord, so two arcs sharing endpoints still order correctly.
     departure: f64,
+    /// The edge's geometry, oriented tail-first for THIS traversal.
+    geometry: ProfileEdge,
 }
 
-/// Every bounded face of the sketch's planar graph, deterministically ordered by key, with arcs
-/// tessellated at the RESOLVED tolerance — the faces that are the profile's meaning.
+/// Every bounded face of the sketch's planar graph, deterministically ordered by key, **with its
+/// arcs intact** — the faces that are the profile's meaning.
+///
+/// There is no tolerance here, and no variant of this that takes one. A face's boundary is a loop
+/// of [`ProfileEdge`]s, so the walk, the area and everything downstream read the curve itself;
+/// flattening is something a consumer does at its own edge ([`super::ProfileLoop::flatten`]).
 ///
 /// Construction geometry is skipped: a construction edge never bounds a region (ADR 0030 §1).
 pub fn derive(sketch: &Sketch) -> Vec<Face> {
-    derive_within(sketch, super::ARC_SAGITTA_TOLERANCE_VOXELS)
-}
-
-/// [`derive()`] with a caller-chosen arc sagitta tolerance — the DISPLAY door, mirroring
-/// [`super::arc_interior_points_within`].
-///
-/// An arc's chord count follows its radius in VOXELS, so a face bounded by a curve is the same
-/// coarse polygon however far a viewer has zoomed in. A viewer that knows what a voxel is currently
-/// worth in pixels asks for a finer tolerance and gets the same face with a smoother boundary; the
-/// graph walk, the face keys and the pick state are geometry-independent, so nothing else moves.
-/// Only [`derive()`]'s pinned tolerance is the resolved MEANING (ADR 0019).
-pub fn derive_within(sketch: &Sketch, arc_tolerance_voxels: f64) -> Vec<Face> {
     let position = |id: EntityId| {
         sketch
             .points
@@ -95,7 +87,6 @@ pub fn derive_within(sketch: &Sketch, arc_tolerance_voxels: f64) -> Vec<Face> {
     };
     // Half-edges, both directions per real edge, with each end's departure direction.
     let mut half_edges: Vec<HalfEdge> = Vec::new();
-    let mut interiors: HashMap<EntityId, Vec<SketchPoint>> = HashMap::new();
     for segment in sketch
         .segments
         .iter()
@@ -106,32 +97,21 @@ pub fn derive_within(sketch: &Sketch, arc_tolerance_voxels: f64) -> Vec<Face> {
         };
         push_half_edges(
             &mut half_edges,
-            segment.id,
             segment.origin,
-            (segment.from, from.in_plane()),
-            (segment.to, to.in_plane()),
-            &[],
+            (segment.from, segment.to),
+            ProfileEdge::straight(from, to),
         );
     }
     for arc in sketch.arcs.iter().filter(|a| a.role == EntityRole::Real) {
         let (Some(from), Some(to)) = (position(arc.from), position(arc.to)) else {
             continue;
         };
-        let interior = arc_interior_points_within(
-            from.in_plane(),
-            to.in_plane(),
-            arc.bulge.to_degrees_f64(),
-            arc_tolerance_voxels,
-        );
         push_half_edges(
             &mut half_edges,
-            arc.id,
             arc.origin,
-            (arc.from, from.in_plane()),
-            (arc.to, to.in_plane()),
-            &interior,
+            (arc.from, arc.to),
+            ProfileEdge::curved(from, to, arc.bulge.to_degrees_f64()),
         );
-        interiors.insert(arc.id, interior);
     }
     if half_edges.is_empty() {
         return Vec::new();
@@ -191,7 +171,7 @@ pub fn derive_within(sketch: &Sketch, arc_tolerance_voxels: f64) -> Vec<Face> {
         if !closed {
             continue;
         }
-        if let Some(face) = face_from_cycle(sketch, &half_edges, &interiors, &cycle) {
+        if let Some(face) = face_from_cycle(&half_edges, &cycle) {
             faces.push(face);
         }
     }
@@ -204,66 +184,39 @@ pub fn derive_within(sketch: &Sketch, arc_tolerance_voxels: f64) -> Vec<Face> {
 }
 
 /// Append the two half-edges of one edge — ALWAYS as a pair, so twins are neighbours and
-/// `index ^ 1` is the twin. `interior` is the arc's chord fan from tail to head
-/// (empty for a segment); the departure angle at each end points at the first thing along the
-/// edge, which for an arc is its tangent rather than its chord.
+/// `index ^ 1` is the twin. The departure angle at each end is the edge's own outgoing tangent
+/// there ([`ProfileEdge::departure_radians`]), taken analytically: it used to be read off the
+/// arc's first tessellated chord, which made the vertex ordering depend on how finely the arc had
+/// been cut.
 fn push_half_edges(
     into: &mut Vec<HalfEdge>,
-    edge: EntityId,
     origin: EntityId,
-    tail: (EntityId, [f64; 2]),
-    head: (EntityId, [f64; 2]),
-    interior: &[SketchPoint],
+    ends: (EntityId, EntityId),
+    geometry: ProfileEdge,
 ) {
-    let first = interior.first().map(|p| p.in_plane()).unwrap_or(head.1);
-    let last = interior.last().map(|p| p.in_plane()).unwrap_or(tail.1);
+    let backward = geometry.reversed();
     into.push(HalfEdge {
-        from: tail.0,
-        edge,
+        from: ends.0,
         origin,
-        departure: (first[1] - tail.1[1]).atan2(first[0] - tail.1[0]),
+        departure: geometry.departure_radians(),
+        geometry,
     });
     into.push(HalfEdge {
-        from: head.0,
-        edge,
+        from: ends.1,
         origin,
-        departure: (last[1] - head.1[1]).atan2(last[0] - head.1[0]),
+        departure: backward.departure_radians(),
+        geometry: backward,
     });
 }
 
 /// Turn a traced half-edge cycle into a bounded face, or `None` when the cycle is a component's
 /// unbounded face (clockwise ⇒ non-positive area) or degenerate (a whisker walked out and back,
 /// which encloses nothing).
-fn face_from_cycle(
-    sketch: &Sketch,
-    half_edges: &[HalfEdge],
-    interiors: &HashMap<EntityId, Vec<SketchPoint>>,
-    cycle: &[usize],
-) -> Option<Face> {
-    let position = |id: EntityId| {
-        sketch
-            .points
-            .iter()
-            .find(|point| point.id == id)
-            .map(|point| point.at)
-    };
-    let mut boundary: Vec<SketchPoint> = Vec::with_capacity(cycle.len());
-    for &index in cycle {
-        let half = &half_edges[index];
-        boundary.push(position(half.from)?);
-        if let Some(interior) = interiors.get(&half.edge) {
-            // The fan is stored tail→head; walked the other way it is the same points reversed.
-            let forward = sketch
-                .arcs
-                .iter()
-                .any(|arc| arc.id == half.edge && arc.from == half.from);
-            if forward {
-                boundary.extend(interior.iter().copied());
-            } else {
-                boundary.extend(interior.iter().rev().copied());
-            }
-        }
-    }
+fn face_from_cycle(half_edges: &[HalfEdge], cycle: &[usize]) -> Option<Face> {
+    let boundary: Vec<ProfileEdge> = cycle
+        .iter()
+        .map(|&index| half_edges[index].geometry)
+        .collect();
     let area = signed_area(&boundary);
     if area <= AREA_EPSILON_SQUARE_VOXELS {
         return None;
@@ -280,18 +233,12 @@ fn face_from_cycle(
 /// threshold is a hundredth of a voxel of area rather than `0.0`.
 const AREA_EPSILON_SQUARE_VOXELS: f64 = 1.0e-2;
 
-/// Twice-the-shoelace, halved: positive counter-clockwise, negative clockwise.
-fn signed_area(boundary: &[SketchPoint]) -> f64 {
-    let count = boundary.len();
-    if count < 3 {
-        return 0.0;
-    }
-    let mut sum = 0.0;
-    let mut previous = boundary[count - 1].in_plane();
-    for point in boundary {
-        let current = point.in_plane();
-        sum += previous[0] * current[1] - current[0] * previous[1];
-        previous = current;
-    }
-    sum * 0.5
+/// The enclosed signed area by Green's theorem: positive counter-clockwise, negative clockwise.
+///
+/// Each edge contributes `½∮(x dy − y dx)` over itself ([`ProfileEdge::signed_area_term`]), which
+/// is the shoelace term for a straight span and the exact circular integral for an arc. A
+/// two-edge cycle (an arc and its chord, say) genuinely encloses area, so there is no
+/// minimum-vertex floor here — [`AREA_EPSILON_SQUARE_VOXELS`] is the only filter.
+fn signed_area(boundary: &[ProfileEdge]) -> f64 {
+    boundary.iter().map(ProfileEdge::signed_area_term).sum()
 }

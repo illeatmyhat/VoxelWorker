@@ -47,9 +47,11 @@ impl SketchSolid {
         // EVERY loop of the region creases, holes included (#100): the wall of a pocket is as
         // much a feature edge as the outside of the shape.
         let mut polylines = Vec::new();
-        for profile_loop in self.sketch.flattened_region() {
+        // A crease line IS a polyline, so this is a terminal adapter: it flattens at the default
+        // tolerance rather than passing one back up to the region.
+        for profile_loop in self.sketch.region() {
             self.ring_edge_polylines(
-                &profile_loop.points,
+                &profile_loop.flatten(super::ARC_SAGITTA_TOLERANCE_VOXELS),
                 profile_min,
                 circle_segments,
                 &mut polylines,

@@ -3,8 +3,9 @@
 //!
 //! A fullscreen triangle whose fragment intersects the sketch plane and evaluates
 //! `substrate::geom2d::signed_distance_to_region` there — the shader is a hand-written mirror, and
-//! it is handed the SAME `(LoopRole, Vec<[f32; 2]>)` value the resolve folds, so there is one
-//! definition of the region and two evaluators of it. Drawn INSIDE the existing MSAA voxel pass
+//! it is handed the SAME `(LoopRole, Vec<RegionEdge>)` value the resolve folds, so there is one
+//! definition of the region and two evaluators of it. Arcs arrive as ARCS: the wash shades the
+//! curve, not a chord budget somebody upstream chose for it. Drawn INSIDE the existing MSAA voxel pass
 //! with depth compare `Always`, like the placement ghost: the wash is an authoring affordance on
 //! the plane, and the solid it describes stands in front of that plane, so depth-testing it would
 //! hide it exactly when it matters.
@@ -13,7 +14,7 @@
 //! [`update`](SketchRegionRenderer::update) uploads a region.
 
 use super::*;
-use substrate::geom2d::LoopRole;
+use substrate::geom2d::{LoopRole, RegionEdge};
 
 /// std140 uniform for the wash; field order matches `SketchRegionUniforms` in
 /// `sketch_region.wgsl` **byte-for-byte**.
@@ -32,7 +33,7 @@ struct SketchRegionUniforms {
     counts: [u32; 4],
 }
 
-/// One loop's slice of the point buffer, as the shader's `RegionLoop`.
+/// One loop's slice of the edge buffer, as the shader's `RegionLoop`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct RegionLoopSlot {
@@ -49,6 +50,56 @@ pub fn sketch_region_loop_role_discriminant(role: LoopRole) -> u32 {
     match role {
         LoopRole::Fill => 0,
         LoopRole::Hole => 1,
+    }
+}
+
+/// The `RegionEdge` variant the shader switches on. **MUST match the WGSL `EDGE_*` constants**;
+/// the exhaustive `match` in [`pack_edge`] makes a new variant a compile error here.
+const EDGE_SEGMENT: u32 = 0;
+const EDGE_ARC: u32 = 1;
+
+/// One boundary edge, as the shader's `RegionEdge` — 40 bytes, offsets matching the WGSL struct.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct RegionEdgeSlot {
+    start_point: [f32; 2],
+    end_point: [f32; 2],
+    centre: [f32; 2],
+    radius: f32,
+    start_radians: f32,
+    sweep_radians: f32,
+    kind: u32,
+}
+
+/// A `RegionEdge` in the shader's layout. A segment leaves the circle fields zeroed; the shader
+/// never reads them, because `kind` decides first.
+fn pack_edge(edge: &RegionEdge) -> RegionEdgeSlot {
+    match *edge {
+        RegionEdge::Segment { start, end } => RegionEdgeSlot {
+            start_point: start,
+            end_point: end,
+            centre: [0.0; 2],
+            radius: 0.0,
+            start_radians: 0.0,
+            sweep_radians: 0.0,
+            kind: EDGE_SEGMENT,
+        },
+        RegionEdge::Arc {
+            start,
+            end,
+            centre,
+            radius,
+            start_radians,
+            sweep_radians,
+        } => RegionEdgeSlot {
+            start_point: start,
+            end_point: end,
+            centre,
+            radius,
+            start_radians,
+            sweep_radians,
+            kind: EDGE_ARC,
+        },
     }
 }
 
@@ -78,12 +129,12 @@ pub struct SketchRegionRenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     loop_buffer: wgpu::Buffer,
-    point_buffer: wgpu::Buffer,
+    edge_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// Loops the storage buffer can hold before it must grow.
     loop_capacity: usize,
-    /// Points the storage buffer can hold before it must grow.
-    point_capacity: usize,
+    /// Edges the storage buffer can hold before it must grow.
+    edge_capacity: usize,
     /// Whether a region was uploaded. `false` after `new`; set by `update`, cleared by `disarm`.
     armed: bool,
 }
@@ -137,13 +188,13 @@ impl SketchRegionRenderer {
             mapped_at_creation: false,
         });
         let loop_buffer = storage_buffer::<RegionLoopSlot>(device, "loops", INITIAL_CAPACITY);
-        let point_buffer = storage_buffer::<[f32; 2]>(device, "points", INITIAL_CAPACITY);
+        let edge_buffer = storage_buffer::<RegionEdgeSlot>(device, "edges", INITIAL_CAPACITY);
         let bind_group = bind_region(
             device,
             &bind_group_layout,
             &uniform_buffer,
             &loop_buffer,
-            &point_buffer,
+            &edge_buffer,
         );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -205,10 +256,10 @@ impl SketchRegionRenderer {
             bind_group_layout,
             uniform_buffer,
             loop_buffer,
-            point_buffer,
+            edge_buffer,
             bind_group,
             loop_capacity: INITIAL_CAPACITY,
-            point_capacity: INITIAL_CAPACITY,
+            edge_capacity: INITIAL_CAPACITY,
             armed: false,
         }
     }
@@ -227,36 +278,33 @@ impl SketchRegionRenderer {
         ray_eye: glam::Vec3,
         viewport_px: [u32; 4],
         plane: SketchPlaneFrame,
-        region: &[(LoopRole, Vec<[f32; 2]>)],
+        region: &[(LoopRole, Vec<RegionEdge>)],
         tint: [f32; 4],
     ) {
-        let total_points: usize = region.iter().map(|(_, points)| points.len()).sum();
-        if region.is_empty() || total_points == 0 {
+        let total_edges: usize = region.iter().map(|(_, edges)| edges.len()).sum();
+        if region.is_empty() || total_edges == 0 {
             self.disarm();
             return;
         }
         let mut slots = Vec::with_capacity(region.len());
-        let mut points: Vec<[f32; 2]> = Vec::with_capacity(total_points);
+        let mut edges: Vec<RegionEdgeSlot> = Vec::with_capacity(total_edges);
         let mut bounds = ([f32::MAX, f32::MAX], [f32::MIN, f32::MIN]);
-        for (role, loop_points) in region {
+        for (role, loop_edges) in region {
             slots.push(RegionLoopSlot {
                 role: sketch_region_loop_role_discriminant(*role),
-                start: points.len() as u32,
-                count: loop_points.len() as u32,
+                start: edges.len() as u32,
+                count: loop_edges.len() as u32,
                 padding: 0,
             });
-            for point in loop_points {
-                for ((low, high), coordinate) in bounds
-                    .0
-                    .iter_mut()
-                    .zip(bounds.1.iter_mut())
-                    .zip(point.iter())
-                {
-                    *low = low.min(*coordinate);
-                    *high = high.max(*coordinate);
+            for edge in loop_edges {
+                // An arc's own bounds, so the early-out box never clips a bulge (`RegionEdge`).
+                let (low, high) = edge.bounds();
+                for axis in 0..2 {
+                    bounds.0[axis] = bounds.0[axis].min(low[axis]);
+                    bounds.1[axis] = bounds.1[axis].max(high[axis]);
                 }
+                edges.push(pack_edge(edge));
             }
-            points.extend_from_slice(loop_points);
         }
 
         // Grow either storage buffer if this region outgrew it, then rebind — a bind group holds
@@ -268,9 +316,10 @@ impl SketchRegionRenderer {
                 storage_buffer::<RegionLoopSlot>(device, "loops", self.loop_capacity);
             rebind = true;
         }
-        if points.len() > self.point_capacity {
-            self.point_capacity = points.len().next_power_of_two();
-            self.point_buffer = storage_buffer::<[f32; 2]>(device, "points", self.point_capacity);
+        if edges.len() > self.edge_capacity {
+            self.edge_capacity = edges.len().next_power_of_two();
+            self.edge_buffer =
+                storage_buffer::<RegionEdgeSlot>(device, "edges", self.edge_capacity);
             rebind = true;
         }
         if rebind {
@@ -279,11 +328,11 @@ impl SketchRegionRenderer {
                 &self.bind_group_layout,
                 &self.uniform_buffer,
                 &self.loop_buffer,
-                &self.point_buffer,
+                &self.edge_buffer,
             );
         }
         queue.write_buffer(&self.loop_buffer, 0, bytemuck::cast_slice(&slots));
-        queue.write_buffer(&self.point_buffer, 0, bytemuck::cast_slice(&points));
+        queue.write_buffer(&self.edge_buffer, 0, bytemuck::cast_slice(&edges));
 
         let uniforms = SketchRegionUniforms {
             ray_inverse_unprojection: ray_inverse_unprojection.to_cols_array_2d(),
@@ -342,7 +391,7 @@ fn bind_region(
     layout: &wgpu::BindGroupLayout,
     uniforms: &wgpu::Buffer,
     loops: &wgpu::Buffer,
-    points: &wgpu::Buffer,
+    edges: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("sketch region bind group"),
@@ -358,7 +407,7 @@ fn bind_region(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: points.as_entire_binding(),
+                resource: edges.as_entire_binding(),
             },
         ],
     })
@@ -393,5 +442,28 @@ mod tests {
     #[test]
     fn loop_slot_matches_the_shader_struct() {
         assert_eq!(std::mem::size_of::<RegionLoopSlot>(), 16);
+    }
+
+    /// Three `vec2` (24) + three `f32` (12) + one `u32` (4) = 40 bytes, and every field offset must
+    /// land where WGSL's `RegionEdge` puts it — `vec2<f32>` aligns to 8 there, so a stride that is
+    /// not a multiple of 8 would silently shear the whole array.
+    #[test]
+    fn edge_slot_matches_the_shader_struct() {
+        assert_eq!(std::mem::size_of::<RegionEdgeSlot>(), 40);
+        assert_eq!(std::mem::size_of::<RegionEdgeSlot>() % 8, 0);
+        let slot = pack_edge(&RegionEdge::Segment {
+            start: [1.0, 2.0],
+            end: [3.0, 4.0],
+        });
+        assert_eq!(slot.kind, EDGE_SEGMENT);
+        let arc = pack_edge(&RegionEdge::Arc {
+            start: [1.0, 0.0],
+            end: [-1.0, 0.0],
+            centre: [0.0, 0.0],
+            radius: 1.0,
+            start_radians: 0.0,
+            sweep_radians: std::f32::consts::PI,
+        });
+        assert_eq!(arc.kind, EDGE_ARC);
     }
 }

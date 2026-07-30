@@ -3,11 +3,16 @@
 // the signal at low alpha and a void carries none.
 //
 // **This is a hand-written WGSL MIRROR of `substrate::geom2d::signed_distance_to_region`**
-// and the functions it folds — `nearest_edge_distance`, `distance_point_to_segment` (the
-// `Metric::Euclidean` branch) and `point_in_polygon` for the sign. Every function marked MIRROR
+// and the functions it folds — `nearest_boundary_distance`, `RegionEdge::distance` (the
+// `Metric::Euclidean` branch) and `point_in_edge_loop` for the sign. Every function marked MIRROR
 // has a named Rust counterpart, and the CPU and the shader are handed the SAME
-// `(LoopRole, Vec<[f32; 2]>)` value the resolve consumes — that is what the geom2d module doc's
+// `(LoopRole, Vec<RegionEdge>)` value the resolve consumes — that is what the geom2d module doc's
 // f32 measurement half exists for, since WGSL has no f64.
+//
+// The boundary arrives as EDGES, arcs included, so a curve is shaded as a curve. There is no
+// tolerance in this pass and no screen-space chord budget to tune: a circle is one arc primitive
+// however far the view has zoomed in, which is both exact and cheaper than the twenty-odd chords
+// that used to stand in for it.
 //
 // The loop ORDER is part of that value: innermost-first (smallest enclosed area first), which is
 // what makes a loop govern its own area and nothing nested inside it.
@@ -59,7 +64,7 @@ struct SketchRegionUniforms {
     counts: vec4<u32>,
 };
 
-// One boundary loop's slice of `region_points`. Innermost-first in `region_loops`.
+// One boundary loop's slice of `region_edges`. Innermost-first in `region_loops`.
 struct RegionLoop {
     // 0 Fill, 1 Hole — matching `LoopRole`'s declaration order in substrate::geom2d
     // (`sketch_region_loop_role_discriminant` is the guarded conversion).
@@ -69,15 +74,34 @@ struct RegionLoop {
     padding: u32,
 };
 
+// MIRROR of `substrate::geom2d::RegionEdge` — a straight span, or an arc that stays an arc.
+// `centre`/`radius`/`start_radians`/`sweep_radians` are unused when `kind` is EDGE_SEGMENT.
+struct RegionEdge {
+    // `from`/`to` would be nicer, but `from` is a WGSL reserved keyword.
+    start_point: vec2<f32>,
+    end_point: vec2<f32>,
+    centre: vec2<f32>,
+    radius: f32,
+    start_radians: f32,
+    sweep_radians: f32,
+    kind: u32,
+};
+
 @group(0) @binding(0)
 var<uniform> uniforms: SketchRegionUniforms;
 @group(0) @binding(1)
 var<storage, read> region_loops: array<RegionLoop>;
 @group(0) @binding(2)
-var<storage, read> region_points: array<vec2<f32>>;
+var<storage, read> region_edges: array<RegionEdge>;
 
 const ROLE_FILL: u32 = 0u;
 const ROLE_HOLE: u32 = 1u;
+
+const EDGE_SEGMENT: u32 = 0u;
+const EDGE_ARC: u32 = 1u;
+
+const TAU: f32 = 6.2831853;
+const HALF_PI: f32 = 1.5707963;
 
 // WGSL has no infinity literal. Every distance here is in profile VOXELS, so a value this large
 // folds through `min`/`max` exactly as `f32::INFINITY` does in the Rust.
@@ -104,40 +128,144 @@ fn distance_point_to_segment(a: vec2<f32>, b: vec2<f32>, point: vec2<f32>) -> f3
     return length(offset - along * delta);
 }
 
-// MIRROR of `point_in_polygon` (geom2d.rs): the crossing number of a ray in the +axis1
-// direction. The loop is implicitly closed (last vertex → first).
-fn point_in_polygon(start: u32, count: u32, sample: vec2<f32>) -> bool {
-    if (count == 0u) {
-        return false;
+// MIRROR of `travel_to_bearing` (geom2d.rs): how far along the sweep a bearing sits, or a negative
+// sentinel when it is off the arc. WGSL has no Option, and travel is never negative on the arc.
+fn travel_to_bearing(start_radians: f32, sweep_radians: f32, bearing: f32) -> f32 {
+    var travelled: f32;
+    if (sweep_radians < 0.0) {
+        travelled = start_radians - bearing;
+    } else {
+        travelled = bearing - start_radians;
     }
-    var inside = false;
-    var previous = count - 1u;
-    for (var current = 0u; current < count; current = current + 1u) {
-        let here = region_points[start + current];
-        let last = region_points[start + previous];
-        if ((here.y > sample.y) != (last.y > sample.y)) {
-            let crossing = (last.x - here.x) * (sample.y - here.y) / (last.y - here.y) + here.x;
-            if (sample.x < crossing) {
-                inside = !inside;
-            }
-        }
-        previous = current;
+    // `rem_euclid(TAU)`: the non-negative remainder, which `%` alone does not give for a negative.
+    travelled = travelled - TAU * floor(travelled / TAU);
+    if (travelled > abs(sweep_radians)) {
+        return -1.0;
     }
-    return inside;
+    return travelled;
 }
 
-// MIRROR of `nearest_edge_distance` (geom2d.rs): the UNSIGNED distance to the nearest edge. The
-// region decides the sign for itself, so the edges are walked once.
-fn nearest_edge_distance(start: u32, count: u32, point: vec2<f32>) -> f32 {
-    if (count < 2u) {
-        return FAR;
+// MIRROR of `RegionEdge::distance` (geom2d.rs), the `Metric::Euclidean` branch. The Chebyshev
+// branch is not mirrored: it is the lattice metric an outset measures in, and a wash wants the
+// round one.
+//
+// The arc is measured as a CURVE — the distance to the circle where the point's bearing falls
+// inside the sweep, the nearer endpoint outside it. No chords exist to be seen.
+fn distance_to_edge(edge: RegionEdge, point: vec2<f32>) -> f32 {
+    if (edge.kind == EDGE_SEGMENT) {
+        return distance_point_to_segment(edge.start_point, edge.end_point, point);
     }
-    var nearest = FAR;
-    var previous = region_points[start + count - 1u];
+    let offset = point - edge.centre;
+    let bearing = atan2(offset.y, offset.x);
+    if (travel_to_bearing(edge.start_radians, edge.sweep_radians, bearing) >= 0.0) {
+        return abs(length(offset) - edge.radius);
+    }
+    return min(distance(edge.start_point, point), distance(edge.end_point, point));
+}
+
+// MIRROR of `segment_crossings` (geom2d.rs).
+fn segment_crossings(a: vec2<f32>, b: vec2<f32>, sample: vec2<f32>) -> u32 {
+    if ((b.y > sample.y) == (a.y > sample.y)) {
+        return 0u;
+    }
+    let crossing_0 = (a.x - b.x) * (sample.y - b.y) / (a.y - b.y) + b.x;
+    if (sample.x < crossing_0) {
+        return 1u;
+    }
+    return 0u;
+}
+
+// MIRROR of `RegionEdge::crossings` (geom2d.rs): how many times a ray cast from `sample` in the
+// +axis0 direction crosses this edge.
+//
+// An arc can cross the ray's line twice, so it is first cut at its own top and bottom — the only
+// places its tangent turns horizontal — leaving pieces that are axis1-monotone and obey the same
+// half-open rule a segment does. The cuts are the arc's own, so the parity does not depend on
+// where the ray sits.
+fn edge_crossings(edge: RegionEdge, sample: vec2<f32>) -> u32 {
+    if (edge.kind == EDGE_SEGMENT) {
+        return segment_crossings(edge.start_point, edge.end_point, sample);
+    }
+    let span = abs(edge.sweep_radians);
+    var cuts = array<f32, 4>(0.0, span, span, span);
+    var count = 2u;
+    for (var index = 0u; index < 2u; index = index + 1u) {
+        var extreme = HALF_PI;
+        if (index == 1u) {
+            extreme = -HALF_PI;
+        }
+        let travel = travel_to_bearing(edge.start_radians, edge.sweep_radians, extreme);
+        if (travel > 0.0 && travel < span) {
+            cuts[count] = travel;
+            count = count + 1u;
+        }
+    }
+    // Insertion sort over at most four entries — the two extremes arrive out of order.
+    for (var index = 1u; index < count; index = index + 1u) {
+        let held = cuts[index];
+        var slot = index;
+        while (slot > 0u && cuts[slot - 1u] > held) {
+            cuts[slot] = cuts[slot - 1u];
+            slot = slot - 1u;
+        }
+        cuts[slot] = held;
+    }
+    var direction = 1.0;
+    if (edge.sweep_radians < 0.0) {
+        direction = -1.0;
+    }
+    var crossings = 0u;
+    for (var index = 0u; index + 1u < count; index = index + 1u) {
+        let entry = cuts[index];
+        let exit = cuts[index + 1u];
+        if (exit <= entry) {
+            continue;
+        }
+        // The outer ends are the STORED endpoints, so a vertex shared with the next edge is the
+        // same value on both sides of the join.
+        var low = edge.start_point;
+        if (entry != 0.0) {
+            let bearing = edge.start_radians + direction * entry;
+            low = edge.centre + edge.radius * vec2<f32>(cos(bearing), sin(bearing));
+        }
+        var high = edge.end_point;
+        if (exit != span) {
+            let bearing = edge.start_radians + direction * exit;
+            high = edge.centre + edge.radius * vec2<f32>(cos(bearing), sin(bearing));
+        }
+        if ((low.y > sample.y) == (high.y > sample.y)) {
+            continue;
+        }
+        let rise = sample.y - edge.centre.y;
+        let half_chord = sqrt(max(edge.radius * edge.radius - rise * rise, 0.0));
+        let middle = edge.start_radians + direction * (entry + exit) * 0.5;
+        var crossing_0 = edge.centre.x - half_chord;
+        if (cos(middle) >= 0.0) {
+            crossing_0 = edge.centre.x + half_chord;
+        }
+        if (sample.x < crossing_0) {
+            crossings = crossings + 1u;
+        }
+    }
+    return crossings;
+}
+
+// MIRROR of `point_in_edge_loop` (geom2d.rs): the crossing-number test over a closed loop of
+// edges, straight or curved alike.
+fn point_in_edge_loop(start: u32, count: u32, sample: vec2<f32>) -> bool {
+    var crossings = 0u;
     for (var index = 0u; index < count; index = index + 1u) {
-        let current = region_points[start + index];
-        nearest = min(nearest, distance_point_to_segment(previous, current, point));
-        previous = current;
+        crossings = crossings + edge_crossings(region_edges[start + index], sample);
+    }
+    return (crossings % 2u) == 1u;
+}
+
+// MIRROR of `nearest_boundary_distance` (geom2d.rs): the UNSIGNED distance to the nearest edge.
+// The region decides the sign for itself, so the edges are walked once.
+fn nearest_boundary_distance(start: u32, count: u32, point: vec2<f32>) -> f32 {
+    var nearest = FAR;
+    for (var index = 0u; index < count; index = index + 1u) {
+        nearest = min(nearest, distance_to_edge(region_edges[start + index], point));
     }
     return nearest;
 }
@@ -154,8 +282,8 @@ fn signed_distance_to_region(point: vec2<f32>) -> f32 {
     var inside = false;
     for (var index = 0u; index < uniforms.counts.x; index = index + 1u) {
         let region = region_loops[index];
-        nearest = min(nearest, nearest_edge_distance(region.start, region.count, point));
-        if (!decided && point_in_polygon(region.start, region.count, point)) {
+        nearest = min(nearest, nearest_boundary_distance(region.start, region.count, point));
+        if (!decided && point_in_edge_loop(region.start, region.count, point)) {
             decided = true;
             inside = region.role == ROLE_FILL;
         }

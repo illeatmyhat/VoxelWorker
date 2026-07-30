@@ -190,7 +190,7 @@ fn a_crossing_needs_a_snapped_point_to_bound_anything() {
         bowtie.faces().is_empty(),
         "the two halves cancel: no bounded face without a real vertex at the crossing"
     );
-    assert!(bowtie.flattened_region().is_empty());
+    assert!(bowtie.region().is_empty());
 }
 
 /// The unpicked set is document state: it round-trips, and a pre-#100 document loads with every

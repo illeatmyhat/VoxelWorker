@@ -823,34 +823,9 @@ impl WindowedState {
                 let tip = handles.profile_to_render(coord);
                 [tip[0] - origin[0], tip[1] - origin[1], tip[2] - origin[2]]
             };
-            // What one profile voxel is worth in pixels, so a curved boundary earns chords by how
-            // big it is ON SCREEN — the rule the arc outline painter already uses. Without it the
-            // wash is a polygon inside its own smooth outline at any real zoom.
-            let plane_px = |coord: [f64; 2]| -> Option<glam::Vec2> {
-                let point = handles.profile_to_render(coord);
-                let clip = view_projection * glam::Vec4::new(point[0], point[1], point[2], 1.0);
-                (clip.w > 0.0).then(|| {
-                    glam::Vec2::new(
-                        clip.x / clip.w * 0.5 * prepared.viewport_px[2] as f32,
-                        clip.y / clip.w * 0.5 * prepared.viewport_px[3] as f32,
-                    )
-                })
-            };
-            let voxel_px = plane_px([0.0, 0.0])
-                .zip(plane_px([1.0, 0.0]).zip(plane_px([0.0, 1.0])))
-                .map(|(centre, (along_0, along_1))| {
-                    (centre.distance(along_0) + centre.distance(along_1)) / 2.0
-                })
-                .filter(|scale| *scale > f32::EPSILON);
-            let resolved = document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS;
-            let arc_tolerance = voxel_px
-                .map(|scale| ARC_SCREEN_SAGITTA_PX / f64::from(scale))
-                // Never coarser than the profile's own meaning, and never so fine that the
-                // per-pixel fold pays for chords no one can see.
-                .map_or(resolved, |tolerance| {
-                    tolerance.clamp(resolved / 16.0, resolved)
-                });
-            let region = sketch.region_field_loops_within(arc_tolerance);
+            // No tolerance and no screen-scale heuristic: the region carries its arcs and the wash
+            // measures the curve, so there is nothing here for a zoom level to be right about.
+            let region = sketch.region_field_loops();
             self.sketch_region_renderer.update(
                 &self.gpu.device,
                 &self.gpu.queue,
@@ -2489,7 +2464,13 @@ impl WindowedState {
         };
         if let Some(sketch) = sketch {
             for face in sketch.faces() {
-                if let Some(projected) = project(&face.boundary) {
+                // A hit-test polygon IS discrete, so this is a terminal adapter: it flattens here
+                // rather than asking the region for a coarser boundary.
+                let boundary = document::sketch::flatten_edges(
+                    &face.boundary,
+                    document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                );
+                if let Some(projected) = project(&boundary) {
                     self.sketch_face_polygons.push((face.key, projected));
                 }
             }
