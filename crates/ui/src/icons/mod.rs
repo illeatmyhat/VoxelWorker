@@ -520,6 +520,12 @@ pub enum Group {
     /// Sketch tools that change entities already there — every one needs curve–curve
     /// intersection, which is why they land as one group and not scattered through the rail.
     SketchModify,
+    /// Sketch tools that read existing entities and EMIT new ones: mirror and the two patterns.
+    ///
+    /// Neither create nor modify. A create tool asks the pointer for picks and a modify tool
+    /// changes what it is given; these take a selection plus a rule and hand back more geometry,
+    /// which is why the same glyph has to show both the source and the copies.
+    SketchOperator,
     /// The constraint palette: what the solver is told, rather than what is drawn.
     SketchConstraint,
     /// Dimension gizmos — the authored quantities a constraint is driven by (ADR 0029).
@@ -542,6 +548,7 @@ impl Group {
             Group::Sketch => "Sketch mode",
             Group::SketchCreate => "Sketch · create",
             Group::SketchModify => "Sketch · modify",
+            Group::SketchOperator => "Sketch · operators",
             Group::SketchConstraint => "Sketch · constraints",
             Group::SketchDimension => "Sketch · dimensions",
             Group::Chrome => "Chrome",
@@ -561,7 +568,8 @@ impl Group {
             Group::Sketch => "the sketch scope's rail: vertex tools + profile position snap (extrude/revolve reuse Producers)",
             Group::SketchCreate => "adds an entity: the picks carry the accent, so a glyph says what it will ask you for",
             Group::SketchModify => "changes what is already drawn — each one needs curve–curve intersection",
-            Group::SketchConstraint => "what the solver is told; a constraint produces no geometry of its own",
+            Group::SketchOperator => "reads a selection and emits more of it: the glyph has to show source AND copies",
+            Group::SketchConstraint =>"what the solver is told; a constraint produces no geometry of its own",
             Group::SketchDimension => "authored quantities (ADR 0029) — the parametric handles a solver drives",
             Group::Chrome => "furniture: disclosure, commit, drawer, search",
         }
