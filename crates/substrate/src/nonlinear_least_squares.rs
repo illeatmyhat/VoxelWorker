@@ -65,10 +65,12 @@ pub trait ResidualSystem {
 pub enum SolveOutcome {
     /// The residuals are as small as the tolerances ask for. The parameters are a solution.
     Converged,
-    /// The step the solver wants is smaller than the parameters can usefully represent — it has
-    /// arrived somewhere, and that somewhere is the best it can reach from where it started. For a
-    /// consistent system this is a solution; for an inconsistent one it is the least-squares
-    /// compromise, which is what a sketch with contradictory constraints settles into.
+    /// The solver stopped moving without the residuals getting small: either the step it wants is
+    /// smaller than the parameters can usefully represent, or the gradient vanished at a point the
+    /// residuals are still large at. Both say the same thing — this is the best it can reach from
+    /// where it started, and it is the least-squares COMPROMISE rather than a solution, which is
+    /// what a sketch with contradictory constraints settles into. Read
+    /// [`residual_norm`](SolveReport::residual_norm) to see how far from satisfied they are.
     Stalled,
     /// The iteration budget ran out with the residuals still shrinking. Not a failure: it means
     /// the answer is somewhere ahead and the caller decides whether to spend more.
@@ -98,7 +100,9 @@ pub struct SolveReport {
 /// The stopping tolerances and budget of one solve.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SolveSettings {
-    /// Stop when every component of the gradient `Jᵀr` is under this — a stationary point.
+    /// Stop when every component of the gradient `Jᵀr` is under this — a stationary point. Stopping
+    /// there is a [`Stalled`](SolveOutcome::Stalled), never a convergence: a flat objective says the
+    /// search cannot continue, not that the residuals are zero.
     pub gradient_tolerance: f64,
     /// Stop when the step is under this, RELATIVE to the size of the parameters themselves, so
     /// the same setting means the same thing for a sketch in voxels and one in blocks.
@@ -166,7 +170,11 @@ pub fn solve(
             parameter_count,
         );
         if infinity_norm(&gradient) <= settings.gradient_tolerance {
-            outcome = SolveOutcome::Converged;
+            // A vanishing gradient is a STATIONARY point, not a solution. The residual test a few
+            // lines up already claimed every genuine convergence, so arriving here means the sum of
+            // squares has flattened out with the residuals still too big — a local minimum the
+            // constraints are not satisfied at, which is what a contradictory sketch settles into.
+            outcome = SolveOutcome::Stalled;
             break;
         }
         let step = dog_leg_step(
@@ -714,6 +722,31 @@ mod tests {
         );
         assert_ne!(report.outcome, SolveOutcome::Converged);
         assert_eq!(report.redundant_residuals, 1, "{report:?}");
+    }
+
+    /// A STATIONARY POINT that is not a root: `r(x) = x² + 1` has gradient `2x(x² + 1)`, which
+    /// vanishes at `x = 0` where the residual is 1 and never zero anywhere. The gradient test fires
+    /// and the solver stops, and stopping there must not be reported as a solution — an
+    /// over-constrained sketch reaches exactly this shape, and `Converged` would tell the author
+    /// their constraints hold when they do not.
+    #[test]
+    fn a_stationary_point_that_is_not_a_root_stalls() {
+        let never_zero = |p: &[f64]| p[0] * p[0] + 1.0;
+        let system = Closures {
+            parameters: 1,
+            residuals: vec![&never_zero],
+        };
+        // Started exactly on the stationary point, so the gradient test is what stops it.
+        let mut parameters = vec![0.0];
+        let report = solve(&system, &mut parameters, SolveSettings::default());
+        assert_eq!(report.outcome, SolveOutcome::Stalled, "{report:?}");
+        assert_eq!(report.iterations, 1, "the gradient test, not the budget");
+        assert!(report.residual_norm >= 1.0, "and unsolved: {report:?}");
+        // And from off the stationary point it descends into it and still refuses to call it solved.
+        let mut approached = vec![0.6];
+        let report = solve(&system, &mut approached, SolveSettings::default());
+        assert_ne!(report.outcome, SolveOutcome::Converged, "{report:?}");
+        assert!(report.residual_norm >= 1.0, "{report:?}");
     }
 
     /// A system with NO curvature in one direction at all — the Jacobian column is identically

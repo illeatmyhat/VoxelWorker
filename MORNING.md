@@ -129,7 +129,7 @@ Expect **13 passed**, including two tests whose meaning I inverted:
 `substrate::nonlinear_least_squares`: Powell's Dog Leg with a trust region in parameter units,
 Levenberg–Marquardt as the repair for the singular case, and a rank report.
 
-**Check it** (~15 s): `cargo test -p substrate nonlinear` — expect **10 passed**, including
+**Check it** (~15 s): `cargo test -p substrate nonlinear` — expect **11 passed**, including
 Rosenbrock's valley from `(-1.2, 1)`, the start plain Gauss-Newton diverges from.
 
 The half you will actually see in the UI is `SolveReport`: `degrees_of_freedom` (how many ways
