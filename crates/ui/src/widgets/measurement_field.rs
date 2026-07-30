@@ -4,7 +4,7 @@
 //! commit protocol every measurement editor in the app shares — see [`MeasurementField`].
 
 use crate::theme;
-use voxel_core::units::{self, DisplayUnit, Measurement, MeasurementError};
+use parametric::units::{self, DisplayUnit, Measurement, MeasurementError};
 
 /// The width of the text box, in points. Every measurement field is this wide so the
 /// columns line up down a panel regardless of which section drew them.

@@ -174,8 +174,8 @@ pub(crate) struct VisitedLeaf<'walk> {
     /// which is what keeps the authored intent (`"1/4 block"`) rather than a number derived
     /// at the wrong moment.
     ///
-    /// [`Measurement`]: voxel_core::units::Measurement
-    pub outset: voxel_core::units::Measurement,
+    /// [`Measurement`]: parametric::units::Measurement
+    pub outset: parametric::units::Measurement,
     /// The chain of enclosing sealed scopes, outermost first (see [`ScopeFrame`]).
     pub scope_path: &'walk [ScopeFrame],
     /// Which node this leaf came from, and the instance it was expanded under (ADR 0032).
@@ -571,7 +571,7 @@ pub(crate) fn leaf_producer_grid_voxels(
 /// Falling back to zero is the safe direction: an unresolvable outset leaves the body
 /// undilated rather than dilating it by a wrong amount.
 pub(crate) fn outset_voxels_at(
-    outset: voxel_core::units::Measurement,
+    outset: parametric::units::Measurement,
     voxels_per_block: u32,
 ) -> i64 {
     outset.to_voxels(voxels_per_block).unwrap_or(0)

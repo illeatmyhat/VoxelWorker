@@ -7,7 +7,7 @@ use crate::sketch::{
     PlaneAxis, Point, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
 };
 use crate::voxel::VoxelProducer;
-use voxel_core::units::AngleMeasurement;
+use ::parametric::units::AngleMeasurement;
 use voxel_core::voxel::VoxelGrid;
 
 /// A closed profile: the `[0,4] × [0,3]` rectangle whose BOTTOM edge is replaced by a

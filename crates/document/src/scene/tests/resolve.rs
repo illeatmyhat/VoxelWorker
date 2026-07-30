@@ -318,7 +318,7 @@ fn outset_grows_a_box_by_the_outset_on_every_side() {
                 material: MaterialChoice::Stone,
             },
         );
-        node.outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+        node.outset = parametric::units::Measurement::from_voxels(outset_voxels);
         let scene = Scene::from_nodes(vec![node]);
         let grid = scene.resolve_region(
             scene.full_extent_blocks(voxels_per_block),
@@ -366,7 +366,7 @@ fn chunked_resolve_matches_monolithic_under_outset() {
             material: MaterialChoice::Stone,
         },
     );
-    solid.outset = voxel_core::units::Measurement::from_voxels(3);
+    solid.outset = parametric::units::Measurement::from_voxels(3);
 
     // An outset SUBTRACT cutter: the dilation must carve MORE than the cutter's own
     // bounds, in both paths, including across a chunk seam.
@@ -378,7 +378,7 @@ fn chunked_resolve_matches_monolithic_under_outset() {
         },
     );
     cutter.operation = CombineOp::Subtract;
-    cutter.outset = voxel_core::units::Measurement::from_voxels(2);
+    cutter.outset = parametric::units::Measurement::from_voxels(2);
     cutter.transform = NodeTransform::from_blocks([1, 0, 0], voxels_per_block);
 
     let scene = with_minted_ids(Scene::from_nodes(vec![solid, cutter]));
@@ -410,7 +410,7 @@ fn an_outset_cutter_carves_more_than_an_undilated_one() {
             },
         );
         cutter.operation = CombineOp::Subtract;
-        cutter.outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+        cutter.outset = parametric::units::Measurement::from_voxels(outset_voxels);
         let scene = Scene::from_nodes(vec![solid, cutter]);
         scene
             .resolve_region(
@@ -479,7 +479,7 @@ fn an_outset_on_a_part_dilates_the_parts_composed_body() {
         scene
             .node_at_path_mut(&path)
             .expect("the Part resolves at path [0]")
-            .outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+            .outset = parametric::units::Measurement::from_voxels(outset_voxels);
         scene
     };
 
@@ -558,7 +558,7 @@ fn an_outset_shell_takes_the_nearest_members_material() {
     scene
         .node_at_path_mut(&path)
         .expect("the Part resolves at path [0]")
-        .outset = voxel_core::units::Measurement::from_voxels(2);
+        .outset = parametric::units::Measurement::from_voxels(2);
 
     let grid = scene.resolve_region(
         scene.full_extent_blocks(voxels_per_block),
@@ -617,7 +617,7 @@ fn chunked_resolve_matches_monolithic_for_an_outset_part() {
     scene
         .node_at_path_mut(&path)
         .expect("the Part resolves at path [0]")
-        .outset = voxel_core::units::Measurement::from_voxels(3);
+        .outset = parametric::units::Measurement::from_voxels(3);
     let scene = with_minted_ids(scene);
     assert_chunked_matches_monolithic(&scene, voxels_per_block, "outset-part");
 }
@@ -679,7 +679,7 @@ fn emboss_moves_the_surface_within_the_cutters_footprint() {
     };
 
     let emboss = |voxels: i64| CombineOp::Emboss {
-        amount: voxel_core::units::Measurement::from_voxels(voxels),
+        amount: parametric::units::Measurement::from_voxels(voxels),
     };
     let flat = occupancy(&scene_with(emboss(0)));
     let raised = occupancy(&scene_with(emboss(4)));
@@ -744,7 +744,7 @@ fn a_top_level_emboss_moves_the_surface() {
             );
             node.transform = NodeTransform::from_blocks([2, 1, 2], voxels_per_block);
             node.operation = CombineOp::Emboss {
-                amount: voxel_core::units::Measurement::from_voxels(amount),
+                amount: parametric::units::Measurement::from_voxels(amount),
             };
             node
         };

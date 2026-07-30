@@ -605,7 +605,7 @@ pub(crate) fn build_demo_two_material(voxels_per_block: u32) -> DemoScene {
 /// same block). The golden pins its brick render == its mesh render — the proof the mixed-material
 /// mesh cliff is closed. The 2-voxel X offset lands mid-block for any `voxels_per_block >= 3`.
 pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> DemoScene {
-    use voxel_core::units::Measurement;
+    use parametric::units::Measurement;
     let stone = {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
         Node::new(

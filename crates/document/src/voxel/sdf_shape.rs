@@ -44,7 +44,7 @@ pub struct GeometryParams {
     /// when the size carries no parametric block expression (a pure-voxel size). The
     /// canonical `size_voxels` always wins for geometry; this is retention/display
     /// only, kept so a density re-target re-evaluates losslessly.
-    pub size_measurements: Option<Box<[voxel_core::units::Measurement; 3]>>,
+    pub size_measurements: Option<Box<[parametric::units::Measurement; 3]>>,
     /// Voxels per block (chisel fineness): the density slider's transient UI value,
     /// mirrored to/from [`Scene::voxels_per_block`](crate::scene::Scene). Default 16.
     pub voxels_per_block: u32,
@@ -104,7 +104,7 @@ pub struct SdfShape {
     /// then SYNTHESISES a pure-voxel measurement from `size_voxels`. Boxed so the
     /// common (`None`) case keeps `SdfShape` small.
     #[serde(default)]
-    size_measurements: Option<Box<[voxel_core::units::Measurement; 3]>>,
+    size_measurements: Option<Box<[parametric::units::Measurement; 3]>>,
 }
 
 /// Persistence defaults for a partial [`SdfShape`] (a missing field falls back to
@@ -164,7 +164,7 @@ impl SdfShape {
         wall_blocks: u32,
         voxels_per_block: u32,
     ) -> Self {
-        use voxel_core::units::{ExactRational, Measurement};
+        use parametric::units::{ExactRational, Measurement};
         let density = voxels_per_block.max(1);
         let blocks = [
             size_blocks[0].max(1),
@@ -204,9 +204,9 @@ impl SdfShape {
         }
     }
 
-    /// Build a shape from a per-axis authored [`Measurement`](voxel_core::units::Measurement)
+    /// Build a shape from a per-axis authored [`Measurement`](parametric::units::Measurement)
     /// size at density `voxels_per_block` (ADR 0003 Â§3f(0)). The canonical voxel size
-    /// is DERIVED via [`Measurement::to_voxels`](voxel_core::units::Measurement::to_voxels)
+    /// is DERIVED via [`Measurement::to_voxels`](parametric::units::Measurement::to_voxels)
     /// and clamped to `>= 1`; the measurements are RETAINED for lossless density
     /// re-targeting. Mirrors
     /// [`NodeTransform::from_measurements`](crate::scene::NodeTransform::from_measurements),
@@ -216,11 +216,11 @@ impl SdfShape {
     /// below 1 voxel is clamped to 1 and resynthesised to the pure-voxel `1`.)
     pub fn from_measurements(
         kind: ShapeKind,
-        measurements: [voxel_core::units::Measurement; 3],
+        measurements: [parametric::units::Measurement; 3],
         wall_blocks: u32,
         voxels_per_block: u32,
     ) -> Self {
-        use voxel_core::units::{Measurement, MeasurementError};
+        use parametric::units::{Measurement, MeasurementError};
         let resolve_axis = |measurement: Measurement| -> (u32, Measurement) {
             let raw = match measurement.to_voxels(voxels_per_block) {
                 Ok(voxels) => (voxels, Some(measurement)),
@@ -260,10 +260,10 @@ impl SdfShape {
     /// byte-identical and serde gains no redundant husk. Mirrors
     /// `NodeTransform::retained_or_none`.
     fn retained_or_none(
-        measurements: Option<Box<[voxel_core::units::Measurement; 3]>>,
+        measurements: Option<Box<[parametric::units::Measurement; 3]>>,
         size_voxels: [u32; 3],
-    ) -> Option<Box<[voxel_core::units::Measurement; 3]>> {
-        use voxel_core::units::Measurement;
+    ) -> Option<Box<[parametric::units::Measurement; 3]>> {
+        use parametric::units::Measurement;
         let measurements = measurements?;
         let is_synthesisable = (0..3)
             .all(|axis| measurements[axis] == Measurement::from_voxels(size_voxels[axis] as i64));
@@ -279,8 +279,8 @@ impl SdfShape {
     /// SYNTHESISES a pure-voxel measurement equal to `size_voxels` per axis (correct
     /// at any density, just non-parametric). Mirrors
     /// `NodeTransform::offset_measurements`.
-    pub fn size_measurements(&self) -> [voxel_core::units::Measurement; 3] {
-        use voxel_core::units::Measurement;
+    pub fn size_measurements(&self) -> [parametric::units::Measurement; 3] {
+        use parametric::units::Measurement;
         match &self.size_measurements {
             Some(measurements) => **measurements,
             None => [
@@ -631,7 +631,7 @@ impl Field for SdfShape {
 #[cfg(test)]
 mod sdf_size_units_tests {
     use super::*;
-    use voxel_core::units::{DisplayUnit, ExactRational, Measurement};
+    use parametric::units::{DisplayUnit, ExactRational, Measurement};
 
     /// A whole-**block** size built via `from_blocks` derives `size_voxels =
     /// blocks Â· d` (byte-identical to the OLD block-granular store), and retains
@@ -781,8 +781,8 @@ mod sdf_size_units_tests {
     #[test]
     fn size_format_parse_round_trips() {
         for voxels in [1_i64, 16, 56, 80, 83, 257] {
-            let text = voxel_core::units::format(voxels, 16, DisplayUnit::BlocksAndVoxels);
-            let reparsed = voxel_core::units::parse(&text).expect("re-parses");
+            let text = parametric::units::format(voxels, 16, DisplayUnit::BlocksAndVoxels);
+            let reparsed = parametric::units::parse(&text).expect("re-parses");
             assert_eq!(
                 reparsed.to_voxels(16).unwrap(),
                 voxels,

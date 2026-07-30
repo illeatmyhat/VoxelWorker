@@ -20,7 +20,7 @@ edition = "2021"
 # holds the vocabulary the derive names (a proc-macro crate can export only macros) and
 # is a leaf beside `substrate`: it depends on nothing and names no domain type.
 [workspace]
-members = [".", "crates/snapshot", "crates/snapshot_derive", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/assets", "crates/display", "crates/interchange", "crates/work", "crates/ui", "crates/shot"]
+members = [".", "crates/snapshot", "crates/snapshot_derive", "crates/substrate", "crates/parametric", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/assets", "crates/display", "crates/interchange", "crates/work", "crates/ui", "crates/shot"]
 
 [lib]
 name = "voxel_worker"
@@ -64,6 +64,9 @@ default = []
 tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
 
 [dependencies]
+# The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
+# algebra, and the exact-rational expression language (ADR 0035).
+parametric = { path = "crates/parametric" }
 # The pure CS/math substrate library (this workspace's other member). Carries no
 # domain types; see docs/architecture/data-structures.md ("Substrate").
 substrate = { path = "crates/substrate" }

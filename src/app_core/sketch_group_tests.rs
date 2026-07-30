@@ -383,9 +383,9 @@ fn one_authoring_act_is_one_in_mode_undo_step() {
             Intent::SetOffset {
                 target,
                 offset_measurements: [
-                    voxel_core::units::Measurement::from_voxels(5),
-                    voxel_core::units::Measurement::from_voxels(0),
-                    voxel_core::units::Measurement::from_voxels(0),
+                    parametric::units::Measurement::from_voxels(5),
+                    parametric::units::Measurement::from_voxels(0),
+                    parametric::units::Measurement::from_voxels(0),
                 ],
             },
         ],

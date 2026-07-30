@@ -5,8 +5,8 @@ use document::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
 use document::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
 use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use document::voxel::SdfShape;
+use parametric::units::Measurement;
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::units::Measurement;
 use voxel_core::voxel::ShapeKind;
 
 /// A headless [`AppCore`] for the undo tests (no GPU — `apply_intent`/`undo`/`redo`
@@ -517,8 +517,8 @@ fn set_offset_round_trips() {
 #[test]
 fn set_offset_apply_derives_voxels_at_density() {
     let expression = [
-        Measurement::new(voxel_core::units::ExactRational::new(7, 2).unwrap(), 0), // 3.5 blocks
-        Measurement::new(voxel_core::units::ExactRational::from_integer(-2), 4), // -2 blocks 4 voxels
+        Measurement::new(parametric::units::ExactRational::new(7, 2).unwrap(), 0), // 3.5 blocks
+        Measurement::new(parametric::units::ExactRational::from_integer(-2), 4), // -2 blocks 4 voxels
         Measurement::from_voxels(7),                                             // 7 voxels
     ];
 
@@ -575,7 +575,7 @@ fn set_offset_undo_restores_retained_measurement() {
     let mut core = test_core();
 
     let first = [
-        Measurement::new(voxel_core::units::ExactRational::from_integer(2), 8), // 2 blocks 8 voxels
+        Measurement::new(parametric::units::ExactRational::from_integer(2), 8), // 2 blocks 8 voxels
         Measurement::from_voxels(0),
         Measurement::from_voxels(0),
     ];
@@ -806,7 +806,7 @@ fn set_density_re_evaluates_retained_measurement_exactly() {
     let target = scene.roots[1];
     let mut core = test_core();
     let expression = [
-        Measurement::new(voxel_core::units::ExactRational::from_integer(3), 8), // 3 blocks 8 voxels
+        Measurement::new(parametric::units::ExactRational::from_integer(3), 8), // 3 blocks 8 voxels
         Measurement::from_voxels(0),
         Measurement::from_voxels(0),
     ];

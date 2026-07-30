@@ -60,8 +60,8 @@ use camera::OrbitCamera;
 use document::intent::{Intent, NodeSpec};
 use document::scene::{NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
+use parametric::units::Measurement;
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::units::Measurement;
 use voxel_core::voxel::ShapeKind;
 use voxel_worker::{AppCore, CuboidMeshRenderer, GpuContext, RebuildOutcome, COLOR_TARGET_FORMAT};
 

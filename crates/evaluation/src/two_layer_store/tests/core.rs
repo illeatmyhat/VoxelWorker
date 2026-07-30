@@ -933,7 +933,7 @@ fn an_outset_part_classifies_as_the_dense_resolve_does() {
         scene
             .node_at_path_mut(&NodePath::from_indices(vec![0]))
             .expect("the Part resolves at path [0]")
-            .outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+            .outset = parametric::units::Measurement::from_voxels(outset_voxels);
         assert_two_layer_round_trip_matches_dense(
             &scene,
             density,
@@ -977,7 +977,7 @@ fn an_emboss_classifies_as_the_dense_resolve_does() {
             );
             node.transform = NodeTransform::from_blocks([2, 1, 2], density);
             node.operation = CombineOp::Emboss {
-                amount: voxel_core::units::Measurement::from_voxels(amount),
+                amount: parametric::units::Measurement::from_voxels(amount),
             };
             node
         };

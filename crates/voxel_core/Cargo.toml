@@ -25,6 +25,9 @@ edition = "2021"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
+# The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
+# algebra, and the exact-rational expression language (ADR 0035).
+parametric = { path = "../parametric" }
 # The pure CS/math substrate library. voxel_core names substrate structures at the
 # domain seam: the half-open integer box (`VoxelAabb`), the edit-broadphase BVH, the
 # exact `Rational` behind a `Measurement`, and the CSG field interval.

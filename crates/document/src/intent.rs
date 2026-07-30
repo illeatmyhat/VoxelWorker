@@ -25,8 +25,8 @@ use serde::{Deserialize, Serialize};
 use crate::scene::{CombineOp, DefId, Node, NodeContent, NodeGrids, NodeId, VoxelBody};
 use crate::sketch::SketchSolid;
 use crate::voxel::SdfShape;
+use parametric::units::Measurement;
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::units::Measurement;
 
 /// A **by-value node payload** for the structural add intents (ADR 0003 Phase C).
 ///
@@ -460,7 +460,7 @@ impl IntentEffect {
 /// same result the old block-granular path produced.
 #[cfg(any(test, feature = "test-support"))]
 pub fn whole_block_offset(blocks: [i64; 3]) -> [Measurement; 3] {
-    use voxel_core::units::ExactRational;
+    use parametric::units::ExactRational;
     [
         Measurement::new(ExactRational::from_integer(blocks[0] as i128), 0),
         Measurement::new(ExactRational::from_integer(blocks[1] as i128), 0),

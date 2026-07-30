@@ -105,6 +105,41 @@ impl Rational {
         .expect("non-zero denominators add to a non-zero denominator")
     }
 
+    /// `self - other`, reduced.
+    pub fn minus(self, other: Rational) -> Rational {
+        Rational::new(
+            self.numerator * other.denominator - other.numerator * self.denominator,
+            self.denominator * other.denominator,
+        )
+        .expect("non-zero denominators subtract to a non-zero denominator")
+    }
+
+    /// `-self`.
+    ///
+    /// `None` for `i128::MIN / 1` alone: its magnitude is one past `i128::MAX`, so the
+    /// negation has no `i128` form — the same asymmetry [`new`](Self::new) documents. The
+    /// value is already reduced and negating cannot change that, so this rebuilds directly
+    /// rather than going through a subtraction that would overflow before it could report.
+    pub fn negated(self) -> Option<Rational> {
+        Some(Self {
+            numerator: self.numerator.checked_neg()?,
+            denominator: self.denominator,
+        })
+    }
+
+    /// `self / other`, reduced. `None` when `other` is zero, or when the reduced result has
+    /// no `i128` form.
+    ///
+    /// Unlike [`times`](Self::times) and [`plus`](Self::plus) this can genuinely fail, so it
+    /// returns an `Option` rather than asserting: dividing by a user-authored expression that
+    /// evaluates to zero is an ordinary authoring mistake, not a bug.
+    pub fn divided_by(self, other: Rational) -> Option<Rational> {
+        Rational::new(
+            self.numerator * other.denominator,
+            self.denominator * other.numerator,
+        )
+    }
+
     /// `true` when this rational is a whole number (denominator reduced to 1).
     pub fn is_integer(self) -> bool {
         self.denominator == 1
@@ -495,5 +530,37 @@ mod tests {
         assert_eq!(r.denominator(), 2);
         // Zero denominator is the only un-representable case.
         assert_eq!(Rational::new(1, 0), None);
+    }
+
+    #[test]
+    fn subtraction_and_division_are_exact() {
+        let third = Rational::new(1, 3).expect("non-zero denominator");
+        let two_thirds = Rational::new(2, 3).expect("non-zero denominator");
+        assert_eq!(two_thirds.minus(third), third);
+        // 1/3 divided by 1/3 is exactly one, where the f64 chain drifts.
+        assert_eq!(third.divided_by(third), Some(Rational::from_integer(1)));
+        assert_eq!(
+            two_thirds.divided_by(Rational::from_integer(2)),
+            Some(third)
+        );
+    }
+
+    #[test]
+    fn dividing_by_zero_reports_rather_than_panicking() {
+        // An authored expression that evaluates to zero is an ordinary mistake, so this is
+        // the one arithmetic door that returns an Option instead of asserting.
+        let half = Rational::new(1, 2).expect("non-zero denominator");
+        assert_eq!(half.divided_by(Rational::from_integer(0)), None);
+    }
+
+    #[test]
+    fn negation_is_exact_and_refuses_only_the_unrepresentable_extreme() {
+        let half = Rational::new(1, 2).expect("non-zero denominator");
+        assert_eq!(half.negated(), Rational::new(-1, 2));
+        assert_eq!(half.negated().and_then(Rational::negated), Some(half));
+        // |i128::MIN| is one past i128::MAX, so its negation has no form. Rebuilding
+        // directly (rather than subtracting from zero) is what lets this REPORT instead of
+        // overflowing on the way to the check.
+        assert_eq!(Rational::from_integer(i128::MIN).negated(), None);
     }
 }

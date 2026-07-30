@@ -20,7 +20,7 @@
 //! (the algebra the geometry is written in), `serde` (persistence derives), and
 //! `substrate`, whose pure CS/math structures this crate names at the domain seam — a
 //! half-open integer box becomes a [`spatial_index::VoxelAabb`], an exact
-//! [`substrate::interval::Rational`] becomes the block term of a [`units::Measurement`].
+//! [`substrate::interval::Rational`] becomes the block term of a `parametric::Measurement`.
 //! It never depends on the sibling `camera` or `raycast` crates.
 //!
 //! ## The chapter it serves
@@ -43,8 +43,6 @@
 //! * [`spatial_index`] — the [`spatial_index::VoxelAabb`] absolute-voxel box and its
 //!   chunk-coverage reading, the [`spatial_index::EditBroadphaseBvh`] alias, and the
 //!   flat [`spatial_index::LeafSpatialIndex`] over a scene's leaf world-AABBs.
-//! * [`units`] — the parametric blocks/voxels [`units::Measurement`] core with its
-//!   strict parser and formatter over an exact [`units::ExactRational`].
 
 // A public item's doc may link to a private helper to explain how the two relate; that
 // cross-reference stays a navigable link under `--document-private-items`. The CI doc
@@ -53,5 +51,4 @@
 
 pub mod core_geom;
 pub mod spatial_index;
-pub mod units;
 pub mod voxel;

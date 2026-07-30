@@ -136,7 +136,7 @@ fn a_pre_composed_scope_picks_its_inner_member() {
     scene
         .node_by_id_mut(group_id)
         .expect("the group resolves")
-        .outset = voxel_core::units::Measurement::from_voxels(2);
+        .outset = parametric::units::Measurement::from_voxels(2);
     let scene = with_minted_ids(scene);
     let members = match &scene
         .node_by_id(group_id)
@@ -268,7 +268,7 @@ fn the_outset_shell_of_a_part_picks_the_member_beneath_it() {
     scene
         .node_by_id_mut(group_id)
         .expect("the group resolves")
-        .outset = voxel_core::units::Measurement::from_voxels(3);
+        .outset = parametric::units::Measurement::from_voxels(3);
     let scene = with_minted_ids(scene);
     let member = match &scene
         .node_by_id(group_id)

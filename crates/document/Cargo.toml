@@ -18,6 +18,9 @@ edition = "2021"
 # docs/design/per-layer-crates-extraction-map.md (the document row) for provenance.
 
 [dependencies]
+# The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
+# algebra, and the exact-rational expression language (ADR 0035).
+parametric = { path = "../parametric" }
 # The foundational value vocabulary (one layer down): the resolved Voxel + sparse
 # VoxelGrid, the ShapeKind tag + signed-distance functions the producers sample, the
 # BlockId / CellKey / MaterialChoice palette, the absolute-voxel box + leaf index, and

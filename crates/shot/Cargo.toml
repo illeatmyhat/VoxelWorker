@@ -28,6 +28,9 @@ edition = "2021"
 # `--features oracle` used to mean, minus the flag.
 
 [dependencies]
+# The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
+# algebra, and the exact-rational expression language (ADR 0035).
+parametric = { path = "../parametric" }
 # The pure CS/math substrate: LatticeOrientation, to orient the placement ghost from a
 # `--ghost-face` normal (ADR 0026 headless verification).
 substrate = { path = "../substrate" }

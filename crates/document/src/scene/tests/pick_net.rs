@@ -438,7 +438,7 @@ fn a_pre_composed_scope_agrees_with_the_material_its_shell_wears() {
             scene
                 .node_by_id_mut(group)
                 .expect("the group resolves")
-                .outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+                .outset = parametric::units::Measurement::from_voxels(outset_voxels);
             let scene = with_minted_ids(scene);
             assert!(
                 assert_the_pick_names_the_owner(

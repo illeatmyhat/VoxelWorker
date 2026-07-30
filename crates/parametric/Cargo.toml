@@ -1,0 +1,30 @@
+[package]
+name = "parametric"
+version = "0.1.0"
+edition = "2021"
+
+# The authored-quantity crate (ADR 0035 Decision 12): everything the author *types*
+# and the document *retains* as an expression rather than a number — the blocks/voxels
+# measurement core, the dimension algebra that keeps a length from being added to an
+# angle, and the exact-rational expression language with its named parameters.
+#
+# It sits between `substrate` (from which it takes only `Rational`) and `voxel_core`,
+# so the units vocabulary has somewhere to grow that is not the middle of the value
+# crate, and so `substrate` stays free of domain words like "block" and "voxel"
+# (ADR 0014). The dependency edge is one-way: `substrate <- parametric <- voxel_core
+# <- the rest of the app`.
+#
+# The invariant that shapes every type here: **exactness is a storage and authoring
+# property, never a solver one**. Nothing in this crate touches `f64` except at an
+# explicit evaluation door. The constraint solver above it is floating-point by nature
+# and is not bound by this rule.
+
+[dependencies]
+# The exact rational behind every measurement, and the only thing taken from substrate.
+substrate = { path = "../substrate" }
+# Derive Serialize/Deserialize for the persisted authored expressions.
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# The measurement serde round-trip test asserts a `Measurement` survives JSON.
+serde_json = "1"

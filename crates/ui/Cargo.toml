@@ -23,6 +23,9 @@ name = "ui"
 path = "src/lib.rs"
 
 [dependencies]
+# The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
+# algebra, and the exact-rational expression language (ADR 0035).
+parametric = { path = "../parametric" }
 # The immediate-mode GUI toolkit this crate's widgets are written against. Matched to the
 # workspace version so an `egui::Ui` / `egui::TextureId` crosses the shell boundary without a
 # conversion. NO egui-wgpu here — the tiles reference thumbnails only as registered TextureIds.

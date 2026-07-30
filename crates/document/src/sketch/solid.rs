@@ -385,7 +385,7 @@ impl SketchSolid {
         &self,
         from: EntityId,
         to: EntityId,
-        bulge: voxel_core::units::AngleMeasurement,
+        bulge: parametric::units::AngleMeasurement,
     ) -> SketchSolid {
         let mut next = self.clone();
         next.sketch.connect_arc(from, to, bulge);

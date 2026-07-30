@@ -9,8 +9,8 @@ use document::intent::Intent;
 use document::scene::{CombineOp, NodeContent, VoxelBody, ROOT_NODE_ID};
 use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use document::voxel::SdfShape;
+use parametric::units;
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::units;
 use voxel_core::voxel::ShapeKind;
 
 /// The inspector: switches on the active node. A **Tool** shows the shape chips,
@@ -642,7 +642,7 @@ fn build_operation_section(
 /// MEANS.
 ///
 /// A commit emits a single `SetOffset` carrying all three per-axis
-/// [`Measurement`](voxel_core::units::Measurement)s — the edited axis plus the two
+/// [`Measurement`](parametric::units::Measurement)s — the edited axis plus the two
 /// unchanged RETAINED ones, so a single-axis edit does not disturb the others. A
 /// rejected edit yields no commit, so the canonical offset never moves on bad input.
 ///

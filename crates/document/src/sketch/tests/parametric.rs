@@ -5,7 +5,7 @@
 
 use crate::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
 use crate::voxel::VoxelProducer;
-use voxel_core::units::{ExactRational, Measurement};
+use ::parametric::units::{ExactRational, Measurement};
 use voxel_core::voxel::VoxelGrid;
 
 #[test]

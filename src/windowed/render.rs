@@ -1109,9 +1109,9 @@ impl WindowedState {
             transaction.push(crate::Intent::SetOffset {
                 target,
                 offset_measurements: [
-                    voxel_core::units::Measurement::from_voxels(final_offset[0]),
-                    voxel_core::units::Measurement::from_voxels(final_offset[1]),
-                    voxel_core::units::Measurement::from_voxels(final_offset[2]),
+                    parametric::units::Measurement::from_voxels(final_offset[0]),
+                    parametric::units::Measurement::from_voxels(final_offset[1]),
+                    parametric::units::Measurement::from_voxels(final_offset[2]),
                 ],
             });
         }
@@ -1480,7 +1480,7 @@ impl WindowedState {
             else {
                 return;
             };
-            let Some(bulge) = voxel_core::units::AngleMeasurement::from_degrees_f64(degrees) else {
+            let Some(bulge) = parametric::units::AngleMeasurement::from_degrees_f64(degrees) else {
                 return;
             };
             let next = producer.with_arc_between(start, end, bulge);
@@ -2172,9 +2172,9 @@ impl WindowedState {
             transaction.push(crate::Intent::SetOffset {
                 target,
                 offset_measurements: [
-                    voxel_core::units::Measurement::from_voxels(new_offset[0]),
-                    voxel_core::units::Measurement::from_voxels(new_offset[1]),
-                    voxel_core::units::Measurement::from_voxels(new_offset[2]),
+                    parametric::units::Measurement::from_voxels(new_offset[0]),
+                    parametric::units::Measurement::from_voxels(new_offset[1]),
+                    parametric::units::Measurement::from_voxels(new_offset[2]),
                 ],
             });
         }

@@ -6,7 +6,7 @@
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-use voxel_core::units::{ExactRational, Measurement};
+use parametric::units::{ExactRational, Measurement};
 
 use super::producers::{outset_voxels_at, AccumulatedOffset, LeafBody, VisitedLeaf};
 use super::*;
@@ -258,14 +258,14 @@ impl NodeTransform {
         let resolve_axis = |measurement: Measurement| -> (i64, Measurement) {
             match measurement.to_voxels(voxels_per_block) {
                 Ok(voxels) => (voxels, measurement),
-                Err(voxel_core::units::MeasurementError::BlockTermNotWholeVoxels {
+                Err(parametric::units::MeasurementError::BlockTermNotWholeVoxels {
                     nearest_floor_voxels,
                     ..
                 }) => (
                     nearest_floor_voxels,
                     Measurement::from_voxels(nearest_floor_voxels),
                 ),
-                Err(voxel_core::units::MeasurementError::ZeroDensity) => {
+                Err(parametric::units::MeasurementError::ZeroDensity) => {
                     let voxels = measurement.voxel_term();
                     (voxels, Measurement::from_voxels(voxels))
                 }

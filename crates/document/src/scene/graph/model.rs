@@ -166,9 +166,9 @@ pub enum CombineOp {
     /// it was raised from.
     Emboss {
         /// How far the surface moves: outward when positive, recessed when negative. A
-        /// [`Measurement`](voxel_core::units::Measurement) rather than a voxel count, for
+        /// [`Measurement`](parametric::units::Measurement) rather than a voxel count, for
         /// the same reason an outset is one — it is authored geometry, not a derived count.
-        amount: voxel_core::units::Measurement,
+        amount: parametric::units::Measurement,
     },
     // future: Override, …
 }
@@ -242,7 +242,7 @@ pub struct Node {
     /// level and this needs no new machinery. A NEGATIVE outset insets, shrinking the body —
     /// which is how a deliberate gap between chiselled pieces is authored.
     ///
-    /// It is a [`Measurement`](voxel_core::units::Measurement), never an integer voxel
+    /// It is a [`Measurement`](parametric::units::Measurement), never an integer voxel
     /// count, so `"1/4 block"` survives a
     /// density change as the authored intent rather than as a stale derived number (ADR 0008
     /// — the frame is carried, never re-derived).
@@ -271,7 +271,7 @@ pub struct Node {
     /// members' behaviour unchanged — such a body is fieldless, so it could not be outset
     /// anyway (ADR 0020 Decision 1).
     #[serde(default)]
-    pub outset: voxel_core::units::Measurement,
+    pub outset: parametric::units::Measurement,
     /// Whether the node participates in the composed geometry. This is NOT a display
     /// flag: a disabled node is pruned from the op-stack walk *before* evaluation, so it
     /// stamps nothing and its operation never runs. Disabling a `Subtract` therefore
@@ -306,7 +306,7 @@ impl Node {
             name: name.into(),
             transform: NodeTransform::identity(),
             operation: CombineOp::Union,
-            outset: voxel_core::units::Measurement::default(),
+            outset: parametric::units::Measurement::default(),
             enabled: true,
             grids: NodeGrids::default(),
             content,

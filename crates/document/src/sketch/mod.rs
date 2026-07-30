@@ -37,7 +37,7 @@ pub use faces::{Face, FaceKey};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 
-use voxel_core::units::{AngleMeasurement, Measurement};
+use parametric::units::{AngleMeasurement, Measurement};
 
 /// Which axis the sketch plane's normal points along — i.e. the axis the profile
 /// is EXTRUDED along (ADR 0003 §3i, 2a axis-aligned scope).
@@ -191,14 +191,14 @@ impl SketchPoint {
             let resolve_axis = |measurement: Measurement| -> (i64, Measurement) {
                 match measurement.to_voxels(new_density) {
                     Ok(voxels) => (voxels, measurement),
-                    Err(voxel_core::units::MeasurementError::BlockTermNotWholeVoxels {
+                    Err(parametric::units::MeasurementError::BlockTermNotWholeVoxels {
                         nearest_floor_voxels,
                         ..
                     }) => (
                         nearest_floor_voxels,
                         Measurement::from_voxels(nearest_floor_voxels),
                     ),
-                    Err(voxel_core::units::MeasurementError::ZeroDensity) => {
+                    Err(parametric::units::MeasurementError::ZeroDensity) => {
                         let voxels = measurement.voxel_term();
                         (voxels, Measurement::from_voxels(voxels))
                     }

@@ -201,7 +201,7 @@ impl Scene {
                 .get(child)
                 .is_some_and(|node| node.operation.needs_accumulated_field())
         });
-        if scope.outset == voxel_core::units::Measurement::default() && !embosses {
+        if scope.outset == parametric::units::Measurement::default() && !embosses {
             return None;
         }
         let mut members = Vec::new();

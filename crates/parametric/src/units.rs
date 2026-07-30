@@ -140,6 +140,26 @@ impl Measurement {
         };
         Ok(whole_block_voxels as i64 + self.voxel_term)
     }
+
+    /// Evaluate to an EXACT voxel value at density `d`, without the whole-voxel policy.
+    ///
+    /// `block_term · d + voxel_term` as a rational, so `"3.5 blocks"` at `d = 15` is exactly
+    /// `105/2` rather than an error. This is the door the **expression evaluator** takes
+    /// ([`Quantity::from_measurement`](crate::quantity::Quantity::from_measurement)):
+    /// intermediate results are routinely fractional, and refusing them mid-expression would
+    /// reject `wall / 3 * 3`.
+    ///
+    /// [`to_voxels`](Self::to_voxels) remains the door into *storage*, where the whole-voxel
+    /// rule applies and the nearest representable values are reported. Nothing is finer than
+    /// a voxel in the document; plenty is finer than a voxel on the way there.
+    ///
+    /// Total: a density of 0 yields just the voxel term, which is what `block_term · 0`
+    /// literally is.
+    pub fn to_voxels_exact(self, density: u32) -> ExactRational {
+        self.block_term()
+            .times(ExactRational::from_integer(density as i128))
+            .plus(ExactRational::from_integer(self.voxel_term as i128))
+    }
 }
 
 /// A parametric ANGLE measurement in degrees — ADR 0029's `Angle` kind, first consumed by

@@ -197,7 +197,7 @@ fn an_arc_creases_only_at_its_authored_ends() {
         .connect_arc(
             sketch.points()[3].id,
             sketch.points()[0].id,
-            voxel_core::units::AngleMeasurement::from_degrees(180),
+            ::parametric::units::AngleMeasurement::from_degrees(180),
         )
         .expect("a half turn under the box");
 

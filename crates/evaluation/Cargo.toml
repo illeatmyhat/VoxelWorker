@@ -20,6 +20,9 @@ edition = "2021"
 # row) for provenance.
 
 [dependencies]
+# The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
+# algebra, and the exact-rational expression language (ADR 0035).
+parametric = { path = "../parametric" }
 # The authored-TRUTH layer (one layer down): the scene graph the evaluator resolves, the
 # producers whose conservative interval bound drives block classification, and the
 # FieldClassification the CSG composition names.
