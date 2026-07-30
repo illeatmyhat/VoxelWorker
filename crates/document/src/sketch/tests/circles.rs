@@ -212,6 +212,79 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
     assert_eq!(secant.faces().len(), 2, "cut clean through: two halves");
 }
 
+/// **The relaxation itself.** Slice B asked for the full turn to be admitted for the closed case,
+/// and this is the pair of assertions that says it was: the SAME geometry — a full turn about
+/// `(2, -3)` at radius 4 — is legal in the form the profile uses and refused in the form the store
+/// uses, on purpose.
+///
+/// `ProfileEdge::circle` is a `sweep_radians: TAU` arc whose chord is zero length. Everything that
+/// consumes it was moved off the endpoint-plus-bulge derivation and onto the solved circle:
+/// `interior_points` walks the circle, `signed_area_term` integrates the real sweep, `measured`
+/// hands substrate a centre and a sweep. None of those has a full-turn guard, and this test fails if
+/// one is ever put back.
+///
+/// `arc_sweep_is_valid` guards a different form on a different path — authoring an `Arc` ENTITY from
+/// two endpoints — where the full turn is a pole rather than a policy
+/// (`the_full_turn_is_where_the_radius_diverges`).
+#[test]
+fn a_full_turn_profile_edge_is_the_relaxed_closed_case() {
+    let (centre, radius) = ([2.0, -3.0], 4.0);
+    let edge = ProfileEdge::circle(centre, radius);
+    assert!(edge.is_closed(), "a loop with no vertex");
+    assert_eq!(
+        edge.from.in_plane(),
+        edge.to.in_plane(),
+        "the chord is zero length — the thing the store's form cannot survive"
+    );
+
+    // Exact, by Green's theorem over the real sweep rather than over a fan of chords.
+    let expected = std::f64::consts::PI * radius * radius;
+    assert!(
+        (edge.signed_area_term() - expected).abs() < 1e-9,
+        "a full turn encloses its disc — got {}, want {expected}",
+        edge.signed_area_term()
+    );
+
+    // The tessellation walks the whole circle, not a chord's worth of it.
+    let interior = edge.interior_points(ARC_SAGITTA_TOLERANCE_VOXELS);
+    assert!(
+        interior.len() > 8,
+        "a full turn needs a fan: {}",
+        interior.len()
+    );
+    for point in &interior {
+        let at = point.in_plane();
+        let distance = ((at[0] - centre[0]).powi(2) + (at[1] - centre[1]).powi(2)).sqrt();
+        assert!((distance - radius).abs() < 1e-5, "off the circle: {at:?}");
+    }
+    let bearings: Vec<f64> = interior
+        .iter()
+        .map(|point| {
+            let at = point.in_plane();
+            (at[1] - centre[1])
+                .atan2(at[0] - centre[0])
+                .rem_euclid(std::f64::consts::TAU)
+        })
+        .collect();
+    for quadrant in 0..4 {
+        let low = quadrant as f64 * std::f64::consts::FRAC_PI_2;
+        assert!(
+            bearings
+                .iter()
+                .any(|b| (low..low + std::f64::consts::FRAC_PI_2).contains(b)),
+            "the fan reaches every quadrant, so the walk is a full turn"
+        );
+    }
+
+    // The same geometry offered to the store's endpoint-plus-bulge form: no answer.
+    let seam = edge.from.in_plane();
+    assert_eq!(
+        arc_center_radius(seam, seam, 360.0),
+        None,
+        "the store's form has a pole here; the profile's form does not"
+    );
+}
+
 /// A circle IS its centre plus a radius, so deleting the centre deletes the circle — and deleting
 /// the circle takes its minted centre with it, since nothing else was ever named there.
 #[test]
