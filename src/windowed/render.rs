@@ -5,6 +5,11 @@
 
 use super::*;
 
+/// How far (physical px) a drawn arc chord may sag from the true curve. A quarter pixel is under
+/// the width of the thinnest stroke the gizmo family draws, so the tessellation is invisible at
+/// any zoom; it only ever refines the DRAWING, never the resolved profile.
+const ARC_SCREEN_SAGITTA_PX: f64 = 0.25;
+
 impl WindowedState {
     pub(super) fn render(&mut self) {
         profiling::scope!("render");
@@ -1008,13 +1013,12 @@ impl WindowedState {
         };
         let mut preview = drag.original.clone();
         // Mutate the grabbed point ENTITY directly by its stable id (ADR 0030 — no loop index).
-        let Some(point) = preview.sketch.point_position_mut(point_id) else {
-            self.sketch_drag = None;
-            return IntentEffect::none();
-        };
         // The snap policy re-authors the whole position (#96/#101): a snapped drag zeroes
         // the fraction, NoSnap carries it; either way a stale retained expression drops.
-        *point = snapped;
+        if !preview.sketch.move_point(point_id, snapped) {
+            self.sketch_drag = None;
+            return IntentEffect::none();
+        }
         let new_min = Self::profile_bbox_min(&preview);
         let [in0, in1] = preview.sketch.plane.in_plane_axes();
         let mut new_offset = original_offset;
@@ -2277,25 +2281,43 @@ impl WindowedState {
         self.sketch_point_ids = handles.point_ids.clone();
         self.sketch_segments = handles.segments.clone();
 
-        // Arc chord polylines in PHYSICAL px (#102), from the same tessellation the resolve
-        // flattens with. A behind-camera chord vertex culls the whole arc, matching the
-        // segment rule — a partially-projected curve would draw a fold across the viewport.
-        for (arc_id, polyline) in &handles.arcs {
-            let projected: Option<Vec<egui::Pos2>> = polyline
-                .iter()
-                .map(|vertex| {
-                    let clip =
-                        view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
-                    (clip.w > 0.0).then(|| {
-                        egui::Pos2::new(
-                            vx + (clip.x / clip.w * 0.5 + 0.5) * vw,
-                            vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh,
-                        )
-                    })
+        // Arc chord polylines in PHYSICAL px (#102), tessellated for the SCREEN. The resolve's
+        // sagitta tolerance is measured in VOXELS, so an arc earns the same handful of chords at
+        // every zoom and draws as a visible polygon once a voxel is worth more than a few pixels.
+        // The projected radius says what a voxel is currently worth — one number that already
+        // carries the zoom, the foreshortening and the plane's tilt — and the tolerance follows
+        // from it. Only the pinned resolve tolerance is the profile's MEANING (ADR 0019); this is
+        // the same curve, drawn smoothly. A behind-camera chord vertex culls the whole arc,
+        // matching the segment rule: a partially-projected curve would fold across the viewport.
+        let to_viewport_px = |coord: [f64; 2]| {
+            let vertex = handles.profile_to_render(coord);
+            let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
+            (clip.w > 0.0).then(|| {
+                egui::Pos2::new(
+                    vx + (clip.x / clip.w * 0.5 + 0.5) * vw,
+                    vy + (1.0 - (clip.y / clip.w * 0.5 + 0.5)) * vh,
+                )
+            })
+        };
+        for &(arc_id, from, to, sweep) in &handles.arcs {
+            let tolerance = document::sketch::arc_center_radius(from, to, sweep)
+                .and_then(|(center, radius)| {
+                    let radius_px = to_viewport_px(center)?.distance(to_viewport_px(from)?);
+                    (radius_px > 1.0).then(|| radius * ARC_SCREEN_SAGITTA_PX / f64::from(radius_px))
                 })
-                .collect();
+                .unwrap_or(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS)
+                .min(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS);
+            let mut profile = vec![from];
+            profile.extend(
+                document::sketch::arc_interior_points_within(from, to, sweep, tolerance)
+                    .iter()
+                    .map(|point| point.in_plane()),
+            );
+            profile.push(to);
+            let projected: Option<Vec<egui::Pos2>> =
+                profile.into_iter().map(&to_viewport_px).collect();
             if let Some(projected) = projected {
-                self.sketch_arc_chords.push((*arc_id, projected));
+                self.sketch_arc_chords.push((arc_id, projected));
             }
         }
 
@@ -2375,37 +2397,7 @@ impl WindowedState {
         // Each arc's derived centre (ADR 0030 §5 stores endpoints + included angle; the centre and
         // the radius fall out of those). Drawn as a datum with a dashed radius to each endpoint, so
         // an arc's radius is legible without a dimension — the owner's read of a bare curve.
-        let arc_geometry: Vec<(document::sketch::EntityId, [f64; 2], [f64; 2], f64)> = self
-            .panel_state
-            .scene
-            .node_by_id(target)
-            .and_then(|node| match &node.content {
-                document::scene::NodeContent::SketchTool { producer, .. } => Some(&producer.sketch),
-                _ => None,
-            })
-            .map(|sketch| {
-                let position_of = |id| {
-                    sketch
-                        .points()
-                        .iter()
-                        .find(|point| point.id == id)
-                        .map(|point| point.at.in_plane())
-                };
-                sketch
-                    .arcs()
-                    .iter()
-                    .filter_map(|arc| {
-                        Some((
-                            arc.id,
-                            position_of(arc.from)?,
-                            position_of(arc.to)?,
-                            arc.bulge.to_degrees_f64(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        for (arc_id, from, to, sweep) in arc_geometry {
+        for &(arc_id, from, to, sweep) in &handles.arcs {
             // The chord polyline is already culled and projected — reuse its ends rather than
             // projecting the endpoints a second time, so the datum can never disagree with the
             // curve it belongs to.

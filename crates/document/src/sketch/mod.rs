@@ -287,11 +287,29 @@ pub struct Arc {
     /// strictly inside `(0, 360)` — zero and full-turn bulges are degenerate and erased
     /// by [`Sketch::repair`].
     pub bulge: AngleMeasurement,
+    /// The [`Point`] entity standing at the arc's centre — a REIFIED derived value. Its
+    /// coordinates are recomputed from the endpoints and the bulge by
+    /// [`Sketch::sync_arc_centers`] and are never authored directly, but it is a real point
+    /// entity with a stable id so it selects, snaps and drags exactly like every other
+    /// sketch point. Always [`EntityRole::Construction`]: a centre never bounds a region.
+    /// `serde(default)` yields [`ABSENT_CENTER`] for a pre-centre document, which
+    /// [`Sketch::repair`] materialises on load.
+    #[serde(default = "absent_center")]
+    pub center: EntityId,
     /// Lineage id for region identity across edits (ADR 0030 §3), like [`Segment::origin`].
     pub origin: EntityId,
     /// Real vs construction geometry (reserved).
     #[serde(default)]
     pub role: EntityRole,
+}
+
+/// The `center` of an arc that has no centre point yet — a pre-centre document, or an arc
+/// mid-construction. Ids are handed out monotonically from zero and never reused, so the top
+/// of the range can never collide with a live entity.
+pub const ABSENT_CENTER: EntityId = EntityId::MAX;
+
+fn absent_center() -> EntityId {
+    ABSENT_CENTER
 }
 
 /// A grid-aligned PLANE plus a collection of sketch ENTITIES — points and segments
@@ -420,6 +438,17 @@ impl Sketch {
         id
     }
 
+    /// Allocate a construction point at `at` — geometry that never bounds a region.
+    fn add_construction_point(&mut self, at: SketchPoint) -> EntityId {
+        let id = self.alloc_id();
+        self.points.push(Point {
+            id,
+            at,
+            role: EntityRole::Construction,
+        });
+        id
+    }
+
     /// Allocate a segment `from → to`, its `origin` set to its own id (a root of its
     /// lineage), returning its fresh id.
     fn add_segment(&mut self, from: EntityId, to: EntityId) -> EntityId {
@@ -521,17 +550,45 @@ impl Sketch {
         }
     }
 
-    /// Mutable access to a point's position by id (the drag write path).
-    pub fn point_position_mut(&mut self, id: EntityId) -> Option<&mut SketchPoint> {
-        self.point_index(id).map(|i| &mut self.points[i].at)
+    /// Move the point `id` to `at` — the drag write path. Reports whether the point exists.
+    ///
+    /// An arc's centre is DERIVED, so dragging one cannot re-author its coordinates: it
+    /// TRANSLATES the arc instead. Both endpoints shift by the same delta, the bulge is
+    /// untouched, and the centre re-derives exactly where it was dragged — a rigid move, the
+    /// one centre edit the canonical form can hold. Every other point simply takes `at`.
+    pub fn move_point(&mut self, id: EntityId, at: SketchPoint) -> bool {
+        let Some(index) = self.point_index(id) else {
+            return false;
+        };
+        match self.arcs.iter().copied().find(|arc| arc.center == id) {
+            Some(arc) => {
+                let was = self.points[index].at.in_plane();
+                let now = at.in_plane();
+                let delta = [now[0] - was[0], now[1] - was[1]];
+                for endpoint in [arc.from, arc.to] {
+                    if let Some(slot) = self.point_index(endpoint) {
+                        let here = self.points[slot].at.in_plane();
+                        self.points[slot].at =
+                            SketchPoint::from_continuous(here[0] + delta[0], here[1] + delta[1]);
+                    }
+                }
+            }
+            None => self.points[index].at = at,
+        }
+        self.sync_arc_centers();
+        true
     }
 
     /// Delete a point by id and every segment/arc incident to it (ADR 0030 §6). The
     /// edges' other endpoints survive as free points. No dangling reference can result.
+    /// Deleting an arc's CENTRE deletes that arc: the centre is the arc's own derived
+    /// geometry, so there is no arc left for it to be the centre of.
     pub fn delete_point_cascade(&mut self, id: EntityId) {
         self.segments.retain(|seg| seg.from != id && seg.to != id);
-        self.arcs.retain(|arc| arc.from != id && arc.to != id);
+        self.arcs
+            .retain(|arc| arc.from != id && arc.to != id && arc.center != id);
         self.points.retain(|point| point.id != id);
+        self.prune_orphan_centers();
     }
 
     /// Delete just the segment with id `seg_id` (ADR 0030 — deleting a line removes only the
@@ -619,10 +676,56 @@ impl Sketch {
             from,
             to,
             bulge,
+            center: ABSENT_CENTER,
             origin: id,
             role: EntityRole::Real,
         });
+        self.sync_arc_centers();
         Some(id)
+    }
+
+    /// Re-derive every arc's centre point from its endpoints and bulge (ADR 0030 §5), minting
+    /// one for any arc that has none yet. The centre is a real [`Point`] so it can be selected,
+    /// snapped to and dragged like any other, but its coordinates are OWNED here — every edit
+    /// that can move an arc ends by calling this, so a centre can never drift out of agreement
+    /// with the curve it belongs to. An arc whose endpoints are missing or coincident is left
+    /// alone; [`repair`](Self::repair) erases it.
+    pub fn sync_arc_centers(&mut self) {
+        for index in 0..self.arcs.len() {
+            let arc = self.arcs[index];
+            let (Some(tail), Some(head)) = (self.point_index(arc.from), self.point_index(arc.to))
+            else {
+                continue;
+            };
+            let Some((center, _radius)) = arc_center_radius(
+                self.points[tail].at.in_plane(),
+                self.points[head].at.in_plane(),
+                arc.bulge.to_degrees_f64(),
+            ) else {
+                continue;
+            };
+            let at = SketchPoint::from_continuous(center[0], center[1]);
+            match self.point_index(arc.center) {
+                Some(existing) => self.points[existing].at = at,
+                None => self.arcs[index].center = self.add_construction_point(at),
+            }
+        }
+    }
+
+    /// Drop every construction point nothing references any more — the centre of an arc that
+    /// has just been deleted. A centre the author has since drawn to (an edge names it) is
+    /// referenced, so it survives as ordinary geometry.
+    fn prune_orphan_centers(&mut self) {
+        let mut referenced = std::collections::BTreeSet::new();
+        for arc in &self.arcs {
+            referenced.extend([arc.center, arc.from, arc.to]);
+        }
+        for segment in &self.segments {
+            referenced.extend([segment.from, segment.to]);
+        }
+        self.points.retain(|point| {
+            point.role != EntityRole::Construction || referenced.contains(&point.id)
+        });
     }
 
     /// Whether a straight segment already joins `a` and `b` in either direction.
@@ -648,6 +751,7 @@ impl Sketch {
     /// §6 — deleting a segment/arc removes only it). No-op if `arc_id` is unknown.
     pub fn delete_arc(&mut self, arc_id: EntityId) {
         self.arcs.retain(|arc| arc.id != arc_id);
+        self.prune_orphan_centers();
     }
 
     /// The lowest-id point entity sitting EXACTLY at `at`'s position, if any. The drawing
@@ -687,6 +791,7 @@ impl Sketch {
         for point in &mut self.points {
             point.at = point.at.retargeted(old_density, new_density);
         }
+        self.sync_arc_centers();
     }
 
     /// Erase every structurally-invalid segment or arc — one that references a point id not
@@ -710,7 +815,12 @@ impl Sketch {
                 && point_ids.contains(&arc.to)
                 && arc_sweep_is_valid(arc.bulge.to_degrees_f64())
         });
-        before - self.segments.len() - self.arcs.len()
+        let dropped = before - self.segments.len() - self.arcs.len();
+        // A pre-centre document names no centre at all, and a just-erased arc leaves one
+        // behind; both are settled here, so a loaded sketch always agrees with its arcs.
+        self.prune_orphan_centers();
+        self.sync_arc_centers();
+        dropped
     }
 }
 
@@ -766,10 +876,27 @@ pub fn arc_center_radius(
 /// [`ARC_SAGITTA_TOLERANCE_VOXELS`]. Empty when the arc is degenerate — the callers
 /// then fall back to the straight chord.
 pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> Vec<SketchPoint> {
+    arc_interior_points_within(from, to, sweep_degrees, ARC_SAGITTA_TOLERANCE_VOXELS)
+}
+
+/// [`arc_interior_points`] at a caller-chosen sagitta tolerance — the DISPLAY door.
+///
+/// The resolve's tolerance is measured in voxels, so an arc's chord count follows its
+/// radius-in-voxels and not its size on screen: a 15-voxel arc earns nine chords whatever the
+/// zoom, which reads as a visible polygon. A viewer that knows how many pixels a voxel is
+/// currently worth can ask for a tolerance that keeps the sagitta well under a pixel instead.
+/// Only the pinned [`ARC_SAGITTA_TOLERANCE_VOXELS`] is the resolved MEANING (ADR 0019); a
+/// finer one is a smoother drawing of the same curve, never a different profile.
+pub fn arc_interior_points_within(
+    from: [f64; 2],
+    to: [f64; 2],
+    sweep_degrees: f64,
+    sagitta_tolerance_voxels: f64,
+) -> Vec<SketchPoint> {
     let Some((center, radius)) = arc_center_radius(from, to, sweep_degrees) else {
         return Vec::new();
     };
-    let chords = arc_chord_count(radius, sweep_degrees);
+    let chords = arc_chord_count(radius, sweep_degrees, sagitta_tolerance_voxels);
     let start = (from[1] - center[1]).atan2(from[0] - center[0]);
     let step = sweep_degrees.to_radians() / chords as f64;
     (1..chords)
@@ -784,8 +911,12 @@ pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> 
 }
 
 /// How many chords keep each sagitta within tolerance, capped at [`ARC_MAX_CHORDS`].
-fn arc_chord_count(radius: f64, sweep_degrees: f64) -> u32 {
-    let tolerance = ARC_SAGITTA_TOLERANCE_VOXELS;
+fn arc_chord_count(radius: f64, sweep_degrees: f64, tolerance: f64) -> u32 {
+    // A non-positive or non-finite tolerance would ask for infinite refinement; the chord cap
+    // answers it instead of the arithmetic below producing a NaN step.
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        return ARC_MAX_CHORDS;
+    }
     if 2.0 * radius <= tolerance {
         return 1; // the whole arc deviates less than the tolerance from its chord
     }

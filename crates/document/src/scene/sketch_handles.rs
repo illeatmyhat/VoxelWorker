@@ -18,7 +18,7 @@
 //! of which operation later lifts it into a volume.
 
 use super::*;
-use crate::sketch::{EntityId, Operation};
+use crate::sketch::{EntityId, EntityRole, Operation};
 use glam::Vec3;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
@@ -44,11 +44,13 @@ pub struct SketchHandles {
     /// line per entry and hit-tests add-point against them (splitting the named segment by id).
     /// A segment with a dangling endpoint is omitted.
     pub segments: Vec<(EntityId, usize, usize)>,
-    /// Each arc entity as `(arc id, its tessellated polyline in the render frame)` (#102).
-    /// The polyline runs endpoint to endpoint INCLUSIVE, at the same chord tolerance the
-    /// resolve flattens with, so the drawn curve is exactly the boundary the profile
-    /// occupies. An arc with a dangling endpoint is omitted.
-    pub arcs: Vec<(EntityId, Vec<[f32; 3]>)>,
+    /// Each arc entity as `(arc id, tail, head, signed sweep in degrees)` — ADR 0030 §5's
+    /// canonical form with the endpoint ids resolved to PROFILE coordinates (#102). The curve
+    /// is deliberately NOT tessellated here: chord count belongs to whoever knows how many
+    /// pixels a voxel is currently worth, and [`profile_to_render`](Self::profile_to_render)
+    /// maps each sample it produces into this frame. An arc with a dangling endpoint is
+    /// omitted.
+    pub arcs: Vec<(EntityId, [f64; 2], [f64; 2], f64)>,
     /// A point ON the sketch plane in the render frame (the first vertex) — the ray
     /// intersection anchor.
     pub plane_point: [f32; 3],
@@ -139,19 +141,22 @@ impl Scene {
         let points = producer.sketch.points();
         let point_ids: Vec<EntityId> = points.iter().map(|point| point.id).collect();
 
-        // The in-plane bounding box over ALL points anchors the overlay frame. For a closed
+        // The in-plane bounding box over the REAL points anchors the overlay frame. For a closed
         // loop this equals the resolve's `profile_bbox_min`, so the handles sit on the resolved
         // geometry; for an open graph (which resolves to nothing) it just places every vertex;
-        // for an empty sketch the frame anchors on `[0, 0]` (the node origin).
-        let mut min = points
-            .first()
-            .map(|point| point.at.offset_voxels)
-            .unwrap_or([0, 0]);
+        // for an empty sketch the frame anchors on `[0, 0]` (the node origin). Construction
+        // points are excluded on purpose: an arc's centre can sit well outside the profile, and
+        // letting a DERIVED point move the anchor would slide every handle off the solid.
+        let mut real = points
+            .iter()
+            .filter(|point| point.role == EntityRole::Real)
+            .map(|point| point.at.offset_voxels);
+        let mut min = real.next().unwrap_or([0, 0]);
         let mut max = min;
-        for point in points {
+        for coords in real {
             for axis in 0..2 {
-                min[axis] = min[axis].min(point.at.offset_voxels[axis]);
-                max[axis] = max[axis].max(point.at.offset_voxels[axis]);
+                min[axis] = min[axis].min(coords[axis]);
+                max[axis] = max[axis].max(coords[axis]);
             }
         }
 
@@ -217,28 +222,25 @@ impl Scene {
             .filter_map(|seg| Some((seg.id, index_of(seg.from)?, index_of(seg.to)?)))
             .collect();
 
-        // Arc polylines, tessellated at the resolve's chord tolerance (#102) and mapped
-        // through the same frame — so the drawn curve IS the boundary that occupies.
+        // Each arc's canonical form with its endpoints resolved (#102) — the viewer picks the
+        // chord count, so nothing is tessellated here.
         let position_of = |id: EntityId| {
             points
                 .iter()
                 .find(|point| point.id == id)
                 .map(|point| point.at.in_plane())
         };
-        let arcs: Vec<(EntityId, Vec<[f32; 3]>)> = producer
+        let arcs: Vec<(EntityId, [f64; 2], [f64; 2], f64)> = producer
             .sketch
             .arcs()
             .iter()
             .filter_map(|arc| {
-                let (from, to) = (position_of(arc.from)?, position_of(arc.to)?);
-                let mut polyline = vec![to_render(from)];
-                polyline.extend(
-                    crate::sketch::arc_interior_points(from, to, arc.bulge.to_degrees_f64())
-                        .into_iter()
-                        .map(|point| to_render(point.in_plane())),
-                );
-                polyline.push(to_render(to));
-                Some((arc.id, polyline))
+                Some((
+                    arc.id,
+                    position_of(arc.from)?,
+                    position_of(arc.to)?,
+                    arc.bulge.to_degrees_f64(),
+                ))
             })
             .collect();
 

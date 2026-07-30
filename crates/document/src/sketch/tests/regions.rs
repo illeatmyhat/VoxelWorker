@@ -119,7 +119,10 @@ fn an_unpick_survives_a_vertex_drag_and_an_edge_split() {
     sketch.set_face_picked(inner.clone(), false);
 
     let moved = sketch.points().last().expect("a point").id;
-    *sketch.point_position_mut(moved).expect("the point") = SketchPoint::new(5, 5);
+    assert!(
+        sketch.move_point(moved, SketchPoint::new(5, 5)),
+        "the point"
+    );
     assert!(
         !sketch.face_is_picked(&innermost(&sketch)),
         "a drag re-derives the same key"

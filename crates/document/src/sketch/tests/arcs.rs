@@ -3,8 +3,8 @@
 //! cascade / repair, and serialization (including a pre-arc document loading clean).
 
 use crate::sketch::{
-    arc_center_radius, arc_interior_points, included_angle_through_degrees, PlaneAxis, Sketch,
-    SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
+    arc_center_radius, arc_interior_points, included_angle_through_degrees, EntityId, EntityRole,
+    PlaneAxis, Point, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
 };
 use crate::voxel::VoxelProducer;
 use voxel_core::units::AngleMeasurement;
@@ -279,6 +279,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         from: p,
         to: 77, // dangling
         bulge: AngleMeasurement::from_degrees(90),
+        center: crate::sketch::ABSENT_CENTER,
         origin: 90,
         role: crate::sketch::EntityRole::Real,
     });
@@ -287,6 +288,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         from: p,
         to: p, // self-loop
         bulge: AngleMeasurement::from_degrees(90),
+        center: crate::sketch::ABSENT_CENTER,
         origin: 91,
         role: crate::sketch::EntityRole::Real,
     });
@@ -295,6 +297,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         from: q,
         to: p,
         bulge: AngleMeasurement::from_degrees(0), // degenerate bulge
+        center: crate::sketch::ABSENT_CENTER,
         origin: 92,
         role: crate::sketch::EntityRole::Real,
     });
@@ -333,4 +336,149 @@ fn quantized_angle_survives_the_float_door() {
         "arc-second quantization: within half a second of arc"
     );
     assert_eq!(AngleMeasurement::from_degrees_f64(f64::NAN), None);
+}
+
+/// The `[0,0] → [4,0]` half-turn arc: centre `[2,0]`, radius 2, bulging down.
+fn half_turn() -> (Sketch, EntityId, EntityId, EntityId) {
+    let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(4, 0));
+    let arc = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(180))
+        .expect("a legal half turn");
+    (sketch, from, to, arc)
+}
+
+/// A derived centre is a float — the apothem of an exact half turn is `chord / 2 / tan(90°)`,
+/// which lands a whisker off zero rather than on it. Compare within a thousandth of a voxel.
+fn assert_near(actual: [f64; 2], expected: [f64; 2]) {
+    assert!(
+        (actual[0] - expected[0]).abs() < 1.0e-3 && (actual[1] - expected[1]).abs() < 1.0e-3,
+        "{actual:?} is not {expected:?}"
+    );
+}
+
+fn center_of(sketch: &Sketch, arc: EntityId) -> Point {
+    let center = sketch
+        .arcs()
+        .iter()
+        .find(|candidate| candidate.id == arc)
+        .expect("the arc")
+        .center;
+    *sketch
+        .points()
+        .iter()
+        .find(|point| point.id == center)
+        .expect("a reified centre point")
+}
+
+#[test]
+fn an_arc_reifies_its_centre_as_a_selectable_point() {
+    let (sketch, from, to, arc) = half_turn();
+    let center = center_of(&sketch, arc);
+
+    assert_near(center.at.in_plane(), [2.0, 0.0]);
+    assert_eq!(center.role, EntityRole::Construction);
+    assert!(
+        ![from, to].contains(&center.id),
+        "the centre is its own entity, not an endpoint wearing a second hat"
+    );
+    // It rides in `points()` like any other point, which is the whole ask: the overlay places a
+    // handle per point, so the centre gets hover, selection and a drag for free.
+    assert_eq!(sketch.points().len(), 3);
+
+    // Being construction geometry, it bounds nothing: an isolated point is not a face, and the
+    // arc's own single edge still cannot close one.
+    assert!(sketch.faces().is_empty());
+}
+
+#[test]
+fn dragging_a_centre_translates_its_arc() {
+    let (mut sketch, from, to, arc) = half_turn();
+    let center = center_of(&sketch, arc).id;
+
+    assert!(sketch.move_point(center, SketchPoint::new(2, 5)));
+
+    let position = |id| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .expect("the point")
+            .at
+            .in_plane()
+    };
+    assert_near(position(from), [0.0, 5.0]);
+    assert_near(position(to), [4.0, 5.0]);
+    assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, 5.0]);
+    assert_eq!(
+        sketch.arcs()[0].bulge,
+        AngleMeasurement::from_degrees(180),
+        "a rigid move never touches the sweep"
+    );
+}
+
+#[test]
+fn a_centre_re_derives_when_an_endpoint_moves() {
+    let (mut sketch, _from, to, arc) = half_turn();
+    // Halving the chord halves the radius, so the centre slides to the new midpoint.
+    assert!(sketch.move_point(to, SketchPoint::new(2, 0)));
+    assert_near(center_of(&sketch, arc).at.in_plane(), [1.0, 0.0]);
+}
+
+#[test]
+fn a_centre_lives_and_dies_with_its_arc() {
+    let (mut sketch, from, _to, arc) = half_turn();
+    let center = center_of(&sketch, arc).id;
+
+    // Deleting the CENTRE takes the arc: there is no arc left for it to be the centre of.
+    let mut by_centre = sketch.clone();
+    by_centre.delete_point_cascade(center);
+    assert!(by_centre.arcs().is_empty());
+    assert_eq!(
+        by_centre.points().len(),
+        2,
+        "both endpoints survive as free"
+    );
+
+    // Deleting the ARC takes the centre, and leaves the endpoints alone.
+    sketch.delete_arc(arc);
+    assert!(sketch.arcs().is_empty());
+    assert_eq!(sketch.points().len(), 2);
+    assert!(sketch.points().iter().any(|point| point.id == from));
+
+    // A centre the author has since drawn TO is referenced geometry, and outlives its arc.
+    let (mut kept, from, _to, arc) = half_turn();
+    let center = center_of(&kept, arc).id;
+    kept.connect(from, center).expect("a radius line");
+    kept.delete_arc(arc);
+    assert!(kept.points().iter().any(|point| point.id == center));
+}
+
+#[test]
+fn a_pre_centre_document_gains_its_centres_on_load() {
+    let (sketch, _from, _to, arc) = half_turn();
+    let mut value = serde_json::to_value(&sketch).expect("a sketch serializes");
+    // Strip every `center` the way a document written before centres existed would have.
+    for stored in value["arcs"]
+        .as_array_mut()
+        .expect("the arcs are an array")
+        .iter_mut()
+    {
+        stored
+            .as_object_mut()
+            .expect("an arc is a JSON object")
+            .remove("center")
+            .expect("the key was present");
+    }
+    // ... and drop the orphaned centre point too, so the store is exactly the old shape.
+    value["points"]
+        .as_array_mut()
+        .expect("the points are an array")
+        .retain(|point| point["role"] != "Construction");
+
+    let mut loaded: Sketch = serde_json::from_value(value).expect("a pre-centre document loads");
+    assert_eq!(loaded.arcs()[0].center, crate::sketch::ABSENT_CENTER);
+    assert_eq!(loaded.repair(), 0, "nothing was structurally invalid");
+    assert_near(center_of(&loaded, arc).at.in_plane(), [2.0, 0.0]);
 }
