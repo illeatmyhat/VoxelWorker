@@ -491,7 +491,23 @@ impl Sketch {
     /// instead, which made nesting the overlay's own problem to solve — a fill inside a fill
     /// composited twice — where the region predicate already answers it.
     pub fn region_field_loops(&self) -> Vec<(LoopRole, Vec<[f32; 2]>)> {
-        produce::to_region_points_measured(&self.flattened_region())
+        self.region_field_loops_within(ARC_SAGITTA_TOLERANCE_VOXELS)
+    }
+
+    /// [`region_field_loops`](Self::region_field_loops) with a caller-chosen arc sagitta tolerance
+    /// — the DISPLAY door, for a viewer that knows what a voxel is worth in pixels.
+    ///
+    /// The resolved tolerance is measured in voxels, so a curved boundary carries the same chord
+    /// count however far the view has zoomed in: a circle of radius six voxels is a 22-gon on
+    /// screen at every scale, and past a few pixels per voxel the wash reads as a polygon inside its
+    /// own smooth outline (the outline painter already asks for a screen tolerance, which is exactly
+    /// how the two came to disagree). A finer tolerance is a smoother drawing of the same profile,
+    /// never a different one.
+    pub fn region_field_loops_within(
+        &self,
+        arc_tolerance_voxels: f64,
+    ) -> Vec<(LoopRole, Vec<[f32; 2]>)> {
+        produce::to_region_points_measured(&self.flattened_region_within(arc_tolerance_voxels))
     }
 
     /// Whether the face with this boundary key contributes solid. Faces default to PICKED — the
@@ -519,14 +535,30 @@ impl Sketch {
 
     /// The DERIVED flattened profile: one tagged loop per derived face, `Fill` where the face is
     /// picked and `Hole` where it is not (ADR 0030 §4), each a simple closed polygon with its
-    /// arcs tessellated into sub-voxel chords ([`ARC_SAGITTA_TOLERANCE_VOXELS`]).
+    /// arcs tessellated into sub-voxel chords ([`ARC_SAGITTA_TOLERANCE_VOXELS`]), ordered
+    /// SMALLEST-AREA-FIRST.
+    ///
+    /// That order is [`substrate::geom2d::point_in_region`]'s contract: innermost-first, so each
+    /// face decides its own area and nothing nested inside it. A face strictly inside another has
+    /// strictly less area, so sorting on area IS the nesting order — no containment analysis
+    /// needed. It is what makes carving a region leave a picked region inside it standing: the pick
+    /// state of a face governs that face, and a face is the ground its own boundary encloses minus
+    /// whatever sits within.
     ///
     /// This is what the producer resolves, and the tessellated polygons ARE the resolved meaning
-    /// (ADR 0019). The combination is an explicit 2D boolean — union the fills, subtract the
-    /// holes — never a global crossing parity, so two fills that touch or share an edge both
-    /// count where even-odd would cancel them.
+    /// (ADR 0019). The combination is an ordered fold over nesting, never a global crossing parity,
+    /// so two fills that touch or share an edge both count where even-odd would cancel them.
     pub fn flattened_region(&self) -> Vec<ProfileLoop> {
-        self.faces()
+        self.flattened_region_within(ARC_SAGITTA_TOLERANCE_VOXELS)
+    }
+
+    /// [`flattened_region`](Self::flattened_region) with a caller-chosen arc sagitta tolerance — the
+    /// DISPLAY door. See [`region_field_loops_within`](Self::region_field_loops_within).
+    pub fn flattened_region_within(&self, arc_tolerance_voxels: f64) -> Vec<ProfileLoop> {
+        let mut faces = faces::derive_within(self, arc_tolerance_voxels);
+        // Ties keep `faces`' deterministic order, so the region is stable across derivations.
+        faces.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
+        faces
             .into_iter()
             .map(|face| ProfileLoop {
                 role: if self.face_is_picked(&face.key) {

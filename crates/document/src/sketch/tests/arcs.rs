@@ -512,3 +512,63 @@ fn a_pre_centre_document_gains_its_centres_on_load() {
     assert_eq!(loaded.repair(), 0, "nothing was structurally invalid");
     assert_near(center_of(&loaded, arc).at.in_plane(), [2.0, 0.0]);
 }
+
+/// The DISPLAY door tessellates the same face more finely without changing it: the boundary gains
+/// chords, the face keys and the pick state do not move, and the profile it describes is the same
+/// one to within the finer tolerance.
+///
+/// This is what keeps the wash from reading as a polygon inside its own smooth outline — the
+/// resolved tolerance is measured in voxels, so a curve earns the same chord count at every zoom.
+#[test]
+fn the_display_door_smooths_a_face_without_moving_it() {
+    let mut sketch = Sketch::new(
+        PlaneAxis::Z,
+        vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(0, 3),
+            SketchPoint::new(4, 3),
+            SketchPoint::new(4, 0),
+        ],
+    );
+    let bottom = sketch
+        .segments()
+        .iter()
+        .find(|seg| [seg.from, seg.to].contains(&0) && [seg.from, seg.to].contains(&3))
+        .expect("the wrap segment")
+        .id;
+    sketch.delete_segment(bottom);
+    sketch
+        .connect_arc(0, 3, AngleMeasurement::from_degrees(180))
+        .expect("a fresh arc");
+
+    let resolved = sketch.region_field_loops();
+    let smooth = sketch.region_field_loops_within(ARC_SAGITTA_TOLERANCE_VOXELS / 16.0);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(smooth.len(), 1);
+    assert_eq!(resolved[0].0, smooth[0].0, "the same role");
+    // Chord count goes as 1/sqrt(sagitta), so 16x finer is ~4x the ARC's chords — a little less
+    // over the whole boundary, which carries three straight corners as well.
+    assert!(
+        smooth[0].1.len() > resolved[0].1.len() * 2,
+        "a 16x finer sagitta is ~4x the chords: {} vs {}",
+        smooth[0].1.len(),
+        resolved[0].1.len()
+    );
+    // The finer boundary describes the same profile: every one of its vertices is within the
+    // COARSE tolerance of the coarse boundary, so no chord wandered off the curve.
+    for vertex in &smooth[0].1 {
+        let gap = substrate::geom2d::signed_distance_to_polygon(
+            &resolved[0].1,
+            *vertex,
+            substrate::geom2d::Metric::Euclidean,
+        )
+        .abs();
+        assert!(
+            gap <= ARC_SAGITTA_TOLERANCE_VOXELS as f32 + 1e-5,
+            "a smoothed vertex {vertex:?} sits {gap} off the resolved boundary"
+        );
+    }
+    // Faces are identified by lineage, not geometry, so the pick state survives the door.
+    let key = sketch.faces().first().expect("a face").key.clone();
+    assert!(sketch.face_is_picked(&key));
+}

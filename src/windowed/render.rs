@@ -815,14 +815,42 @@ impl WindowedState {
             let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
                 return None;
             };
-            Some((handles, producer.sketch.region_field_loops()))
+            Some((handles, producer.sketch.clone()))
         });
-        if let Some((handles, region)) = sketch_region {
+        if let Some((handles, sketch)) = sketch_region {
             let origin = handles.profile_to_render([0.0, 0.0]);
             let axis = |coord: [f64; 2]| {
                 let tip = handles.profile_to_render(coord);
                 [tip[0] - origin[0], tip[1] - origin[1], tip[2] - origin[2]]
             };
+            // What one profile voxel is worth in pixels, so a curved boundary earns chords by how
+            // big it is ON SCREEN — the rule the arc outline painter already uses. Without it the
+            // wash is a polygon inside its own smooth outline at any real zoom.
+            let plane_px = |coord: [f64; 2]| -> Option<glam::Vec2> {
+                let point = handles.profile_to_render(coord);
+                let clip = view_projection * glam::Vec4::new(point[0], point[1], point[2], 1.0);
+                (clip.w > 0.0).then(|| {
+                    glam::Vec2::new(
+                        clip.x / clip.w * 0.5 * prepared.viewport_px[2] as f32,
+                        clip.y / clip.w * 0.5 * prepared.viewport_px[3] as f32,
+                    )
+                })
+            };
+            let voxel_px = plane_px([0.0, 0.0])
+                .zip(plane_px([1.0, 0.0]).zip(plane_px([0.0, 1.0])))
+                .map(|(centre, (along_0, along_1))| {
+                    (centre.distance(along_0) + centre.distance(along_1)) / 2.0
+                })
+                .filter(|scale| *scale > f32::EPSILON);
+            let resolved = document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS;
+            let arc_tolerance = voxel_px
+                .map(|scale| ARC_SCREEN_SAGITTA_PX / f64::from(scale))
+                // Never coarser than the profile's own meaning, and never so fine that the
+                // per-pixel fold pays for chords no one can see.
+                .map_or(resolved, |tolerance| {
+                    tolerance.clamp(resolved / 16.0, resolved)
+                });
+            let region = sketch.region_field_loops_within(arc_tolerance);
             self.sketch_region_renderer.update(
                 &self.gpu.device,
                 &self.gpu.queue,

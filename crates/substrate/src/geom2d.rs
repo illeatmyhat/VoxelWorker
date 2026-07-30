@@ -359,6 +359,18 @@ pub fn distance_point_to_segment(a: [f32; 2], b: [f32; 2], point: [f32; 2], metr
 ///
 /// Fewer than two vertices has no boundary to measure, and returns `f32::INFINITY`.
 pub fn signed_distance_to_polygon(polygon: &[[f32; 2]], point: [f32; 2], metric: Metric) -> f32 {
+    let nearest = nearest_edge_distance(polygon, point, metric);
+    if point_in_polygon(polygon, point) {
+        -nearest
+    } else {
+        nearest
+    }
+}
+
+/// The UNSIGNED distance to the polygon's nearest edge — the magnitude half of
+/// [`signed_distance_to_polygon`], split out so a caller that decides the sign for itself walks the
+/// edges once instead of twice. `f32::INFINITY` when there is no boundary to measure.
+fn nearest_edge_distance(polygon: &[[f32; 2]], point: [f32; 2], metric: Metric) -> f32 {
     if polygon.len() < 2 {
         return f32::INFINITY;
     }
@@ -368,47 +380,60 @@ pub fn signed_distance_to_polygon(polygon: &[[f32; 2]], point: [f32; 2], metric:
         nearest = nearest.min(distance_point_to_segment(previous, current, point, metric));
         previous = current;
     }
-    if point_in_polygon(polygon, point) {
-        -nearest
-    } else {
-        nearest
-    }
+    nearest
 }
 
-/// How a boundary loop contributes to a multi-loop region: `Fill` adds its interior, `Hole`
-/// removes it. The 2D analogue of the `Union` / `Subtract` arms of the 3D composite fold, so a
-/// profile and a body are combined by one algebra rather than two.
+/// How a boundary loop contributes to a multi-loop region: `Fill` claims its own area, `Hole`
+/// leaves it void.
+///
+/// "Its own area" is the point: a loop governs the ground it encloses that no NARROWER loop
+/// encloses. That is why a region is an ORDERED fold (see [`point_in_region`]) and not a global
+/// algebra — a `Hole` carves the ground it sits on without reaching into whatever sits inside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopRole {
-    /// The loop's interior is part of the region.
+    /// The loop's own area is part of the region.
     Fill,
-    /// The loop's interior is carved out of it.
+    /// The loop's own area is left out of it.
     Hole,
 }
 
-/// Whether `sample` is inside the region `loops` — inside at least one `Fill` loop and inside no
-/// `Hole` loop. An explicit boolean per loop, NOT a global crossing parity over a loop soup: two
-/// `Fill` loops that touch or share an edge both count, where even-odd would cancel them.
+/// Whether `sample` is inside the region `loops` — decided by the FIRST loop that contains it.
 ///
-/// An empty region (no loops, or no `Fill` loop) contains nothing.
+/// # The ordering is the contract
+///
+/// `loops` must run INNERMOST-FIRST: a loop appears before every loop that contains it. A caller
+/// deriving loops from nested boundaries gets that for free by sorting on enclosed area ascending,
+/// since strict containment means strictly smaller area.
+///
+/// Given that order, "the first containing loop wins" means each loop decides its OWN area and
+/// nothing deeper. This is not a detail of the algorithm, it is the meaning of a nested profile: a
+/// carved region does not carve what is nested inside it, so a `Hole` around a `Fill` leaves that
+/// `Fill` standing as an island. An algebra over the whole loop set cannot express that — union
+/// then subtract makes an outer `Hole` veto everything within it, which is a different (and, for
+/// authoring, a surprising) shape.
+///
+/// It is also NOT a global crossing parity: two loops that touch or share an edge each keep their
+/// own area, where even-odd would cancel them.
+///
+/// A sample in no loop at all is outside, so an empty region contains nothing.
 pub fn point_in_region(loops: &[(LoopRole, Vec<[f32; 2]>)], sample: [f32; 2]) -> bool {
-    let mut filled = false;
     for (role, polygon) in loops {
-        if !point_in_polygon(polygon, sample) {
-            continue;
-        }
-        match role {
-            LoopRole::Fill => filled = true,
-            LoopRole::Hole => return false,
+        if point_in_polygon(polygon, sample) {
+            return *role == LoopRole::Fill;
         }
     }
-    filled
+    false
 }
 
 /// Signed distance from `point` to the region's boundary under `metric` — negative inside,
-/// positive outside. The field fold of [`point_in_region`]: `min` over the `Fill` loops (union),
-/// then `max` against each negated `Hole` loop (subtraction) — the 2D reading of the 3D composite
-/// algebra, so a hole in a profile behaves exactly like a subtracted body.
+/// positive outside. The field reading of [`point_in_region`], and it takes the same
+/// innermost-first `loops`.
+///
+/// The sign comes from the predicate; the magnitude is the distance to the nearest loop boundary of
+/// any kind. Every boundary of the region is one of those, so the field is zero wherever the sign
+/// flips and stays 1-Lipschitz and continuous — what the interval bounds need. Where a loop edge is
+/// INTERIOR to the region (two adjacent `Fill` loops sharing it) the magnitude UNDERSTATES the true
+/// clearance, which narrows a coarse claim and never widens one (CONSERVATIVE-NEVER-NARROW).
 ///
 /// An empty region is `f32::INFINITY` (everywhere outside), matching the composite fold's empty
 /// accumulator.
@@ -417,41 +442,44 @@ pub fn signed_distance_to_region(
     point: [f32; 2],
     metric: Metric,
 ) -> f32 {
-    let mut distance = f32::INFINITY;
+    let mut nearest = f32::INFINITY;
+    let mut inside = None;
     for (role, polygon) in loops {
-        if *role == LoopRole::Fill {
-            distance = distance.min(signed_distance_to_polygon(polygon, point, metric));
+        nearest = nearest.min(nearest_edge_distance(polygon, point, metric));
+        // The innermost containing loop decides, so only the first one to answer counts.
+        if inside.is_none() && point_in_polygon(polygon, point) {
+            inside = Some(*role == LoopRole::Fill);
         }
     }
-    for (role, polygon) in loops {
-        if *role == LoopRole::Hole {
-            distance = distance.max(-signed_distance_to_polygon(polygon, point, metric));
-        }
+    if inside.unwrap_or(false) {
+        -nearest
+    } else {
+        nearest
     }
-    distance
 }
 
-/// Whether the CLOSED axis-aligned rectangle lies ENTIRELY inside the region — inside one `Fill`
-/// loop and disjoint from every `Hole` loop. **Conservative**: it never claims a rectangle that
-/// is not wholly solid, but it declines rectangles that are (one spanning two adjacent `Fill`
-/// loops, say), because the coarse classifier's contract is to narrow work, never to narrow
-/// truth.
+/// Whether the CLOSED axis-aligned rectangle lies ENTIRELY inside the region — the innermost loop
+/// that touches it is a `Fill` that contains it whole. Takes the same innermost-first `loops`
+/// [`point_in_region`] does.
+///
+/// **Conservative**: it never claims a rectangle that is not wholly solid, but it declines
+/// rectangles that are (one spanning two adjacent `Fill` loops, say), because the coarse
+/// classifier's contract is to narrow work, never to narrow truth.
 pub fn rectangle_inside_region(
     loops: &[(LoopRole, Vec<[f64; 2]>)],
     rect_min: [f64; 2],
     rect_max: [f64; 2],
 ) -> bool {
-    let filled = loops.iter().any(|(role, polygon)| {
-        *role == LoopRole::Fill && rectangle_inside_polygon(polygon, rect_min, rect_max)
-    });
-    if !filled {
-        return false;
+    for (role, polygon) in loops {
+        if !rectangle_meets_polygon(polygon, rect_min, rect_max) {
+            continue;
+        }
+        // The innermost loop with any claim on this rectangle. It decides the whole rectangle only
+        // if it is a `Fill` that swallows it; a loop that merely crosses the rectangle leaves part
+        // of it to something narrower, which is not a claim this may build on.
+        return *role == LoopRole::Fill && rectangle_inside_polygon(polygon, rect_min, rect_max);
     }
-    // A hole disqualifies the rectangle unless the two are provably disjoint: no hole edge meets
-    // it and its centre is outside the hole.
-    !loops.iter().any(|(role, polygon)| {
-        *role == LoopRole::Hole && rectangle_meets_polygon(polygon, rect_min, rect_max)
-    })
+    false
 }
 
 /// Whether the closed rectangle touches the polygon's interior or boundary at all — an edge
@@ -501,12 +529,13 @@ mod tests {
     const OUTER: [[f64; 2]; 4] = [[0.0, 0.0], [12.0, 0.0], [12.0, 12.0], [0.0, 12.0]];
     const INNER: [[f64; 2]; 4] = [[4.0, 4.0], [8.0, 4.0], [8.0, 8.0], [4.0, 8.0]];
 
-    /// A hole is subtracted, not parity-cancelled: the ring is inside and the pocket is not.
+    /// A hole is carved, not parity-cancelled: the ring is inside and the pocket is not. Loops run
+    /// innermost-first, so the pocket gets its say before the square it sits in.
     #[test]
     fn a_hole_is_carved_out_of_its_fill() {
         let region = [
-            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
             (LoopRole::Hole, INNER_MEASURED.to_vec()),
+            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
         ];
         assert!(point_in_region(&region, [1.0, 1.0]), "the ring is solid");
         assert!(!point_in_region(&region, [6.0, 6.0]), "the pocket is not");
@@ -518,8 +547,8 @@ mod tests {
     #[test]
     fn nested_fills_do_not_cancel_each_other() {
         let region = [
-            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
             (LoopRole::Fill, INNER_MEASURED.to_vec()),
+            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
         ];
         assert!(point_in_region(&region, [6.0, 6.0]));
         // The even-odd rule over the same loop soup says the opposite.
@@ -536,8 +565,8 @@ mod tests {
     #[test]
     fn the_region_field_signs_match_the_predicate() {
         let region = [
-            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
             (LoopRole::Hole, INNER_MEASURED.to_vec()),
+            (LoopRole::Fill, OUTER_MEASURED.to_vec()),
         ];
         let at = |point| signed_distance_to_region(&region, point, Metric::Euclidean);
         assert!(at([1.0, 6.0]) < 0.0, "in the ring");
@@ -558,8 +587,8 @@ mod tests {
     #[test]
     fn the_coarse_region_claim_declines_anything_a_hole_touches() {
         let region = [
-            (LoopRole::Fill, OUTER.to_vec()),
             (LoopRole::Hole, INNER.to_vec()),
+            (LoopRole::Fill, OUTER.to_vec()),
         ];
         assert!(
             rectangle_inside_region(&region, [1.0, 1.0], [3.0, 3.0]),

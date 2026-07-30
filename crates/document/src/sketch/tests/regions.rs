@@ -293,11 +293,11 @@ fn an_unpicked_inner_face_reads_as_a_void() {
     );
 }
 
-/// A picked face inside an unpicked one is NOT material: the hole vetoes everything within it, so
-/// the field never resurrects it as an island — and the resolve agrees, which is the point of the
-/// wash and the occupancy reading one definition.
+/// Carving a region does NOT carve what is nested inside it: a picked face inside an unpicked one
+/// stands as an island. Each face's pick state governs its OWN area, so "carve this region" carves
+/// that region and nothing else — the region fold is ordered innermost-first, not a global veto.
 #[test]
-fn a_picked_island_inside_a_void_is_not_material() {
+fn a_picked_island_inside_a_void_survives_the_carve() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     square(&mut sketch, 0, 20);
     square(&mut sketch, 4, 12);
@@ -314,14 +314,18 @@ fn a_picked_island_inside_a_void_is_not_material() {
         "the outermost ring is material"
     );
     assert!(
-        !substrate::geom2d::point_in_region(&field, [10.0, 10.0]),
-        "the island inside the void is not"
+        !substrate::geom2d::point_in_region(&field, [6.0, 6.0]),
+        "the carved middle is not"
+    );
+    assert!(
+        substrate::geom2d::point_in_region(&field, [10.0, 10.0]),
+        "the island inside the carve still is"
     );
     let occupied = occupancy_set(&SketchSolid::extrude(sketch, 1), 8).len();
     assert_eq!(
         occupied,
-        20 * 20 - 12 * 12,
-        "the resolve agrees: the island is void too"
+        20 * 20 - 12 * 12 + 4 * 4,
+        "the resolve agrees: the ring and the island, not the pocket between them"
     );
 }
 

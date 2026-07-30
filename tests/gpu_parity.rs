@@ -3044,8 +3044,8 @@ const WASH_PLANE: display::renderer::SketchPlaneFrame = display::renderer::Sketc
 /// The wash is a hand-written mirror of `signed_distance_to_region`, so this renders it over a known
 /// plane and asserts the resolved alpha against the CPU predicate, pixel by pixel: full tint alpha
 /// well inside the material, nothing at all well outside it or inside a void. The fixture is the
-/// case the mesh wash got wrong — a picked region, an unpicked void in it, and a picked island
-/// inside that void, which a `Hole` vetoes.
+/// nesting the mesh wash got wrong — a picked region, an unpicked void carved in it, and a picked
+/// island standing inside that void, all three of which the loop ORDER resolves.
 ///
 /// Only pixels FAR from any boundary are asserted (further than one antialiasing band plus the MSAA
 /// sample spread); the edge band is the shader's own smoothstep, which has no byte-exact CPU twin.
@@ -3060,11 +3060,12 @@ fn sketch_region_wash_matches_the_cpu_region_field() {
     let size = 64u32;
     let span = 32.0f32;
     let voxels_per_pixel = span / size as f32;
-    // 24×24 material, a 16×16 void in it, an 8×8 picked island inside the void.
+    // 24×24 material, a 16×16 void carved in it, an 8×8 picked island inside the void —
+    // INNERMOST-FIRST, which is `point_in_region`'s contract.
     let region = vec![
-        (LoopRole::Fill, wash_square(4.0, 24.0)),
-        (LoopRole::Hole, wash_square(8.0, 16.0)),
         (LoopRole::Fill, wash_square(12.0, 8.0)),
+        (LoopRole::Hole, wash_square(8.0, 16.0)),
+        (LoopRole::Fill, wash_square(4.0, 24.0)),
     ];
     let tint = [0.2, 0.4, 0.8, 0.54];
 
@@ -3154,8 +3155,8 @@ fn nested_picked_regions_wash_to_one_alpha() {
         size,
         WASH_PLANE,
         &[
-            (LoopRole::Fill, wash_square(4.0, 24.0)),
             (LoopRole::Fill, wash_square(10.0, 12.0)),
+            (LoopRole::Fill, wash_square(4.0, 24.0)),
         ],
         tint,
         ray_frame,

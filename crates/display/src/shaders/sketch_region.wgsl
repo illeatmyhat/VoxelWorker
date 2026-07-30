@@ -3,19 +3,22 @@
 // the signal at low alpha and a void carries none.
 //
 // **This is a hand-written WGSL MIRROR of `substrate::geom2d::signed_distance_to_region`**
-// and the three functions it folds — `signed_distance_to_polygon`, `distance_point_to_segment`
-// (the `Metric::Euclidean` branch) and `point_in_polygon` for the sign. Every function marked
-// MIRROR has a named Rust counterpart, and the CPU and the shader are handed the SAME
+// and the functions it folds — `nearest_edge_distance`, `distance_point_to_segment` (the
+// `Metric::Euclidean` branch) and `point_in_polygon` for the sign. Every function marked MIRROR
+// has a named Rust counterpart, and the CPU and the shader are handed the SAME
 // `(LoopRole, Vec<[f32; 2]>)` value the resolve consumes — that is what the geom2d module doc's
 // f32 measurement half exists for, since WGSL has no f64.
+//
+// The loop ORDER is part of that value: innermost-first (smallest enclosed area first), which is
+// what makes a loop govern its own area and nothing nested inside it.
 //
 // ## Why a field and not a mesh
 //
 // The overlay used to triangulate each face and fill it with an `egui::Mesh`. Two faces that
 // nest have overlapping polygons, so the alpha composited twice; a void had to be bridged out of
 // its contour by hand. Evaluated as a field none of that arises — `point_in_region`'s rule
-// ("inside a Fill, inside no Hole") IS the nesting, per pixel — and the edge gets antialiasing
-// from the distance for free.
+// ("the innermost loop containing this point decides") IS the nesting, per pixel — and the edge
+// gets antialiasing from the distance for free.
 //
 // ## Frames (ADR 0008)
 //
@@ -52,11 +55,11 @@ struct SketchRegionUniforms {
     // The profile's bounding box, padded: xy = minimum, zw = maximum, in profile voxels. The
     // early-out that keeps a whole-screen pass from evaluating every edge at every pixel.
     bounds: vec4<f32>,
-    // x: the number of loops. y/z/w unused.
+    // x: the number of loops, ordered innermost-first. y/z/w unused.
     counts: vec4<u32>,
 };
 
-// One boundary loop's slice of `region_points`.
+// One boundary loop's slice of `region_points`. Innermost-first in `region_loops`.
 struct RegionLoop {
     // 0 Fill, 1 Hole — matching `LoopRole`'s declaration order in substrate::geom2d
     // (`sketch_region_loop_role_discriminant` is the guarded conversion).
@@ -123,8 +126,9 @@ fn point_in_polygon(start: u32, count: u32, sample: vec2<f32>) -> bool {
     return inside;
 }
 
-// MIRROR of `signed_distance_to_polygon` (geom2d.rs): nearest edge, signed by containment.
-fn signed_distance_to_polygon(start: u32, count: u32, point: vec2<f32>) -> f32 {
+// MIRROR of `nearest_edge_distance` (geom2d.rs): the UNSIGNED distance to the nearest edge. The
+// region decides the sign for itself, so the edges are walked once.
+fn nearest_edge_distance(start: u32, count: u32, point: vec2<f32>) -> f32 {
     if (count < 2u) {
         return FAR;
     }
@@ -135,36 +139,31 @@ fn signed_distance_to_polygon(start: u32, count: u32, point: vec2<f32>) -> f32 {
         nearest = min(nearest, distance_point_to_segment(previous, current, point));
         previous = current;
     }
-    if (point_in_polygon(start, count, point)) {
-        return -nearest;
-    }
     return nearest;
 }
 
-// MIRROR of `signed_distance_to_region` (geom2d.rs): `min` over the Fill loops (union), then
-// `max` against each negated Hole loop (subtraction). Two passes, in that order — the same 2D
-// reading of the 3D composite algebra, so a hole in a profile behaves like a subtracted body.
+// MIRROR of `signed_distance_to_region` (geom2d.rs): the magnitude is the distance to the nearest
+// loop boundary of any role (every boundary of the region is one of those, so the field is zero
+// wherever the sign flips), and the sign comes from the FIRST loop containing the point.
+//
+// The loops arrive innermost-first (smallest area first), so each one governs its own area and
+// nothing nested inside it — which is what leaves a picked region standing inside a carved one.
 fn signed_distance_to_region(point: vec2<f32>) -> f32 {
-    var distance = FAR;
+    var nearest = FAR;
+    var decided = false;
+    var inside = false;
     for (var index = 0u; index < uniforms.counts.x; index = index + 1u) {
         let region = region_loops[index];
-        if (region.role == ROLE_FILL) {
-            distance = min(
-                distance,
-                signed_distance_to_polygon(region.start, region.count, point)
-            );
+        nearest = min(nearest, nearest_edge_distance(region.start, region.count, point));
+        if (!decided && point_in_polygon(region.start, region.count, point)) {
+            decided = true;
+            inside = region.role == ROLE_FILL;
         }
     }
-    for (var index = 0u; index < uniforms.counts.x; index = index + 1u) {
-        let region = region_loops[index];
-        if (region.role == ROLE_HOLE) {
-            distance = max(
-                distance,
-                -signed_distance_to_polygon(region.start, region.count, point)
-            );
-        }
+    if (inside) {
+        return -nearest;
     }
-    return distance;
+    return nearest;
 }
 
 // ---------------------------------------------------------------------------

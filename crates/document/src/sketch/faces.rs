@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use super::{arc_interior_points, EntityId, EntityRole, Sketch, SketchPoint};
+use super::{arc_interior_points_within, EntityId, EntityRole, Sketch, SketchPoint};
 
 /// A derived face's identity: the sorted set of the `origin` ids of its boundary edges (ADR 0030
 /// §3). It survives the edits that leave a face the same face — dragging a vertex touches no
@@ -69,10 +69,23 @@ struct HalfEdge {
     departure: f64,
 }
 
-/// Every bounded face of the sketch's planar graph, deterministically ordered by key.
+/// Every bounded face of the sketch's planar graph, deterministically ordered by key, with arcs
+/// tessellated at the RESOLVED tolerance — the faces that are the profile's meaning.
 ///
 /// Construction geometry is skipped: a construction edge never bounds a region (ADR 0030 §1).
 pub fn derive(sketch: &Sketch) -> Vec<Face> {
+    derive_within(sketch, super::ARC_SAGITTA_TOLERANCE_VOXELS)
+}
+
+/// [`derive()`] with a caller-chosen arc sagitta tolerance — the DISPLAY door, mirroring
+/// [`super::arc_interior_points_within`].
+///
+/// An arc's chord count follows its radius in VOXELS, so a face bounded by a curve is the same
+/// coarse polygon however far a viewer has zoomed in. A viewer that knows what a voxel is currently
+/// worth in pixels asks for a finer tolerance and gets the same face with a smoother boundary; the
+/// graph walk, the face keys and the pick state are geometry-independent, so nothing else moves.
+/// Only [`derive()`]'s pinned tolerance is the resolved MEANING (ADR 0019).
+pub fn derive_within(sketch: &Sketch, arc_tolerance_voxels: f64) -> Vec<Face> {
     let position = |id: EntityId| {
         sketch
             .points
@@ -104,8 +117,12 @@ pub fn derive(sketch: &Sketch) -> Vec<Face> {
         let (Some(from), Some(to)) = (position(arc.from), position(arc.to)) else {
             continue;
         };
-        let interior =
-            arc_interior_points(from.in_plane(), to.in_plane(), arc.bulge.to_degrees_f64());
+        let interior = arc_interior_points_within(
+            from.in_plane(),
+            to.in_plane(),
+            arc.bulge.to_degrees_f64(),
+            arc_tolerance_voxels,
+        );
         push_half_edges(
             &mut half_edges,
             arc.id,
