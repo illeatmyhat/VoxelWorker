@@ -139,7 +139,9 @@ pub use work::workers::Worker;
 // `cfg(test)` only: this crate has no `oracle` feature since `shot` became its own
 // package, and `shot` reaches the resolver through `evaluation` directly rather than
 // through this re-export. The dev-dependency on `evaluation` supplies the feature.
-pub use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+pub use document::sketch::{
+    Circle, Operation, PlaneAxis, RevolveAxis, Sketch, SketchLength, SketchPoint, SketchSolid,
+};
 #[cfg(test)]
 pub use evaluation::two_layer_store::resolve_region_two_layer;
 pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};

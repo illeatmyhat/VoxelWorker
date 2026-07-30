@@ -10,6 +10,10 @@
 //! That traces every bounded face counter-clockwise and each connected component's unbounded face
 //! clockwise, so the signed area's sign is what tells them apart.
 //!
+//! A [`Circle`](super::Circle) skips the walk entirely: a closed curve is already a loop, so it
+//! contributes one face directly (ADR 0035 Decision 7). It needs no vertex to hang from, which is
+//! why a circle drawn on an empty plane bounds a region where a lone arc bounds nothing.
+//!
 //! Nesting is deliberately NOT computed here. Two disjoint loops derive as two faces, and a hole
 //! appears only because the author unpicked the inner one — the 2D CSG in
 //! [`substrate::geom2d::signed_distance_to_region`] then subtracts it from whatever contains it.
@@ -113,10 +117,6 @@ pub fn derive(sketch: &Sketch) -> Vec<Face> {
             ProfileEdge::curved(from, to, arc.bulge.to_degrees_f64()),
         );
     }
-    if half_edges.is_empty() {
-        return Vec::new();
-    }
-
     // The cyclic order of departures around each vertex, counter-clockwise. Ties (two edges
     // leaving in the same direction) break by half-edge index so the order is total.
     let mut around: HashMap<EntityId, Vec<usize>> = HashMap::new();
@@ -174,6 +174,24 @@ pub fn derive(sketch: &Sketch) -> Vec<Face> {
         if let Some(face) = face_from_cycle(&half_edges, &cycle) {
             faces.push(face);
         }
+    }
+    // A circle needs no walk: it closes on itself, so it IS a face (ADR 0035 Decision 7). It joins
+    // the graph's faces here as a peer, and the region's ordered fold decides nesting from area the
+    // same way it does for two disjoint squares.
+    for circle in sketch.circles.iter().filter(|c| c.role == EntityRole::Real) {
+        let Some(centre) = position(circle.center) else {
+            continue;
+        };
+        let edge = ProfileEdge::circle(centre.in_plane(), circle.radius.value());
+        let area = edge.signed_area_term();
+        if area <= AREA_EPSILON_SQUARE_VOXELS {
+            continue;
+        }
+        faces.push(Face {
+            key: FaceKey::from_origins([circle.origin]),
+            boundary: vec![edge],
+            area_voxels: area,
+        });
     }
     faces.sort_by(|a, b| {
         a.key

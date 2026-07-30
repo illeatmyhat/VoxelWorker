@@ -3,7 +3,7 @@
 
 use voxel_worker::{
     CombineOp, DefId, MaterialChoice, Node, NodeBuilder, NodeContent, PlaneAxis, RevolveAxis,
-    Scene, SdfShape, ShapeKind, Sketch, SketchPoint, SketchSolid,
+    Scene, SdfShape, ShapeKind, Sketch, SketchLength, SketchPoint, SketchSolid,
 };
 
 /// The block offset of the far-offset demo box (ADR 0002 streaming S1; S4b makes it
@@ -837,6 +837,73 @@ pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
         NodeContent::SketchTool {
             producer,
             material: MaterialChoice::Stone,
+        },
+    );
+    let mut scene = with_node_ids(Scene::from_nodes(vec![node]));
+    scene.voxels_per_block = voxels_per_block;
+    DemoScene::first_node(scene)
+}
+
+/// Build the `--demo-sketch-circle` (ADR 0035 Decision 7): ONE whole-circle entity, extruded.
+///
+/// A circle has no on-curve vertex to hang a loop from, so nothing about the graph walk that
+/// derives faces from segments and arcs applies to it — it closes on itself and IS a face. A round
+/// disc in the render is the proof that path derives, resolves and displays; an octagon would mean
+/// something flattened it, and nothing at all would mean the closed curve never reached a face.
+pub(crate) fn build_demo_sketch_circle(voxels_per_block: u32) -> DemoScene {
+    let block = voxels_per_block.max(1) as i64;
+    let sketch = Sketch::circle(PlaneAxis::Z, SketchPoint::new(0, 0), 3 * block);
+    let producer = SketchSolid::extrude(sketch, block as u32);
+    let node = Node::new(
+        "Sketch circle",
+        NodeContent::SketchTool {
+            producer,
+            material: MaterialChoice::Stone,
+        },
+    );
+    let mut scene = with_node_ids(Scene::from_nodes(vec![node]));
+    scene.voxels_per_block = voxels_per_block;
+    DemoScene::first_node(scene)
+}
+
+/// Build the `--demo-sketch-donut` (ADR 0035 Decision 7): a square with a circle inside it, the
+/// circle UNPICKED.
+///
+/// Two faces, one of them closed-curve, folded smallest-area-first — so the disc carves the square
+/// it sits in and the render has a round hole through it. That the hole is round and the outside is
+/// square is the point: one region, two kinds of boundary, no conversion between them.
+pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
+    let block = voxels_per_block.max(1) as i64;
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let span = 8 * block;
+    let corners = [
+        SketchPoint::new(0, 0),
+        SketchPoint::new(span, 0),
+        SketchPoint::new(span, span),
+        SketchPoint::new(0, span),
+    ]
+    .map(|at| sketch.add_free_point(at));
+    for index in 0..4 {
+        sketch.connect(corners[index], corners[(index + 1) % 4]);
+    }
+    sketch.add_circle(
+        SketchPoint::new(span / 2, span / 2),
+        SketchLength::new(3 * block),
+    );
+    // The disc is the smaller face; unpicking it is what turns the square into a ring.
+    let disc = sketch
+        .faces()
+        .into_iter()
+        .min_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels))
+        .expect("the square and the disc")
+        .key;
+    sketch.set_face_picked(disc, false);
+    let producer = SketchSolid::extrude(sketch, block as u32);
+    let node = Node::new(
+        "Sketch donut",
+        NodeContent::SketchTool {
+            producer,
+            material: MaterialChoice::Wood,
         },
     );
     let mut scene = with_node_ids(Scene::from_nodes(vec![node]));

@@ -186,6 +186,15 @@ pub(crate) struct ShotOptions {
     /// capture confirms the revolve producer resolves + renders through the same
     /// pipeline as `SdfShape`. Overrides --shape/--size/--density.
     pub(crate) demo_sketch_revolve: bool,
+    /// `--demo-sketch-circle` (ADR 0035 Decision 7): a single whole-CIRCLE entity extruded.
+    /// A circle has no on-curve vertex and bounds a face on its own, so a disc in the render
+    /// is the evidence the closed-curve path derives, resolves and displays. Overrides
+    /// --shape/--size/--density.
+    pub(crate) demo_sketch_circle: bool,
+    /// `--demo-sketch-donut` (ADR 0035 Decision 7): a square with a circle inside it, the
+    /// circle UNPICKED. A visible hole is the evidence a closed curve takes part in the
+    /// region's ordered fold like any other face. Overrides --shape/--size/--density.
+    pub(crate) demo_sketch_donut: bool,
     /// `--demo-sketch-box <edge_voxels>`: a solid cube of the given voxel edge, built
     /// via the SKETCH EXTRUDE path (a square profile extruded its own edge) — the
     /// large-scene fixture for the two-layer / brick display + fog at scale. `Some(N)`
@@ -378,6 +387,8 @@ impl Default for ShotOptions {
             demo_village_far: false,
             demo_sketch_extrude: false,
             demo_sketch_revolve: false,
+            demo_sketch_circle: false,
+            demo_sketch_donut: false,
             demo_sketch_box: None,
             demo_groups: false,
             far_offset: false,
@@ -705,6 +716,12 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--demo-sketch-revolve" => {
                 options.demo_sketch_revolve = true;
             }
+            "--demo-sketch-circle" => {
+                options.demo_sketch_circle = true;
+            }
+            "--demo-sketch-donut" => {
+                options.demo_sketch_donut = true;
+            }
             "--demo-sketch-box" => {
                 options.demo_sketch_box = Some(
                     args.next()
@@ -920,6 +937,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
+                     \x20            [--demo-sketch-circle] [--demo-sketch-donut]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
@@ -957,6 +975,12 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20  --demo-sketch-revolve build a single 2D-sketch→revolve producer:\n\
                      \x20                a stepped (vase) radial profile revolved 360° about\n\
                      \x20                +Z into a solid of revolution (ADR 0003 §3i). Overrides\n\
+                     \x20                --shape/--size/--density.\n\
+                     \x20  --demo-sketch-circle  build a single whole-CIRCLE sketch extruded —\n\
+                     \x20                a closed curve bounds a face with no on-curve vertex\n\
+                     \x20                (ADR 0035 D7). Overrides --shape/--size/--density.\n\
+                     \x20  --demo-sketch-donut   the same circle inside a square, UNPICKED, so\n\
+                     \x20                the closed curve carves a hole (ADR 0035 D7). Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\
                      \x20                blocks (ADR 0002 streaming S1). Precision baseline:\n\

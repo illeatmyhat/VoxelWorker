@@ -219,6 +219,91 @@ impl SketchPoint {
     }
 }
 
+/// A scalar sketch length — a circle's radius today, whatever else the tool suite dimensions
+/// later (ADR 0035 Decision 7). The one-dimensional twin of [`SketchPoint`], carried the same way
+/// for the same reasons: a canonical integer voxel count, a sub-voxel remainder, and an optionally
+/// retained authored [`Measurement`].
+///
+/// It is a separate type rather than a bare `f64` because a radius has to survive a density
+/// re-target: `2 blocks` is a different voxel count at `d16` and `d32`, and only the retained
+/// expression knows that.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SketchLength {
+    /// Whole voxels at the document density `d`.
+    pub voxels: i64,
+    /// Sub-voxel remainder in `[0, 1)`.
+    #[serde(default)]
+    pub local_voxels: f32,
+    /// The RETAINED authored expression (ADR 0029), or `None` for a plain snapped length.
+    #[serde(default)]
+    pub measurement: Option<Measurement>,
+}
+
+impl SketchLength {
+    /// A whole-voxel length.
+    pub fn new(voxels: i64) -> Self {
+        Self {
+            voxels,
+            local_voxels: 0.0,
+            measurement: None,
+        }
+    }
+
+    /// A CONTINUOUS length: floor lands in [`voxels`](Self::voxels), the fraction in
+    /// [`local_voxels`](Self::local_voxels). A non-finite input sanitises to zero, the same
+    /// `NaN` guard [`SketchPoint::from_continuous`] keeps.
+    pub fn from_continuous(voxels: f64) -> Self {
+        if !voxels.is_finite() {
+            return Self::new(0);
+        }
+        let floor = voxels.floor();
+        Self {
+            voxels: floor as i64,
+            local_voxels: (voxels - floor) as f32,
+            measurement: None,
+        }
+    }
+
+    /// The continuous value: integer part first, then the fraction.
+    pub fn value(&self) -> f64 {
+        self.voxels as f64 + self.local_voxels as f64
+    }
+
+    /// The same value in the **measurement** width, narrowed from the `i64` source directly
+    /// ([`SketchPoint::in_plane_measured`] keeps the same discipline and says why).
+    pub fn measured(&self) -> f32 {
+        self.voxels as f32 + self.local_voxels
+    }
+
+    /// This length re-targeted from `old_density` to `new_density`, exactly as
+    /// [`SketchPoint::retargeted`] treats one coordinate.
+    pub fn retargeted(&self, old_density: u32, new_density: u32) -> Self {
+        let Some(measurement) = self.measurement else {
+            let scale = new_density.max(1) as f64 / old_density.max(1) as f64;
+            return Self::from_continuous(self.value() * scale);
+        };
+        let (voxels, retained) = match measurement.to_voxels(new_density) {
+            Ok(voxels) => (voxels, measurement),
+            Err(parametric::units::MeasurementError::BlockTermNotWholeVoxels {
+                nearest_floor_voxels,
+                ..
+            }) => (
+                nearest_floor_voxels,
+                Measurement::from_voxels(nearest_floor_voxels),
+            ),
+            Err(parametric::units::MeasurementError::ZeroDensity) => {
+                let voxels = measurement.voxel_term();
+                (voxels, Measurement::from_voxels(voxels))
+            }
+        };
+        Self {
+            voxels,
+            local_voxels: self.local_voxels,
+            measurement: Some(retained),
+        }
+    }
+}
+
 /// A stable, monotonically-allocated identifier for a sketch entity (a point or a
 /// segment). **Never a `Vec` index** — an index shifts when an entity is deleted, which
 /// would silently corrupt every reference; a stable id does not (ADR 0030). Ids are
@@ -348,6 +433,34 @@ impl ProfileEdge {
         }
     }
 
+    /// A whole circle as ONE closed edge (ADR 0035 Decision 7): tail and head are the same point,
+    /// and the arc sweeps a full turn counter-clockwise about `centre`.
+    ///
+    /// The seam sits at bearing zero — `centre + [radius, 0]` — matching
+    /// [`substrate::geom2d::RegionEdge`]'s convention so the CPU field and its WGSL mirror cut the
+    /// circle in the same place. It is a seam and not a vertex: the document holds no [`Point`]
+    /// there, nothing may snap to it, and moving the circle moves it with no trace.
+    pub fn circle(centre: [f64; 2], radius: f64) -> Self {
+        let seam = SketchPoint::from_continuous(centre[0] + radius, centre[1]);
+        ProfileEdge {
+            from: seam,
+            to: seam,
+            arc: Some(ProfileArc {
+                centre,
+                radius,
+                start_radians: 0.0,
+                sweep_radians: std::f64::consts::TAU,
+            }),
+        }
+    }
+
+    /// Whether this edge closes on itself — a whole circle rather than a span between two
+    /// distinct points. Such an edge is a loop all by itself.
+    pub fn is_closed(&self) -> bool {
+        self.arc
+            .is_some_and(|arc| arc.sweep_radians.abs() >= std::f64::consts::TAU)
+    }
+
     /// The same edge walked the other way — what a half-edge traversal against the stored direction
     /// gets. An arc keeps its circle and reverses its sweep.
     pub fn reversed(&self) -> Self {
@@ -397,14 +510,13 @@ impl ProfileEdge {
 
     /// The edge's tessellated INTERIOR points (both endpoints exclusive), empty for a straight
     /// span. The one place a tolerance enters, reached only through [`ProfileLoop::flatten`].
+    ///
+    /// It walks the SOLVED circle rather than re-deriving one from the endpoints, which is what
+    /// lets a closed curve through at all: a full turn has a zero-length chord, and there is no
+    /// circle to be recovered from that.
     pub fn interior_points(&self, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
         match self.arc {
-            Some(arc) => arc_interior_points_within(
-                self.from.in_plane(),
-                self.to.in_plane(),
-                arc.sweep_radians.to_degrees(),
-                sagitta_tolerance_voxels,
-            ),
+            Some(arc) => arc_interior_on_circle(arc, sagitta_tolerance_voxels),
             None => Vec::new(),
         }
     }
@@ -531,6 +643,32 @@ pub struct Arc {
     pub role: EntityRole,
 }
 
+/// A whole-circle entity: a centre [`Point`] **by id** plus a radius (ADR 0035 Decision 7).
+///
+/// A closed curve is its own loop. There is no on-curve vertex to anchor it to and none is
+/// invented — a circle drawn on an empty plane bounds a face immediately, where an arc has to meet
+/// something to bound anything. The centre is the handle: dragging it moves the circle, and
+/// changing [`radius`](Self::radius) resizes it, so the two authored degrees of freedom are exactly
+/// the two the shape has.
+///
+/// The centre is always [`EntityRole::Construction`] — a centre is not on the boundary, so it never
+/// bounds a region, exactly as an [`Arc`]'s centre does not.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Circle {
+    /// Stable identity.
+    pub id: EntityId,
+    /// The [`Point`] entity at the circle's centre. Unlike an [`Arc`]'s centre this is AUTHORED,
+    /// not derived: it is where the author put it, and nothing recomputes it.
+    pub center: EntityId,
+    /// The radius, in voxels, optionally retaining the authored expression.
+    pub radius: SketchLength,
+    /// Lineage id for region identity across edits (ADR 0030 §3), like [`Segment::origin`].
+    pub origin: EntityId,
+    /// Real vs construction geometry.
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
 /// The `center` of an arc that has no centre point yet — a pre-centre document, or an arc
 /// mid-construction. Ids are handed out monotonically from zero and never reused, so the top
 /// of the range can never collide with a live entity.
@@ -561,6 +699,10 @@ pub struct Sketch {
     /// document loads with none.
     #[serde(default)]
     arcs: Vec<Arc>,
+    /// The whole-circle entities (ADR 0035 Decision 7). `serde(default)` so a pre-circle
+    /// document loads with none.
+    #[serde(default)]
+    circles: Vec<Circle>,
     /// The faces the author has UNPICKED, by boundary origin-set key (ADR 0030 §3, #100).
     /// Every derived face is picked by default, so this holds only the exceptions and is
     /// usually empty. A key that matches no current face is inert, not an error: it costs
@@ -583,6 +725,7 @@ impl Sketch {
             points: Vec::with_capacity(profile.len()),
             segments: Vec::with_capacity(profile.len()),
             arcs: Vec::new(),
+            circles: Vec::new(),
             unpicked: std::collections::BTreeSet::new(),
             next_id: 0,
         };
@@ -621,9 +764,19 @@ impl Sketch {
             points: Vec::new(),
             segments: Vec::new(),
             arcs: Vec::new(),
+            circles: Vec::new(),
             unpicked: std::collections::BTreeSet::new(),
             next_id: 0,
         }
+    }
+
+    /// A sketch on `plane` holding ONE circle of `radius_voxels` about `centre` — the circle twin
+    /// of [`rectangle`](Self::rectangle), and the shortest path to a profile with no straight edge
+    /// in it at all.
+    pub fn circle(plane: PlaneAxis, centre: SketchPoint, radius_voxels: i64) -> Self {
+        let mut sketch = Self::empty(plane);
+        sketch.add_circle(centre, SketchLength::new(radius_voxels));
+        sketch
     }
 
     /// Read-only view of the point entities.
@@ -641,6 +794,11 @@ impl Sketch {
         &self.arcs
     }
 
+    /// Read-only view of the whole-circle entities (ADR 0035 Decision 7).
+    pub fn circles(&self) -> &[Circle] {
+        &self.circles
+    }
+
     /// Test-only mutable access to the raw segment vector, for constructing the malformed
     /// stores the load-repair path is meant to erase.
     #[cfg(test)]
@@ -653,6 +811,12 @@ impl Sketch {
     #[cfg(test)]
     pub(crate) fn arcs_mut_for_test(&mut self) -> &mut Vec<Arc> {
         &mut self.arcs
+    }
+
+    /// Test-only mutable access to the raw circle vector.
+    #[cfg(test)]
+    pub(crate) fn circles_mut_for_test(&mut self) -> &mut Vec<Circle> {
+        &mut self.circles
     }
 
     /// Allocate a point entity at `at`, returning its fresh id.
@@ -868,6 +1032,8 @@ impl Sketch {
         self.segments.retain(|seg| seg.from != id && seg.to != id);
         self.arcs
             .retain(|arc| arc.from != id && arc.to != id && arc.center != id);
+        // A circle IS its centre plus a radius, so deleting the centre deletes the circle.
+        self.circles.retain(|circle| circle.center != id);
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
     }
@@ -965,6 +1131,77 @@ impl Sketch {
         Some(id)
     }
 
+    /// Draw a circle of `radius` about a FRESH construction centre at `at`, returning the circle's
+    /// id (ADR 0035 Decision 7). `None` — and no mutation — for a non-positive or non-finite
+    /// radius, which is not a curve.
+    ///
+    /// The centre is minted here rather than taken as an id because that is what the centre-radius
+    /// tool does: one click plants the centre, the drag sets the radius. Drawing about a point that
+    /// already exists is [`circle_about`](Self::circle_about).
+    pub fn add_circle(&mut self, at: SketchPoint, radius: SketchLength) -> Option<EntityId> {
+        if !circle_radius_is_valid(radius.value()) {
+            return None;
+        }
+        let center = self.add_construction_point(at);
+        self.push_circle(center, radius)
+    }
+
+    /// Draw a circle of `radius` about the EXISTING point `center`, returning its id. `None` for an
+    /// unknown point, an invalid radius, or a circle the store already holds about that centre at
+    /// that radius — the same curve twice is not two curves.
+    ///
+    /// Concentric circles of different radii are fine, and are the ring: two faces, the inner one
+    /// unpicked.
+    pub fn circle_about(&mut self, center: EntityId, radius: SketchLength) -> Option<EntityId> {
+        if self.point_index(center).is_none()
+            || !circle_radius_is_valid(radius.value())
+            || self.circle_traces(center, radius.value())
+        {
+            return None;
+        }
+        self.push_circle(center, radius)
+    }
+
+    /// Allocate the circle entity itself, its `origin` a root of its own lineage.
+    fn push_circle(&mut self, center: EntityId, radius: SketchLength) -> Option<EntityId> {
+        let id = self.alloc_id();
+        self.circles.push(Circle {
+            id,
+            center,
+            radius,
+            origin: id,
+            role: EntityRole::Real,
+        });
+        Some(id)
+    }
+
+    /// Whether a circle of this radius about this centre is already stored.
+    pub fn circle_traces(&self, center: EntityId, radius_voxels: f64) -> bool {
+        self.circles
+            .iter()
+            .any(|circle| circle.center == center && circle.radius.value() == radius_voxels)
+    }
+
+    /// Resize the circle `id` — the radius-drag write path. Reports whether it took: an unknown id
+    /// or an invalid radius leaves the store untouched rather than erasing the curve.
+    pub fn set_circle_radius(&mut self, id: EntityId, radius: SketchLength) -> bool {
+        if !circle_radius_is_valid(radius.value()) {
+            return false;
+        }
+        let Some(index) = self.circles.iter().position(|circle| circle.id == id) else {
+            return false;
+        };
+        self.circles[index].radius = radius;
+        true
+    }
+
+    /// Delete just the circle with id `circle_id`. Its centre goes with it when nothing else names
+    /// it — the centre is the circle's own anchor, so there is no circle left for it to centre.
+    pub fn delete_circle(&mut self, circle_id: EntityId) {
+        self.circles.retain(|circle| circle.id != circle_id);
+        self.prune_orphan_centers();
+    }
+
     /// Re-derive every arc's centre point from its endpoints and bulge (ADR 0030 §5), minting
     /// one for any arc that has none yet. The centre is a real [`Point`] so it can be selected,
     /// snapped to and dragged like any other, but its coordinates are OWNED here — every edit
@@ -1003,6 +1240,9 @@ impl Sketch {
         }
         for segment in &self.segments {
             referenced.extend([segment.from, segment.to]);
+        }
+        for circle in &self.circles {
+            referenced.insert(circle.center);
         }
         self.points.retain(|point| {
             point.role != EntityRole::Construction || referenced.contains(&point.id)
@@ -1072,6 +1312,10 @@ impl Sketch {
         for point in &mut self.points {
             point.at = point.at.retargeted(old_density, new_density);
         }
+        // A radius is a length like any other: an authored `2 blocks` must stay two blocks.
+        for circle in &mut self.circles {
+            circle.radius = circle.radius.retargeted(old_density, new_density);
+        }
         self.sync_arc_centers();
     }
 
@@ -1084,7 +1328,7 @@ impl Sketch {
     /// is a cleanup + audit, not a crash guard.
     pub fn repair(&mut self) -> usize {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
-        let before = self.segments.len() + self.arcs.len();
+        let before = self.segments.len() + self.arcs.len() + self.circles.len();
         self.segments.retain(|seg| {
             seg.from != seg.to && point_ids.contains(&seg.from) && point_ids.contains(&seg.to)
         });
@@ -1096,7 +1340,12 @@ impl Sketch {
                 && point_ids.contains(&arc.to)
                 && arc_sweep_is_valid(arc.bulge.to_degrees_f64())
         });
-        let dropped = before - self.segments.len() - self.arcs.len();
+        // A circle is invalid on a missing centre or a radius that is not a positive finite
+        // length — either way there is no curve to draw.
+        self.circles.retain(|circle| {
+            point_ids.contains(&circle.center) && circle_radius_is_valid(circle.radius.value())
+        });
+        let dropped = before - self.segments.len() - self.arcs.len() - self.circles.len();
         // A pre-centre document names no centre at all, and a just-erased arc leaves one
         // behind; both are settled here, so a loaded sketch always agrees with its arcs.
         self.prune_orphan_centers();
@@ -1119,10 +1368,22 @@ pub const ARC_SAGITTA_TOLERANCE_VOXELS: f64 = 1.0 / 16.0;
 /// into an unbounded fan.
 const ARC_MAX_CHORDS: u32 = 512;
 
-/// Whether a signed sweep is a legal arc bulge: finite, non-zero, strictly under a full
+/// Whether a signed sweep is a legal [`Arc`] bulge: finite, non-zero, strictly under a full
 /// turn in magnitude.
+///
+/// The full turn stays excluded ON PURPOSE. A closed curve is a [`Circle`] — a centre and a radius
+/// — not an arc bulged all the way round (ADR 0035 Decision 7): the endpoint-plus-bulge form
+/// degenerates there, its chord shrinking to nothing and taking the circle it was supposed to
+/// determine with it. Admitting a 360° bulge would put an unsolvable arc in the store to spare a
+/// tool one branch.
 fn arc_sweep_is_valid(sweep_degrees: f64) -> bool {
     sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
+}
+
+/// Whether a radius is a legal [`Circle`]: finite and strictly positive. A zero radius is a point
+/// and a negative one is nothing.
+fn circle_radius_is_valid(radius_voxels: f64) -> bool {
+    radius_voxels.is_finite() && radius_voxels > 0.0
 }
 
 /// The centre and radius DERIVED from the canonical arc form (ADR 0030 §5): endpoints
@@ -1178,18 +1439,39 @@ pub fn arc_interior_points_within(
     sweep_degrees: f64,
     sagitta_tolerance_voxels: f64,
 ) -> Vec<SketchPoint> {
-    let Some((center, radius)) = arc_center_radius(from, to, sweep_degrees) else {
+    let Some((centre, radius)) = arc_center_radius(from, to, sweep_degrees) else {
         return Vec::new();
     };
-    let chords = arc_chord_count(radius, sweep_degrees, sagitta_tolerance_voxels);
-    let start = (from[1] - center[1]).atan2(from[0] - center[0]);
-    let step = sweep_degrees.to_radians() / chords as f64;
+    arc_interior_on_circle(
+        ProfileArc {
+            centre,
+            radius,
+            start_radians: (from[1] - centre[1]).atan2(from[0] - centre[0]),
+            sweep_radians: sweep_degrees.to_radians(),
+        },
+        sagitta_tolerance_voxels,
+    )
+}
+
+/// The interior points of an ALREADY-SOLVED arc — the circle walked directly, both endpoints
+/// exclusive.
+///
+/// This is the form the closed case needs. Recovering a circle from endpoints plus a bulge is a
+/// chord solve, and a whole turn has no chord; carrying the solved centre and radius instead means
+/// a circle tessellates by the same rule as every other arc rather than by a special case.
+fn arc_interior_on_circle(arc: ProfileArc, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+    let chords = arc_chord_count(
+        arc.radius,
+        arc.sweep_radians.to_degrees(),
+        sagitta_tolerance_voxels,
+    );
+    let step = arc.sweep_radians / chords as f64;
     (1..chords)
         .map(|chord_index| {
-            let angle = start + step * chord_index as f64;
+            let angle = arc.start_radians + step * chord_index as f64;
             SketchPoint::from_continuous(
-                center[0] + radius * angle.cos(),
-                center[1] + radius * angle.sin(),
+                arc.centre[0] + arc.radius * angle.cos(),
+                arc.centre[1] + arc.radius * angle.sin(),
             )
         })
         .collect()
