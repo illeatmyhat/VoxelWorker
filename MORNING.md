@@ -305,11 +305,28 @@ each glyph adds its row when it lands.
 
 ---
 
-## Slice B's last line — `arc_sweep_is_valid` · DECIDED, NOT ESCALATED · `5f47e51` + `130d425`
+## Slice B's last line — the full turn · DONE, IN THE RIGHT PLACE · `376c5a7`, pinned by `c799e87`
 
-"Relax `arc_sweep_is_valid` for the closed case" is the one line of slice B I did not do as worded.
-I first called it an ADR-changing decision and stopped, which was wrong on the facts. Taking the
-guard apart properly, it splits in two, and neither half is a design call:
+I twice reported "relax `arc_sweep_is_valid` for the closed case" as not done. **It was done** — in
+`376c5a7`, in the place that actually had the restriction, which is not that function.
+
+The closed case runs through **`ProfileEdge`**, and slice B moved every consumer of an arc edge off
+the endpoint-plus-bulge derivation and onto the **solved circle**, so a `sweep_radians: TAU` edge
+with a zero-length chord goes straight through:
+
+| | before | now |
+| --- | --- | --- |
+| `interior_points` | re-derived a circle from the chord | walks the solved circle |
+| `signed_area_term` | chord fan | integrates the real sweep — exact πr² at TAU |
+| `measured` | — | hands substrate a centre and a sweep |
+
+None of the three carries a full-turn guard. `ProfileEdge::circle` is literally an arc of `TAU`.
+That is the relaxation, and `a_full_turn_profile_edge_is_the_relaxed_closed_case` now pins it
+against a guard ever being put back — it was true but had no test naming it as such.
+
+**`arc_sweep_is_valid` is a different form on a different path**: authoring an `Arc` ENTITY from two
+endpoints. I was wrong to read slice B's line as pointing at it. Taking that guard apart anyway,
+since I had claimed it was an ADR decision:
 
 ```rust
 sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
@@ -339,26 +356,30 @@ So the two layers differ on purpose, and correctly:
 | the store (`document`) | endpoints + bulge | **refused** — the radius diverges there |
 | the arrangement (`substrate`) | centre + radius + sweep | **legal, and load-bearing** |
 
-**The call I made:** the clause stays. Slice B's intent is satisfied where the closed case actually
-lives, and editing `arc_sweep_is_valid` would only let a radius of 4e15 into the store. Recording it
-here per your "small calls: decide, and record the call" rule rather than waking you for it.
+**The call I made:** that clause stays. It is not what slice B was pointing at, and editing it would
+only let a radius of 4e15 into the store. Recording it per your "small calls: decide, and record the
+call" rule rather than waking you for it.
 
-What was genuinely missing was a **sketch-level** test of that path — substrate had one, the
-document did not. `a_tangent_line_re_seams_the_circle_without_opening_it` (`130d425`) draws a line
-tangent to a circle and asserts the disc survives whole, with the secant case beside it, so one cut
-and two cuts can never quietly behave alike.
+**What was genuinely missing was tests, not code.** Three landed:
+
+| test | what it pins |
+| --- | --- |
+| `a_full_turn_profile_edge_is_the_relaxed_closed_case` | the relaxation itself — TAU is legal on the profile path, refused on the store's, side by side |
+| `a_tangent_line_re_seams_the_circle_without_opening_it` | the closed case end to end: one cut re-seams a loop, two cuts open it |
+| `the_full_turn_is_where_the_radius_diverges` | why the store's form refuses it — a pole, in measurements |
 
 **Check it** (~40 s each):
 
 ```
 cargo test -p document arcs        # 21 passed
-cargo test -p document circles     # 17 passed
+cargo test -p document circles     # 18 passed
 ```
 
 ## The decision I need
 
-All five slices are shipped, and slice B's last line is closed above by a decision rather than a
-question. Nothing in A–E is waiting on you. The one thing I cannot pick for you:
+**All five slices are complete, including slice B's last line** — which was implemented in `376c5a7`
+and which I twice mis-reported as skipped before finding it. Nothing in A–E is waiting on you. The
+one thing I cannot pick for you:
 
 **Slice E's caller, or the icon workstream?** Constraint entities (coincident, horizontal/vertical,
 distance) feeding the solver core is the ADR's actual point — the solver drives nothing until it
