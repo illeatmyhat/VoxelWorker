@@ -257,28 +257,73 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   a solved constraint. A point with no incident edge is a legal **free point**. _Avoid_: vertex (a
   point is an entity, not a slot in a loop).
 
-- **Region** — a bounded **face of the point-segment graph**: the closed areas the entities enclose
-  (`docs/adr/0030`). Regions are **derived**, never stored. A visual crossing with no shared point
-  makes no region — snap a point at the intersection to create one.
+- **Region** — a bounded **face of the planar arrangement** of the sketch's entities: the closed
+  areas the curves enclose, cut at **every crossing**, whether or not the crossing is a shared point.
+  Regions are **derived**, never stored. Two overlapping circles make three regions and need no
+  constraint to do it. _Avoid_: face of the point-segment graph (through v1 a crossing with no shared
+  point made no region — `docs/adr/0030` §2, superseded).
+
+- **Arrangement** — the planar subdivision the sketch's curves induce: every curve cut at every
+  intersection with every other curve, the pieces forming a graph whose bounded faces are the
+  regions. The **geometric** answer to profile detection, as against the **topological** one, where
+  only a shared endpoint joins two entities. Needs curve–curve intersection, and is what lets a
+  circle crossing a line close a profile without the author snapping a point there first.
 
 - **Pick / unpick** — each region is **picked (solid) by default**; the author **unpicks** regions to
   carve holes. Explicit per-face inclusion, **not** even-odd fill. A region's identity across edits is
-  the **set of `origin` ids of its boundary edges**, so dragging a vertex or subdividing a loop edge
-  preserves an unpick, while restructuring the boundary resets it to picked. Picking regions *inside
-  one's own sketch* is authoring one's own profile, not cross-node operand targeting (ADR 0017).
+  an **interior sample point** — the deepest point inside it, where the region's signed distance is
+  most negative — and a re-derived face *is* that face when it still contains the stored point. So an
+  unpick survives a drag that moves the face, and resets to picked when the face shrinks past its own
+  sample point. Picking regions *inside one's own sketch* is authoring one's own profile, not
+  cross-node operand targeting (ADR 0017). _Avoid_: identifying a region by its boundary (an
+  arrangement re-cuts boundaries on every edit, and the three faces of two overlapping circles share
+  one origin set).
 
 - **Profile** — the shape a body is lifted from, **derived from the picked regions** of the sketch
   entities (`docs/adr/0030`). It is the *output* of authoring, not the input the author manipulates
   (that is the entities). Positioned in continuous coordinates, never required to align to the voxel
   lattice. _Avoid_: outline, vertex list (the profile is derived, not hand-maintained).
 
-- **Flattened profile** — the profile reduced to **`Fill` / `Hole` tagged loops** (simple polygons,
-  arcs tessellated at sub-voxel chord tolerance) resolved by **2D field CSG** — union the `Fill`
-  loops, subtract the `Hole` loops, reusing the 3D field algebra (ADR 0017). **This is the profile's
-  meaning, not an approximation of it**: field, classification, resolve and outset see only the loops,
-  so a new curve kind is additive at the authoring layer and invisible below it. Because the loops
-  *are* the meaning, the flattening is deterministic and versioned — changing it changes existing
-  documents. _Avoid_: even-odd fill (explicit `Fill`/`Hole` CSG, not global crossing parity).
+- **Region loops** — the profile reduced to **`Fill` / `Hole` tagged loops** resolved by **2D field
+  CSG** — union the `Fill` loops, subtract the `Hole` loops, reusing the 3D field algebra (ADR 0017).
+  A loop is a closed run of **edges** that keep their curves (a straight span or an arc), never a
+  vertex list. _Avoid_: even-odd fill (explicit `Fill`/`Hole` CSG, not global crossing parity).
+
+- **Flattening** — replacing a loop's curves with chords, within a **sagitta tolerance** measured in
+  voxels. A **consumption step, never a production step** (`docs/adr/0034`): it happens only at a
+  **terminal adapter** — a crease polyline, a screen hit-test polygon, the coarse cell classifier —
+  and nothing downstream of one inherits the tolerance. The flattened polygon is **one lossy view of
+  the region, never its meaning**; the region is a field over curve primitives and occupancy samples
+  that field exactly. _Avoid_: calling the tolerance a document constant (it is a tuning knob), or
+  passing a tolerance into a query (that means a producer flattened and the consumer is haggling).
+
+- **Constraint** — a sketch **entity** (stable id, selectable, individually deletable) asserting a
+  relationship the solver maintains: coincidence, tangency, equality, an angle, a quantization
+  (`docs/adr/0035`). A constraint **owns the position of any point it touches** — snapping only
+  decides where a point is *born*. Applying one **trial-solves**: an unsatisfiable constraint is
+  refused and names what it fights, a merely redundant one is accepted and flagged, so the system is
+  always solvable. _Avoid_: treating a snap as a constraint (it asserts nothing and is never stored
+  as one).
+
+- **Solver** — the two-tier engine that moves geometry to satisfy constraints: a **continuous** core
+  in `substrate` (residuals + Jacobian, DogLeg with a Levenberg–Marquardt fallback, no density
+  vocabulary) and an **integer outer loop** in `document` that rounds quantized freedoms, fixes
+  them, and re-solves. Both tiers run **live during a drag**. Its rank check yields the
+  degree-of-freedom count, so *fully constrained* is measured, not guessed. Floating-point by
+  nature — exactness is a storage and authoring invariant, never a solver one.
+
+- **Quantize** — the one voxel-native constraint: this degree of freedom is a whole multiple of a
+  **pitch**, at a **phase**. On a position it reads as *on the lattice*; on a distance, as *a whole
+  number of blocks thick*. Phase 0 is a voxel boundary and ½ a voxel centre — the difference between
+  an even-width and an odd-width mirror-symmetric shape. Earns its place **only where the value is
+  an output of the solve**; if the author knows the number, they type it.
+
+- **Inference** — constraints offered **while Shift is held** during a drawing gesture, sampled live
+  so candidates appear and vanish with the key and commit on mouse-up. Nothing is asserted unless the
+  author asks. Tangent, perpendicular/parallel, quantize, equal/collinear/midpoint and rise:run are
+  inferable; horizontal/vertical are not (snapping delivers them), nor coincidence (already free),
+  nor fix. Its tolerance is **in pixels** — a pick question at the cursor that never reaches the
+  document; in voxels it would be a bug.
 
 - **Construction line** — a sketch entity carrying `role: Construction`: reference geometry that
   **never bounds a region** (`docs/adr/0030`). Reserved for the eventual constraint solver; the field
@@ -286,23 +331,44 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 
 - **Sketch dimension** — a sketch entity that makes a `Measurement` **visible** on the canvas (an
   arc radius, a point-to-element distance, an angle) and — with the solver — **drives** it
-  (`docs/adr/0030`). The UI face of the measurement substrate (`docs/adr/0029`). *Display-only*
-  dimensions are solver-free; *driving* dimensions need the solver. Reserved.
+  (`docs/adr/0030`). The UI face of the measurement substrate (`docs/adr/0029`). A **driving**
+  dimension is a constraint: the solver moves geometry to satisfy its value. A **display-only**
+  dimension reports whatever the geometry currently measures and constrains nothing; it is
+  solver-free. _Avoid_: **derived** for the display-only kind, and **driven** for either — `Derived`
+  is a state classification meaning *recomputed, never stored* (`docs/adr/0022`), and Fusion's own
+  driving/driven pair is two near-homophones for opposite meanings.
 
-- **Lattice snapping** — the voxel grid standing in for a constraint solver **in v1**. Snapping to
-  grid, edges and axes delivers axis-alignment, equal lengths and coincidence as a by-product of
-  quantization, so the v1 sketch layer carries no constraint entities and no solver. This is a
-  **stand-in, not a permanent no** (`docs/adr/0029`, `docs/adr/0030`): a real solver, construction
-  lines, and constraints on points/segments are the intended future, built on the `Measurement`
-  expression substrate + stable entity ids.
+- **Quantized dimension** — a driving dimension whose value is constrained to a **whole multiple of
+  its displayed unit** rather than to a fixed number: "a whole number of blocks thick", not "32
+  voxels thick". The unit already carries the pitch (voxels → 1, blocks → the density), so the
+  author never types one. The voxel-native replacement for expression math, and the reason there is
+  no separate quantized-distance or lattice-radius constraint. Needs the solver's integer outer
+  loop, like every lattice assertion.
+
+- **Lattice snapping** — quantizing an authored position to the plane's own grid, by zeroing a
+  `SketchPoint`'s sub-voxel remainder. **A birth-time assist, not an authority**: snapping decides
+  where a point is *born* and where a free drag lands, and an unconstrained point then stays put
+  because nothing pulls it. The **solver owns any point a constraint touches**, and its solution is
+  continuous — sub-voxel sketch geometry is normal, because occupancy samples the exact field and
+  quantizes only at resolve (`docs/adr/0034`). An author who wants lattice alignment *asserted* says
+  so with constraints (Fix, Horizontal/Vertical, Lattice), never by relying on the snap to hold.
+  Through v1 the snap stood in for the absent solver entirely (`docs/adr/0029`, `docs/adr/0030`).
 
 - **Sketch mode** — the editing environment entered on a sketch scene object (`docs/adr/0028`):
   the tool rail swaps to sketch tools and non-sketch operations disable, so the sketch's **real,
   directly-manipulated entities** (not previews) are authored in a **sealed, self-contained scope**.
-  A property of the **editor, never the document**; its edits form **one undo group** that commits
-  atomically on *Finish* or rolls back on *Cancel*. The sketch stays **fused** with its lifting
-  operation — the operation lifts its own derived profile, never referencing an external sketch (no
-  operand targeting, ADR 0017).
+  A property of the **editor, never the document**. Its edits land as **one entry on the timeline**,
+  while **undo stays flat** — entering and finishing the mode are ordinary undo entries, so undoing
+  past a *Finish* re-enters the mode and continues one operation at a time (`docs/adr/0035`). The
+  sketch stays **fused** with its lifting operation — the operation lifts its own derived profile,
+  never referencing an external sketch (no operand targeting, ADR 0017).
+
+- **Timeline vs undo history** — two different stacks, and conflating them is the mistake
+  `docs/adr/0028` §4 made. The **timeline** is the op stack (`docs/adr/0009`): document-level,
+  persisted, ordered, one entry per authored operation, and a sketch edit is one entry however long
+  the session ran. The **undo history** is session-level, **flat**, and **transient** — dropped on
+  relaunch as accepted policy, because a dump replays the scene, not the edit history. _Avoid_:
+  nesting undo inside a mode (it creates a cliff where one keystroke reverses an hour).
 
 ## Field
 

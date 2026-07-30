@@ -1,6 +1,11 @@
 # ADR 0028 — Sketch mode: a sketch is a scene object you enter, editing real entities in a sealed scope
 
-- **Status:** Accepted
+- **Status:** Accepted. **§4's nested session undo is superseded by
+  [ADR 0035](0035-the-sketch-tool-suite.md) Decision 13** — undo is ONE flat transient stack and
+  mode entry/finish are ordinary entries on it, so undoing past a Finish re-enters the mode rather
+  than reversing the whole session in one step. §4's *other* half stands and was always right: the
+  timeline entry is atomic, and undo history is transient. The mode shell, the sealed scope, the
+  fused sketch-plus-operation, and live-real-edits-not-previews are all unchanged.
 - **Date:** 2026-07-22
 - **Relates to:** [ADR 0003 §3i](0003-shape-authoring.md) (the sketch→volume authoring atom this makes
   interactive), [ADR 0017](0017-csg-composition.md) (the ordered fold + sealed composition scope +

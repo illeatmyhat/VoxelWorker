@@ -1,6 +1,12 @@
 # ADR 0030 — A sketch is an entity collection; the profile is derived from picked faces
 
-- **Status:** Accepted
+- **Status:** Accepted. **Three decisions are superseded by
+  [ADR 0035](0035-the-sketch-tool-suite.md)**: §2's topological region (a crossing with no shared
+  point now makes a region — profile detection is the geometric arrangement), §3's boundary
+  origin-set `FaceKey` (identity is an interior sample point), and §5's "no solver in v1, tangency
+  one-shot" (there is a solver, and tangency is a maintained constraint). §1 (entities with stable
+  ids), §4's `Fill`/`Hole` CSG algebra, §6 (faces derived, delete cascades) and §7 (coordinates)
+  all stand — and §4's *loops* became curve-bearing in [ADR 0034](0034-curves-stay-curves.md).
 - **Date:** 2026-07-23
 - **Supersedes:** the profile representation of [ADR 0028](0028-sketch-mode.md) (a sketch as a single
   hand-maintained closed polygon `Vec<SketchPoint>`). ADR 0028's mode shell, undo group, fused

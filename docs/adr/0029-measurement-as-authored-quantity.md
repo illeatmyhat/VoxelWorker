@@ -1,6 +1,11 @@
 # ADR 0029 — `Measurement` is the authored-quantity type; occupancy is derived and carries none
 
-- **Status:** Accepted
+- **Status:** Accepted, and **extended by [ADR 0035](0035-the-sketch-tool-suite.md) Decision 12**:
+  the umbrella type gains a **dimension** (an exponent pair over length and angle) and moves to
+  `crates/parametric` alongside an expression language and named parameters. The umbrella is not
+  reversed — it becomes the *dynamic* eval-layer quantity, with statically typed `Length`/`Angle`
+  wrappers above it for document fields. Exactness is reaffirmed as a storage and authoring
+  invariant, explicitly not a solver one.
 - **Date:** 2026-07-23
 - **Relates to:** [ADR 0003 §3f(0)](0003-shape-authoring.md) (the voxel planning unit + blocks/voxels
   measurement retention this generalizes), [ADR 0027](0027-placement-continuity.md) (the
