@@ -39,6 +39,7 @@ mod operand_ghost;
 mod placement_ghost;
 mod points;
 mod selection_cel;
+mod sketch_region;
 mod targets;
 #[cfg(test)]
 mod tests;
@@ -64,6 +65,9 @@ pub use placement_ghost::{
 };
 pub use points::{enabled_grid_planes, GridPlaneInstance, PointsRenderer};
 pub use selection_cel::selection_cel_tint;
+pub use sketch_region::{
+    sketch_region_loop_role_discriminant, SketchPlaneFrame, SketchRegionRenderer,
+};
 pub use targets::{create_depth_view, create_msaa_color_view, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 pub use view_cube::{
     view_cube_corner, ViewCubeRenderer, VIEW_CUBE_VIEWPORT_MARGIN, VIEW_CUBE_VIEWPORT_PIXELS,

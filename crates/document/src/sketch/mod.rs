@@ -33,7 +33,7 @@ mod solid;
 #[cfg(test)]
 mod tests;
 
-pub use faces::{Face, FaceKey, MaterialComponent};
+pub use faces::{Face, FaceKey};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 
@@ -482,11 +482,16 @@ impl Sketch {
         faces::derive(self)
     }
 
-    /// The resolved 2D material region as non-overlapping pieces — each a picked outer boundary
-    /// with the voids inside it (ADR 0030 §3). What a translucent overlay fills, since nesting is
-    /// what keeps one fill from compositing twice over the same place.
-    pub fn material_components(&self) -> Vec<MaterialComponent> {
-        faces::material_components(self)
+    /// The flattened region in the **measurement** width — the exact value
+    /// [`substrate::geom2d::signed_distance_to_region`] folds, and the exact value the wash's
+    /// WGSL mirror is handed (ADR 0030 §3).
+    ///
+    /// One definition of the region, two evaluators of it: the resolve asks it per voxel on the
+    /// CPU, the overlay asks it per pixel on the GPU. The overlay used to triangulate the faces
+    /// instead, which made nesting the overlay's own problem to solve — a fill inside a fill
+    /// composited twice — where the region predicate already answers it.
+    pub fn region_field_loops(&self) -> Vec<(LoopRole, Vec<[f32; 2]>)> {
+        produce::to_region_points_measured(&self.flattened_region())
     }
 
     /// Whether the face with this boundary key contributes solid. Faces default to PICKED — the

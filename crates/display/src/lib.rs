@@ -101,5 +101,6 @@ impl_scene_draw!(
     renderer::PointsRenderer,
     renderer::TransformGizmoRenderer,
     renderer::PlacementGhostRenderer,
+    renderer::SketchRegionRenderer,
     mesh::SelectedOperandGhostRenderer,
 );

@@ -254,44 +254,48 @@ fn the_coarse_claim_never_over_claims_across_a_hole() {
     }
 }
 
-/// Nesting is what stops an overlay filling the same place twice: two nested PICKED faces resolve
-/// to ONE piece of material, because the inner face adds nothing the outer does not already claim.
-/// This is the arc-profile-inside-a-profile case from the field.
+/// The wash asks the SAME field the resolve does ([`Sketch::region_field_loops`]), so what an
+/// overlay covers is decided by `point_in_region` and nesting is never the overlay's problem. Two
+/// nested PICKED faces claim the outer square once — the inner adds nothing the outer does not
+/// already claim, where two triangulated fills composited their alpha twice.
 #[test]
-fn nested_picked_faces_resolve_to_one_material_piece() {
+fn nested_picked_faces_claim_the_region_once() {
     let sketch = nested_squares();
     assert_eq!(sketch.faces().len(), 2, "still two faces");
-    let pieces = sketch.material_components();
-    assert_eq!(pieces.len(), 1, "but one piece of material");
-    assert!(pieces[0].holes.is_empty(), "and no void in it");
-    assert_eq!(pieces[0].outer.len(), 4);
-    let area = substrate::geom2d::polygon_signed_area(
-        &pieces[0]
-            .outer
-            .iter()
-            .map(|point| point.in_plane())
-            .collect::<Vec<_>>(),
-    )
-    .abs()
-        / 2.0;
-    assert_eq!(area, 144.0, "the OUTER square, not the inner one");
+    let field = sketch.region_field_loops();
+    assert!(substrate::geom2d::point_in_region(&field, [6.0, 6.0]));
+    assert!(substrate::geom2d::point_in_region(&field, [2.0, 2.0]));
+    assert!(!substrate::geom2d::point_in_region(&field, [13.0, 6.0]));
+    // Inside, so negative, and no deeper for being doubly enclosed: the union is a `min` over the
+    // Fill loops, so the field is the distance to the NEAREST boundary either way.
+    let inside = substrate::geom2d::signed_distance_to_region(
+        &field,
+        [6.0, 6.0],
+        substrate::geom2d::Metric::Euclidean,
+    );
+    assert!(inside < 0.0, "inside the material: {inside}");
 }
 
-/// Unpick the inner face and the same two faces resolve to a piece WITH a void — the donut, which
-/// is what makes the hole readable instead of washed over.
+/// Unpick the inner face and the same two faces read as a donut — the void carries no wash, because
+/// a `Hole` loop vetoes the point outright.
 #[test]
-fn an_unpicked_inner_face_becomes_a_void_in_the_piece() {
+fn an_unpicked_inner_face_reads_as_a_void() {
     let mut sketch = nested_squares();
     sketch.set_face_picked(innermost(&sketch), false);
-    let pieces = sketch.material_components();
-    assert_eq!(pieces.len(), 1);
-    assert_eq!(pieces[0].holes.len(), 1, "the pocket is a void");
-    assert_eq!(pieces[0].holes[0].len(), 4);
+    let field = sketch.region_field_loops();
+    assert!(
+        substrate::geom2d::point_in_region(&field, [2.0, 2.0]),
+        "the ring"
+    );
+    assert!(
+        !substrate::geom2d::point_in_region(&field, [6.0, 6.0]),
+        "the pocket"
+    );
 }
 
-/// A picked face inside an unpicked one is NOT material: a hole vetoes everything within it, which
-/// is exactly what `substrate::geom2d::point_in_region` does, so the region must not resurrect it as
-/// an island.
+/// A picked face inside an unpicked one is NOT material: the hole vetoes everything within it, so
+/// the field never resurrects it as an island — and the resolve agrees, which is the point of the
+/// wash and the occupancy reading one definition.
 #[test]
 fn a_picked_island_inside_a_void_is_not_material() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -304,12 +308,14 @@ fn a_picked_island_inside_a_void_is_not_material() {
         faces[1].key.clone()
     };
     sketch.set_face_picked(middle, false);
-    let pieces = sketch.material_components();
-    assert_eq!(pieces.len(), 1, "only the outermost ring is material");
-    assert_eq!(
-        pieces[0].holes.len(),
-        1,
-        "one void — the innermost square is inside it, not beside it"
+    let field = sketch.region_field_loops();
+    assert!(
+        substrate::geom2d::point_in_region(&field, [2.0, 2.0]),
+        "the outermost ring is material"
+    );
+    assert!(
+        !substrate::geom2d::point_in_region(&field, [10.0, 10.0]),
+        "the island inside the void is not"
     );
     let occupied = occupancy_set(&SketchSolid::extrude(sketch, 1), 8).len();
     assert_eq!(
@@ -319,14 +325,15 @@ fn a_picked_island_inside_a_void_is_not_material() {
     );
 }
 
-/// Faces that merely share an edge are separate pieces, each washed in full — the chord case, where
-/// neither half contains the other.
+/// Faces that merely share an edge are both material in full — the chord case, where neither half
+/// contains the other and the shared edge is interior to the region.
 #[test]
-fn faces_sharing_an_edge_are_separate_pieces() {
+fn faces_sharing_an_edge_are_both_material() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let corners = square(&mut sketch, 0, 4);
     sketch.connect(corners[0], corners[2]);
-    let pieces = sketch.material_components();
-    assert_eq!(pieces.len(), 2);
-    assert!(pieces.iter().all(|piece| piece.holes.is_empty()));
+    let field = sketch.region_field_loops();
+    assert_eq!(field.len(), 2);
+    assert!(substrate::geom2d::point_in_region(&field, [1.0, 2.0]));
+    assert!(substrate::geom2d::point_in_region(&field, [3.0, 2.0]));
 }

@@ -188,8 +188,6 @@ impl WindowedState {
                 // ADR 0030 §5 (#102): the committed arc curves, projected last frame — the same
                 // under-layer as the straight edges.
                 &self.sketch_arc_lines,
-                // ADR 0030 §3 (#100): the picked regions' wash, projected last frame.
-                &self.sketch_face_washes,
                 // #100: the pick state of the region the open menu was raised inside, so the
                 // menu can label its row "carve" or "fill".
                 sketch_face_at_menu,
@@ -805,6 +803,44 @@ impl WindowedState {
         } else {
             self.placement_ghost_renderer.disarm();
         }
+        // ADR 0030 §3 (#100): the picked region's wash, as a FIELD over the sketch plane. The plane
+        // basis comes from the one forward map the vertex handles use, so the wash cannot land on a
+        // different plane than the handles do (ADR 0008).
+        let sketch_region = self.panel_state.sketch_mode.and_then(|target| {
+            let handles = self
+                .panel_state
+                .scene
+                .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+            let node = self.panel_state.scene.node_by_id(target)?;
+            let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+                return None;
+            };
+            Some((handles, producer.sketch.region_field_loops()))
+        });
+        if let Some((handles, region)) = sketch_region {
+            let origin = handles.profile_to_render([0.0, 0.0]);
+            let axis = |coord: [f64; 2]| {
+                let tip = handles.profile_to_render(coord);
+                [tip[0] - origin[0], tip[1] - origin[1], tip[2] - origin[2]]
+            };
+            self.sketch_region_renderer.update(
+                &self.gpu.device,
+                &self.gpu.queue,
+                scene_matrices.ray_unprojection.inverse(),
+                scene_matrices.ray_eye,
+                prepared.viewport_px,
+                display::renderer::SketchPlaneFrame {
+                    origin,
+                    axis0: axis([1.0, 0.0]),
+                    axis1: axis([0.0, 1.0]),
+                    normal: handles.plane_normal,
+                },
+                &region,
+                ui::theme::linear_rgba(ui::theme::color_palette::SKETCH_REGION_FILL),
+            );
+        } else {
+            self.sketch_region_renderer.disarm();
+        }
         // Overlay uniforms shared with `shot` (ADR 0031): the selection-follow gizmo, the
         // boolean-operand x-ray ghost, and the corner view cube — one orchestration point so the
         // two paths cannot drift.
@@ -849,6 +885,8 @@ impl WindowedState {
         if self.panel_state.placement_ghost().is_some() {
             over_model.push(&self.placement_ghost_renderer);
         }
+        // ADR 0030 §3: the sketch region wash self-gates on a sketch being open.
+        over_model.push(&self.sketch_region_renderer);
         // Behind-model: the occluded axes' paint-order pass (depth-off overlay), drawn before the
         // model so geometry paints over it — the invariant part that never clips.
         let mut behind_model: Vec<&dyn display::SceneDraw> = Vec::new();
@@ -2185,7 +2223,6 @@ impl WindowedState {
         self.sketch_arc_lines.clear();
         self.sketch_arc_chords.clear();
         self.sketch_face_polygons.clear();
-        self.sketch_face_washes.clear();
         self.sketch_insert_preview = None;
         self.sketch_draw_preview.clear();
         self.sketch_marquee_band = None;
@@ -2391,12 +2428,11 @@ impl WindowedState {
             self.sketch_arc_lines.push((curve, state));
         }
 
-        // The derived regions (#100). Derivation is a graph walk over the sketch's own entities, so
-        // it re-runs here with the rest of the overlay rather than being cached against an edit
-        // counter. Two consumers, two shapes: every FACE in physical px for the right-press
-        // hit-test, and the resolved MATERIAL pieces for the wash. They are not the same list — a
-        // face nested in another face is its own pick target but no extra material, and washing
-        // both would composite the same place twice.
+        // The derived faces (#100), in physical px for the right-press hit-test. Derivation is a
+        // graph walk over the sketch's own entities, so it re-runs here with the rest of the overlay
+        // rather than being cached against an edit counter. The WASH is not projected here at all:
+        // it is a GPU pass over the plane (`SketchRegionRenderer`), so no boundary is projected for
+        // it and nesting is the region field's business, not the overlay's.
         let sketch = self
             .panel_state
             .scene
@@ -2423,30 +2459,11 @@ impl WindowedState {
                 })
                 .collect()
         };
-        let to_points = |projected: &[egui::Pos2]| -> Vec<egui::Pos2> {
-            projected
-                .iter()
-                .map(|point| {
-                    egui::Pos2::new(point.x / pixels_per_point, point.y / pixels_per_point)
-                })
-                .collect()
-        };
         if let Some(sketch) = sketch {
             for face in sketch.faces() {
                 if let Some(projected) = project(&face.boundary) {
                     self.sketch_face_polygons.push((face.key, projected));
                 }
-            }
-            for piece in sketch.material_components() {
-                let Some(outer) = project(&piece.outer) else {
-                    continue;
-                };
-                let holes = piece
-                    .holes
-                    .iter()
-                    .filter_map(|hole| project(hole).map(|hole| to_points(&hole)))
-                    .collect();
-                self.sketch_face_washes.push((to_points(&outer), holes));
             }
         }
 

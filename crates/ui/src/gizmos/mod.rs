@@ -49,7 +49,6 @@ mod label_chip;
 mod open_segment;
 mod orbit_center;
 mod orbit_reticle;
-mod region_wash;
 mod segment;
 mod snap_ticks;
 mod vertex_handle;
@@ -63,7 +62,6 @@ pub use label_chip::label_chip;
 pub use open_segment::open_segment;
 pub use orbit_center::{orbit_center, orbit_center_overlay, ORBIT_CENTER_RADIUS};
 pub use orbit_reticle::{orbit_reticle, orbit_reticle_overlay};
-pub use region_wash::region_wash;
 pub use segment::{
     dashed_segment, marked_segment, segment, styled_segment, warn_cross, warn_segment,
 };

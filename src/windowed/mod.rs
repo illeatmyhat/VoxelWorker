@@ -121,6 +121,10 @@ struct WindowedState {
     /// the armed tool's pending drop (`PanelState::placement_ghost()`); disarmed (no draw)
     /// when nothing is armed.
     placement_ghost_renderer: crate::PlacementGhostRenderer,
+    /// ADR 0030 §3 (#100): the picked sketch region's wash — the region signed-distance field
+    /// evaluated per pixel ON the sketch plane. Held permanently and armed per-frame from the open
+    /// sketch; disarmed (no draw) whenever no sketch is open.
+    sketch_region_renderer: display::renderer::SketchRegionRenderer,
     view_cube_renderer: ViewCubeRenderer,
     /// The Signal viewport background gradient (issue #91): a fullscreen radial field
     /// painted first in the 3D pass so the scene composites over it.
@@ -359,13 +363,6 @@ struct WindowedState {
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.
     sketch_face_polygons: Vec<(document::sketch::FaceKey, Vec<egui::Pos2>)>,
-    /// The resolved material pieces for THIS frame, each `(outer boundary, its voids)` in egui
-    /// POINTS — what the overlay washes to show what resolves as material (#100). NOT one entry per
-    /// face: nesting is resolved first, so two nested picked faces are one piece and an unpicked
-    /// one is a void in the piece around it. The drawing twin of
-    /// [`sketch_face_polygons`](Self::sketch_face_polygons), split for the same reason the segment
-    /// and arc pairs are.
-    sketch_face_washes: Vec<(Vec<egui::Pos2>, Vec<Vec<egui::Pos2>>)>,
     /// The region the open viewport context menu is acting on (#100), resolved at the right-press
     /// from [`sketch_face_polygons`](Self::sketch_face_polygons) — smallest containing face wins,
     /// so a click inside a pocket carves the pocket. `None` when no menu is up, the press missed
@@ -644,6 +641,9 @@ impl WindowedState {
         // frame arms it from the armed tool's pending drop).
         let placement_ghost_renderer =
             crate::PlacementGhostRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        // ADR 0030 §3: the sketch region wash, held permanently (disarmed until a sketch is open).
+        let sketch_region_renderer =
+            display::renderer::SketchRegionRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let background_gradient_renderer =
@@ -704,6 +704,7 @@ impl WindowedState {
             points_overlay_renderer,
             infinite_grid_renderer,
             placement_ghost_renderer,
+            sketch_region_renderer,
             view_cube_renderer,
             background_gradient_renderer,
             palette,
@@ -772,7 +773,6 @@ impl WindowedState {
             sketch_arc_lines: Vec::new(),
             sketch_arc_chords: Vec::new(),
             sketch_face_polygons: Vec::new(),
-            sketch_face_washes: Vec::new(),
             sketch_menu_face: None,
             sketch_insert_preview: None,
             sketch_draw_preview: Vec::new(),
@@ -894,6 +894,7 @@ impl WindowedState {
             points_overlay_renderer: _,
             infinite_grid_renderer: _,
             placement_ghost_renderer: _,
+            sketch_region_renderer: _,
             view_cube_renderer: _,
             background_gradient_renderer: _,
             // Per-frame caches + dirty flags: derived from classified state each frame
@@ -921,7 +922,6 @@ impl WindowedState {
             sketch_arc_lines: _,
             sketch_arc_chords: _,
             sketch_face_polygons: _,
-            sketch_face_washes: _,
             sketch_menu_face: _,
             sketch_insert_preview: _,
             sketch_draw_preview: _,

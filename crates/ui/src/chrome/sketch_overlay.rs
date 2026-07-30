@@ -189,21 +189,6 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleStat
     }
 }
 
-/// Wash each resolved MATERIAL piece over its projected boundary, minus the voids in it (ADR 0030
-/// §3, #100). The shell passes pieces, not faces: nesting is resolved before it gets here, so a
-/// picked face inside another adds no second wash. Not chrome: a passive readout,
-/// so a press still reaches the camera or the marquee; the pick verb lives on the viewport context
-/// menu. Call this BEFORE the segment and arc painters so the outline reads over the fill.
-pub fn sketch_face_washes(ui: &egui::Ui, pieces: &[(Vec<Pos2>, Vec<Vec<Pos2>>)]) {
-    let painter = ui.ctx().layer_painter(LayerId::new(
-        Order::Foreground,
-        Id::new("sketch_face_washes"),
-    ));
-    for (outer, holes) in pieces {
-        gizmos::region_wash(&painter, outer, holes);
-    }
-}
-
 /// Draw the profile vertex handles at their projected positions and register each grab rect as
 /// chrome so a press drags the vertex instead of orbiting.
 pub fn sketch_vertex_handles(

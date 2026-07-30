@@ -2878,3 +2878,296 @@ fn skip_without_gpu(test: &str) -> bool {
     eprintln!("skipping {test}: no GPU adapter on this machine");
     true
 }
+
+// ===========================================================================
+// Sketch region wash tier (ADR 0030 §3) — the WGSL region field vs geom2d
+// ===========================================================================
+
+/// Render the wash pass ALONE over a transparent target and resolve it, returning the RGBA bytes.
+///
+/// The pipeline is built for the viewport's MSAA colour + depth attachments, so the harness
+/// supplies both and resolves down; the wash is the only thing drawn, so every non-zero alpha in
+/// the readback came from the region field.
+fn render_sketch_region_wash(
+    gpu: &voxel_worker::GpuContext,
+    size: u32,
+    plane: display::renderer::SketchPlaneFrame,
+    region: &[(substrate::geom2d::LoopRole, Vec<[f32; 2]>)],
+    tint: [f32; 4],
+    ray_inverse_unprojection: glam::Mat4,
+) -> Vec<[u8; 4]> {
+    use voxel_worker::COLOR_TARGET_FORMAT;
+
+    let mut renderer =
+        display::renderer::SketchRegionRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+    renderer.update(
+        &gpu.device,
+        &gpu.queue,
+        ray_inverse_unprojection,
+        glam::Vec3::ZERO,
+        [0, 0, size, size],
+        plane,
+        region,
+        tint,
+    );
+
+    let msaa_view =
+        display::renderer::create_msaa_color_view(&gpu.device, size, size, COLOR_TARGET_FORMAT);
+    let depth_view = display::renderer::create_depth_view(&gpu.device, size, size);
+    let resolved = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wash resolve"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: COLOR_TARGET_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let resolved_view = resolved.create_view(&wgpu::TextureViewDescriptor::default());
+    // 4 bytes per pixel and a size that is a multiple of 64, so the row pitch needs no padding.
+    let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wash readback"),
+        size: (size * size * 4) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("wash encoder"),
+        });
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wash pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &msaa_view,
+                depth_slice: None,
+                resolve_target: Some(&resolved_view),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        renderer.draw(&mut pass);
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &resolved,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 4),
+                rows_per_image: Some(size),
+            },
+        },
+        wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit(Some(encoder.finish()));
+
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("map the readback")
+    });
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("poll the readback");
+    let pixels: Vec<[u8; 4]> = slice
+        .get_mapped_range()
+        .chunks_exact(4)
+        .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
+        .collect();
+    readback.unmap();
+    pixels
+}
+
+/// An ortho camera looking straight down `−Z` at the XY plane, spanning `[0, span]` in both
+/// in-plane axes — so a pixel's profile coordinate is its world `xy` and one pixel is
+/// `span / size` voxels wide.
+fn overhead_ortho_ray_frame(span: f32) -> glam::Mat4 {
+    let half = span / 2.0;
+    let view = glam::Mat4::look_at_rh(
+        glam::Vec3::new(half, half, 10.0),
+        glam::Vec3::new(half, half, 0.0),
+        glam::Vec3::Y,
+    );
+    let projection = glam::Mat4::orthographic_rh(-half, half, -half, half, 0.1, 100.0);
+    (projection * view).inverse()
+}
+
+/// A `side × side` square loop from `(origin, origin)`, counter-clockwise.
+fn wash_square(origin: f32, side: f32) -> Vec<[f32; 2]> {
+    vec![
+        [origin, origin],
+        [origin + side, origin],
+        [origin + side, origin + side],
+        [origin, origin + side],
+    ]
+}
+
+/// The wash plane for the harness: the XY plane, profile coordinate == world `xy`.
+const WASH_PLANE: display::renderer::SketchPlaneFrame = display::renderer::SketchPlaneFrame {
+    origin: [0.0, 0.0, 0.0],
+    axis0: [1.0, 0.0, 0.0],
+    axis1: [0.0, 1.0, 0.0],
+    normal: [0.0, 0.0, 1.0],
+};
+
+/// **ADR 0030 §3 — the WGSL region field agrees with `substrate::geom2d` about what is material.**
+///
+/// The wash is a hand-written mirror of `signed_distance_to_region`, so this renders it over a known
+/// plane and asserts the resolved alpha against the CPU predicate, pixel by pixel: full tint alpha
+/// well inside the material, nothing at all well outside it or inside a void. The fixture is the
+/// case the mesh wash got wrong — a picked region, an unpicked void in it, and a picked island
+/// inside that void, which a `Hole` vetoes.
+///
+/// Only pixels FAR from any boundary are asserted (further than one antialiasing band plus the MSAA
+/// sample spread); the edge band is the shader's own smoothstep, which has no byte-exact CPU twin.
+#[test]
+fn sketch_region_wash_matches_the_cpu_region_field() {
+    if skip_without_gpu("sketch_region_wash_matches_the_cpu_region_field") {
+        return;
+    }
+    use substrate::geom2d::{LoopRole, Metric};
+
+    let gpu = common::shared_gpu();
+    let size = 64u32;
+    let span = 32.0f32;
+    let voxels_per_pixel = span / size as f32;
+    // 24×24 material, a 16×16 void in it, an 8×8 picked island inside the void.
+    let region = vec![
+        (LoopRole::Fill, wash_square(4.0, 24.0)),
+        (LoopRole::Hole, wash_square(8.0, 16.0)),
+        (LoopRole::Fill, wash_square(12.0, 8.0)),
+    ];
+    let tint = [0.2, 0.4, 0.8, 0.54];
+
+    let pixels = render_sketch_region_wash(
+        gpu,
+        size,
+        WASH_PLANE,
+        &region,
+        tint,
+        overhead_ortho_ray_frame(span),
+    );
+
+    let expected_alpha = (tint[3] * 255.0).round() as i32;
+    // One antialiasing band is one pixel of footprint; two pixels of slack also covers the MSAA
+    // sample spread, so an asserted pixel is unambiguously interior or exterior.
+    let clear_of_the_edge = 2.0 * voxels_per_pixel;
+    let mut inside_pixels = 0usize;
+    let mut outside_pixels = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for y in 0..size {
+        for x in 0..size {
+            // The framebuffer's +y runs DOWN; the plane's second axis runs up.
+            let profile = [
+                (x as f32 + 0.5) * voxels_per_pixel,
+                span - (y as f32 + 0.5) * voxels_per_pixel,
+            ];
+            let distance =
+                substrate::geom2d::signed_distance_to_region(&region, profile, Metric::Euclidean);
+            if distance.abs() <= clear_of_the_edge {
+                continue;
+            }
+            let alpha = pixels[(y * size + x) as usize][3] as i32;
+            let (expected, what) = if distance < 0.0 {
+                inside_pixels += 1;
+                (expected_alpha, "material")
+            } else {
+                outside_pixels += 1;
+                (0, "air")
+            };
+            // ±1 for the 8-bit round-trip of the blend.
+            if (alpha - expected).abs() > 1 && failures.len() < 8 {
+                failures.push(format!(
+                    "px=({x},{y}) profile={profile:?} is {what} (d={distance}) but alpha={alpha}, \
+                     expected {expected}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the WGSL region field disagrees with geom2d:\n{}",
+        failures.join("\n")
+    );
+    assert!(
+        inside_pixels > 200 && outside_pixels > 200,
+        "the fixture must cover both readings: {inside_pixels} material, {outside_pixels} air"
+    );
+}
+
+/// **Nested picked regions composite ONCE.** The bug the field replaced a triangle mesh to fix: two
+/// nested `Fill` loops were two overlapping fills, so the inner one blended a second time and read
+/// as a different material. Evaluated as a field the union is a `min`, so a doubly-enclosed point
+/// carries exactly the same alpha as a singly-enclosed one.
+#[test]
+fn nested_picked_regions_wash_to_one_alpha() {
+    if skip_without_gpu("nested_picked_regions_wash_to_one_alpha") {
+        return;
+    }
+    use substrate::geom2d::LoopRole;
+
+    let gpu = common::shared_gpu();
+    let size = 64u32;
+    let span = 32.0f32;
+    let tint = [0.2, 0.4, 0.8, 0.54];
+    let ray_frame = overhead_ortho_ray_frame(span);
+
+    let one = render_sketch_region_wash(
+        gpu,
+        size,
+        WASH_PLANE,
+        &[(LoopRole::Fill, wash_square(4.0, 24.0))],
+        tint,
+        ray_frame,
+    );
+    let nested = render_sketch_region_wash(
+        gpu,
+        size,
+        WASH_PLANE,
+        &[
+            (LoopRole::Fill, wash_square(4.0, 24.0)),
+            (LoopRole::Fill, wash_square(10.0, 12.0)),
+        ],
+        tint,
+        ray_frame,
+    );
+    let centre = ((size / 2) * size + size / 2) as usize;
+    assert!(
+        one[centre][3] > 0,
+        "the fixture washed nothing at the centre"
+    );
+    assert_eq!(
+        nested[centre], one[centre],
+        "a doubly-enclosed pixel composited differently"
+    );
+    assert_eq!(nested, one, "the nested fill changed the wash");
+}

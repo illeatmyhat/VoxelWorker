@@ -44,3 +44,21 @@ impl Theme {
 pub fn active() -> Theme {
     Theme::default()
 }
+
+/// A palette token as LINEAR RGB + its own alpha, for a GPU pass that paints in the viewport.
+///
+/// Some chrome is painted by a render pipeline rather than by egui — the sketch region wash is a
+/// fragment shader over the plane. Those still take their colour from this registry, converted here,
+/// so the 2D and 3D readings of one signal cannot drift apart.
+///
+/// UNMULTIPLIED, because a pipeline that blends premultiplied does that multiply itself and doing it
+/// twice darkens a translucent wash by its own alpha.
+pub fn linear_rgba(color: egui::Color32) -> [f32; 4] {
+    let [red, green, blue, alpha] = color.to_srgba_unmultiplied();
+    [
+        substrate::srgb::srgb_component_to_linear(red),
+        substrate::srgb::srgb_component_to_linear(green),
+        substrate::srgb::srgb_component_to_linear(blue),
+        alpha as f32 / 255.0,
+    ]
+}
