@@ -56,6 +56,11 @@
 //!   [`distance_point_to_segment`](geom2d::distance_point_to_segment),
 //!   [`signed_distance_to_polygon`](geom2d::signed_distance_to_polygon) and
 //!   [`point_in_polygon`](geom2d::point_in_polygon), which a WGSL preview mirrors.
+//! - [`curve_intersection`] — where two planar curves meet:
+//!   [`PlanarCurve`](curve_intersection::PlanarCurve) and the
+//!   [`CurveCrossing`](curve_intersection::CurveCrossing)s it reports, located by PARAMETER on
+//!   both curves so an arrangement can cut at them. Exact-`f64` throughout, because a missed
+//!   crossing changes the topology of the answer rather than its precision.
 //! - [`noise`] — a procedural-generation kit: the [`SmallRng`](noise::SmallRng) LCG and
 //!   [`PerlinNoise`](noise::PerlinNoise) gradient noise with fBm.
 //! - [`interval`] — [`FieldInterval`](interval::FieldInterval),
@@ -80,6 +85,7 @@
 // call site (`substrate::spatial::LatticeAabb`, `substrate::occupancy::BitCube`);
 // each category module re-exports its own types. `supersede` and `srgb` belong to
 // no family and stay at the crate root.
+pub mod curve_intersection;
 pub mod geom2d;
 pub mod interval;
 pub mod noise;
