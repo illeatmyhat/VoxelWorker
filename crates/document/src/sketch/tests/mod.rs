@@ -6,6 +6,7 @@ use voxel_core::voxel::VoxelGrid;
 mod arcs;
 mod circles;
 mod coarse_solid;
+mod constraints;
 mod drawing;
 mod edges;
 mod edits;

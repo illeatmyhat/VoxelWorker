@@ -26,6 +26,7 @@
 //! The profile is a closed simple polygon (≥3 points); a degenerate profile
 //! (fewer than 3 points, or zero area) resolves to nothing rather than panicking.
 
+mod constraint;
 mod edges;
 mod faces;
 mod produce;
@@ -34,9 +35,11 @@ mod solid;
 #[cfg(test)]
 mod tests;
 
+pub use constraint::{Constraint, ConstraintKind, ConstraintRefusal};
 pub use faces::{Face, FaceKey};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
+pub use substrate::nonlinear_least_squares::{SolveOutcome, SolveReport};
 
 use parametric::units::{AngleMeasurement, Measurement};
 
@@ -715,6 +718,14 @@ pub struct Sketch {
     /// face picked rather than failing on a key it cannot parse.
     #[serde(default)]
     unpicked_points: Vec<FaceKey>,
+    /// The constraint entities (ADR 0035 Decision 3). `serde(default)` so a pre-constraint
+    /// document loads with none.
+    ///
+    /// Deliberately absent from [`region_memo`]'s snapshot: a constraint does not change what the
+    /// drawing looks like, only where a SOLVE would move it, and a solve moves points — which the
+    /// snapshot already watches.
+    #[serde(default)]
+    constraints: Vec<Constraint>,
     /// The next id to hand out. Ids are monotonic and never reused, so this only grows.
     next_id: EntityId,
     /// The derived region, remembered between queries — see [`region_memo`]. Not document
@@ -738,6 +749,7 @@ impl Sketch {
             arcs: Vec::new(),
             circles: Vec::new(),
             unpicked_points: Vec::new(),
+            constraints: Vec::new(),
             next_id: 0,
             region_memo: region_memo::RegionMemo::default(),
         };
@@ -778,6 +790,7 @@ impl Sketch {
             arcs: Vec::new(),
             circles: Vec::new(),
             unpicked_points: Vec::new(),
+            constraints: Vec::new(),
             next_id: 0,
             region_memo: region_memo::RegionMemo::default(),
         }
@@ -830,6 +843,13 @@ impl Sketch {
     #[cfg(test)]
     pub(crate) fn circles_mut_for_test(&mut self) -> &mut Vec<Circle> {
         &mut self.circles
+    }
+
+    /// Test-only mutable access to the raw constraint vector. The public door trial-solves, so
+    /// this is the only way to build the dangling constraint `repair` is meant to erase.
+    #[cfg(test)]
+    pub(crate) fn constraints_mut_for_test(&mut self) -> &mut Vec<Constraint> {
+        &mut self.constraints
     }
 
     /// Allocate a point entity at `at`, returning its fresh id.
@@ -1147,12 +1167,157 @@ impl Sketch {
         self.circles.retain(|circle| circle.center != id);
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
+        self.drop_dangling_constraints();
     }
 
     /// Delete just the segment with id `seg_id` (ADR 0030 — deleting a line removes only the
     /// line). Its endpoint points survive as free points. No-op if `seg_id` is unknown.
     pub fn delete_segment(&mut self, seg_id: EntityId) {
         self.segments.retain(|seg| seg.id != seg_id);
+        self.drop_dangling_constraints();
+    }
+
+    /// The constraint entities, in the order they were authored.
+    pub fn constraints(&self) -> &[Constraint] {
+        &self.constraints
+    }
+
+    /// The endpoint pairs the residual system needs, as `(segment id, from, to)`.
+    fn segment_ends(&self) -> Vec<(EntityId, EntityId, EntityId)> {
+        self.segments
+            .iter()
+            .map(|seg| (seg.id, seg.from, seg.to))
+            .collect()
+    }
+
+    /// Add a constraint, trial-solving before it is kept (ADR 0035 Decision 4).
+    ///
+    /// **Unsatisfiable is refused** and nothing changes, so the system is always solvable and every
+    /// downstream feature gets to assume it rather than defend against it. **Redundant is accepted
+    /// and flagged**: a solution exists but the Jacobian loses rank, and redundancy is sometimes
+    /// the intent — symmetry asserted although the geometry already implies it is insurance
+    /// against a later edit.
+    ///
+    /// The trial runs on a copy, so a refusal leaves the drawing exactly where it was rather than
+    /// where a failed solve pushed it.
+    pub fn add_constraint(&mut self, kind: ConstraintKind) -> Result<EntityId, ConstraintRefusal> {
+        self.check_names_live_geometry(kind)?;
+        // The id is minted only once the trial has passed, so a refusal leaves the id space
+        // untouched rather than burning a number nothing will ever name.
+        let candidate = Constraint {
+            id: self.next_id,
+            kind,
+            redundant: false,
+        };
+
+        let mut trial = self.points.clone();
+        let mut with_candidate = self.constraints.clone();
+        with_candidate.push(candidate);
+        let report = constraint::solve_in_place(&mut trial, &self.segment_ends(), &with_candidate)
+            .expect("a constraint was just pushed, so the system is not empty");
+        if report.outcome != SolveOutcome::Converged {
+            return Err(ConstraintRefusal::Unsatisfiable);
+        }
+
+        // Rank is measured against what the system knew a moment ago: if the new constraint did
+        // not raise it, everything it says was already being said. `rank = parameters − dof`,
+        // and the parameter count is the same on both sides because the points did not change.
+        let parameters = self.points.len() * 2;
+        let rank = |report: &SolveReport| parameters - report.degrees_of_freedom;
+        let previous_rank = self.solve_report().as_ref().map_or(0, rank);
+        let id = self.alloc_id();
+        self.constraints.push(Constraint {
+            id,
+            redundant: rank(&report) <= previous_rank,
+            ..candidate
+        });
+        self.points = trial;
+        Ok(id)
+    }
+
+    /// Whether every entity `kind` names is in the store, and its own terms are meetable.
+    fn check_names_live_geometry(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
+        let known_point = |id: EntityId| self.points.iter().any(|point| point.id == id);
+        match kind {
+            ConstraintKind::Fix { point, .. } => {
+                if !known_point(point) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+            }
+            ConstraintKind::Horizontal { segment } | ConstraintKind::Vertical { segment } => {
+                let Some(seg) = self.segments.iter().find(|seg| seg.id == segment) else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
+                if seg.from == seg.to {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
+            ConstraintKind::Distance { from, to, length } => {
+                if !known_point(from) || !known_point(to) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // A negative distance is no drawing's distance, and a zero one between two
+                // distinct points is Coincident, which is shared identity rather than a
+                // constraint (Decision 5).
+                if !length.value().is_finite() || length.value() <= 0.0 || from == to {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete one constraint by id. The geometry it held stays where the last solve put it —
+    /// releasing an assertion does not undo its effect, it only stops re-asserting it.
+    pub fn delete_constraint(&mut self, id: EntityId) {
+        self.constraints.retain(|constraint| constraint.id != id);
+    }
+
+    /// Solve the sketch against its constraints, writing the solution into the points
+    /// (ADR 0035 Decision 2's continuous tier; the integer loop sits above it).
+    ///
+    /// `None` when there is nothing to solve. Solved positions are **authored** state, not
+    /// `Derived` (Decision 3): they are the solver's input as well as its output, and an
+    /// under-constrained sketch has freedoms only the stored position remembers.
+    pub fn solve(&mut self) -> Option<SolveReport> {
+        let ends = self.segment_ends();
+        constraint::solve_in_place(&mut self.points, &ends, &self.constraints)
+    }
+
+    /// What a solve WOULD report, without moving anything.
+    pub fn solve_report(&self) -> Option<SolveReport> {
+        let mut trial = self.points.clone();
+        constraint::solve_in_place(&mut trial, &self.segment_ends(), &self.constraints)
+    }
+
+    /// How many ways the drawing can still move: `2 × points − rank(J)`.
+    ///
+    /// Zero is a fully-constrained sketch. With no constraints every coordinate is free, which is
+    /// two per point — the count is read off the store rather than from a solve that has no
+    /// residuals to take a rank of.
+    pub fn degrees_of_freedom(&self) -> usize {
+        match self.solve_report() {
+            Some(report) => report.degrees_of_freedom,
+            None => self.points.len() * 2,
+        }
+    }
+
+    /// Drop constraints naming geometry the store no longer holds. Called by every delete, so a
+    /// constraint never outlives what it constrains (ADR 0035 Decision 3's cascade).
+    fn drop_dangling_constraints(&mut self) {
+        let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
+        let segment_ids: Vec<EntityId> = self.segments.iter().map(|seg| seg.id).collect();
+        self.constraints.retain(|constraint| {
+            constraint
+                .kind
+                .points()
+                .iter()
+                .all(|id| point_ids.contains(id))
+                && constraint
+                    .kind
+                    .segment()
+                    .is_none_or(|id| segment_ids.contains(&id))
+        });
     }
 
     /// Split the segment with id `seg_id` by inserting a new point `at` on it (ADR 0030
@@ -1456,7 +1621,15 @@ impl Sketch {
         self.circles.retain(|circle| {
             point_ids.contains(&circle.center) && circle_radius_is_valid(circle.radius.value())
         });
-        let dropped = before - self.segments.len() - self.arcs.len() - self.circles.len();
+        // A constraint naming geometry the store does not hold asserts nothing about anything,
+        // and left in place it would keep a row in the residual system for a shape that is gone.
+        let before = before + self.constraints.len();
+        self.drop_dangling_constraints();
+        let dropped = before
+            - self.segments.len()
+            - self.arcs.len()
+            - self.circles.len()
+            - self.constraints.len();
         // A pre-centre document names no centre at all, and a just-erased arc leaves one
         // behind; both are settled here, so a loaded sketch always agrees with its arcs.
         self.prune_orphan_centers();
