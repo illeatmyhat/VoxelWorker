@@ -164,6 +164,54 @@ fn two_overlapping_circles_bound_three_faces() {
     assert!(point_in_region(&carved, [17.0, 0.0]), "the right one");
 }
 
+/// THE CLOSED CASE, end to end. A line tangent to a circle crosses it once, so the arrangement
+/// cuts the circle at exactly one parameter — and a single cut does not open a loop, it only moves
+/// where the loop is written from. The piece that comes back is a FULL-TURN arc.
+///
+/// This is the sketch-level proof that the full turn is legal where the closed case actually lives.
+/// The store refuses a 360° *bulge* because endpoints-plus-bulge has a pole there
+/// (`the_full_turn_is_where_the_radius_diverges`); substrate's centre-radius-sweep form has no pole
+/// and carries the closed piece. Get the re-seaming wrong and the disc either splits in two or
+/// disappears, so this test fails loudly in both directions.
+#[test]
+fn a_tangent_line_re_seams_the_circle_without_opening_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch.add_circle(SketchPoint::new(10, 10), SketchLength::new(5));
+    let left = sketch.add_free_point(SketchPoint::new(0, 15));
+    let right = sketch.add_free_point(SketchPoint::new(30, 15));
+    sketch.connect(left, right).expect("the tangent line");
+
+    let faces = sketch.faces();
+    assert_eq!(faces.len(), 1, "the disc, touched but not cut open");
+    let expected = std::f64::consts::PI * 25.0;
+    assert!(
+        (faces[0].area_voxels - expected).abs() < 1e-9,
+        "the whole disc survives the tangency — got {}, want {expected}",
+        faces[0].area_voxels
+    );
+    assert_eq!(faces[0].boundary.len(), 1, "still one edge");
+    assert!(faces[0].boundary[0].is_closed(), "still closed");
+
+    let region = sketch.region_field_loops();
+    assert!(
+        point_in_region(&region, [10.0, 10.0]),
+        "the centre is solid"
+    );
+    assert!(
+        !point_in_region(&region, [10.0, 16.0]),
+        "above the tangency"
+    );
+
+    // The secant case is the contrast: two crossings DO open the circle, into two arcs bounding
+    // two faces. One cut and two cuts must not behave the same way.
+    let mut secant = Sketch::empty(PlaneAxis::Z);
+    secant.add_circle(SketchPoint::new(10, 10), SketchLength::new(5));
+    let a = secant.add_free_point(SketchPoint::new(0, 10));
+    let b = secant.add_free_point(SketchPoint::new(30, 10));
+    secant.connect(a, b).expect("the secant");
+    assert_eq!(secant.faces().len(), 2, "cut clean through: two halves");
+}
+
 /// A circle IS its centre plus a radius, so deleting the centre deletes the circle — and deleting
 /// the circle takes its minted centre with it, since nothing else was ever named there.
 #[test]
