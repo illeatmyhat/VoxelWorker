@@ -1,6 +1,9 @@
-# Morning report — ADR 0035, slices A–E
+# Morning report — ADR 0035
 
-All five slices shipped and pushed. Four gates green on every commit.
+All five slices shipped and pushed. Four gates green on every commit. Slices A–E are below as
+written; **[the icon suite](#the-sketch-icon-suite--partial--fc46006)** and
+**[slice D's missing gate](#slice-d--the-arrangement--6193d5c-cut--bd8316e-faces--identity)** are
+the later additions.
 
 **Look at this first** (10 seconds, no build):
 
@@ -102,6 +105,18 @@ Expect **13 passed**, including two tests whose meaning I inverted:
   `a_crossing_needs_a_snapped_point_to_bound_anything`. The bowtie is now two triangles.
 - `cutting_an_unpicked_face_in_two_migrates_the_unpick` — was
   `restructuring_the_boundary_resets_the_face_to_picked`.
+
+**The gate this slice was missing** · `bf0115f`
+
+The picture at the top of this file — two circles that cross, three regions — had **no test**.
+Every nearby one is something else: `concentric_circles_are_two_faces` is nesting,
+`two_arcs_over_one_pair_bound_a_lens` is arcs, `a_crossing_bounds_faces_with_no_snapped_point` is
+segments. Nothing pinned two closed curves cut by their own crossings, which is this slice's whole
+claim. `two_overlapping_circles_bound_three_faces` now does, and it checks **areas against the
+analytic lens** (89.45904360 to 3e-14), so a wrong arrangement fails it and not just a wrong count.
+It then unpicks the lens, proving the three faces are separately addressable.
+
+`cargo test -p document circles` — expect **16 passed**.
 
 **Decisions you might disagree with**
 
@@ -216,6 +231,61 @@ construction. Both new tests fail under the old anchor.
 
 ---
 
+## The sketch icon suite · PARTIAL · `fc46006`
+
+Not one of the five slices. This is the tool-suite half of ADR 0035 — the rail needs a mark per
+command, and the marks are what the sheets argue about.
+
+**Where it stands:** the *sheet* is complete and mechanically checked (41 marks, every command on
+your list covered). The *Rust* holds **one** sketch glyph traced from it — `line`. The other ~60
+are tasks #36–#40 and are not started.
+
+| | |
+| --- | --- |
+| `d356c35` | `SKETCH_CONSTRUCTION` — the one ink outside the accent |
+| `05d129a` | ink roles, the `Node` vertex, the sketch shelves |
+| `0e18c7f` + `02a5992` | the Line glyph's curl: two thirds of a circle, `r = 3` |
+| `ebe49c6` | sketch **operators** become their own shelf |
+| `7d6ca97` | **the parity gate** |
+| `313b238` | the eight marks your list named and the sheet had never drawn |
+| `fc46006` | Chamfer reverted to B, per your call |
+
+**Check it** (~30 s, both):
+
+```
+node tools/design/check-marks.mjs
+cargo test -p ui --lib icons::
+```
+
+Expect the checker to print **PASS** over 41 marks, and **9 passed** from the tests. The two that
+matter are `glyphs_are_data` (only the three orbit marks may be imperative) and
+`glyphs_match_the_design_sheet` (a glyph must equal the sheet's resolved geometry to 2e-3).
+
+The gate exists because the set is authored **twice** — as SVG where the geometry is argued for,
+as `Mark` data where the prose lives — and a hand-transposed coordinate is wrong in a way nobody
+catches by looking. I broke it two ways (a slipped coordinate, a swapped ink) before trusting it;
+both failed with each side printed.
+
+**Decisions you might disagree with**
+
+1. **Sketch operators are a fourth shelf**, not part of modify. Mirror/circular/rectangular read a
+   selection and emit more of it; the others change what is already there. That is a rail-layout
+   change you did not ask for.
+2. **The two new chamfers differ only by slope.** After the revert they share a composition —
+   gapped legs, accent bevel — and at 16 px I do not think they are tellable apart. The
+   discrimination scheme I had built for that is the thing you overruled, so I have left them and
+   am flagging it rather than re-solving it.
+3. **`design_reference.rs` is generated and committed**, carrying `#[rustfmt::skip]` so that
+   regenerating and formatting do not become two ordered steps.
+4. **The sheets moved into `docs/design/sketch-marks/`** so the whole chain reproduces from `main`
+   instead of from a session-scoped temp directory. DesignSync now publishes *from* the repo.
+
+**What I skipped:** #36–#40 — the ~60 remaining glyphs and the dimension gizmos.
+`reference.mjs`'s `IDS` table holds one row, so only `line` is currently diffed against the sheet;
+each glyph adds its row when it lands.
+
+---
+
 ## Decisions settled
 
 - **The unpick MIGRATES** when its face is cut in two (your call, 2026-07-30). Already the shipped
@@ -226,7 +296,25 @@ construction. Both new tests fail under the old anchor.
 1. **Slice E has no caller.** The solver core is real and tested and drives nothing. The smallest
    useful slice: constraint entities (coincident, horizontal/vertical, distance), a residual system
    built from them, and `SolveReport`'s DOF surfaced in the UI. This is the ADR's whole point.
-2. **The expression text parser.** The AST and evaluator ship; nothing parses `2*width + 3mm`.
+2. **~60 glyphs and the dimension gizmos** — #36–#40. The sheet and the gate are done; this is
+   transposition against a test that catches the slips.
+3. **The expression text parser.** The AST and evaluator ship; nothing parses `2*width + 3mm`.
    Belongs to the parameters panel.
-3. **Kani harnesses** for `curve_intersection` and `deepest_interior_point`.
-4. **The inspector reads "Custom profile (1 points)"** for a circle. Cosmetic.
+4. **Kani harnesses** for `curve_intersection` and `deepest_interior_point`.
+5. **The inspector reads "Custom profile (1 points)"** for a circle. Cosmetic.
+
+---
+
+## The one thing I did not decide
+
+`arc_sweep_is_valid` still refuses the full turn. Your slice-B wording said to relax it; Decision 7
+says a closed curve is a `Circle`, and relaxing it would admit an arc whose chord has shrunk to
+nothing. **Changing it changes an ADR 0035 decision, so I left it alone and wrote it down** rather
+than redesigning. If Decision 7 is what you meant, this needs no action and the ADR's wording could
+absorb it.
+
+## The decision I need
+
+**Finish the icon workstream, or park it?** #36–#40 is a few sessions of transposition against a
+green gate — safe, mechanical, and it unblocks the rail. Slice E's caller (constraint entities) is
+the ADR's actual point and is the harder, more valuable work. I can only do one next.
