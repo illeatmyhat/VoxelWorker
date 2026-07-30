@@ -109,6 +109,11 @@ fn point_in_ccw_triangle(sample: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]
 
 /// Whether `(previous, ear, next)` is a clippable EAR of the polygon whose live vertices are
 /// `remaining`: a counter-clockwise (convex) corner no other live vertex sits in.
+///
+/// A vertex COINCIDENT with one of the corner's own three is not an obstruction — it is the same
+/// place, reached twice. That case is not exotic: [`triangulate_polygon_with_holes`] bridges a hole
+/// in by duplicating two vertices, and without this the duplicates block their own ears and the
+/// fan stalls immediately.
 fn is_ear(points: &[[f64; 2]], remaining: &[usize], corner: [usize; 3]) -> bool {
     let [previous, ear, next] = corner;
     let (a, b, c) = (points[previous], points[ear], points[next]);
@@ -116,10 +121,14 @@ fn is_ear(points: &[[f64; 2]], remaining: &[usize], corner: [usize; 3]) -> bool 
         return false; // reflex, or a collinear sliver worth no triangle
     }
     !remaining.iter().any(|&index| {
+        let sample = points[index];
         index != previous
             && index != ear
             && index != next
-            && point_in_ccw_triangle(points[index], a, b, c)
+            && sample != a
+            && sample != b
+            && sample != c
+            && point_in_ccw_triangle(sample, a, b, c)
     })
 }
 
@@ -170,6 +179,134 @@ pub fn triangulate_simple_polygon(points: &[[f64; 2]]) -> Vec<[usize; 3]> {
         triangles.push(last);
     }
     triangles
+}
+
+/// Fan a polygon WITH HOLES into triangles, returning `(vertices, triangles)` — the vertex list is
+/// the bridged contour, so it is longer than the inputs and the triples index INTO IT, not into
+/// `outer`.
+///
+/// Each hole is cut into the outer contour along a BRIDGE — a doubled-back diagonal from the hole's
+/// rightmost vertex to a visible outer vertex — which turns the whole thing into one simple polygon
+/// that [`triangulate_simple_polygon`] fans (Eberly, *Triangulation by Ear Clipping*, 2002 §3; the
+/// visibility rule is O'Rourke's *Computational Geometry in C* §2.5). Holes are bridged
+/// rightmost-first and each one bridges against the contour built so far, so a hole may legitimately
+/// attach to a previously merged hole.
+///
+/// The holes must lie inside `outer` and not overlap each other or it — which is what a nesting
+/// analysis over the faces of a planar graph produces. Winding is normalised here, so pass either.
+pub fn triangulate_polygon_with_holes(
+    outer: &[[f64; 2]],
+    holes: &[Vec<[f64; 2]>],
+) -> (Vec<[f64; 2]>, Vec<[usize; 3]>) {
+    let mut contour: Vec<[f64; 2]> = outer.to_vec();
+    if polygon_signed_area(&contour) < 0.0 {
+        contour.reverse();
+    }
+    if contour.len() < 3 {
+        return (contour, Vec::new());
+    }
+    // Rightmost hole first: its bridge can only run to the outer contour, where a hole further left
+    // may need to reach across one already merged.
+    let mut ordered: Vec<&Vec<[f64; 2]>> = holes.iter().filter(|hole| hole.len() >= 3).collect();
+    ordered.sort_by(|a, b| rightmost_vertex(b).1[0].total_cmp(&rightmost_vertex(a).1[0]));
+    for hole in ordered {
+        bridge_hole_into(&mut contour, hole);
+    }
+    let triangles = triangulate_simple_polygon(&contour);
+    (contour, triangles)
+}
+
+/// The hole's rightmost vertex as `(index, position)`, ties broken upward — the bridge's hole end.
+fn rightmost_vertex(hole: &[[f64; 2]]) -> (usize, [f64; 2]) {
+    let mut best = 0;
+    for (index, point) in hole.iter().enumerate() {
+        if (point[0], point[1]) > (hole[best][0], hole[best][1]) {
+            best = index;
+        }
+    }
+    (best, hole[best])
+}
+
+/// Splice `hole` into `contour` along a bridge, leaving one simple polygon. No-op when no contour
+/// edge is visible to the right of the hole (the hole is not inside the contour).
+fn bridge_hole_into(contour: &mut Vec<[f64; 2]>, hole: &[[f64; 2]]) {
+    let (hole_start, mouth) = rightmost_vertex(hole);
+    let Some(attach) = visible_contour_vertex(contour, mouth) else {
+        return;
+    };
+    // The hole runs the OPPOSITE way round from the contour, so the bridge does not cross itself:
+    // out along it, clockwise around the hole, back along it.
+    let mut inserted: Vec<[f64; 2]> = (0..hole.len())
+        .map(|step| hole[(hole_start + step) % hole.len()])
+        .collect();
+    if polygon_signed_area(&inserted) > 0.0 {
+        inserted[1..].reverse();
+    }
+    inserted.push(mouth);
+    inserted.push(contour[attach]);
+    contour.splice(attach + 1..attach + 1, inserted);
+}
+
+/// The index of a contour vertex the ray `+x` from `mouth` can reach without leaving the contour's
+/// interior, or `None` when the ray never meets the contour.
+///
+/// Cast the ray, take the nearest crossing, and start from that edge's right-hand endpoint. That
+/// vertex is visible unless some REFLEX vertex of the contour blocks it, so the blockers are tested
+/// and the one at the shallowest angle off the ray wins — the standard visibility repair, and the
+/// step that keeps a bridge from cutting through a neighbouring concavity.
+fn visible_contour_vertex(contour: &[[f64; 2]], mouth: [f64; 2]) -> Option<usize> {
+    let count = contour.len();
+    let mut nearest: Option<(f64, usize)> = None;
+    for index in 0..count {
+        let (a, b) = (contour[index], contour[(index + 1) % count]);
+        if (a[1] > mouth[1]) == (b[1] > mouth[1]) {
+            continue; // the edge does not straddle the ray's height
+        }
+        let along = (mouth[1] - a[1]) / (b[1] - a[1]);
+        let crossing = a[0] + along * (b[0] - a[0]);
+        if crossing < mouth[0] {
+            continue;
+        }
+        if nearest.is_none_or(|(best, _)| crossing < best) {
+            nearest = Some((crossing, index));
+        }
+    }
+    let (crossing, edge) = nearest?;
+    let next = (edge + 1) % count;
+    let candidate = if contour[edge][0] >= contour[next][0] {
+        edge
+    } else {
+        next
+    };
+    // The visibility triangle: mouth → the crossing point → the candidate, wound counter-clockwise.
+    // Any reflex vertex inside it hides the candidate, so the shallowest such vertex takes over as
+    // the bridge's far end.
+    let sight = [crossing, mouth[1]];
+    let corner = if orient2d(mouth, sight, contour[candidate]) > 0.0 {
+        [mouth, sight, contour[candidate]]
+    } else {
+        [mouth, contour[candidate], sight]
+    };
+    let mut attach = candidate;
+    let mut shallowest = f64::INFINITY;
+    for index in 0..count {
+        let previous = contour[(index + count - 1) % count];
+        let here = contour[index];
+        let following = contour[(index + 1) % count];
+        if index == candidate || here[0] <= mouth[0] || orient2d(previous, here, following) >= 0.0 {
+            continue;
+        }
+        if !point_in_ccw_triangle(here, corner[0], corner[1], corner[2]) {
+            continue;
+        }
+        // The tangent of the angle off the ray, so no trigonometry decides the tie.
+        let angle = (here[1] - mouth[1]).abs() / (here[0] - mouth[0]);
+        if angle < shallowest {
+            shallowest = angle;
+            attach = index;
+        }
+    }
+    Some(attach)
 }
 
 #[inline]
@@ -990,6 +1127,103 @@ mod tests {
                 "every emitted triangle is counter-clockwise whatever the input winding"
             );
         }
+    }
+
+    /// A hole is bridged in, so the fan covers the ring and NOT the void — the property the wash
+    /// depends on, since alpha over a hole would read as material.
+    #[test]
+    fn a_hole_is_bridged_out_of_the_fan() {
+        let outer = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let hole = vec![[4.0, 4.0], [4.0, 6.0], [6.0, 6.0], [6.0, 4.0]];
+        let (vertices, fan) = triangulate_polygon_with_holes(&outer, &[hole]);
+        assert_eq!(
+            vertices.len(),
+            10,
+            "4 outer + 4 hole + the bridge's two doubles"
+        );
+        assert_eq!(fan.len(), vertices.len() - 2);
+        let area = fan_area(&vertices, &fan) / 2.0;
+        assert!(
+            (area - (100.0 - 4.0)).abs() < 1.0e-9,
+            "the ring's area, not the square's: {area}"
+        );
+        for sample in [[5.0, 5.0], [4.5, 5.5]] {
+            assert!(
+                !fan.iter().any(|&[a, b, c]| point_in_ccw_triangle(
+                    sample,
+                    vertices[a],
+                    vertices[b],
+                    vertices[c]
+                )),
+                "no triangle covers the void at {sample:?}"
+            );
+        }
+        assert!(fan.iter().any(|&[a, b, c]| point_in_ccw_triangle(
+            [1.0, 1.0],
+            vertices[a],
+            vertices[b],
+            vertices[c]
+        )));
+    }
+
+    /// Two holes, the left one bridging across the right one's merged contour — the case that makes
+    /// bridging order matter.
+    #[test]
+    fn two_holes_both_come_out() {
+        let outer = [[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
+        let holes = vec![
+            vec![[2.0, 2.0], [2.0, 8.0], [6.0, 8.0], [6.0, 2.0]],
+            vec![[12.0, 3.0], [12.0, 7.0], [16.0, 7.0], [16.0, 3.0]],
+        ];
+        let (vertices, fan) = triangulate_polygon_with_holes(&outer, &holes);
+        let area = fan_area(&vertices, &fan) / 2.0;
+        assert!(
+            (area - (200.0 - 24.0 - 16.0)).abs() < 1.0e-9,
+            "both voids are out: {area}"
+        );
+        for void in [[4.0, 5.0], [14.0, 5.0]] {
+            assert!(!fan.iter().any(|&[a, b, c]| point_in_ccw_triangle(
+                void,
+                vertices[a],
+                vertices[b],
+                vertices[c]
+            )));
+        }
+    }
+
+    /// A hole reached only past a concavity: the bridge must turn to the blocking reflex vertex
+    /// instead of cutting straight through the outer wall.
+    #[test]
+    fn a_bridge_turns_around_a_blocking_concavity() {
+        // A C-shape opening to the right, with a hole tucked inside the bay.
+        let outer = [
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 4.0],
+            [8.0, 4.0],
+            [8.0, 16.0],
+            [20.0, 16.0],
+            [20.0, 20.0],
+            [0.0, 20.0],
+        ];
+        let hole = vec![[2.0, 8.0], [2.0, 12.0], [5.0, 12.0], [5.0, 8.0]];
+        let (vertices, fan) = triangulate_polygon_with_holes(&outer, &[hole]);
+        let expected = polygon_signed_area(&outer) / 2.0 - 12.0;
+        let area = fan_area(&vertices, &fan) / 2.0;
+        assert!((area - expected).abs() < 1.0e-9, "{area} vs {expected}");
+        assert!(!fan.iter().any(|&[a, b, c]| point_in_ccw_triangle(
+            [3.5, 10.0],
+            vertices[a],
+            vertices[b],
+            vertices[c]
+        )));
+        // The bay is outside the shape; a bridge that cut through the wall would cover it.
+        assert!(!fan.iter().any(|&[a, b, c]| point_in_ccw_triangle(
+            [14.0, 10.0],
+            vertices[a],
+            vertices[b],
+            vertices[c]
+        )));
     }
 
     #[test]

@@ -359,12 +359,13 @@ struct WindowedState {
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.
     sketch_face_polygons: Vec<(document::sketch::FaceKey, Vec<egui::Pos2>)>,
-    /// One boundary polygon per PICKED derived region for THIS frame, in egui POINTS — the faces
-    /// the overlay washes to show what resolves as material (#100). An unpicked face is a hole and
-    /// appears here not at all. The drawing twin of
+    /// The resolved material pieces for THIS frame, each `(outer boundary, its voids)` in egui
+    /// POINTS — what the overlay washes to show what resolves as material (#100). NOT one entry per
+    /// face: nesting is resolved first, so two nested picked faces are one piece and an unpicked
+    /// one is a void in the piece around it. The drawing twin of
     /// [`sketch_face_polygons`](Self::sketch_face_polygons), split for the same reason the segment
     /// and arc pairs are.
-    sketch_face_washes: Vec<Vec<egui::Pos2>>,
+    sketch_face_washes: Vec<(Vec<egui::Pos2>, Vec<Vec<egui::Pos2>>)>,
     /// The region the open viewport context menu is acting on (#100), resolved at the right-press
     /// from [`sketch_face_polygons`](Self::sketch_face_polygons) — smallest containing face wins,
     /// so a click inside a pocket carves the pocket. `None` when no menu is up, the press missed

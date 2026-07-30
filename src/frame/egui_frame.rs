@@ -233,10 +233,10 @@ pub fn run_egui_frame(
     // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
     // headless `shot` path.
     sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
-    // ADR 0030 §3 (#100): the PICKED derived faces for THIS frame, each a projected boundary in
-    // egui points, washed to show what resolves as material. Empty unless a sketch is being
-    // edited, always empty on the headless `shot` path.
-    sketch_face_washes: &[Vec<egui::Pos2>],
+    // ADR 0030 §3 (#100): the resolved MATERIAL pieces for THIS frame, each an outer projected
+    // boundary in egui points with the voids inside it, washed to show what resolves as material.
+    // Empty unless a sketch is being edited, always empty on the headless `shot` path.
+    sketch_face_washes: &[(Vec<egui::Pos2>, Vec<Vec<egui::Pos2>>)],
     // #100: whether the open viewport context menu was raised INSIDE a derived face, and if so
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.

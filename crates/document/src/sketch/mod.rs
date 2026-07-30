@@ -33,7 +33,7 @@ mod solid;
 #[cfg(test)]
 mod tests;
 
-pub use faces::{Face, FaceKey};
+pub use faces::{Face, FaceKey, MaterialComponent};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 
@@ -480,6 +480,13 @@ impl Sketch {
     /// void is [`face_is_picked`](Self::face_is_picked).
     pub fn faces(&self) -> Vec<Face> {
         faces::derive(self)
+    }
+
+    /// The resolved 2D material region as non-overlapping pieces — each a picked outer boundary
+    /// with the voids inside it (ADR 0030 §3). What a translucent overlay fills, since nesting is
+    /// what keeps one fill from compositing twice over the same place.
+    pub fn material_components(&self) -> Vec<MaterialComponent> {
+        faces::material_components(self)
     }
 
     /// Whether the face with this boundary key contributes solid. Faces default to PICKED — the

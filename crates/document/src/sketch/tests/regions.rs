@@ -253,3 +253,80 @@ fn the_coarse_claim_never_over_claims_across_a_hole() {
         }
     }
 }
+
+/// Nesting is what stops an overlay filling the same place twice: two nested PICKED faces resolve
+/// to ONE piece of material, because the inner face adds nothing the outer does not already claim.
+/// This is the arc-profile-inside-a-profile case from the field.
+#[test]
+fn nested_picked_faces_resolve_to_one_material_piece() {
+    let sketch = nested_squares();
+    assert_eq!(sketch.faces().len(), 2, "still two faces");
+    let pieces = sketch.material_components();
+    assert_eq!(pieces.len(), 1, "but one piece of material");
+    assert!(pieces[0].holes.is_empty(), "and no void in it");
+    assert_eq!(pieces[0].outer.len(), 4);
+    let area = substrate::geom2d::polygon_signed_area(
+        &pieces[0]
+            .outer
+            .iter()
+            .map(|point| point.in_plane())
+            .collect::<Vec<_>>(),
+    )
+    .abs()
+        / 2.0;
+    assert_eq!(area, 144.0, "the OUTER square, not the inner one");
+}
+
+/// Unpick the inner face and the same two faces resolve to a piece WITH a void — the donut, which
+/// is what makes the hole readable instead of washed over.
+#[test]
+fn an_unpicked_inner_face_becomes_a_void_in_the_piece() {
+    let mut sketch = nested_squares();
+    sketch.set_face_picked(innermost(&sketch), false);
+    let pieces = sketch.material_components();
+    assert_eq!(pieces.len(), 1);
+    assert_eq!(pieces[0].holes.len(), 1, "the pocket is a void");
+    assert_eq!(pieces[0].holes[0].len(), 4);
+}
+
+/// A picked face inside an unpicked one is NOT material: a hole vetoes everything within it, which
+/// is exactly what `substrate::geom2d::point_in_region` does, so the region must not resurrect it as
+/// an island.
+#[test]
+fn a_picked_island_inside_a_void_is_not_material() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    square(&mut sketch, 0, 20);
+    square(&mut sketch, 4, 12);
+    square(&mut sketch, 8, 4);
+    let middle = {
+        let mut faces = sketch.faces();
+        faces.sort_by(|a, b| a.area_voxels.total_cmp(&b.area_voxels));
+        faces[1].key.clone()
+    };
+    sketch.set_face_picked(middle, false);
+    let pieces = sketch.material_components();
+    assert_eq!(pieces.len(), 1, "only the outermost ring is material");
+    assert_eq!(
+        pieces[0].holes.len(),
+        1,
+        "one void — the innermost square is inside it, not beside it"
+    );
+    let occupied = occupancy_set(&SketchSolid::extrude(sketch, 1), 8).len();
+    assert_eq!(
+        occupied,
+        20 * 20 - 12 * 12,
+        "the resolve agrees: the island is void too"
+    );
+}
+
+/// Faces that merely share an edge are separate pieces, each washed in full — the chord case, where
+/// neither half contains the other.
+#[test]
+fn faces_sharing_an_edge_are_separate_pieces() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let corners = square(&mut sketch, 0, 4);
+    sketch.connect(corners[0], corners[2]);
+    let pieces = sketch.material_components();
+    assert_eq!(pieces.len(), 2);
+    assert!(pieces.iter().all(|piece| piece.holes.is_empty()));
+}

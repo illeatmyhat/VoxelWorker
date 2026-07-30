@@ -2391,11 +2391,13 @@ impl WindowedState {
             self.sketch_arc_lines.push((curve, state));
         }
 
-        // The derived regions (#100): each face's boundary in physical px for the right-press
-        // hit-test, plus a wash boundary in egui points when it is picked. Derivation is a graph
-        // walk over the sketch's own entities, so it re-runs here with the rest of the overlay
-        // rather than being cached against an edit counter.
-        let regions: Vec<(document::sketch::FaceKey, Vec<[f64; 2]>, bool)> = self
+        // The derived regions (#100). Derivation is a graph walk over the sketch's own entities, so
+        // it re-runs here with the rest of the overlay rather than being cached against an edit
+        // counter. Two consumers, two shapes: every FACE in physical px for the right-press
+        // hit-test, and the resolved MATERIAL pieces for the wash. They are not the same list — a
+        // face nested in another face is its own pick target but no extra material, and washing
+        // both would composite the same place twice.
+        let sketch = self
             .panel_state
             .scene
             .node_by_id(target)
@@ -2403,23 +2405,13 @@ impl WindowedState {
                 document::scene::NodeContent::SketchTool { producer, .. } => Some(&producer.sketch),
                 _ => None,
             })
-            .map(|sketch| {
-                sketch
-                    .faces()
-                    .into_iter()
-                    .map(|face| {
-                        let picked = sketch.face_is_picked(&face.key);
-                        let boundary = face.boundary.iter().map(|point| point.in_plane()).collect();
-                        (face.key, boundary, picked)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        for (key, boundary, picked) in regions {
-            let projected: Option<Vec<egui::Pos2>> = boundary
+            .cloned();
+        // A behind-camera boundary vertex culls the whole outline, as it culls an arc.
+        let project = |boundary: &[document::sketch::SketchPoint]| -> Option<Vec<egui::Pos2>> {
+            boundary
                 .iter()
-                .map(|coord| {
-                    let render = handles.profile_to_render(*coord);
+                .map(|point| {
+                    let render = handles.profile_to_render(point.in_plane());
                     let clip =
                         view_projection * glam::Vec4::new(render[0], render[1], render[2], 1.0);
                     (clip.w > 0.0).then(|| {
@@ -2429,24 +2421,33 @@ impl WindowedState {
                         )
                     })
                 })
-                .collect();
-            // A behind-camera boundary vertex culls the whole face, as it culls an arc.
-            let Some(projected) = projected else { continue };
-            // A PICKED face is washed — the 2D read of the 3D selection wash, saying "this
-            // resolves as material". An unpicked face is a hole and gets nothing; the centroid
-            // badge this replaced put a round mark beside every arc's own centre point, where the
-            // two read as one confusing pair.
-            if picked {
-                self.sketch_face_washes.push(
-                    projected
-                        .iter()
-                        .map(|point| {
-                            egui::Pos2::new(point.x / pixels_per_point, point.y / pixels_per_point)
-                        })
-                        .collect(),
-                );
+                .collect()
+        };
+        let to_points = |projected: &[egui::Pos2]| -> Vec<egui::Pos2> {
+            projected
+                .iter()
+                .map(|point| {
+                    egui::Pos2::new(point.x / pixels_per_point, point.y / pixels_per_point)
+                })
+                .collect()
+        };
+        if let Some(sketch) = sketch {
+            for face in sketch.faces() {
+                if let Some(projected) = project(&face.boundary) {
+                    self.sketch_face_polygons.push((face.key, projected));
+                }
             }
-            self.sketch_face_polygons.push((key, projected));
+            for piece in sketch.material_components() {
+                let Some(outer) = project(&piece.outer) else {
+                    continue;
+                };
+                let holes = piece
+                    .holes
+                    .iter()
+                    .filter_map(|hole| project(hole).map(|hole| to_points(&hole)))
+                    .collect();
+                self.sketch_face_washes.push((to_points(&outer), holes));
+            }
         }
 
         // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
