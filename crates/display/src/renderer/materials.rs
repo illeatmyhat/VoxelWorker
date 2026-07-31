@@ -44,9 +44,9 @@ pub enum RegionRole {
     ClipToRegion,
 }
 
-/// The selected object's placed AABB the onion-fog band clip is confined to (ADR 0018
-/// Decision 5), in the **recentered voxel frame** the mesher emits vertices in — a voxel
-/// at absolute producer coord `a` sits at recentered `a − recenter_voxels` (ADR 0008),
+/// The selected object's placed AABB the onion-fog band clip is confined to, in the
+/// **recentered voxel frame** the mesher emits vertices in — a voxel at absolute producer
+/// coord `a` sits at recentered `a − recenter_voxels`,
 /// so the two-layer mesher tests its `block_low_recentered` directly and the dense mesher
 /// tests `global_index + world_offset` (both the same world lattice). Half-open
 /// `[min, max)` per axis.
@@ -90,7 +90,7 @@ impl RegionClip {
 
 // (The instanced `VoxelRenderer` + its per-chunk GPU instance cache were removed
 // with the legacy mesher — part of #20. The cuboid path was the sole renderer
-// until the brick raymarch path (ADR 0011) landed; it is now the always-present,
+// until the brick raymarch path landed; it is now the always-present,
 // no-GPU-capable fallback beside brick raymarch's primary display.)
 
 /// Which texture the voxel pass binds for the active material.
@@ -108,7 +108,7 @@ pub enum MaterialSource<'a> {
 /// (binding 0, one layer per cube face) + a sampler (binding 1). Both the
 /// procedural materials and a loaded VS block build a bind group of this shape,
 /// so every pipeline that samples it — the cuboid mesh pass and the brick
-/// raymarch pass alike (ADR 0011 G2) — draws uniform and per-face materials
+/// raymarch pass alike — draws uniform and per-face materials
 /// the same way.
 /// Array layers allocated for a six-face block material: SEVEN, of which the shader
 /// only ever samples layers 0..=5.
@@ -343,7 +343,7 @@ fn material_average_linear(id: u16) -> [f32; 3] {
     ]
 }
 
-/// The per-voxel material base colors (ADR 0001 step 3) RELATIVE to the bound
+/// The per-voxel material base colors RELATIVE to the bound
 /// texture's own average color. Slot `id` holds `avg(id) / avg(bound)`, so:
 ///   * the bound material's own slot is ~`[1,1,1]` (neutral — its texture is
 ///     shown unchanged, preserving the existing look for a single-material model);
@@ -351,7 +351,7 @@ fn material_average_linear(id: u16) -> [f32; 3] {
 ///     material's tint, so a Wood node and a Stone node drawn from one bound
 ///     texture render in visibly distinct colors.
 ///
-/// This is the cheap base-color-modulation the ADR/task call for, NOT a
+/// This is the cheap base-color modulation the task calls for, NOT a
 /// per-material texture array.
 fn relative_material_base_colors(
     bound: MaterialChoice,
@@ -374,7 +374,7 @@ fn relative_material_base_colors(
 }
 
 /// Public access to the per-material relative base colors (step 3b) for the cuboid
-/// mesh path (ADR 0002 E3b-1), so it modulates per-box material color. Returns each
+/// mesh path, so it modulates per-box material color. Returns each
 /// material's average color relative to `bound`'s average (the bound material's
 /// own slot is ~neutral white).
 pub fn relative_material_base_colors_public(
@@ -385,7 +385,7 @@ pub fn relative_material_base_colors_public(
 
 /// The grid-overlay tuning, originally authored for the instanced voxel pass
 /// (removed with the legacy mesher, #20) and now shared: both the cuboid mesh
-/// path (ADR 0002 E3b-2) and the brick raymarch path draw the position-based
+/// path and the brick raymarch path draw the position-based
 /// grid overlay with the EXACT same colors/half-widths/alphas — keeping the
 /// merged box faces phase-aligned to the same per-voxel/per-block lines.
 #[derive(Debug, Clone, Copy)]

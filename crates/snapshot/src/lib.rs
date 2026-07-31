@@ -151,7 +151,7 @@ pub struct ClassifiedField {
 /// classified.
 ///
 /// The trait carries no capture behavior on purpose. Splitting `AppConfig` into a
-/// document, a dump and a settings artifact is a separate and much larger job (ADR
+/// document, a dump and a settings artifact is a separate and much larger job.
 /// 0022's stated largest implementation cost); what this trait provides today is the
 /// classification table those artifacts will be built against, plus the fact that
 /// producing it at all forced every field to be decided.

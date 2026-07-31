@@ -1,7 +1,7 @@
-# Sketch tool suite — what ADR 0035 still owes
+# Sketch tool suite — remaining work
 
-ADR 0035 shipped in five slices (`crates/parametric`, the arrangement, the solver core, the
-glyph set, the wiring). What the shipped parts *are* lives in
+The sketch-tool work shipped in five slices (`crates/parametric`, the arrangement, the solver
+core, the glyph set, the wiring). What the shipped parts *are* lives in
 `docs/architecture/01-document.md`; the rulings behind the solver's behavior live in
 `sketch-constraint-solve.md`. This file holds only the part of the record that has no code
 behind it yet.

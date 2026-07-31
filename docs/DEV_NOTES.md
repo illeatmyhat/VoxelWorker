@@ -159,7 +159,7 @@ The workspace was first formatted in `5157b26`; that commit is listed in
 `.git-blame-ignore-revs`, which GitHub honors automatically and git honors after
 `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
 
-## Golden-image regression tests (issue #24 — E0 safety net for ADR 0002)
+## Golden-image regression tests
 
 `tests/golden.rs` is an integration test that is ALWAYS compiled; each case skips loudly at
 runtime (printing why) when `voxel_worker::gpu::adapter_available()` reports no adapter. It renders 5 canonical cases through the real `shot` binary (found via

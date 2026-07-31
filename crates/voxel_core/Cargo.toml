@@ -18,7 +18,7 @@ edition = "2021"
 # the provenance.
 
 # `cfg(kani)` gates the bounded-model-checking proofs of the frame-rebase cast in
-# `core_geom.rs` (ADR 0008: the i64 rebase stamped into an i32 `local_index`). Set only
+# `core_geom.rs`: the i64 rebase stamped into an i32 `local_index`. Set only
 # under `cargo kani`; registered here so ordinary `cargo`/clippy builds don't warn on the
 # unknown cfg. See verification/README.md.
 [lints.rust]
@@ -26,7 +26,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
 # The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
-# algebra, and the exact-rational expression language (ADR 0035).
+# algebra, and the exact-rational expression language.
 parametric = { path = "../parametric" }
 # The pure CS/math substrate library. voxel_core names substrate structures at the
 # domain seam: the half-open integer box (`VoxelAabb`), the edit-broadphase BVH, the

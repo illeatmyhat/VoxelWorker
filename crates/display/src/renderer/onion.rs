@@ -26,7 +26,7 @@ const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 /// The onion ghost's fixed alpha, used as the flat translucent
 /// blend the CUBOID MESH path shades its onion-slab ghost with (depth-tested `Less`,
 /// depth write ON — the ghost pipeline in `mesh/pipeline.rs`). The BRICK RAYMARCH
-/// path shades its ghost differently since the ADR 0012 H1.5 Beer-Lambert haze spike:
+/// path shades its ghost differently since the Beer-Lambert haze spike:
 /// `fragment_ghost_haze` (`brick/raymarch.rs`) computes its own opacity from the ray's
 /// accumulated in-solid thickness and ignores this constant outright, reading only the
 /// tint's RGB below (depth write OFF there — the haze march folds a whole slab into one
@@ -34,7 +34,7 @@ const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 /// Linear-space, matching the linear shading both cuboid + brick shaders work in.
 const ONION_GHOST_ALPHA: f32 = 0.5;
 
-/// The onion ghost tint as linear `[r, g, b, a]` (ADR 0012 H1). Both display paths read
+/// The onion ghost tint as linear `[r, g, b, a]`. Both display paths read
 /// this ONE constant, so the raymarch haze and the mesh ghost always share the same hue
 /// — but NOT the same alpha (the raymarch path discards `a` for its own computed haze
 /// opacity, see `ONION_GHOST_ALPHA`'s doc above), so the two paths' onion aesthetics

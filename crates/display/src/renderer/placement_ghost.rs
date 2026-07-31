@@ -69,7 +69,7 @@ pub const PLACEMENT_GHOST_TINT: [f32; 4] = [0.32, 0.78, 0.92, 0.55];
 /// voxels drawn earlier in the SAME MSAA pass occlude it wherever they are in front.
 ///
 /// The renderer is deliberately dumb: the frame math (`center_world = world_offset +
-/// grid/2 - recenter`, ADR 0008) lives in the CALLER, which passes a resolved
+/// grid/2 - recenter`) lives in the CALLER, which passes a resolved
 /// `center_world` — passing the shape's raw parameters and letting the shader re-derive
 /// its placement is exactly the silent frame-error mode this split prevents.
 ///
@@ -199,7 +199,7 @@ impl PlacementGhostRenderer {
     /// wide-baseline recenter (a06d215).
     ///
     /// `center_world` is the field center in the display's render frame — the caller
-    /// resolves it via the frame law (`world_offset + grid/2 - recenter`, ADR 0008);
+    /// resolves it via the frame law (`world_offset + grid/2 - recenter`);
     /// `semi_axes` are the inscribed half-extents in voxels (`grid/2` per axis, EXACT
     /// half); `wall_voxels` is `wall_blocks * density` (Tube only); `tint` is linear RGB +
     /// source alpha.

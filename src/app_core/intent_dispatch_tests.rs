@@ -672,8 +672,8 @@ fn set_density_sets_document_field() {
         },
         |s| {
             // `apply` rescales every node's voxel offset old→new density to preserve
-            // block placement, AND re-targets every Tool's voxel-granular size (ADR
-            // 0003 §3f(0)); mirror both here. (Every node has a zero offset, so the
+            // block placement, AND re-targets every Tool's voxel-granular size; mirror both
+            // here. (Every node has a zero offset, so the
             // offset rescale is a no-op; the sizes DO re-target — a retained whole-block
             // size re-evaluates at the new density.)
             let old_density = s.voxels_per_block.max(1) as i64;

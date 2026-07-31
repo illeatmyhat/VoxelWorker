@@ -110,7 +110,7 @@ const BOUNDS_PADDING_VOXELS: f32 = 8.0;
 /// The sketch plane in the render frame, as the ONE forward map produces it.
 ///
 /// Every field comes from `SketchHandles::profile_to_render`, so the wash lands on the plane the
-/// vertex handles land on by construction rather than by a kept-in-sync mirror (ADR 0008).
+/// vertex handles land on by construction rather than by a kept-in-sync mirror.
 #[derive(Debug, Clone, Copy)]
 pub struct SketchPlaneFrame {
     /// The render-frame position of profile coordinate `(0, 0)`.

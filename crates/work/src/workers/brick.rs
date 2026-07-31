@@ -173,7 +173,7 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
 pub type BrickWorker = Worker<BrickRebuildRequest, BrickRebuildResult>;
 
 /// Spawn the brick-pipeline worker on a dedicated thread. The closure builds via
-/// [`build_brick_rebuild`] and carries the request's recenter through to the result (ADR
+/// [`build_brick_rebuild`] and carries the request's recenter through to the result.
 /// 0008: the frame value travels with the build, never re-derived at install). Like the
 /// geometry worker, the build runs under [`build_catching`] so a build panic is caught and
 /// surfaced as a `None` outcome the shell can react to, keeping the loop alive.

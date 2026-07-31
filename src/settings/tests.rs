@@ -66,7 +66,7 @@ fn config_round_trips_through_json() {
             angle: ui::panel::AngleSnap::Deg15,
             pivot: ui::panel::PlacementPivot::VolumetricCenter,
         },
-        // Non-default (Some) so the round-trip exercises sketch-mode persistence (ADR 0028).
+        // Non-default (Some) so the round-trip exercises sketch-mode persistence.
         sketch_mode: Some(document::scene::NodeId(9)),
         // Non-default (not Select) so the round-trip exercises the armed sketch tool (#95).
         sketch_tool: ui::panel::SketchTool::AddPoint,
@@ -213,7 +213,7 @@ fn config_persists_and_reloads_its_scene() {
     let mut panel = PanelState::with_view_cube_default();
     panel.geometry.voxels_per_block = voxels_per_block;
     panel.scene = scene.clone();
-    // ADR 0032: the selection is WORKSPACE state on the panel, keyed by NodeId — it
+    // The selection is WORKSPACE state on the panel, keyed by NodeId — it
     // rides the config's own `selection` field, not the document.
     let selected = scene
         .id_at_path(&NodePath::root_index(1))
@@ -348,7 +348,7 @@ fn old_config_with_debug_clouds_field_still_loads() {
     let panel = restored.to_panel_state();
     assert_eq!(panel.scene.roots.len(), 1);
     // Density DID carry over from the config and now lives on the document
-    // (ADR 0003 §3f(0)), not the shape.
+    // not the shape.
     assert_eq!(panel.scene.voxels_per_block, 20);
     let seed_node = panel
         .scene
@@ -359,7 +359,7 @@ fn old_config_with_debug_clouds_field_still_loads() {
         Some(document::scene::NodeContent::Tool { shape, material }) => {
             // The default seed geometry, NOT the persisted flat params.
             assert_eq!(shape.kind, ShapeKind::Cylinder);
-            // Size is voxel-canonical now (ADR 0003 §3f(0)): the 5×1×5-block seed
+            // Size is voxel-canonical now: the 5×1×5-block seed
             // built at the persisted density 20 = [100, 20, 100] voxels.
             assert_eq!(shape.size_voxels, [100, 20, 100]);
             // The persisted `material` rides the seed (it is still an AppConfig field).
@@ -448,7 +448,7 @@ fn full_scene_round_trips_through_json() {
     let mut instance = Node::new("House instance", NodeContent::Instance(def_id));
     instance.transform = document::scene::NodeTransform::from_blocks([-6, 0, 0], voxels_per_block);
 
-    // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
+    // Selection is keyed by NodeId, so mint ids and select
     // the Group's child (path [2, 0]) by its stable id.
     let mut scene = Scene::from_nodes(vec![
         NodeBuilder::leaf(stone),
@@ -471,7 +471,7 @@ fn full_scene_round_trips_through_json() {
     let mut panel = PanelState::with_view_cube_default();
     panel.geometry.voxels_per_block = voxels_per_block;
     panel.scene = scene.clone();
-    // ADR 0032: the workspace selection rides the config alongside the scene.
+    // The workspace selection rides the config alongside the scene.
     let selected = scene
         .id_at_path(&NodePath::from_indices(vec![2, 0]))
         .expect("the Group child has an id");
@@ -570,9 +570,9 @@ fn malformed_scene_falls_back_to_default_without_panicking() {
 /// no width, so serde reads it straight into `i64` — the "tolerant persistence
 /// migration" S4a requires. The document must load, keep its offsets, and resolve
 /// to a non-empty grid. (Placement is canonical voxels at the document density now,
-/// ADR 0003 §3f(0); authored here as a whole-block offset via `from_blocks`.)
+/// authored here as a whole-block offset via `from_blocks`.)
 ///
-/// **ADR 0003 Phase B5 note:** the original version of this test hand-authored a
+/// **Compatibility note:** the original version of this test hand-authored a
 /// `"scene": { "nodes": [ … ] }` document in the OLD positional-`Vec<Node>` on-disk
 /// shape. Phase B5 flipped scene storage to an id-keyed `arena` + `roots` spine, so
 /// that legacy array shape no longer deserializes (the field is gone). Per project
@@ -648,7 +648,7 @@ fn old_i32_offset_scene_loads_after_widening_to_i64() {
 /// `i32` range, ±2.1×10⁹) round-trips through `capture → JSON → load` byte-exact.
 /// This proves the widened field both serializes and deserializes the full
 /// 64-bit range — far-apart village nodes survive a save/load. (Placement is
-/// canonical voxels now, ADR 0003 §3f(0); the large value is set directly on the
+/// canonical voxels now; the large value is set directly on the
 /// voxel field to exercise the full i64 range it persists.)
 #[test]
 fn large_i64_offset_round_trips_through_json() {
@@ -690,7 +690,7 @@ fn large_i64_offset_round_trips_through_json() {
         [far_offset, -far_offset, far_offset / 2],
         "a >i32-range i64 offset must round-trip byte-exact through save/load"
     );
-    // ADR 0032: the workspace selection is keyed by NodeId and round-trips intact.
+    // The workspace selection is keyed by NodeId and round-trips intact.
     assert_eq!(
         restored_panel.selection.primary_node_id(),
         Some(selected),
@@ -831,7 +831,7 @@ fn modern_scene_keeps_its_masters_and_single_origin() {
     );
 }
 
-/// ADR 0003 Phase B3 regression: a persisted scene whose nodes carry the
+/// Regression: a persisted scene whose nodes carry the
 /// `NodeId(0)` sentinel and a stale `next_node_id` (an unminted save) must be
 /// minted on the load path, not left selection-dead. Without the
 /// `ensure_node_ids` call in `to_panel_state`, `id_at_path` would resolve a
@@ -852,7 +852,7 @@ fn unminted_persisted_scene_gets_ids_minted_on_load() {
             },
         )
     };
-    // REWRITTEN for the id-keyed arena (ADR 0003 B5): the old fixture built two
+    // REWRITTEN for the id-keyed arena: the old fixture built two
     // `NodeId(0)` nodes, but the arena is keyed BY id, so it cannot hold two
     // sentinel nodes, and `ensure_node_ids` re-keys a lone 0-node in the arena
     // WITHOUT rewriting the `roots`/Group spines that reference it — so a

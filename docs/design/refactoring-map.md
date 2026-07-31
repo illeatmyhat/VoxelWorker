@@ -136,9 +136,9 @@ regardless of how far verification goes.
 
 ## 12. Keep the documentation contract honest — **DONE / STANDING**
 
-Four places, four roles. `CONTEXT.md` defines terms and nothing else. `docs/adr/` records
-point-in-time decisions and is append-only. `docs/design/` records what is still to do and
-what was done to learn something, and is **pruned as its content folds into architecture**.
+Three places, three roles. `CONTEXT.md` defines terms and nothing else. `docs/architecture/`
+records the enduring shape of the system. `docs/design/` records what is still to do and what
+was done to learn something, and is **pruned as its content folds into architecture**.
 `docs/architecture/` is the final home: it describes the system as it is, with no history, no
 roadmap, and no reference to anything outside itself — not to decision records, not to other
 products.

@@ -84,11 +84,11 @@ pub struct SelectionConfig {
 impl SelectionConfig {
     /// Capture the config mirror from the live [`Selection`], **dropping every sketch entity**.
     ///
-    /// ADR 0032 folded the retired `sketch_selection` field into one set, but not its
+    /// The retired `sketch_selection` field was folded into one set, but not its
     /// persistence policy: an in-mode pick is momentary — cleared on entering and on leaving a
     /// sketch — and an `EntityId` is the one target that can go stale against a profile edited
     /// between the dump and the replay. So the sketch side reaches neither the document nor the
-    /// dump, exactly as when it was the sole justified `transient` field (ADR 0022/0024).
+    /// dump, exactly as when it was the sole justified `transient` field.
     pub fn from_selection(selection: &Selection) -> Self {
         Self {
             targets: selection
@@ -281,13 +281,13 @@ use crate::artifacts::{
 /// The whole persisted application state, one field per decision, each classified.
 ///
 /// It used to be the single persistence artifact as well — config file, project and debug
-/// repro all at once — which is the arrangement ADR 0022 unpicked. It is now the *source*
+/// repro all at once — which is the arrangement split. It is now the *source*
 /// the artifacts are captured from and the *target* a loaded dump is restored into, which
 /// leaves it doing exactly one job: being the complete, reviewable list of what the
 /// application considers durable state.
 #[derive(Debug, Clone, PartialEq, snapshot::Snapshot)]
 pub struct AppConfig {
-    // --- scene (ADR 0001 step 8: full scene persistence) ---
+    // --- scene: full scene persistence ---
     // The whole assembly (node tree + reusable definitions + the active
     // selection) is persisted here. It is the ONE `#[snapshot(document)]` field, so
     // `DocumentArtifact` is built from it alone. An absent `scene` key on disk
@@ -296,8 +296,8 @@ pub struct AppConfig {
     // never reach this field as garbage: serde tolerates missing inner fields (every
     // scene field is `#[serde(default)]`), and an outright unparseable config is
     // rejected wholesale by `load()` → defaults. Density
-    // (`voxels_per_block`) is now a document-level attribute on the `scene` (ADR 0003
-    // §3f(0)); the app-level field below persists the inspector slider's transient
+    // (`voxels_per_block`) is now a document-level attribute on the `scene`; the app-level
+    // field below persists the inspector slider's transient
     // mirror value, kept in sync with `scene.voxels_per_block` via `SetDensity`.
     //
     // issue #32: the flat `shape` / `size_blocks` / `wall_blocks` geometry mirror
@@ -308,14 +308,14 @@ pub struct AppConfig {
     // `deny_unknown_fields`, so serde ignores the now-unknown keys, and a scene-less
     // config just loads the default seed scene.
     //
-    // regional export: deferred to the chunking milestone (ADR 0001 step 8's
+    // regional export: deferred to the chunking milestone's
     // "regional/streamed .vox export" sub-part — meaningless until chunking; the
     // current full-grid `.vox` export already covers bounded scenes).
     #[snapshot(document)]
     pub scene: Option<Scene>,
 
     // --- density (the inspector slider's persisted mirror; the document truth is
-    // `scene.voxels_per_block`, ADR 0003 §3f(0)) ---
+    // `scene.voxels_per_block`) ---
     // View, not document: the truth is `scene.voxels_per_block`, and a mirror of document
     // truth is where you are working rather than what the model is.
     #[snapshot(view)]
@@ -335,7 +335,7 @@ pub struct AppConfig {
     // field (`scene.master_voxel_grid` / `master_block_lattice` / `master_floor_grid`).
     // No `deny_unknown_fields`, so an OLD config still carrying those keys loads fine
     // (serde ignores the now-unknown keys); the scene's own masters are authoritative.
-    /// Whether the Points' axes draw on top of the model vs occluded (ADR 0031). ON by
+    /// Whether the Points' axes draw on top of the model vs occluded. ON by
     /// default; a display preference that outlives a project.
     #[snapshot(settings)]
     pub axes_on_top: bool,
@@ -413,14 +413,14 @@ pub struct AppConfig {
     // nothing: `to_panel_state` hard-coded every one of them to a default, and no field
     // here carried them. That is the pan-target bug exactly — a decision recorded at the
     // field and never honored by a capture — and it survived because the
-    // `PanelState` -> `AppConfig` seam is hand-written, which is the gap ADR 0022's third
-    // amendment recorded. These fields are that seam being closed.
+    // `PanelState` -> `AppConfig` seam is hand-written. These fields are that seam being
+    // closed.
     //
     // Session rather than view: they say how the workspace was arranged, not where the
     // camera was. Session rather than settings: nobody chose them, they are merely where
     // the user stopped, and a preference is something you would want honored in every
     // project.
-    /// The viewer's exclusive rendering mode. ADR 0018 decision 3 ruled it out of the
+    /// The viewer's exclusive rendering mode. The rendering policy rules it out of the
     /// document, which stands; session state remains separate from the document.
     /// out of persistence altogether.
     #[snapshot(session)]
@@ -436,7 +436,7 @@ pub struct AppConfig {
     /// the diagnostic the fault was visible under is not a repro.
     #[snapshot(session)]
     pub debug_brick_faces: bool,
-    /// The armed tool (ADR 0022) with its pending drop nested inside, `None` when no tool
+    /// The armed tool with its pending drop nested inside, `None` when no tool
     /// is armed. Session state on the same footing as [`view_mode`](Self::view_mode): an
     /// armed tool is how the workspace was left, so a mid-gesture dump re-arms and replays
     /// it. Named `armed_tool` to match the [`PanelState`] field it routes to (the
@@ -451,7 +451,7 @@ pub struct AppConfig {
     #[snapshot(session)]
     pub placement_snap: PlacementSnap,
 
-    /// The sketch node being edited in sketch mode (ADR 0028), `None` in the normal chrome.
+    /// The sketch node being edited in sketch mode, `None` in the normal chrome.
     /// Session state on the same footing as [`armed_tool`](Self::armed_tool): the
     /// mode is how the workspace was left, so a mid-edit dump (an F9 repro) re-enters the same
     /// sketch. Named `sketch_mode` to match the [`PanelState`] field it routes to. `NodeId` is
@@ -460,7 +460,7 @@ pub struct AppConfig {
     #[snapshot(session)]
     pub sketch_mode: Option<NodeId>,
 
-    /// The armed sketch-mode tool (ADR 0028, #95), restored so a mid-edit dump re-enters the
+    /// The armed sketch-mode tool, restored so a mid-edit dump re-enters the
     /// mode with the same tool in hand. Session state alongside [`sketch_mode`](Self::sketch_mode);
     /// `SketchTool` lives in the serde-free `ui` crate, so `SessionArtifact` persists it through a
     /// `SketchToolConfig` remote shim exactly as it does the viewer mode. Named `sketch_tool` to
@@ -468,7 +468,7 @@ pub struct AppConfig {
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
 
-    /// The armed constraint gesture and its picks so far (ADR 0035 Decision 15), restored so a
+    /// The armed constraint gesture and its picks so far, restored so a
     /// mid-pick dump re-enters with the same question on screen — the same reason
     /// [`sketch_tool`](Self::sketch_tool) is carried, applied to the one sketch gesture that
     /// lives on the panel rather than on the shell. `SessionArtifact` persists it through the
@@ -483,10 +483,10 @@ pub struct AppConfig {
     #[snapshot(session)]
     pub sketch_snap: PositionSnap,
 
-    /// The workspace selection (ADR 0032) — the picked nodes and reference Points. Session
+    /// The workspace selection — the picked nodes and reference Points. Session
     /// state alongside [`sketch_mode`](Self::sketch_mode): what was picked is how the
     /// workspace was left, so a dump replays with the same things selected. It never
-    /// travels in a shared document, which is what ADR 0032 repealed. `Selection` lives in
+    /// travels in a shared document. `Selection` lives in
     /// the serde-free `ui` crate, so it persists through the [`SelectionConfig`] mirror.
     #[snapshot(session)]
     pub selection: SelectionConfig,
@@ -601,7 +601,7 @@ impl AppConfig {
             stack: panel.stack,
             debug_face_orientation: panel.debug_face_orientation,
             debug_brick_faces: panel.debug_brick_faces,
-            // ADR 0022: the armed tool with its pending drop, captured as its serde-able
+            // The armed tool with its pending drop, captured as its serde-able
             // mirror so a mid-gesture dump re-arms and replays it.
             armed_tool: panel
                 .armed_tool
@@ -614,7 +614,7 @@ impl AppConfig {
             orbit_mode: panel.orbit_mode,
             shortcuts: ShortcutsConfig::from_shortcuts(&panel.shortcuts),
             selection: SelectionConfig::from_selection(&panel.selection),
-            // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
+            // The sketch node under edit, so a mid-edit dump re-enters sketch mode.
             sketch_mode: panel.sketch_mode,
         }
     }
@@ -640,7 +640,7 @@ impl AppConfig {
 
     /// Build the [`PanelState`] this config describes.
     ///
-    /// step 8 (ADR 0001): the full scene (node tree + definitions + active
+    /// The full scene (node tree + definitions + active
     /// selection) is restored from [`scene`](Self::scene) when present. When it is
     /// absent — an OLD config that predates scene persistence (issue #32 deleted the
     /// flat geometry mirror fields) — the default seed scene is loaded, the same one
@@ -653,7 +653,7 @@ impl AppConfig {
             // issue #32: the flat geometry mirror fields are gone. The inspector
             // mirror starts at its defaults, overridden only by the persisted
             // app-level density; it is re-synced from the active node after the seed.
-            // Size is voxel-granular (ADR 0003 §3f(0)): the default seed is 5×1×5
+            // Size is voxel-granular: the default seed is 5×1×5
             // BLOCKS, so build its canonical voxels at the PERSISTED density (not the
             // Default impl's hardcoded d16) so a config at d20 still seeds a 5-block
             // shape, matching the old block-granular seed.
@@ -705,7 +705,7 @@ impl AppConfig {
             // Issue #29 S5: refreshed each frame from the camera target by the windowed
             // caller; defaults to the world origin (the headless harness keeps it 0).
             point_add_position_blocks: [0, 0, 0],
-            // ADR 0022: restore the armed tool (session state) WITH its pending drop, so a
+            // Restore the armed tool (session state) WITH its pending drop, so a
             // mid-gesture repro re-arms and replays it rather than resetting to no armed
             // tool. The material comes from this config's own material field — the same
             // source the original arm read.
@@ -713,14 +713,14 @@ impl AppConfig {
                 .armed_tool
                 .as_ref()
                 .map(|armed| armed.to_armed(self.material)),
-            // ADR 0028: re-enter sketch mode on the same node a mid-edit dump was taken in.
+            // Re-enter sketch mode on the same node a mid-edit dump was taken in.
             // Cleared to `None` below if the id no longer resolves in the restored scene, so a
             // stale sketch node can never trap the mode.
             sketch_mode: self.sketch_mode,
-            // ADR 0028 (#95): restore the armed sketch tool, so a mid-edit repro re-enters with
+            // Restore the armed sketch tool, so a mid-edit repro re-enters with
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
-            // ADR 0035 Decision 15: and the constraint gesture, picks included.
+            // And restore the constraint gesture, picks included.
             armed_constraint: self.armed_constraint.clone(),
             sketch_snap: self.sketch_snap,
             default_orbit_type: self.default_orbit_type,
@@ -749,14 +749,14 @@ impl AppConfig {
         // directly, and a fresh/legacy config with no scene falls back to the
         // default seed scene whose `Scene::default()` masters all default ON.
         state.scene.ensure_origin_point();
-        // ADR 0003 Phase B3: selection and the edit ops key on a stable `NodeId`, and
+        // Selection and the edit ops key on a stable `NodeId`, and
         // `mint_node_id` trusts `next_node_id` to already sit past every live id. A
         // restored scene may carry unminted nodes (`NodeId(0)` sentinel) and/or a stale
         // counter, so mint ids and advance the counter here — idempotent, and uniform
         // with the seed branch and `shot.rs`. Runs after `ensure_origin_point` so the
         // origin point it may have just appended also receives an id.
         state.scene.ensure_node_ids();
-        // ADR 0030 load policy: erase structurally-invalid sketch entities (a segment
+        // Load policy: erase structurally-invalid sketch entities (a segment
         // referencing a missing point, a self-loop) rather than fail the load, warning on the
         // CLI. A clean scene drops nothing.
         for (node_name, dropped) in state.scene.repair_sketches() {
@@ -764,7 +764,7 @@ impl AppConfig {
                 "warning: dropped {dropped} invalid sketch segment(s) from \"{node_name}\" on load"
             );
         }
-        // ADR 0028: a restored sketch mode must point at a live sketch node. Drop it if the
+        // A restored sketch mode must point at a live sketch node. Drop it if the
         // id no longer resolves to a `SketchTool` in the loaded scene (a scene-less config, a
         // deleted node, or a node that is no longer a sketch), so a stale id cannot trap the
         // mode with no way out.
@@ -777,7 +777,7 @@ impl AppConfig {
                 state.sketch_mode = None;
             }
         }
-        // ADR 0032: the workspace selection is session state of its own, restored from the
+        // The workspace selection is session state of its own, restored from the
         // config rather than dug out of the document.
         state.selection = self.selection.to_selection();
         state
@@ -839,7 +839,7 @@ impl AppConfig {
     ///
     /// Both on-disk artifacts are dumps, so both loads land here. Keeping the parse in one
     /// place is what stops the F9 file and the config file from drifting into two formats
-    /// that happen to look alike — the failure this ADR's whole split is about.
+    /// that happen to look alike — the failure this split is meant to prevent.
     pub fn from_dump_json(text: &str) -> Result<Self, serde_json::Error> {
         Dump::from_json(text).map(Dump::into_state)
     }

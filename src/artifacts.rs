@@ -307,7 +307,7 @@ pub struct SettingsArtifact {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewArtifact {
     /// The inspector slider's density mirror. The document truth is
-    /// `scene.voxels_per_block` (ADR 0003 §3f(0)); a mirror of document truth is view
+    /// `scene.voxels_per_block`; a mirror of document truth is view
     /// state, which is why it is here and not next door.
     #[serde(default = "default_density")]
     pub voxels_per_block: u32,
@@ -532,7 +532,7 @@ impl Dump {
     /// build here with `error[E0027]: pattern does not mention field`. Because the dump is
     /// a superset of every other artifact, a field that survives this function has
     /// reached persistence and a field that does not has reached nothing at all — which
-    /// is exactly the property ADR 0022 decision 4 asks for, and the one a derive alone
+    /// is exactly the property the persistence boundary requires, and the one a derive alone
     /// could not give.
     pub fn from_state(state: &AppConfig) -> Self {
         let AppConfig {
@@ -850,9 +850,9 @@ mod tests {
                 pivot: ui::panel::PlacementPivot::VolumetricCenter,
             },
             // Off its default (Some, not None) so a capture that dropped it fails the
-            // round-trip rather than coinciding with a default restore (ADR 0028).
+            // round-trip rather than coinciding with a default restore.
             sketch_mode: Some(document::scene::NodeId(9)),
-            // Off its default (AddPoint, not Select) for the same reason (ADR 0028, #95).
+            // Off its default (AddPoint, not Select) for the same reason.
             sketch_tool: SketchTool::AddPoint,
             armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
                 ui::panel::ConstraintVerb::Fix,
@@ -943,10 +943,10 @@ mod tests {
         );
     }
 
-    /// ADR 0028 (#93 acceptance): sketch mode is session/editing state, never document state —
+    /// Sketch mode is session/editing state, never document state —
     /// a saved document is byte-identical whether or not a sketch was being edited. The
     /// exhaustive destructure in `DocumentArtifact::from_state` already declines `sketch_mode`;
-    /// this pins the property the ADR's acceptance names, from the outside.
+    /// this pins that property from the outside.
     #[test]
     fn sketch_mode_never_reaches_the_document() {
         let mut editing = distinctive_state();

@@ -518,8 +518,8 @@ impl AppCore {
         };
 
         // Tier 1 — geometry. A picked surface is unambiguous, and a node dropped on a geometry
-        // surface is ALWAYS **seated**: it contacts the surface with the surface's own normal (ADR
-        // 0027 — "Seated placement"). There is no upright mode here; "upright" is the degenerate
+        // surface is ALWAYS **seated**: it contacts the surface with the surface's own normal.
+        // There is no upright mode here; "upright" is the degenerate
         // world-vertical case, and that belongs to the world-plane tier below (world planes are
         // never seated). So the picked voxel face — only an axis-aligned staircase of the true
         // surface (a cylinder's curved side reads as +X/+Y steps) — is refined to the CONTINUOUS

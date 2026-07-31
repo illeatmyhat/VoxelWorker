@@ -266,8 +266,8 @@ fn round_trip_matches_dense_with_unboundable_cloud() {
 #[test]
 fn large_solid_box_stores_zero_interior_voxels() {
     let density = 16;
-    // 50×50×50 BLOCKS @ d16 = 800×800×800 voxels — the revolve-class size the ADR
-    // calls out. Dense interior would be 800³ ≈ 5.1e8 voxels (far past the 6M cap);
+    // 50×50×50 BLOCKS @ d16 = 800×800×800 voxels — the revolve-class size under test.
+    // Dense interior would be 800³ ≈ 5.1e8 voxels (far past the 6M cap);
     // the two-layer interior holds NONE.
     let blocks = 50u32;
     let shape = SdfShape::from_blocks(ShapeKind::Box, [blocks, blocks, blocks], 1, density);

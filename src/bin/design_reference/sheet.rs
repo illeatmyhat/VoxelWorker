@@ -101,7 +101,7 @@ impl Sheet {
                     section(ui, "Viewport gizmos", "camera chrome drawn into the scene — screen-space, never depth-tested, never grabbable");
                     self.viewport_gizmos(ui);
                     ui.add_space(22.0);
-                    section(ui, "Sketch gizmos", "on-canvas manipulators over the 3D plane — screen-space billboards at projected vertices (ADR 0028)");
+                    section(ui, "Sketch gizmos", "on-canvas manipulators over the 3D plane — screen-space billboards at projected vertices");
                     self.sketch_gizmos(ui);
                     ui.add_space(22.0);
                     section(ui, "Dimension gizmos", "authored quantities on the canvas — a layout, not a shape: what is drawn depends on whether it fits");
@@ -497,7 +497,7 @@ impl Sheet {
             ui,
             viewport_stage,
             "orbit center · placed / placing",
-            "The camera's placed pivot (ADR 0032): a ringed crosshair round a filled dot, at the \
+            "The camera's placed pivot: a ringed crosshair round a filled dot, at the \
              pivot's projected point. Accent when placed, hover-step while a placement rides the \
              cursor. Deliberately unlike a vertex handle's square thumb — a vertex is a thing you \
              grab, this is a thing you turn around.",

@@ -266,7 +266,7 @@ fn unclassified_field_error(field: &Field, field_name: &str) -> syn::Error {
          `derived` at least makes a checkable claim: dropping the field must change how long \
          something takes and NOTHING else.\n\n\
          The category describes this field's WHOLE object and does not recurse into it — \
-         serialization already carries what is inside. See docs/adr/0022.",
+         serialization already carries what is inside.",
     );
     syn::Error::new(field.span(), message)
 }

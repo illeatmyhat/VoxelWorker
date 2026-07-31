@@ -66,7 +66,7 @@ pub struct TwoLayerResidentCache {
 
 impl TwoLayerResidentCache {
     /// A resident cache with the two-layer capability ENABLED. The default ([`Default`]) is
-    /// DISABLED (empty, no-op), matching the ADR's "OFF by default, dense fallback" coexistence.
+    /// DISABLED (empty, no-op), matching the "OFF by default, dense fallback" coexistence.
     pub fn enabled() -> Self {
         Self {
             enabled: true,

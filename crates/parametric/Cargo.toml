@@ -3,7 +3,7 @@ name = "parametric"
 version = "0.1.0"
 edition = "2021"
 
-# The authored-quantity crate (ADR 0035 Decision 12): everything the author *types*
+# The authored-quantity crate: everything the author *types*
 # and the document *retains* as an expression rather than a number — the blocks/voxels
 # measurement core, the dimension algebra that keeps a length from being added to an
 # angle, and the exact-rational expression language with its named parameters.

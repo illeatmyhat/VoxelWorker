@@ -140,9 +140,9 @@ pub fn upload_scene_scaffold(
     );
 }
 
-/// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot` (ADR 0031):
+/// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot`:
 /// the selection-follow transform gizmo, the boolean-operand x-ray ghost, the selection
-/// outline+wash (ADR 0032), and the corner view cube. Each is a pure camera upload with no scene
+/// outline+wash, and the corner view cube. Each is a pure camera upload with no scene
 /// rebuild — the drift these previously risked (a gizmo matrix or cube projection computed two
 /// different ways) is made unrepresentable by one call site.
 ///
@@ -174,9 +174,9 @@ pub fn upload_overlay_uniforms(
         let gizmo_view_projection = camera.overlay_view_projection(aspect_ratio, pivot);
         transform_gizmo.update_uniforms(queue, gizmo_view_projection, model);
     }
-    // ADR 0018 Decision 6: the operand ghost + the corner cube ride the scene camera directly.
+    // The operand ghost + the corner cube ride the scene camera directly.
     selected_operand_ghost.update_uniforms(queue, view_projection);
-    // ADR 0032: the selection outline's G-buffer records the SAME scene matrix (the wash
+    // The selection outline's G-buffer records the SAME scene matrix (the wash
     // compares its hardware depth against the scene's), and its epsilon rides the matching
     // NDC-depth mapping.
     selection_outline.update_uniforms(queue, view_projection, ndc_depth);
@@ -184,7 +184,7 @@ pub fn upload_overlay_uniforms(
 }
 
 /// Upload the per-frame **voxel-model** uniforms shared by the windowed shell and `shot`
-/// (ADR 0031): the cuboid mesh path and, when engaged, the brick raymarch that REPLACES the mesh
+/// the cuboid mesh path and, when engaged, the brick raymarch that REPLACES the mesh
 /// draw for this frame. Both consume the same camera + band + region + grid-overlay-master +
 /// bound-material inputs, so a single call keeps the two render paths pixel-comparable — the whole
 /// premise of the gpu_parity net. Returns whether the brick path is engaged (`brick.is_some()`),
@@ -228,7 +228,7 @@ pub fn upload_voxel_uniforms(
     let Some(brick) = brick else {
         return false;
     };
-    // ADR 0011 G2: mirror the applied-block state into the shader (solid hits shade from the
+    // Mirror the applied-block state into the shader (solid hits shade from the
     // block's D2Array); the grazing-rim diagnostic swaps the shade for face-axis color. Both are
     // per-frame toggles, no rebuild — shot leaves them at their defaults.
     brick.set_loaded_material_active(loaded_material_active);
@@ -281,7 +281,7 @@ pub fn render_frame(
         &prepared.screen_descriptor,
     );
 
-    // === Pass 0: the selection outline's depth-only G-buffer (ADR 0032) — the selected
+    // === Pass 0: the selection outline's depth-only G-buffer — the selected
     // bodies rasterised under the scene camera into the renderer's private depth map,
     // read back by the composite pass after the voxel pass below.
     if let Some(selection_outline) = phases.selection_outline {
@@ -334,19 +334,19 @@ pub fn render_frame(
         );
         voxel_pass.set_scissor_rect(viewport_x, viewport_y, viewport_width, viewport_height);
 
-        // Background phase (ADR 0031): fullscreen, pre-solid, depth off — the Signal
+        // Background phase: fullscreen, pre-solid, depth off — the Signal
         // background gradient — so every voxel + phase below composites over it.
         for draw in phases.background {
             draw.draw(&mut voxel_pass);
         }
 
-        // Behind-model phase (ADR 0031): depth-off draws recorded before the model, so the opaque
+        // Behind-model phase: depth-off draws recorded before the model, so the opaque
         // model paints over them (paint-order occlusion) — the far-distance reference-axes fallback.
         for draw in phases.behind_model {
             draw.draw(&mut voxel_pass);
         }
 
-        // The voxel model: the brick raymarch (ADR 0011 G1) when engaged, else the
+        // The voxel model: the brick raymarch when engaged, else the
         // cuboid mesh path. When a VS block is applied the mesh path binds the
         // block's 6-layer D2Array so it textures per-face; no applied block →
         // `None` keeps the procedural-atlas path. The brick pass writes ray-hit
@@ -357,7 +357,7 @@ pub fn render_frame(
             display::renderer::MaterialSource::Procedural(_) => None,
         };
         if let Some(brick_raymarch) = phases.brick_raymarch {
-            // ADR 0011 G2: a loaded VS block now textures the raymarch too — bind the
+            // A loaded VS block now textures the raymarch too — bind the
             // block's 6-layer D2Array at group(2) so solid hits shade per-face by the
             // owner's lattice rule (the brick renderer's `loaded_material_active` flag,
             // set alongside its uniforms, selects that branch). `None` binds the dummy.
@@ -366,7 +366,7 @@ pub fn render_frame(
             phases.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
         }
 
-        // ADR 0012 (H1) — the onion GHOST pass. Immediately after the SOLID band draw,
+        // The onion GHOST pass. Immediately after the SOLID band draw,
         // in the SAME MSAA pass, the engaged display path ghosts the voxels in the onion
         // slabs (recentered-Z outside the band, within ±onion_depth). Depth-tested
         // `Less` + alpha-blended, with depth WRITE ON so only the nearest ghost surface
@@ -382,15 +382,15 @@ pub fn render_frame(
             }
         }
 
-        // Over-model phase (ADR 0031): translucent ghosts blended over the solid, depth-tested
-        // no-write — the operand x-ray (#78 / ADR 0018 D6) and the armed-tool placement ghost
-        // (ADR 0022). After the solid + onion ghost so both display paths' depth is final;
+        // Over-model phase: translucent ghosts blended over the solid, depth-tested
+        // no-write — the operand x-ray and the armed-tool placement ghost. After the solid +
+        // onion ghost so both display paths' depth is final;
         // before the scaffold, which they cannot occlude (they write no depth).
         for draw in phases.over_model {
             draw.draw(&mut voxel_pass);
         }
 
-        // Scaffold phase (ADR 0031): depth-tested reference lines the solid model occludes —
+        // Scaffold phase: depth-tested reference lines the solid model occludes —
         // per-object block/floor grids (#29 S3), the analytic infinite reference grid (#29
         // Points fast-follow, depth-tested via `frag_depth`), and the visible Points' axes
         // (#29 S5). Scaffold behind/under the model, not an overlay on top.
@@ -398,14 +398,14 @@ pub fn render_frame(
             draw.draw(&mut voxel_pass);
         }
 
-        // On-top phase (ADR 0031): depth-test OFF, drawn through the solid model — the
+        // On-top phase: depth-test OFF, drawn through the solid model — the
         // manipulator gizmos.
         for draw in phases.on_top {
             draw.draw(&mut voxel_pass);
         }
     }
 
-    // === Pass 1a: the selection outline + wash composite (ADR 0032) — full-screen onto
+    // === Pass 1a: the selection outline + wash composite — full-screen onto
     // the RESOLVED target, sampling its G-buffer against the voxel pass's stored MSAA
     // depth. Before the view cube, so the corner chrome stays on top.
     if let Some(selection_outline) = phases.selection_outline {

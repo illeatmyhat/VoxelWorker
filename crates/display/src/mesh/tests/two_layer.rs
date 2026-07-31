@@ -315,7 +315,7 @@ fn two_layer_chunk_set_renderable_faces(
     renderable
 }
 
-/// **ADR 0010 #54 GATE (rendered parity):** a scene edited INCREMENTALLY on the two-layer
+/// **Rendered parity gate:** a scene edited INCREMENTALLY on the two-layer
 /// path (build scene A into a [`TwoLayerResidentCache`], invalidate the edit's dirty AABB
 /// chunks, re-derive only those) meshes to the SAME renderable exposed-face set as (a) a
 /// FULL from-scratch two-layer rebuild of the edited scene B and (b) the dense ground truth.
@@ -700,7 +700,7 @@ fn banded_occupancy_indices(
         .collect()
 }
 
-/// ADR 0010 #53 GATE: the two-layer BANDED mesher's RENDERABLE face set equals the dense
+/// The two-layer BANDED mesher's RENDERABLE face set equals the dense
 /// path's band-masked genuine surface — proving the band reclip (coarse clipped one-box,
 /// microblock cuboid clip, cut-plane cap faces) is a pure optimization on the data seam,
 /// identical to `build_cuboid_mesh_banded` on the dense path. Because `renderable_unit_faces`
@@ -766,7 +766,7 @@ fn assert_two_layer_banded_face_parity(scene: &Scene, density: u32, band: LayerB
     );
 }
 
-/// THE ADR 0010 #53 GATE: the two-layer mesher honors a layer band identically to the dense
+/// The two-layer mesher honors a layer band identically to the dense
 /// banded path across a matrix of bands — a band that CUTS through coarse-solid interiors (a
 /// large box: the clipped one-box + cut cap face), a band that clips microblock cuboids (a
 /// sphere), a band flush to a block boundary, and a thin single-block band. Multi-chunk at

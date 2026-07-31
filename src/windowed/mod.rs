@@ -150,12 +150,12 @@ struct WindowedState {
     /// block resolves its blocktype JSON → per-face PNGs on the main thread.
     /// Rebuilt when "Connect folder…" switches the source.
     face_resolver: FaceResolver,
-    /// ADR 0011 G5: the last rebuild's region dimensions (voxels) + composite recenter
-    /// (floating origin, ADR 0008). The dense `VoxelGrid` husk is GONE — the camera
+    /// The last rebuild's region dimensions (voxels) + composite recenter (floating origin).
+    /// The dense `VoxelGrid` husk is GONE — the camera
     /// auto-frame and layer scrubber read these scalars directly.
     region_dimensions: [u32; 3],
     recenter_voxels: RecenterVoxels,
-    /// The headless orchestrator (ADR 0003 keystone): owns the per-chunk resolve
+    /// The headless orchestrator: owns the per-chunk resolve
     /// store (issue #27 S2 — the resolve mechanism behind `rebuild_geometry`, with
     /// issue #27 S3's TARGETED invalidation that diffs the scene's leaf spatial
     /// index against the previous one and evicts only the chunks the edit's
@@ -170,7 +170,7 @@ struct WindowedState {
     /// The band the most recent measurement was DISPATCHED for (not necessarily landed yet).
     /// A change (band scrub, or the grid-edit reset to `(u32::MAX, u32::MAX)`) re-dispatches.
     measured_band: (u32, u32),
-    /// ADR 0010 E5 follow-up: the background diameter / widest-run measurement worker — the
+    /// The background diameter / widest-run measurement worker — the
     /// layer-band readout is streamed off the event-loop thread so a huge scene never freezes
     /// the UI on a scrub. The shell shows the stale `measured_diameter` until a fresh result
     /// arrives (`poll_diameter_worker`).
@@ -322,10 +322,10 @@ struct WindowedState {
     /// Placement intents produced by a viewport click this frame, drained into the SAME
     /// apply loop as the panel intents so a drop goes through `apply_intent` + rebuild.
     viewport_intents: Vec<crate::Intent>,
-    /// Intent batches that must apply as ONE undo step (multi-node Delete, ADR 0033).
+    /// Intent batches that must apply as ONE undo step (multi-node Delete).
     /// Drained right after `viewport_intents` through `AppCore::apply_transaction`.
     viewport_transactions: Vec<Vec<crate::Intent>>,
-    /// ADR 0028 (#94): the sketch profile's vertex handles, projected to egui points with
+    /// The sketch profile's vertex handles, projected to egui points with
     /// their interaction state, refreshed at the END of each frame and drawn on the NEXT
     /// (a one-frame lag, imperceptible for handle chrome). Empty outside sketch mode.
     sketch_overlay_points: Vec<(egui::Pos2, ui::gizmos::HandleState)>,
@@ -338,14 +338,14 @@ struct WindowedState {
     sketch_vertex_px: Vec<Option<egui::Pos2>>,
     /// The stable point id for each entry in [`sketch_vertex_px`](Self::sketch_vertex_px), in
     /// the SAME order — maps an overlay hit index to the entity to drag or delete (the store has
-    /// no positional index, ADR 0030).
+    /// no positional index).
     sketch_point_ids: Vec<document::sketch::EntityId>,
     /// Each segment as `(segment id, from index, to index)` into
     /// [`sketch_vertex_px`](Self::sketch_vertex_px) — the add-point hit-test splits the named
-    /// segment by id, and the overlay draws a line per entry (ADR 0030, not consecutive pairs).
+    /// segment by id, and the overlay draws a line per entry, not consecutive pairs.
     sketch_segments: Vec<(document::sketch::EntityId, usize, usize)>,
     /// Each committed segment's two endpoints in egui POINTS for THIS frame plus its interaction
-    /// [`HandleState`](ui::gizmos::HandleState), drawn as a line on the NEXT (ADR 0030 — a sketch's
+    /// [`HandleState`](ui::gizmos::HandleState), drawn as a line on the NEXT frame — a sketch's
     /// edges, so an open profile reads as connected geometry, not loose dots). The one segment
     /// under the cursor (when no vertex is closer — vertices take priority) carries `Hover` under
     /// the Select tool (brighter line) or `Marked` under Delete (warn-red line + `✕`); every other
@@ -398,18 +398,18 @@ struct WindowedState {
     /// the edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so
     /// a click edits and a drag still rotates the view.
     sketch_edit_press: bool,
-    /// Whether the most recent left-press was a pick for an ARMED CONSTRAINT (ADR 0035 Decision
+    /// Whether the most recent left-press was a pick for an ARMED CONSTRAINT (the
     /// 15). A stationary release with this set offers the entity under the cursor to the slot
     /// that is waiting; a drag leaves it and turns the view instead, like every other sketch
     /// press flag here.
     sketch_constraint_press: bool,
-    /// The constraint badges to draw over the sketch (ADR 0035 Decision 16) — one per asserted
+    /// The constraint badges to draw over the sketch — one per asserted
     /// relation, anchored on the geometry it names. Rebuilt each frame by the overlay refresh,
     /// alongside the vertex handles and the segment lines it is projected from.
     ///
     /// Also the shell's hit-test set: a constraint is picked by clicking its badge, and this is
     /// the only record of where one is, so what is drawn and what is clickable are one list
-    /// (ADR 0035 Decision 3).
+    ///
     sketch_constraint_badges: Vec<ui::chrome::ConstraintBadge>,
     /// The open polyline chain (#99) as `(first point id, last point id)`, or `None` when no
     /// chain is being drawn. Each polyline click connects `last → clicked` and advances;
@@ -447,7 +447,7 @@ struct WindowedState {
     /// window (`true`, solid + accent fill) or crossing (`false`, dashed + lighter) box, or
     /// `None` when no marquee is live. Refreshed alongside the handles; drawn next frame.
     sketch_marquee_band: Option<(egui::Rect, bool)>,
-    /// Whether the most recent left-press armed a **node** selection resolve (ADR 0032): the live
+    /// Whether the most recent left-press armed a **node** selection resolve: the live
     /// viewport, with no tool armed and no sketch mode open — i.e. every other left-click consumer
     /// declined. A STATIONARY release with this set picks the node under the cursor; a drag orbits
     /// instead, so the view stays freely rotatable.
@@ -468,11 +468,11 @@ struct WindowedState {
     shift_held: bool,
 }
 
-/// An in-progress sketch point-vertex drag (ADR 0028 #94, id-based per ADR 0030).
+/// An in-progress sketch point-vertex drag, identified by stable id.
 #[derive(Debug, Clone)]
 struct SketchVertexDrag {
     /// The stable id of the point entity being dragged — NOT a loop index, which is invalid
-    /// once the graph opens (ADR 0030).
+    /// once the graph opens.
     point_id: document::sketch::EntityId,
     /// The sketch producer as it stood when the vertex was grabbed — the base every preview
     /// moves the dragged vertex on (a fresh clone), so successive frames never compound, and
@@ -557,14 +557,14 @@ impl WindowedState {
         );
 
         // Resolve the panel geometry into the grid, then build the renderer's
-        // instance buffer FROM the grid (the resolved-grid seam, `docs/adr/0006`). The view cube +
+        // instance buffer FROM the grid (the resolved-grid seam). The view cube +
         // block lattice are ON by default; the persisted config overrides them.
         let mut panel_state = match &config {
             Some(config) => config.to_panel_state(),
             None => PanelState::with_view_cube_default(),
         };
         let shape = SdfShape::from_geometry(panel_state.geometry.clone());
-        // ADR 0011 G5: the startup DOOR constructs NO `VoxelGrid` — it returns only the region
+        // The startup DOOR constructs NO `VoxelGrid` — it returns only the region
         // dimensions + resolve recenter (the camera auto-frame and layer scrubber
         // consume these scalars), exactly what the per-edit `AppCore::rebuild` yields. This
         // closes the startup OOM on both binaries: the persisted 8000×800×800 scene once
@@ -580,7 +580,7 @@ impl WindowedState {
         panel_state
             .layer_range
             .rescale_to_grid_z(0, grid_z, panel_state.geometry.voxels_per_block);
-        // ADR 0010 E5 follow-up: the diameter / scrubber readout is measured ASYNCHRONOUSLY
+        // The diameter / scrubber readout is measured ASYNCHRONOUSLY
         // (the streamed cacheless query is O(total blocks) — sub-second on a huge solid but not
         // free, and a persisted config could load a large scene at startup). Seed a stale `0`
         // and an impossible band so the first render frame's `current_band != measured_band`
@@ -591,12 +591,12 @@ impl WindowedState {
         let diameter_worker = spawn_diameter_worker();
         let diameter_generation = GenerationTracker::new();
         let vox_export_worker = spawn_vox_export_worker();
-        // ADR 0011 G5: no occupancy is ever resolved at startup (dims-only door).
+        // No occupancy is ever resolved at startup (dims-only door).
         println!(
             "resolved region {:?} for {:?} {:?}@{} (no dense occupancy)",
             region_dimensions, shape.kind, shape.size_voxels, panel_state.geometry.voxels_per_block,
         );
-        // ADR 0010 E5: the cuboid mesh renderer is the sole voxel render path AND it
+        // The cuboid mesh renderer is the sole voxel render path AND it
         // meshes THROUGH the two-layer store (coarse one-box + microblock cuboids +
         // seam-flag culling) — the SAME path `rebuild_geometry` takes on every later
         // edit, so the startup frame (which renders until the first edit re-meshes) is
@@ -637,12 +637,12 @@ impl WindowedState {
         // to the SELECTED node each frame via its model matrix (no per-frame geometry rebuild).
         let transform_gizmo_renderer =
             TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-        // The boolean-operand ghost (ADR 0018 Decision 6): built empty; the first render
+        // The boolean-operand ghost: built empty; the first render
         // frame derives it for the loaded scene's selection when the view mode is
         // Show-booleans (`selected_ghost_dirty` below).
         let selected_operand_ghost_renderer =
             crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-        // The selection outline + wash (ADR 0032, reworked): built empty; the first
+        // The selection outline + wash: built empty; the first
         // render frame derives it for the restored selection (same dirty flag as the
         // operand ghost) and sizes its depth map to the target.
         let selection_outline_renderer =
@@ -655,11 +655,11 @@ impl WindowedState {
         let points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let points_overlay_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-        // ADR 0022: the armed-tool placement ghost, held permanently (disarmed until a
+        // The armed-tool placement ghost, held permanently (disarmed until a
         // frame arms it from the armed tool's pending drop).
         let placement_ghost_renderer =
             crate::PlacementGhostRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-        // ADR 0030 §3: the sketch region wash, held permanently (disarmed until a sketch is open).
+        // The sketch region wash, held permanently (disarmed until a sketch is open).
         let sketch_region_renderer =
             display::renderer::SketchRegionRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
@@ -854,7 +854,7 @@ impl WindowedState {
     }
 
     /// The EFFECTIVE layer clip (band + onion-fog region) the render path will apply this
-    /// frame for a whole-scene grid of `scene_grid_z` layers (issue #12 / #60 M2 / ADR 0018
+    /// frame for a whole-scene grid of `scene_grid_z` layers (issue #12 / #60 M2 /
     /// Decisions 4–5). Delegates to the shared [`AppCore::mesh_clip`] so the async worker,
     /// the fallback rebuild, and the render uniforms all clip identically (the swap frame's
     /// `rebuild_for_band` then no-ops). The band bites only in Onion-fog mode with a
@@ -871,7 +871,7 @@ impl WindowedState {
         )
     }
 
-    /// The shell's field-role ledger — the ADR 0022 classification, extended to the ONE
+    /// The shell's field-role ledger — the field classification, extended to the ONE
     /// struct that sits outside it.
     ///
     /// `AppConfig`'s `#[snapshot(...)]` categories cover the classified state, but the
@@ -899,7 +899,7 @@ impl WindowedState {
             depth_view: _,
             msaa_color_view: _,
             // CLASSIFIED state — the only fields the capture seam reads. `panel_state`
-            // is classified field-by-field (ADR 0022); `app_core` files its OWN fields
+            // is classified field-by-field; `app_core` files its OWN fields
             // (the ledger call below — the camera is classified, the rest are caches
             // plus one named policy loss); `home_view` persists as settings.
             panel_state: _,
@@ -1037,7 +1037,7 @@ impl WindowedState {
             window_size,
         );
         let path = std::env::temp_dir().join("voxelworker-repro.json");
-        // The DUMP, explicitly (ADR 0022): the superset artifact, from which a scene must be
+        // The DUMP, explicitly: the superset artifact, from which a scene must be
         // completely reproducible. The document projection would be the wrong choice here by
         // construction — it deliberately drops the camera, which is the one thing a repro of a
         // visual bug cannot do without.
@@ -1050,7 +1050,7 @@ impl WindowedState {
         }
     }
 
-    /// ADR 0022 live placement: cancel any armed tool — the tool takes its pending drop
+    /// Cancel any armed tool — the tool takes its pending drop
     /// (the ghost preview) with it, so one clear disarms everything. Escape and a viewport
     /// right-click both call this; the ghost vanishes on the next frame (nothing armed ⇒
     /// the pass is a no-op).

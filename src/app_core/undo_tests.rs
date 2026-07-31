@@ -1252,7 +1252,7 @@ fn undo_of_point_edit_reports_points_not_scene() {
     );
     assert!(
         !undo_effect.selection_changed,
-        "ADR 0033: a hidden-flag flip invalidates no target, so nothing pruned"
+        "A hidden-flag flip invalidates no target, so nothing is pruned"
     );
 }
 

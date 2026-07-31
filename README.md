@@ -38,7 +38,7 @@ profiling, pulls a C/C++ dependency — see `docs/profiling.md`) and per-crate `
 ## Architecture
 
 The layers are cut into workspace crates so the dependency direction is compile-enforced and
-flows strictly downward (`docs/adr/0016`):
+flows strictly downward according to `docs/architecture/README.md`:
 
 ```
 substrate · camera · raycast   pure CS/math, and wgpu-free graphics math
@@ -61,8 +61,8 @@ than by convention.
   chunk, boundary residency, brick, fold). Start here.
 - [`docs/architecture/`](docs/architecture/) — the *timeless* shape of the system, one file per
   layer. Describes what is, not how it got there.
-- [`docs/adr/`](docs/adr/) — append-only decision records (0001–0021). The reasoning behind
-  every non-obvious choice lives here.
+- [`docs/architecture/`](docs/architecture/) — the enduring rationale for the system's
+  non-obvious choices.
 - [`docs/design/`](docs/design/) — working notes: extraction maps, prior-art studies, the
   refactoring map, the Signal chrome spec.
 - [`docs/DEV_NOTES.md`](docs/DEV_NOTES.md) — verified crate API signatures for the pinned

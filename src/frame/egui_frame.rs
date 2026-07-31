@@ -81,7 +81,7 @@ pub struct PreparedEguiFrame {
     /// caller runs Home/Fit/SetHome; the ortho toggle is applied in-place to
     /// `panel_state.projection_mode` and is not reported here.
     pub cube_menu_request: Option<ViewCubeMenuRequest>,
-    /// The Signal icon rail's Home / Fit click this frame (ADR 0018 Decision 8), if any,
+    /// The Signal icon rail's Home / Fit click this frame, if any,
     /// pre-mapped onto the SAME [`ChromeClickAction`] the retired cube badges dispatched
     /// so the caller runs it through the shell's existing `run_chrome_action` (no forked
     /// logic). The rail's viewport-mode-cycle button is applied IN PLACE to
@@ -216,24 +216,24 @@ pub fn run_egui_frame(
     // faint readout line under the cube. `None` when nothing is hovered — and always
     // `None` on the headless `shot` path, so the goldens stay pure cube geometry.
     view_cube_zone_readout: Option<&str>,
-    // ADR 0028 (#94): the sketch profile's vertex handles for THIS frame — each already
+    // The sketch profile's vertex handles for THIS frame — each already
     // projected to a screen position (egui points) with its interaction state. Empty unless
     // a sketch is being edited. Drawn as a foreground overlay + registered as chrome so a
     // handle drag never orbits the camera. The shell owns projection / hit-test / drag.
     sketch_handles: &[(egui::Pos2, ui::gizmos::HandleState)],
-    // ADR 0030: the sketch's committed segment lines for THIS frame — each a pair of already-
+    // The sketch's committed segment lines for THIS frame — each a pair of already-
     // projected endpoints (egui points) plus its interaction state. Drawn UNDER the vertex handles
     // so the profile reads as connected edges (an open sketch resolves to nothing, so these are
     // the only shape cue); the hovered segment draws brighter (Select) or warn-red with a `✕`
     // (Delete). Empty unless a sketch is being edited, always empty on the headless `shot` path.
     sketch_segment_lines: &[(egui::Pos2, egui::Pos2, ui::gizmos::HandleState)],
-    // ADR 0030 §5 (#102): the sketch's committed arc curves for THIS frame — each an already-
+    // The sketch's committed arc curves for THIS frame — each an already-
     // projected polyline (egui points) from endpoint to endpoint through the tessellated chords,
     // plus its interaction state. Same layer and vocabulary as the segment lines: an arc is an
     // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
     // headless `shot` path.
     sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
-    // ADR 0035 Decision 15: the constraint badges for THIS frame — each asserted relation's own
+    // The constraint badges for THIS frame — each asserted relation's own
     // glyph at an already-projected center (egui points), anchored on the geometry the relation
     // names. Drawn OVER the lines and handles: a badge is a claim about the drawing and must not
     // be buried by it. Empty unless a sketch is being edited, always empty on the headless
@@ -243,7 +243,7 @@ pub fn run_egui_frame(
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.
     sketch_face_at_menu: Option<bool>,
-    // ADR 0028 (#95): the add-point insert-preview marker for THIS frame (egui points), or
+    // The add-point insert-preview marker for THIS frame (egui points), or
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
     sketch_insert_preview: Option<egui::Pos2>,
@@ -255,13 +255,13 @@ pub fn run_egui_frame(
     // window (`true`, solid + stronger fill) or crossing (`false`, dashed + lighter) box, or
     // `None` when no marquee is live. Always `None` on the headless `shot` path.
     sketch_marquee: Option<(egui::Rect, bool)>,
-    // ADR 0032: the orbit center's projected position (egui points) plus whether a placement is
+    // The orbit center's projected position (egui points) plus whether a placement is
     // armed, or `None` when the pivot should not be drawn — it shows while a placement rides the
     // cursor and while Shift+MMB is turning about it, and is hidden otherwise. Registers no chrome
     // rect: the pivot is moved by the context menu, never by dragging it. Always `None` on the
     // headless `shot` path.
     orbit_center: Option<(egui::Pos2, bool)>,
-    // ADR 0032: whether the explicit orbit mode's targeting reticle draws this frame. It fills
+    // Whether the explicit orbit mode's targeting reticle draws this frame. It fills
     // the central viewport rect — computed inside this pass, so no position travels with the
     // flag — and the shell clears it while a TURN is in flight, so the model comes round against
     // an unobstructed view. Always `false` on the headless `shot` path.
@@ -269,7 +269,7 @@ pub fn run_egui_frame(
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
-    // Signal (ADR 0018 Decision 8): the icon rail's Home/Fit click, pre-mapped onto the
+    // Signal: the icon rail's Home/Fit click, pre-mapped onto the
     // shell's `ChromeClickAction`; a mode-cycle click mutates `panel_state.view_mode` in
     // place inside the closure (never surfaced), like the ortho toggle.
     let mut rail_action: Option<ChromeClickAction> = None;
@@ -384,7 +384,7 @@ pub fn run_egui_frame(
             let context = ui.ctx().clone();
             // Delete is enabled only when there is something to remove: an entity picked inside
             // the OPEN sketch, or (normal mode) a picked node. Asking per-sketch, not "is the
-            // selection non-empty", so a node picked outside the mode never arms it (ADR 0032).
+            // selection non-empty", so a node picked outside the mode never arms it.
             let delete_enabled = match panel_state.sketch_mode {
                 Some(sketch) => panel_state.selection.holds_sketch_entities(sketch),
                 None => panel_state.selected_node().is_some(),
@@ -598,7 +598,7 @@ pub fn run_egui_frame(
             chrome_rects_points.push(dialog_rect);
         }
 
-        // Signal (ADR 0018 Decision 8): the cube's on-screen anchors in egui points
+        // Signal: the cube's on-screen anchors in egui points
         // (shared by the readout, icon rail, and status line so they track the cube as
         // the side panel resizes AND slide left of the display stack). The cube's right
         // inset from the central edge is the stack's current width (issue #88); `cube_fits`
@@ -704,7 +704,7 @@ pub fn run_egui_frame(
         }
 
         // Signal: the viewport's bottom-left corner, which a standing constraint refusal takes
-        // and nothing else does (ADR 0035 Decision 15). The persistent mode · dims · density
+        // and nothing else does. The persistent mode · dims · density
         // status line that used to live here is gone — see `ui::chrome`. Draws on BOTH paths.
         if let Some(why) = panel_state
             .sketch_mode
@@ -713,7 +713,7 @@ pub fn run_egui_frame(
             ui::chrome::viewport_notice(ui, central_rect_points, why);
         }
 
-        // ADR 0028: while a sketch is being edited, the immersive accent viewport border + the
+        // While a sketch is being edited, the immersive accent viewport border + the
         // floating CANCEL | FINISH SKETCH control (the two mode signals the owner review kept,
         // besides the rail swap). Draws on BOTH paths so the mode chrome is verifiable by the
         // headless `shot` capture. A click routes onto the response as `exit_sketch`; the
@@ -724,23 +724,23 @@ pub fn run_egui_frame(
             {
                 panel_response.exit_sketch = Some(exit);
             }
-            // ADR 0030: the committed segment lines, drawn FIRST so the vertex dots sit on top.
+            // The committed segment lines, drawn FIRST so the vertex dots sit on top.
             // Not chrome — a segment press is handled by the shell's hit-test, and these are a
             // passive under-layer.
             ui::chrome::sketch_segment_lines(ui, sketch_segment_lines);
-            // ADR 0030 §5: the committed arc curves, on the same under-layer as the straight edges.
+            // The committed arc curves, on the same under-layer as the straight edges.
             ui::chrome::sketch_arc_curves(ui, sketch_arc_lines);
-            // ADR 0028 (#94): the draggable profile-vertex handles, drawn at the shell's
+            // The draggable profile-vertex handles, drawn at the shell's
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).
             ui::chrome::sketch_vertex_handles(ui, sketch_handles, &mut chrome_rects_points);
-            // ADR 0035 Decision 15: the constraint badges, over the geometry rather than under
+            // The constraint badges, over the geometry rather than under
             // it — a badge is what tells the author a level-looking line is level BECAUSE it was
             // asserted, so a line drawn across it would take the answer away.
             if !sketch_constraint_badges.is_empty() {
                 ui::chrome::sketch_constraint_badges(ui, sketch_constraint_badges);
             }
-            // ADR 0028 (#95): the add-point insert preview — a diamond on the hovered edge. NOT
+            // The add-point insert preview — a diamond on the hovered edge. NOT
             // chrome (a passive marker), so a click passes through to the stationary-release insert.
             if let Some(center) = sketch_insert_preview {
                 ui::chrome::sketch_insert_marker(ui, center);
@@ -756,13 +756,13 @@ pub fn run_egui_frame(
             }
         }
 
-        // ADR 0032: the orbit center, on its own foreground layer so it reads over the scene in
+        // The orbit center, on its own foreground layer so it reads over the scene in
         // every mode — sketch or not.
         if let Some((center, placing)) = orbit_center {
             ui::gizmos::orbit_center_overlay(ui, center, placing);
         }
 
-        // ADR 0032: the explicit orbit mode's targeting reticle, filling the central viewport.
+        // The explicit orbit mode's targeting reticle, filling the central viewport.
         // Drawn whenever the mode runs and the button is up — it is what says the left button now
         // turns and re-centers, so hiding it between gestures would leave the flipped verb
         // invisible for most of the mode.

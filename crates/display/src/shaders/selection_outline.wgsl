@@ -130,7 +130,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 0.0);
 }
 
-// ---- Analytic feature edges (ADR 0032 V1) -----------------------------------
+// ---- Analytic feature edges -----------------------------------
 //
 // The selected shapes' AUTHORED edges (a box's 12, a cylinder/tube's rim
 // ellipses) as world-stable 1px lines, projected under the scene's own

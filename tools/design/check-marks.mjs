@@ -257,7 +257,7 @@ near(10 + ((30 - 20) / (30 - 6)) * 16, 16.67, 5e-3, 'trim A crossing x');
   for (const [key, s] of [['A', m.draw()], ['B', m.b.draw()], ['C', m.c.draw()]]) {
     ok(s.includes('13.6944'), `three-point arc ${key}: radius is not the solved one`);
   }
-  // A and C keep the through-point a DISC per ADR 0030 sec 5; B is the Fusion port and may not
+  // A and C keep the through-point a DISC; B is the Fusion port and may not
   ok(/<circle cx="18" cy="8"/.test(m.draw()), 'three-point arc A: through-point is not a disc');
   ok(/<circle cx="18" cy="8"/.test(m.c.draw()), 'three-point arc C: through-point is not a disc');
   ok(/<rect[^>]*x="15.4"/.test(m.b.draw()), 'three-point arc B: through-point is not a square');

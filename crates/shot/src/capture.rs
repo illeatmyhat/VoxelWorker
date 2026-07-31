@@ -29,7 +29,7 @@ use crate::demos::{
 };
 use crate::options::ShotOptions;
 
-/// `--replay` (ADR 0003 Phase C, slice C3): **replay-script -> Scene**.
+/// `--replay`: **replay-script -> Scene**.
 ///
 /// The script at `replay_path` is **newline-delimited JSON**: one
 /// [`voxel_worker::Intent`] per non-empty line. Each line is parsed with
@@ -94,7 +94,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     );
 
     // Resolve the requested geometry into the grid, then build the renderer's
-    // instance buffer FROM the grid (the resolved-grid seam, `docs/adr/0006`). The voxel cap
+    // instance buffer FROM the grid (the resolved-grid seam). The voxel cap
     // (the stability cap) guards against an enormous CLI request.
     let shape = SdfShape::from_geometry(options.geometry.clone());
     // Z-up: layers are Z-slices, so the layer track spans the Z dimension (index 2).
@@ -116,10 +116,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // `--grid`/`--lattice`/`--floor` flags drive `scene.master_*` directly below
         // (the single source of truth); the scene's masters otherwise default ON.
         debug_face_orientation: options.debug_face_orientation,
-        // ADR 0018 Decision 3: the viewer mode (`--view-mode`). Only Show-booleans
+        // The viewer mode (`--view-mode`). Only Show-booleans
         // populates the boolean-operand ghost this slice; Normal / Onion-fog leave it empty.
         view_mode: options.view_mode,
-        // ADR 0032: which face the rail's orbit split button shows. No drag happens headlessly,
+        // Which face the rail's orbit split button shows. No drag happens headlessly,
         // so this only ever reaches the chrome.
         default_orbit_type: options.orbit_type,
         // Issue #88: pin the folded/expanded state of the floating Signal display stack for
@@ -131,13 +131,13 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         layer_range,
         ..PanelState::default()
     };
-    // ADR 0001 step 2/3: resolve through a scene. `--demo-scene` builds a
+    // Resolve through a scene. `--demo-scene` builds a
     // hardcoded multi-node PLACED scene (sphere at origin + box offset +8 in X +
     // clouds offset in Z) to verify separated placement; otherwise a one-node
     // scene — a Tool, or a DebugClouds VoxelBody when `--shape debug-clouds`. Seed the
     // panel's scene so the node-list section renders the nodes in the captured
     // panel.
-    // `--replay` (ADR 0003 Phase C, slice C3) is the highest-precedence scene SOURCE:
+    // `--replay` is the highest-precedence scene SOURCE:
     // when present it REPLACES the demo/shape sources entirely — the scene is built by
     // replaying the JSONL Intent script against the default seed via
     // `AppCore::apply_intent`. A parse/read error is reported (line number + bad line)
@@ -179,12 +179,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.debug_face_orientation =
             restored.debug_face_orientation || options.debug_face_orientation;
         panel_state.debug_brick_faces = restored.debug_brick_faces;
-        // ADR 0022: adopt the armed tool the dump carried (session state) — the authority
+        // Adopt the armed tool the dump carried (session state) — the authority
         // WITH its pending drop — so a mid-gesture F9 repro renders the pending drop.
         panel_state.armed_tool = restored.armed_tool;
     }
 
-    // ADR 0032: a demo carries its own arriving selection alongside the scene, since the
+    // A demo carries its own arriving selection alongside the scene, since the
     // document no longer has an `active` field to smuggle it on. `None` means "this path
     // picked nothing", which leaves whatever the config restored in place.
     let DemoScene {
@@ -282,7 +282,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             });
         }
     }
-    // ADR 0003 Phase B: mint a stable NodeId for every node before the scene is
+    // Mint a stable NodeId for every node before the scene is
     // consumed (idempotent; nothing reads the id yet in B1).
     scene.ensure_node_ids();
     panel_state.scene = scene.clone();
@@ -293,14 +293,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.selection.set_primary_node(Some(demo_node));
     }
     if let Some(index) = options.select_node {
-        // ADR 0003 Phase B3: selection is keyed by NodeId. Parse the same top-level
+        // Selection is keyed by NodeId. Parse the same top-level
         // index as before, then resolve it to that node's stable id (ids were minted
         // by `ensure_node_ids` above), so the SAME `--select-node N` argument selects
         // the SAME node. An out-of-range index resolves to None → clears selection.
         let picked = panel_state.scene.id_at_path(&NodePath::root_index(index));
         panel_state.selection.set_primary_node(picked);
     }
-    // ADR 0018 Decision 2: `--select-root` selects the ROOT PART, so a headless capture
+    // `--select-root` selects the ROOT PART, so a headless capture
     // can prove a view mode applies scene-wide (Show-booleans x-rays every boolean).
     // Takes precedence over `--select-node`.
     if options.select_root {
@@ -346,7 +346,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         }
         panel_state.scene = scene.clone();
     }
-    // ADR 0022: `--placement-ghost` arms the translucent SDF ghost of the current
+    // `--placement-ghost` arms the translucent SDF ghost of the current
     // `--shape`/`--size`/`--density` geometry at `--ghost-offset` (default the origin) —
     // the headless verification path for the placement ghost (does it render, and does it
     // COINCIDE with an equivalent solid node at the same offset?). Overrides any ghost a
@@ -414,7 +414,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         scene.full_extent_blocks(options.geometry.voxels_per_block)
     } else {
         {
-            // The geometry mirror is voxel-canonical (ADR 0003 §3f(0)); the explicit
+            // The geometry mirror is voxel-canonical; the explicit
             // single-shape region is whole blocks, so round the voxel size UP to
             // whole blocks (a whole-block size divides cleanly).
             let density = options.geometry.voxels_per_block.max(1);
@@ -451,7 +451,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // A VoxelBody-only scene (`--shape debug-clouds`) has no composite extent, so it is
     // resolved through the explicit-region path and sized `region × density` (rather
     // than `placed_region_dimensions`, which is `[0,0,0]` for it).
-    // The dense reference `Store` (ADR 0010 E5) owns the per-chunk grids the default
+    // The dense reference `Store` owns the per-chunk grids the default
     // (dense) mesh path borrows via `render_chunks_for_mesh`; it must outlive that
     // borrow, so it lives here at the `main` scope. `None` on the density-cap /
     // VoxelBody-only branches (which build no dense per-chunk accessor).
@@ -485,7 +485,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             };
             (grid, region_dimensions, None)
         } else if scene.has_chunkable_extent(density) {
-            // ADR 0010 E5: `shot` is the golden **DENSE REFERENCE ORACLE** — it resolves
+            // `shot` is the golden **DENSE REFERENCE ORACLE** — it resolves
             // through the dense `Store` (the retired-from-runtime `resolve_region`, kept
             // as the parity/golden reference) so the committed reference PNGs are the
             // dense-path truth the two-layer live path is cross-checked against
@@ -552,7 +552,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     } else if options.demo_village_far {
         println!(
             "resolved {} voxels for demo-village-far ({} instances of {} definition(s), base offset \
-             {:?} blocks, region {:?} blocks) — ADR 0010 D0: the composite is rebased to its \
+             {:?} blocks, region {:?} blocks): the composite is rebased to its \
              floating origin in i64 before the f32 downcast, so the far village renders crisp \
              (the §3a payload-move baseline)",
             grid.occupied_count(),
@@ -595,7 +595,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // M8: `--export-vox` writes the resolved grid as a MagicaVoxel .vox and then
     // exits (no render needed — this is the headless verification path).
     if let Some(vox_path) = &options.export_vox_path {
-        // ADR 0003 §3a: map each categorical `block_id` to its color via the procedural
+        // Map each categorical `block_id` to its color via the procedural
         // block palette (slot `material_id` = that material's average), so a multi-
         // material grid exports each block in its own color. The active material's slot
         // keeps its representative color, so a single-material grid is unchanged.
@@ -625,7 +625,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         return;
     }
 
-    // ADR 0011 G2: `--brick` sources the voxel display from the brick raymarch. The
+    // `--brick` sources the voxel display from the brick raymarch. The
     // gate mirrors the live app's: a chunkable procedural scene
     // (SDF / SketchSolid — the supported field set; DebugClouds is VoxelBody-only, so the
     // two-layer store has no boundary set for it), brick-representable (every rendered
@@ -650,7 +650,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 .build_covering_chunks(&scene, density, 0);
             // shot's --brick goldens verify the brick display against the dense reference
             // INCLUDING onion-band cut planes. This installs the LIVE surface-only build
-            // (ADR 0011 interior elision) — the exact record set the running app uploads —
+            // (interior elision) — the exact record set the running app uploads —
             // so the goldens pin the live path, not a test-only oracle. A band cut plane can
             // start a ray inside the solid where the surface-only set holds no record; the
             // raymarch's block-occupancy fallback (the pyramid rides the same chunks and
@@ -715,7 +715,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // exercise the per-chunk path, falling back to the whole-grid wrapper when the
     // scene has no chunkable extent (the wrapper buckets internally → identical mesh).
     let mut cuboid_mesh_renderer = if brick_raymarch_renderer.is_some() {
-        // ADR 0011 G1: bricks own the frame — build the mesh renderer EMPTY (the
+        // Bricks own the frame — build the mesh renderer EMPTY (the
         // borrow of the dense store is released first) so the capture provably
         // renders from the brick atlas, not the mesh.
         if let Some(render_chunks) = render_chunks_for_mesh.take() {
@@ -729,7 +729,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             options.geometry.voxels_per_block,
         )
     } else if !options.dense && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
-        // ADR 0010 E3 / #50: mesh THROUGH the two-layer path — now the DEFAULT (the live-app
+        // Mesh THROUGH the two-layer path — now the DEFAULT (the live-app
         // path), so a headless render matches the window, including the continuous
         // rotation the dense oracle drops. `--dense` opts back to the parity oracle below. Build
         // each covering chunk's [`evaluation::two_layer_store::TwoLayerChunk`]
@@ -787,13 +787,13 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             options.geometry.voxels_per_block,
         )
     };
-    // ADR 0018 Decision 6: the boolean-operand ghost — every Subtract/Intersect operand
+    // The boolean-operand ghost — every Subtract/Intersect operand
     // body in the selected subtree, as an operation-coded x-ray (quiet where directly
     // visible, loud where buried). Populated only in Show-booleans mode (`--view-mode
     // booleans`); derived from the SAME `panel_state.scene` the gizmo reads (so
     // `--select-node` / `--select-root` steer it), bounded by the ghosted operands'
     // covering chunks; meshed against the COMPOSED scene's recenter so it lands
-    // voxel-exact on each operand's place (ADR 0008). Per-frame uniforms upload below.
+    // voxel-exact on each operand's place. Per-frame uniforms upload below.
     let mut selected_operand_ghost_renderer =
         SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     if options.view_mode == ViewMode::ShowBooleans {
@@ -814,7 +814,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             println!("boolean-operand ghost: {} body(ies)", ghost.bodies.len());
         }
     }
-    // ADR 0032 (reworked): the selection outline+wash — a screen-space depth-map
+    // The selection outline+wash — a screen-space depth-map
     // treatment of every selected node's derived body, in ANY view mode. Opt-in via
     // `--selection-cel` (goldens stay byte-identical); derived exactly as the windowed
     // shell derives it.
@@ -877,9 +877,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // enabled planes. SUPPRESSED by default with the rest of Points; `--points` enables
     // it. Built below from `scene.points` + the camera once the view matrix is known.
     let mut infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-    // ADR 0022: the armed-tool placement ghost. Held disarmed; armed below (after the
+    // The armed-tool placement ghost. Held disarmed; armed below (after the
     // camera matrix is known) from `panel_state.placement_ghost` in the grid's recenter —
-    // the EXACT frame the solid voxels above were resolved in (ADR 0008).
+    // the EXACT frame the solid voxels above were resolved in.
     let mut placement_ghost_renderer =
         PlacementGhostRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
@@ -890,7 +890,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // placed scene), used for the band clip + uniforms so a demo scene that grew
     // past the single-shape `grid_z` is not clipped or mis-sized. Layers are Z-slices.
     let render_grid_z = grid_dimensions[2];
-    // ADR 0018 Decisions 4–5: the region-scoped layer clip (band + onion-fog region),
+    // The region-scoped layer clip (band + onion-fog region),
     // derived by the SAME `AppCore::mesh_clip` the windowed shell uses. The band bites only
     // in Onion-fog mode with a selection (`--view-mode onion` + `--select-node`/`--select-root`);
     // Normal / Show-booleans (and a placed/demo scene with no onion selection) render finished.
@@ -1140,7 +1140,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &mut panel_state,
-        // ADR 0018 Decision 5: the layer scrubber's track spans the selected object's Z
+        // The layer scrubber's track spans the selected object's Z
         // extent in Onion-fog mode (else the whole scene).
         clip.track_len,
         measured_diameter,
@@ -1152,36 +1152,36 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         pixels_per_point,
         // #13 Step 3: the headless path never opens the ViewCube context menu.
         &mut None,
-        // ADR 0030: nor the general viewport context menu (windowed-only interaction).
+        // nor the general viewport context menu (windowed-only interaction).
         &mut None,
-        // ADR 0032: nor the icon rail's orbit-type menu.
+        // nor the icon rail's orbit-type menu.
         &mut false,
         // Signal (#86): no zone-name readout in the goldens — the highlight lives in
         // the cube itself; the readout is a windowed-only overlay. Keeps every golden
         // diff to the two cube corners.
         None,
-        // ADR 0028 (#94): the headless capture computes no live vertex handles (sketch
+        // The headless capture computes no live vertex handles (sketch
         // authoring is a windowed-only interaction); the goldens stay handle-free.
         &[],
-        // ADR 0030: no sketch segment lines either — windowed-only overlay.
+        // no sketch segment lines either — windowed-only overlay.
         &[],
-        // ADR 0030 §5 (#102): nor arc curves, for the same reason.
+        // nor arc curves, for the same reason.
         &[],
-        // ADR 0035 Decision 15: no constraint badges — they are projected by the windowed
+        // no constraint badges — they are projected by the windowed
         // overlay refresh, which the headless path does not run.
         &[],
         // #100: and no viewport menu is open, so no region is under one.
         None,
-        // ADR 0028 (#95): likewise no add-point insert preview in the headless goldens.
+        // likewise no add-point insert preview in the headless goldens.
         None,
         // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.
         &[],
         // Slice 3: nor a marquee band — box-select is a windowed-only gesture.
         None,
-        // ADR 0032: no orbit-center marker — it shows only during a placement or a Shift+MMB
+        // no orbit-center marker — it shows only during a placement or a Shift+MMB
         // orbit, both windowed-only gestures.
         None,
-        // ADR 0032: nor the orbit-mode reticle — the explicit orbit mode is entered by a click
+        // nor the orbit-mode reticle — the explicit orbit mode is entered by a click
         // the headless path never makes.
         false,
     );
@@ -1195,7 +1195,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let scene_matrices = app_core.scene_matrices(aspect_ratio, grid_dimensions);
     let view_projection = scene_matrices.view_projection;
     // Scene scaffold uniforms (per-object scene grid + world-reference Points + analytic
-    // infinite grid), shared with the windowed shell through one orchestration point (ADR 0031).
+    // infinite grid), shared with the windowed shell through one orchestration point.
     // `--points` gates the Points/infinite grid (default OFF keeps the goldens unchanged).
     let axes_through = options.axes_on_top;
     let overlay_vp = app_core.points_overlay_view_projection(
@@ -1218,7 +1218,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &mut points_overlay_renderer,
         &mut infinite_grid_renderer,
     );
-    // ADR 0022: arm the placement ghost from the armed tool's pending drop. The
+    // Arm the placement ghost from the armed tool's pending drop. The
     // render-frame field center is resolved from THIS grid's recenter (`grid.recenter_voxels`)
     // via the frame law — the same recenter the solid voxels were resolved in — so a ghost
     // at offset P coincides with a solid node at P (the frame-error guard the shot verifies).
@@ -1245,7 +1245,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             ghost.rotation_inverse_columns(),
         );
     }
-    // Overlay uniforms shared with the shell (ADR 0031): the selection-follow gizmo, the
+    // Overlay uniforms shared with the shell: the selection-follow gizmo, the
     // boolean-operand x-ray ghost, and the corner view cube — one orchestration point so the two
     // paths cannot drift. The gizmo uploads only when placed (drawn under the same condition below).
     voxel_worker::frame::render::upload_overlay_uniforms(
@@ -1270,7 +1270,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         Some(_) => None,
         None => Some(options.material),
     };
-    // Voxel-model uniforms, shared with the shell (ADR 0031): the cuboid mesh + (when present) the
+    // Voxel-model uniforms, shared with the shell: the cuboid mesh + (when present) the
     // brick raymarch that replaces its draw. One call keeps the two paths pixel-comparable (the
     // gpu_parity premise). `shot` has no interactive brick flags, so it passes the defaults
     // (`false` / `0`); presence of the brick renderer IS its engagement.
@@ -1299,7 +1299,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         cuboid_mesh_renderer.chunk_count(),
     );
 
-    // ADR 0002 E2 (#19): the frustum cull ran inside `update_uniforms`. Report the
+    // The frustum cull ran inside `update_uniforms`. Report the
     // drawn/total chunk counts so the chunking + culling are verifiable headlessly.
     if options.debug_chunks {
         println!(
@@ -1317,17 +1317,17 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         None => MaterialSource::Procedural(options.material),
     };
 
-    // The ordered frame phases (ADR 0031), gated for `shot` so the existing goldens stay
+    // The ordered frame phases, gated for `shot` so the existing goldens stay
     // byte-identical (Points suppressed unless `--points`, gizmo only with a placement, etc.).
     let background: [&dyn display::SceneDraw; 1] = [&background_gradient_renderer];
     let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
-    // ADR 0018 Decision 6: the operand x-ray — suppressed in debug-faces; self-gates when
-    // empty. (The ADR 0032 selection feedback is the screen-space outline+wash composite,
+    // The operand x-ray — suppressed in debug-faces; self-gates when
+    // empty. (The selection feedback is the screen-space outline+wash composite,
     // wired below as `selection_outline`.)
     if !options.debug_face_orientation {
         over_model.push(&selected_operand_ghost_renderer);
     }
-    // ADR 0022: the armed-tool placement ghost (self-gates on a pending drop).
+    // The armed-tool placement ghost (self-gates on a pending drop).
     if panel_state.placement_ghost().is_some() {
         over_model.push(&placement_ghost_renderer);
     }
@@ -1360,12 +1360,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         scaffold: &scaffold,
         on_top: &on_top,
         cuboid_mesh: &cuboid_mesh_renderer,
-        // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw (the mesh
+        // When engaged, the brick raymarch takes the voxel-model draw (the mesh
         // renderer above was built empty); everything else is unchanged.
         brick_raymarch: brick_raymarch_renderer.as_ref(),
-        // ADR 0012: onion ghost when the band is a real onion slab (`onion_depth > 0`).
+        // Onion ghost when the band is a real onion slab (`onion_depth > 0`).
         onion_ghost_active: band.onion_depth > 0,
-        // ADR 0032: the selection outline+wash — suppressed in debug-faces like the
+        // The selection outline+wash — suppressed in debug-faces like the
         // operand x-ray; self-gates on an empty selection (goldens never pass
         // `--selection-cel`, so their frames record no extra pass work).
         selection_outline: if options.debug_face_orientation {

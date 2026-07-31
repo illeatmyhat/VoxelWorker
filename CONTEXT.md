@@ -1,14 +1,14 @@
 # Context glossary
 
 Canonical terms for VoxelWorker. This file is a **glossary only** — no implementation detail,
-no decisions (those live in `docs/adr/`). Define a term here the first time an ambiguity bites.
+no decisions. Define a term here the first time an ambiguity bites.
 
 ## Substrate vs domain
 
 - **Substrate** — the objects of computer science and pure math: components describable
   entirely in textbook CS/math vocabulary (BVH, AABB, bit cube, interval list, min-mip pyramid,
   rational, free-list, key codec, supersede protocol), parameterized by plain numbers/generics,
-  never by domain types. They live apart from the domain (`docs/adr/0014`) so they can be
+  never by domain types. They live apart from the domain so they can be
   identified, read, and performance-reasoned in isolation.
 
 - **Domain** — the objects of VoxelWorker's subject matter (scene, producer, chunk, brick,
@@ -40,7 +40,7 @@ no decisions (those live in `docs/adr/`). Define a term here the first time an a
   faithfully; no authoring rule may resolve the mix away.
 
 - **Voxel** — the **chisel granularity**: `voxels_per_block` per axis within a block (document-level
-  density, `docs/adr/0003`; VS = 16³). Geometry/occupancy is addressed per voxel; a chiseled block's
+  density; VS = 16³). Geometry/occupancy is addressed per voxel; a chiseled block's
   surface steps on the voxel lattice while its faces still carry the per-block texture.
 
 ## Measurement
@@ -77,7 +77,7 @@ separate microblock entities). A solid interior is never voxelized.
 - **Block classification** — each block of a chunk is **air**, **coarse-solid**
   (in the coarse layer), or **boundary** (in the microblock layer). Decided by a
   conservative per-op field-interval bound over the block cell (see the op-stack
-  ADR / ADR 0009 §3–§4): all-outside ⇒ air, all-inside ⇒ coarse-solid, straddling
+  evaluator law): all-outside ⇒ air, all-inside ⇒ coarse-solid, straddling
   (or unboundable) ⇒ boundary. The bound is conservative so classification is
   **occupancy-identical to brute force** on the exact seam (exporter/query/golden);
   an op that cannot bound a cell falls back to per-voxel evaluation (still exact).
@@ -103,7 +103,7 @@ op-stack field (see `docs/architecture/03-display.md`).
 - **Mixed brick** — the sculpted brick of a **mixed-material block**. Besides its occupancy slot
   it holds a slot in a second, **sparse material atlas** carrying one **cell key** per voxel;
   a uniform sculpted brick carries its single cell identity on its record alone and pays no
-  per-voxel material storage. Per-voxel cost is paid only where mixing exists (`docs/adr/0013`).
+  per-voxel material storage. Per-voxel cost is paid only where mixing exists.
 
 - **Cell key** — the per-voxel-cell display identity: the block-palette id together with the
   on-face-grid overlay flag, packed as one value. Carried per microblock cuboid in the boundary
@@ -134,7 +134,7 @@ op-stack field (see `docs/architecture/03-display.md`).
   part too. Primitives and tools are never assembly citizens on their own — they are a
   part's ingredients.
 
-- **Ordered fold** — the composition semantics (`docs/adr/0017`): a scope's children
+- **Ordered fold** — the composition semantics: a scope's children
   evaluate in document order, each folding into the accumulated result under its combine
   operation (union / subtract / intersect). A boolean affects everything accumulated
   before it; **placement order — never operand selection — decides what it touches**.
@@ -242,8 +242,8 @@ op-stack field (see `docs/architecture/03-display.md`).
 
 - **Picked node** — the node a viewport click on composed geometry resolves to: the **leaf
   producer** whose geometry made the clicked surface (any depth — the viewport agrees with the
-  browser, ADR 0001), except an **instance**, which picks as itself (its internals are sealed,
-  ADR 0017). Ownership follows the ordered fold: a surviving voxel belongs to the **additive**
+  browser), except an **instance**, which picks as itself (its internals are sealed).
+  Ownership follows the ordered fold: a surviving voxel belongs to the **additive**
   node it survived from — clicking the wall of a carved hole picks the carved body, never the
   cutter; where unioned bodies overlap, the later node in fold order wins. A rule evaluated
   against authoring truth, not a stored attribution. _Avoid_: drill-down (no click-count
@@ -252,7 +252,7 @@ op-stack field (see `docs/architecture/03-display.md`).
 ## Sketching
 
 - **Sketch entity** — a first-class piece of sketch geometry the author add/deletes independently:
-  a **point**, a **line segment**, or an **arc** (more later), each with a stable id (`docs/adr/0030`).
+  a **point**, a **line segment**, or an **arc** (more later), each with a stable id.
   Segments and arcs reference their endpoint **points by id** — coincidence *is* shared identity, not
   a solved constraint. A point with no incident edge is a legal **free point**. _Avoid_: vertex (a
   point is an entity, not a slot in a loop).
@@ -261,7 +261,7 @@ op-stack field (see `docs/architecture/03-display.md`).
   areas the curves enclose, cut at **every crossing**, whether or not the crossing is a shared point.
   Regions are **derived**, never stored. Two overlapping circles make three regions and need no
   constraint to do it. _Avoid_: face of the point-segment graph (through v1 a crossing with no shared
-  point made no region — `docs/adr/0030` §2, superseded).
+  point made no region — the current arrangement rule superseded that earlier behavior).
 
 - **Arrangement** — the planar subdivision the sketch's curves induce: every curve cut at every
   intersection with every other curve, the pieces forming a graph whose bounded faces are the
@@ -275,22 +275,22 @@ op-stack field (see `docs/architecture/03-display.md`).
   most negative — and a re-derived face *is* that face when it still contains the stored point. So an
   unpick survives a drag that moves the face, and resets to picked when the face shrinks past its own
   sample point. Picking regions *inside one's own sketch* is authoring one's own profile, not
-  cross-node operand targeting (ADR 0017). _Avoid_: identifying a region by its boundary (an
+  cross-node operand targeting. _Avoid_: identifying a region by its boundary (an
   arrangement re-cuts boundaries on every edit, and the three faces of two overlapping circles share
   one origin set).
 
 - **Profile** — the shape a body is lifted from, **derived from the picked regions** of the sketch
-  entities (`docs/adr/0030`). It is the *output* of authoring, not the input the author manipulates
+  entities. It is the *output* of authoring, not the input the author manipulates
   (that is the entities). Positioned in continuous coordinates, never required to align to the voxel
   lattice. _Avoid_: outline, vertex list (the profile is derived, not hand-maintained).
 
 - **Region loops** — the profile reduced to **`Fill` / `Hole` tagged loops** resolved by **2D field
-  CSG** — union the `Fill` loops, subtract the `Hole` loops, reusing the 3D field algebra (ADR 0017).
+  CSG** — union the `Fill` loops, subtract the `Hole` loops, reusing the 3D field algebra.
   A loop is a closed run of **edges** that keep their curves (a straight span or an arc), never a
   vertex list. _Avoid_: even-odd fill (explicit `Fill`/`Hole` CSG, not global crossing parity).
 
 - **Flattening** — replacing a loop's curves with chords, within a **sagitta tolerance** measured in
-  voxels. A **consumption step, never a production step** (`docs/adr/0034`): it happens only at a
+  voxels. A **consumption step, never a production step** (see `docs/architecture/01-document.md`): it happens only at a
   **terminal adapter** — a crease polyline, a screen hit-test polygon, the coarse cell classifier —
   and nothing downstream of one inherits the tolerance. The flattened polygon is **one lossy view of
   the region, never its meaning**; the region is a field over curve primitives and occupancy samples
@@ -299,7 +299,7 @@ op-stack field (see `docs/architecture/03-display.md`).
 
 - **Constraint** — a sketch **entity** (stable id, selectable, individually deletable) asserting a
   relationship the solver maintains: coincidence, tangency, equality, an angle, a quantization
-  (`docs/adr/0035`). A constraint **owns the position of any point it touches** — snapping only
+  (see `docs/architecture/01-document.md`). A constraint **owns the position of any point it touches** — snapping only
   decides where a point is *born*. Applying one **trial-solves**: an unsatisfiable constraint is
   refused and names what it fights, a merely redundant one is accepted and flagged, so the system is
   always solvable. _Avoid_: treating a snap as a constraint (it asserts nothing and is never stored
@@ -346,16 +346,16 @@ op-stack field (see `docs/architecture/03-display.md`).
   document; in voxels it would be a bug.
 
 - **Construction line** — a sketch entity carrying `role: Construction`: reference geometry that
-  **never bounds a region** (`docs/adr/0030`). Reserved for the eventual constraint solver; the field
+  **never bounds a region**. Reserved for the eventual constraint solver; the field
   exists, the toggle UI is deferred.
 
 - **Sketch dimension** — a sketch entity that makes a `Measurement` **visible** on the canvas (an
   arc radius, a point-to-element distance, an angle) and — with the solver — **drives** it
-  (`docs/adr/0030`). The UI face of the measurement substrate (`docs/adr/0029`). A **driving**
+  (see `docs/architecture/01-document.md`). The UI face of the measurement substrate. A **driving**
   dimension is a constraint: the solver moves geometry to satisfy its value. A **display-only**
   dimension reports whatever the geometry currently measures and constrains nothing; it is
   solver-free. _Avoid_: **derived** for the display-only kind, and **driven** for either — `Derived`
-  is a state classification meaning *recomputed, never stored* (`docs/adr/0022`), and Fusion's own
+  is a state classification meaning *recomputed, never stored*, and Fusion's own
   driving/driven pair is two near-homophones for opposite meanings.
 
 - **Quantized dimension** — a driving dimension whose value is constrained to a **whole multiple of
@@ -370,21 +370,21 @@ op-stack field (see `docs/architecture/03-display.md`).
   where a point is *born* and where a free drag lands, and an unconstrained point then stays put
   because nothing pulls it. The **solver owns any point a constraint touches**, and its solution is
   continuous — sub-voxel sketch geometry is normal, because occupancy samples the exact field and
-  quantizes only at resolve (`docs/adr/0034`). An author who wants lattice alignment *asserted* says
+  quantizes only at resolve. An author who wants lattice alignment *asserted* says
   so with constraints (Fix, Horizontal/Vertical, Lattice), never by relying on the snap to hold.
-  Through v1 the snap stood in for the absent solver entirely (`docs/adr/0029`, `docs/adr/0030`).
+  Through v1 the snap stood in for the absent solver entirely.
 
-- **Sketch mode** — the editing environment entered on a sketch scene object (`docs/adr/0028`):
+- **Sketch mode** — the editing environment entered on a sketch scene object:
   the tool rail swaps to sketch tools and non-sketch operations disable, so the sketch's **real,
   directly-manipulated entities** (not previews) are authored in a **sealed, self-contained scope**.
   A property of the **editor, never the document**. Its edits land as **one entry on the timeline**,
   while **undo stays flat** — entering and finishing the mode are ordinary undo entries, so undoing
-  past a *Finish* re-enters the mode and continues one operation at a time (`docs/adr/0035`). The
+  past a *Finish* re-enters the mode and continues one operation at a time. The
   sketch stays **fused** with its lifting operation — the operation lifts its own derived profile,
-  never referencing an external sketch (no operand targeting, ADR 0017).
+  never referencing an external sketch (no operand targeting).
 
 - **Timeline vs undo history** — two different stacks, and conflating them is the mistake
-  `docs/adr/0028` §4 made. The **timeline** is the op stack (`docs/adr/0009`): document-level,
+  the earlier split made. The **timeline** is the op stack: document-level,
   persisted, ordered, one entry per authored operation, and a sketch edit is one entry however long
   the session ran. The **undo history** is session-level, **flat**, and **transient** — dropped on
   relaunch as accepted policy, because a dump replays the scene, not the edit history. _Avoid_:
@@ -502,7 +502,7 @@ op-stack field (see `docs/architecture/03-display.md`).
 
 - **Operation stack** — the ordered list of authoring operations for a part's geometry: parametric
   SDF primitives, boolean CSG ops (authored from 2D sketches), and sparse hand-sculpted voxel
-  deltas. **This is the single source of truth.** (See `docs/adr/0006`, and the op-stack ADR.)
+  deltas. **This is the single source of truth.** (See `docs/architecture/02-evaluation.md`.)
 
 - **Resolved grid** — voxel occupancy obtained by evaluating the operation stack
   (`apply(overlay, evaluate(tree))`). A **derived cache, never truth**; materialized lazily and
@@ -513,12 +513,12 @@ op-stack field (see `docs/architecture/03-display.md`).
 
 - **Recenter** — the integer voxel offset a producer's grid was placed at. A placed Tool is
   recentered onto the origin by `floor(dim/2)`; a corner-anchored Part (e.g. `DebugClouds`) has
-  recenter `[0,0,0]`. **Carried on the grid, never re-derived** (ADR 0008).
+  recenter `[0,0,0]`. **Carried on the grid, never re-derived**.
 
 - **Field position vs voxel position** — a **field**'s position is **continuous** (a float on the
   node transform, the authoring truth); a **voxel**'s position is **integer** (the quantized
   occupancy it resolves to). Both carry a **wandering origin** so far-from-origin placement stays
-  precise in either representation (ADR 0008's i64 rebase is the integer side; the float side rebases
+  precise in either representation (the i64 rebase is the integer side; the float side rebases
   its local origin the same way).
 
 - **Rotation** — how a node is turned in space: a **continuous** affine rotation to any angle,
@@ -527,9 +527,8 @@ op-stack field (see `docs/architecture/03-display.md`).
   field's Lipschitz bound, so per-voxel classification stays occupancy-identical to brute force; only
   the block-cell **interval bound** loosens under a non-axis turn (a performance cost, not a
   correctness one — straddling cells fall to exact per-voxel evaluation). The 24 axis-aligned turns
-  are the special case that resamples exactly. **Supersedes the discrete `LatticeOrientation` of
-  `docs/adr/0026`** (subsumed — the discrete orientation is just a rotation that lands on the exact
-  path). See `docs/adr/0027`.
+  are the special case that resamples exactly. **Supersedes the discrete `LatticeOrientation`**
+  (the discrete orientation is just a rotation that lands on the exact path).
 
 - **Seated placement** — a node dropped on a surface **contacts** it with a consistent normal; the
   contact point and the rotation are two views of **one** degree of freedom (where the contact slides
@@ -550,4 +549,4 @@ op-stack field (see `docs/architecture/03-display.md`).
   diagonal, but the value is the composed field's. When both position and angle are snapped the seat
   **minimizes their combined error** rather than letting either strictly dominate; when position is
   None the sub-voxel cursor position is kept and only the angle is quantized (a curved surface may
-  slide the contact to where that angle occurs). See `docs/adr/0027`.
+  slide the contact to where that angle occurs).

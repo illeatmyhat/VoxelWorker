@@ -69,7 +69,7 @@ pub use segment::{
 pub use snap_ticks::snap_ticks;
 pub use vertex_handle::{vertex_handle, HandleState};
 
-/// The spatial axis a snap guide follows — its color IS the constraint it stands in for (ADR
+/// The spatial axis a snap guide follows — its color is the constraint it stands in for
 /// 0028 §5). X = warn-red, Y = green, Z = accent, from the shared token table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Axis {

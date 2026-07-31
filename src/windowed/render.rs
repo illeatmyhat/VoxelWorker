@@ -177,33 +177,33 @@ impl WindowedState {
                 self.hovered_cube_zone
                     .and_then(camera::view_cube_zone_readout)
                     .as_deref(),
-                // ADR 0028 (#94): the sketch vertex handles, projected LAST frame (the
+                // The sketch vertex handles, projected LAST frame (the
                 // viewport + camera the projection needs are only known after this call).
                 // A one-frame lag is imperceptible for handle chrome and self-corrects; the
                 // cache is refreshed at the end of `render` below.
                 &self.sketch_overlay_points,
-                // ADR 0030: the committed segment lines, projected last frame — drawn under the
+                // The committed segment lines, projected last frame — drawn under the
                 // vertex dots so the profile reads as connected edges.
                 &self.sketch_segment_lines,
-                // ADR 0030 §5 (#102): the committed arc curves, projected last frame — the same
+                // The committed arc curves, projected last frame — the same
                 // under-layer as the straight edges.
                 &self.sketch_arc_lines,
-                // ADR 0035 Decision 15: the constraint badges, projected last frame — each
+                // The constraint badges, projected last frame — each
                 // asserted relation's glyph beside the geometry it names.
                 &self.sketch_constraint_badges,
                 // #100: the pick state of the region the open menu was raised inside, so the
                 // menu can label its row "carve" or "fill".
                 sketch_face_at_menu,
-                // ADR 0028 (#95): the add-point insert preview, projected last frame.
+                // The add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
                 // #99: the drawing tools' dashed preview, projected last frame.
                 &self.sketch_draw_preview,
                 // Slice 3: the marquee rubber band, computed last frame.
                 self.sketch_marquee_band,
-                // ADR 0032: the orbit-center marker — live under the cursor while a placement is
+                // The orbit-center marker — live under the cursor while a placement is
                 // armed, projected-last-frame while Shift+MMB turns about it.
                 orbit_center_marker,
-                // ADR 0032: whether the orbit mode's targeting reticle draws — it fills the
+                // Whether the orbit mode's targeting reticle draws — it fills the
                 // viewport rect the frame computes, so no position travels with the flag.
                 orbit_reticle,
             )
@@ -308,7 +308,7 @@ impl WindowedState {
         // the camera now (startup fit, the ViewCube Home/Fit buttons, and the
         // right-click "Focus" action below). Take the intents out of `prepared`
         // (leaving it otherwise intact for the `render_frame` call below).
-        // ADR 0022 live placement: adopt a tool the panel armed this frame (a VIEW
+        // Live placement: adopt a tool the panel armed this frame (a VIEW
         // action carried on the response, like `focus_node`, not a document Intent).
         // Freshly armed = no pending drop yet; the arm pass below resolves one.
         if let Some(spec) = prepared.panel_response.arm_tool.take() {
@@ -323,7 +323,7 @@ impl WindowedState {
         if prepared.panel_response.disarm_tool {
             self.disarm_placement();
         }
-        // ADR 0032: a clicked row's selection change — a VIEW action on the response, like
+        // A clicked row's selection change — a VIEW action on the response, like
         // `armed_tool`. The shell is the single place a click lands on the workspace
         // selection; the effect below re-syncs the inspector mirror and the operand ghost
         // exactly as a selection-only Intent used to.
@@ -353,7 +353,7 @@ impl WindowedState {
             }
             None => crate::IntentEffect::none(),
         };
-        // ADR 0028: enter / leave sketch mode — a VIEW action on the response (entering a mode
+        // Enter / leave sketch mode — a VIEW action on the response (entering a mode
         // mutates no document state), like `armed_tool`. Entering scopes the mode to the
         // requested node, disarms any placement tool (non-sketch ops withdraw in the mode), and
         // OPENS the undo group (§4). Finish commits the session as one main-history entry;
@@ -388,7 +388,7 @@ impl WindowedState {
             self.toggle_sketch_menu_face();
         }
         // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
-        // is not the document (ADR 0022's classification: this is view state).
+        // is not the document (this is view state).
         match prepared.panel_response.orbit_center_request {
             // "Place" ARMS rather than places: the center then follows the cursor, visibly,
             // until a click commits it. Placing straight onto the right-clicked point would
@@ -410,7 +410,7 @@ impl WindowedState {
         // The keyboard half of the same doors. Read AFTER the pass, so a focused text field has
         // already eaten its own keys. Returns the Undo/Redo effect, folded into the merge below.
         let shortcut_effect = self.run_shortcut_commands();
-        // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
+        // Advance an in-progress sketch vertex drag — a live preview that
         // re-resolves the volume and records ONE coalesced command in the open group. Uses
         // this frame's viewport (from `prepared`) to build the cursor→plane ray; its effect
         // folds into `merged_effect` below so the display re-resolves like any other edit.
@@ -426,7 +426,7 @@ impl WindowedState {
             self.update_sketch_vertex_drag(drag_ray_unprojection, prepared.viewport_px)
         };
         let mut intents = std::mem::take(&mut prepared.panel_response.intents);
-        // ADR 0022 live placement: a viewport click's drop intent is applied through the
+        // Live placement: a viewport click's drop intent is applied through the
         // SAME door as the panel's edits (taken BEFORE the borrow of `prepared` ends), so
         // a placement re-resolves + rebuilds identically to a panel-driven add.
         intents.extend(std::mem::take(&mut self.viewport_intents));
@@ -442,7 +442,7 @@ impl WindowedState {
             );
             merged_effect = merged_effect.merged_with(effect);
         }
-        // Batched intents that must land as ONE undo step: a multi-node Delete (ADR 0033), and
+        // Batched intents that must land as ONE undo step: a multi-node Delete, and
         // every sketch commit — one authoring act, one press of Ctrl+Z.
         for transaction in std::mem::take(&mut self.viewport_transactions) {
             let effect = self.app_core.apply_transaction(
@@ -479,7 +479,7 @@ impl WindowedState {
             // via explicit controls (Home/Fit/Focus) and the startup fit.
             self.rebuild_geometry();
         }
-        // ADR 0018 Decision 6: re-derive the boolean-operand ghost on selection /
+        // Re-derive the boolean-operand ghost on selection /
         // geometry / MODE change ONLY (never per frame). A selection click marks it dirty
         // without a scene re-resolve; the derivation is bounded by the ghosted operands'
         // covering chunks (`AppCore::boolean_operand_ghost`), so this stays cheap even in
@@ -489,7 +489,7 @@ impl WindowedState {
         if merged_effect.selection_changed || merged_effect.scene_changed {
             self.selected_ghost_dirty = true;
         }
-        // ADR 0032: the selection outline+wash re-derives on the SAME seam (selection /
+        // The selection outline+wash re-derives on the SAME seam (selection /
         // geometry change), for ALL view modes and the WHOLE pick-ordered node list —
         // reading the shared dirty flag BEFORE the operand-ghost block below clears it.
         // Bounded per node by its own covering chunks (`AppCore::selected_body_cel`).
@@ -579,11 +579,11 @@ impl WindowedState {
         let geometry = self.panel_state.geometry.clone();
         // The grid dims come from the ACTUALLY resolved scene grid (the composited
         // region's extent), not the active node's geometry — with several nodes the
-        // region is the per-axis max of their sizes (ADR 0001 step 2).
+        // region is the per-axis max of their sizes.
         let grid_dimensions = self.region_dimensions;
         let scene_matrices = self.app_core.scene_matrices(aspect_ratio, grid_dimensions);
         let view_projection = scene_matrices.view_projection;
-        // ADR 0028 (#94): refresh the sketch vertex-handle overlay from the CURRENT geometry
+        // Refresh the sketch vertex-handle overlay from the CURRENT geometry
         // (post-rebuild recenter) and camera, caching the projected handles for NEXT frame's
         // draw (in `run_egui_frame`) and the press hit-test (in `events`). A one-frame lag on
         // the handles is imperceptible and self-corrects.
@@ -601,7 +601,7 @@ impl WindowedState {
         // is computed by the shared `current_layer_band` helper (issue #60 M2) so the async
         // worker builds the mesh at the SAME band the render path applies here.
         let layer_range = self.panel_state.layer_range;
-        // ADR 0018 Decisions 4–5: the region-scoped clip (band + onion-fog region). The
+        // The region-scoped clip (band + onion-fog region). The
         // band bites only in Onion-fog mode with a selection; the region confines it to the
         // selected object's AABB. BOTH display paths honor the region — the cuboid mesh path
         // (geometry) and the brick raymarch (per-frame uniforms, #85).
@@ -617,13 +617,13 @@ impl WindowedState {
             Some(_) => None,
             None => Some(self.panel_state.material),
         };
-        // ADR 0012 (H1): the onion GHOST replaces the volumetric fog. Active when onion skin is on
+        // The onion GHOST replaces the volumetric fog. Active when onion skin is on
         // and the band is a real slab (`current_layer_band` sets a non-zero `onion_depth` exactly
         // then; debug-face mode forces FULL → 0). The engaged display path draws the ghost after
         // its solid pass (`render_frame`); a band scrub is a pure uniform update on the brick path,
         // a thin-slab re-mesh on the cuboid path — never the fog atlas rebuild.
         let onion_ghost_active = band.onion_depth > 0;
-        // Voxel-model uniforms, shared with `shot` (ADR 0031): the cuboid mesh + (when engaged) the
+        // Voxel-model uniforms, shared with `shot`: the cuboid mesh + (when engaged) the
         // brick raymarch that replaces its draw. One call keeps the two paths pixel-comparable (the
         // gpu_parity premise). Interactive-only brick flags (loaded-material shade, the brick-faces
         // diagnostic) travel as params; the on-face-grid MASTER (#29 S4) is `scene.master_voxel_grid`.
@@ -675,7 +675,7 @@ impl WindowedState {
         // / base-plane floor lines. Empty when no node enables a grid (the new
         // default — per-object grids are OFF until the user turns them on).
         // Scene scaffold uniforms (per-object scene grid + world-reference Points + analytic
-        // infinite grid), shared with `shot` through one orchestration point (ADR 0031). The
+        // infinite grid), shared with `shot` through one orchestration point. The
         // shell always draws the Points; `axes_on_top` skips the depth-tested Points instance.
         let axes_through = self.panel_state.axes_on_top;
         let overlay_vp = self.app_core.points_overlay_view_projection(
@@ -698,7 +698,7 @@ impl WindowedState {
             &mut self.points_overlay_renderer,
             &mut self.infinite_grid_renderer,
         );
-        // ADR 0022 live placement: while a tool is armed and the cursor is over the
+        // Live placement: while a tool is armed and the cursor is over the
         // viewport, resolve where it would drop (via the headless `place_primitive`) and
         // write the pending drop + the pending click intent onto the armed tool. Armed
         // with NO cursor keeps a restored drop untouched (an F9 repro replays it until
@@ -783,10 +783,10 @@ impl WindowedState {
                 self.pending_placement = None;
             }
         }
-        // ADR 0022: the armed-tool placement ghost. Arm it from the armed tool's pending
+        // The armed-tool placement ghost. Arm it from the armed tool's pending
         // drop (resolved live above, or restored from a loaded config F9 repro), resolving
         // the render-frame field center from THIS rebuild's recenter so the ghost sits in
-        // the exact frame the solid voxels are drawn in (ADR 0008). Disarmed → no-op.
+        // the exact frame the solid voxels are drawn in. Disarmed → no-op.
         if let Some(ghost) = self.panel_state.placement_ghost() {
             let voxels_per_block = self.panel_state.geometry.voxels_per_block;
             let recenter = self.recenter_voxels.voxels();
@@ -806,9 +806,9 @@ impl WindowedState {
         } else {
             self.placement_ghost_renderer.disarm();
         }
-        // ADR 0030 §3 (#100): the picked region's wash, as a FIELD over the sketch plane. The plane
+        // The picked region's wash, as a FIELD over the sketch plane. The plane
         // basis comes from the one forward map the vertex handles use, so the wash cannot land on a
-        // different plane than the handles do (ADR 0008).
+        // different plane than the handles do.
         let sketch_region = self.panel_state.sketch_mode.and_then(|target| {
             let handles = self
                 .panel_state
@@ -847,7 +847,7 @@ impl WindowedState {
         } else {
             self.sketch_region_renderer.disarm();
         }
-        // Overlay uniforms shared with `shot` (ADR 0031): the selection-follow gizmo, the
+        // Overlay uniforms shared with `shot`: the selection-follow gizmo, the
         // boolean-operand x-ray ghost, and the corner view cube — one orchestration point so the
         // two paths cannot drift.
         // The outline's target-sized depth map (a cheap no-op unless the target resized).
@@ -881,17 +881,17 @@ impl WindowedState {
         // gizmo, always non-empty) is gated on there being a selection.
         let background: [&dyn display::SceneDraw; 1] = [&self.background_gradient_renderer];
         let mut over_model: Vec<&dyn display::SceneDraw> = Vec::new();
-        // ADR 0018 D6: the operand x-ray — suppressed in debug-faces mode; self-gates when
-        // empty. (The ADR 0032 selection feedback is no longer an over-model draw: it is
+        // The operand x-ray — suppressed in debug-faces mode; self-gates when
+        // empty. (The selection feedback is no longer an over-model draw: it is
         // the screen-space outline+wash composite, wired below as `selection_outline`.)
         if !self.panel_state.debug_face_orientation {
             over_model.push(&self.selected_operand_ghost_renderer);
         }
-        // ADR 0022: the armed-tool placement ghost self-gates on a pending drop.
+        // The armed-tool placement ghost self-gates on a pending drop.
         if self.panel_state.placement_ghost().is_some() {
             over_model.push(&self.placement_ghost_renderer);
         }
-        // ADR 0030 §3: the sketch region wash self-gates on a sketch being open.
+        // The sketch region wash self-gates on a sketch being open.
         over_model.push(&self.sketch_region_renderer);
         // Behind-model: the occluded axes' paint-order pass (depth-off overlay), drawn before the
         // model so geometry paints over it — the invariant part that never clips.
@@ -921,16 +921,16 @@ impl WindowedState {
             scaffold: &scaffold,
             on_top: &on_top,
             cuboid_mesh: self.display.cuboid_mesh_renderer(),
-            // ADR 0011 G1: when engaged, the brick raymarch replaces the cuboid-mesh DRAW for
+            // When engaged, the brick raymarch replaces the cuboid-mesh DRAW for
             // this frame; the mesh stays built as the fallback + A/B reference.
             brick_raymarch: if brick_raymarch_engaged {
                 self.display.brick_raymarch_renderer()
             } else {
                 None
             },
-            // ADR 0012: ghost the onion slabs after the solid draw (uniforms/geometry prepared above).
+            // Ghost the onion slabs after the solid draw (uniforms/geometry prepared above).
             onion_ghost_active,
-            // ADR 0032: the selection outline+wash — suppressed in debug-faces mode (like
+            // The selection outline+wash — suppressed in debug-faces mode (like
             // the operand x-ray); self-gates on an empty selection.
             selection_outline: if self.panel_state.debug_face_orientation {
                 None
@@ -979,7 +979,7 @@ impl WindowedState {
         profiling::finish_frame!();
     }
 
-    /// ADR 0028 (#94): advance an in-progress sketch vertex drag by one frame — a LIVE PREVIEW.
+    /// Advance an in-progress sketch vertex drag by one frame — a LIVE PREVIEW.
     /// The gesture is COMMITTED synchronously by [`commit_sketch_vertex_drag`], called from the
     /// `events` release handler (NOT deferred to a render flag: deferring left a window where a
     /// second press between release and the commit frame could orphan the un-recorded preview).
@@ -1022,7 +1022,7 @@ impl WindowedState {
         };
         // Recompute the handles from the CURRENT scene (not last frame's cache): a mid-drag
         // move can shift the composite recenter / profile bbox, and the forward projection and
-        // the inverse plane-hit map must share ONE frame or the vertex jitters (ADR 0008).
+        // the inverse plane-hit map must share ONE frame or the vertex jitters.
         let Some(handles) = self
             .panel_state
             .scene
@@ -1054,7 +1054,7 @@ impl WindowedState {
             return IntentEffect::none();
         };
         let mut preview = drag.original.clone();
-        // Mutate the grabbed point ENTITY directly by its stable id (ADR 0030 — no loop index).
+        // Mutate the grabbed point ENTITY directly by its stable id — no loop index.
         // The snap policy re-authors the whole position (#96/#101): a snapped drag zeroes
         // the fraction, NoSnap carries it; either way a stale retained expression drops.
         if !preview.sketch.move_point(point_id, snapped) {
@@ -1181,7 +1181,7 @@ impl WindowedState {
     }
 
     /// Cursor (physical px) → the CONTINUOUS profile coordinate `(c0, c1)` under it on the
-    /// sketch node's plane, using `handles` for the plane + inverse map (ADR 0028). Shared by
+    /// sketch node's plane, using `handles` for the plane + inverse map. Shared by
     /// the vertex-drag preview (#94) and the add-point insert (#95) so the frame math lives once.
     ///
     /// Casts from the EYE under perspective — the near-plane ray origin is unreliable at close
@@ -1226,7 +1226,7 @@ impl WindowedState {
     /// The profile-vertex index under the cursor (physical px), the nearest within the handle
     /// grab radius, or `None`. Reads the profile-order [`sketch_vertex_px`](Self::sketch_vertex_px)
     /// cache, so it shares the exact projection the overlay drew. Used by the vertex-drag grab
-    /// (#94) and the selection click resolve (ADR 0030).
+    /// (#94) and the selection click resolve.
     fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
         let grab_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
             * self.window.scale_factor() as f32;
@@ -1243,7 +1243,7 @@ impl WindowedState {
 
     /// The sketch SEGMENT under the cursor (physical px) as `(segment id, endpoint a px,
     /// endpoint b px)`, the nearest within the grab pad — iterated over the actual segment
-    /// ENTITIES (ADR 0030), not consecutive vertices, so it is correct for an open or
+    /// ENTITIES, not consecutive vertices, so it is correct for an open or
     /// multi-loop graph. `None` when no edge is close enough or an endpoint is culled.
     pub(super) fn nearest_sketch_segment(
         &self,
@@ -1324,7 +1324,7 @@ impl WindowedState {
     }
 
     /// The id of the sketch SEGMENT under the cursor (physical px), for add-point — the click
-    /// splits the named segment (ADR 0030). `None` when no edge is close enough.
+    /// splits the named segment. `None` when no edge is close enough.
     fn sketch_segment_at(
         &self,
         cursor_x: f64,
@@ -1334,7 +1334,7 @@ impl WindowedState {
             .map(|(seg_id, _, _)| seg_id)
     }
 
-    /// ADR 0028 (#95): the add-point producer for a click at the cursor (physical px) — the
+    /// The add-point producer for a click at the cursor (physical px) — the
     /// current sketch with a new grid-snapped vertex inserted into the segment under the cursor,
     /// splitting that edge. `None` when no segment is under the cursor, the cursor cannot be
     /// projected onto the plane, or `target` is not an enabled sketch node. The caller routes the
@@ -1358,7 +1358,7 @@ impl WindowedState {
             &handles,
         )?;
         let (producer, _) = self.sketch_node_state(target)?;
-        // Split the segment under the cursor with a policy-snapped point (ADR 0030, #96).
+        // Split the segment under the cursor with a policy-snapped point.
         let point = apply_sketch_snap(
             coord,
             self.panel_state.sketch_snap,
@@ -1441,7 +1441,7 @@ impl WindowedState {
         }
     }
 
-    /// #102: one 3-point-arc click (ADR 0030 §5). Click 1 picks the start endpoint, click 2 the
+    /// #102: one 3-point-arc click. Click 1 picks the start endpoint, click 2 the
     /// end endpoint — each an existing vertex under the cursor or a fresh snapped free point —
     /// and click 3 names a coordinate the curve passes through, which the included angle is
     /// solved from and then discarded (a through-point is an input, never an entity). Picking the
@@ -1507,7 +1507,7 @@ impl WindowedState {
         };
         self.sketch_arc_gesture = match self.sketch_arc_gesture {
             None => Some((clicked, None)),
-            // A zero-length arc cannot be held (ADR 0030 §5). An already-joined pair CAN: the
+            // A zero-length arc cannot be held. An already-joined pair CAN: the
             // curve is not known until the third click, and arcing over a chord (or over another
             // arc that bulges elsewhere) is legal geometry. A true duplicate is refused at the
             // commit, where the sweep exists to compare.
@@ -1542,7 +1542,7 @@ impl WindowedState {
         }
     }
 
-    /// ADR 0030: resolve a stationary Select-tool click into the sketch selection. A vertex under
+    /// Resolve a stationary Select-tool click into the sketch selection. A vertex under
     /// the cursor takes priority (it already answers as a handle), then a segment, else empty
     /// space. Plain click **replaces** the selection with that one entity; `shift` **toggles** it
     /// in/out (accumulate). A plain click on empty space **clears**; a Shift-click on empty space
@@ -1558,7 +1558,7 @@ impl WindowedState {
             Some(target) => self.panel_state.selection.select_only(target),
             // Empty space: a plain click clears; a Shift-click leaves the set alone (Fusion).
             // Only the sketch side goes — what is picked outside the mode is not this click's
-            // business (ADR 0032).
+            // business.
             None if !shift => self.panel_state.selection.clear_sketch_entities(),
             None => {}
         }
@@ -1660,7 +1660,7 @@ impl WindowedState {
         }
     }
 
-    /// ADR 0032: resolve a stationary viewport click into a node selection change, or `None`
+    /// Resolve a stationary viewport click into a node selection change, or `None`
     /// when the click asks for nothing.
     ///
     /// The raycast names the solid absolute voxel under the cursor (CPU truth over the resident
@@ -1687,7 +1687,7 @@ impl WindowedState {
             band: self.last_pick_band,
         };
         // `pick_voxel` answers in the scene's ABSOLUTE voxel frame, which is exactly the frame
-        // `picked_node_at_voxel` reads — no recenter to undo (ADR 0008: the frame is carried).
+        // `picked_node_at_voxel` reads — no recenter to undo (the frame is carried).
         let picked = self
             .app_core
             .pick_voxel(
@@ -1844,7 +1844,7 @@ impl WindowedState {
         {
             match command {
                 // The document history. `AppCore::undo`/`redo` route into an open sketch
-                // group's fine-grained session stacks by themselves (ADR 0028 §4).
+                // group's fine-grained session stacks by themselves.
                 ui::shortcuts::ShortcutCommand::Undo => {
                     effect = effect.merged_with(
                         self.app_core
@@ -1860,11 +1860,11 @@ impl WindowedState {
                 // Dump the scene + LIVE camera to the repro file (`shot --from-config`), so an
                 // exact live-view bug reproduces headlessly.
                 ui::shortcuts::ShortcutCommand::ExportRepro => self.export_repro(),
-                // ADR 0032: Cancel is a priority chain, not one act. An armed orbit-center
+                // Cancel is a priority chain, not one act. An armed orbit-center
                 // placement outranks the tool ghost — it is what the cursor is carrying, so it
                 // goes back first and leaves any armed tool alone. With nothing to put back it
                 // CANCELS the running modal command (the same act the viewport menu's Cancel row
-                // performs); with no command running it disarms the tool ghost (ADR 0022).
+                // performs); with no command running it disarms the tool ghost.
                 // Leaving never writes the DEFAULT orbit type: a session override dies with the
                 // mode rather than outliving it.
                 //
@@ -2014,7 +2014,7 @@ impl WindowedState {
         let cursor = [cursor_x as f32, cursor_y as f32];
         let viewport = [vx as f32, vy as f32, vw as f32, vh as f32];
         // Both tiers answer in ABSOLUTE voxels; the camera lives in the RECENTERED render frame,
-        // so the point rebases once here (ADR 0008 — the recenter is carried, this is the only
+        // so the point rebases once here (the recenter is carried, this is the only
         // conversion).
         let absolute = self.app_core.surface_point_absolute(
             cursor,
@@ -2026,7 +2026,7 @@ impl WindowedState {
         Some(absolute - glam::Vec3::new(recenter[0] as f32, recenter[1] as f32, recenter[2] as f32))
     }
 
-    /// ADR 0030/0032: the [`SelectionTarget`](ui::panel::SelectionTarget) under the cursor
+    /// The [`SelectionTarget`](ui::panel::SelectionTarget) under the cursor
     /// (physical px) inside `sketch`, or `None` over empty space. Vertices take priority over
     /// segments, as everywhere. The ONE place a sketch target is minted, which is what makes
     /// the shell's admission `debug_assert` hold by construction.
@@ -2038,7 +2038,7 @@ impl WindowedState {
     ) -> Option<ui::panel::SelectionTarget> {
         // A badge beats the geometry under it, because it is drawn over it: badges paint last,
         // in the foreground layer, so anything else winning here would mean picking something the
-        // cursor cannot see (ADR 0035 Decision 3).
+        // cursor cannot see.
         if let Some(entity) = self.sketch_constraint_at(cursor_x, cursor_y) {
             return Some(ui::panel::SelectionTarget::SketchConstraint { sketch, entity });
         }
@@ -2058,7 +2058,7 @@ impl WindowedState {
             })
     }
 
-    /// ADR 0030: is the cursor (physical px) over a sketch entity — a vertex or a segment? Used by
+    /// Is the cursor (physical px) over a sketch entity — a vertex or a segment? Used by
     /// the right-click handler to tell a sketch handle (which registers as chrome so a LEFT press
     /// drags it) from the real Signal chrome, so a right-click on an entity opens the context menu
     /// even though the handle sits in the chrome hit-set.
@@ -2068,7 +2068,7 @@ impl WindowedState {
             || self.sketch_constraint_at(cursor_x, cursor_y).is_some()
     }
 
-    /// ADR 0030: a right-click over a sketch entity selects it (Fusion: right-clicking an entity
+    /// A right-click over a sketch entity selects it (Fusion: right-clicking an entity
     /// acts on it). If the entity is already in the selection the whole set is kept — so
     /// right-clicking one of several selected entities deletes them all — otherwise the selection is
     /// replaced with just that entity. Vertices take priority over segments, as everywhere.
@@ -2091,7 +2091,7 @@ impl WindowedState {
     /// that call for the keyboard path, which arrives with no menu to have been built in a mode.
     /// A no-op when nothing is picked, so the binding is safe to press at any time.
     ///
-    /// A multi-selection deletes whole (ADR 0033), filtered to its **selection roots**: a node
+    /// A multi-selection deletes whole subtrees, filtered to its **selection roots**: a node
     /// whose ancestor is also picked is skipped, because removing the ancestor takes it anyway
     /// and a second `RemoveNode` on the dead id would ride the transaction as a no-op. The batch
     /// is ONE undo step, mirroring the sketch multi-delete.
@@ -2125,7 +2125,7 @@ impl WindowedState {
         }
     }
 
-    /// ADR 0030: delete every entity in the sketch selection as ONE edit — each selected point
+    /// Delete every entity in the sketch selection as ONE edit — each selected point
     /// (cascading its incident segments and arcs) then each selected segment and arc (a no-op if
     /// a cascade already took it), committed through the same anchor-preserving path a single
     /// delete uses
@@ -2173,7 +2173,7 @@ impl WindowedState {
         self.panel_state.selection.clear_sketch_entities();
     }
 
-    /// The constraint badges to draw next frame (ADR 0035 Decision 15): one glyph per asserted
+    /// The constraint badges to draw next frame: one glyph per asserted
     /// relation, anchored on the geometry the relation NAMES.
     ///
     /// The anchor comes from the constraint's entity ids resolved through the same projected
@@ -2262,7 +2262,7 @@ impl WindowedState {
             // would read as belonging to whichever segment it stood beside, and the whole job of
             // the mark is to say which geometry is bound to which — a single mark on one member
             // leaves the other looking free. They share the constraint id, so a click on either
-            // picks the one relation (ADR 0035 Decision 16).
+            // picks the one relation.
             let placements: Vec<(egui::Pos2, egui::Vec2)> = match constraint.kind {
                 document::sketch::ConstraintKind::Horizontal { segment }
                 | document::sketch::ConstraintKind::Vertical { segment } => {
@@ -2355,7 +2355,7 @@ impl WindowedState {
             .map(|badge| badge.constraint)
     }
 
-    /// ADR 0035 Decision 15: feed the entity under the cursor to the armed constraint.
+    /// Feed the entity under the cursor to the armed constraint.
     ///
     /// A pick the waiting slot cannot take is refused and the gesture keeps running — a click on
     /// the wrong kind of thing is a mis-click, not a decision to abandon the command. A pick that
@@ -2536,7 +2536,7 @@ impl WindowedState {
         self.commit_sketch_profile_edit(target, next);
     }
 
-    /// ADR 0028 (#95): queue an add/delete profile edit as ONE entry in the open sketch undo
+    /// Queue an add/delete profile edit as ONE entry in the open sketch undo
     /// group. Recomputes the bbox-min anchor compensation exactly like the vertex drag — the
     /// producer re-anchors its bbox-min to the node origin, so a vertex inserted or removed at
     /// the bbox extreme would shift the whole profile in world unless the node offset absorbs the
@@ -2573,7 +2573,7 @@ impl WindowedState {
         self.viewport_transactions.push(transaction);
     }
 
-    /// ADR 0028 (#94): if the cursor (physical px) is over a profile-vertex handle, build the
+    /// If the cursor (physical px) is over a profile-vertex handle, build the
     /// [`SketchVertexDrag`] that grabs it — the nearest handle within the grab radius, with the
     /// current producer snapshotted so the whole gesture coalesces to one command. `None` when
     /// no handle is under the cursor (the press falls through to the normal camera/placement
@@ -2585,7 +2585,7 @@ impl WindowedState {
     ) -> Option<SketchVertexDrag> {
         let target = self.panel_state.sketch_mode?;
         // A constraint badge takes the press it is drawn over, and MOVING one means nothing: a
-        // constraint has no position, so there is nothing for a drag to change (ADR 0035
+        // constraint has no position, so there is nothing for a drag to change (the
         // Decision 3). Asked through `is_positional` rather than by matching the variant, so the
         // next entity kind that has no place answers here without a second edit.
         if self
@@ -2608,7 +2608,7 @@ impl WindowedState {
         })
     }
 
-    /// ADR 0028 (#94, extended #95): recompute the sketch overlay for the NEXT frame. Projects
+    /// Recompute the sketch overlay for the NEXT frame. Projects
     /// each profile vertex (render frame) to screen, storing the egui-point handles + their
     /// interaction state for drawing, and the physical-pixel centers **in profile order** for the
     /// press hit-tests (a culled behind-camera vertex is `None`, keeping the indices aligned so
@@ -2699,7 +2699,7 @@ impl WindowedState {
                 .unwrap_or(false);
             // Precedence: dragged > selected > hover > idle. A selected vertex stays
             // filled-accent even under the cursor, matching the segment rule so a point and an
-            // edge read alike (ADR 0030).
+            // edge read alike.
             let state = if dragging_point == point_id {
                 ui::gizmos::HandleState::Snapped
             } else if selected {
@@ -2717,7 +2717,7 @@ impl WindowedState {
 
         // The stable point id + segment connectivity for THIS frame, aligned with
         // `sketch_vertex_px` — the press hit-tests (in `events`) read these to resolve a click to
-        // the entity it targets (ADR 0030).
+        // the entity it targets.
         self.sketch_point_ids = handles.point_ids.clone();
         self.sketch_segments = handles.segments.clone();
 
@@ -2789,7 +2789,7 @@ impl WindowedState {
         self.refresh_sketch_constraint_badges(target, pixels_per_point);
 
         // The segment LINES to draw next frame: each committed edge between its two projected
-        // endpoints, in egui points (ADR 0030 — an open sketch resolves to nothing, so the edges
+        // endpoints, in egui points — an open sketch resolves to nothing, so the edges
         // are the only thing that shows the profile is connected). A behind-camera endpoint
         // (`None` in `sketch_vertex_px`) culls its line, matching the vertex-dot cull. The one
         // hovered segment carries its Hover/Marked state; the rest are Idle.
@@ -3163,7 +3163,7 @@ fn selection_target(
     }
 }
 
-/// What the top bar says about a refused constraint (ADR 0035). `offer` screens the clerical
+/// What the top bar says about a refused constraint. `offer` screens the clerical
 /// refusals before the producer sees them, so in practice the author reads the third — but a
 /// message per variant is what keeps that claim checkable rather than assumed.
 fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {

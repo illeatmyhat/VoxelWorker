@@ -1,5 +1,5 @@
 //! Golden-image regression harness (issue #24) — the **E0 safety net** for the
-//! upcoming engine/renderer rewrite (ADR 0002).
+//! upcoming engine/renderer rewrite.
 //!
 //! Each canonical case renders through the REAL `shot` binary (located via the
 //! `CARGO_BIN_EXE_shot` env var Cargo sets for integration tests — it auto-builds
@@ -87,12 +87,12 @@ const CASES: &[GoldenCase] = &[
         name: "demo-village",
         args: &["--demo-village"],
     },
-    // ADR 0010 D0 (ADR 0003 §G3, Phase D0): the FAR-SCENE baseline. The SAME instanced
+    // The FAR-SCENE baseline. The SAME instanced
     // village, but its whole composite is placed at ~XZ 10,000 blocks (vertical bounded;
     // Z-up, so the far offset is on the two horizontal axes X/Y). Every other golden is
     // near-origin, where the f32 voxel payload is still exact — they cannot see far-scene
     // precision loss. At XZ~10k an absolute f32 voxel center has barely a fractional bit
-    // left, so this golden is the guard the ADR 0003 §3a chunk-local-integer payload move
+    // left, so this golden guards the chunk-local-integer payload move
     // (#48) must preserve. It renders pixel-identical to `demo-village` TODAY because the
     // resolve rebases to the composite floating-origin in i64 BEFORE the f32 downcast
     // (S4b); a regression of that rebase would smear or speckle this golden while leaving
@@ -116,7 +116,7 @@ const CASES: &[GoldenCase] = &[
             "2",
         ],
     },
-    // ADR 0012 (H1): the onion GHOST pass — replaces the retired volumetric fog golden.
+    // The onion GHOST pass — replaces the retired volumetric fog golden.
     // An 8³-block sphere (grid 128³) with an onion-skinned equatorial band: layers [56,72]
     // render as the crisp solid stone disk, while the sphere's shell ABOVE and BELOW the
     // band ghosts as crisp TRANSLUCENT voxels (8 onion layers each side, the retired fog
@@ -127,7 +127,7 @@ const CASES: &[GoldenCase] = &[
     // underlying solid's per-path shading shows through the ghost), so it is deliberately
     // EXCLUDED from the two-layer + brick cross-checks — the brick ghost is gated separately by
     // `onion_ghost_marches_only_the_onion_slabs` in `tests/gpu_parity.rs`.
-    // ADR 0018 (#84): onion fog is now a VIEWER MODE with a per-object region-scoped clip.
+    // Onion fog is a VIEWER MODE with a per-object region-scoped clip.
     // The band bites only in `--view-mode onion` with a selection; selecting the sole object
     // (`--select-node 0`) scopes the region to it — which, being the whole scene, makes the
     // ConfineBand clip + ghost slabs identical to the pre-0018 scene-wide band, so this renders
@@ -173,7 +173,7 @@ const CASES: &[GoldenCase] = &[
     // with a HIGHLIGHTED TOP·RIGHT edge (forced via `--cube-hover element:top-right`).
     // Both the TOP and RIGHT faces are visible at the golden camera, so the hover lights
     // the two across-the-fold facets — the right-strip cell of TOP and the top-strip cell
-    // of RIGHT — in the accent, pinning the fold-crossing highlight. (ADR 0018 Decision 8:
+    // of RIGHT — in the accent, pinning the fold-crossing highlight. (The view-cube action
     // the Home/Fit badges left the cube for the Signal icon rail, which now renders under
     // the cube; the badges no longer appear here.) The 3D viewport/panel are untouched.
     GoldenCase {
@@ -191,15 +191,15 @@ const CASES: &[GoldenCase] = &[
         name: "roll-quarter",
         args: &["--demo-village", "--roll-quarters", "1"],
     },
-    // ADR 0003 §3i (revolve commit 4): the sketch→revolve render path. A stepped
+    // The sketch→revolve render path. A stepped
     // (vase) radial profile revolved a full 360° about the vertical Z axis into a
     // solid of revolution — a round, axially-symmetric body with a foot, a pinched
     // waist and a flared lip that a box / extrude cannot produce. Pins the revolve
     // producer resolving + rendering through the SAME cuboid/instanced pipeline as
     // SdfShape at the fixed golden camera.
-    // The revolve was IMPLICITLY band-clipped pre-0018 (its composite grid_z 128 exceeded the
-    // default layer-track's 80, so the top third clipped scene-wide). ADR 0018 (#84) retired
-    // the scene-wide band: the clip now needs `--view-mode onion` to bite. Selecting the sole
+    // The revolve's composite grid_z 128 used to exceed the default layer-track's 80, so the
+    // top third clipped scene-wide. The current viewer no longer applies that scene-wide band:
+    // the clip now needs `--view-mode onion` to bite. Selecting the sole
     // revolve node (`--select-node 0`) scopes the (default [0,80]) hard band to it — the whole
     // scene — reproducing the pre-0018 clipped image pixel-for-pixel (viewport AND panel), so
     // this stays the band-clipped SketchSolid case in the two-layer / brick cross-checks.
@@ -213,16 +213,16 @@ const CASES: &[GoldenCase] = &[
             "0",
         ],
     },
-    // ADR 0010 E3 (#50): a sketch→extrude (L-footprint) solid — a SketchSolid producer that
+    // A sketch→extrude (L-footprint) solid — a SketchSolid producer that
     // is NOT band-clipped (its 3-block extrusion fits under the layer-track grid_z), the
     // non-clipped SketchSolid case in the two-layer cross-check. (The revolve golden IS
-    // band-clipped via the layer-track's default grid_z; ADR 0010 #53 taught the two-layer
+    // band-clipped via the layer-track's default grid_z; the two-layer
     // path to reclip, so BOTH are now in TWO_LAYER_CASE_NAMES.)
     GoldenCase {
         name: "sketch-extrude-l",
         args: &["--demo-sketch-extrude"],
     },
-    // ADR 0010 E3 (#50): an overlapping multi-material scene — two solid boxes of different
+    // An overlapping multi-material scene — two solid boxes of different
     // materials whose corner volumes overlap (the overlap resolves last-writer-wins by
     // document order). Pins that an OVERLAP region renders identically; the two-layer
     // cross-check (`two_layer_golden_matches_dense`) re-renders it through the two-layer
@@ -231,7 +231,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-overlap",
         args: &["--demo-overlap"],
     },
-    // ADR 0017 (#73): the CSG tracer bullet — a solid Stone box carved by a smaller box
+    // The CSG tracer bullet — a solid Stone box carved by a smaller box
     // placed AFTER it under CombineOp::Subtract (the ordered document-order fold). The
     // render shows a crisp cubic notch bitten out of the box's corner, and the cutter's
     // own material (Wood) never appears: a Subtract is an occupancy-only mask, so every
@@ -242,7 +242,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-subtract",
         args: &["--demo-subtract"],
     },
-    // ADR 0017 Decision 3 (#74): the SEALED-SCOPE golden — a Group holds a Stone body
+    // The SEALED-SCOPE golden — a Group holds a Stone body
     // carved by a Subtract cutter, and a Wood bystander box placed BEFORE the group
     // overlaps the cutter's volume. Under a flat (unsealed) fold the cutter — later in
     // depth-first order — would carve the bystander; here it renders INTACT, nestled
@@ -253,7 +253,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-group-subtract",
         args: &["--demo-group-subtract"],
     },
-    // ADR 0017 (#75): the INTERSECT golden — a Stone body box and an overlapping box
+    // The INTERSECT golden — a Stone body box and an overlapping box
     // placed AFTER it under CombineOp::Intersect. Exactly the overlap volume survives (a
     // 2³-block cube where the boxes met), and the mask's own material (Wood) never
     // appears: an Intersect is an occupancy-only mask, so the surviving cube renders
@@ -264,7 +264,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-intersect",
         args: &["--demo-intersect"],
     },
-    // ADR 0017 (#76): the REUSABLE CUTTER golden — ONE "corner cutter" definition placed
+    // The REUSABLE CUTTER golden — ONE "corner cutter" definition placed
     // by TWO Instance nodes under CombineOp::Subtract, each carving its own separated
     // Stone host's top corner octant. Two identical notches from a single stored
     // definition is the visible proof of reuse-by-reference cutters (the sealed def body
@@ -275,7 +275,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-cutter-def",
         args: &["--demo-cutter-def"],
     },
-    // ADR 0017 Decision 4 (#77): THE WINDOW golden — a Stone wall and ONE placement
+    // THE WINDOW golden — a Stone wall and ONE placement
     // of a FIXTURE definition [opening cutter Subtract, Wood frame Union]. The def
     // does not pre-compose: its children splice into the wall's scope at the
     // instance's position, so the single placement both CUTS the 3×3-block opening
@@ -287,7 +287,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-window-fixture",
         args: &["--demo-window-fixture"],
     },
-    // ADR 0018 Decision 6: the BURIED-CUTTER golden — a Subtract cutter entirely inside a
+    // The BURIED-CUTTER golden — a Subtract cutter entirely inside a
     // Stone host (an internal void invisible by success), with the CUTTER selected, in
     // Show-booleans mode. The boolean-operand ghost renders the cutter's whole body in the
     // LOUD occluded red (depth test `Greater` — every ghost fragment is behind the host's
@@ -297,7 +297,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-buried-cutter",
         args: &["--demo-buried-cutter", "--view-mode", "booleans"],
     },
-    // ADR 0018 Decision 6: the CORNER-CUTTER golden — the demo-subtract scene with the
+    // The CORNER-CUTTER golden — the demo-subtract scene with the
     // CUTTER selected (`--select-node 1`), in Show-booleans mode. The cutter's exposed
     // carve faces COINCIDE with the notch's cut surface — the delicate half of the depth
     // split: another mesher's triangulation of the same plane must still classify QUIET
@@ -314,8 +314,8 @@ const CASES: &[GoldenCase] = &[
             "booleans",
         ],
     },
-    // ADR 0018 Decision 6: the FIXTURE-SELECTION golden — the window scene with the window
-    // INSTANCE selected, in Show-booleans mode. Its own operation is inert (ADR 0017
+    // The FIXTURE-SELECTION golden — the window scene with the window
+    // INSTANCE selected, in Show-booleans mode. Its own operation is inert
     // Decision 4), so the walk splices its children: only the opening cutter ghosts (red,
     // QUIET on the opening's exposed carve faces, LOUD where the wall thickness / the
     // later-placed frame bury it — both halves of the depth split in one image). The Union
@@ -330,7 +330,7 @@ const CASES: &[GoldenCase] = &[
             "booleans",
         ],
     },
-    // ADR 0018 Decision 6: the INTERSECT-mask ghost — the demo-intersect scene with the
+    // The INTERSECT-mask ghost — the demo-intersect scene with the
     // MASK selected, in Show-booleans mode. The mask's body ghosts AMBER: quiet over the
     // empty space the fold cleared (nothing occludes it there), loud where the surviving
     // Stone cube buries it. Also pins that Intersect never renders the Subtract red.
@@ -344,7 +344,7 @@ const CASES: &[GoldenCase] = &[
             "booleans",
         ],
     },
-    // ADR 0018 Decision 6: the ROOT-PART master — a Group whose Stone body carries an
+    // The ROOT-PART master — a Group whose Stone body carries an
     // exposed corner cutter AND a strictly-interior buried cutter, with the ROOT PART
     // selected in Show-booleans mode (`--select-root --view-mode booleans`). Selecting the
     // root x-rays EVERY boolean in the whole scene: both cutters render as operand ghosts
@@ -360,14 +360,14 @@ const CASES: &[GoldenCase] = &[
             "booleans",
         ],
     },
-    // ADR 0018 Decision 4: the SAME scene in NORMAL mode — the finished carved look with
+    // The SAME scene in NORMAL mode — the finished carved look with
     // ZERO ghosts. Pins that Normal renders no overlay regardless of selection (the mode,
     // not a per-node flag, is what separates this from the master case above).
     GoldenCase {
         name: "demo-child-booleans-normal",
         args: &["--demo-child-booleans", "--view-mode", "normal"],
     },
-    // ADR 0018 Decision 5 (#84): the REGION-SCOPING proof. A three-object scene (Sphere at the
+    // The REGION-SCOPING proof. A three-object scene (Sphere at the
     // origin, Box at +8 blocks X, Torus at +6 blocks Z) in `--view-mode onion` with ONLY the
     // Sphere selected (`--select-node 0`). The Sphere clips to its mid-band [30,50] of its own
     // 80-layer Z track with the ghost haze above/below — INSIDE its placed AABB only; the Box
@@ -400,7 +400,7 @@ const CASES: &[GoldenCase] = &[
         name: "stack-folded",
         args: &["--demo-village", "--stack-folded"],
     },
-    // ADR 0018 Decision 4 (#84): Normal mode IGNORES the layer band. A sphere with a NARROW
+    // Normal mode IGNORES the layer band. A sphere with a NARROW
     // band ([56,72]) but `--view-mode normal` renders the FULL finished sphere — the band is
     // Onion-fog's tool alone and does not clip here (contrast `onion-ghost`, the same-shape
     // band alive under `--view-mode onion --select-root`).
@@ -440,7 +440,7 @@ const CASES: &[GoldenCase] = &[
             "--grid",
         ],
     },
-    // ADR 0032: the selection-cel JUNCTION creases — the subtract scene with the HOST
+    // The selection-cel JUNCTION creases — the subtract scene with the HOST
     // selected under `--selection-cel`. The cel draws the screen-space outline + wash plus
     // the analytic edge overlay: the host's authored box catalog AND the three traced
     // open L-curves where the flush-corner cutter's walls meet the host's faces
@@ -451,7 +451,7 @@ const CASES: &[GoldenCase] = &[
         name: "demo-subtract-junction-cel",
         args: &["--demo-subtract", "--select-node", "0", "--selection-cel"],
     },
-    // ADR 0032: the CURVED junction — a blind bore (Cylinder Subtract into a Box) with the
+    // The CURVED junction — a blind bore (Cylinder Subtract into a Box) with the
     // host selected under `--selection-cel`. The bore's mouth is a full circle on the top
     // face: the one junction class the flush-corner case cannot show (a closed curved
     // curve, seeded + traced to closure, deduped to exactly one loop).
@@ -467,12 +467,12 @@ const CASES: &[GoldenCase] = &[
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
-/// cases the two-layer mesher actually meshes through (ADR 0010 E3 / #50). `debug-clouds` is
+/// cases the two-layer mesher actually meshes through. `debug-clouds` is
 /// VoxelBody-only (no chunkable extent) so it is excluded — `--two-layer` falls back to the dense
 /// path there, which the cross-check would test only trivially. Every name MUST exist in
 /// `CASES`.
 ///
-/// ADR 0010 #53: the two LAYER-BAND-clip cases are now INCLUDED — the two-layer mesher honors
+/// The two LAYER-BAND-clip cases are INCLUDED — the two-layer mesher honors
 /// a layer band (clips coarse blocks to the band one-box, clips microblock cuboids, synthesizes
 /// cut-plane cap faces at the band edge), so the band slab renders pixel-identical to the dense
 /// banded path with no dense source grids:
@@ -480,14 +480,14 @@ const CASES: &[GoldenCase] = &[
 ///   the (default-cylinder) `shape` grid_z (80), below the revolve composite grid_z (128), so
 ///   the dense golden clips the vase's upper third — and the two-layer band reclip now matches.
 ///
-/// ADR 0032: the two `*-junction-cel` cases are NOT in this list (nor the brick list). The
+/// The two `*-junction-cel` cases are NOT in this list (nor the brick list). The
 /// selection cel is a screen-space post-pass over the solid's depth/normal buffers, and those
 /// buffers are not bit-identical across display paths at silhouette pixels — the same
 /// translucent-composite reasoning as `onion-ghost` below. The cel is pinned against the dense
 /// reference only; cross-path parity of the underlying SOLIDS is already gated by
 /// `demo-subtract`.
 ///
-/// ADR 0012 (H1): `onion-ghost` is NOT in this list. The onion ghost is a TRANSLUCENT
+/// `onion-ghost` is NOT in this list. The onion ghost is a TRANSLUCENT
 /// alpha-blended pass, so the underlying solid's shading shows through the whole ghost cap —
 /// and the dense apron mesh, the two-layer mesh, and the brick raymarch shade / decompose the
 /// solid differently enough (and the two-layer banded mesh hits the known band-clip×elision
@@ -507,30 +507,30 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     "sketch-revolve-dome",
     "sketch-extrude-l",
     "demo-overlap",
-    // ADR 0017 (#73): the subtract scene is chunkable and multi-producer, so the
+    // The subtract scene is chunkable and multi-producer, so the
     // two-layer cross-check re-renders the carved box through `--two-layer` and pins it
     // pixel-identical to the dense reference (the carve must classify + resolve the same
     // on both paths).
     "demo-subtract",
-    // ADR 0017 Decision 3 (#74): the sealed-scope scene through `--two-layer` — the
+    // The sealed-scope scene through `--two-layer` — the
     // scoped classification + scoped boundary resolve must render pixel-identical to
     // the dense scoped oracle (the group's cutter carves the group's body only, on
     // both paths).
     "demo-group-subtract",
-    // ADR 0017 (#75): the intersect scene through `--two-layer` — the mask's
+    // The intersect scene through `--two-layer` — the mask's
     // conservative interval fold (never-dropped mask candidates, whole-chunk degrade,
     // per-voxel boundary resolve) must render pixel-identical to the dense oracle.
     "demo-intersect",
-    // ADR 0017 (#76): the instanced-cutter scene through `--two-layer` — the
+    // The instanced-cutter scene through `--two-layer` — the
     // definition-scope expansion under each instance's Subtract must classify +
     // resolve pixel-identical to the dense oracle at both placements.
     "demo-cutter-def",
-    // ADR 0017 Decision 4 (#77): the window-fixture scene through `--two-layer` —
+    // The window-fixture scene through `--two-layer` —
     // the frameless (spliced) definition expansion must classify + resolve
     // pixel-identical to the dense oracle: the spliced cutter is a root cutter and
     // the spliced frame a root additive leaf to the conservative fast paths.
     "demo-window-fixture",
-    // ADR 0018 Decision 6: the boolean-operand ghost cases through `--two-layer`. The
+    // The boolean-operand ghost cases through `--two-layer`. The
     // ghost GEOMETRY is path-independent (derived from the operand slices' two-layer
     // chunks either way), and the two-layer solid's exposed-face set is proven identical
     // to the dense mesh — so the composite (translucent ghost over solid) must match the
@@ -549,14 +549,14 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     "tube-grid-overlay",
 ];
 
-/// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a
+/// The golden cases whose scene is a chunkable SINGLE producer with a
 /// uniform render cell — the ones the brick raymarch actually engages for (`shot --brick`).
 /// Each renders brick-path pixel-identical (within the tolerance model) to the SAME committed
 /// dense reference: the parity gate's clause (c). The
 /// village/overlap cases are multi-producer (not gated); `sphere-debug-faces` disengages
 /// bricks (debug-faces is a mesh-only mode). Every name MUST exist in `CASES`.
 ///
-/// ADR 0012 (H1): `onion-ghost` is NOT here — its TRANSLUCENT ghost pass composites the
+/// `onion-ghost` is NOT here — its TRANSLUCENT ghost pass composites the
 /// underlying solid's per-path shading through the whole cap, so brick vs dense-mesh is not
 /// pixel-identical (≈6% on the ghost cap) even though the OPAQUE solid is. The brick ghost is
 /// instead gated by `onion_ghost_marches_only_the_onion_slabs` in `tests/gpu_parity.rs` (the
@@ -595,7 +595,7 @@ fn output_dir() -> PathBuf {
 }
 
 /// Run the real `shot` binary for `case`, writing a PNG to `out_path`. `extra_args` appends
-/// flags (e.g. `--two-layer` for the ADR 0010 E3 golden cross-check) so the same case can be
+/// flags (e.g. `--two-layer` for the two-layer golden cross-check) so the same case can be
 /// rendered through an alternate path and compared to the SAME committed reference.
 fn render_case_with(case: &GoldenCase, out_path: &Path, extra_args: &[&str]) {
     let shot = env!("CARGO_BIN_EXE_shot");
@@ -780,7 +780,7 @@ fn golden_images_match() {
     );
 }
 
-/// ADR 0010 E3 (#50): render the chunkable golden cases THROUGH the two-layer mesh path
+/// Render the chunkable golden cases THROUGH the two-layer mesh path
 /// (`shot --two-layer`: coarse one-box + microblock cuboids + seam-flag culling) and assert
 /// each is PIXEL-IDENTICAL to the SAME committed dense reference PNG. This is the display
 /// half of the E3 parity gate — the two-layer mesher is a pure optimization on the data
@@ -852,7 +852,7 @@ fn two_layer_golden_matches_dense() {
     );
 }
 
-/// ADR 0011 G1 (#67): render the gated single-producer golden cases THROUGH the brick
+/// Render the gated single-producer golden cases THROUGH the brick
 /// raymarch (`shot --brick`: block-DDA over the G0 sorted records + R8 sculpted atlas, the
 /// cuboid mesh built EMPTY so the pixels provably come from the atlas) and assert each is
 /// PIXEL-IDENTICAL to the SAME committed dense reference — the parity gate's clause (c). The
@@ -860,7 +860,7 @@ fn two_layer_golden_matches_dense() {
 /// reproduce the rasterized mesh, not merely approximate it, so this reuses the mesh path's
 /// own goldens with no new references. The view cube composites over the brick-drawn solid
 /// the same as over the mesh, so a byte-for-byte-equivalent render is the depth-compositing
-/// evidence (grill Q5 / the one integration point the ADR 0009 benchmark never exercised).
+/// evidence (grill Q5 / the one integration point the benchmark never exercised).
 ///
 /// Run: `cargo test -p shot --test golden`. On a mismatch, read the `-brick-actual.png`
 /// and `-brick-diff.png` artifacts — a silhouette-only diff points at MSAA sample positions,
@@ -922,12 +922,12 @@ fn brick_golden_matches_dense() {
 
     assert!(
         failures.is_empty(),
-        "brick golden regression(s) vs dense reference (ADR 0011 gate (c)):\n{}",
+        "brick golden regression(s) vs dense reference (gate (c)):\n{}",
         failures.join("\n")
     );
 }
 
-/// ADR 0011 G2 (#68): the multi-producer per-record-material golden. `--demo-two-material`
+/// The multi-producer per-record-material golden. `--demo-two-material`
 /// is two DISTINCT-material boxes placed a whole chunk apart, so every rendered block is
 /// single-material — the widened brick gate engages, and the sink shades each hit from its
 /// OWN record's packed material id (not a scene-wide uniform), reproducing the mesh's

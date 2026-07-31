@@ -11,7 +11,7 @@ error: field `orbit_target` is not classified: every field of application state 
 
        `transient` and `derived` reach neither artifact and are the two ways to get this error to go away without deciding anything, so they are the ones review looks at. `derived` at least makes a checkable claim: dropping the field must change how long something takes and NOTHING else.
 
-       The category describes this field's WHOLE object and does not recurse into it — serialization already carries what is inside. See docs/adr/0022.
+       The category describes this field's WHOLE object and does not recurse into it — serialization already carries what is inside. See the architecture documentation.
   --> tests/compile_fail/several_unclassified_fields.rs:12:5
    |
 12 |     orbit_target: [f32; 3],
@@ -30,7 +30,7 @@ error: field `view_mode` is not classified: every field of application state mus
 
        `transient` and `derived` reach neither artifact and are the two ways to get this error to go away without deciding anything, so they are the ones review looks at. `derived` at least makes a checkable claim: dropping the field must change how long something takes and NOTHING else.
 
-       The category describes this field's WHOLE object and does not recurse into it — serialization already carries what is inside. See docs/adr/0022.
+       The category describes this field's WHOLE object and does not recurse into it — serialization already carries what is inside. See the architecture documentation.
   --> tests/compile_fail/several_unclassified_fields.rs:13:5
    |
 13 |     view_mode: u8,

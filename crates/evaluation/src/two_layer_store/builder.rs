@@ -31,7 +31,7 @@ pub struct TwoLayerStore {
 
 impl TwoLayerStore {
     /// A store with the two-layer capability ENABLED. The default ([`Default`]) is
-    /// DISABLED, matching the ADR's "OFF by default, dense fallback" coexistence.
+    /// DISABLED, matching the "OFF by default, dense fallback" coexistence.
     pub fn enabled() -> Self {
         Self { enabled: true }
     }

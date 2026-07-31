@@ -29,7 +29,7 @@ edition = "2021"
 
 [dependencies]
 # The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
-# algebra, and the exact-rational expression language (ADR 0035).
+# algebra, and the exact-rational expression language.
 parametric = { path = "../parametric" }
 # The pure CS/math substrate: LatticeOrientation, to orient the placement ghost from a
 # `--ghost-face` normal for headless verification.

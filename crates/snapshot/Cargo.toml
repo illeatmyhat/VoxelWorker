@@ -3,7 +3,7 @@ name = "snapshot"
 version = "0.1.0"
 edition = "2021"
 
-# The vocabulary half of the state-classification pair (ADR 0022). A proc-macro crate
+# The vocabulary half of the state-classification pair. A proc-macro crate
 # can export nothing but macros, so the `StateCategory` enum, the `ClassifiedField`
 # record and the `Snapshot` trait the derive targets have to live in an ordinary
 # library; this is the same split serde/serde_derive and thiserror/thiserror-impl use.

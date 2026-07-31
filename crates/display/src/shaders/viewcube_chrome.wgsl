@@ -3,7 +3,7 @@
 // Draws screen-space textured glyph quads (the persistent rotate arrows and the
 // hover-only roll arrows) that are FIXED to the cube rect — they do NOT rotate with
 // the cube. (Home/Fit button badges used to draw here too, but they left the cube
-// for the Signal icon rail — ADR 0018 Decision 8 — so this overlay no longer draws
+// for the Signal icon rail — so this overlay no longer draws
 // badge glyphs.) Positions arrive already in NDC
 // (computed on the CPU from the Step-1 layout fractions, within the scissored
 // cube viewport), so the vertex stage is a pass-through. Each glyph samples its
