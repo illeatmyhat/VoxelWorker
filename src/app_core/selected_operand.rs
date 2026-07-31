@@ -19,13 +19,13 @@ use display::renderer::OperandGhostStyle;
 use document::scene::{CombineOp, NodeId, Scene};
 use evaluation::two_layer_store::TwoLayerStore;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint};
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 
 use super::AppCore;
 
 /// Everything the display's [`SelectedOperandGhostRenderer`] rebuild needs: the ghost
 /// bodies plus the COMPOSED scene's frame (ADR 0008 — the slice chunks are in absolute
-/// composite coords, so meshing them against the composed recentre lands the ghost
+/// composite coords, so meshing them against the composed recenter lands the ghost
 /// voxel-exact on the operand's place in the render frame).
 ///
 /// [`SelectedOperandGhostRenderer`]: display::mesh::SelectedOperandGhostRenderer
@@ -35,8 +35,8 @@ pub struct SelectedOperandGhost {
     pub bodies: Vec<SelectedOperandGhostBody>,
     /// The composed scene's voxel extent (the shader's corner-anchoring scalar).
     pub grid_dimensions: [u32; 3],
-    /// The composed scene's resolve recentre — the render frame the ghost meshes into.
-    pub recentre: RecentreVoxels,
+    /// The composed scene's resolve recenter — the render frame the ghost meshes into.
+    pub recenter: RecenterVoxels,
     /// The document density the bodies were evaluated at.
     pub density: u32,
 }
@@ -70,18 +70,18 @@ pub struct SelectedBodyCel {
     pub bodies: Vec<display::mesh::SelectedBodyChunks>,
     /// The composed scene's voxel extent (the shader's corner-anchoring scalar).
     pub grid_dimensions: [u32; 3],
-    /// The composed scene's resolve recentre — the render frame the cel meshes into.
-    pub recentre: RecentreVoxels,
+    /// The composed scene's resolve recenter — the render frame the cel meshes into.
+    pub recenter: RecenterVoxels,
     /// The document density the bodies were evaluated at.
     pub density: u32,
     /// Analytic feature-edge segments of the selected shapes (flat endpoint pairs) in
     /// RENDER-frame voxels — the authored geometry's own edges (a box's 12, a
     /// cylinder's 2 rim ellipses, a tube's 4), not anything derived from the voxel
-    /// surface. Empty when no selected shape catalogues any edge.
+    /// surface. Empty when no selected shape catalogs any edge.
     pub edge_segments: Vec<[f32; 3]>,
     /// A cap cut the junction tracing short (pair cap, seed or step budget) —
     /// some crease lines may be missing. Surfaced so a missing-line report is a
-    /// lookup, not a hunt; the catalogue edges are never truncated.
+    /// lookup, not a hunt; the catalog edges are never truncated.
     pub edge_trace_truncated: bool,
 }
 
@@ -89,11 +89,11 @@ pub struct SelectedBodyCel {
 /// is world-stable under orbit — the whole point of the analytic edges.
 const EDGE_CIRCLE_SEGMENTS: u32 = 96;
 
-/// Emit every leaf's authored edge catalogue ([`VoxelProducer::edge_polylines_local`])
+/// Emit every leaf's authored edge catalog ([`VoxelProducer::edge_polylines_local`])
 /// as segment endpoint pairs in TRUE-WORLD voxels. Consumes the SAME `leaf_producers`
 /// walk the evaluator reads — never a hand-mirrored descent — so placement, instance
 /// expansion, the cycle guard and fixture splicing stay single-sourced. A pre-composed
-/// scope or an outset-wrapped leaf arrives as a producer that honestly catalogues
+/// scope or an outset-wrapped leaf arrives as a producer that honestly catalogs
 /// nothing (its authored edges are gone from the surface it resolves).
 ///
 /// [`VoxelProducer::edge_polylines_local`]: document::voxel::VoxelProducer::edge_polylines_local
@@ -150,7 +150,7 @@ const JUNCTION_PAIR_CAP: usize = 64;
 /// Emboss leaves skip (their resolved surface has moved off the authored field);
 /// a fieldless producer skips by type. The prune brackets are the evaluator's own
 /// `cell_field_interval` — conservative-never-narrow per producer, so the seeding
-/// never silently loses a curve to an optimistic Lipschitz guess.
+/// never silently loses a curve to an optimiztic Lipschitz guess.
 ///
 /// Returns whether any cap truncated the result (the pair cap here, or a seed /
 /// step budget inside the tracer) — surfaced, never silent.
@@ -381,16 +381,16 @@ impl AppCore {
             density,
             &mut edge_segments_true_world,
         );
-        let recentre = scene.recentre_voxels_for_resolve(density);
-        let recentre_f32 = recentre.voxels().map(|axis| axis as f32);
+        let recenter = scene.recenter_voxels_for_resolve(density);
+        let recenter_f32 = recenter.voxels().map(|axis| axis as f32);
         let edge_segments = edge_segments_true_world
             .into_iter()
-            .map(|point| std::array::from_fn(|axis| point[axis] - recentre_f32[axis]))
+            .map(|point| std::array::from_fn(|axis| point[axis] - recenter_f32[axis]))
             .collect();
         Some(SelectedBodyCel {
             bodies,
             grid_dimensions: scene.placed_region_dimensions(density),
-            recentre,
+            recenter,
             density,
             edge_segments,
             edge_trace_truncated,
@@ -402,7 +402,7 @@ impl AppCore {
 /// stateless two-layer evaluator — bounded by the SLICE's covering chunks, never a
 /// whole-scene resolve, never a dense grid — and package the surviving bodies with the
 /// COMPOSED scene's frame (ADR 0008: the slices are in absolute composite coords, so
-/// meshing against the composed recentre lands each ghost voxel-exact).
+/// meshing against the composed recenter lands each ghost voxel-exact).
 fn evaluate_operand_ghost_slices(
     scene: &Scene,
     slices: Vec<(CombineOp, Scene)>,
@@ -430,7 +430,7 @@ fn evaluate_operand_ghost_slices(
     Some(SelectedOperandGhost {
         bodies,
         grid_dimensions: scene.placed_region_dimensions(density),
-        recentre: scene.recentre_voxels_for_resolve(density),
+        recenter: scene.recenter_voxels_for_resolve(density),
         density,
     })
 }
@@ -521,8 +521,8 @@ mod tests {
             scene.placed_region_dimensions(DENSITY)
         );
         assert_eq!(
-            ghost.recentre.voxels(),
-            scene.recentre_voxels_for_resolve(DENSITY).voxels()
+            ghost.recenter.voxels(),
+            scene.recenter_voxels_for_resolve(DENSITY).voxels()
         );
     }
 
@@ -562,8 +562,8 @@ mod tests {
         }
         assert_eq!(cel.grid_dimensions, scene.placed_region_dimensions(DENSITY));
         assert_eq!(
-            cel.recentre.voxels(),
-            scene.recentre_voxels_for_resolve(DENSITY).voxels()
+            cel.recenter.voxels(),
+            scene.recenter_voxels_for_resolve(DENSITY).voxels()
         );
     }
 
@@ -580,15 +580,15 @@ mod tests {
         assert!(AppCore::selected_body_cel(&scene, &[host], DENSITY).is_none());
     }
 
-    /// Analytic edge catalogue (ADR 0032 V1): a box lists its 12 straight edges on
+    /// Analytic edge catalog (ADR 0032 V1): a box lists its 12 straight edges on
     /// the `[0, full]` corners; a sphere and a torus are smooth and list nothing.
     #[test]
-    fn box_catalogues_twelve_edges_and_smooth_kinds_none() {
-        let catalogue = |kind, blocks| {
+    fn box_catalogs_twelve_edges_and_smooth_kinds_none() {
+        let catalog = |kind, blocks| {
             SdfShape::from_blocks(kind, blocks, 1, DENSITY)
                 .edge_polylines_local(DENSITY, EDGE_CIRCLE_SEGMENTS)
         };
-        let edges = catalogue(ShapeKind::Box, [4, 4, 4]);
+        let edges = catalog(ShapeKind::Box, [4, 4, 4]);
         assert_eq!(edges.len(), 12);
         for polyline in &edges {
             assert_eq!(polyline.len(), 2, "a box edge is one straight segment");
@@ -601,47 +601,47 @@ mod tests {
                 }
             }
         }
-        assert!(catalogue(ShapeKind::Sphere, [4, 4, 4]).is_empty());
-        assert!(catalogue(ShapeKind::Torus, [4, 4, 2]).is_empty());
+        assert!(catalog(ShapeKind::Sphere, [4, 4, 4]).is_empty());
+        assert!(catalog(ShapeKind::Torus, [4, 4, 2]).is_empty());
     }
 
-    /// A tube catalogues 4 rim ellipses (outer + inner × top + bottom, axis along Z);
+    /// A tube catalogs 4 rim ellipses (outer + inner × top + bottom, axis along Z);
     /// a wall consuming the whole cross-section closes the hole and drops the inner
     /// pair. A cylinder is the outer pair alone.
     #[test]
-    fn tube_catalogues_four_rims_until_the_wall_closes_the_hole() {
-        let catalogue = |kind, blocks, wall_blocks| {
+    fn tube_catalogs_four_rims_until_the_wall_closes_the_hole() {
+        let catalog = |kind, blocks, wall_blocks| {
             SdfShape::from_blocks(kind, blocks, wall_blocks, DENSITY)
                 .edge_polylines_local(DENSITY, EDGE_CIRCLE_SEGMENTS)
         };
-        let rims = catalogue(ShapeKind::Tube, [8, 8, 4], 1);
+        let rims = catalog(ShapeKind::Tube, [8, 8, 4], 1);
         assert_eq!(rims.len(), 4);
         for rim in &rims {
             let z = rim[0][2];
             assert!(z == 0.0 || z == 32.0, "rims sit on the tube's caps");
             assert!(rim.iter().all(|point| point[2] == z), "each rim is planar");
         }
-        // Angle 0 of each rim: centre (32, 32) + radius along +X — outer 32, inner 24.
+        // Angle 0 of each rim: center (32, 32) + radius along +X — outer 32, inner 24.
         let radii: Vec<f32> = rims.iter().map(|rim| rim[0][0] - 32.0).collect();
         assert_eq!(radii, vec![32.0, 32.0, 24.0, 24.0]);
 
-        let walled_shut = catalogue(ShapeKind::Tube, [4, 4, 4], 2);
+        let walled_shut = catalog(ShapeKind::Tube, [4, 4, 4], 2);
         assert_eq!(walled_shut.len(), 2, "no hole, no inner rims");
-        assert_eq!(catalogue(ShapeKind::Cylinder, [8, 8, 4], 0).len(), 2);
+        assert_eq!(catalog(ShapeKind::Cylinder, [8, 8, 4], 0).len(), 2);
     }
 
     /// The cel's edge segments land in the RENDER frame: the host box's 12 edges
-    /// (24 endpoints) sit on the `[0, 32]` true-world corners minus the recentre.
+    /// (24 endpoints) sit on the `[0, 32]` true-world corners minus the recenter.
     #[test]
     fn cel_edge_segments_land_in_the_render_frame() {
         let scene = host_and_cutter_scene();
         let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0]], DENSITY)
             .expect("host derives a body");
         assert_eq!(cel.edge_segments.len(), 24, "12 edges, 2 endpoints each");
-        let recentre = cel.recentre.voxels();
+        let recenter = cel.recenter.voxels();
         for point in &cel.edge_segments {
             for axis in 0..3 {
-                let true_world = point[axis] + recentre[axis] as f32;
+                let true_world = point[axis] + recenter[axis] as f32;
                 assert!(
                     true_world == 0.0 || true_world == 32.0,
                     "endpoint {point:?} must be a box corner in true world"
@@ -669,12 +669,12 @@ mod tests {
         node.transform = node.transform.clone().with_rotation(quarter_turn);
 
         let cel = AppCore::selected_body_cel(&scene, &[target], DENSITY).expect("derives a body");
-        let recentre = cel.recentre.voxels();
+        let recenter = cel.recenter.voxels();
         let mut max = [f32::MIN; 3];
         let mut min = [f32::MAX; 3];
         for point in &cel.edge_segments {
             for axis in 0..3 {
-                let true_world = point[axis] + recentre[axis] as f32;
+                let true_world = point[axis] + recenter[axis] as f32;
                 min[axis] = min[axis].min(true_world);
                 max[axis] = max[axis].max(true_world);
             }
@@ -694,7 +694,7 @@ mod tests {
         );
     }
 
-    /// An instance's edges are the definition's catalogue under the instance's
+    /// An instance's edges are the definition's catalog under the instance's
     /// placement: a definition holding a rotated 64×32×32 box, instanced at a block
     /// offset, shows 12 edges spanning 32×64×32 anchored on the instance offset —
     /// translation-only composition, exactly like the resolve walk.
@@ -717,12 +717,12 @@ mod tests {
             24,
             "12 box edges, 2 endpoints each"
         );
-        let recentre = cel.recentre.voxels();
+        let recenter = cel.recenter.voxels();
         let mut min = [f32::MAX; 3];
         let mut max = [f32::MIN; 3];
         for point in &cel.edge_segments {
             for axis in 0..3 {
-                let true_world = point[axis] + recentre[axis] as f32;
+                let true_world = point[axis] + recenter[axis] as f32;
                 min[axis] = min[axis].min(true_world);
                 max[axis] = max[axis].max(true_world);
             }
@@ -740,11 +740,11 @@ mod tests {
         );
     }
 
-    /// Two instances of one definition each catalogue their own copy; a fixture
-    /// definition's spliced Subtract child catalogues too (the walk never reads
+    /// Two instances of one definition each catalog their own copy; a fixture
+    /// definition's spliced Subtract child catalogs too (the walk never reads
     /// operations — the shader clips edges to where they crease the composed body).
     #[test]
-    fn every_instance_and_spliced_cutter_catalogues_edges() {
+    fn every_instance_and_spliced_cutter_catalogs_edges() {
         let host = box_tool([4, 4, 4], [0, 0, 0], CombineOp::Union, "Host");
         let cutter = box_tool([2, 2, 2], [1, 1, 1], CombineOp::Subtract, "Cutter");
         let mut first = Node::new("First", NodeContent::Instance(DefId(3)));
@@ -764,11 +764,11 @@ mod tests {
             96,
             "2 instances × (host 24 + spliced cutter 24) endpoints"
         );
-        let recentre = cel.recentre.voxels();
+        let recenter = cel.recenter.voxels();
         let xs: Vec<f32> = cel
             .edge_segments
             .iter()
-            .map(|point| point[0] + recentre[0] as f32)
+            .map(|point| point[0] + recenter[0] as f32)
             .collect();
         assert!(
             xs.iter().any(|&x| x < 40.0) && xs.iter().any(|&x| x >= 80.0),
@@ -777,7 +777,7 @@ mod tests {
     }
 
     /// A sketch solid's edges arrive through the same leaf walk (the producer answers
-    /// the catalogue itself): an L extrude catalogues 2 cap outlines (6 windows each)
+    /// the catalog itself): an L extrude catalogs 2 cap outlines (6 windows each)
     /// + 6 laterals = 36 segment endpoints, corner-anchored at the node's offset.
     #[test]
     fn sketch_solid_cel_edges_flow_through_the_leaf_walk() {
@@ -804,9 +804,9 @@ mod tests {
         let cel = AppCore::selected_body_cel(&scene, &[scene.roots[0]], DENSITY)
             .expect("sketch solid derives a body");
         assert_eq!(cel.edge_segments.len(), 36);
-        let recentre = cel.recentre.voxels();
+        let recenter = cel.recenter.voxels();
         for point in &cel.edge_segments {
-            let z = point[2] + recentre[2] as f32;
+            let z = point[2] + recenter[2] as f32;
             assert!(z == 0.0 || z == 3.0, "every edge point sits on a cap plane");
         }
     }
@@ -928,17 +928,17 @@ mod tests {
                 .signed_distance([p.x - 32.0, p.y - 32.0, p.z - 32.0], density)
         };
         let bracket_body = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
-            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            let center = cell_min + glam::Vec3::splat(size / 2.0);
             substrate::spatial::lipschitz_cell_bracket(
-                field_body(centre),
+                field_body(center),
                 1.5,
                 size * 3f32.sqrt() / 2.0,
             )
         };
         let bracket_cutter = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
-            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            let center = cell_min + glam::Vec3::splat(size / 2.0);
             substrate::spatial::lipschitz_cell_bracket(
-                field_cutter(centre),
+                field_cutter(center),
                 1.5,
                 size * 3f32.sqrt() / 2.0,
             )
@@ -998,17 +998,17 @@ mod tests {
                 .signed_distance([p.x - 16.0, p.y - 16.0, p.z - 16.0], density)
         };
         let bracket_body = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
-            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            let center = cell_min + glam::Vec3::splat(size / 2.0);
             substrate::spatial::lipschitz_cell_bracket(
-                field_body(centre),
+                field_body(center),
                 1.5,
                 size * 3f32.sqrt() / 2.0,
             )
         };
         let bracket_bore = |cell_min: glam::Vec3, size: f32| -> (f32, f32) {
-            let centre = cell_min + glam::Vec3::splat(size / 2.0);
+            let center = cell_min + glam::Vec3::splat(size / 2.0);
             substrate::spatial::lipschitz_cell_bracket(
-                field_bore(centre),
+                field_bore(center),
                 1.5,
                 size * 3f32.sqrt() / 2.0,
             )

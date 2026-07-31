@@ -1,6 +1,6 @@
 // Selection outline + wash composite (ADR 0032, reworked 2026-07-29).
 //
-// Full-screen pass over the RESOLVED colour target. Inputs: the selection's FRONT
+// Full-screen pass over the RESOLVED color target. Inputs: the selection's FRONT
 // and BACK hull depth maps (the selected bodies rasterised depth-only under the
 // SAME view_projection as the scene pass — nearest front face / farthest back
 // face) and the scene's MSAA depth. Per pixel:
@@ -16,13 +16,13 @@
 //     alone drifts past ε and the wash speckles. ε is a half-voxel converted to
 //     NDC at the sampled depth via the projection z-row (`ndc_epsilon`), never by
 //     linearising the hardware z: the inverse map amplifies depth-buffer
-//     quantisation by view_depth²/near, while the forward slope degrades
+//     quantization by view_depth²/near, while the forward slope degrades
 //     gracefully at any baseline.
 //   * OUTLINE (1px, near-opaque) just OUTSIDE the washed region's boundary — one
 //     rule that traces both the body's screen silhouette and the edge where it
 //     slips behind other geometry.
 //
-// Uniform control flow throughout (no textureSample), so the neighbour taps are
+// Uniform control flow throughout (no textureSample), so the neighbor taps are
 // plain loads; out-of-viewport texels were cleared to "no body" by the hull
 // passes' full-attachment clears.
 
@@ -115,8 +115,8 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (selection_visible_at(pixel)) {
         return uniforms.tint;
     }
-    // 1px outer ring: a non-washed pixel with a washed 4-neighbour. Clamped taps:
-    // at the map's edge the clamped neighbour is the pixel itself (not visible
+    // 1px outer ring: a non-washed pixel with a washed 4-neighbor. Clamped taps:
+    // at the map's edge the clamped neighbor is the pixel itself (not visible
     // here), so the border can never phantom-outline.
     let edge = vec2<i32>(textureDimensions(front_hull_depth)) - vec2<i32>(1, 1);
     let zero = vec2<i32>(0, 0);

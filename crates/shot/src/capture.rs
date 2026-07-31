@@ -64,7 +64,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // Fully headless: no surface, no window.
     let gpu = GpuContext::new(None).await;
 
-    // Offscreen colour target. Same sRGB format as the windowed surface so the
+    // Offscreen color target. Same sRGB format as the windowed surface so the
     // screenshot is identical to the window; COPY_SRC so we can read it back.
     let capture_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("headless capture color"),
@@ -82,8 +82,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     });
     let capture_view = capture_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // 4× MSAA depth + colour at the offscreen size. The 3D pass renders into the
-    // multisampled colour texture and resolves into `capture_texture` (the single
+    // 4× MSAA depth + color at the offscreen size. The 3D pass renders into the
+    // multisampled color texture and resolves into `capture_texture` (the single
     // -sample COPY_SRC target read back below).
     let depth_view = create_depth_view(&gpu.device, options.width, options.height);
     let msaa_color_view = create_msaa_color_view(
@@ -389,7 +389,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // composite extent; a single-node scene uses its own block size (step-2 region).
     // The far-offset demo also resolves its full composite extent (a single 4³
     // box). `full_extent_blocks` returns the box's own size (4³) for a lone node,
-    // and the resolve rebases it to the floating origin (= the composite recentre)
+    // and the resolve rebases it to the floating origin (= the composite recenter)
     // in i64 BEFORE the f32 downcast (S4b), so even at a 1_000_000-block offset
     // (16M voxels, past the f32 exact-integer ceiling) the grid is BYTE-IDENTICAL
     // to the near box at the origin — the far-lands jitter is gone (S4b proof).
@@ -595,10 +595,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // M8: `--export-vox` writes the resolved grid as a MagicaVoxel .vox and then
     // exits (no render needed — this is the headless verification path).
     if let Some(vox_path) = &options.export_vox_path {
-        // ADR 0003 §3a: map each categorical `block_id` to its colour via the procedural
+        // ADR 0003 §3a: map each categorical `block_id` to its color via the procedural
         // block palette (slot `material_id` = that material's average), so a multi-
-        // material grid exports each block in its own colour. The active material's slot
-        // keeps its representative colour, so a single-material grid is unchanged.
+        // material grid exports each block in its own color. The active material's slot
+        // keeps its representative color, so a single-material grid is unchanged.
         let representative = procedural_material_average_color(options.material);
         let mut palette_colors =
             VoxExport::block_palette_from_active(options.material, representative);
@@ -694,7 +694,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                     &cell_key_atlas,
                     &gpu_records,
                     &pyramid,
-                    voxel_worker::RecentreVoxels::new(grid.recentre_voxels),
+                    voxel_worker::RecenterVoxels::new(grid.recenter_voxels),
                 );
                 // Grazing-rim DIAGNOSTIC: `--brick --debug-faces` shades every hit by its
                 // face axis + a per-voxel UV checkerboard (geometry-staircase vs shading-
@@ -710,7 +710,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     }
 
     // Part of #20: the cuboid mesh path is the sole voxel renderer. Since issue #20
-    // S6c-2d it meshes PER CHUNK with a 1-voxel neighbour apron: built from the
+    // S6c-2d it meshes PER CHUNK with a 1-voxel neighbor apron: built from the
     // resolve cache's per-chunk accessor (`resident_render_chunks`) so the goldens
     // exercise the per-chunk path, falling back to the whole-grid wrapper when the
     // scene has no chunkable extent (the wrapper buckets internally → identical mesh).
@@ -757,14 +757,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             COLOR_TARGET_FORMAT,
             &two_layer_chunks,
             grid_dimensions,
-            // The dense-oracle grid carries its recentre as a raw triple; mint the frame
-            // newtype at this `shot` boundary (the builder now speaks `RecentreVoxels`).
-            voxel_worker::RecentreVoxels::new(grid.recentre_voxels),
+            // The dense-oracle grid carries its recenter as a raw triple; mint the frame
+            // newtype at this `shot` boundary (the builder now speaks `RecenterVoxels`).
+            voxel_worker::RecenterVoxels::new(grid.recenter_voxels),
             density,
         )
     } else if let Some(render_chunks) = render_chunks_for_mesh.take() {
         // Chunkable path: mesh the per-chunk accessor from `AppCore::rebuild` above
-        // (1-voxel neighbour apron per chunk), so the goldens exercise the real
+        // (1-voxel neighbor apron per chunk), so the goldens exercise the real
         // per-chunk mesh path. `render_chunks` holds an immutable borrow of the store;
         // consume + drop it here, freeing `app_core` for the camera assignment below.
         let renderer = CuboidMeshRenderer::new_from_chunks(
@@ -792,7 +792,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // visible, loud where buried). Populated only in Show-booleans mode (`--view-mode
     // booleans`); derived from the SAME `panel_state.scene` the gizmo reads (so
     // `--select-node` / `--select-root` steer it), bounded by the ghosted operands'
-    // covering chunks; meshed against the COMPOSED scene's recentre so it lands
+    // covering chunks; meshed against the COMPOSED scene's recenter so it lands
     // voxel-exact on each operand's place (ADR 0008). Per-frame uniforms upload below.
     let mut selected_operand_ghost_renderer =
         SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
@@ -808,7 +808,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 &gpu.device,
                 &ghost.bodies,
                 ghost.grid_dimensions,
-                ghost.recentre,
+                ghost.recenter,
                 ghost.density,
             );
             println!("boolean-operand ghost: {} body(ies)", ghost.bodies.len());
@@ -832,7 +832,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                 &cel.bodies,
                 &cel.edge_segments,
                 cel.grid_dimensions,
-                cel.recentre,
+                cel.recenter,
                 cel.density,
             );
             println!(
@@ -850,7 +850,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     }
 
     // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
-    // active/selected node at its recentred pivot, screen-stable-sized via the model
+    // active/selected node at its recentered pivot, screen-stable-sized via the model
     // matrix below. `None` (no selection / no extent) keeps `--gizmo` a no-op, and the
     // goldens (which never pass `--gizmo`) are unaffected.
     let gizmo_placement = if options.show_origin_gizmo {
@@ -878,7 +878,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // it. Built below from `scene.points` + the camera once the view matrix is known.
     let mut infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // ADR 0022: the armed-tool placement ghost. Held disarmed; armed below (after the
-    // camera matrix is known) from `panel_state.placement_ghost` in the grid's recentre —
+    // camera matrix is known) from `panel_state.placement_ghost` in the grid's recenter —
     // the EXACT frame the solid voxels above were resolved in (ADR 0008).
     let mut placement_ghost_renderer =
         PlacementGhostRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -896,7 +896,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // Normal / Show-booleans (and a placed/demo scene with no onion selection) render finished.
     // In Onion-fog the `--layer-lower/--layer-upper` handles are OBJECT-RELATIVE over the
     // selected object's Z extent; `mesh_clip` offsets them into the scene-absolute `band` and
-    // confines it to the object's placed AABB (`region`). BOTH display paths honour the region:
+    // confines it to the object's placed AABB (`region`). BOTH display paths honor the region:
     // the cuboid mesh path (geometry) and the brick raymarch (per-frame uniforms, #85).
     let clip = AppCore::mesh_clip(
         &panel_state.scene,
@@ -933,7 +933,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     app_core.camera = OrbitCamera {
         // `--from-config` reproduces the app's PAN too: the persisted orbit target (the world
         // point the camera looks at). Without it a panned view reframes on the origin and misses
-        // the artifact. A non-config render keeps the origin-centred target (the scene recentres
+        // the artifact. A non-config render keeps the origin-centered target (the scene recenters
         // there).
         target: match &from_config {
             Some(config) => glam::Vec3::from_array(config.orbit_target),
@@ -949,7 +949,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         orbit_theta: theta,
         orbit_phi: phi,
         // `--from-config` uses the persisted orbit distance (the exact live zoom); otherwise the
-        // CLI `--dist`, or the auto-frame. The scene resolves recentred on the origin on both the
+        // CLI `--dist`, or the auto-frame. The scene resolves recentered on the origin on both the
         // app and shot paths, so the app's target≈origin and the distance transfers directly.
         orbit_distance: match &from_config {
             Some(config) => config.orbit_distance,
@@ -1084,7 +1084,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         }
     }
 
-    // Part of #20: synthetic loaded block — six distinct solid-colour faces built
+    // Part of #20: synthetic loaded block — six distinct solid-color faces built
     // in-process (no VS install). Proves the cuboid path now renders a loaded
     // per-face D2Array (layer selected by normal) and matches the instanced path
     // per face. CubeFaceSlot order: 0 +X red, 1 -X green, 2 +Y blue, 3 -Y yellow,
@@ -1188,7 +1188,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect
     // from the CENTRAL 3D viewport rect (window minus side panel + bottom dock) so
-    // the model is centred in the visible 3D area instead of partly hidden behind
+    // the model is centered in the visible 3D area instead of partly hidden behind
     // the side panel. Then upload every uniform that depends on the camera matrix.
     let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
     let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
@@ -1219,17 +1219,17 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &mut infinite_grid_renderer,
     );
     // ADR 0022: arm the placement ghost from the armed tool's pending drop. The
-    // render-frame field centre is resolved from THIS grid's recentre (`grid.recentre_voxels`)
-    // via the frame law — the same recentre the solid voxels were resolved in — so a ghost
+    // render-frame field center is resolved from THIS grid's recenter (`grid.recenter_voxels`)
+    // via the frame law — the same recenter the solid voxels were resolved in — so a ghost
     // at offset P coincides with a solid node at P (the frame-error guard the shot verifies).
     if let Some(ghost) = panel_state.placement_ghost() {
         let voxels_per_block = options.geometry.voxels_per_block;
-        let recentre = grid.recentre_voxels;
-        let center_world = ghost.center_world(recentre, voxels_per_block);
+        let recenter = grid.recenter_voxels;
+        let center_world = ghost.center_world(recenter, voxels_per_block);
         let semi_axes = ghost.semi_axes(voxels_per_block);
         println!(
-            "placement ghost: {:?} offset={:?} centre_world={:?} semi_axes={:?} recentre={:?}",
-            ghost.shape.kind, ghost.offset_voxels, center_world, semi_axes, recentre
+            "placement ghost: {:?} offset={:?} center_world={:?} semi_axes={:?} recenter={:?}",
+            ghost.shape.kind, ghost.offset_voxels, center_world, semi_axes, recenter
         );
         placement_ghost_renderer.update_uniforms(
             &gpu.queue,
@@ -1262,7 +1262,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     );
 
     // Part of #20: upload the cuboid path's uniforms (camera + per-material base
-    // colours + band clip) and frustum-cull its mesh chunks. A loaded VS block
+    // colors + band clip) and frustum-cull its mesh chunks. A loaded VS block
     // textures the cuboid path per-face (its 6-layer D2Array is bound at draw time in
     // `render_frame`, selecting the loaded pipeline); `bound = None` here just
     // disables the procedural per-box modulation the loaded pipeline ignores.

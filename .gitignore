@@ -7,6 +7,9 @@ Cargo.lock.orig
 /shots/
 *.tmp.png
 
+# Claude Code local state: agent worktrees, fable advice ledger
+.claude/
+
 # OS / editor
 Thumbs.db
 .DS_Store

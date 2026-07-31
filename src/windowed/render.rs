@@ -50,7 +50,7 @@ impl WindowedState {
                 &self.panel_state,
                 &mut self.app_core.two_layer_cache,
                 self.region_dimensions,
-                self.recentre_voxels,
+                self.recenter_voxels,
                 clip.band,
                 clip.region,
             );
@@ -103,21 +103,21 @@ impl WindowedState {
         }
 
         // Issue #29 S5: tell the panel where **+ Add Point** should drop a new Point —
-        // the camera target, converted from the recentred render frame back to whole
-        // world blocks (`(target_voxels + recentre) / density`), so a new Point lands
+        // the camera target, converted from the recentered render frame back to whole
+        // world blocks (`(target_voxels + recenter) / density`), so a new Point lands
         // where the user is looking.
         {
             let density = self.panel_state.geometry.voxels_per_block.max(1) as i64;
-            let recentre = self
+            let recenter = self
                 .panel_state
                 .scene
-                .recentre_voxels_for_resolve(self.panel_state.geometry.voxels_per_block)
+                .recenter_voxels_for_resolve(self.panel_state.geometry.voxels_per_block)
                 .voxels();
             let target = self.app_core.camera.target;
             self.panel_state.point_add_position_blocks = [
-                ((target.x.round() as i64) + recentre[0]).div_euclid(density),
-                ((target.y.round() as i64) + recentre[1]).div_euclid(density),
-                ((target.z.round() as i64) + recentre[2]).div_euclid(density),
+                ((target.x.round() as i64) + recenter[0]).div_euclid(density),
+                ((target.y.round() as i64) + recenter[1]).div_euclid(density),
+                ((target.z.round() as i64) + recenter[2]).div_euclid(density),
             ];
         }
 
@@ -256,7 +256,7 @@ impl WindowedState {
 
         // Camera UX change: right-click a node row → "Focus" frames that node. This
         // is the ONLY edit-tree action that moves the camera. Set the orbit target to
-        // the node's recentred world centre and fit the distance to its AABB (same fit
+        // the node's recentered world center and fit the distance to its AABB (same fit
         // math as Fit, scoped to the node). The orbit ANGLES are held (Focus moves the
         // pivot + distance only). A node with no resolvable extent is a no-op.
         if let Some(focus_id) = prepared.panel_response.focus_node {
@@ -509,7 +509,7 @@ impl WindowedState {
                         &cel.bodies,
                         &cel.edge_segments,
                         cel.grid_dimensions,
-                        cel.recentre,
+                        cel.recenter,
                         cel.density,
                     ),
                     None => self.selection_outline_renderer.clear(),
@@ -540,7 +540,7 @@ impl WindowedState {
                     &self.gpu.device,
                     &ghost.bodies,
                     ghost.grid_dimensions,
-                    ghost.recentre,
+                    ghost.recenter,
                     ghost.density,
                 ),
                 None => self.selected_operand_ghost_renderer.clear(),
@@ -557,7 +557,7 @@ impl WindowedState {
                 &self.panel_state,
                 &mut self.app_core.two_layer_cache,
                 self.region_dimensions,
-                self.recentre_voxels,
+                self.recenter_voxels,
                 clip.band,
                 clip.region,
             );
@@ -573,7 +573,7 @@ impl WindowedState {
         // toggle. The grid dims are the current geometry's voxel-space size.
         // Issue #25: the camera aspect comes from the CENTRAL 3D viewport rect (the
         // window minus the side panel + bottom dock), not the whole window, so the
-        // model is centred in the visible 3D area instead of partly hidden behind
+        // model is centered in the visible 3D area instead of partly hidden behind
         // the side panel. `prepared.viewport_px` = [x, y, w, h] in physical pixels.
         let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
         let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
@@ -585,7 +585,7 @@ impl WindowedState {
         let scene_matrices = self.app_core.scene_matrices(aspect_ratio, grid_dimensions);
         let view_projection = scene_matrices.view_projection;
         // ADR 0028 (#94): refresh the sketch vertex-handle overlay from the CURRENT geometry
-        // (post-rebuild recentre) and camera, caching the projected handles for NEXT frame's
+        // (post-rebuild recenter) and camera, caching the projected handles for NEXT frame's
         // draw (in `run_egui_frame`) and the press hit-test (in `events`). A one-frame lag on
         // the handles is imperceptible and self-corrects.
         self.refresh_sketch_overlay(view_projection, prepared.viewport_px, pixels_per_point);
@@ -604,12 +604,12 @@ impl WindowedState {
         let layer_range = self.panel_state.layer_range;
         // ADR 0018 Decisions 4–5: the region-scoped clip (band + onion-fog region). The
         // band bites only in Onion-fog mode with a selection; the region confines it to the
-        // selected object's AABB. BOTH display paths honour the region — the cuboid mesh path
+        // selected object's AABB. BOTH display paths honor the region — the cuboid mesh path
         // (geometry) and the brick raymarch (per-frame uniforms, #85).
         let clip = self.current_mesh_clip(grid_dimensions[2]);
         let band = clip.band;
         // Part of #20: the cuboid mesh path is the sole voxel renderer. Upload its
-        // per-frame uniforms (camera + per-material base colours + band + region clip). A
+        // per-frame uniforms (camera + per-material base colors + band + region clip). A
         // loaded VS block textures it per-face (its 6-layer D2Array is bound at DRAW
         // time in `render_frame`, selecting the loaded pipeline); `bound = None` then
         // just disables the procedural per-box modulation/atlas, which the loaded
@@ -723,7 +723,7 @@ impl WindowedState {
                 let cursor = [cursor_x as f32, cursor_y as f32];
                 let frame = crate::PickFrame {
                     region_dimensions: self.region_dimensions,
-                    recentre_voxels: self.recentre_voxels.voxels(),
+                    recenter_voxels: self.recenter_voxels.voxels(),
                     density: self.panel_state.geometry.voxels_per_block,
                     chunks: &self.resident_chunks,
                     band: self.last_pick_band,
@@ -786,18 +786,18 @@ impl WindowedState {
         }
         // ADR 0022: the armed-tool placement ghost. Arm it from the armed tool's pending
         // drop (resolved live above, or restored from a loaded config F9 repro), resolving
-        // the render-frame field centre from THIS rebuild's recentre so the ghost sits in
+        // the render-frame field center from THIS rebuild's recenter so the ghost sits in
         // the exact frame the solid voxels are drawn in (ADR 0008). Disarmed → no-op.
         if let Some(ghost) = self.panel_state.placement_ghost() {
             let voxels_per_block = self.panel_state.geometry.voxels_per_block;
-            let recentre = self.recentre_voxels.voxels();
+            let recenter = self.recenter_voxels.voxels();
             self.placement_ghost_renderer.update_uniforms(
                 &self.gpu.queue,
                 view_projection,
                 scene_matrices.ray_unprojection.inverse(),
                 scene_matrices.ray_eye,
                 prepared.viewport_px,
-                glam::Vec3::from_array(ghost.center_world(recentre, voxels_per_block)),
+                glam::Vec3::from_array(ghost.center_world(recenter, voxels_per_block)),
                 ghost.shape.kind,
                 glam::Vec3::from_array(ghost.semi_axes(voxels_per_block)),
                 ghost.wall_voxels(voxels_per_block),
@@ -1022,7 +1022,7 @@ impl WindowedState {
             return IntentEffect::none();
         };
         // Recompute the handles from the CURRENT scene (not last frame's cache): a mid-drag
-        // move can shift the composite recentre / profile bbox, and the forward projection and
+        // move can shift the composite recenter / profile bbox, and the forward projection and
         // the inverse plane-hit map must share ONE frame or the vertex jitters (ADR 0008).
         let Some(handles) = self
             .panel_state
@@ -1192,7 +1192,7 @@ impl WindowedState {
     ///
     /// `ray_unprojection` is the RAY-FRAME matrix (`SceneMatrices::ray_unprojection`), not the full
     /// scene VP: under perspective the full inverse melts the `/w` divide at a wide-baseline
-    /// recentre (a06d215), so we unproject the DIRECTION through the camera-relative bracket and
+    /// recenter (a06d215), so we unproject the DIRECTION through the camera-relative bracket and
     /// take the origin from the eye. Ortho keeps the plain frame (`ray_unprojection == view_projection`).
     fn cursor_to_profile_coord(
         &self,
@@ -1574,7 +1574,7 @@ impl WindowedState {
     /// entity, matching the overlay cull. Pure selection-state mutation — no document edit.
     ///
     /// Constraint badges are swept too, on the point rule: a badge is a small square mark, so
-    /// window takes it when its CENTRE is inside and crossing when the box touches its box. A
+    /// window takes it when its CENTER is inside and crossing when the box touches its box. A
     /// constraint has no position of its own, but the badge does — and the badge is the whole of
     /// how a constraint is on screen, so a box drawn around it has named it as plainly as a box
     /// drawn around a vertex names that.
@@ -1682,13 +1682,13 @@ impl WindowedState {
         let [vx, vy, vw, vh] = self.last_viewport_px;
         let frame = crate::PickFrame {
             region_dimensions: self.region_dimensions,
-            recentre_voxels: self.recentre_voxels.voxels(),
+            recenter_voxels: self.recenter_voxels.voxels(),
             density,
             chunks: &self.resident_chunks,
             band: self.last_pick_band,
         };
         // `pick_voxel` answers in the scene's ABSOLUTE voxel frame, which is exactly the frame
-        // `picked_node_at_voxel` reads — no recentre to undo (ADR 0008: the frame is carried).
+        // `picked_node_at_voxel` reads — no recenter to undo (ADR 0008: the frame is carried).
         let picked = self
             .app_core
             .pick_voxel(
@@ -1832,7 +1832,7 @@ impl WindowedState {
     /// `consume_shortcut` says which of them fired, and this match says what each one DOES — so a
     /// rebind moves one settings entry and both the menu's right-hand column and this dispatch
     /// follow it. Called after the egui pass, which is what makes a focused text field swallow its
-    /// own Escape instead of cancelling the running viewport command (and its own Ctrl+Z instead
+    /// own Escape instead of canceling the running viewport command (and its own Ctrl+Z instead
     /// of undoing a document edit). Returns the Undo/Redo [`crate::IntentEffect`], which the
     /// caller folds into the frame's merged effect so the display rebuilds like any other edit.
     fn run_shortcut_commands(&mut self) -> crate::IntentEffect {
@@ -1942,13 +1942,13 @@ impl WindowedState {
     /// Whether the explicit orbit mode's reticle draws this frame.
     ///
     /// Nothing is projected: the camera looks AT its target, so the target is the viewport's
-    /// centre by construction and the reticle is laid out against the rect egui itself just
+    /// center by construction and the reticle is laid out against the rect egui itself just
     /// measured. That also means it cannot lag the camera by a frame the way a cached
     /// projection would.
     ///
     /// It hides while a TURN is in flight — the mark spans most of the frame, and watching the
     /// model come round is exactly when you need it out of the way. A press that has not crossed
-    /// the drag threshold keeps it: that press is still a candidate for the re-centring click,
+    /// the drag threshold keeps it: that press is still a candidate for the re-centering click,
     /// which aims *at* the reticle, so blanking on mouse-down would hide the sight the moment
     /// you took the shot.
     pub(super) fn orbit_reticle_visible(&self) -> bool {
@@ -1998,24 +1998,24 @@ impl WindowedState {
     /// placing at all — the failure was invisible precisely because the fallback was plausible.
     /// The gizmo simply does not draw on a miss, and the click does not commit.
     ///
-    /// The point is CONTINUOUS, not a voxel centre: a pivot is a camera quantity with no lattice
+    /// The point is CONTINUOUS, not a voxel center: a pivot is a camera quantity with no lattice
     /// meaning, and a snapped one visibly jumps a whole cell at a time under the cursor.
     pub(super) fn surface_point_at(&self, cursor_px: Option<(f64, f64)>) -> Option<glam::Vec3> {
         let (cursor_x, cursor_y) = cursor_px?;
         let density = self.panel_state.geometry.voxels_per_block;
         let [vx, vy, vw, vh] = self.last_viewport_px;
-        let recentre = self.recentre_voxels.voxels();
+        let recenter = self.recenter_voxels.voxels();
         let frame = crate::PickFrame {
             region_dimensions: self.region_dimensions,
-            recentre_voxels: recentre,
+            recenter_voxels: recenter,
             density,
             chunks: &self.resident_chunks,
             band: self.last_pick_band,
         };
         let cursor = [cursor_x as f32, cursor_y as f32];
         let viewport = [vx as f32, vy as f32, vw as f32, vh as f32];
-        // Both tiers answer in ABSOLUTE voxels; the camera lives in the RECENTRED render frame,
-        // so the point rebases once here (ADR 0008 — the recentre is carried, this is the only
+        // Both tiers answer in ABSOLUTE voxels; the camera lives in the RECENTERED render frame,
+        // so the point rebases once here (ADR 0008 — the recenter is carried, this is the only
         // conversion).
         let absolute = self.app_core.surface_point_absolute(
             cursor,
@@ -2024,7 +2024,7 @@ impl WindowedState {
             &self.panel_state.scene,
             self.panel_state.scene.master_floor_grid,
         )?;
-        Some(absolute - glam::Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32))
+        Some(absolute - glam::Vec3::new(recenter[0] as f32, recenter[1] as f32, recenter[2] as f32))
     }
 
     /// ADR 0030/0032: the [`SelectionTarget`](ui::panel::SelectionTarget) under the cursor
@@ -2611,7 +2611,7 @@ impl WindowedState {
 
     /// ADR 0028 (#94, extended #95): recompute the sketch overlay for the NEXT frame. Projects
     /// each profile vertex (render frame) to screen, storing the egui-point handles + their
-    /// interaction state for drawing, and the physical-pixel centres **in profile order** for the
+    /// interaction state for drawing, and the physical-pixel centers **in profile order** for the
     /// press hit-tests (a culled behind-camera vertex is `None`, keeping the indices aligned so
     /// segments can pair adjacent vertices). Also derives the add-point **insert-preview**
     /// marker from the armed tool. Clears everything outside sketch mode.

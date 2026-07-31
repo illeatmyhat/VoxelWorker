@@ -13,7 +13,7 @@
 //!    the selection's depth interval per pixel. One map pair for the whole selection:
 //!    bodies union in the depth tests, so multi-select is one pass pair, never
 //!    per-body.
-//! 2. **Composite** — a full-screen pass on the RESOLVED colour target (after the
+//! 2. **Composite** — a full-screen pass on the RESOLVED color target (after the
 //!    voxel MSAA pass, before the view cube) tests the scene's MSAA depth against
 //!    that interval. A pixel is WASHED where ANY scene sample lies inside
 //!    `[front − ε, back + ε]` — the visible surface is ON or IN the selected body,
@@ -24,7 +24,7 @@
 //!    offsets: on a steeply sloped face the sample-0 depth alone drifts past ε and
 //!    speckles. ε is a half-voxel converted to NDC at the sampled depth
 //!    (`NdcDepthMapping` — the compare stays in hardware-z space; linearising would
-//!    amplify quantisation noise by `view_depth²/near`). A 1px OUTLINE lands just
+//!    amplify quantization noise by `view_depth²/near`). A 1px OUTLINE lands just
 //!    outside the washed region's boundary — one rule that hugs both the body's
 //!    silhouette and the edge where it slips behind other geometry.
 //!
@@ -67,7 +67,7 @@ struct SelectionOutlineUniforms {
     /// The scene pass's own view-projection — the edge lines project through it so
     /// their fragments land on the same pixels + depths as the voxel surface.
     view_projection: [[f32; 4]; 4],
-    /// Wash colour: the Signal accent (linear) + the resting wash alpha.
+    /// Wash color: the Signal accent (linear) + the resting wash alpha.
     tint: [f32; 4],
     outline_alpha: f32,
     half_voxel: f32,
@@ -108,7 +108,7 @@ pub struct SelectionOutlineRenderer {
     /// the selection has no body), sorted by coord within each body.
     chunk_buffers: Vec<CuboidChunkBuffers>,
     /// The analytic edge segments' vertex buffer (render-frame voxel positions,
-    /// endpoint pairs) + its vertex count. `None`/0 = no catalogued edges.
+    /// endpoint pairs) + its vertex count. `None`/0 = no catalogd edges.
     edge_vertex_buffer: Option<wgpu::Buffer>,
     edge_vertex_count: u32,
     /// The composed scene's voxel dims + density the meshes were built against, echoed
@@ -447,7 +447,7 @@ impl SelectionOutlineRenderer {
     /// (Re)build the selection meshes for a fresh derivation. Called ONLY on
     /// selection/geometry change, never per frame. Each body is meshed by the SAME
     /// two-layer cuboid mesher the solid path uses, at the FULL band, against the
-    /// COMPOSED scene's `recentre` — so the depth map lands voxel-exact on the
+    /// COMPOSED scene's `recenter` — so the depth map lands voxel-exact on the
     /// selected node's place in the render frame (ADR 0008).
     pub fn rebuild(
         &mut self,
@@ -455,7 +455,7 @@ impl SelectionOutlineRenderer {
         bodies: &[SelectedBodyChunks],
         edge_segments: &[[f32; 3]],
         grid_dimensions: [u32; 3],
-        recentre: RecentreVoxels,
+        recenter: RecenterVoxels,
         voxels_per_block: u32,
     ) {
         self.chunk_buffers.clear();
@@ -473,7 +473,7 @@ impl SelectionOutlineRenderer {
             let meshes = build_two_layer_chunk_meshes(
                 chunks,
                 grid_dimensions,
-                recentre,
+                recenter,
                 voxels_per_block,
                 LayerBand::FULL,
                 None,
@@ -534,7 +534,7 @@ impl SelectionOutlineRenderer {
 
     /// Record the two depth-only hull passes (their own passes, before the scene's
     /// MSAA pass). Each clear covers its WHOLE map (load ops ignore the scissor), so
-    /// out-of-viewport texels read "no body" in the composite's neighbour taps.
+    /// out-of-viewport texels read "no body" in the composite's neighbor taps.
     /// A no-op with no bodies — the composite is gated on the same condition, so a
     /// stale map is never read.
     pub fn draw_gbuffer(&self, encoder: &mut wgpu::CommandEncoder, viewport_px: [u32; 4]) {
@@ -579,7 +579,7 @@ impl SelectionOutlineRenderer {
         }
     }
 
-    /// Record the composite pass onto the RESOLVED colour target (after the scene's
+    /// Record the composite pass onto the RESOLVED color target (after the scene's
     /// MSAA pass has stored its depth, before the view cube). A no-op with no bodies.
     pub fn draw_composite(
         &self,
