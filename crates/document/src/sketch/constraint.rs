@@ -20,10 +20,19 @@ use substrate::nonlinear_least_squares::{
 
 /// What a constraint asserts. Each variant names geometry **by id**, never by index.
 ///
-/// This is the subset ADR 0035 Decision 1 names as the things an author asserts about position
-/// directly. Tangent, Perpendicular/Parallel, Equal, Collinear, Midpoint and `Quantize`
-/// (Decisions 5 and 14) join it as their residuals are written; the entity, the cascade and the
-/// solve path below are the same for all of them.
+/// This is the set ADR 0035 Decisions 1 and 5 name as the things an author asserts about position
+/// directly. Tangent, Concentric, Curvature and `Quantize` (Decision 14) join it as their
+/// residuals are written; the entity, the cascade and the solve path below are the same for all
+/// of them. The first three wait on arcs and circles entering the parameter vector, which they do
+/// not yet — an arc's centre is DERIVED from its ends and its sweep, so a constraint cannot name
+/// it until the system carries the sweep as a parameter too.
+///
+/// **Every match on this enum is exhaustive**, here and at each of its five seams, and that is
+/// load-bearing rather than stylistic: it is what makes adding a variant a compiler error at each
+/// place that has to answer for it instead of a silent default. `residual_count` carried a `_ => 1`
+/// arm until 2026-07-30 and was the one hole — a new two-residual kind would have been given one
+/// row, shifting every later constraint's row by one and corrupting the whole system rather than
+/// failing.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ConstraintKind {
     /// This point does not move, and `at` is where it does not move to.
@@ -43,15 +52,50 @@ pub enum ConstraintKind {
         to: EntityId,
         length: SketchLength,
     },
+    /// Two points occupy one place.
+    ///
+    /// It is a CONSTRAINT and not a merge, although a merge is the other design and Decision 5
+    /// gestures at it. Merging two points into one is destructive in a way the author cannot see
+    /// afterwards — the second id is gone, every segment that named it now names the first, and
+    /// deleting the coincidence cannot put the drawing back. As an assertion it deletes like any
+    /// other and the two points spring apart, which is what "remove this constraint" should mean.
+    Coincident { first: EntityId, second: EntityId },
+    /// Two segments run the same way. The residual is the SINE of the angle between them, so it
+    /// is dimensionless and reads the same on a 3-voxel segment and a 300-voxel one.
+    Parallel { first: EntityId, second: EntityId },
+    /// Two segments meet at a right angle — the cosine of the angle between them, normalised for
+    /// the same reason [`Parallel`](Self::Parallel) is.
+    Perpendicular { first: EntityId, second: EntityId },
+    /// Two segments have the same length. Which length is not asserted: the pair is free to settle
+    /// anywhere, which is what separates it from two [`Distance`](Self::Distance) dimensions
+    /// carrying one number.
+    Equal { first: EntityId, second: EntityId },
+    /// The point sits halfway along the segment. Two residuals — it pins both coordinates,
+    /// because "halfway" names a place and not merely a line.
+    Midpoint { point: EntityId, segment: EntityId },
+    /// Two segments lie on one infinite line.
+    ///
+    /// Two residuals, not one: it says parallel AND no offset, and asking for it as the distance
+    /// of each of `second`'s ends from `first`'s line says both at once without the solver having
+    /// to reconcile two differently-scaled rows.
+    Collinear { first: EntityId, second: EntityId },
 }
 
 impl ConstraintKind {
     /// Every point id this constraint names directly.
     pub(super) fn points(&self) -> Vec<EntityId> {
         match *self {
-            ConstraintKind::Fix { point, .. } => vec![point],
+            ConstraintKind::Fix { point, .. } | ConstraintKind::Midpoint { point, .. } => {
+                vec![point]
+            }
             ConstraintKind::Distance { from, to, .. } => vec![from, to],
-            ConstraintKind::Horizontal { .. } | ConstraintKind::Vertical { .. } => Vec::new(),
+            ConstraintKind::Coincident { first, second } => vec![first, second],
+            ConstraintKind::Horizontal { .. }
+            | ConstraintKind::Vertical { .. }
+            | ConstraintKind::Parallel { .. }
+            | ConstraintKind::Perpendicular { .. }
+            | ConstraintKind::Equal { .. }
+            | ConstraintKind::Collinear { .. } => Vec::new(),
         }
     }
 
@@ -79,25 +123,54 @@ impl ConstraintKind {
                 [segment, segment]
             }
             ConstraintKind::Distance { from, to, .. } => [from.min(to), from.max(to)],
+            // Symmetric relations: naming the pair the other way round is the same claim.
+            ConstraintKind::Coincident { first, second }
+            | ConstraintKind::Parallel { first, second }
+            | ConstraintKind::Perpendicular { first, second }
+            | ConstraintKind::Equal { first, second }
+            | ConstraintKind::Collinear { first, second } => [first.min(second), first.max(second)],
+            // Asymmetric: the point and the segment play different parts, so the pair is not
+            // canonicalised — and it cannot collide, because the two ids name different stores.
+            ConstraintKind::Midpoint { point, segment } => [point, segment],
         }
     }
 
-    /// The segment id this constraint names, if it names one.
-    pub(super) fn segment(&self) -> Option<EntityId> {
+    /// Every segment id this constraint names. Empty when it names none.
+    pub(super) fn segments(&self) -> Vec<EntityId> {
         match *self {
-            ConstraintKind::Horizontal { segment } | ConstraintKind::Vertical { segment } => {
-                Some(segment)
-            }
-            ConstraintKind::Fix { .. } | ConstraintKind::Distance { .. } => None,
+            ConstraintKind::Horizontal { segment }
+            | ConstraintKind::Vertical { segment }
+            | ConstraintKind::Midpoint { segment, .. } => vec![segment],
+            ConstraintKind::Parallel { first, second }
+            | ConstraintKind::Perpendicular { first, second }
+            | ConstraintKind::Equal { first, second }
+            | ConstraintKind::Collinear { first, second } => vec![first, second],
+            ConstraintKind::Fix { .. }
+            | ConstraintKind::Distance { .. }
+            | ConstraintKind::Coincident { .. } => Vec::new(),
         }
     }
 
-    /// How many residuals it contributes. A `Fix` pins two coordinates and so writes two; the
-    /// rest write one each.
+    /// How many residuals it contributes.
+    ///
+    /// Exhaustive on purpose — see the note on [`ConstraintKind`]. This number is the STRIDE the
+    /// residual loop advances by, so a wrong answer here does not produce a wrong constraint, it
+    /// shifts every later constraint's row and silently corrupts the system.
     fn residual_count(&self) -> usize {
         match *self {
-            ConstraintKind::Fix { .. } => 2,
-            _ => 1,
+            // Two: they pin a place, both coordinates of it.
+            ConstraintKind::Fix { .. }
+            | ConstraintKind::Coincident { .. }
+            | ConstraintKind::Midpoint { .. } => 2,
+            // Two: parallel and no offset, asked as one distance per end.
+            ConstraintKind::Collinear { .. } => 2,
+            // One: they pin a single scalar — a coordinate, an angle or a length.
+            ConstraintKind::Horizontal { .. }
+            | ConstraintKind::Vertical { .. }
+            | ConstraintKind::Distance { .. }
+            | ConstraintKind::Parallel { .. }
+            | ConstraintKind::Perpendicular { .. }
+            | ConstraintKind::Equal { .. } => 1,
         }
     }
 }
@@ -193,6 +266,37 @@ pub(super) struct SketchResiduals<'a> {
     resolved: Vec<Resolved>,
 }
 
+/// A segment's two endpoints, resolved to parameter slots. Named rather than a `[usize; 2]`,
+/// because which end is which is the difference between a direction and its reverse.
+#[derive(Debug, Clone, Copy)]
+struct SegmentSlots {
+    from: usize,
+    to: usize,
+}
+
+/// The length of a resolved segment at the given parameters.
+fn length_of(at: &impl Fn(usize) -> [f64; 2], segment: SegmentSlots) -> f64 {
+    let (tail, head) = (at(segment.from), at(segment.to));
+    let span = [head[0] - tail[0], head[1] - tail[1]];
+    (span[0] * span[0] + span[1] * span[1]).sqrt()
+}
+
+/// A resolved segment's direction, as a unit vector.
+///
+/// A segment with no extent has no direction, and the honest answer there is a residual that says
+/// nothing rather than a division by zero: `[0, 0]` makes the angle residuals vanish, so a
+/// collapsed segment neither satisfies nor violates an angle claim, and the collapse itself is
+/// caught by `Sketch::collapsed_by` — which is the check that actually knows what to say about it.
+fn unit_along(at: &impl Fn(usize) -> [f64; 2], segment: SegmentSlots) -> [f64; 2] {
+    let (tail, head) = (at(segment.from), at(segment.to));
+    let span = [head[0] - tail[0], head[1] - tail[1]];
+    let length = (span[0] * span[0] + span[1] * span[1]).sqrt();
+    if length <= f64::EPSILON {
+        return [0.0, 0.0];
+    }
+    [span[0] / length, span[1] / length]
+}
+
 /// A constraint with its geometry resolved to parameter slots.
 #[derive(Debug, Clone, Copy)]
 enum Resolved {
@@ -210,6 +314,33 @@ enum Resolved {
         from: usize,
         to: usize,
         length: f64,
+    },
+    Coincident {
+        first: usize,
+        second: usize,
+    },
+    /// The sine of the angle between two segments, which is zero when they run the same way.
+    Parallel {
+        first: SegmentSlots,
+        second: SegmentSlots,
+    },
+    /// The cosine of that angle, which is zero when they meet square.
+    Perpendicular {
+        first: SegmentSlots,
+        second: SegmentSlots,
+    },
+    Equal {
+        first: SegmentSlots,
+        second: SegmentSlots,
+    },
+    Midpoint {
+        point: usize,
+        segment: SegmentSlots,
+    },
+    /// Each of `other`'s ends measured off `datum`'s infinite line.
+    Collinear {
+        datum: SegmentSlots,
+        other: SegmentSlots,
     },
     /// The constraint named geometry that has since gone. It contributes a zero residual rather
     /// than shifting every later constraint's row, and `repair` is what removes it.
@@ -236,6 +367,7 @@ impl<'a> SketchResiduals<'a> {
                 .find(|(id, _, _)| *id == segment)
                 .and_then(|(_, from, to)| Some((slot(*from)?, slot(*to)?)))
         };
+        let span = |segment: EntityId| ends(segment).map(|(from, to)| SegmentSlots { from, to });
         let resolved = constraints
             .iter()
             .map(|constraint| match constraint.kind {
@@ -259,6 +391,30 @@ impl<'a> SketchResiduals<'a> {
                         length: length.value(),
                     })
                     .unwrap_or(Resolved::Dangling { residuals: 1 }),
+                ConstraintKind::Coincident { first, second } => slot(first)
+                    .zip(slot(second))
+                    .map(|(first, second)| Resolved::Coincident { first, second })
+                    .unwrap_or(Resolved::Dangling { residuals: 2 }),
+                ConstraintKind::Parallel { first, second } => span(first)
+                    .zip(span(second))
+                    .map(|(first, second)| Resolved::Parallel { first, second })
+                    .unwrap_or(Resolved::Dangling { residuals: 1 }),
+                ConstraintKind::Perpendicular { first, second } => span(first)
+                    .zip(span(second))
+                    .map(|(first, second)| Resolved::Perpendicular { first, second })
+                    .unwrap_or(Resolved::Dangling { residuals: 1 }),
+                ConstraintKind::Equal { first, second } => span(first)
+                    .zip(span(second))
+                    .map(|(first, second)| Resolved::Equal { first, second })
+                    .unwrap_or(Resolved::Dangling { residuals: 1 }),
+                ConstraintKind::Midpoint { point, segment } => slot(point)
+                    .zip(span(segment))
+                    .map(|(point, segment)| Resolved::Midpoint { point, segment })
+                    .unwrap_or(Resolved::Dangling { residuals: 2 }),
+                ConstraintKind::Collinear { first, second } => span(first)
+                    .zip(span(second))
+                    .map(|(datum, other)| Resolved::Collinear { datum, other })
+                    .unwrap_or(Resolved::Dangling { residuals: 2 }),
             })
             .collect();
         Some(SketchResiduals {
@@ -319,6 +475,52 @@ impl ResidualSystem for SketchResiduals<'_> {
                     let span = [head[0] - tail[0], head[1] - tail[1]];
                     into[row] = (span[0] * span[0] + span[1] * span[1]).sqrt() - length;
                     row += 1;
+                }
+                Resolved::Coincident { first, second } => {
+                    let (here, there) = (at(first), at(second));
+                    into[row] = here[0] - there[0];
+                    into[row + 1] = here[1] - there[1];
+                    row += 2;
+                }
+                Resolved::Parallel { first, second } => {
+                    let (a, b) = (unit_along(&at, first), unit_along(&at, second));
+                    // The cross product of two unit vectors IS the sine of the angle between
+                    // them, so this residual is an angle and not a length — the same number on a
+                    // 3-voxel segment and a 300-voxel one, which is what keeps the solver's
+                    // trust region from being dominated by whichever segment happens to be long.
+                    into[row] = a[0] * b[1] - a[1] * b[0];
+                    row += 1;
+                }
+                Resolved::Perpendicular { first, second } => {
+                    let (a, b) = (unit_along(&at, first), unit_along(&at, second));
+                    into[row] = a[0] * b[0] + a[1] * b[1];
+                    row += 1;
+                }
+                Resolved::Equal { first, second } => {
+                    into[row] = length_of(&at, first) - length_of(&at, second);
+                    row += 1;
+                }
+                Resolved::Midpoint { point, segment } => {
+                    let here = at(point);
+                    let (tail, head) = (at(segment.from), at(segment.to));
+                    into[row] = here[0] - (tail[0] + head[0]) / 2.0;
+                    into[row + 1] = here[1] - (tail[1] + head[1]) / 2.0;
+                    row += 2;
+                }
+                Resolved::Collinear { datum, other } => {
+                    // How far each of `other`'s ends stands off `datum`'s infinite line, measured
+                    // along the datum's normal. Zero for both means parallel AND no offset, which
+                    // is the whole of collinear said as two well-scaled lengths rather than as an
+                    // angle and a distance the solver would have to weigh against each other.
+                    let along = unit_along(&at, datum);
+                    let normal = [-along[1], along[0]];
+                    let anchor = at(datum.from);
+                    for (offset, end) in [other.from, other.to].into_iter().enumerate() {
+                        let here = at(end);
+                        into[row + offset] =
+                            (here[0] - anchor[0]) * normal[0] + (here[1] - anchor[1]) * normal[1];
+                    }
+                    row += 2;
                 }
                 Resolved::Dangling { residuals } => {
                     into[row..row + residuals].fill(0.0);

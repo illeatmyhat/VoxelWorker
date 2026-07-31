@@ -172,6 +172,33 @@ The inference tolerance is **in pixels**. It is a pick question, answered at the
 never reaches the document — the one shape of tolerance ADR 0034 permits. In voxels it would be a
 bug.
 
+**The relations ship as explicit verbs first** (2026-07-30): Coincident, Parallel, Perpendicular,
+Equal, Collinear and Midpoint join Horizontal/Vertical, Fix and Distance on the rail, each armed
+and picked like every other constraint. Inference is the layer above them and is not built yet;
+there is nothing for Shift to offer until the residuals exist, and now they do.
+
+**Coincident is a constraint after all, not shared point identity.** The paragraph above put it in
+the not-inferable list on the grounds that it is "already free" — one point instead of two. That
+was the wrong call, and taking it seriously exposed why: a merge is destructive in a way the author
+cannot see afterwards. The second id is gone, every segment that named it names the first instead,
+and deleting the coincidence cannot put the drawing back, because there is no record of which point
+was which. As an assertion it costs two residuals and deletes like anything else, and the two
+points spring apart again — which is what removing a constraint should mean everywhere.
+
+**Two residual-scaling calls worth stating.** The angle relations normalise: Parallel's residual is
+the SINE of the angle between the two directions and Perpendicular's is the cosine, so both are
+dimensionless and read the same on a 3-voxel segment and a 300-voxel one. Unnormalised, a long
+segment's row would dominate the trust region and a short one would barely be heard. Collinear is
+asked as **two distances** — how far each of the second segment's ends stands off the first's
+infinite line — rather than as an angle plus an offset, so the solver never has to weigh a radian
+against a voxel.
+
+**Still unbacked:** Concentric, Tangent and Curvature, which need arcs and circles inside the
+parameter vector (an arc's centre is derived from its ends and its sweep, so nothing can name it
+until the sweep is a parameter too); Symmetry; and `Quantize`, which is Decision 14's integer tier.
+Their glyphs are drawn on the design sheet and deliberately absent from the rail — an armable verb
+that asserts nothing is worse than a cell that is not there.
+
 ### 6. Project, Intersect and Spun Profile are cut
 
 They define sketch geometry by another node's geometry, with a live dependency. That is exactly

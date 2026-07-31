@@ -19,10 +19,12 @@
 //! author is saying "line this up with an axis", and which axis is already visible in what they
 //! drew. The badge then reports the answer rather than the question.
 //!
-//! Only the three kinds whose residuals ship are here. The other eleven glyphs on the constraint
-//! shelf are drawn and named but have no residual behind them
+//! Only the kinds whose residuals ship are here. The glyphs still missing from the rail —
+//! Concentric, Tangent, Curvature, Symmetry and `Quantize` — are drawn and named on the design
+//! sheet but have no residual behind them yet
 //! (`crates/document/src/sketch/constraint.rs`), and an armable verb that asserts nothing is worse
-//! than a cell that is not there.
+//! than a cell that is not there. The first three wait on arcs and circles entering the
+//! parameter vector.
 
 use document::sketch::{ConstraintKind, EntityId, Sketch};
 
@@ -77,6 +79,18 @@ pub enum ConstraintVerb {
     HorizontalOrVertical,
     /// The picked point stays where it is.
     Fix,
+    /// Two picked points occupy one place.
+    Coincident,
+    /// Two picked segments run the same way.
+    Parallel,
+    /// Two picked segments meet square.
+    Perpendicular,
+    /// Two picked segments have the same length.
+    Equal,
+    /// The picked point sits halfway along the picked segment.
+    Midpoint,
+    /// Two picked segments lie on one infinite line.
+    Collinear,
 }
 
 impl ConstraintVerb {
@@ -88,14 +102,30 @@ impl ConstraintVerb {
         match self {
             ConstraintVerb::HorizontalOrVertical => &[SlotKind::Segment],
             ConstraintVerb::Fix => &[SlotKind::Point],
+            ConstraintVerb::Coincident => &[SlotKind::Point, SlotKind::Point],
+            ConstraintVerb::Parallel
+            | ConstraintVerb::Perpendicular
+            | ConstraintVerb::Equal
+            | ConstraintVerb::Collinear => &[SlotKind::Segment, SlotKind::Segment],
+            // The point first, because it is the thing being placed: the gesture reads "put THIS
+            // in the middle of THAT", and a slot order that asked for the carrier first would
+            // read as picking a line and then being asked what for.
+            ConstraintVerb::Midpoint => &[SlotKind::Point, SlotKind::Segment],
         }
     }
 
-    /// The rail tooltip.
+    /// The rail tooltip. It names the verb and then what the FIRST pick is, because that is the
+    /// only thing the author has to decide at the moment they read it.
     pub fn tooltip(self) -> &'static str {
         match self {
             ConstraintVerb::HorizontalOrVertical => "Horizontal / Vertical — then pick a line",
             ConstraintVerb::Fix => "Fix — then pick a point",
+            ConstraintVerb::Coincident => "Coincident — then pick two points",
+            ConstraintVerb::Parallel => "Parallel — then pick two lines",
+            ConstraintVerb::Perpendicular => "Perpendicular — then pick two lines",
+            ConstraintVerb::Equal => "Equal — then pick two lines",
+            ConstraintVerb::Midpoint => "Midpoint — then pick a point and a line",
+            ConstraintVerb::Collinear => "Collinear — then pick two lines",
         }
     }
 
@@ -109,6 +139,12 @@ impl ConstraintVerb {
         match self {
             ConstraintVerb::HorizontalOrVertical => Icon::ConstraintHorizontalVertical,
             ConstraintVerb::Fix => Icon::ConstraintFix,
+            ConstraintVerb::Coincident => Icon::ConstraintCoincident,
+            ConstraintVerb::Parallel => Icon::ConstraintParallel,
+            ConstraintVerb::Perpendicular => Icon::ConstraintPerpendicular,
+            ConstraintVerb::Equal => Icon::ConstraintEqual,
+            ConstraintVerb::Midpoint => Icon::ConstraintMidpoint,
+            ConstraintVerb::Collinear => Icon::ConstraintCollinear,
         }
     }
 }
@@ -122,6 +158,12 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Vertical { .. } => Icon::ConstraintVertical,
         ConstraintKind::Fix { .. } => Icon::ConstraintFix,
         ConstraintKind::Distance { .. } => Icon::SketchDimension,
+        ConstraintKind::Coincident { .. } => Icon::ConstraintCoincident,
+        ConstraintKind::Parallel { .. } => Icon::ConstraintParallel,
+        ConstraintKind::Perpendicular { .. } => Icon::ConstraintPerpendicular,
+        ConstraintKind::Equal { .. } => Icon::ConstraintEqual,
+        ConstraintKind::Midpoint { .. } => Icon::ConstraintMidpoint,
+        ConstraintKind::Collinear { .. } => Icon::ConstraintCollinear,
     }
 }
 
@@ -232,18 +274,59 @@ impl ArmedConstraint {
         if self.wants().is_some() {
             return None;
         }
-        match (self.verb, self.picked.first()?) {
-            (ConstraintVerb::HorizontalOrVertical, SketchEntity::Segment(segment)) => {
-                Some(nearer_axis(sketch, *segment)?)
-            }
-            (ConstraintVerb::Fix, SketchEntity::Point(point)) => {
-                let at = sketch.points().iter().find(|p| p.id == *point)?.at;
-                Some(ConstraintKind::Fix { point: *point, at })
-            }
-            // `offer` type-checks every slot, so a filled gesture whose entity kinds do not match
-            // its verb cannot be built. Refusing here rather than unwrapping keeps that a
-            // no-constraint instead of a panic if a future verb's slots and arms disagree.
+        // The two-slot verbs read their pair the same way, so the pair is pulled out once. A
+        // verb's slot list is what guarantees these are the kinds asked for; `offer` enforces it.
+        let point_pair = || match (self.picked.first()?, self.picked.get(1)?) {
+            (SketchEntity::Point(first), SketchEntity::Point(second)) => Some((*first, *second)),
             _ => None,
+        };
+        let segment_pair = || match (self.picked.first()?, self.picked.get(1)?) {
+            (SketchEntity::Segment(first), SketchEntity::Segment(second)) => {
+                Some((*first, *second))
+            }
+            _ => None,
+        };
+        match self.verb {
+            ConstraintVerb::HorizontalOrVertical => match self.picked.first()? {
+                SketchEntity::Segment(segment) => nearer_axis(sketch, *segment),
+                SketchEntity::Point(_) => None,
+            },
+            ConstraintVerb::Fix => match self.picked.first()? {
+                SketchEntity::Point(point) => {
+                    let at = sketch.points().iter().find(|p| p.id == *point)?.at;
+                    Some(ConstraintKind::Fix { point: *point, at })
+                }
+                SketchEntity::Segment(_) => None,
+            },
+            ConstraintVerb::Coincident => {
+                let (first, second) = point_pair()?;
+                Some(ConstraintKind::Coincident { first, second })
+            }
+            ConstraintVerb::Parallel => {
+                let (first, second) = segment_pair()?;
+                Some(ConstraintKind::Parallel { first, second })
+            }
+            ConstraintVerb::Perpendicular => {
+                let (first, second) = segment_pair()?;
+                Some(ConstraintKind::Perpendicular { first, second })
+            }
+            ConstraintVerb::Equal => {
+                let (first, second) = segment_pair()?;
+                Some(ConstraintKind::Equal { first, second })
+            }
+            ConstraintVerb::Collinear => {
+                let (first, second) = segment_pair()?;
+                Some(ConstraintKind::Collinear { first, second })
+            }
+            ConstraintVerb::Midpoint => match (self.picked.first()?, self.picked.get(1)?) {
+                (SketchEntity::Point(point), SketchEntity::Segment(segment)) => {
+                    Some(ConstraintKind::Midpoint {
+                        point: *point,
+                        segment: *segment,
+                    })
+                }
+                _ => None,
+            },
         }
     }
 }

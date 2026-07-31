@@ -2208,57 +2208,82 @@ impl WindowedState {
         let mut stacked: std::collections::HashMap<[u32; 2], f32> =
             std::collections::HashMap::new();
 
+        // A badge stands at a segment's midpoint, offset along that segment's normal.
+        let beside_segment = |segment: document::sketch::EntityId| {
+            let &(_, a_idx, b_idx) = self
+                .sketch_segments
+                .iter()
+                .find(|(id, _, _)| *id == segment)?;
+            let (a, b) = (at(a_idx)?, at(b_idx)?);
+            let along = b - a;
+            let length = along.length();
+            if length < f32::EPSILON {
+                return None;
+            }
+            Some((a + along * 0.5, egui::vec2(-along.y, along.x) / length))
+        };
+        // A badge on a point sits up and to the right of it — there is no geometry to take a
+        // normal from, so the direction is a convention.
+        let beside_point = |id: document::sketch::EntityId| {
+            Some((at(point_index(id)?)?, egui::vec2(0.707, -0.707)))
+        };
+
         for constraint in producer.sketch.constraints() {
-            let (anchor, direction) = match constraint.kind {
+            // **A relation gets a badge on EVERY member.** One badge on a two-segment relation
+            // would read as belonging to whichever segment it stood beside, and the whole job of
+            // the mark is to say which geometry is bound to which — a single mark on one member
+            // leaves the other looking free. They share the constraint id, so a click on either
+            // picks the one relation (ADR 0035 Decision 16).
+            let placements: Vec<(egui::Pos2, egui::Vec2)> = match constraint.kind {
                 document::sketch::ConstraintKind::Horizontal { segment }
                 | document::sketch::ConstraintKind::Vertical { segment } => {
-                    let Some(&(_, a_idx, b_idx)) = self
-                        .sketch_segments
-                        .iter()
-                        .find(|(id, _, _)| *id == segment)
-                    else {
-                        continue;
-                    };
-                    let (Some(a), Some(b)) = (at(a_idx), at(b_idx)) else {
-                        continue;
-                    };
-                    let along = b - a;
-                    let length = along.length();
-                    if length < f32::EPSILON {
-                        continue;
-                    }
-                    let normal = egui::vec2(-along.y, along.x) / length;
-                    (a + along * 0.5, normal)
+                    beside_segment(segment).into_iter().collect()
                 }
                 document::sketch::ConstraintKind::Fix { point, .. } => {
-                    let Some(index) = point_index(point) else {
-                        continue;
-                    };
-                    let Some(position) = at(index) else { continue };
-                    (position, egui::vec2(0.707, -0.707))
+                    beside_point(point).into_iter().collect()
                 }
+                // Coincident's two points end up in one place, so a badge on each would
+                // overprint. It marks the pair once, at the first-named point.
+                document::sketch::ConstraintKind::Coincident { first, .. } => {
+                    beside_point(first).into_iter().collect()
+                }
+                // Midpoint marks the POINT, which is the thing being placed. The carrier is
+                // already visibly a line through it.
+                document::sketch::ConstraintKind::Midpoint { point, .. } => {
+                    beside_point(point).into_iter().collect()
+                }
+                document::sketch::ConstraintKind::Parallel { first, second }
+                | document::sketch::ConstraintKind::Perpendicular { first, second }
+                | document::sketch::ConstraintKind::Equal { first, second }
+                | document::sketch::ConstraintKind::Collinear { first, second } => [first, second]
+                    .into_iter()
+                    .filter_map(beside_segment)
+                    .collect(),
                 // A Distance dimension draws as a dimension gizmo, not a badge — the number IS
                 // the mark, and a glyph beside it would say the same thing twice.
-                document::sketch::ConstraintKind::Distance { .. } => continue,
+                document::sketch::ConstraintKind::Distance { .. } => Vec::new(),
             };
-            // Anchors are keyed by their rounded bits so two constraints on the same midpoint
-            // share a stack; f32 has no Hash, and exact equality is what "same anchor" means.
-            let key = [anchor.x.round().to_bits(), anchor.y.round().to_bits()];
-            let step = stacked.entry(key).or_insert(1.0);
-            let center = anchor + direction * (ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * *step);
-            *step += 1.0;
-            self.sketch_constraint_badges
-                .push(ui::chrome::ConstraintBadge {
-                    center,
-                    icon: ui::panel::constraint_icon(constraint.kind),
-                    constraint: constraint.id,
-                    picked: self.panel_state.selection.contains(
-                        ui::panel::SelectionTarget::SketchConstraint {
-                            sketch: target,
-                            entity: constraint.id,
-                        },
-                    ),
-                });
+            for (anchor, direction) in placements {
+                // Anchors are keyed by their rounded bits so two constraints on the same midpoint
+                // share a stack; f32 has no Hash, and exact equality is what "same anchor" means.
+                let key = [anchor.x.round().to_bits(), anchor.y.round().to_bits()];
+                let step = stacked.entry(key).or_insert(1.0);
+                let center =
+                    anchor + direction * (ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * *step);
+                *step += 1.0;
+                self.sketch_constraint_badges
+                    .push(ui::chrome::ConstraintBadge {
+                        center,
+                        icon: ui::panel::constraint_icon(constraint.kind),
+                        constraint: constraint.id,
+                        picked: self.panel_state.selection.contains(
+                            ui::panel::SelectionTarget::SketchConstraint {
+                                sketch: target,
+                                entity: constraint.id,
+                            },
+                        ),
+                    });
+            }
         }
     }
 

@@ -1364,7 +1364,7 @@ impl Sketch {
         self.constraints
             .iter()
             .filter(|held| {
-                held.kind.segment() == Some(entity)
+                held.kind.segments().contains(&entity)
                     || held.kind.points().iter().any(|named| ends.contains(named))
             })
             .map(|held| held.id)
@@ -1495,6 +1495,7 @@ impl Sketch {
     /// Whether every entity `kind` names is in the store, and its own terms are meetable.
     fn check_names_live_geometry(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
         let known_point = |id: EntityId| self.points.iter().any(|point| point.id == id);
+        let live_segment = |id: EntityId| self.segments.iter().find(|seg| seg.id == id);
         match kind {
             ConstraintKind::Fix { point, .. } => {
                 if !known_point(point) {
@@ -1514,9 +1515,51 @@ impl Sketch {
                     return Err(ConstraintRefusal::UnknownEntity);
                 }
                 // A negative distance is no drawing's distance, and a zero one between two
-                // distinct points is Coincident, which is shared identity rather than a
-                // constraint (Decision 5).
+                // distinct points is Coincident, which asserts one place rather than a span.
                 if !length.value().is_finite() || length.value() <= 0.0 || from == to {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
+            ConstraintKind::Coincident { first, second } => {
+                if !known_point(first) || !known_point(second) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // A point already occupies its own place, so asserting it is a claim with no
+                // content rather than a claim that happens to hold.
+                if first == second {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
+            ConstraintKind::Parallel { first, second }
+            | ConstraintKind::Perpendicular { first, second }
+            | ConstraintKind::Equal { first, second }
+            | ConstraintKind::Collinear { first, second } => {
+                let (Some(one), Some(other)) = (live_segment(first), live_segment(second)) else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
+                if one.from == one.to || other.from == other.to {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+                // A segment is trivially parallel to itself and cannot be perpendicular to
+                // itself, and neither statement is about the drawing.
+                if first == second {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+            }
+            ConstraintKind::Midpoint { point, segment } => {
+                if !known_point(point) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                let Some(span) = live_segment(segment) else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
+                if span.from == span.to {
+                    return Err(ConstraintRefusal::Impossible);
+                }
+                // An endpoint cannot be its own segment's midpoint without collapsing it, and
+                // saying so here is a better answer than a solve that squeezes the line to
+                // nothing and reports a collapse.
+                if point == span.from || point == span.to {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
@@ -1572,8 +1615,9 @@ impl Sketch {
                 .all(|id| point_ids.contains(id))
                 && constraint
                     .kind
-                    .segment()
-                    .is_none_or(|id| segment_ids.contains(&id))
+                    .segments()
+                    .iter()
+                    .all(|id| segment_ids.contains(id))
         });
     }
 

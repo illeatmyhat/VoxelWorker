@@ -154,6 +154,12 @@ pub struct ArmedConstraintConfig {
 enum ConstraintVerbConfig {
     HorizontalOrVertical,
     Fix,
+    Coincident,
+    Parallel,
+    Perpendicular,
+    Equal,
+    Midpoint,
+    Collinear,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -170,6 +176,12 @@ impl ArmedConstraintConfig {
                     ConstraintVerbConfig::HorizontalOrVertical
                 }
                 ui::panel::ConstraintVerb::Fix => ConstraintVerbConfig::Fix,
+                ui::panel::ConstraintVerb::Coincident => ConstraintVerbConfig::Coincident,
+                ui::panel::ConstraintVerb::Parallel => ConstraintVerbConfig::Parallel,
+                ui::panel::ConstraintVerb::Perpendicular => ConstraintVerbConfig::Perpendicular,
+                ui::panel::ConstraintVerb::Equal => ConstraintVerbConfig::Equal,
+                ui::panel::ConstraintVerb::Midpoint => ConstraintVerbConfig::Midpoint,
+                ui::panel::ConstraintVerb::Collinear => ConstraintVerbConfig::Collinear,
             },
             picked: armed
                 .picked()
@@ -188,6 +200,12 @@ impl ArmedConstraintConfig {
                 ui::panel::ConstraintVerb::HorizontalOrVertical
             }
             ConstraintVerbConfig::Fix => ui::panel::ConstraintVerb::Fix,
+            ConstraintVerbConfig::Coincident => ui::panel::ConstraintVerb::Coincident,
+            ConstraintVerbConfig::Parallel => ui::panel::ConstraintVerb::Parallel,
+            ConstraintVerbConfig::Perpendicular => ui::panel::ConstraintVerb::Perpendicular,
+            ConstraintVerbConfig::Equal => ui::panel::ConstraintVerb::Equal,
+            ConstraintVerbConfig::Midpoint => ui::panel::ConstraintVerb::Midpoint,
+            ConstraintVerbConfig::Collinear => ui::panel::ConstraintVerb::Collinear,
         };
         let picked = self
             .picked

@@ -623,3 +623,291 @@ fn redundancy_reads_the_same_on_a_solved_and_an_unsolved_drawing() {
     assert!(flagged_for([10.0, 0.0]));
     assert!(flagged_for([10.0, 4.0]));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The relations (ADR 0035 Decision 5): the constraints that name two pieces of geometry rather
+// than one piece and an axis. Every one of them is checked by measuring the drawing afterwards,
+// never by trusting the solver's own verdict — see `SATISFIED_RESIDUAL`.
+// ---------------------------------------------------------------------------------------------
+
+/// Two segments, drawn apart and slanted differently, for the two-segment relations.
+fn two_segments() -> (Sketch, EntityId, EntityId) {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first_tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let first_head = sketch.add_free_point(SketchPoint::new(20, 4));
+    let second_tail = sketch.add_free_point(SketchPoint::new(0, 30));
+    let second_head = sketch.add_free_point(SketchPoint::new(12, 44));
+    let first = sketch.connect(first_tail, first_head).expect("a segment");
+    let second = sketch.connect(second_tail, second_head).expect("a segment");
+    (sketch, first, second)
+}
+
+/// The direction of a segment, as a unit vector, read off the solved drawing.
+fn direction(sketch: &Sketch, segment: EntityId) -> [f64; 2] {
+    let span = sketch
+        .segments()
+        .iter()
+        .find(|seg| seg.id == segment)
+        .expect("the segment");
+    let (tail, head) = (position(sketch, span.from), position(sketch, span.to));
+    let delta = [head[0] - tail[0], head[1] - tail[1]];
+    let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+    [delta[0] / length, delta[1] / length]
+}
+
+/// The length of a segment, read off the solved drawing.
+fn span_length(sketch: &Sketch, segment: EntityId) -> f64 {
+    let span = sketch
+        .segments()
+        .iter()
+        .find(|seg| seg.id == segment)
+        .expect("the segment");
+    let (tail, head) = (position(sketch, span.from), position(sketch, span.to));
+    ((head[0] - tail[0]).powi(2) + (head[1] - tail[1]).powi(2)).sqrt()
+}
+
+/// Coincident brings two points to one place — and it is a constraint, not a merge, so both ids
+/// survive and deleting it lets them part again.
+#[test]
+fn coincident_brings_two_points_together_without_merging_them() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch.add_free_point(SketchPoint::new(0, 0));
+    let second = sketch.add_free_point(SketchPoint::new(10, 6));
+    let id = sketch
+        .add_constraint(ConstraintKind::Coincident { first, second })
+        .expect("two free points can always meet");
+
+    let (here, there) = (position(&sketch, first), position(&sketch, second));
+    assert!(
+        (here[0] - there[0]).abs() < 1e-6 && (here[1] - there[1]).abs() < 1e-6,
+        "coincident: {here:?} vs {there:?}"
+    );
+    // They meet in the middle, for the same least-squares reason a level segment does.
+    assert!((here[0] - 5.0).abs() < 1e-6, "met in the middle: {here:?}");
+
+    sketch.delete_constraint(id);
+    assert_eq!(sketch.points().len(), 2, "both ids survived the assertion");
+}
+
+/// A point cannot be asserted coincident with itself: the claim has no content.
+#[test]
+fn coincident_with_itself_is_refused() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let point = sketch.add_free_point(SketchPoint::new(3, 3));
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Coincident {
+            first: point,
+            second: point
+        }),
+        Err(ConstraintRefusal::Impossible)
+    );
+}
+
+/// Parallel drives the sine of the angle between two segments to zero, and both segments keep
+/// their extent getting there.
+///
+/// It does NOT preserve length exactly, and the first draft of this test asserted that it did.
+/// The residual is an angle, so the solver is free to reach it any way it likes, and the way it
+/// likes is the smallest move in the PARAMETERS — which are coordinates, not lengths. A pure
+/// rotation would hold both lengths and is a larger coordinate move than the shear-ish answer the
+/// solve actually finds. What the normalisation buys is conditioning, not rigidity: the residual
+/// reads the same on a 3-voxel segment and a 300-voxel one, so neither dominates the step.
+#[test]
+fn parallel_aligns_two_segments_without_collapsing_them() {
+    let (mut sketch, first, second) = two_segments();
+    let before_first = span_length(&sketch, first);
+    let before_second = span_length(&sketch, second);
+    sketch
+        .add_constraint(ConstraintKind::Parallel { first, second })
+        .expect("two free segments can always be made parallel");
+
+    let (a, b) = (direction(&sketch, first), direction(&sketch, second));
+    assert!(
+        (a[0] * b[1] - a[1] * b[0]).abs() < 1e-6,
+        "parallel: {a:?} vs {b:?}"
+    );
+    for (segment, before) in [(first, before_first), (second, before_second)] {
+        let after = span_length(&sketch, segment);
+        assert!(
+            after > before / 2.0,
+            "an angle claim kept the extent: {segment} went {before} to {after}"
+        );
+    }
+}
+
+/// Perpendicular drives the cosine to zero.
+#[test]
+fn perpendicular_squares_two_segments() {
+    let (mut sketch, first, second) = two_segments();
+    sketch
+        .add_constraint(ConstraintKind::Perpendicular { first, second })
+        .expect("two free segments can always be squared");
+
+    let (a, b) = (direction(&sketch, first), direction(&sketch, second));
+    assert!(
+        (a[0] * b[0] + a[1] * b[1]).abs() < 1e-6,
+        "perpendicular: {a:?} vs {b:?}"
+    );
+}
+
+/// Equal matches two lengths without naming one — the pair settles between them, which is the
+/// difference between a relation and a pair of dimensions.
+#[test]
+fn equal_matches_two_lengths_without_asserting_which() {
+    let (mut sketch, first, second) = two_segments();
+    let longest = span_length(&sketch, first).max(span_length(&sketch, second));
+    let shortest = span_length(&sketch, first).min(span_length(&sketch, second));
+    sketch
+        .add_constraint(ConstraintKind::Equal { first, second })
+        .expect("two free segments can always match");
+
+    let (a, b) = (span_length(&sketch, first), span_length(&sketch, second));
+    assert!((a - b).abs() < 1e-6, "equal: {a} vs {b}");
+    assert!(
+        a > shortest && a < longest,
+        "neither end won outright: {a} is not between {shortest} and {longest}"
+    );
+}
+
+/// Midpoint pins a point halfway along a segment — both coordinates of halfway.
+#[test]
+fn midpoint_puts_a_point_halfway_along_a_segment() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(20, 10));
+    let segment = sketch.connect(tail, head).expect("a segment");
+    let point = sketch.add_free_point(SketchPoint::new(3, 17));
+    sketch
+        .add_constraint(ConstraintKind::Midpoint { point, segment })
+        .expect("a free point can always reach a midpoint");
+
+    let here = position(&sketch, point);
+    let a = position(&sketch, tail);
+    let b = position(&sketch, head);
+    assert!(
+        (here[0] - (a[0] + b[0]) / 2.0).abs() < 1e-6
+            && (here[1] - (a[1] + b[1]) / 2.0).abs() < 1e-6,
+        "midpoint: {here:?} on {a:?}..{b:?}"
+    );
+}
+
+/// A segment's own endpoint cannot be its midpoint: it names the collapse rather than solving
+/// into one.
+#[test]
+fn an_endpoint_is_refused_as_its_own_segments_midpoint() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(20, 0));
+    let segment = sketch.connect(tail, head).expect("a segment");
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Midpoint {
+            point: tail,
+            segment
+        }),
+        Err(ConstraintRefusal::Impossible)
+    );
+}
+
+/// Collinear says parallel AND no offset, which is why it spends two freedoms where Parallel
+/// spends one.
+#[test]
+fn collinear_puts_two_segments_on_one_line() {
+    let (mut sketch, first, second) = two_segments();
+    let before = sketch.degrees_of_freedom();
+    sketch
+        .add_constraint(ConstraintKind::Collinear { first, second })
+        .expect("two free segments can always share a line");
+
+    let (a, b) = (direction(&sketch, first), direction(&sketch, second));
+    assert!(
+        (a[0] * b[1] - a[1] * b[0]).abs() < 1e-6,
+        "collinear implies parallel: {a:?} vs {b:?}"
+    );
+    let datum = sketch
+        .segments()
+        .iter()
+        .find(|seg| seg.id == first)
+        .expect("the datum");
+    let anchor = position(&sketch, datum.from);
+    let normal = [-a[1], a[0]];
+    let other = *sketch
+        .segments()
+        .iter()
+        .find(|seg| seg.id == second)
+        .expect("the other");
+    for end in [other.from, other.to] {
+        let here = position(&sketch, end);
+        let off = (here[0] - anchor[0]) * normal[0] + (here[1] - anchor[1]) * normal[1];
+        assert!(off.abs() < 1e-6, "end {end} stands {off} off the line");
+    }
+    assert_eq!(
+        sketch.degrees_of_freedom(),
+        before - 2,
+        "collinear spends two freedoms"
+    );
+}
+
+/// **The stride property.** A kind that writes two residuals must be given two rows, or every
+/// constraint after it in the list reads the wrong ones. This is the regression for the `_ => 1`
+/// arm that `residual_count` carried: it would have handed a two-row kind one row and corrupted
+/// the whole system rather than failing.
+///
+/// Asserted by stacking a two-row relation BEFORE a one-row one and checking that both still
+/// hold — under a wrong stride the second reads the first's spare row and cannot be met.
+#[test]
+fn a_two_residual_relation_does_not_shift_the_rows_after_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch.add_free_point(SketchPoint::new(0, 0));
+    let second = sketch.add_free_point(SketchPoint::new(9, 5));
+    let tail = sketch.add_free_point(SketchPoint::new(30, 0));
+    let head = sketch.add_free_point(SketchPoint::new(50, 7));
+    let segment = sketch.connect(tail, head).expect("a segment");
+
+    sketch
+        .add_constraint(ConstraintKind::Coincident { first, second })
+        .expect("two free points can meet");
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment })
+        .expect("an untouched segment can be levelled");
+
+    let (here, there) = (position(&sketch, first), position(&sketch, second));
+    assert!(
+        (here[0] - there[0]).abs() < 1e-6 && (here[1] - there[1]).abs() < 1e-6,
+        "the earlier two-row relation still holds: {here:?} vs {there:?}"
+    );
+    let (a, b) = (position(&sketch, tail), position(&sketch, head));
+    assert!(
+        (a[1] - b[1]).abs() < 1e-6,
+        "the later one-row relation still holds: {a:?} to {b:?}"
+    );
+}
+
+/// Every new relation survives a drag of the geometry it names, for the same reason a level
+/// segment does — the drag solves the whole standing system with the grabbed point pinned, and it
+/// names no kind.
+#[test]
+fn the_relations_hold_through_a_drag() {
+    let (mut sketch, first, second) = two_segments();
+    sketch
+        .add_constraint(ConstraintKind::Perpendicular { first, second })
+        .expect("two free segments can be squared");
+    let grabbed = sketch
+        .segments()
+        .iter()
+        .find(|seg| seg.id == first)
+        .expect("the segment")
+        .from;
+
+    assert!(sketch.move_point(grabbed, SketchPoint::new(-13, 9)));
+
+    let (a, b) = (direction(&sketch, first), direction(&sketch, second));
+    assert!(
+        (a[0] * b[0] + a[1] * b[1]).abs() < 1e-6,
+        "still square after the drag: {a:?} vs {b:?}"
+    );
+    let held = position(&sketch, grabbed);
+    assert!(
+        (held[0] + 13.0).abs() < 1e-6 && (held[1] - 9.0).abs() < 1e-6,
+        "the hand still holds its point: {held:?}"
+    );
+}

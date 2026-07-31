@@ -128,8 +128,19 @@ const SKETCH_SNAPS: &[(Icon, &str, PositionSnap)] = &[
 ///
 /// Three of the constraint shelf's fourteen glyphs. The rest are drawn and named but have no
 /// residual behind them yet, and an armable verb that asserts nothing is worse than no cell.
-const SKETCH_CONSTRAINTS: &[ConstraintVerb] =
-    &[ConstraintVerb::HorizontalOrVertical, ConstraintVerb::Fix];
+/// Ordered by how often a drawing reaches for them, not alphabetically and not by arity:
+/// Coincident and Horizontal/Vertical carry most of the work on a real profile, the angle pair
+/// comes next, and the two that place one thing against another sit last.
+const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
+    ConstraintVerb::Coincident,
+    ConstraintVerb::HorizontalOrVertical,
+    ConstraintVerb::Parallel,
+    ConstraintVerb::Perpendicular,
+    ConstraintVerb::Equal,
+    ConstraintVerb::Collinear,
+    ConstraintVerb::Midpoint,
+    ConstraintVerb::Fix,
+];
 
 /// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
 /// the SAME fused node, moved here from the deleted right panel). Extrude + Revolve ship and
