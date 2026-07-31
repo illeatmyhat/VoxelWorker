@@ -9,7 +9,7 @@
 
 struct LineUniforms {
     view_projection: mat4x4<f32>,
-    // A small NDC depth offset applied to every vertex (issue #29 floor fix).
+    // A small NDC depth offset applied to every vertex keeps floor lines visible.
     // wgpu forbids a hardware DepthBiasState on LineList topology, so the floor
     // grid biases its depth here instead: a NEGATIVE value pulls the line a hair
     // toward the camera (smaller NDC z) so it wins the `Less` depth test against

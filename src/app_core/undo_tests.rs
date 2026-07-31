@@ -9,8 +9,8 @@ use parametric::units::Measurement;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-/// A headless [`AppCore`] for the undo tests (no GPU — `apply_intent`/`undo`/`redo`
-/// only touch the borrowed scene + the owned command stack).
+/// A headless [`AppCore`] for undo tests. These operations touch only the borrowed
+/// scene and command stack.
 fn test_core() -> AppCore {
     AppCore::new(OrbitCamera::default())
 }
@@ -60,7 +60,7 @@ fn tool_node(shape: SdfShape, material: MaterialChoice) -> Node {
     )
 }
 
-/// A normalized two-Tool scene with stable ids minted + an Origin point. The workspace
+/// A normalized two-tool scene with stable IDs and an Origin point. The workspace
 /// selection a test pairs with it comes from `selection_of_first_root`.
 fn two_tool_scene() -> Scene {
     let mut scene = Scene::from_nodes(vec![
@@ -72,7 +72,7 @@ fn two_tool_scene() -> Scene {
     scene
 }
 
-/// Apply `intent`, asserting the round-trip invariant: `undo()` restores the
+/// Apply `intent` and assert the round-trip invariant: `undo()` restores the
 /// scene byte-for-byte to `before`, and `redo()` restores it byte-for-byte to the
 /// post-apply `after`. Returns the core so the caller can inspect the stacks.
 fn assert_round_trips(scene: &mut Scene, intent: Intent) {

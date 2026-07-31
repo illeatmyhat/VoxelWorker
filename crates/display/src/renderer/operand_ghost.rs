@@ -1,5 +1,4 @@
-//! Selected-operand ghost styles (issue #78; the tint-constant voice of the ADR 0012
-//! onion ghost in `onion.rs`).
+//! Selected-operand ghost styles. The tint constants complement [`super::onion`].
 //!
 //! In "Show booleans" mode (one of three exclusive viewer modes — it and onion clip can
 //! never co-render), the shell renders every boolean operand body in the SELECTED
@@ -14,9 +13,9 @@
 
 use super::*;
 
-/// The operation role a selected-operand ghost body renders as (issue #78). Display's
+/// The operation role a selected-operand ghost body renders as. Display's
 /// OWN vocabulary — the app_core derivation maps the document's `CombineOp` onto it, so
-/// the display layer renders a style without reading documents (ADR 0016 layering).
+/// the display layer renders a style without reading document state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperandGhostStyle {
     /// The operand carves — translucent red.

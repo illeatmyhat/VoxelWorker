@@ -1,9 +1,9 @@
-// Viewport background gradient (issue #91, item 1) — the Signal field.
+// Viewport background gradient.
 //
 // A fullscreen radial gradient painted FIRST in the 3D MSAA pass (before the voxels,
 // depth-test off / no write) so both display paths (cuboid mesh + brick raymarch) and
 // the headless `shot` composite the scene over the SAME background. It reproduces the
-// approved mock's viewport field:
+// viewport field:
 //
 //   radial-gradient(120% 90% at 45% 38%, #1d2023 0%, #141618 62%, #0e0f11 100%)
 //

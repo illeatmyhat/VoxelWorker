@@ -1,10 +1,10 @@
-//! Selection tint (ADR 0032 — viewport selection feedback, reworked 2026-07-29).
+//! Selection tint for viewport feedback.
 //!
 //! A selected node shows as a screen-space WASH + 1px OUTLINE built from a depth map
 //! of its derived body (`mesh::SelectionOutlineRenderer` + `selection_outline.wgsl`),
 //! replacing the rejected cel re-draw. Still depth-coincident with the composed model
 //! — feedback shows the surface the model actually shows, never an x-ray — and applies
-//! in ALL view modes (owner-resolved 2026-07-26): showing what is selected is a
+//! in all view modes: showing what is selected is a
 //! property of having selected it, not a way of displaying the document.
 
 use super::*;

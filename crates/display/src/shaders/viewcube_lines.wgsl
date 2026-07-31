@@ -1,4 +1,4 @@
-// View-cube wireframe lines — constant screen-space width, anti-aliased (issue #91 item 3).
+// View-cube wireframe lines — constant screen-space width, anti-aliased.
 //
 // Replaces the hardware `LineList` pipeline (1 px, aliased) for the cube's silhouette,
 // the three axis-colored edges, and the projected X/Y/Z letter glyphs. Each source

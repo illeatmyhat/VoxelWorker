@@ -1,9 +1,9 @@
-//! Points — the world reference grid (issue #29 S5).
+//! Points: the world reference grid.
 
 use super::*;
 
-/// Reference-plane line color `#39414a` (issue #91 item 4): a desaturated near-neutral
-/// slate from the Signal token family (the mock's faint `#2a2e33` ground strokes are the
+/// Reference-plane line color `#39414a`: a desaturated near-neutral
+/// slate. The faint ground strokes are the
 /// visual target), replacing the old bright teal `#5fb8a4` that buried the bottom-left
 /// status text. Used by the analytic infinite-grid shader.
 pub(crate) const POINT_PLANE_COLOR_HEX: u32 = 0x39_41_4a;
@@ -12,18 +12,18 @@ pub(crate) const POINT_PLANE_COLOR_HEX: u32 = 0x39_41_4a;
 pub(crate) const POINT_PLANE_MINOR_ALPHA: f32 = 0.08;
 /// Base alpha of a MAJOR (per-BLOCK, spacing = density) analytic-grid line — bolder than
 /// the voxel lines so block boundaries still read, but the two-tier contrast is COMPRESSED
-/// (issue #91 item 4) from the old 3× ratio so the field stays calm over the gradient.
+/// from the old 3× ratio so the field stays calm over the gradient.
 pub(crate) const POINT_PLANE_MAJOR_ALPHA: f32 = 0.18;
 
 /// Fraction of the viewport height each half-axis spans — the Point axes are a screen-stable
-/// nav marker (ADR 0031), so they hold a constant on-screen size at any zoom instead of a fixed
+/// nav marker, so they hold a constant on-screen size at any zoom instead of a fixed
 /// world length that clips against the scene's near/far. Fed to
 /// [`OrbitCamera::screen_stable_size`](camera::OrbitCamera::screen_stable_size).
 const POINT_AXIS_SCREEN_FRACTION: f32 = 0.09;
 /// Base alpha of a Point's axis lines.
 pub(crate) const POINT_AXIS_ALPHA: f32 = 0.85;
 
-/// Which reference plane a tiled grid lies in (issue #29 S5). The plane is spanned
+/// Which reference plane a tiled grid lies in. The plane is spanned
 /// by its two in-plane axes; the third (constant) axis is pinned at the Point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReferencePlane {
@@ -35,7 +35,7 @@ enum ReferencePlane {
     Yz,
 }
 
-/// Append a Point's colored axis lines (issue #29 S5; per-axis fix) through
+/// Append a Point's colored axis lines through
 /// `origin_voxels` (the recentered render-frame position), reusing the gizmo axis
 /// colors. `enabled[axis]` gates each axis independently (X = red +X, Y = green
 /// +Y, Z = blue +Z), so e.g. turning Y off drops the green line and emits only the
@@ -71,7 +71,7 @@ fn point_axes_into(
     }
 }
 
-/// The recentered render-frame position (voxels) of a Point's origin (issue #29 S5):
+/// The recentered render-frame position (voxels) of a Point's origin:
 /// `position_blocks·density − recenter`, the SAME frame the resolved voxels and the
 /// per-object grids live in.
 fn point_origin_voxels(point: &Point, recenter: RecenterVoxels, density: i64) -> [f32; 3] {
@@ -84,12 +84,12 @@ fn point_origin_voxels(point: &Point, recenter: RecenterVoxels, density: i64) ->
     origin
 }
 
-/// Build the AXIS line batch for every VISIBLE Point in `scene` (issue #29 S5),
+/// Build the axis line batch for every visible Point in `scene`,
 /// gated CPU-side so it is unit-testable without a GPU. For each non-hidden Point
 /// its enabled axes (X = red +X, Y = green +Y, Z = blue +Z) are emitted as three
 /// colored line segments through the Point's origin, in the recentered render frame.
 ///
-/// Issue #29 Points fast-follow: the reference PLANES no longer live here — they are
+/// The reference planes no longer live here — they are
 /// drawn by [`InfiniteGridRenderer`] as an ANALYTIC infinite grid (a fullscreen
 /// ray-plane shader), which fixes the old finite tiled quad's hard edge / near-clip
 /// cutoff at shallow angles. This batch is now AXES-only (the axes were fine as
@@ -109,7 +109,7 @@ pub(crate) fn points_line_batch(
         }
         let origin = point_origin_voxels(point, recenter, density);
         if point.axis_x || point.axis_y || point.axis_z {
-            // Screen-stable half-length at this Point's depth (ADR 0031).
+            // Screen-stable half-length at this Point's depth.
             let half = camera
                 .screen_stable_size(glam::Vec3::from_array(origin), POINT_AXIS_SCREEN_FRACTION);
             point_axes_into(
@@ -123,7 +123,7 @@ pub(crate) fn points_line_batch(
     vertices
 }
 
-/// One enabled reference PLANE of a visible Point (issue #29 Points fast-follow),
+/// One enabled reference plane of a visible Point,
 /// resolved into the recentered render frame for the analytic infinite-grid shader.
 /// Computed CPU-side from the scene so the plane selection is unit-testable without
 /// a GPU; [`InfiniteGridRenderer`] turns each into one fullscreen draw.
@@ -151,7 +151,7 @@ fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]
     }
 }
 
-/// Collect every enabled reference PLANE of every VISIBLE Point (issue #29 Points
+/// Collect every enabled reference plane of every visible Point
 /// fast-follow), in the recentered render frame, for the analytic infinite-grid pass.
 /// Hidden Points and disabled planes contribute nothing; the common case (the
 /// Origin Point's XY ground plane, Z-up) yields exactly one instance. Pure + GPU-free
@@ -188,19 +188,19 @@ pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlan
     planes
 }
 
-/// The world reference AXES (issue #29 S5): every visible [`Point`]'s axis lines, batched into
-/// one alpha-blended line buffer. Since ADR 0031 the axes are a **screen-stable nav marker** —
+/// The world reference axes: every visible [`Point`]'s axis lines, batched into one
+/// alpha-blended line buffer. The axes are a **screen-stable navigation marker** —
 /// each half-axis spans a fixed fraction of the viewport ([`POINT_AXIS_SCREEN_FRACTION`]) at any
 /// zoom — drawn ON TOP by default (depth off, through the model) with the option to occlude
 /// (depth-tested), selected per frame by [`rebuild_from_scene`](Self::rebuild_from_scene).
 ///
-/// Issue #29 Points fast-follow: the reference PLANES moved to [`InfiniteGridRenderer`] (an
+/// The reference planes moved to [`InfiniteGridRenderer`] (an
 /// analytic infinite grid); this renderer draws AXES only. Each frame the caller rebuilds the
 /// batch from `scene.points` via [`Self::rebuild_from_scene`], then uploads the camera matrix.
 /// With no visible Point (all hidden / axes off) the batch is empty and [`Self::draw`] is a no-op.
 pub struct PointsRenderer {
     /// Depth-tested pipeline — the near occluded case: opaque geometry occludes the axes by depth
-    /// (ADR 0031, scaffold phase).
+    /// (scaffold phase).
     pipeline: wgpu::RenderPipeline,
     /// Depth-OFF pipeline — the on-top nav marker AND the far-distance paint-order fallback (both
     /// draw without depth-testing; the phase they sit in decides whether geometry paints over).
@@ -236,7 +236,7 @@ impl PointsRenderer {
             line_uniform_bind_group(device, &uniform_buffer, "points");
 
         // Two pipelines: depth-tested (occluded scaffold) and depth-OFF (on-top nav marker,
-        // the default). The caller picks per frame via `on_top` (ADR 0031).
+        // the default). The caller picks per frame via `on_top`.
         let pipeline = build_line_pipeline(
             device,
             color_format,
@@ -292,7 +292,7 @@ impl PointsRenderer {
     }
 
     /// Upload the camera matrix (same `view_projection` as the voxel pass). Points
-    /// use no depth bias (only the floor grid does — issue #29 fix).
+    /// use no depth bias (only the floor grid does).
     pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
         let uniforms = LineUniforms {
             view_projection: view_projection.to_cols_array_2d(),

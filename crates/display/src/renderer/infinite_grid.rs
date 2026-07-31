@@ -1,4 +1,4 @@
-//! Analytic infinite reference grid (issue #29 Points fast-follow) — replaces the
+//! Analytic infinite reference grid — replaces the
 //! finite tiled-line ground plane with a fullscreen ray-plane shader.
 
 use super::*;
@@ -46,7 +46,7 @@ const ORTHOGRAPHIC_LOD_FADE_SCALE: f32 = 1.0;
 /// of Points). Bounds the dynamic-offset uniform buffer; extra planes are dropped.
 const MAX_GRID_PLANES: usize = 32;
 
-/// The analytic infinite reference grid (issue #29 Points fast-follow): for each
+/// The analytic infinite reference grid: for each
 /// visible [`Point`]'s enabled plane it draws a fullscreen triangle whose fragment
 /// shader intersects the per-pixel view ray with that plane, computes a two-tier
 /// (voxel + block) anti-aliased grid via screen-space derivatives, fades with
@@ -178,7 +178,7 @@ impl InfiniteGridRenderer {
         }
     }
 
-    /// Rebuild this frame's analytic-grid planes by walking `scene.points` (issue #29
+    /// Rebuild this frame's analytic-grid planes by walking `scene.points`
     /// Points fast-follow), uploading one plane uniform per visible Point × enabled
     /// plane. The whole shader runs in the EYE-TRANSLATED frame
     /// ([`camera::SceneMatrices`]) — the ray-plane math is translation-invariant, and

@@ -1,12 +1,8 @@
-//! # The persistence artifacts (ADR 0022, extended by ADR 0024)
+//! # Persistence artifacts
 //!
-//! One structure used to serve as config, project and debug repro at once, and the cost
-//! of that was concrete: the camera's orbit target went missing from the F9 dump for a
-//! release, not because anyone judged a panned view unimportant but because a single
-//! capture function has nowhere for an omission to show. This module is the other half
-//! of the answer to that. `crates/snapshot` records, at each field, *which* artifacts it
-//! reaches; what follows is the code that actually carries it there, written so that the
-//! compiler refuses a field nobody routed.
+//! The application stores document, settings, view, session, and complete dump artifacts
+//! separately. Fields are captured explicitly so adding one without assigning it to an
+//! artifact is a compile-time error.
 //!
 //! ## What each one is for
 //!
@@ -17,7 +13,7 @@
 //!   the projection, the Home view the user deliberately kept.
 //! * [`ViewArtifact`] is where the author was looking from: the camera pose, the layer
 //!   band, the density mirror.
-//! * [`SessionArtifact`] is how they had the workspace arranged while looking (ADR 0024):
+//! * [`SessionArtifact`] is how they had the workspace arranged while looking:
 //!   the viewer mode, the folded panels, the diagnostic overlays. It shares the view's
 //!   destinations exactly — dump yes, document no — and is a separate type because the
 //!   *question* differs, which is the same reason settings and view are separate types
@@ -38,9 +34,8 @@
 //! pattern**. Adding a field to that struct therefore fails to compile in
 //! [`Dump::from_state`] and in [`DocumentArtifact::from_state`] until somebody says
 //! where it goes — `error[E0027]: pattern does not mention field`. The derive proves a
-//! field is *classified*; only this destructuring proves the classification was
-//! *honored*, which is the distinction ADR 0022's second amendment had to make after
-//! the derive landed alone.
+//! field is *classified*; only this destructuring proves that the classification was
+//! *honored*.
 //!
 //! The document's capture binds the fields it declines with `field_name: _`, rather than
 //! reaching for `..`. That is deliberate and is most of this module's review value: a
@@ -109,7 +104,7 @@ enum OrbitModeConfig {
 }
 
 /// The same shim for the `ui` crate's [`ViewMode`]. `ui` links egui and the domain crates
-/// and no serde (ADR 0016's crate law), so the viewer mode is persisted from out here,
+/// and no serde, so the viewer mode is persisted from out here,
 /// exactly as the projection is. Mirrors all three variants; a dump naming a variant this
 /// build does not have fails its part's deserialize and falls back to the default, which
 /// is the same tolerance every other key gets.
@@ -121,7 +116,7 @@ enum ViewModeConfig {
     ShowBooleans,
 }
 
-/// The same shim for the `ui` crate's [`SketchTool`] (ADR 0028, #95/#99) — the armed
+/// The same shim for the `ui` crate's [`SketchTool`] — the armed
 /// sketch-mode verb. `ui` carries no serde (the crate law), so the tool is persisted from out
 /// here exactly as the viewer mode is. Mirrors every variant; a dump naming a variant this
 /// build lacks (e.g. the retired `Delete` tool) falls back to the default (`Select`), the
@@ -136,7 +131,7 @@ enum SketchToolConfig {
     ThreePointArc,
 }
 
-/// The same shim treatment for an armed constraint gesture (ADR 0035 Decision 15) — the verb
+/// The same shim treatment for an armed constraint gesture — the verb
 /// and the entities picked for it so far. `ui` carries no serde, and the gesture's fields are
 /// private to it because `offer` is what maintains their agreement, so this mirrors the shape
 /// and converts through the public parts door rather than reaching inside.
@@ -234,8 +229,7 @@ struct SignalStackStateConfig {
 
 /// What the model **is**: the project a user would save, share and reopen.
 ///
-/// One field today, and that is the point rather than an embarrassment — ADR 0022's first
-/// decision is that a shared file carries the model and nothing about where somebody was
+/// A shared file carries the model and nothing about where somebody was
 /// working, and the smallest honest document is the strongest statement of it. The type
 /// exists so that "is this document state?" is a question with a place to be answered,
 /// and so that the day a second field earns `#[snapshot(document)]` the addition is a
@@ -247,7 +241,7 @@ struct SignalStackStateConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct DocumentArtifact {
     /// The whole assembly — node tree, reusable definitions, the active selection, and
-    /// the document-level density (ADR 0003 §3f(0)). `None` means "no scene was
+    /// the document-level density. `None` means "no scene was
     /// persisted", which the load path answers with the default seed scene rather than
     /// an empty document.
     #[serde(default)]
@@ -269,7 +263,7 @@ pub struct SettingsArtifact {
     /// The procedural material the viewport shades with.
     #[serde(default)]
     pub material: MaterialChoice,
-    /// Whether the Points' axes draw on top of the model vs occluded (ADR 0031).
+    /// Whether the Points' axes draw on top of the model or are occluded.
     #[serde(default = "default_true")]
     pub axes_on_top: bool,
     /// The applied block's **label** only. Re-resolving its texture on load is heavy
@@ -350,7 +344,7 @@ pub struct ViewArtifact {
 /// How the workspace was left, which is neither what the model is nor what the user
 /// prefers.
 ///
-/// The browser bargain (ADR 0024): close it, open it, and your tabs come back — nobody
+/// Close it, open it, and the workspace comes back — nobody
 /// files that under preferences, and nobody expects it inside a document they share. The
 /// membership test that separates this from [`SettingsArtifact`] next door is **chosen
 /// versus left**: a Home view is a viewpoint the user pressed a button to keep, whereas a
@@ -367,13 +361,11 @@ pub struct ViewArtifact {
 /// diagnostics off), so there is nothing to state that the field types do not already say.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SessionArtifact {
-    /// The viewer's exclusive rendering mode. ADR 0018 decision 3 kept it out of the
-    /// document and the implementation read that as out of persistence entirely;
-    /// ADR 0024 supersedes that half.
+    /// The viewer's exclusive rendering mode, separate from document contents.
     #[serde(default, with = "ViewModeConfig")]
     pub view_mode: ViewMode,
     /// The floating Signal display stack: folded to edge tabs, and which sections are
-    /// open. Saved whole, per ADR 0022's amendment — all four flags, not a subset.
+    /// open. Saved as one value so the stack reopens consistently.
     #[serde(default = "default_signal_stack", with = "SignalStackStateConfig")]
     pub stack: SignalStackState,
     /// The face-orientation debug shading (color by outward normal, cull off).
@@ -384,37 +376,37 @@ pub struct SessionArtifact {
     /// different picture than the one the bug was seen in.
     #[serde(default)]
     pub debug_brick_faces: bool,
-    /// The armed tool (ADR 0022) with its pending drop nested inside, `None` when nothing
+    /// The armed tool with its pending drop nested inside, `None` when nothing
     /// is armed. A dump taken mid-gesture re-arms the tool and replays the drop — the
     /// authority travels, so a restore can never carry a ghost without the tool that
     /// derives it. `ArmedToolConfig` derives its own serde (it lives in a serde-aware
     /// crate), so no remote shim is needed here.
     #[serde(default)]
     pub armed_tool: Option<ArmedToolConfig>,
-    /// The armed-tool placement snap settings (position + orientation, owner ruling
-    /// 2026-07-21). Durable across adds and relaunch; `PlacementSnap` derives its own serde.
+    /// The armed-tool placement snap settings (position and orientation). Durable across
+    /// relaunch; `PlacementSnap` derives its own serde.
     #[serde(default)]
     pub placement_snap: ui::panel::PlacementSnap,
-    /// The sketch node under edit in sketch mode (ADR 0028), `None` in the normal chrome. A
+    /// The sketch node under edit in sketch mode, `None` in the normal chrome. A
     /// dump taken mid-edit re-enters the same sketch; `NodeId` derives its own serde (it lives
     /// in the serde-aware `document` crate), so no remote shim is needed. The `serde(default)`
     /// degrades a pre-field dump to `None`.
     #[serde(default)]
     pub sketch_mode: Option<document::scene::NodeId>,
-    /// The armed sketch-mode tool (ADR 0028, #95). Persisted through the `SketchToolConfig`
+    /// The armed sketch-mode tool. Persisted through the `SketchToolConfig`
     /// remote shim (the `ui` crate carries no serde); a pre-field dump degrades to the default
     /// `Select`.
     #[serde(default, with = "SketchToolConfig")]
     pub sketch_tool: SketchTool,
-    /// The armed constraint gesture and its picks so far (ADR 0035 Decision 15). A pre-field
+    /// The armed constraint gesture and its picks so far. A pre-field
     /// dump degrades to `None` — nothing armed.
     #[serde(default)]
     pub armed_constraint: Option<ArmedConstraintConfig>,
-    /// The sketch-mode position snap (#96). Durable like `placement_snap`; `PositionSnap`
+    /// The sketch-mode position snap. Durable like `placement_snap`; `PositionSnap`
     /// derives its own serde, and a pre-field dump degrades to the default `Voxel`.
     #[serde(default)]
     pub sketch_snap: ui::panel::PositionSnap,
-    /// The workspace selection (ADR 0032) — the picked nodes and reference Points. A dump
+    /// The workspace selection — the picked nodes and reference Points. A dump
     /// replays with the same things selected; `SelectionConfig` derives its own serde (it
     /// lives out here, not in the serde-free `ui` crate), so no remote shim is needed. The
     /// `serde(default)` degrades a pre-field dump to nothing picked.

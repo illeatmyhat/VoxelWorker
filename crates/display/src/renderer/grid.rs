@@ -1,32 +1,33 @@
-//! Block lattice + fine floor grid (Milestone 8) — prototype `buildGrids`.
+//! Block lattice and fine floor grid.
 
 use super::*;
 
 /// Block lattice color `#5fb8a4` (teal patina) at ~0.28 alpha.
 const LATTICE_COLOR_HEX: u32 = 0x5f_b8_a4;
 const LATTICE_ALPHA: f32 = 0.28;
-/// Floor grid color `#b8a47a` (warm sand) at 0.55 alpha. Issue #29 fix: the
+/// Floor grid color `#b8a47a` (warm sand) at 0.55 alpha. The
 /// floor grid was previously a very dim `#6b5f4a` at 0.16 alpha — coincident with
 /// the model's depth-tested base plane and near-black against the background, so
 /// it read as "nothing" when toggled on. A brighter color at a lattice-comparable
 /// opacity makes the base-plane grid clearly visible (it still hugs the node's
 /// enclosing-block XZ footprint, snapped to the global block lattice).
 const FLOOR_COLOR_HEX: u32 = 0xb8_a4_7a;
-/// Alpha of a BOLD (block-edge) floor line — the major tier of the two-tier fine
-/// floor grid (issue #29 fix). These lines sit at every block boundary and so
+/// Alpha of a bold (block-edge) floor line—the major tier of the two-tier fine
+/// floor grid. These lines sit at every block boundary and so
 /// coincide exactly with the block lattice's vertical lines at the base plane.
 const FLOOR_ALPHA: f32 = 0.55;
-/// Alpha of a fine VOXEL-edge floor line — the minor tier (issue #29 fix). One
+/// Alpha of a fine voxel-edge floor line—the minor tier. One
 /// line per voxel boundary (step = 1) at a deliberately low opacity, so the floor
 /// reads as a dense fine grid under the object without drowning the bold block
 /// lines or the model. Mirrors the Point ground plane's minor/major two-tier
 /// scheme (`POINT_PLANE_MINOR_ALPHA` vs `POINT_PLANE_MAJOR_ALPHA`).
 const FLOOR_VOXEL_ALPHA: f32 = 0.16;
 
-/// The per-object block lattice and floor grid (the prototype's `buildGrids`), drawn through the shared alpha-blended, depth-tested line
+/// The per-object block lattice and floor grid, drawn through the shared alpha-blended,
+/// depth-tested line
 /// pipeline in the MSAA pass.
 ///
-/// Issue #29 S3: this is no longer ONE whole-region lattice. Each frame the caller
+/// Each frame the caller
 /// walks the scene and, for every node whose grids are enabled (the scene master
 /// ANDed with the node's own toggle), appends that node's block lattice and/or
 /// floor lines into the renderer's per-frame batch via `Self::set_batch`. A
@@ -44,7 +45,7 @@ pub struct SceneGridRenderer {
     /// Uniforms for the lattice draw — view-projection with ZERO depth bias.
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
-    /// Separate uniforms for the floor draw (issue #29 fix): the SAME
+    /// Separate uniforms for the floor draw: the same
     /// view-projection but a NEGATIVE [`LineUniforms::depth_bias`], so the floor
     /// draws at the EXACT base plane `z = min[2]` (Z-up; meeting the lattice's bottom
     /// edges) yet wins the `Less` depth test against the model's coincident bottom
@@ -55,7 +56,7 @@ pub struct SceneGridRenderer {
     floor_uniform_bind_group: wgpu::BindGroup,
 }
 
-/// The NDC depth bias (issue #29 fix) the floor grid uploads in its
+/// The NDC depth bias the floor grid uploads in its
 /// [`LineUniforms::depth_bias`]: a small NEGATIVE offset pulls the floor lines a
 /// hair toward the camera so they win the `Less` depth test against the model's
 /// coincident bottom face. ~5e-4 in NDC is imperceptible spatially (far below the
@@ -92,7 +93,7 @@ impl SceneGridRenderer {
             line_uniform_bind_group(device, &uniform_buffer, "lattice");
 
         // A SECOND uniform buffer for the floor draw, carrying the same matrix with a
-        // negative NDC depth bias (issue #29 fix) — wgpu rejects a hardware depth bias
+        // negative NDC depth bias — wgpu rejects a hardware depth bias
         // on LineList, so the floor biases its depth in the line shader via this buffer.
         let floor_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("floor uniforms"),
@@ -180,7 +181,7 @@ impl SceneGridRenderer {
 
     /// Upload the camera matrix (same `view_projection` as the voxel pass) to BOTH
     /// the lattice uniform (zero depth bias) and the floor uniform (a negative NDC
-    /// [`FLOOR_DEPTH_BIAS_NDC`] depth bias — issue #29 fix), so the floor wins
+    /// [`FLOOR_DEPTH_BIAS_NDC`] depth bias, so the floor wins
     /// coincident depth against the model's base face without a geometric drop.
     pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
         let view_projection = view_projection.to_cols_array_2d();
@@ -197,7 +198,7 @@ impl SceneGridRenderer {
     }
 
     /// Record the lattice + floor draws into an already-begun (MSAA) pass. Gating
-    /// is done at batch-build time (issue #29 S3): only grid-enabled nodes
+    /// is done at batch-build time: only grid-enabled nodes
     /// contributed lines, so empty batches simply draw nothing here. Both draws use
     /// the same line pipeline; the floor binds its own (depth-biased) uniform.
     pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
@@ -211,7 +212,7 @@ impl SceneGridRenderer {
             render_pass.draw(0..self.lattice_vertex_count, 0..1);
         }
         if self.floor_vertex_count > 0 {
-            // Floor's own uniform carries the negative depth bias (issue #29 fix) so
+            // Floor's own uniform carries the negative depth bias so
             // the base-plane floor wins coincident depth against the model's bottom face.
             render_pass.set_bind_group(0, &self.floor_uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.floor_buffer.slice(..));
@@ -220,7 +221,7 @@ impl SceneGridRenderer {
     }
 }
 
-/// The per-object grid boxes for a scene (issue #29 S3), gated CPU-side so the walk
+/// The per-object grid boxes for a scene, gated CPU-side so the walk
 /// is unit-testable without a GPU. Returns `(lattice_boxes, floor_boxes)` where each
 /// box is the `(min, max)` enclosing-block AABB (recentered voxels) of a node whose
 /// grid is enabled — the scene-wide master ANDed with the node's own per-object
@@ -305,8 +306,8 @@ pub(crate) fn voxel_boundaries(lo: f32, hi: f32, step: u32) -> Vec<(f32, bool)> 
 }
 
 /// Append a 3D block lattice for the box `[min, max]` (voxels) — grid lines at every
-/// BLOCK boundary (spacing = `step`) — into `vertices` (issue #29 S3, per-object).
-/// Port of the prototype `buildGrids` lattice loop, now spanning an arbitrary box.
+/// BLOCK boundary (spacing = `step`) into `vertices`.
+/// This follows the same lattice as the scene's voxel coordinates.
 pub(crate) fn lattice_vertices_into(
     vertices: &mut Vec<LineVertex>,
     min: [f32; 3],
@@ -353,7 +354,7 @@ pub(crate) fn lattice_vertices_into(
 }
 
 /// Append a FINE floor grid for the box `[min, max]` (voxels) on its BASE plane
-/// (Z-up: exactly at `z = min[2]`, an XY grid) into `vertices` (issue #29 fix).
+/// (Z-up: exactly at `z = min[2]`, an XY grid) into `vertices`.
 /// Two-tier, mirroring the block lattice and the Point ground plane:
 ///
 /// * **Fine voxel lines** — one per voxel boundary (step 1), at the subtle

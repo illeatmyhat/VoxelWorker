@@ -137,9 +137,7 @@ pub fn apply_app_style(style: &mut Style) {
     ]
     .into();
 
-    // Density pass (issue #90): egui's defaults render cramped rows + chunky buttons. Give
-    // the sidebar the mock's airier rhythm — ~9 px row gaps, snug-but-not-tight button
-    // padding, compact interact rows — so the sections breathe like the design.
+    // Keep the sidebar airy while preserving compact controls.
     style.spacing.item_spacing = egui::Vec2::new(8.0, 6.0);
     style.spacing.button_padding = egui::Vec2::new(7.0, 3.0);
     style.spacing.interact_size.y = 20.0;
@@ -153,7 +151,7 @@ pub fn apply_app_style(style: &mut Style) {
     v.faint_bg_color = HOVER_BG; // striped rows
     apply_widget_visuals(v);
     // Text tiers. NO `override_text_color` — it would bake a light color into every galley
-    // and desaturate the dark-on-accent selected text (issue #90). Instead: plain labels ride
+    // and desaturate the dark-on-accent selected text. Instead: plain labels ride
     // `noninteractive.fg_stroke` (muted, set in `apply_widget_visuals`); `.weak()` hints ride
     // `weak_text_color`; and the sidebar's idle interactable text (which is where the
     // blocks+voxels VALUE readouts, DragValues and action buttons live) is raised to the
@@ -163,14 +161,10 @@ pub fn apply_app_style(style: &mut Style) {
 }
 
 /// The DISPLAY stack's scoped Signal style (`panel::signal_stack`). REPLACES the scoped
-/// ui's style with a fresh [`Style::default`]-derived variant so the floating stack is
-/// decoupled from the app-wide restyle around it — its tighter spacing + primary-forced
-/// text render byte-identically to the epic-#80 stack regardless of [`apply_app_style`].
+/// ui's style with a fresh [`Style::default`]-derived variant so the floating stack keeps its
+/// tighter spacing and primary text independent of [`apply_app_style`].
 pub fn apply_stack_style(ui: &mut egui::Ui) {
-    // Mono body across the stack's widgets (issue #90): the projection toggle + grid
-    // checkboxes previously fell back to egui's ~14 px proportional Body, dwarfing the
-    // painter-drawn 10 px section headers. Pin every tier to the stack mono size so the body
-    // reads at the same scale as the sidebar and the headers.
+    // Keep widget text aligned with the stack's compact monospace headers.
     let mut style = Style {
         text_styles: [
             (

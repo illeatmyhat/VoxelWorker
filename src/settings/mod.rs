@@ -1,19 +1,18 @@
-//! Config persistence (Milestone 8) — the **classified state record**.
+//! Config state and explicit artifact classification.
 //!
 //! [`AppConfig`] is a flat, self-contained mirror of everything the application
 //! persists, captured from the live render-coupled `PanelState` rather than derived on
 //! it. That indirection is what keeps internal struct churn away from anything durable,
-//! and it is why every field can carry a `#[snapshot(...)]` category (ADR 0022) in one
+//! and every field can carry a `#[snapshot(...)]` category in one
 //! readable column.
 //!
-//! What this type is *not*, since 2026-07-20, is an on-disk format. It has no serde
+//! This type is not an on-disk format and has no serde
 //! derive at all. The artifacts it is carried into — the document, the settings, and the
 //! dump that is their superset — live in [`crate::artifacts`], and every one of them
 //! destructures this struct exhaustively. That is the whole mechanism: the category on a
 //! field records where it should go, and the destructuring next door refuses to compile
 //! if it does not get there. A struct that both classified its fields and serialized
-//! itself would have no place for that second check to live, which is how `orbit_target`
-//! went missing from the F9 dump in the first place.
+//! itself would have no place for that second check to live.
 //!
 //! Loading still never panics: a missing file, an unreadable file, or invalid JSON all
 //! yield `None`, and the caller uses its built-in defaults.
@@ -29,11 +28,11 @@ use ui::shortcuts::{ShortcutCommand, Shortcuts};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-/// The serde-able mirror of the armed tool [`ArmedTool`] (ADR 0022) — the AUTHORITY, with
+/// The serde-able mirror of the armed tool [`ArmedTool`] — the authority, with
 /// its pending drop nested inside — carried in the session dump so a repro taken
 /// mid-gesture re-arms the same tool and replays the pending drop.
 ///
-/// [`ArmedTool`] lives in the `ui` crate, which links no serde (ADR 0016's crate law), so —
+/// [`ArmedTool`] lives in the `ui` crate, which links no serde, so —
 /// like [`ViewMode`] and the Signal stack — it is persisted from out here. It stores the
 /// armed primitive's kind/size/wall plus (when a drop was pending) the ABSOLUTE
 /// corner-anchored offset the node would take (`Intent::PlaceNode`'s frame); the
@@ -64,14 +63,14 @@ fn default_wall_blocks() -> u32 {
 pub enum SelectionTargetConfig {
     /// A scene-graph node, by its stable id.
     Node(NodeId),
-    /// A reference Point, by its stable id (ADR 0033).
+    /// A reference Point, by its stable id.
     ReferencePoint(document::scene::PointId),
 }
 
-/// The serde-able mirror of the workspace [`Selection`] (ADR 0032), carried in the session
+/// The serde-able mirror of the workspace [`Selection`], carried in the session
 /// dump so a repro replays with the same things picked.
 ///
-/// [`Selection`] lives in the `ui` crate, which links no serde (ADR 0016's crate law), so —
+/// [`Selection`] lives in the `ui` crate, which links no serde, so —
 /// like [`ViewMode`] and the placement ghost — it is persisted from out here. Pick ORDER is
 /// preserved, because the per-kind primary (what the inspector mirrors) is the newest target
 /// of its kind, not the lowest id.

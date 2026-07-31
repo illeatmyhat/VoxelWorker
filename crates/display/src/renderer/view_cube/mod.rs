@@ -1,5 +1,4 @@
-//! View cube (Milestone 5; restyled to the "Signal" language, issue #86 / ADR 0018
-//! Decision 8) — see `docs/design/viewport-chrome-signal.md`.
+//! View cube renderer and its CPU-generated geometry and face-label textures.
 //!
 //! The cube is a near-black instrument-panel widget in the **top-right** of the 3D
 //! viewport (industry norm): translucent flat face fills within `#10141a`–`#1b2126`,
@@ -27,8 +26,7 @@ pub(crate) use geometry::view_cube_geometry;
 use geometry::{expand_thick_lines, view_cube_edges};
 use labels::generate_face_label_textures;
 
-/// Edge length (pixels) of the corner view-cube viewport (top-right). Bumped 128 → 144
-/// (issue #91 item 3) for a modestly larger cube; the 16 px margin is unchanged and the
+/// Edge length, in pixels, of the corner view-cube viewport. The 16 px margin is unchanged and the
 /// rail anchor + shell hit-testing derive from this constant, so they track it.
 pub const VIEW_CUBE_VIEWPORT_PIXELS: u32 = 144;
 /// Margin (pixels) from the viewport's top-right corner to the cube.
@@ -45,7 +43,7 @@ pub fn view_cube_corner(viewport: [u32; 4], right_inset_px: u32) -> Option<(u32,
     let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
     let margin = VIEW_CUBE_VIEWPORT_MARGIN;
     let size = VIEW_CUBE_VIEWPORT_PIXELS;
-    // Issue #88: the cube's right inset is the floating display stack's current width (the
+    // The cube's right inset is the floating display stack's current width (the
     // cube slides left of it), replacing the old bare `margin`. It must still clear the
     // cube + a vertical margin — below that the cube isn't drawn (the min on-screen rule).
     if viewport_width < right_inset_px + size || viewport_height < margin + size {
@@ -61,8 +59,8 @@ pub fn view_cube_corner(viewport: [u32; 4], right_inset_px: u32) -> Option<(u32,
 /// Edge length of each square face-label texture.
 const FACE_LABEL_TEXTURE_SIZE: u32 = 128;
 
-// --- Signal tokens (docs/design/viewport-chrome-signal.md §Tokens) ---
-// The face-fill (now opaque, issue #91 item 6), the `#2b3238` slice lines (now an SDF)
+// --- View-cube colors ---
+// The face fill, `#2b3238` slice lines, and
 // and the `#9cb4d8` hover accent all live in `viewcube.wgsl`; the tokens baked on the
 // CPU (silhouette + axis edges + labels) are below.
 /// Cube silhouette color `#59636d` (the 9 non-axis edges).
@@ -85,7 +83,7 @@ pub(crate) struct CubeLabelVertex {
     layer: u32,
 }
 
-/// One expanded thick-line vertex (issue #91 item 3): the segment's two endpoints (so
+/// One expanded thick-line vertex: the segment's two endpoints (so
 /// the vertex shader can compute the screen-space direction), the line color, and a
 /// `[side, end]` selector (`side` ∈ {-1,+1} across the width, `end` ∈ {0,1} picks the
 /// endpoint). Six per source segment → a screen-space quad of constant pixel width.
@@ -120,7 +118,7 @@ const CUBE_LINE_FEATHER_PX: f32 = 1.0;
 /// first).
 pub struct ViewCubeRenderer {
     face_pipeline: wgpu::RenderPipeline,
-    /// The anti-aliased screen-space thick-line pipeline (issue #91 item 3): silhouette,
+    /// The anti-aliased screen-space thick-line pipeline: silhouette,
     /// axis edges, and X/Y/Z letters at constant ~1.4 px width.
     line_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -133,7 +131,7 @@ pub struct ViewCubeRenderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     label_bind_group: wgpu::BindGroup,
-    // --- Issue #91 item 3: composite the resolved MSAA cube over the scene ---
+    // Composite the resolved MSAA cube over the scene.
     composite_pipeline: wgpu::RenderPipeline,
     composite_bind_group_layout: wgpu::BindGroupLayout,
     composite_sampler: wgpu::Sampler,
@@ -323,7 +321,7 @@ impl ViewCubeRenderer {
             fragment: Some(wgpu::FragmentState {
                 module: &cube_shader,
                 entry_point: Some("fragment_main"),
-                // Signal: the faces are FULLY OPAQUE flat fills (issue #91 item 6), reading
+                // The faces are fully opaque flat fills, reading
                 // solid over the scene; the pipeline still alpha-blends, but only for the
                 // AA slice-line feathering. Back faces are culled and the three visible
                 // faces never overlap in screen space, so no per-face depth sorting is
@@ -351,7 +349,7 @@ impl ViewCubeRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            // Issue #91 (item 3): the cube renders into its own 4× MSAA offscreen target
+            // The cube renders into its own 4× MSAA offscreen target
             // (resolved + composited in `draw`) so the face silhouettes + linework are
             // coverage-anti-aliased, not just the SDF/thick-line feathering.
             multisample: wgpu::MultisampleState {
@@ -363,7 +361,7 @@ impl ViewCubeRenderer {
             cache: None,
         });
 
-        // --- Edge lines: constant screen-space width, anti-aliased (issue #91 item 3) ---
+        // --- Edge lines: constant screen-space width, anti-aliased ---
         let line_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("view cube line uniforms"),
             size: std::mem::size_of::<CubeLineUniforms>() as u64,
@@ -400,7 +398,7 @@ impl ViewCubeRenderer {
         let (chrome_pipeline, chrome_bind_group) =
             build_chrome_overlay(device, queue, color_format, MSAA_SAMPLE_COUNT);
 
-        // --- Composite pipeline (issue #91 item 3): blend the resolved MSAA cube on top ---
+        // --- Composite pipeline: blend the resolved MSAA cube on top ---
         let composite_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("view cube composite layout"),
@@ -472,7 +470,7 @@ impl ViewCubeRenderer {
             depth_bias: [0.0; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        // The anti-aliased line pipeline (issue #91 item 3) needs the same VP plus the
+        // The anti-aliased line pipeline needs the same VP plus the
         // cube's square on-screen pixel size + line width to expand its screen-space quads.
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
         let line_uniforms = CubeLineUniforms {
@@ -492,7 +490,7 @@ impl ViewCubeRenderer {
     /// with a freshly-cleared private depth texture). The color attachment loads
     /// the already-resolved scene so only the corner is touched.
     ///
-    /// Issue #25: the corner is the top-left of the CENTRAL 3D viewport rect
+    /// The corner is the top-left of the central 3D viewport rect
     /// (`viewport_x/y/w/h`, physical pixels), NOT the whole window — so the cube
     /// lines up with the visible 3D area instead of hiding behind the side panel.
     /// `target_width/height` are the full target dims (the color + depth
@@ -502,7 +500,7 @@ impl ViewCubeRenderer {
     /// (from `classify_cube_point`). The roll arrows are drawn ONLY when their zone is
     /// hovered. #13 Step 6 follow-up: the four rotate arrows are drawn PERSISTENTLY
     /// whenever `rotate_arrows_visible` (the view is face-constrained), with the hovered
-    /// one brightened. (Home/Fit left the cube for the Signal icon rail — ADR 0018
+    /// one brightened. (Home/Fit lives in the Signal icon rail —
     /// Decision 8.) The chrome is a screen-space overlay FIXED to the cube rect (it does
     /// NOT rotate with the cube), laid out in the same `rect.size` fractions Step 1
     /// hit-tests against.
@@ -545,7 +543,7 @@ impl ViewCubeRenderer {
         if corner_x + size > target_width || corner_y + size > target_height {
             return;
         }
-        // Issue #91 (item 3): render the cube into its OWN small 4× MSAA offscreen target
+        // Render the cube into its own small 4× MSAA offscreen target
         // (cleared transparent), resolve it to a single-sample texture with coverage-AA'd
         // silhouettes, then composite that over the scene in the corner. This anti-aliases
         // the opaque FACE silhouettes as well as the linework — the whole cube reads clean.
@@ -702,7 +700,7 @@ fn cube_uniform_bind_group(
     (layout, bind_group)
 }
 
-/// Build the anti-aliased cube-line pipeline (issue #91 item 3): screen-space thick-line
+/// Build the anti-aliased cube-line pipeline: screen-space thick-line
 /// quads (`viewcube_lines.wgsl`), alpha-blended over the opaque faces, depth-tested `Less`
 /// against the cube's private depth, 1 sample (the cube pass resolves at 1 sample).
 fn build_cube_line_pipeline(
@@ -792,7 +790,7 @@ fn build_cube_line_pipeline(
     })
 }
 
-/// Build the composite pipeline (issue #91 item 3): a fullscreen textured quad that blends
+/// Build the composite pipeline: a fullscreen textured quad that blends
 /// the resolved MSAA cube over the scene in the corner with premultiplied-alpha blending.
 fn build_cube_composite_pipeline(
     device: &wgpu::Device,

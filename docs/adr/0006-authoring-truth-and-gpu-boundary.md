@@ -1,27 +1,13 @@
-# ADR 0006 — Authoring truth is CPU/`Intent`-authoritative; the GPU is a display + optional input shell
+# Authoring truth is CPU/`Intent`-authoritative; the GPU is a display and optional input shell
 
-- **Status:** Proposed. **Amended 2026-07-12: Accepted** — the system has operated under
-  this ruling since it was written (it is Law 4 of `docs/architecture/README.md`); the
-  formal flip was simply never recorded.
-- **Date:** 2026-06-29
-- **Layer:** BOUNDARY RULING. Not a feature-on-top like [ADR 0004](0004-agent-authoring-stack.md) /
-  [ADR 0005](0005-architecture-completeness.md); it sits beside [ADR 0003](0003-foundation-rework.md) (the
-  foundation) and constrains [ADR 0002](0002-engine-streaming-meshing.md) (the renderer) and **any future
-  GPU-pipeline work**. It pins the CPU↔GPU authority line so the recurring "shouldn't the SDF→voxel→fog
-  pipeline be on the GPU?" question is answered once, with its rationale, rather than re-litigated into a
-  rewrite that quietly breaks export / analysis / persistence / sculpt / agent-authoring. It introduces
-  **no new foundation model** — it ratifies and names boundaries that ADR 0003/0004 already imply, and
-  records the decision gate for the GPU work that is genuinely worthwhile.
+- **Layer:** Boundary rule. The CPU model and `Intent` journal are authoritative; the GPU is a
+  display and input shell. See `docs/architecture/README.md` for the current architecture map.
 
 ## Context
 
-A performance investigation (per-edit latency on a large/high-density scene) bottomed out in the fog
-occupancy rebuild, and the fix work (parallelised producer resolve; chunk-windowed `resolve_into`,
-commits `af661cd`/`d2d4d96`; fog scatter build, `83a715b`) raised a deeper question from the product
-owner: **why is the entire SDF boolean → voxel → fog-slicing pipeline on the CPU at all, when that is
-textbook GPU-parallel work?** Four grounded investigations followed, stress-testing a "do edits on the
-GPU" proposal from three angles — display, sculpt, and agent-authoring. Their convergent finding is the
-substance of this ADR.
+The SDF boolean → voxel → fog-slicing pipeline could run on the GPU, but the product also needs a
+deterministic CPU representation for export, measurement, persistence, undo, sculpt overlays, and
+agent authoring. Those consumers define the authority boundary.
 
 The headline: **the CPU "one consumed truth" design is deliberate and load-bearing, and it is correct for
 what this product is** — a planner/editor with export, measurement, persistence, undo, a coming sculpt

@@ -5,7 +5,7 @@
 //! single draw call regardless of how many materials it contains. This module is
 //! the CPU side of that for the cuboid mesher: it lays each material's texture into one
 //! atlas image and records, per material, the UV sub-rectangle it occupies. The
-//! The cuboid mesher maps each face's `material_id` to its sub-rect
+//! cuboid mesher maps each face's `material_id` to its sub-rect
 //! and emits atlas UVs (`cuboid_mesh.rs`); the cuboid shader samples the one atlas
 //! (`shaders/cuboid.wgsl`).
 //!
@@ -43,11 +43,8 @@
 //! the half-texel-inset sampling window the shader actually uses.
 
 use voxel_core::core_geom::MaterialChoice;
-// The pure packer geometry — shelf layout, half-texel-inset UV rects, and the
-// replicated-edge blit — is textbook rectangle packing with no material/texture
-// vocabulary, so it lives in substrate (see the material-atlas handling in
-// docs/architecture). This module is the domain adapter: it owns the material
-// ordering, the gutter choice, and the `MaterialAtlas`/`AtlasSubRect` names.
+// Shelf layout and edge replication are generic packing operations in substrate.
+// This module supplies the material ordering, gutter choice, and atlas types.
 use substrate::occupancy::shelf_bin_pack::{ShelfBinPack, TileImage, TileSize};
 
 /// Texels of replicated-edge gutter padded around every tile in the atlas. One
@@ -110,8 +107,7 @@ pub struct AtlasSourceTile {
 impl MaterialAtlas {
     /// Pack the procedural Stone/Wood/Plain material textures into one atlas, in
     /// [`MaterialChoice`] order so the sub-rect for `material_id == m` is
-    /// `sub_rects[m]`. This is the cuboid path's atlas source (it binds the SAME
-    /// procedural textures the instanced path uses, just packed).
+    /// `sub_rects[m]`. This is the cuboid path's atlas source.
     pub fn from_procedural_materials() -> MaterialAtlas {
         let texture_size = crate::renderer::procedural_material_texture_size();
         let tiles: Vec<AtlasSourceTile> = crate::renderer::procedural_material_pixels()
@@ -134,8 +130,7 @@ impl MaterialAtlas {
     /// half-texel-inset sampling windows (see the module docs). The shelf layout,
     /// UV-rect math, and gutter blit are substrate's [`ShelfBinPack`]; this adapter
     /// supplies the tile sizes and the [`GUTTER_TEXELS`] gutter, then names the
-    /// result in material-atlas vocabulary. Byte-identical to the pre-extraction
-    /// output (the app's texture rendering + goldens pin it).
+    /// result in material-atlas vocabulary.
     pub fn pack_tiles(tiles: &[AtlasSourceTile]) -> MaterialAtlas {
         if tiles.is_empty() {
             return MaterialAtlas {

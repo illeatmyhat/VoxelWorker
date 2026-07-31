@@ -25,18 +25,14 @@ document = { path = "../document" }
 # The foundational value vocabulary: MaterialChoice / BlockId (the palette resolver + material
 # selector) and the ShapeKind / units the inspector edits.
 voxel_core = { path = "../voxel_core" }
-# The pure CS/math substrate: LatticeOrientation, the placement ghost's turn (ADR 0026).
+# The pure math substrate for placement orientation.
 substrate = { path = "../substrate" }
-# The vector algebra the placement ghost's continuous rotation is expressed in (ADR 0027): the
-# `Quat` it previews and the `Mat3` it hands the ghost shader as an inverse-rotation uniform.
+# The vector algebra used for placement rotation previews and inverse-rotation uniforms.
 glam = "0.33.1"
-# Serde derive for the session-durable placement snap settings (ADR 0024 / 0026), which the
-# app's AppConfig serializes directly rather than through a mirror shim.
+# Serde derive for session-durable placement snap settings.
 serde = { version = "1", features = ["derive"] }
 # The viewing library: the ProjectionMode the camera-section toggle drives.
 camera = { path = "../camera" }
-# The state-classification vocabulary (ADR 0022). `PanelState` is the live view state the
-# persistence artifacts capture, so every one of its fields declares which artifacts it
-# reaches; the derive makes an unclassified field a compile error here rather than a
-# silent omission discovered later in a repro that cannot reproduce anything.
+# The state-classification vocabulary. `PanelState` declares which persistence artifacts receive
+# each field, and the derive rejects fields that have not been classified.
 snapshot = { path = "../snapshot" }

@@ -1,7 +1,7 @@
-// View-cube shader (Milestone 5; restyled to the "Signal" language, #86).
+// View-cube shader.
 //
 // Draws the small orientation cube in the top-right corner viewport. Each face is a
-// FLAT, FULLY OPAQUE near-black fill (issue #91 item 6) sampled from its own label
+// flat, fully opaque near-black fill sampled from its own label
 // texture (a 6-layer 2D array, layer = materialIndex order +X,-X,+Y,-Y,+Z,-Z) — no
 // lighting, per the Signal "flat fills" rule. On hover, an element's across-the-fold
 // facets are tinted with the onion-haze accent, decided GEOMETRICALLY from the

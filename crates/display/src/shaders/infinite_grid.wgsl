@@ -1,4 +1,4 @@
-// Analytic infinite reference grid (issue #29 Points fast-follow).
+// Analytic infinite reference grid.
 //
 // Replaces the old finite, camera-relative TILED LINE quad (48-block radius) that
 // cut off at a hard edge / near-clip at shallow viewing angles. This is the
@@ -24,7 +24,7 @@
 //     once its cells go sub-pixel — finer tiers fading before coarser ones — so the
 //     plane dissolves into the background at the horizon with no hard world-distance
 //     rim and no hard horizon line. There is NO grazing-angle fade and NO fixed
-//     world-distance fade (both were removed: they caused the zoom-out vanish).
+//     world-distance fade.
 //   * `@builtin(frag_depth)` is written to the plane-hit point's clip depth and the
 //     pipeline depth-tests LessEqual, so opaque objects (drawn earlier in the SAME
 //     MSAA pass) OCCLUDE the grid. The grid reads as subtle world scaffold behind /

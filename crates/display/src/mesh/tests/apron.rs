@@ -9,17 +9,13 @@ fn bucket_for_test(grid: &VoxelGrid, voxels_per_block: u32) -> Vec<([i32; 3], Vo
     crate::mesh::bucket_grid_into_chunk_grids(grid, voxels_per_block)
 }
 
-/// An incremental rebuild re-meshes only the apron-dilated dirty subset,
-/// evict vacated chunks, keep every other chunk's buffer — produces a per-chunk
-/// mesh (buffer) set BYTE-IDENTICAL to a wholesale rebuild, for every edit kind
-/// INCLUDING edits at a chunk SEAM (where the 1-voxel apron makes a neighbor's
-/// boundary faces depend on the edited chunk). This is the cuboid analog of the
-/// deleted instanced `incremental_rebuild_equals_full_rebuild_for_every_edit_kind`
-/// and the real proof that consuming `cuboid_incremental_plan` is output-preserving.
+/// An incremental rebuild re-meshes only the apron-dilated dirty subset, evicts
+/// vacated chunks, and preserves every other buffer. Its result must equal a
+/// wholesale rebuild, including edits on chunk seams where the apron affects a
+/// neighbor.
 ///
-/// Both scenes pin the SAME global bounds with anchor voxels at the extremes (so
-/// `world_offset` is identical — modeling the live `incremental_ok` precondition
-/// that the floating origin did NOT shift; a shift forces a wholesale fall-back).
+/// Anchor voxels keep the global bounds and `world_offset` unchanged; a floating-origin
+/// shift would correctly require a wholesale rebuild.
 /// Edits touch only interior / seam voxels. `evicted_dirty` is set to exactly the
 /// chunks that were resident in A AND changed in B — faithfully modeling
 /// `Store::invalidate_aabb`'s evicted set — so the plan's 26-neighbor dilation is

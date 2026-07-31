@@ -1,10 +1,8 @@
-// Cuboid mesh shader — LOADED VS BLOCK variant (part of #20).
+// Cuboid mesh shader — loaded VS block variant.
 //
 // This is the cuboid path's `MaterialSource::Loaded` counterpart to `cuboid.wgsl`:
 // it binds a 6-layer D2Array (one PNG per cube face, `MaterialSource::Loaded`) and
-// selects the per-face layer FROM THE FACE NORMAL, reproducing the per-face layer
-// selection the since-removed instanced path (`shaders/voxel.wgsl`, deleted with the
-// legacy mesher, #20) used to do for a loaded block. The default `cuboid.wgsl`
+// selects the per-face layer from the face normal. The default `cuboid.wgsl`
 // samples a packed PROCEDURAL atlas (Stone/Wood/Plain) and cannot show a runtime-
 // loaded block texture; when a VS block is applied, the renderer selects THIS
 // pipeline instead.
@@ -50,7 +48,7 @@ struct CuboidUniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: CuboidUniforms;
 
-// ADR 0003 §3c / ADR 0010 E3: the on-face-grid flag is NEITHER in `material_id` (the
+// The on-face-grid flag is neither in `material_id` (the
 // retired `GRID_OVERLAY_BIT` mirror) NOR a per-vertex attribute. A loaded VS block selects
 // its per-face texture layer from the outward normal; the on-face-grid flag is the per-draw
 // group(2) uniform (the chunk mesh is split into overlay-off / overlay-on draws).
@@ -80,7 +78,7 @@ var material_sampler: sampler;
 // prepended by `with_shared_shading`.
 
 // Signed-axis debug color, identical to cuboid.wgsl (both carried it over from
-// the since-removed instanced voxel.wgsl, deleted with the legacy mesher, #20).
+// the removed instanced shader).
 fn debug_face_color(face_normal: vec3<f32>) -> vec3<f32> {
     let axis_magnitude = abs(face_normal);
     if (axis_magnitude.x > axis_magnitude.y && axis_magnitude.x > axis_magnitude.z) {
@@ -96,7 +94,7 @@ struct VertexInput {
     @location(0) world_position: vec3<f32>,
     @location(1) face_normal: vec3<f32>,
     @location(2) material_id: u32,
-    // ADR 0010 E3: the on-face-grid flag is no longer a vertex attribute (it is the
+    // The on-face-grid flag is no longer a vertex attribute (it is the
     // per-draw group(2) uniform `draw_overlay`).
 };
 
@@ -159,7 +157,7 @@ fn fragment_main(
     // matching the instanced loaded path which disables modulation.
 
     // --- Position-based grid overlay (BUG 2 parity) ---
-    // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
+    // Per-object: master uniform ANDed with this face's flag bit.
     if (on_face_grid_enabled()) {
         // Anchor the overlay to the TRUE world voxel frame (world block lattice), not
         // the render grid's local half-extent frame; `absolute` stays for texture UV.

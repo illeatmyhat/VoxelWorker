@@ -7,7 +7,7 @@ const MATERIAL_TEXTURE_SIZE: u32 = 32;
 // removed with the earlier instanced mesher. The cuboid path uses its own
 // `CuboidUniforms`.)
 
-/// The visible layer band (issue #12), in voxel Z-layer indices (Z-up: layers are
+/// The visible layer band, in voxel Z-layer indices (Z-up: layers are
 /// Z-slices), passed to the mesh band clip. The band is INCLUSIVE on both ends:
 /// layers `[band_min, band_max]` render solid. `onion_depth` is the number of layers
 /// OUTSIDE the band that render ghosted (screen-door dither); `0` = a hard clip.
@@ -31,7 +31,7 @@ impl LayerBand {
     };
 }
 
-/// How a [`RegionClip`] gates a voxel relative to the layer band (ADR 0018 Decision 5).
+/// How a [`RegionClip`] gates a voxel relative to the layer band.
 /// The onion-fog clip is REGION-SCOPED: it only bites inside the selected object's
 /// placed AABB, and the ghost slabs only fill inside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,16 +1,16 @@
 // Placement ghost — a translucent analytic SDF drawn where an armed primitive's voxels
-// WILL land (ADR 0022: "nothing recomposes during the gesture — render a colored
+// will land; nothing recomposes during the gesture, so the preview is a colored
 // transparent SDF where the voxels will be"). The five `ShapeKind` primitives are rendered
 // as parametric fields, sphere-traced on the GPU, over the composed voxel display.
 //
 // **This is a hand-written WGSL MIRROR of `voxel_core::voxel::signed_distance`**
 // (crates/voxel_core/src/voxel.rs) and its three helpers, promoted verbatim from the
-// parity-proven spike (`docs/design/wgsl-sdf-spike.md`: 0 voxels disagree with the CPU
+// parity-tested against the CPU
 // resolve). Every line below marked MIRROR has a named Rust counterpart; the `value_main`
 // entry point exists so a parity test can read these functions' output back and diff it
 // against the Rust.
 //
-// ## Frames (ADR 0008)
+// ## Frames
 //
 // The producer samples its SDF at `local_voxel_index + 0.5 - grid/2`, i.e. in a frame
 // CENTERED on the producer's own grid. The display's world frame relates to absolute

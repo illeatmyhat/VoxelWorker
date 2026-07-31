@@ -44,7 +44,7 @@ mod targets;
 mod tests;
 mod view_cube;
 
-// Public API of the shared render infrastructure (ADR 0016 Phase 4d carve). Every
+// Public API of the shared render infrastructure. Every
 // `crate::renderer::…` / `display::renderer::…` path a consumer named before the
 // carve resolves through these re-exports unchanged.
 pub use background::BackgroundGradientRenderer;

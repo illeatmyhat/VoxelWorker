@@ -1,5 +1,5 @@
 // The sketch region wash — the RESOLVED 2D material region, shaded ON the sketch plane
-// (ADR 0030 §3). What is picked is what will resolve as material, so the plane itself carries
+// What is picked is what will resolve as material, so the plane itself carries
 // the signal at low alpha and a void carries none.
 //
 // **This is a hand-written WGSL MIRROR of `substrate::geom2d::signed_distance_to_region`**
@@ -12,20 +12,20 @@
 // The boundary arrives as EDGES, arcs included, so a curve is shaded as a curve. There is no
 // tolerance in this pass and no screen-space chord budget to tune: a circle is one arc primitive
 // however far the view has zoomed in, which is both exact and cheaper than the twenty-odd chords
-// that used to stand in for it.
+// that replaces the old fill-based overlay.
 //
 // The loop ORDER is part of that value: innermost-first (smallest enclosed area first), which is
 // what makes a loop govern its own area and nothing nested inside it.
 //
 // ## Why a field and not a mesh
 //
-// The overlay used to triangulate each face and fill it with an `egui::Mesh`. Two faces that
+// The overlay evaluates the region directly instead of triangulating each face with an `egui::Mesh`. Two faces that
 // nest have overlapping polygons, so the alpha composited twice; a void had to be bridged out of
 // its contour by hand. Evaluated as a field none of that arises — `point_in_region`'s rule
 // ("the innermost loop containing this point decides") IS the nesting, per pixel — and the edge
 // gets antialiasing from the distance for free.
 //
-// ## Frames (ADR 0008)
+// ## Frames
 //
 // The CPU packs the plane as the render-frame position of profile coordinate `(0, 0)` plus the
 // render-frame displacement of `+1` voxel along each of the profile's two in-plane axes — all

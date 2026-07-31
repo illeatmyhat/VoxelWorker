@@ -1,4 +1,4 @@
-//! The placement ghost renderer (ADR 0022): a translucent analytic SDF drawn where an
+//! The placement ghost renderer: a translucent analytic SDF drawn where an
 //! armed primitive's voxels WILL land — "nothing recomposes during the gesture, render a
 //! colored transparent SDF where the voxels will be".
 //!
@@ -7,7 +7,7 @@
 //! existing MSAA voxel pass so it composites over whichever voxel display path took the
 //! frame and writes `@builtin(frag_depth)` so the solid voxels occlude it where they are
 //! in front. The shader is a hand-written mirror of `voxel_core::voxel::signed_distance`,
-//! promoted verbatim from the parity-proven spike (`docs/design/wgsl-sdf-spike.md`).
+//! validated against the CPU evaluation path.
 
 use super::*;
 
@@ -37,7 +37,7 @@ struct PlacementGhostUniforms {
     /// x: iso level (`SURFACE_ISOLEVEL`). y: shade flag (1 = display). z/w: value-probe
     /// only, unused by the display pass.
     params: [f32; 4],
-    /// The INVERSE lattice orientation (ADR 0026), column-major, as three `vec4` columns
+    /// The inverse lattice orientation, column-major, as three `vec4` columns
     /// (std140 `mat3x3` stride; the `w` lane is padding). The shader maps a world sample back
     /// into the shape's un-turned SDF frame with this, so a side-placed cylinder's ghost lies
     /// on its side. Identity for an upright drop.

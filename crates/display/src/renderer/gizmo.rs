@@ -1,4 +1,4 @@
-//! Transform gizmo (Milestone 5 origin gizmo, repurposed in issue #29 S2).
+//! Transform gizmo: axis lines and square plane handles.
 
 use super::*;
 
@@ -16,7 +16,7 @@ const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
 /// Fed to [`OrbitCamera::screen_stable_model`](camera::OrbitCamera::screen_stable_model).
 pub const GIZMO_SCREEN_FRACTION: f32 = 0.16;
 
-/// The transform gizmo (issue #29 S2): three colored axis lines and three
+/// The transform gizmo: three colored axis lines and three
 /// perpendicular square line-loops, drawn with **depth-test disabled** so it
 /// shows through a solid model (correct manipulator behavior). Drawn in the MSAA
 /// pass, after the voxels. The geometry is a fixed **unit** gizmo; it FOLLOWS the

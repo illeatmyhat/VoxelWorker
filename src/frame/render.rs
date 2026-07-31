@@ -8,14 +8,14 @@ use crate::*;
 
 /// Render a complete frame into `target_view`.
 ///
-/// This is the render-target-agnostic core (Hard requirement #2): it accepts a
+/// This is the render-target-agnostic core: it accepts a
 /// resolved single-sample color [`wgpu::TextureView`] plus the prepared egui
 /// data and has no knowledge of winit or surfaces. The windowed binary passes
 /// the surface texture's view; the headless binary passes the offscreen capture
 /// texture's view.
 ///
-/// Milestone 4 restructures the frame into two passes:
-///   1. **3D MSAA pass** — the instanced voxel cubes are drawn into a 4-sample
+/// The frame uses two passes:
+///   1. **3D MSAA pass** — voxel geometry is drawn into a 4-sample
 ///      color texture (`msaa_color_view`) with a 4-sample depth attachment
 ///      (`depth_view`) and resolved into `target_view` (the single-sample
 ///      surface / capture texture). `material` selects the bound texture and
@@ -26,16 +26,16 @@ use crate::*;
 ///
 /// `msaa_color_view` and `depth_view` are render-target-agnostic: the window and
 /// the headless capture pass their own 4-sample textures sized to the same target.
-/// The viewport render as ordered frame phases (ADR 0031). [`render_frame`] records these into
+/// The viewport render as ordered frame phases. [`render_frame`] records these into
 /// the single MSAA pass in a FIXED order — background → model → over-model → scaffold → on-top —
 /// then the view cube in its own corner pass. Each phase slice is a caller-filled list of
 /// [`SceneDraw`](display::SceneDraw)s (self-gating, so an empty batch draws nothing); the model
 /// and the cube are special (material bind / own sub-pass) and stay named fields.
 pub struct FramePhases<'a> {
-    /// Fullscreen, pre-solid, depth off (the Signal background gradient, issue #91).
+    /// Fullscreen, pre-solid, depth off (the Signal background gradient).
     pub background: &'a [&'a dyn display::SceneDraw],
     /// Depth-off draws recorded BEFORE the model so opaque geometry paints over them —
-    /// paint-order occlusion (ADR 0031). The far-distance reference-axes fallback lives here:
+    /// paint-order occlusion. The far-distance reference-axes fallback lives here:
     /// invariant (never clips) yet still occluded by geometry, where depth-testing can't survive
     /// the collapsed near/far.
     pub behind_model: &'a [&'a dyn display::SceneDraw],
@@ -47,39 +47,39 @@ pub struct FramePhases<'a> {
     pub scaffold: &'a [&'a dyn display::SceneDraw],
     /// Depth off, drawn through the model (the manipulator gizmos).
     pub on_top: &'a [&'a dyn display::SceneDraw],
-    /// The cuboid mesh renderer — the CPU voxel render path (part of #20; the legacy
-    /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
+    /// The cuboid mesh renderer — the CPU voxel render path. Draws the voxels as a
+    /// box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
-    /// Kept PERMANENTLY as the headless/no-GPU fallback + A/B reference (ADR 0011
-    /// Decision 6) even when the brick path below takes the frame.
+    /// Kept as the headless/no-GPU fallback and reference when the brick path below takes
+    /// the frame.
     pub cuboid_mesh: &'a display::mesh::CuboidMeshRenderer,
-    /// ADR 0011 G1: the brick raymarch display sink. `Some` replaces the cuboid
+    /// The brick raymarch display sink. `Some` replaces the cuboid
     /// mesh DRAW for this frame (single ported-producer scenes on the GPU path) —
     /// the pass runs in the same MSAA pass and writes ray-hit depth, so every
     /// phase after it composites unchanged. `None` keeps the mesh path (multi-producer,
     /// loaded materials, debug modes, no-GPU builds).
     pub brick_raymarch: Option<&'a display::brick::BrickRaymarchRenderer>,
-    /// ADR 0012: draw the onion GHOST this frame. When `true`, immediately after the solid
+    /// Draw the onion ghost this frame. When `true`, immediately after the solid
     /// voxel draw (inside the model phase), the engaged display path (brick raymarch when
     /// present, else the cuboid mesh) draws its translucent ghost of the voxels in the onion
     /// slabs. Depth-tested `Less` + alpha-blended, depth WRITE ON so only the NEAREST ghost
     /// surface shows; the solid, drawn first, still occludes it. The ghost uniforms/geometry
     /// must already be prepared by the renderers' `update_uniforms`.
     pub onion_ghost_active: bool,
-    /// ADR 0032 (reworked): the screen-space selection outline + wash. Records its own
+    /// The screen-space selection outline and wash. Records its own
     /// two passes — the depth-only G-buffer before the MSAA pass, the composite onto the
     /// resolved target after it (before the view cube). Self-gating on an empty selection.
     pub selection_outline: Option<&'a display::mesh::SelectionOutlineRenderer>,
     /// The corner view cube (its own scissored pass). `None` when its Display toggle is off.
     pub view_cube: Option<&'a display::renderer::ViewCubeRenderer>,
-    /// The ViewCube chrome zone under the cursor (#13 Step 2). Drives which hover
+    /// The ViewCube chrome zone under the cursor. Drives which hover
     /// arrows the cube draws and which glyph is highlighted. `None` = nothing hovered.
     pub cube_hovered_zone: Option<camera::CubeChromeZone>,
-    /// #13 Step 6 follow-up: draw all four ViewCube rotate arrows PERSISTENTLY (set
+    /// Draw all four ViewCube rotate arrows when
     /// when the view is face-constrained), with the hovered one brightened. `false`
     /// (off-face view) draws no rotate arrows.
     pub cube_rotate_arrows_visible: bool,
-    /// Signal (issue #88): the view cube's right inset (physical px) = the floating display
+    /// The view cube's right inset (physical px) equals the floating display
     /// stack's current width, so the GPU-drawn cube slides left of the stack. From
     /// `PreparedEguiFrame`.
     pub view_cube_right_inset_px: u32,
@@ -89,7 +89,7 @@ pub struct FramePhases<'a> {
 }
 
 /// Upload the per-frame **scene scaffold** uniforms shared by the windowed shell and `shot`
-/// (ADR 0031): the per-object scene grid, the world-reference Points (screen-stable axes +
+/// The per-object scene grid, the world-reference Points (screen-stable axes +
 /// planes), and the analytic infinite grid. Both paths previously drove these renderers with
 /// byte-identical orchestration inline — the drift that let the overlay matrix diverge between
 /// them (a Point far from the render origin clipped in one path but not the other). Centralising

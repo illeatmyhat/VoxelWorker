@@ -74,7 +74,7 @@ impl ApplicationHandler for App {
                     let in_chrome = position
                         .map(|(x, y)| state.position_in_signal_chrome(x, y))
                         .unwrap_or(false);
-                    // ADR 0022 live placement: this press begins a placement when a tool
+                    // This press begins placement when a tool
                     // is armed and it landed on the live viewport (not egui / cube /
                     // chrome). Only a stationary release drops the node — a drag no longer
                     // orbits, but the threshold still keeps a twitchy click from placing.
@@ -85,7 +85,7 @@ impl ApplicationHandler for App {
                         && !in_cube
                         && !in_chrome
                         && state.commit_orbit_center_placement();
-                    // ADR 0032: the explicit ORBIT MODE flips the left button's verb — a drag
+                    // Orbit mode flips the left button's verb — a drag
                     // turns the camera about `camera.target` and a stationary click re-centers
                     // the view on the surface it hits. It outranks selection and the sketch
                     // paths, which is the whole point of a mode, but NOT an armed orbit-center
@@ -109,7 +109,7 @@ impl ApplicationHandler for App {
                         && !egui_consumed
                         && !in_cube
                         && !in_chrome;
-                    // ADR 0032: a plain viewport press arms a NODE selection resolve — but only
+                    // A plain viewport press arms a node-selection resolve — but only
                     // when every other left-click consumer declined. An armed tool keeps its click
                     // for the placement drop, and sketch mode keeps its three paths; selecting a
                     // node from inside a sketch would leave the mode's own selection behind.
@@ -120,7 +120,7 @@ impl ApplicationHandler for App {
                         && !in_chrome
                         && state.panel_state.armed_tool.is_none()
                         && state.panel_state.sketch_mode.is_none();
-                    // ADR 0028 (#94/#95) / #99: a sketch-mode press, on the live viewport (not
+                    // A sketch-mode press on the live viewport (not
                     // egui / cube). The Select tool grabs a vertex handle; Add-point and
                     // Polyline ARM a stationary-release edit; Rectangle pins its anchor corner.
                     // The view stays freely rotatable throughout via Shift+MMB, which is gated
@@ -131,7 +131,7 @@ impl ApplicationHandler for App {
                         && !in_cube
                     {
                         if let Some((cursor_x, cursor_y)) = position {
-                            // ADR 0035 Decision 15: an armed constraint OVERRIDES the drawing
+                            // An armed constraint overrides the drawing
                             // tool for the duration of its gesture. It hit-tests the same
                             // entities Select does but answers a different question, and letting
                             // the two run together would draw geometry mid-assertion.
@@ -215,7 +215,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0022 live placement: a STATIONARY armed release drops the
+                    // A stationary armed release drops the
                     // pending node. A drag no longer orbits, but the threshold stays: it is
                     // what keeps a twitchy press from placing, and it becomes the
                     // click-vs-marquee discriminator once the marquee lands. The tool STAYS armed so several
@@ -235,7 +235,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0035 Decision 15: a STATIONARY release with a constraint armed offers
+                    // A stationary release with a constraint armed offers
                     // the entity under the cursor to the slot that is waiting. Same
                     // click-vs-drag threshold every other sketch release uses, so a press that
                     // turned into a camera drag never picks. Runs BEFORE `last_cursor_position`
@@ -252,7 +252,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0028 (#95) / #99: a STATIONARY release with a sketch edit armed
+                    // A stationary release with a sketch edit armed
                     // performs it (the same click-vs-drag threshold placement uses; a drag
                     // no longer orbits, but a twitchy press must still not edit).
                     // Runs BEFORE `last_cursor_position` is cleared below, since
@@ -273,11 +273,11 @@ impl ApplicationHandler for App {
                                             state.commit_sketch_profile_edit(target, producer);
                                         }
                                     }
-                                    // #99: place / chain the clicked point; commits internally.
+                                    // Place or chain the clicked point; commits internally.
                                     ui::panel::SketchTool::Polyline => {
                                         state.sketch_polyline_click(up_x, up_y);
                                     }
-                                    // #102: endpoint, endpoint, then the through-point that
+                                    // Endpoint, endpoint, then the through-point that
                                     // solves the bulge; commits internally.
                                     ui::panel::SketchTool::ThreePointArc => {
                                         state.sketch_arc_click(up_x, up_y);
@@ -288,7 +288,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // #99: a rectangle release commits at ANY drag distance (it is the drag
+                    // A rectangle release commits at any drag distance (it is the drag
                     // gesture); a degenerate release just consumes the anchor. Runs BEFORE
                     // `last_cursor_position` is cleared below.
                     if state.sketch_rect_anchor.is_some() {
@@ -297,7 +297,7 @@ impl ApplicationHandler for App {
                             None => state.sketch_rect_anchor = None,
                         }
                     }
-                    // ADR 0030: a STATIONARY release of a viewport Select press resolves the sketch
+                    // A stationary release of a viewport Select press resolves the sketch
                     // selection (a drag moved a vertex instead — the same click-vs-drag threshold
                     // placement / add-point use). Gated on `sketch_select_press` so a click on the
                     // context menu (egui-consumed, never armed) can't be read as click-empty-clear.
@@ -321,7 +321,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     state.sketch_marquee_anchor = None;
-                    // ADR 0032: a STATIONARY release of a plain viewport press picks the node
+                    // A stationary release of a plain viewport press picks the node
                     // under the cursor (the same click-vs-drag threshold every other release path
                     // uses; it survives the orbit rebind as the future marquee discriminator).
                     // Runs BEFORE `last_cursor_position` is
@@ -339,7 +339,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0032 orbit mode: a STATIONARY release RE-CENTERS the view — the surface
+                    // In orbit mode, a stationary release re-centers the view — the surface
                     // under the cursor becomes `camera.target`, so the next turn happens about
                     // what the user just pointed at. A miss (sky, no plane) is a REFUSAL, not a
                     // fallback: the view keeps the target it had. This never touches the orbit
@@ -375,7 +375,7 @@ impl ApplicationHandler for App {
                     state.last_cursor_position = None;
                     state.press_in_view_cube = false;
                     state.view_cube_drag_active = false;
-                    // ADR 0028 (#94): commit the vertex drag SYNCHRONOUSLY here (a no-op if no
+                    // Commit the vertex drag synchronously here (a no-op if no
                     // drag is in progress). It restores the pre-drag state and queues the final
                     // position as intents the next `render` applies as one group edit. Doing it
                     // inline — not via a flag the next render reads — closes the window where a
@@ -418,7 +418,7 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                // ADR 0022 live placement: a right-press while a tool is armed disarms it
+                // A right-press while a tool is armed disarms it
                 // (the ghost vanishes) instead of opening the cube menu — done first so
                 // the cube-menu logic below never runs during placement.
                 if button_state == ElementState::Pressed
@@ -557,7 +557,7 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // ADR 0032: under the explicit ORBIT MODE the left button turns the camera about
+                // Under orbit mode the left button turns the camera about
                 // `camera.target` — the same turn the cube drag performs, but at the latched
                 // ACTIVE type (the mode may be running a per-session override of the default).
                 // The first move past the threshold also spends the press: one press is either a

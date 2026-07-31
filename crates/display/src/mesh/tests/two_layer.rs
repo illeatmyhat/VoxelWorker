@@ -8,7 +8,7 @@ use evaluation::two_layer_store::TwoLayerStore;
 use voxel_core::core_geom::MaterialChoice as MC;
 use voxel_core::voxel::ShapeKind as TwoLayerShape;
 
-/// Every unit face a mesh EMITS that ACTUALLY RENDERS — i.e. whose cell on the NORMAL
+/// Every unit face a mesh emits that actually renders—its cell on the normal
 /// (front) side is AIR per the dense occupancy. A face buried in solid (front solid) is
 /// back-face-culled / depth-occluded and never reaches a pixel, so the rendered image is
 /// exactly this set. Unlike [`visible_unit_faces`] (which pre-filters to `genuine`), this

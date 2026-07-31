@@ -1,8 +1,8 @@
 use super::*;
 use voxel_core::voxel::ShapeKind;
 
-/// Save and reload through the on-disk artifact.
-/// the dump rather than this struct. Most tests below care about what survives a
+/// Save and reload through the dump artifact rather than this struct. Most tests care
+/// about what survives a
 /// save/load, not about which type spells the JSON, so they go through here.
 fn save_and_reload(config: &AppConfig) -> AppConfig {
     let json = config.to_dump_json().expect("serialize");
@@ -730,10 +730,9 @@ fn capture_then_to_panel_state_preserves_masters_and_toggles() {
     assert_eq!(restored.geometry, panel.geometry);
 }
 
-/// issue #29 (grid rework S1) + issue #31: loading an OLD config (no `scene`
-/// field — the legacy flat geometry) gains exactly one Origin Point on the load
-/// path. The grid masters no longer migrate from legacy `show_*` keys (deleted in
-/// #31); the scene-less config seeds a fresh scene whose masters all default ON.
+/// Loading an old config without `scene` gains exactly one Origin Point. The grid
+/// masters do not migrate from the removed `show_*` keys; the scene-less config
+/// seeds a fresh scene whose masters default to ON.
 #[test]
 fn old_config_gains_origin_point_with_default_masters() {
     let old_json = r#"{

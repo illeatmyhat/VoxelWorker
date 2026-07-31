@@ -4,10 +4,10 @@
 
 use super::*;
 
-/// Grid overlay tuning, transcribed from the browser prototype's `GRID`
+/// Grid overlay tuning.
 /// uniforms. Half-widths are in voxel units (the overlay is
 /// computed from absolute voxel position), alphas are blend strengths, and the
-/// colors are the sRGB hex line colors (`docs/design/color-vocabulary.md`).
+/// colors are sRGB hex line colors.
 pub(crate) const VOXEL_LINE_HALF_WIDTH: f32 = 0.05;
 pub(crate) const BLOCK_LINE_HALF_WIDTH: f32 = 0.11;
 pub(crate) const VOXEL_LINE_ALPHA: f32 = 0.40;
@@ -28,7 +28,7 @@ pub(crate) struct LineVertex {
 }
 
 /// Camera uniform for the line passes (gizmo + view-cube edges + lattice/floor +
-/// Points): the view-projection matrix plus a small NDC `depth_bias` (issue #29
+/// Points): the view-projection matrix plus a small NDC `depth_bias`
 /// floor fix). The bias is zero for every pass except the floor grid, which uses a
 /// negative value to win the depth test against the model's coincident bottom face
 /// without a geometric drop (wgpu forbids a hardware depth bias on `LineList`).

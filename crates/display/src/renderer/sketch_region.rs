@@ -1,4 +1,4 @@
-//! The sketch region wash renderer (ADR 0030 §3): the resolved 2D material region shaded ON the
+//! The sketch region wash renderer: the resolved 2D material region shaded on the
 //! sketch plane, as a field rather than a fill.
 //!
 //! A fullscreen triangle whose fragment intersects the sketch plane and evaluates

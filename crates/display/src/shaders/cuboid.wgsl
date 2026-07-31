@@ -1,16 +1,15 @@
-// Cuboid mesh shader (ADR 0002 E3b-2, part of #18) — one of the two live display
-// paths (the brick raymarch, ADR 0011, is the primary sink; this mesher is its
+// Cuboid mesh shader — one of the two live display paths. The brick raymarch is the
+// primary sink; this mesher is its
 // A/B parity oracle and understudy, per `mesh/mod.rs`). It started as a flag-gated
 // alternative to an instanced per-voxel-cube renderer; that renderer and its flag
-// were removed with the legacy mesher (#20), leaving this the sole mesh render path.
+// were removed with the earlier instanced path, leaving this the mesh render path.
 //
 // Draws the exposed-face triangle mesh built by `cuboid_mesh.rs`: each vertex
 // carries a WORLD position, the face's outward normal, and the box's material_id.
 //
 // E3b-1 rendered SHAPE + per-box material color + lighting only (FLAT). E3b-2
 // adds the two per-voxel surface features that make a MERGED box face read as a
-// stack of per-voxel cubes, matching the look of the since-removed instanced path
-// (it lived in `shaders/voxel.wgsl` before #20 deleted it with the legacy mesher):
+// stack of per-voxel cubes.
 //
 //   * PER-VOXEL TEXTURE SLICE — the block texture tiles once per voxel across a
 //     merged face. The UV is the fragment's ABSOLUTE voxel position (world +
@@ -24,7 +23,7 @@
 //     derived from the ABSOLUTE voxel position (NOT face UVs — project guard), so
 //     they fall on the same boundaries the instanced overlay draws.
 //
-// E3c-1 (ADR 0002 O8) replaces the former per-material D2Array bind with ONE
+// The atlas bind replaces the former per-material D2Array bind with one
 // texture ATLAS: all material tiles are packed into a single 2D image and each
 // face's material_id selects its sub-rect (uniform `material_atlas_rects`); the
 // per-voxel slice is `fract`-tiled INTO that sub-rect. A chunk of mixed materials
@@ -53,7 +52,7 @@ struct CuboidUniforms {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
-    // --- Layer-range band clip (issue #12 parity) ---
+    // --- Layer-range band clip ---
     // The visible band, in voxel Z-layer indices (Z-up: layers are Z-slices). The
     // cuboid path clips the band at MESH-BUILD time (see the fragment NOTE below),
     // so these uniforms are unused by the shader and kept only for layout parity.
@@ -66,7 +65,7 @@ struct CuboidUniforms {
     // texture / material / overlay. A trailing pad fills the 16-byte slot so the
     // array below stays 16-aligned.
     debug_face_mode: f32,
-    // ADR 0012 (H1): the onion GHOST flag. 0 = normal textured solid render; 1 = the
+    // The onion ghost flag. 0 = normal textured solid render; 1 = the
     // ghost pass — every fragment shades as the flat translucent `ghost_tint` (NO
     // texture / material / overlay), because the onion-slab geometry itself IS the clip
     // (the mesh ghost draws two thin per-slab meshes, so no shader-side band test is
@@ -76,14 +75,14 @@ struct CuboidUniforms {
     // Per-material base colors ([r,g,b,_pad], LINEAR), relative to the bound
     // texture's average — identical to the instanced path's step-3b array.
     material_base_colors: array<vec4<f32>, 3>,
-    // Per-material atlas sub-rect (ADR 0002 E3c-1 / O8), indexed by material_id:
+    // Per-material atlas sub-rect, indexed by material_id:
     // [inset_min_u, inset_min_v, inset_size_u, inset_size_v]. The per-voxel slice's
     // fract-tiled UV is mapped into this window of the single atlas, so a chunk of
     // mixed materials samples ONE atlas texture (one draw) instead of binding a
     // per-material texture. The inset (half-texel) window keeps the fract-tiling off
     // the cell's outer edge; the atlas's replicated-edge gutter absorbs any spill.
     material_atlas_rects: array<vec4<f32>, 3>,
-    // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
+    // The onion ghost tint (linear RGB + src alpha), read only when
     // `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
     ghost_tint: vec4<f32>,
     // Added to `voxel_absolute_position` inside the on-face grid overlay to recover the
@@ -97,7 +96,7 @@ struct CuboidUniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: CuboidUniforms;
 
-// ADR 0003 §3c / ADR 0010 E3: the on-face-grid flag is NEITHER in `material_id` (the
+// The on-face-grid flag is neither in `material_id` (the
 // retired `GRID_OVERLAY_BIT` mirror) NOR a per-vertex attribute. The chunk mesh is split
 // into an overlay-off and an overlay-on draw, each binding this PER-DRAW `u32` (group 2,
 // dynamic offset) — 1 when the draw's boxes carry the on-face grid, 0 otherwise. So the
@@ -113,12 +112,12 @@ fn material_color_index(material_id: u32) -> u32 {
 }
 
 // Whether this face's on-face grid should draw: the per-DRAW overlay-active flag (group 2,
-// ADR 0010 E3) ANDed with the scene-wide master uniform (`grid_overlay_enabled`).
+// and is ANDed with the scene-wide master uniform (`grid_overlay_enabled`).
 fn on_face_grid_enabled() -> bool {
     return uniforms.grid_overlay_enabled > 0.5 && draw_overlay.value != 0u;
 }
 
-// ONE atlas texture for ALL materials (ADR 0002 E3c-1 / O8): every material tile
+// One atlas texture serves all materials: every material tile
 // is packed into a single 2D image; the per-face material_id selects a sub-rect
 // (in `material_atlas_rects`) that the per-voxel slice tiles into. The sampler is
 // CLAMP-to-edge (NOT Repeat): the shader tiles the slice itself via `fract` mapped
@@ -139,7 +138,7 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 
 // Map an outward normal to a signed-axis debug color — reproduces the signed-axis
 // palette the since-removed instanced `debug_face_color` (voxel.wgsl, deleted with
-// the legacy mesher, #20) used to render, so the cuboid debug-faces output still
+// the removed instanced path used to render, so the cuboid debug-faces output still
 // matches that reference:
 //   +X red, -X cyan; +Y green, -Y magenta; +Z blue, -Z yellow.
 fn debug_face_color(face_normal: vec3<f32>) -> vec3<f32> {
@@ -157,7 +156,7 @@ struct VertexInput {
     @location(0) world_position: vec3<f32>,
     @location(1) face_normal: vec3<f32>,
     @location(2) material_id: u32,
-    // ADR 0010 E3: the on-face-grid flag is no longer a vertex attribute (it is the
+    // The on-face-grid flag is no longer a vertex attribute (it is the
     // per-draw group(2) uniform `draw_overlay`).
 };
 
@@ -189,7 +188,7 @@ fn fragment_main(
     input: VertexOutput,
     @builtin(front_facing) is_front_facing: bool,
 ) -> @location(0) vec4<f32> {
-    // NOTE on the layer-range band clip (issue #12 parity): the cuboid path clips the
+    // NOTE on the layer-range band clip: the cuboid path clips the
     // band at MESH-BUILD time — the densified region is masked to the band's Z-range
     // (Z-up: layers are Z-slices) before decomposition, so the band's top/bottom
     // voxels expose real CAP faces (a fragment discard on a single merged column would
@@ -213,7 +212,7 @@ fn fragment_main(
         return vec4<f32>(debug_color, 1.0);
     }
 
-    // --- Onion ghost pass (ADR 0012 H1) ---
+    // --- Onion ghost pass ---
     // The ghost geometry IS the onion slab (built clipped per-slab, `cuboid_mesh.rs`),
     // so no band test is needed here: every ghost fragment shades as the flat
     // translucent tint (no texture / lighting / material / overlay), matching the brick
@@ -257,7 +256,7 @@ fn fragment_main(
     // Directional + ambient lighting (shared `lambert_lighting`).
     var color = sampled * lambert_lighting(input.world_normal);
 
-    // Per-box material modulation (ADR 0001 step 3): multiply by the material's
+    // Per-box material modulation: multiply by the material's
     // relative base color so distinct boxes render in distinct materials.
     if (uniforms.material_modulation_enabled > 0.5) {
         let base = material_base_colors_lookup(input.material_id);
@@ -266,9 +265,9 @@ fn fragment_main(
 
     // --- Position-based grid overlay (BUG 2 parity) ---
     // Maths/constants carried over from the since-removed instanced path
-    // (voxel.wgsl, deleted with the legacy mesher, #20): lines from the absolute
+    // (the removed instanced path): lines from the absolute
     // voxel position (not UVs), with the block line winning over the voxel line.
-    // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
+    // Per-object: master uniform ANDed with this face's flag bit.
     if (on_face_grid_enabled()) {
         // Anchor the overlay to the TRUE world voxel frame so its voxel + block lines
         // fall on the world block lattice (the per-object cage's lattice), not the

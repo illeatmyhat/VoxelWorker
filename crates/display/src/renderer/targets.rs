@@ -48,7 +48,8 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        // TEXTURE_BINDING dates from the retired volumetric fog pass (ADR 0012), which
+        // TEXTURE_BINDING is retained for compatibility with the bind-group layout; the
+        // current pass does not use it.
         // sampled this MSAA depth as a texture to occlude its march. The current onion
         // and operand ghosts occlude by depth-TESTING (`Less`/fail) against this same
         // attachment inside the shared MSAA pass instead, so nothing samples it today.

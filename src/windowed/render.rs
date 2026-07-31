@@ -1,7 +1,6 @@
 //! The shell's per-frame render seam: acquire the surface texture, poll the display/measurement
 //! workers, run the egui frame, apply this frame's Intents + view actions, upload every
-//! renderer's uniforms, and submit the shared [`render_frame`]. Split out of `windowed/mod.rs`
-//! (ADR 0016).
+//! renderer's uniforms, and submit the shared [`render_frame`].
 
 use super::*;
 
@@ -58,7 +57,7 @@ impl WindowedState {
                 self.window.request_redraw();
             }
         }
-        // ADR 0010 E5 follow-up: accept a finished (non-stale) diameter measurement.
+        // Accept a finished, non-stale diameter measurement.
         self.poll_diameter_worker();
 
         // M6: drain the background scan channel and turn any new groups into
@@ -82,12 +81,12 @@ impl WindowedState {
             self.panel_state.layer_range.upper,
         );
         if current_band != self.measured_band {
-            // ADR 0010 E5 follow-up: re-measure the diameter ASYNCHRONOUSLY. The streamed
+            // Re-measure the diameter asynchronously. The streamed
             // cacheless query (a coarse block contributes its run block-granular, boundary
-            // per-voxel — the SAME value the retired dense `widest_run_in_band` returns) is
+            // per-voxel — the same value as the dense query) is
             // O(total blocks): sub-second on a huge solid but not free, and it must never
             // block the event-loop thread. Dispatch it to the `DiameterWorker`; the shell
-            // keeps showing the previous (stale) `measured_diameter` until the result lands
+            // keeps showing the previous `measured_diameter` until the result lands
             // (`poll_diameter_worker`). Record `current_band` as dispatched so we don't
             // re-dispatch every frame; a later scrub or a grid edit (which resets
             // `measured_band` to `(u32::MAX, u32::MAX)`) supersedes it via the generation.
@@ -147,7 +146,7 @@ impl WindowedState {
             status_line: export_status_line.as_deref(),
         };
 
-        // ADR 0018 Decision 5: the layer scrubber's track spans the SELECTED object's Z
+        // The layer scrubber's track spans the selected object's Z
         // extent in Onion-fog mode (else the whole scene). Read it from the shared clip
         // (a no-op walk outside Onion-fog mode, where it returns the scene `grid_z`).
         let layer_track_len = self.current_mesh_clip(grid_z).track_len;
@@ -236,8 +235,8 @@ impl WindowedState {
             None => {}
         }
 
-        // Signal (ADR 0018 Decision 8): the icon rail's Home/Fit click, pre-mapped onto a
-        // `ChromeClickAction`, runs through the SAME `run_chrome_action` the (now retired)
+        // The icon rail's Home/Fit click, pre-mapped onto a
+        // `ChromeClickAction`, runs through the same `run_chrome_action` as the
         // cube badges used — no forked framing logic. A rail mode-cycle already mutated
         // `panel_state.view_mode` inside `run_egui_frame`, so it needs nothing here (the
         // overlay re-derivation below keys on the mode change, like a panel-driven one).
@@ -290,7 +289,7 @@ impl WindowedState {
         self.egui_winit_state
             .handle_platform_output(&self.window, prepared.platform_output.clone());
 
-        // ADR 0003 Phase C C4a: the panel no longer mutates the scene directly — it
+        // The panel does not mutate the scene directly — it
         // DESCRIBES this frame's mutations as a `Vec<Intent>`. Apply each through the
         // single `AppCore::apply_intent` door (in order), merging the returned typed
         // `IntentEffect`s, then fold them into the loop's existing decisions:
@@ -444,7 +443,7 @@ impl WindowedState {
             merged_effect = merged_effect.merged_with(effect);
         }
         // Batched intents that must land as ONE undo step: a multi-node Delete (ADR 0033), and
-        // every sketch commit — one authoring act, one press of Ctrl+Z (owner 2026-07-29).
+        // every sketch commit — one authoring act, one press of Ctrl+Z.
         for transaction in std::mem::take(&mut self.viewport_transactions) {
             let effect = self.app_core.apply_transaction(
                 &mut self.panel_state.scene,
@@ -871,13 +870,13 @@ impl WindowedState {
             &self.view_cube_renderer,
         );
 
-        // ADR 0012: the onion-skin VOLUMETRIC FOG is retired. Onion context draws as the
+        // Onion context draws as the
         // display paths' ghost pass (prepared above: the brick slabs in `update_ghost_uniforms`,
         // the cuboid slabs in `update_uniforms` → `rebuild_for_band`; drawn in `render_frame`
         // when `onion_ghost_active`).
         let _ = layer_range;
 
-        // The ordered frame phases (ADR 0031). Each renderer self-gates (empty batch → no
+        // The ordered frame phases. Each renderer self-gates (empty batch → no
         // draw), so an always-included draw is a cheap no-op; only the gizmo (a fixed unit
         // gizmo, always non-empty) is gated on there being a selection.
         let background: [&dyn display::SceneDraw; 1] = [&self.background_gradient_renderer];
@@ -1723,7 +1722,7 @@ impl WindowedState {
     /// placement is armed at all, so a click over nothing keeps the placement armed rather
     /// than falling through to select something. Only a click that HITS a surface places.
     ///
-    /// The ray is cast here and nowhere else. It used to run on every `CursorMoved` to keep a
+    /// The ray is cast here and nowhere else. It runs on the stationary-click path so a
     /// preview point in step, which put a full CPU pick between the mouse and the frame that
     /// showed it — the reason the gizmo trailed the cursor on a large scene. It answers one
     /// question, asked once, at the moment the answer is needed.
@@ -1964,7 +1963,7 @@ impl WindowedState {
     /// lands is the placement's business, not the gizmo's: a click over nothing simply does not
     /// commit, and the placement stays armed.
     ///
-    /// This used to gate on a per-move raycast, which made the gizmo both lag and blink out over
+    /// A stationary-click gate keeps the gizmo responsive and visible over
     /// sky. Lag is the worse failure — a mark that trails the cursor stops reading as "this is
     /// what you are carrying".
     ///

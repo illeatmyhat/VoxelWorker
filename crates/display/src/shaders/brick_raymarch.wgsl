@@ -15,7 +15,7 @@
 // u32 pair): a kind-0 COARSE record hits as a solid block-cube; a kind-1 SCULPTED
 // record descends to a voxel DDA over the brick's R8 atlas slot; a miss steps on.
 //
-// **Residency-miss contract (ADR 0011 4a, decided at G1):** a sculpted record whose
+// **Residency-miss contract:** a sculpted record whose
 // atlas slot is the NON_RESIDENT sentinel renders its COARSE form (the solid
 // block-cube) — degraded-but-correct, never skipped. One branch, paid up front, so
 // G4's residency rings are a pure eviction policy.
@@ -76,16 +76,16 @@ struct BrickUniforms {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
-    // Material is PER-RECORD (packed into `BrickGpuRecord.kind`, ADR 0011 G2), so no
+    // Material is per-record (packed into `BrickGpuRecord.kind`), so no
     // scene-wide material id rides here — `record_count` plus the band-clip fields fill the slot.
     record_count: u32,
-    // ADR 0011 band-clip interior fallback: 1 when a LAYER BAND actually clips the solid's
+    // Band-clip interior fallback: 1 when a layer band actually clips the solid's
     // Z-extent (a cut plane can enter an elided interior). Only then does a record MISS consult
     // the block-occupancy map — under a full band the surface set is already hit-identical.
     band_clip_active: u32,
     // The block-occupancy cell count (the `occupancy_cells` binary-search span); 0 ⇒ off.
     occupancy_cell_count: u32,
-    // ADR 0012 (H1): the onion GHOST flag. 0 = normal solid shade; 1 = the ghost pass —
+    // The onion ghost flag. 0 = normal solid shade; 1 = the ghost pass —
     // the hit shades as the flat translucent `ghost_tint` (no texture / material /
     // overlay). The onion-slab clip is the traversal AABB itself (the ghost draw sets the
     // band to ONE onion slab, so `traversal_lo/hi.z` bound the slab); no extra Z test is
@@ -98,7 +98,7 @@ struct BrickUniforms {
     block_bias_and_tiles: vec4<i32>,
     // xyz: absolute voxel = sv voxel cell + this bias; w = loaded_material_active
     // (1 when a VS block is applied — shade solid hits from the 6-layer D2Array by the
-    // owner's lattice-determinism rule instead of the procedural atlas, ADR 0011 G2).
+    // owner's lattice-determinism rule instead of the procedural atlas.
     voxel_bias: vec4<i32>,
     // x: first in-band voxel Z (sv frame); y: one-past-last in-band voxel Z (sv
     // frame) — the layer-range band clip, applied at traverse time (the mesh path
@@ -107,11 +107,11 @@ struct BrickUniforms {
     // occupancy atlas's `block_bias_and_tiles.w`) — read only by `mixed_voxel_material`.
     // w unused.
     band_voxel_sv: vec4<i32>,
-    // ADR 0011 G2 clip-map pyramid: x = L1 blocks/cell, y = L1 cell count, z = L2
+    // Clip-map pyramid: x = L1 blocks/cell, y = L1 cell count, z = L2
     // blocks/cell, w = L2 cell count. A zero count disables that level's skip (the
     // flat G1 block-DDA) — how the pyramid-on == off parity A/B's the same shader.
     clipmap_blocks_and_counts: vec4<u32>,
-    // ADR 0011 G4 third clip-map level: x = L3 blocks/cell, y = L3 cell count; zw
+    // Third clip-map level: x = L3 blocks/cell, y = L3 cell count; zw
     // reserved (a fourth level was measured not to pay — see the G4 report). Same
     // zero-count = off convention.
     clipmap_blocks_and_counts_hi: vec4<u32>,
@@ -121,10 +121,10 @@ struct BrickUniforms {
     traversal_hi: vec4<f32>,
     material_base_colors: array<vec4<f32>, 3>,
     material_atlas_rects: array<vec4<f32>, 3>,
-    // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
+    // The onion ghost tint (linear RGB + src alpha), read only when
     // `ghost_mode != 0`. Appended so the solid draw's uniform layout is unchanged.
     ghost_tint: vec4<f32>,
-    // ADR 0018 Decision 5 (S5) — the onion-fog REGION clip, in the sv (shifted-render)
+    // The onion-fog region clip, in the sv (shifted-render)
     // voxel frame. The layer band no longer bites scene-wide: it is confined to the
     // selected object's placed AABB. xyz = the region's low voxel corner (sv frame);
     // w = the region ROLE (0 = ConfineBand — the SOLID march: inside the AABB the band
@@ -195,7 +195,7 @@ var<storage, read> brick_records: array<BrickGpuRecord>;
 @group(0) @binding(2)
 var sculpted_atlas: texture_3d<f32>;
 
-// ADR 0011 G2/G4 clip-map occupancy levels: sorted (hi, lo) packed CELL keys, a
+// Clip-map occupancy levels: sorted (hi, lo) packed cell keys, a
 // min-mip of the brick records. L1 = 8-block cells, L2 = 64-block cells, L3 =
 // 512-block cells. Empty (count 0) ⇒ that level's hierarchical skip is off.
 @group(0) @binding(3)
@@ -205,7 +205,7 @@ var<storage, read> clipmap_level_2_keys: array<vec2<u32>>;
 @group(0) @binding(5)
 var<storage, read> clipmap_level_3_keys: array<vec2<u32>>;
 
-// ADR 0011 band-clip interior-occupancy map: one cell per PRESENT 8-block region (sorted
+// Band-clip interior-occupancy map: one cell per present 8-block region (sorted
 // ascending by packed cell key — same order as the L1 clip-map cells), carrying a 512-bit
 // block-occupancy bitmask + a fallback material. Consulted ONLY when `band_clip_active` and
 // the surface-only record search misses: a set bit ⇒ an elided coarse interior the band cut
@@ -245,7 +245,7 @@ var material_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var material_sampler: sampler;
 
-// ADR 0011 G2 — the LOADED VS-block material: the mesh path's 6-layer face D2Array
+// The loaded VS-block material: the mesh path's 6-layer face D2Array
 // (one PNG per cube face). Group 2 mirrors `renderer::build_face_material_layout`
 // (D2Array + sampler), so `LoadedMaterial::bind_group` — built against that same
 // layout — binds here directly (a dummy 1×1×6 array binds when no block is applied).
@@ -402,7 +402,7 @@ fn floor_div(value: i32, divisor: i32) -> i32 {
     return select(quotient, quotient - 1, remainder != 0 && (remainder < 0) != (divisor < 0));
 }
 
-// ADR 0011 G2 — the hierarchical clip-map DDA helpers.
+// The hierarchical clip-map DDA helpers.
 
 // The hair a coarse-cell skip steps PAST the exit face before re-deriving the
 // block cell — larger than the per-block 1e-4 so the jump reliably lands in the
@@ -540,7 +540,7 @@ struct DdaStep {
 
 // Advance one cell along the DDA axis whose `t_max` is smallest (x ≤ y ≤ z tie order),
 // re-deriving the anchored `t_max` for the new cell. The ONE definition of the "step by
-// min-t axis" move the block DDA and the inner voxel DDA both run (formerly four
+// min-t axis" move the block DDA and the inner voxel DDA both run (previously four
 // hand-copied if-chains, one of which had silently dropped the entry-axis track).
 //
 // Built with `select`/boolean masks, NEVER a dynamic component STORE (`cell[axis] =
@@ -685,7 +685,7 @@ struct MarchHit {
     plane_sv: f32,
     hit_t: f32,
     voxel_cell: vec3<i32>,
-    // The hit block's material color index, decoded from its record (ADR 0011 G2).
+// The hit block's material color index, decoded from its record.
     material_id: u32,
     // The hit's on-face-grid overlay bit (0/1): from the record for a coarse/uniform hit, or
     // per-voxel from the cell-key texel for a mixed hit. The shade draws the grid overlay only
@@ -726,7 +726,7 @@ fn clamped_box_entry(ray: Ray, box_lo: vec3<f32>, box_hi: vec3<f32>) -> SlabEntr
     return entry;
 }
 
-// ADR 0018 Decision 5 (S5) — the onion-fog REGION clip helpers (sv frame). These are
+// The onion-fog region clip helpers (sv frame). These are
 // pure r-value reads (no dynamic component stores), so the FXC X3500 l-value hazard does
 // not apply. They mirror the mesh path's `voxel_meshed` / `RegionClip` predicate exactly.
 
@@ -775,7 +775,7 @@ fn block_intersects_region(block_min_voxel: vec3<i32>, block_max_voxel: vec3<i32
 // falls back to the coarse cube). All boxes are clamped to the traversal AABB so
 // the band clip yields cap faces, exactly like the banded mesh.
 //
-// ADR 0018 Decision 5 (S5): under an ACTIVE region (ConfineBand) the traversal AABB spans
+// Under an active region (ConfineBand) the traversal AABB spans
 // the FULL resident Z (the band is NOT pre-clamped into it — outside-region geometry above
 // or below the band must stay reachable), and the band is applied PER VOXEL via
 // `voxel_meshed`. A coarse block that intersects the region routes through the per-voxel DDA
@@ -836,7 +836,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
 
         // Resolve this block's geometry from its record, OR — on a record MISS under an active
         // band clip — from the block-occupancy map: a band cut-plane can enter an elided coarse
-        // interior the surface-only record set omitted (ADR 0011 interior elision). A present
+        // interior the surface-only record set omitted. A present
         // occupancy bit renders its COARSE block-cube, exactly the record the interior-inclusive
         // oracle build would carry. Under a full band this branch never fires (band_clip_active
         // 0), keeping the common path a single record lookup. S5: under an active region the
@@ -1064,7 +1064,7 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 
 // `absolute` is the cuboid shader's `voxel_absolute_position` (world +
 // grid_half_extent); `world_normal` the face's outward unit normal; `material_id` the
-// hit block's per-record material color index (ADR 0011 G2); `overlay` the hit's own
+// hit block's per-record material color index; `overlay` the hit's own
 // on-face-grid overlay bit (0/1) — the grid draws only where the master toggle AND this bit hold.
 // `screen_derivative` is the analytic voxels-per-pixel of the evaluation position on the hit
 // face's plane (the raymarch's stand-in for the mesh path's `fwidth(absolute)` — derivative
@@ -1083,7 +1083,7 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
         // determinism rule) — pick the per-face D2Array layer from the outward normal and
         // sample `fract(texture_coord)`, so a raymarch hit lands the EXACT texel the merged
         // mesh face does. `face_layer` + this UV + `fract` are copied verbatim from
-        // cuboid_loaded.wgsl (ADR 0011 G2 per-record materials); band-clip cross-section faces
+        // cuboid_loaded.wgsl per-record materials; band-clip cross-section faces
         // + the block-occupancy fallback cubes reach here with their clip/step normal, so they
         // shade by the same rule. Level 0 explicitly (no mips) — legal in non-uniform flow.
         let layer = face_layer(world_normal);
@@ -1235,7 +1235,7 @@ fn fragment_render(
     let clip = uniforms.ray_view_projection * vec4<f32>(hit_eye_relative, 1.0);
 
     var output: FragmentOutput;
-    // ADR 0012 (H1): the onion ghost shades flat translucent (no texture / material /
+    // The onion ghost shades flat translucent (no texture / material /
     // overlay), matching the cuboid mesh ghost's flat tint so the two paths ghost
     // pixel-comparably. The ghost pipeline alpha-blends this + tests depth read-only, so
     // the `frag_depth` below still gates the ghost behind solid geometry (its own solid
@@ -1275,7 +1275,7 @@ fn fragment_render(
 }
 
 // ============================================================================
-// ADR 0012 H1.5 (spike) — Beer–Lambert HAZE ghost: thickness-weighted onion
+// Beer–Lambert haze ghost: thickness-weighted onion
 // translucency, restoring the retired volumetric fog's aerogel look from the
 // brick field alone (no fog tiles, no new data).
 // ============================================================================
@@ -1457,7 +1457,7 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
     return result;
 }
 
-// The HAZE ghost entry (ADR 0012 H1.5 spike). ONE march per PIXEL (center ray —
+// The haze ghost entry. One march per pixel (center ray —
 // a soft haze has no hard edges to antialias, so no per-sample rays: a 4× refund
 // vs the crisp ghost). Opacity is Beer–Lambert over the accumulated in-solid
 // thickness; color is the ghost tint. `frag_depth` is the slab's FIRST in-solid
@@ -1508,7 +1508,7 @@ fn fragment_hit_identity(@builtin(position) position: vec4<f32>) -> @location(0)
 // SHADES each hit exactly as `fragment_render`'s center-ray evaluation would (same
 // plane-intersection, same `shade_cuboid_surface`), into a plain color target. Used
 // to gate that a LOADED-material raymarch hit samples the same texel the mesh's
-// lattice rule computes for that voxel face (ADR 0011 G2). Single sample ⇒ the sample
+// lattice rule computes for that voxel face. Single sample ⇒ the sample
 // ray IS the pixel-center ray, so no per-sample loop is needed.
 @fragment
 fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
@@ -1549,10 +1549,10 @@ fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(
     return shade_cuboid_surface(absolute, world_normal, hit.material_id, hit.overlay, screen_derivative);
 }
 
-// The MATERIAL-parity harness entry (tests/gpu_parity.rs, ADR 0013): a single-sample pass
+// The material-parity harness entry (`tests/gpu_parity.rs`): a single-sample pass
 // that reports the RESOLVED per-voxel material id of each hit — for a MIXED brick the clean
 // block id of its cell-key texel, else the per-record material — instead of a color. This
-// is the direct "shader == CPU-march reference" gate the ADR sets: the CPU reference resolves
+// is the direct "shader == CPU-march reference" gate: the CPU reference resolves
 // the same cell-key tile at the same hit voxel, and this pass surfaces exactly what the shader
 // resolved, so the two are compared without reproducing any shading. `(hit flag, material_id)`.
 @fragment

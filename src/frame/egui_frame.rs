@@ -1,7 +1,7 @@
-//! The egui half of the per-frame pipeline (ADR 0031 — split out of the former monolithic
-//! `lib.rs`): build the panel + tessellate the UI ([`run_egui_frame`]), the persistent
+//! The egui half of the per-frame pipeline: build the panel, tessellate the UI
+//! ([`run_egui_frame`]), the persistent
 //! [`EguiPaintBridge`], the [`PreparedEguiFrame`] it produces, and the view-cube context-menu
-//! request. The GPU pass recording is the sibling [`render`](super::render).
+//! request. GPU pass recording is handled by the sibling [`render`](super::render).
 
 use crate::*;
 

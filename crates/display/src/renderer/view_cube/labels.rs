@@ -47,7 +47,7 @@ pub(super) fn generate_face_label_textures() -> Vec<u8> {
 
 /// Render one Signal face-label texture (RGBA8, `FACE_LABEL_TEXTURE_SIZE` square):
 /// flat `fill_hex` background and the monospace label. The 3×3 slice lines are NOT baked
-/// here anymore (issue #91 item 3): they render as a constant-width anti-aliased SDF in
+/// here: they render as a constant-width anti-aliased SDF in
 /// `viewcube.wgsl` (screen-space, so glancing angles never thin them), leaving this
 /// texture as just the flat fill + centered label.
 fn render_face_label(label: &str, fill_hex: u32) -> Vec<u8> {

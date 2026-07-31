@@ -37,7 +37,7 @@ fn view_cube_is_ccw_outward() {
     assert_ccw_outward(&positions, &normals, &indices);
 }
 
-// ---- issue #29 S3: per-object grid line geometry + gating ----
+// ---- Per-object grid line geometry and gating ----
 
 use document::scene::{Node, NodeContent};
 use document::voxel::SdfShape;
@@ -123,7 +123,7 @@ fn voxel_boundaries_tag_block_lines_at_lattice_positions() {
     }
 }
 
-/// The fine floor grid is two-tier and aligns with the block lattice (issue #29
+/// The fine floor grid is two-tier and aligns with the block lattice
 /// fix). Z-up: the floor is an XY-plane grid at the base. For a node box, this
 /// asserts three properties. First, the floor's DISTINCT X line coordinates form a
 /// superset of — and at the block positions coincide with — the lattice's
@@ -208,7 +208,7 @@ fn lattice_and_floor_vertices_nonempty_per_box() {
             !floor.is_empty(),
             "@step{step}: a sized box has floor lines"
         );
-        // Z-up: the floor sits at the EXACT base plane `z = min[2]` (issue #29
+        // Z-up: the floor sits at the exact base plane `z = min[2]`
         // fix: no geometric drop — the floor pipeline's depth bias avoids
         // z-fighting the model's coincident bottom face), flat in Z, uniform across
         // every vertex. This makes the floor's block lines meet the lattice's
@@ -234,7 +234,7 @@ fn box_node(name: &str, offset: [i64; 3], voxels_per_block: u32) -> Node {
     node
 }
 
-/// Gating (issue #29 S3): a node's lattice box appears in the batch ONLY when the
+/// Gating: a node's lattice box appears in the batch only when the
 /// master AND the node's per-object toggle are both ON; turning EITHER off drops
 /// it. A two-node scene with the grid enabled on ONE node yields exactly ONE
 /// lattice box (the other node contributes none).
@@ -283,7 +283,7 @@ fn scene_grid_boxes_gated_by_master_and_per_object() {
     }
 }
 
-// ===== Issue #29 S5: Points (world reference grid) ==========================
+// ===== Points (world reference grid) ========================================
 
 use document::scene::Point;
 
@@ -294,7 +294,7 @@ fn origin_point_scene(plane_xz: bool, plane_xy: bool, plane_yz: bool, axes: bool
 }
 
 /// A scene carrying only an Origin Point with the given plane flags and explicit
-/// per-axis X/Y/Z toggles (issue #29 fix: separable axes).
+/// per-axis X/Y/Z toggles.
 fn origin_point_scene_axes(
     plane_xz: bool,
     plane_xy: bool,
@@ -402,7 +402,7 @@ fn points_plane_and_axis_toggles_gate() {
     );
 }
 
-/// Per-axis gating (issue #29 fix): the X/Y/Z axes toggle independently. All three
+/// Per-axis gating: the X/Y/Z axes toggle independently. All three
 /// on ⇒ three segments (one per color); turning Y off drops the GREEN segment and
 /// leaves the red (X) and blue (Z) ones; a single axis on ⇒ exactly one segment.
 #[test]

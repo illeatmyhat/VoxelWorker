@@ -1,13 +1,12 @@
-//! VoxelWorker — the windowed application (the default binary's logic, now a shell LIB
-//! module tree).
+//! VoxelWorker windowed application shell.
 //!
 //! winit 0.30 `ApplicationHandler` + wgpu 29 surface + egui 0.34 panel. Shows the warm-dark
 //! workshop clear color and the shared right-hand egui side panel. It uses the exact same
 //! [`render_frame`]/[`run_egui_frame`] code as the headless `shot` binary, so the live window
 //! and the captured PNG match.
 //!
-//! The thin `src/main.rs` binary just calls [`run`]. The logic is split across this module tree
-//! (ADR 0016): the [`WindowedState`] struct lives here, its impl is spread over sibling files
+//! The thin `src/main.rs` binary just calls [`run`]. The logic is split across this module tree:
+//! the [`WindowedState`] struct lives here, its impl is spread over sibling files
 //! (`geometry`, `workers`, `palette`, `export`, `view_cube`, `render`) as descendant modules that
 //! reach its private fields, and the winit event pump (`impl ApplicationHandler for App`) lives in
 //! `events`.
@@ -36,9 +35,9 @@ use display::block_texture::LoadedMaterial;
 use work::workers::scan::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
-// The display-state machine (both renderers + both async workers + the install seams) now
+// The display-state machine (both renderers, async workers, and install seams)
 // lives in the `DisplayOrchestrator`; the shell holds one and calls it at its integration
-// points. See `docs/architecture/03-display.md`.
+// points. See `docs/architecture/03-display.md` for the layer boundary.
 use crate::{
     spawn_diameter_worker, spawn_vox_export_worker, DiameterRequest, DiameterWorker,
     DisplayOrchestrator, DisplayRefreshContext, GenerationTracker, VoxExportRequest,
@@ -77,7 +76,7 @@ struct WindowedState {
     /// handles in [`DisplayOrchestrator::first_build`].
     display: DisplayOrchestrator,
     transform_gizmo_renderer: TransformGizmoRenderer,
-    /// The boolean-operand ghost (ADR 0018 Decision 6, "Show booleans" mode): every
+    /// The boolean-operand ghost in "Show booleans" mode: every
     /// Subtract/Intersect operand body in the selected subtree, as an operation-coded
     /// x-ray over the composed scene. One renderer instance; its meshes are re-derived
     /// ONLY on selection / geometry / MODE change (see the dirty flag below), never per
@@ -92,7 +91,7 @@ struct WindowedState {
     selected_ghost_selection: Option<crate::NodeId>,
     /// The view mode the ghost meshes were last derived for (re-derive on a mode change).
     selected_ghost_view_mode: crate::ViewMode,
-    /// The selection outline + wash (ADR 0032, reworked): a screen-space depth-map
+    /// The selection outline and wash: a screen-space depth-map
     /// treatment of every selected node's derived body — the viewport's selection
     /// feedback, in ALL view modes. Re-derived only on selection / geometry change.
     selection_outline_renderer: display::mesh::SelectionOutlineRenderer,
@@ -100,28 +99,28 @@ struct WindowedState {
     /// it drifts — the belt-and-braces companion to `selected_ghost_dirty`, which the
     /// cel seam shares).
     selected_cel_nodes: Vec<crate::NodeId>,
-    /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
+    /// Per-object block lattice and floor grid. Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
     scene_grid_renderer: SceneGridRenderer,
-    /// The world reference AXES (issue #29 S5): every visible Point's axis lines. Its
+    /// The world reference axes: every visible Point's axis lines. Its
     /// line batch is rebuilt each frame from `scene.points`. This instance is the DEPTH-TESTED
     /// occluded pass (scene matrix); [`points_overlay_renderer`](Self::points_overlay_renderer)
     /// is the depth-off pass. Two instances so the occluded axes can draw both ways at once
-    /// (ADR 0031): crisp depth occlusion near, invariant paint-order occlusion far.
+    /// It provides crisp depth occlusion near and invariant paint-order occlusion far.
     points_renderer: PointsRenderer,
     /// The DEPTH-OFF axes pass (generous overlay matrix that never clips): the on-top nav marker
-    /// when that setting is on, or the occluded setting's paint-order pass otherwise (ADR 0031).
+    /// when that setting is on, or the occluded setting's paint-order pass otherwise.
     points_overlay_renderer: PointsRenderer,
-    /// The analytic infinite reference grid (issue #29 Points fast-follow): every
+    /// The analytic infinite reference grid: every
     /// visible Point's enabled PLANES, drawn as fullscreen ray-plane passes. Replaces
     /// the old finite tiled-line ground plane.
     infinite_grid_renderer: InfiniteGridRenderer,
-    /// ADR 0022: the armed-tool placement ghost — a translucent analytic SDF drawn where
+    /// The armed-tool placement ghost — a translucent analytic SDF drawn where
     /// the armed primitive's voxels would land. Held permanently and armed per-frame from
     /// the armed tool's pending drop (`PanelState::placement_ghost()`); disarmed (no draw)
     /// when nothing is armed.
     placement_ghost_renderer: crate::PlacementGhostRenderer,
-    /// ADR 0030 §3 (#100): the picked sketch region's wash — the region signed-distance field
+    /// The picked sketch region's wash — the region signed-distance field
     /// evaluated per pixel ON the sketch plane. Held permanently and armed per-frame from the open
     /// sketch; disarmed (no draw) whenever no sketch is open.
     sketch_region_renderer: display::renderer::SketchRegionRenderer,

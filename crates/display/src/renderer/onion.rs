@@ -1,5 +1,4 @@
-//! Onion-skin ghost parameters (issue #12; ADR 0012 — the volumetric fog subsystem
-//! was retired, the ghost pass on the live display paths replaces it).
+//! Onion-skin ghost parameters shared by the display paths.
 
 use super::*;
 
@@ -21,11 +20,10 @@ pub struct OnionFogParams {
     pub band_z_max: f32,
 }
 
-/// The onion tint hue (cool blue-gray), matching the retired volumetric fog haze so
-/// the ghost reads as the same "context around the band" the fog conveyed.
+/// The onion tint hue shared by both display paths.
 const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 
-/// ADR 0012 (H1) — the onion ghost's fixed alpha, used as the flat translucent
+/// The onion ghost's fixed alpha, used as the flat translucent
 /// blend the CUBOID MESH path shades its onion-slab ghost with (depth-tested `Less`,
 /// depth write ON — the ghost pipeline in `mesh/pipeline.rs`). The BRICK RAYMARCH
 /// path shades its ghost differently since the ADR 0012 H1.5 Beer-Lambert haze spike:
