@@ -4,7 +4,7 @@ use super::*;
 const MATERIAL_TEXTURE_SIZE: u32 = 32;
 
 // (The instanced renderer's `VoxelUniforms` struct + `voxel.wgsl` shader were
-// removed with the legacy mesher — part of #20. The cuboid path uses its own
+// removed with the earlier instanced mesher. The cuboid path uses its own
 // `CuboidUniforms`.)
 
 /// The visible layer band (issue #12), in voxel Z-layer indices (Z-up: layers are

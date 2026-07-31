@@ -1,4 +1,4 @@
-// View-cube CHROME overlay shader (#13 Step 2).
+// View-cube chrome overlay shader.
 //
 // Draws screen-space textured glyph quads (the persistent rotate arrows and the
 // hover-only roll arrows) that are FIXED to the cube rect — they do NOT rotate with

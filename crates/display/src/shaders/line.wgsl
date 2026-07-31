@@ -1,10 +1,10 @@
-// Flat colored-line shader (Milestone 5).
+// Flat colored-line shader.
 //
 // Shared by the origin gizmo, the block lattice / floor grid, and Points. Each
 // vertex carries a world-space position and a linear RGB color; the only
 // uniform is the view-projection matrix. The view-cube edge wireframe used to
 // share this pipeline too, but moved to its own constant-screen-space-width
-// shader (`viewcube_lines.wgsl`, issue #91 item 3) because hardware `LineList`
+// shader (`viewcube_lines.wgsl`) because hardware `LineList`
 // can't hold a constant pixel width at every orbit angle.
 
 struct LineUniforms {

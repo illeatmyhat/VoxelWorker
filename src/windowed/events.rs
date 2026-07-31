@@ -1,7 +1,6 @@
 //! The winit event pump: `ApplicationHandler for App` — lazy window/GPU creation on `resumed`,
 //! then the window-event router that drives orbit/pan/zoom, the ViewCube click/hover, the
-//! deferred-close data-loss guard, and the per-frame redraw. Split out of `windowed/mod.rs`
-//! (ADR 0016).
+//! deferred-close data-loss guard, and the per-frame redraw.
 
 use super::*;
 

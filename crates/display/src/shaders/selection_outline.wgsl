@@ -1,4 +1,4 @@
-// Selection outline + wash composite (ADR 0032, reworked 2026-07-29).
+// Selection outline and wash composite.
 //
 // Full-screen pass over the RESOLVED color target. Inputs: the selection's FRONT
 // and BACK hull depth maps (the selected bodies rasterised depth-only under the

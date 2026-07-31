@@ -1,6 +1,6 @@
 //! The shell's ViewCube + framing camera actions: Home snap/set, Fit, the cube viewport
 //! hit-rect, chrome-zone dispatch, and the ray-cast element picker that maps a cube click to a
-//! face/edge/corner. Split out of `windowed/mod.rs` (ADR 0016).
+//! face/edge/corner.
 
 use super::*;
 
@@ -96,7 +96,7 @@ impl WindowedState {
         x >= corner_x && x <= corner_x + size && y >= corner_y && y <= corner_y + size
     }
 
-    /// Is the pixel `(x, y)` inside the Signal chrome (the floating display stack or the
+    /// Is the pixel `(x, y)` inside the display chrome (the floating display stack or the
     /// icon rail)? Rects are cached from the last rendered frame
     /// (`PreparedEguiFrame::chrome_rects_px`), like the cube's. The camera gate treats
     /// pointer input inside them as chrome — with the stack no longer allocating in

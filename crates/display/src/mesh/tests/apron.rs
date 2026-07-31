@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Per-chunk apron meshing structural parity (issue #20 S6c-2d) ----
+// ---- Per-chunk apron meshing structural parity ----
 
 /// Bucket a whole grid into per-chunk sub-grids exactly as the renderer's `new`
 /// wrapper does (`floor(world / chunk_extent)`), so the per-chunk mesher sees the
@@ -9,7 +9,7 @@ fn bucket_for_test(grid: &VoxelGrid, voxels_per_block: u32) -> Vec<([i32; 3], Vo
     crate::mesh::bucket_grid_into_chunk_grids(grid, voxels_per_block)
 }
 
-/// Issue #40: an INCREMENTAL rebuild — re-mesh only the apron-dilated dirty subset,
+/// An incremental rebuild re-meshes only the apron-dilated dirty subset,
 /// evict vacated chunks, keep every other chunk's buffer — produces a per-chunk
 /// mesh (buffer) set BYTE-IDENTICAL to a wholesale rebuild, for every edit kind
 /// INCLUDING edits at a chunk SEAM (where the 1-voxel apron makes a neighbor's

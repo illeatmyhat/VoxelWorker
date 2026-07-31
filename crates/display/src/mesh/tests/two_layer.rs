@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- ADR 0010 E3 — two-layer mesher exposed-face parity (#50) ----
+// ---- Two-layer mesher exposed-face parity ----
 
 use document::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
 use document::voxel::SdfShape as TwoLayerSdf;
@@ -84,7 +84,7 @@ fn two_layer_renderable_faces(
 /// and both equal the ground-truth genuinely-exposed set derived straight from the
 /// dense occupancy — for one scene. Mirrors
 /// [`per_chunk_apron_exposed_face_set_equals_whole_region`] (the apron parity), but for
-/// the two-layer (coarse one-box + microblock cuboid + seam-flag) mesher (ADR 0010 E3).
+/// the two-layer (coarse one-box + microblock cuboid + seam-flag) mesher.
 fn assert_two_layer_face_parity(scene: &Scene, density: u32, label: &str) {
     // The dense assembled grid: ground truth occupancy + the reference whole-grid mesh.
     let dense = scene.resolve_region(scene.full_extent_blocks(density), density, 0);

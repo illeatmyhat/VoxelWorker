@@ -1,4 +1,4 @@
-// Brick-field raymarch (ADR 0011 G1) — the minimal GPU display sink.
+// Brick-field raymarch: the GPU display sink.
 //
 // **GPU mirror of `crates/raycast`.** The ray–volume traversal this shader performs —
 // the slab entry, the Amanatides & Woo block/voxel DDA (with its x→y→z tie order), and
@@ -33,7 +33,7 @@
 // pixels therefore resolve to exactly the mesh's center-evaluated color, and
 // silhouette/step edges resolve to the same per-face coverage blend.
 //
-// ## Frames (ADR 0008)
+// ## Frames
 //
 // The march runs in the SHIFTED render frame `sv = world + grid_half_extent +
 // lattice_shift`: voxel boundaries sit on integers and BLOCK boundaries on
@@ -931,7 +931,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                     // a grazing ray entering the block through a MAX face lands
                     // `voxel_entry_position` exactly on that face, so a plain floor seeds one voxel
                     // PAST the block and the bound check below breaks before testing any voxel —
-                    // skipping the block that holds the surface (the grazing-rim bug, 2026-07-17).
+                    // skipping the block that holds the surface.
                     // `voxel_t_max` derives from the clamped cell, so an empty seed still steps on.
                     var voxel_cell = clamp(
                         vec3<i32>(floor(voxel_entry_position)),
@@ -1395,7 +1395,7 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
                         // Seed CLAMPED into the block (mirrors `VoxelDda::seed_in_box`): a grazing
                         // ray entering through a MAX face floors one voxel PAST the block, which the
                         // bound check would read as already-exited — skipping the block's rim solid
-                        // (the grazing-rim bug, 2026-07-17; here it would under-count ghost thickness).
+                        // here it would under-count ghost thickness.
                         var voxel_cell = clamp(
                             vec3<i32>(floor(voxel_entry_position)),
                             block_min_voxel,

@@ -1,7 +1,7 @@
 use super::*;
 use voxel_core::voxel::ShapeKind;
 
-/// Save and reload through the on-disk artifact, which since the ADR 0022 split is
+/// Save and reload through the on-disk artifact.
 /// the dump rather than this struct. Most tests below care about what survives a
 /// save/load, not about which type spells the JSON, so they go through here.
 fn save_and_reload(config: &AppConfig) -> AppConfig {
@@ -88,7 +88,7 @@ fn config_round_trips_through_json() {
     assert_eq!(config, restored);
 }
 
-/// ADR 0024: the session state survives the full live round trip —
+/// The session state survives the full live round trip —
 /// `PanelState → capture → JSON → load → to_panel_state` — which is the leg that was
 /// broken. Each of these four was classified as reaching the dump and was hard-coded
 /// to a default on the way back, so a test asserting only that `AppConfig` round-trips
@@ -181,7 +181,7 @@ fn home_view_persists_and_old_config_defaults() {
     assert!((old_home.distance - defaults.distance).abs() < 1e-5);
 }
 
-/// issue #32: a config persists and reloads its `scene` correctly. A non-trivial
+/// A config persists and reloads its `scene` correctly. A non-trivial
 /// scene (two offset Tool nodes with distinct materials) survives
 /// `capture → JSON → deserialize → to_panel_state` with the same node count,
 /// active selection, and resolved occupancy — the `scene` field is the single
@@ -268,7 +268,7 @@ fn bad_json_falls_back_without_panicking() {
     assert!(AppConfig::from_dump_json("not json at all}{").is_err());
 }
 
-/// issue #31 + #32: the legacy grid `show_*` mirror fields (`show_grid_overlay` /
+/// Legacy grid `show_*` mirror fields (`show_grid_overlay` /
 /// `show_block_lattice` / `show_floor_grid`), the older `show_origin_gizmo`, AND
 /// the flat geometry mirror fields (`shape` / `size_blocks` / `wall_blocks`) were
 /// all removed from `AppConfig`. There is no `deny_unknown_fields`, so an OLD
@@ -698,7 +698,7 @@ fn large_i64_offset_round_trips_through_json() {
     );
 }
 
-/// issue #31: the grid masters are the single source of truth on `scene.master_*`
+/// The grid masters are the single source of truth on `scene.master_*`
 /// and round-trip through `capture → JSON → to_panel_state` directly (no legacy
 /// `show_*` mirror). Non-default master values must survive the round-trip.
 #[test]

@@ -1,4 +1,4 @@
-// View-cube composite (issue #91 item 3) — blend the resolved MSAA cube onto the scene.
+// View-cube composite: blend the resolved MSAA cube onto the scene.
 //
 // The view cube renders into its own small 4× MSAA target (cleared transparent), which is
 // resolved to a single-sample texture with coverage-anti-aliased silhouette edges. This

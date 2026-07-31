@@ -1,4 +1,4 @@
-//! The GPU half of the per-frame pipeline (ADR 0031): [`render_frame`] records the viewport
+//! The GPU half of the per-frame pipeline: [`render_frame`] records the viewport
 //! MSAA pass as ordered [`FramePhases`] (background → model → over-model → scaffold → on-top),
 //! then the view cube in its own corner pass. The egui pass is the sibling
 //! [`egui_frame`](super::egui_frame).
