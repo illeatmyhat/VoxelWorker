@@ -1552,7 +1552,7 @@ impl Icon {
             }
             Icon::ConstraintVertical => "Constraint: the exact quarter turn of Horizontal.",
             Icon::ConstraintHorizontalVertical => {
-                "ONE tool, TWO constraints: the drawing decides which axis was meant, and the                  badge left behind is a plain Horizontal or Vertical. Drawn as those two marks                  superimposed, so nothing here is a third shape to learn."
+                "ONE tool, TWO constraints: the drawing decides which axis was meant, and the                  badge left behind is a plain Horizontal or Vertical. The white corner is the                  two axes on offer, the red 45° run is the segment about to move."
             }
             Icon::ConstraintTangent => "Constraint: touch with a common direction.",
             Icon::ConstraintEqual => {

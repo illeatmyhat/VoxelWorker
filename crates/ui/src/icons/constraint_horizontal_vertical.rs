@@ -1,54 +1,38 @@
 //! `constraint-horizontal-vertical` — along an axis, whichever axis the line is already nearer.
 //!
-//! ONE tool, TWO constraints (Fusion's arrangement): the author says "line this up with an axis"
+//! ONE cell, TWO constraints (Fusion's arrangement): the author says "line this up with an axis"
 //! and the drawing decides which axis it meant. What gets asserted is a plain
 //! [`Horizontal`](super::constraint_horizontal) or [`Vertical`](super::constraint_vertical), and
 //! the badge left behind carries THAT mark rather than this one — this glyph belongs to the
 //! question, those belong to the answer.
 //!
-//! So it is drawn as exactly those two marks superimposed: the same bars, the same end nodes, the
-//! same coordinates, one atop the other. Nothing here is a third shape to learn. The nodes are a
-//! shade smaller than the pair's own, which is the only concession the crossing asks for.
+//! It is the only mark in the set that ASKS rather than reports, and the two-tone ink says so.
+//! White is the reference: the two arms are the axes on offer, each 11 long — exactly the bar in
+//! `Horizontal` and in `Vertical`, so the cell quotes the two answers it stands for. Red is the
+//! driven entity: the author's own segment, drawn at exactly 45° with its midpoint on the
+//! corner's bisector, because the question is symmetric between the two axes and a segment tilted
+//! toward either one would already have answered it. It carries no end nodes — `Collinear` and
+//! `Parallel` set the precedent that a bare run reads as a segment, and two more squares would
+//! crowd the corner this has to stay clear of.
+//!
+//! The two bars SUPERIMPOSED were tried first and rejected: that is a plus with four nodes, which
+//! is what `Snap to voxel` already is, and it needed its nodes shrunk below the pair's own to
+//! survive its own crossing — a concession that says the construction was wrong.
 
 use super::{Ink, Mark};
 
-/// The horizontal bar's ends — [`constraint_horizontal`](super::constraint_horizontal)'s own.
-const LEFT: (f32, f32) = (3.5, 9.0);
-const RIGHT: (f32, f32) = (14.5, 9.0);
-/// The vertical bar's ends — [`constraint_vertical`](super::constraint_vertical)'s own.
-const TOP: (f32, f32) = (9.0, 3.5);
-const BOTTOM: (f32, f32) = (9.0, 14.5);
-
-/// Slightly under the pair's 2.6, so four nodes on one crossing stay four nodes.
-const NODE: f32 = 2.2;
+/// The axis corner: up the left, along the bottom, meeting at `(3.5, 14.5)`.
+const AXES: &[(f32, f32)] = &[(3.5, 3.5), (3.5, 14.5), (14.5, 14.5)];
+/// The author's segment, 45° across the corner, centred on `(9.0, 9.0)`.
+const SEGMENT: &[(f32, f32)] = &[(5.5, 12.5), (12.5, 5.5)];
 
 pub(super) const DRAW: &[Mark] = &[
     Mark::Line {
-        points: &[LEFT, RIGHT],
-        ink: Ink::CONSTRAINT,
+        points: AXES,
+        ink: Ink::SOLID,
     },
     Mark::Line {
-        points: &[TOP, BOTTOM],
+        points: SEGMENT,
         ink: Ink::CONSTRAINT,
-    },
-    Mark::Node {
-        center: LEFT,
-        size: NODE,
-        ink: Ink::SOLID,
-    },
-    Mark::Node {
-        center: RIGHT,
-        size: NODE,
-        ink: Ink::SOLID,
-    },
-    Mark::Node {
-        center: TOP,
-        size: NODE,
-        ink: Ink::SOLID,
-    },
-    Mark::Node {
-        center: BOTTOM,
-        size: NODE,
-        ink: Ink::SOLID,
     },
 ];

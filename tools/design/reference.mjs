@@ -41,6 +41,7 @@ const IDS = {
   'Perpendicular|1 DOF': 'constraint-perpendicular',
   'Horizontal|1 DOF': 'constraint-horizontal',
   'Vertical|1 DOF': 'constraint-vertical',
+  'Horizontal / Vertical|the cell, not a badge': 'constraint-horizontal-vertical',
   'Tangent|1 DOF': 'constraint-tangent',
   'Equal|1 DOF': 'constraint-equal',
   'Symmetry|2 DOF': 'constraint-symmetry',

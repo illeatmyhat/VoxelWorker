@@ -385,6 +385,11 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (9.0, 3.5), size: 2.6, ink: Ink::SOLID },
         Mark::Node { center: (9.0, 14.5), size: 2.6, ink: Ink::SOLID },
     ]),
+    // Horizontal / Vertical — the cell, not a badge
+    ("constraint-horizontal-vertical", &[
+        Mark::Line { points: &[(3.5, 3.5), (3.5, 14.5), (14.5, 14.5)], ink: Ink::SOLID },
+        Mark::Line { points: &[(5.5, 12.5), (12.5, 5.5)], ink: Ink::CONSTRAINT },
+    ]),
     // Tangent — 1 DOF
     ("constraint-tangent", &[
         Mark::Circle { center: (8.0, 11.0), radius: 4.5, ink: Ink::CONSTRAINT },

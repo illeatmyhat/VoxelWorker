@@ -142,6 +142,22 @@
       role: 'The exact 90° rotation of Horizontal, so the pair reads as a pair. Both get their own ' +
             'non-square box rather than being padded to match.' },
 
+    { name: 'Horizontal / Vertical', dof: 'the cell, not a badge', w: 36, h: 36,
+      draw: () => ln([[7, 7], [7, 29], [29, 29]], W) + ln([[11, 25], [25, 11]], R),
+      role: 'The one rail cell that asserts <i>either</i> of two constraints, chosen from the ' +
+            'drawing. It is the only mark here that asks rather than reports, and the ink says so: ' +
+            'the two <b>white</b> arms are the axes — the references on offer — and the <b>red</b> ' +
+            'line is the author\'s own segment, the thing about to move. Both arms are 22 long, ' +
+            'exactly the bar in Horizontal and Vertical, so the cell quotes the two answers it ' +
+            'stands for. The segment is drawn at <i>exactly 45°</i>, its midpoint on the corner\'s ' +
+            'bisector: the question is symmetric between the two axes, and a mark tilted toward ' +
+            'either one would answer it. Bare, with no end nodes — Collinear and Parallel set the ' +
+            'precedent that a segment needs none, and two more squares at 16px would crowd the ' +
+            'corner it has to stay clear of. <br>Rejected: <b>the two bars superimposed</b> (a plus ' +
+            'with four nodes). It collides head-on with Snap to voxel, which <em>is</em> a plus ' +
+            'with a centre square, and it needed its nodes shrunk below the pair\'s to survive its ' +
+            'own crossing — a concession that says the construction was wrong.' },
+
     { name: 'Tangent', dof: '1 DOF', w: 36, h: 36,
       draw: () => ring(16, 22, 9, R) + ln([[4, 13], [32, 13]], W),
       role: 'Touch with a common direction. The line sits at y=13 and the circle\'s top is 22−9=13 — ' +
