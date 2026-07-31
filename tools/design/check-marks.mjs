@@ -2,12 +2,16 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(HERE, '..', '..');
-
-const HTML = path.join(REPO, 'docs', 'design', 'sketch-marks', 'tool-marks.html');
+// The sheets live in the Claude Design project, not in this repo. Point this at a local copy:
+//   node tools/design/check-marks.mjs <tool-marks.html>   (or set SKETCH_MARKS_DIR)
+const HTML = process.argv[2]
+  || (process.env.SKETCH_MARKS_DIR && path.join(process.env.SKETCH_MARKS_DIR, 'tool-marks.html'));
+if (!HTML) {
+  console.error('usage: node tools/design/check-marks.mjs <tool-marks.html>');
+  console.error('       the sheets are published in the Claude Design project; download them first');
+  process.exit(2);
+}
 const src = fs.readFileSync(HTML, 'utf8');
 const body = src.slice(src.lastIndexOf('<script>') + 8, src.lastIndexOf('</script>'));
 
@@ -134,7 +138,7 @@ near(32 - 21, 11, 1e-9, '2-tangent B horizontal line');
   near(perp, r, 5e-3, '2-tangent C diagonal leg');
 }
 
-// 3-tangent: all three lines at distance r from the centre, tangent points on the segments
+// 3-tangent: all three lines at distance r from the center, tangent points on the segments
 {
   const C = [11, 23], r = 7;
   const segs = [[[2, 30], [34, 30]], [[4, 7], [4, 32]], [[2.4, 7.8], [33.6, 31.2]]];
@@ -214,8 +218,8 @@ near(32 - 21, 11, 1e-9, '2-tangent B horizontal line');
   near(12 - 5, 7, 1e-9, 'offset B cap radii differ by the offset');
   near(11 - 4, 7, 1e-9, 'offset B upper leg');
   near(28 - 21, 7, 1e-9, 'offset B lower leg');
-  near((11 + 21) / 2, 16, 1e-9, 'offset B inner cap centre');
-  near((4 + 28) / 2, 16, 1e-9, 'offset B outer cap centre — not concentric with the inner');
+  near((11 + 21) / 2, 16, 1e-9, 'offset B inner cap center');
+  near((4 + 28) / 2, 16, 1e-9, 'offset B outer cap center — not concentric with the inner');
 }
 
 // offset A: a true miter, equal distance on both legs
@@ -259,7 +263,7 @@ near(10 + ((30 - 20) / (30 - 6)) * 16, 16.67, 5e-3, 'trim A crossing x');
   ok(/<rect[^>]*x="15.4"/.test(m.b.draw()), 'three-point arc B: through-point is not a square');
 }
 
-// arc slot: three concentric radii about one centre, exact semicircular caps
+// arc slot: three concentric radii about one center, exact semicircular caps
 {
   const C = [18, 26];
   const at = (r, deg) => [C[0] + r * Math.cos(deg * Math.PI / 180), C[1] + r * Math.sin(deg * Math.PI / 180)];
@@ -271,8 +275,8 @@ near(10 + ((30 - 20) / (30 - 6)) * 16, 16.67, 5e-3, 'trim A crossing x');
   near(dist(drawn.oR, drawn.iR), 8, 5e-4, 'arc slot right cap is not a semicircle of radius 4');
   near(dist(drawn.oL, drawn.iL), 8, 5e-4, 'arc slot left cap is not a semicircle of radius 4');
   for (const [s, i, o] of [[drawn.sR, drawn.iR, drawn.oR], [drawn.sL, drawn.iL, drawn.oL]]) {
-    near(dist(s, i), 4, 5e-4, 'arc slot spine not at the cap centre (inner)');
-    near(dist(s, o), 4, 5e-4, 'arc slot spine not at the cap centre (outer)');
+    near(dist(s, i), 4, 5e-4, 'arc slot spine not at the cap center (inner)');
+    near(dist(s, o), 4, 5e-4, 'arc slot spine not at the cap center (outer)');
   }
 }
 
@@ -410,21 +414,21 @@ const ORANGE = '#dda06a';
     ok(!MARKS.some(m => m.name === gone), `${gone} was cut but is still in the set`);
   }
   // 33 after the two cuts, plus the 8 the owner's authoritative list named and the sheet had
-  // never drawn: Midpoint line, Rectangle 3-point and centre, Circle 2-point, the centre-point
+  // never drawn: Midpoint line, Rectangle 3-point and center, Circle 2-point, the center-point
   // arc slot, Sketch dimension, and the two chamfers past equal distance.
   ok(MARKS.length === 41, `expected 41 marks, found ${MARKS.length}`);
   ok(MARKS.filter(m => m.fresh).length === 8,
      `expected 8 fresh marks, found ${MARKS.filter(m => m.fresh).length}`);
   // Every command on the owner's list is drawn, under the hint the list implies.
-  for (const need of ['Line|2 points', 'Midpoint line|centre · end',
-                      'Rectangle|2-point', 'Rectangle|3-point', 'Rectangle|centre · corner',
-                      'Circle|centre · diameter', 'Circle|2-point', 'Circle|3-point',
+  for (const need of ['Line|2 points', 'Midpoint line|center · end',
+                      'Rectangle|2-point', 'Rectangle|3-point', 'Rectangle|center · corner',
+                      'Circle|center · diameter', 'Circle|2-point', 'Circle|3-point',
                       'Circle|2-tangent', 'Circle|3-tangent',
-                      'Arc|centre · endpoints', 'Arc|tangent', 'Three-point arc|ends + through',
+                      'Arc|center · endpoints', 'Arc|tangent', 'Three-point arc|ends + through',
                       'Polygon|circumscribed', 'Polygon|inscribed', 'Polygon|edge',
-                      'Ellipse|centre · 2 axes',
-                      'Slot|centre-to-centre', 'Slot|overall', 'Slot|centre-point',
-                      'Slot|3-point arc', 'Slot|centre-point arc',
+                      'Ellipse|center · 2 axes',
+                      'Slot|center-to-center', 'Slot|overall', 'Slot|center-point',
+                      'Slot|3-point arc', 'Slot|center-point arc',
                       'Spline|fit point', 'Spline|control point',
                       'Add point|free vertex', 'Text|profile from glyphs',
                       'Sketch dimension|drive a distance',
@@ -440,9 +444,9 @@ const ORANGE = '#dda06a';
 
 // ---- pass D: the redraws, and the claims their notes make -----------------
 {
-  // Rectangle carries a D that was explored and REJECTED in favour of A — it must stay drawn on
+  // Rectangle carries a D that was explored and REJECTED in favor of A — it must stay drawn on
   // the sheet and must not resolve.
-  const WANT_D = ['Line|2 points', 'Circle|centre · diameter', 'Conic|apex · rho',
+  const WANT_D = ['Line|2 points', 'Circle|center · diameter', 'Conic|apex · rho',
                   'Construction|role toggle', 'Offset|parallel copy', 'Break|split at a point'];
   const REJECTED_D = ['Rectangle|2-point'];
   const has = MARKS.filter(m => m.d).map(m => `${m.name}|${m.hint}`);
@@ -472,25 +476,25 @@ const ORANGE = '#dda06a';
     near(ax, sx1, 1e-9, 'Line D: arc does not start where the segment ends');
     near(ay, sy1, 1e-9, 'Line D: arc does not start where the segment ends');
 
-    // Both centres consistent with (start, end, r); (large, sweep) together select one.
+    // Both centers consistent with (start, end, r); (large, sweep) together select one.
     const dx = ex - ax, dy = ey - ay, d = Math.hypot(dx, dy);
     const h = Math.sqrt(Math.max(0, r * r - (d / 2) ** 2));
     const mid = [(ax + ex) / 2, (ay + ey) / 2], u = [-dy / d, dx / d];
     const cands = [[mid[0] + h * u[0], mid[1] + h * u[1]], [mid[0] - h * u[0], mid[1] - h * u[1]]];
-    // sweep=1 is clockwise on screen, so for a MINOR arc the centre lies where
-    // cross(chord, centre - start) > 0. A major arc bulges the other way, so large flips it.
+    // sweep=1 is clockwise on screen, so for a MINOR arc the center lies where
+    // cross(chord, center - start) > 0. A major arc bulges the other way, so large flips it.
     const wantPositive = (sweep === 1) !== (large === 1);
-    const centre = cands.find(c => (dx * (c[1] - ay) - dy * (c[0] - ax) > 0) === wantPositive);
-    ok(centre, 'Line D: neither candidate centre matches the drawn sweep flag');
-    near(Math.hypot(centre[0] - ax, centre[1] - ay), r, 5e-3, 'Line D: centre is not r from the seam');
+    const center = cands.find(c => (dx * (c[1] - ay) - dy * (c[0] - ax) > 0) === wantPositive);
+    ok(center, 'Line D: neither candidate center matches the drawn sweep flag');
+    near(Math.hypot(center[0] - ax, center[1] - ay), r, 5e-3, 'Line D: center is not r from the seam');
     // Tangency: the radius at the seam must be perpendicular to the incoming segment.
-    const v = [sx1 - sx0, sy1 - sy0], w = [centre[0] - ax, centre[1] - ay];
+    const v = [sx1 - sx0, sy1 - sy0], w = [center[0] - ax, center[1] - ay];
     near((v[0] * w[0] + v[1] * w[1]) / (Math.hypot(...v) * r), 0, 5e-3,
          'Line D: the arc is NOT tangent to the segment at the seam');
     // Two thirds of a circle, to the degree. sweep=1 runs clockwise, which is increasing angle
     // once y grows downward, so the swept amount is (end - start) taken mod a full turn.
-    const a0 = Math.atan2(ay - centre[1], ax - centre[0]);
-    const a1 = Math.atan2(ey - centre[1], ex - centre[0]);
+    const a0 = Math.atan2(ay - center[1], ax - center[0]);
+    const a1 = Math.atan2(ey - center[1], ex - center[0]);
     const swept = ((a1 - a0) * (sweep === 1 ? 1 : -1) + 2 * Math.PI) % (2 * Math.PI);
     near(swept * 180 / Math.PI, 240, 5e-3, 'Line D: arc is not two thirds of a circle');
 
@@ -520,13 +524,13 @@ const ORANGE = '#dda06a';
     ok(deg >= 30, `Line D vs Arc-tangent: stems only ${deg.toFixed(1)}° apart — the pair collides`);
   }
 
-  // Circle D: the stub runs centre→rim and STOPS there (a radius, not a diameter chord).
+  // Circle D: the stub runs center→rim and STOPS there (a radius, not a diameter chord).
   {
-    const s = D('Circle', 'centre · diameter');
+    const s = D('Circle', 'center · diameter');
     const seg = [...s.matchAll(/d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)"/g)][0].slice(1).map(Number);
     const [x0, y0, x1, y1] = seg;
-    near(x0, 18, 1e-9, 'circle D: stub does not start at the centre');
-    near(y0, 18, 1e-9, 'circle D: stub does not start at the centre');
+    near(x0, 18, 1e-9, 'circle D: stub does not start at the center');
+    near(y0, 18, 1e-9, 'circle D: stub does not start at the center');
     near(Math.hypot(x1 - 18, y1 - 18), 12, 5e-3, 'circle D: stub does not end ON the rim');
   }
 
@@ -570,7 +574,7 @@ const ORANGE = '#dda06a';
     // The vertical run offsets from x=8 to x=2, the horizontal from y=24 to y=30: both 6.
     near(8 - ax, ar, 1e-9, 'offset D: vertical offset distance != corner radius');
     near(aey - 24, ar, 1e-9, 'offset D: horizontal offset distance != corner radius');
-    // And the arc is genuinely centred on the source corner (8,24).
+    // And the arc is genuinely centered on the source corner (8,24).
     near(Math.hypot(ax - 8, ay - 24), ar, 1e-9, 'offset D: arc start is not r from the source corner');
     near(Math.hypot(aex - 8, aey - 24), ar, 1e-9, 'offset D: arc end is not r from the source corner');
   }
@@ -611,19 +615,19 @@ const ORANGE = '#dda06a';
   const sqs = (d) => [...d.matchAll(/<rect x="([\d.-]+)" y="([\d.-]+)" width="([\d.-]+)"[^>]*fill="([^"]+)"/g)]
     .map(g => [Number(g[1]), Number(g[2]), Number(g[3]), g[4]])
     .filter(r => r[3] !== 'none');   // an outline box is a rect too, and it is not a vertex
-  const centres = (d, tint) => sqs(d).filter(r => !tint || r[3] === tint)
+  const centers = (d, tint) => sqs(d).filter(r => !tint || r[3] === tint)
     .map(r => [r[0] + r[2] / 2, r[1] + r[2] / 2]);
   const has = (list, p, tol = 1e-6) => list.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol);
 
   // Midpoint line: the accented node really is the MIDPOINT, the ticks really are equal and
   // really are perpendicular, and the run leans the opposite way to Line so the pair separates.
   {
-    const d = R('Midpoint line', 'centre · end');
+    const d = R('Midpoint line', 'center · end');
     const [x0, y0, x1, y1] = segs(d)[0];
     const mid = [(x0 + x1) / 2, (y0 + y1) / 2];
-    ok(has(centres(d, BLUE), mid), 'Midpoint line: no accent on the segment midpoint');
-    ok(has(centres(d, BLUE), [x1, y1]), 'Midpoint line: the picked end is not accented');
-    ok(has(centres(d, WHITE), [x0, y0]), 'Midpoint line: the produced end is not line art');
+    ok(has(centers(d, BLUE), mid), 'Midpoint line: no accent on the segment midpoint');
+    ok(has(centers(d, BLUE), [x1, y1]), 'Midpoint line: the picked end is not accented');
+    ok(has(centers(d, WHITE), [x0, y0]), 'Midpoint line: the produced end is not line art');
     const ticks = segs(d).slice(1);
     ok(ticks.length === 2, `Midpoint line: ${ticks.length} ticks, expected 2`);
     const len = (t) => Math.hypot(t[2] - t[0], t[3] - t[1]);
@@ -635,46 +639,46 @@ const ORANGE = '#dda06a';
            `Midpoint line: tick ${i} is not perpendicular to the run`);
       const c = [(t[0] + t[2]) / 2, (t[1] + t[3]) / 2];
       const along = ((c[0] - x0) * run[0] + (c[1] - y0) * run[1]) / (run[0] ** 2 + run[1] ** 2);
-      near(along, i === 0 ? 0.25 : 0.75, 1e-6, `Midpoint line: tick ${i} is off its half's centre`);
+      near(along, i === 0 ? 0.25 : 0.75, 1e-6, `Midpoint line: tick ${i} is off its half's center`);
     }
     const line = segs(R('Line', '2 points'))[0];
     const other = [line[2] - line[0], line[3] - line[1]];
     ok(run[1] * other[1] < 0, 'Midpoint line leans the same way as Line — the pair is one drawing twice');
   }
 
-  // Circle 2-point: the chord is a true DIAMETER (through the centre, length 2r) and the centre
-  // itself carries no square, which is the whole difference from centre-diameter.
+  // Circle 2-point: the chord is a true DIAMETER (through the center, length 2r) and the center
+  // itself carries no square, which is the whole difference from center-diameter.
   {
     const d = R('Circle', '2-point');
     const [, cx, cy, r] = d.match(/<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"/).map(Number);
     const [x0, y0, x1, y1] = segs(d)[0];
     near(Math.hypot(x1 - x0, y1 - y0), 2 * r, 5e-3, 'Circle 2-point: the chord is not a diameter');
     near(Math.hypot((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy), 0, 5e-3,
-         'Circle 2-point: the chord does not pass through the centre');
+         'Circle 2-point: the chord does not pass through the center');
     for (const p of [[x0, y0], [x1, y1]]) {
       near(Math.hypot(p[0] - cx, p[1] - cy), r, 5e-3, 'Circle 2-point: a pick is off the circle');
-      ok(has(centres(d, BLUE), p), 'Circle 2-point: a diameter end is not accented');
+      ok(has(centers(d, BLUE), p), 'Circle 2-point: a diameter end is not accented');
     }
-    ok(!has(centres(d), [cx, cy]), 'Circle 2-point: the centre is marked, which is its sibling');
+    ok(!has(centers(d), [cx, cy]), 'Circle 2-point: the center is marked, which is its sibling');
   }
 
-  // Centre-point arc slot: the accented centre is genuinely equidistant from both cap centres,
+  // Center-point arc slot: the accented center is genuinely equidistant from both cap centers,
   // and the two radii it draws are that same distance — otherwise the fan is decoration.
   {
-    const d = R('Slot', 'centre-point arc');
+    const d = R('Slot', 'center-point arc');
     const radii = segs(d);
-    ok(radii.length === 2, `centre-point arc slot: ${radii.length} radii, expected 2`);
+    ok(radii.length === 2, `center-point arc slot: ${radii.length} radii, expected 2`);
     const c = [radii[0][0], radii[0][1]];
-    near(radii[1][0], c[0], 1e-6, 'centre-point arc slot: the two radii start from different points');
-    near(radii[1][1], c[1], 1e-6, 'centre-point arc slot: the two radii start from different points');
+    near(radii[1][0], c[0], 1e-6, 'center-point arc slot: the two radii start from different points');
+    near(radii[1][1], c[1], 1e-6, 'center-point arc slot: the two radii start from different points');
     const r0 = Math.hypot(radii[0][2] - c[0], radii[0][3] - c[1]);
     const r1 = Math.hypot(radii[1][2] - c[0], radii[1][3] - c[1]);
-    near(r0, r1, 5e-3, 'centre-point arc slot: the centre is not equidistant from the two caps');
-    near(r0, 14, 5e-3, 'centre-point arc slot: the radii are not the family spine radius of 14');
+    near(r0, r1, 5e-3, 'center-point arc slot: the center is not equidistant from the two caps');
+    near(r0, 14, 5e-3, 'center-point arc slot: the radii are not the family spine radius of 14');
     for (const p of [c, [radii[0][2], radii[0][3]], [radii[1][2], radii[1][3]]]) {
-      ok(has(centres(d, BLUE), p), 'centre-point arc slot: a pick is not accented');
+      ok(has(centers(d, BLUE), p), 'center-point arc slot: a pick is not accented');
     }
-    ok(/stroke-dasharray/.test(d), 'centre-point arc slot: the radii are not dashed');
+    ok(/stroke-dasharray/.test(d), 'center-point arc slot: the radii are not dashed');
   }
 
   // Rectangle 3-point: a RECTANGLE, not a lozenge — adjacent edges dot to zero — and no edge is
@@ -695,26 +699,26 @@ const ORANGE = '#dda06a';
       ok(Math.abs(P[i][0] - P[j][0]) > 1e-6 && Math.abs(P[i][1] - P[j][1]) > 1e-6,
          `Rectangle 3-point: edge ${i} is axis-aligned, which is the 2-point mark`);
     }
-    const blue = centres(d, BLUE);
+    const blue = centers(d, BLUE);
     ok(blue.length === 3, `Rectangle 3-point: ${blue.length} accents, expected 3 picks`);
     ok(P.filter(p => has(blue, p)).length === 3, 'Rectangle 3-point: the accents are not on corners');
   }
 
-  // Centre rectangle: five squares, and the fifth is the true centre of the other four.
+  // Center rectangle: five squares, and the fifth is the true center of the other four.
   {
-    const d = R('Rectangle', 'centre · corner');
-    const all = centres(d);
-    ok(all.length === 5, `Centre rectangle: ${all.length} squares, expected 5`);
+    const d = R('Rectangle', 'center · corner');
+    const all = centers(d);
+    ok(all.length === 5, `Center rectangle: ${all.length} squares, expected 5`);
     const b = d.match(/<rect x="([\d.-]+)" y="([\d.-]+)" width="([\d.-]+)" height="([\d.-]+)" stroke="#/);
     const [x, y, w, h] = b.slice(1).map(Number);
     const mid = [x + w / 2, y + h / 2];
-    ok(has(all, mid), 'Centre rectangle: no square on the box centre');
+    ok(has(all, mid), 'Center rectangle: no square on the box center');
     for (const c of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
-      ok(has(all, c), 'Centre rectangle: a corner carries no square');
+      ok(has(all, c), 'Center rectangle: a corner carries no square');
     }
-    const blue = centres(d, BLUE);
+    const blue = centers(d, BLUE);
     ok(blue.length === 2 && has(blue, mid),
-       'Centre rectangle: the accent is not the centre plus one corner');
+       'Center rectangle: the accent is not the center plus one corner');
   }
 
   // Sketch dimension: witness lines stand off the feature and overrun the dimension line, and the
@@ -739,7 +743,7 @@ const ORANGE = '#dda06a';
       near(h[1], dim[1], 1e-9, `Sketch dimension: arrowhead ${i} is off the dimension line`);
       near(h[0], i === 0 ? wL[0] : wR[0], 1e-9, `Sketch dimension: arrowhead ${i} misses its witness line`);
     }
-    ok(centres(d, BLUE).length === 0,
+    ok(centers(d, BLUE).length === 0,
        'Sketch dimension: the measured points are accented — on this mark the accent is the dimension');
     ok(d.split(BLUE).length - 1 === 3,
        'Sketch dimension: the accent is not exactly the dimension line plus its two heads');

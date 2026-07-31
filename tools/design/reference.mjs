@@ -11,7 +11,14 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
 
-const ROOT = path.join(REPO, 'docs', 'design', 'sketch-marks');
+// The sheets live in the Claude Design project, not in this repo. Point this at a local copy:
+//   node tools/design/reference.mjs <dir>   (or set SKETCH_MARKS_DIR)
+const ROOT = process.argv[2] || process.env.SKETCH_MARKS_DIR;
+if (!ROOT) {
+  console.error('usage: node tools/design/reference.mjs <sketch-marks-dir>');
+  console.error('       the sheets are published in the Claude Design project; download them first');
+  process.exit(2);
+}
 const OUT = path.join(REPO, 'crates', 'ui', 'src', 'icons', 'design_reference.rs');
 
 // Sheet name -> the kebab id the Rust `Icon` answers to. Only marks listed here are exported, and
@@ -53,19 +60,19 @@ const IDS = {
   'Circular pattern|generator': 'circular-pattern',
 
   // Sketch · create.
-  'Midpoint line|centre · end': 'midpoint-line',
-  'Circle|centre · diameter': 'circle-center-diameter',
+  'Midpoint line|center · end': 'midpoint-line',
+  'Circle|center · diameter': 'circle-center-diameter',
   'Circle|2-point': 'circle-2-point',
   'Circle|3-point': 'circle-3-point',
   'Circle|2-tangent': 'circle-2-tangent',
   'Circle|3-tangent': 'circle-3-tangent',
-  'Arc|centre · endpoints': 'arc-center-endpoints',
+  'Arc|center · endpoints': 'arc-center-endpoints',
   'Arc|tangent': 'arc-tangent',
-  'Ellipse|centre · 2 axes': 'ellipse-sketch',
-  'Slot|centre-to-centre': 'slot-center-to-center',
+  'Ellipse|center · 2 axes': 'ellipse-sketch',
+  'Slot|center-to-center': 'slot-center-to-center',
   'Slot|overall': 'slot-overall',
-  'Slot|centre-point': 'slot-center-point',
-  'Slot|centre-point arc': 'slot-center-point-arc',
+  'Slot|center-point': 'slot-center-point',
+  'Slot|center-point arc': 'slot-center-point-arc',
   'Slot|3-point arc': 'slot-3-point-arc',
   'Spline|fit point': 'spline-fit-point',
   'Spline|control point': 'spline-control-point',
@@ -74,7 +81,7 @@ const IDS = {
   'Polygon|circumscribed': 'polygon-circumscribed',
   'Polygon|edge': 'polygon-edge',
   'Rectangle|3-point': 'rectangle-3-point',
-  'Rectangle|centre · corner': 'rectangle-center-corner',
+  'Rectangle|center · corner': 'rectangle-center-corner',
   'Sketch dimension|drive a distance': 'sketch-dimension',
   'Text|profile from glyphs': 'sketch-text',
   'Construction|role toggle': 'construction-toggle',
@@ -96,7 +103,7 @@ const IDS = {
 
 const SCALE = 0.5;                       // the sheet draws on 36 units, the glyph grid is 18
 
-// The sheets draw in four colours and `Mark` now has four ink ROLES, one for one:
+// The sheets draw in four colors and `Mark` now has four ink ROLES, one for one:
 //
 //   #f2f6fa  white       the reference entity          -> LineArt
 //   #9cb4d8  tool blue   a generator, or a mode        -> Accent
@@ -126,10 +133,10 @@ function load(file, exports) {
   return sandbox.__X;
 }
 
-// A mark authored on a non-square canvas is CENTRED on the glyph grid rather than stretched: the
+// A mark authored on a non-square canvas is CENTERED on the glyph grid rather than stretched: the
 // sheet draws Horizontal 36x22 and Vertical 22x36 on purpose, so that the pair reads as a
 // quarter-turn of each other, and padding either back to a square would break exactly that.
-function centred(list, w, h) {
+function centered(list, w, h) {
   const dx = (Math.max(w, h) - w) / 2, dy = (Math.max(w, h) - h) / 2;
   if (!dx && !dy) return list;
   const p = ([x, y]) => [x + dx, y + dy];
@@ -142,10 +149,10 @@ function centred(list, w, h) {
   }));
 }
 
-// ---- SVG elliptical-arc endpoint form -> centre form (SVG 1.1 F.6.5) -------
+// ---- SVG elliptical-arc endpoint form -> center form (SVG 1.1 F.6.5) -------
 // Implemented from the spec rather than from a sign heuristic: the flags interact, and getting
 // the interaction subtly wrong produces an arc that is still tangent and still the right length.
-function arcCentre(x1, y1, rx, ry, fA, fS, x2, y2) {
+function arcCenter(x1, y1, rx, ry, fA, fS, x2, y2) {
   const dx2 = (x1 - x2) / 2, dy2 = (y1 - y2) / 2;
   const num = rx * rx * ry * ry - rx * rx * dy2 * dy2 - ry * ry * dx2 * dx2;
   const den = rx * rx * dy2 * dy2 + ry * ry * dx2 * dx2;
@@ -220,7 +227,7 @@ function parse(svg, name) {
         const rx = n(), ry = n(); n();
         const fA = n(), fS = n(), nx = n(), ny = n();
         flush();
-        const c = arcCentre(x, y, rx, ry, fA, fS, nx, ny);
+        const c = arcCenter(x, y, rx, ry, fA, fS, nx, ny);
         out.push({ k: 'Arc', c: [c.cx, c.cy], rx, ry, from: c.from, to: c.to, ink });
         x = nx; y = ny; run = [[x, y]];
       } else if (cmd === 'C') {
@@ -257,7 +264,7 @@ const f = (v) => {
 const rad = (v) => v.toFixed(6);
 const pts = (ps) => '&[' + ps.map(p => `(${f(p[0])}, ${f(p[1])})`).join(', ') + ']';
 // One arm per role, and a throw rather than a fallthrough: the fallthrough used to hand back
-// CONSTRUCTION for anything it did not recognise, so adding the Constraint role silently emitted
+// CONSTRUCTION for anything it did not recognize, so adding the Constraint role silently emitted
 // every red mark as amber and the parity gate compared two copies of the same mistake.
 const ink = (i) => {
   switch (i.role) {
@@ -305,7 +312,7 @@ const rows = [];
 for (const m of SHEET) {
   const id = IDS[m.key];
   if (!id) continue;
-  const parsed = centred(parse(m.svg(), m.key), m.w, m.h);
+  const parsed = centered(parse(m.svg(), m.key), m.w, m.h);
   rows.push(`    // ${m.key.replace('|', ' — ')}\n    ("${id}", &[\n` +
     parsed.map(p => `        ${emit(p)},`).join('\n') + '\n    ]),');
 }
@@ -321,7 +328,7 @@ fs.writeFileSync(OUT, `//! The design sheet's resolved geometry, as data. GENERA
 //! This table is what makes a transposition slip a test failure rather than a subtly wrong icon.
 //!
 //! Coordinates are the sheet's 36-unit canvas halved onto the glyph grid. Arcs arrive in
-//! endpoint form and are converted here by the SVG 1.1 F.6.5 centre formula, because the large
+//! endpoint form and are converted here by the SVG 1.1 F.6.5 center formula, because the large
 //! and sweep flags interact and a sign heuristic gets a plausible wrong answer.
 
 use super::{Ink, Mark};

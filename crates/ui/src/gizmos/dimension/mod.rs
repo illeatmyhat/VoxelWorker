@@ -1,6 +1,6 @@
 //! Dimension gizmos — spans, radii and angles drawn in the viewport at true scale.
 //!
-//! Authored on `docs/design/sketch-marks/dimension-gizmos.html`. Unlike the rest of
+//! Authored on the `dimension-gizmos` design sheet. Unlike the rest of
 //! [`gizmos`](crate::gizmos), a dimension is not one shape with a state: it is a small LAYOUT
 //! problem whose answer changes with the size of the thing being dimensioned, so this module is
 //! split in two. [`span()`], [`radius()`] and [`angle()`] each answer a [`Drawing`] — pure geometry,
@@ -10,10 +10,10 @@
 //! ## The halo is the answer to the ground problem
 //!
 //! A dimension is drawn over whatever the viewport happens to show — the near-black background,
-//! a pale sandstone block, a mid-tone green one. No single flat colour survives all three; red
+//! a pale sandstone block, a mid-tone green one. No single flat color survives all three; red
 //! least of all. So the ink is the theme's foreground and every stroke is backed by a halo in the
 //! theme's background, which is invisible over the viewport and load-bearing over a bright block.
-//! It costs one extra pass, no colour decision, and inverts with the theme for free.
+//! It costs one extra pass, no color decision, and inverts with the theme for free.
 //!
 //! **Every halo is painted before any ink**, as two passes over the WHOLE gizmo — not
 //! halo-then-ink per element, which is what lets an arrowhead's halo bite into the dimension line
@@ -25,7 +25,7 @@
 //! ## Ink
 //!
 //! The sheet asks for "the theme's high-contrast foreground" and, for a reference dimension, the
-//! same hue family one rank quieter — explicitly NOT a disabled grey, because a reference
+//! same hue family one rank quieter — explicitly NOT a disabled gray, because a reference
 //! dimension is fully live and updates on every solve. Those are
 //! [`TEXT_PRIMARY`](color_palette::TEXT_PRIMARY) and
 //! [`TEXT_SECONDARY`](color_palette::TEXT_SECONDARY) as already registered; no dimension-specific
@@ -36,7 +36,7 @@
 //!
 //! The geometry being dimensioned. The design sheet draws a segment or a circle beside each gizmo
 //! because the sheet has no sketch to point at; in the app the sketch draws its own entities, and
-//! a gizmo that drew them again would double every stroke. The one exception is the radius centre
+//! a gizmo that drew them again would double every stroke. The one exception is the radius center
 //! mark, which is dimension ink and belongs to the dimension.
 
 use egui::{Color32, FontId, Painter, Pos2, Shape, Stroke, Vec2};
@@ -79,7 +79,7 @@ const VALUE_ADVANCE: f32 = VALUE_SIZE * 0.6;
 ///
 /// The two are told apart on two channels at once, which is deliberate: a reference dimension is
 /// parenthesised whole — `(R21)`, never `R(21)` — and drawn one rank quieter. The parenthesis
-/// survives greyscale; the weight works in peripheral vision.
+/// survives grayscale; the weight works in peripheral vision.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rank {
     /// The solver holds it. Editing the number moves geometry.
@@ -113,7 +113,7 @@ impl Rank {
 /// How a value sits against its anchor point.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Anchor {
-    /// Centred — a value sitting on the dimension line between the arrows.
+    /// Centered — a value sitting on the dimension line between the arrows.
     Middle,
     /// Left edge at the anchor — a value that has left on a leader running right.
     Start,
