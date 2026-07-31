@@ -7,7 +7,7 @@ use ui::panel::{LayerRange, ViewMode};
 
 use super::AppCore;
 
-/// The mesh/brick layer clip for a frame, region-scoped per ADR 0018 Decision 5. Bundles
+/// The region-scoped mesh/brick layer clip for a frame. Bundles
 /// the effective [`LayerBand`] (scene-absolute layers), the optional [`RegionClip`] the
 /// band is confined to (the selected object's placed AABB, recentered voxels — `None` for a
 /// scene-wide band / no clip), and the layer-track domain the UI scrubber spans.
@@ -23,24 +23,16 @@ pub struct MeshClip {
 }
 
 impl AppCore {
-    /// Resolve the whole [`Scene`] into a fresh grid (ADR 0001 step 2). Every
-    /// visible node composites (union) into one region sized to the per-axis max of
-    /// the nodes' extents, at full resolution (`lod 0`). `voxels_per_block` is the
-    /// global app density (the inspector mirror's density).
-    ///
-    /// ADR 0010 E5: this streams the whole-region grid from the **two-layer evaluator**
-    /// (coarse fast-fill + boundary per-voxel), NOT the retired dense
-    /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate). A VoxelBody-only
-    /// scene (no covering range) resolves to an empty grid, exactly as the dense store did.
-    ///
     /// The startup region door — the SINGLE place the windowed shell seeds its first-frame
-    /// display frame from (`WindowedState::new`). ADR 0011 G5: with the dense grid retired
-    /// this constructs NO `VoxelGrid` at all — it returns only the region dimensions + the
-    /// resolve recenter (the camera auto-frame, layer scrubber and fog frame consume these),
-    /// exactly what the per-edit [`AppCore::rebuild`] yields. This is what closes the startup
-    /// OOM on BOTH binaries: a persisted 8000×800×800 scene once resolved a dense
-    /// ~5.1-billion-cell grid (~28.5 GB RSS → OOM hang before the first print), and the non-gpu
-    /// binary streamed the same region; now neither materialises any occupancy at startup.
+    /// display frame from (`WindowedState::new`). Every visible node composites (union) into
+    /// one region sized to the per-axis max of the nodes' extents.
+    ///
+    /// It constructs NO `VoxelGrid`: it returns only the region dimensions + the resolve
+    /// recenter (what the camera auto-frame and layer scrubber consume), exactly what the
+    /// per-edit [`AppCore::rebuild`] yields. That is what keeps startup off the OOM cliff — a
+    /// persisted 8000×800×800 scene would otherwise expand a dense ~5.1-billion-cell grid
+    /// (~28.5 GB RSS) before the first frame. A VoxelBody-only scene (no covering range) has
+    /// an empty region.
     pub fn startup_region(scene: &Scene, density: u32) -> ([u32; 3], [i64; 3]) {
         (
             scene.placed_region_dimensions(density),
@@ -50,13 +42,10 @@ impl AppCore {
 
     /// The region dimensions (in voxels) the camera auto-frame, origin gizmo, block
     /// lattice, fine floor grid and layer scrubber are sized from — read purely from the
-    /// SCENE (issue #20 S6c-1). ADR 0011 G5: with the dense grid retired there is no
-    /// assembled `VoxelGrid` to reach into, so this is just
+    /// SCENE. There is no assembled `VoxelGrid` to reach into, so this is just
     /// [`Scene::placed_region_dimensions`]. For a chunkable scene (every Tool scene,
-    /// including the startup default) that is the composite extent (proven byte-identical to
-    /// the old assembled grid in `scene::tests::placed_region_dimensions_equals_assembled_grid`);
-    /// a **VoxelBody-only** scene (a lone debug-cloud field) has no composite extent, so this is
-    /// `[0, 0, 0]` — exactly the empty grid's dimensions the old VoxelBody-only fallback returned.
+    /// including the startup default) that is the composite extent; a **VoxelBody-only**
+    /// scene (a lone debug-cloud field) has no composite extent, so this is `[0, 0, 0]`.
     pub fn region_dimensions_for(scene: &Scene, density: u32) -> [u32; 3] {
         scene.placed_region_dimensions(density)
     }
@@ -150,7 +139,7 @@ impl AppCore {
     }
 
     /// The recentered `(pivot_voxels, extent_voxels)` for a node id — where the
-    /// transform gizmo sits (issue #29 S2), and what the camera "Focus" view action
+    /// transform gizmo sits, and what the camera "Focus" view action
     /// frames. A thin wrapper over [`Scene::gizmo_placement_for_id`]; `None` when the
     /// id no longer resolves or the node has no extent (Focus is then a no-op).
     pub fn gizmo_placement_for_id(
@@ -161,18 +150,17 @@ impl AppCore {
         scene.gizmo_placement_for_id(node_id, density)
     }
 
-    /// The region-scoped layer clip for a frame (ADR 0018 Decisions 4–5) — the SINGLE
-    /// place both the windowed shell and `shot` derive the mesh/brick band + region from,
-    /// so the two never drift. The band clips ONLY in **Onion-fog mode with a selection**;
-    /// Normal / Show-booleans (and Onion-fog with nothing selected, or a debug-face render)
-    /// render the whole scene finished (band FULL, no region — the pre-ADR-0018 scene-wide
-    /// band clip is retired).
+    /// The region-scoped layer clip for a frame — the SINGLE place both the windowed shell
+    /// and `shot` derive the mesh/brick band + region from, so the two never drift. The band
+    /// clips ONLY in **Onion-fog mode with a selection**; Normal / Show-booleans (and
+    /// Onion-fog with nothing selected, or a debug-face render) render the whole scene
+    /// finished (band FULL, no region).
     ///
-    /// In Onion-fog the scrubber's `lower`/`upper` are **object-relative** layer indices
-    /// over the selected object's Z extent (Decision 5: the track spans the object, not the
-    /// scene); this offsets them by the object's base layer into scene-absolute band indices
-    /// and derives the recentered-voxel region the band is confined to. Selecting the ROOT
-    /// part gives the whole-scene region (the pre-0018 behavior recovered).
+    /// In Onion-fog the scrubber's `lower`/`upper` are **object-relative** layer indices over
+    /// the selected object's Z extent — the track spans the object, not the scene. This
+    /// offsets them by the object's base layer into scene-absolute band indices and derives
+    /// the recentered-voxel region the band is confined to. Selecting the ROOT part gives the
+    /// whole-scene region.
     pub fn mesh_clip(
         scene: &Scene,
         selection: Option<NodeId>,
@@ -192,7 +180,7 @@ impl AppCore {
             return finished;
         }
         // Onion-fog needs a selected object to scope the clip to. No selection / hidden /
-        // empty subtree ⇒ finished (no implicit whole-scene clip — ADR 0018 Decision 2/5).
+        // empty subtree ⇒ finished; there is no implicit whole-scene clip.
         let Some((rmin, rmax)) = selection
             .and_then(|target| scene.selected_region_extent_recentered_voxels(target, density))
         else {
@@ -237,11 +225,9 @@ impl AppCore {
         }
     }
 
-    /// Build the onion-skin frame parameters (issue #12) from the camera-derived
-    /// view-projection, grid, and layer-range scrubber — the recentered-Z spans the display
-    /// paths' ghost pass derives its onion slabs from (ADR 0012; the volumetric fog that once
-    /// consumed these is retired). Z-up: layers are Z-slices, so
-    /// the band is a Z-range. Corner-anchoring: the grid's low corner in the recentered
+    /// Build the onion-skin frame parameters from the camera-derived view-projection, grid,
+    /// and layer-range scrubber — the recentered-Z spans the display paths' ghost pass
+    /// derives its onion slabs from. Z-up: layers are Z-slices, so the band is a Z-range. Corner-anchoring: the grid's low corner in the recentered
     /// frame is `−floor(dim/2)`, so layer `k` has its voxel center at
     /// `k + 0.5 − floor(grid_z/2)` and spans world-Z `[k − floor(grid_z/2),
     /// k+1 − floor(grid_z/2)]`. The solid band is layers `[lower, upper]`; the onion

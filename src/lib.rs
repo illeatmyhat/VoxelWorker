@@ -1,4 +1,4 @@
-//! VoxelWorker — native Rust port of the Vintage Story chiseling planner.
+//! VoxelWorker — a voxel chiseling planner.
 //!
 //! This crate is the rendering foundation shared by both the windowed application
 //! (`src/main.rs`) and the headless screenshot harness, which is now its own package
@@ -10,7 +10,7 @@
 //!     capture texture — guaranteeing the screenshot matches the window.
 //!   * A single egui panel builder ([`build_panel`]) used by both paths so the
 //!     captured frame is identical to the live one.
-//!   * The warm-dark "workshop" color identity (`docs/design/color-vocabulary.md`).
+//!   * The warm-dark "workshop" color identity.
 
 // A public item's doc may link to a private helper to explain how the two relate; that
 // cross-reference is deliberate and stays a navigable link under `--document-private-items`.
@@ -19,16 +19,16 @@
 // Colors live in `ui::theme::color_palette`; a raw `Color32::from_*` elsewhere is an error.
 #![deny(clippy::disallowed_methods)]
 
-// ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
+// The headless orchestrator (scene + store + camera).
 pub mod app_core;
 // The shell's palette GPU host (`PaletteHost`): it owns the wgpu backing the UI-facing
 // palette cannot name (the `crate::thumbnail::ThumbnailRenderer`, the texture
 // keep-alives, the scanned `BlockGroup`s) and keeps them index-aligned with the
-// `ui::palette::BlockPalette` tiles it renders + registers into egui (ADR 0016 Phase 8b
-// — the egui-facing palette state + the inspector panel moved to the `ui` crate).
+// `ui::palette::BlockPalette` tiles it renders + registers into egui. The egui-facing
+// palette state and the inspector panel live in the `ui` crate.
 pub mod block_palette;
 pub mod gpu;
-// The three persistence artifacts (ADR 0022) and the exhaustive captures that carry
+// The persistence artifacts and the exhaustive captures that carry
 // classified state into them. Separate from `settings` on purpose: that module holds the
 // classified state record, this one holds where it goes and enforces that it gets there.
 pub mod artifacts;
@@ -39,17 +39,17 @@ pub mod settings;
 pub mod thumbnail;
 // The windowed application (the default binary's logic): `WindowedState` + `App` + the winit
 // `ApplicationHandler` + per-frame render + async-worker poll seams. Carved out of `src/main.rs`
-// into a shell LIB module tree (ADR 0016) so the bin is a thin `windowed::run` entry point; the
-// lib already carries the winit/egui/wgpu deps this needs.
+// into a shell LIB module tree so the bin is a thin `windowed::run` entry point; the lib
+// already carries the winit/egui/wgpu deps this needs.
 pub mod windowed;
-// The engagement state machine + the async worker pool moved to the `work` crate at the ADR 0016
-// Phase 6 cut (`{display, interchange} <- work <- shell`); their types are re-exported flat below
-// so the shell's `voxel_worker::<Name>` uses keep resolving.
+// The engagement state machine + the async worker pool live in the `work` crate
+// (`{display, interchange} <- work <- shell`); their types are re-exported flat below so the
+// shell's `voxel_worker::<Name>` uses keep resolving.
 
 #[cfg(test)]
 mod windowed_resolve_tests;
 
-// ADR 0010 E1: the standalone exactness parity for the conservative cell-interval
+// The standalone exactness parity for the conservative cell-interval
 // bound primitive (VoxelProducer::cell_field_interval) + the CSG interval composition.
 #[cfg(test)]
 mod cell_interval_parity_tests;
@@ -145,12 +145,11 @@ pub use document::sketch::{
 #[cfg(test)]
 pub use evaluation::two_layer_store::resolve_region_two_layer;
 pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
-// The headless `.vox` export sink now lives in the `interchange` crate (ADR 0016 Phase 5);
-// re-exported flat so `voxel_worker::VoxExport` / `VoxExportBuilder` keep resolving.
+// The headless `.vox` export sink lives in the `interchange` crate; re-exported flat so `voxel_worker::VoxExport` / `VoxExportBuilder` keep resolving.
 pub use interchange::vox_export::{VoxExport, VoxExportBuilder};
-// Value vocabulary lives in the voxel_core crate; the producer half now lives in the
-// document crate. Both are re-exported flat so `voxel_worker::Voxel`, `voxel_worker::SdfShape`,
-// etc. keep resolving for the bins and integration tests.
+// Value vocabulary lives in the voxel_core crate; the producer half in the document crate.
+// Both are re-exported flat so `voxel_worker::Voxel`, `voxel_worker::SdfShape`, etc. keep
+// resolving for the bins and integration tests.
 pub use document::voxel::{GeometryParams, SdfShape, VoxelProducer};
 pub use voxel_core::voxel::{
     widest_run_in_band_over_chunks, RecenterVoxels, ShapeKind, Voxel, VoxelGrid,
@@ -159,10 +158,10 @@ pub use voxel_core::voxel::{
 /// Surface / offscreen color format used everywhere in the project.
 ///
 /// Using the same sRGB format for the windowed surface and the headless capture
-/// texture keeps the screenshot identical to the window (Hard requirement #9).
+/// texture keeps the screenshot identical to the window.
 pub const COLOR_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// The warm-dark "workshop" clear color (`docs/design/color-vocabulary.md`).
+/// The warm-dark "workshop" clear color.
 ///
 /// These are *linear* component values handed to wgpu; with an sRGB render
 /// target the GPU encodes them back to sRGB on write, so the perceived color is
@@ -174,8 +173,7 @@ pub const WORKSHOP_CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-// The per-frame pipeline (ADR 0031): egui pass ([`frame::egui_frame`]) + GPU viewport pass
-// ([`frame::render`]). Split out of this root so the two responsibilities stop sharing a file.
-// A public module, NOT re-exported flat: callers name `voxel_worker::frame::render::render_frame`
-// etc. directly.
+// The per-frame pipeline: egui pass ([`frame::egui_frame`]) + GPU viewport pass
+// ([`frame::render`]). A public module, NOT re-exported flat: callers name
+// `voxel_worker::frame::render::render_frame` etc. directly.
 pub mod frame;

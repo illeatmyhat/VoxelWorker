@@ -48,7 +48,7 @@ fn tool_node(shape: SdfShape, material: MaterialChoice) -> Node {
 }
 
 /// A normalized two-Tool scene with stable ids minted. The workspace selection a test
-/// pairs with it comes from `selection_of_first_root` (ADR 0032).
+/// pairs with it comes from `selection_of_first_root`.
 fn two_tool_scene() -> Scene {
     let mut scene = Scene::from_nodes(vec![
         tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone),
@@ -69,8 +69,8 @@ fn root_id(scene: &Scene, index: usize) -> NodeId {
 /// the SAME scene state (so id-minting counters match), so the scenes compare
 /// equal (Scene derives PartialEq).
 ///
-/// ADR 0032: the edit ops no longer steer selection — `dispatch` does — so a
-/// `direct` oracle for a selection-steering intent must land the same steer itself.
+/// The edit ops do not steer selection — `dispatch` does — so a `direct` oracle for a
+/// selection-steering intent must land the same steer itself.
 fn assert_dispatch_matches(scene: &Scene, intent: Intent, direct: impl FnOnce(&mut Scene)) {
     let mut core = test_core();
     let mut applied = scene.clone();
@@ -320,7 +320,7 @@ fn set_material_dispatches() {
 
 #[test]
 fn set_operation_dispatches() {
-    // ADR 0017 (#73): SetOperation writes the leaf node's combine operation.
+    // SetOperation writes the leaf node's combine operation.
     let scene = two_tool_scene();
     let target = root_id(&scene, 0);
     assert_dispatch_matches(
@@ -339,7 +339,7 @@ fn set_operation_dispatches() {
 
 #[test]
 fn set_operation_intersect_dispatches() {
-    // ADR 0017 (#75): SetOperation carries the Intersect arm through the same
+    // SetOperation carries the Intersect arm through the same
     // field write as Subtract — no structural change, just the third value.
     let scene = two_tool_scene();
     let target = root_id(&scene, 0);
@@ -359,9 +359,8 @@ fn set_operation_intersect_dispatches() {
 
 #[test]
 fn set_operation_on_group_dispatches() {
-    // ADR 0017 Decision 3 (#74): a Group is a sealed composition scope whose
-    // composed body folds under the GROUP's own operation, so SetOperation on a
-    // Group target must apply (it was a no-op in the #73 sibling-level slice).
+    // A Group is a sealed composition scope whose composed body folds under the
+    // GROUP's own operation, so SetOperation on a Group target must apply.
     let mut scene = two_tool_scene();
     let group = scene
         .wrap_node_in_group(root_id(&scene, 0))
@@ -382,10 +381,9 @@ fn set_operation_on_group_dispatches() {
 
 #[test]
 fn set_operation_on_instance_dispatches() {
-    // ADR 0017 / issue #76: an Instance folds the referenced definition's
-    // finished body under the INSTANCE's own operation — a definition instanced
-    // with Subtract is the reusable cutter — so SetOperation on an Instance
-    // target must apply (it was a deliberate no-op until this slice).
+    // An Instance folds the referenced definition's finished body under the
+    // INSTANCE's own operation — a definition instanced with Subtract is the
+    // reusable cutter — so SetOperation on an Instance target must apply.
     let mut scene = two_tool_scene();
     scene
         .make_definition_from_node(root_id(&scene, 0), "Part def")
@@ -407,7 +405,7 @@ fn set_operation_on_instance_dispatches() {
 
 #[test]
 fn set_definition_fixture_dispatches() {
-    // ADR 0017 Decision 4 (#77): SetDefinitionFixture is a DEFINITION field
+    // SetDefinitionFixture is a DEFINITION field
     // write — the flag lives on the AssemblyDef (being a fixture is what the
     // part IS), so the dispatch mutates the definition, not any node.
     let mut scene = two_tool_scene();
@@ -435,7 +433,7 @@ fn set_offset_dispatches() {
         },
         |s| {
             // `apply` derives canonical voxels from the per-axis measurement at
-            // the document density (ADR 0003 §3f(0)); mirror that here.
+            // the document density; mirror that here.
             let density = s.voxels_per_block;
             if let Some(node) = s.node_by_id_mut(target) {
                 node.transform =
@@ -656,7 +654,7 @@ fn set_shape_on_non_tool_is_noop() {
 
 #[test]
 fn set_density_sets_document_field() {
-    // Density is a single document-level field (ADR 0003 §3f(0)): the dispatch sets
+    // Density is a single document-level field: the dispatch sets
     // `scene.voxels_per_block`, not a per-Tool fan-out.
     let mut scene = Scene::from_nodes(vec![
         tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
@@ -715,10 +713,6 @@ fn set_grid_masters_dispatches() {
         },
     );
 }
-
-// ADR 0032 deleted `Intent::SelectNode` / `SelectPoint`. Selecting is a VIEW action on
-// `PanelResponse::select`, applied by the shell to the workspace `Selection` — it never
-// reaches the dispatcher, so there is no dispatch arm left to pin here.
 
 // === Points ===
 

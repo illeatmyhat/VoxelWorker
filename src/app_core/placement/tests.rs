@@ -13,7 +13,7 @@ use voxel_core::voxel::ShapeKind;
 use super::*;
 use crate::{AppCore, RebuildOutcome};
 
-/// **place_primitive seats CONTINUOUSLY to the surface normal (ADR 0027).** On a flat box
+/// **place_primitive seats CONTINUOUSLY to the surface normal.** On a flat box
 /// face the composed-field gradient normal equals the entered face normal, so the emitted
 /// intent carries a continuous `rotation_quaternion` that tilts the node's local +Z to that
 /// normal. The whole tilt lives in the quaternion. (The occupancy correctness of an
@@ -139,7 +139,7 @@ fn placement_fixture(camera: OrbitCamera) -> Fixture {
 }
 
 /// Is the ABSOLUTE voxel `v` occupied in the resident two-layer chunks? The
-/// chunks are keyed by absolute chunk coordinate (ADR 0008), so this decodes `v`
+/// chunks are keyed by absolute chunk coordinate, so this decodes `v`
 /// the same way `pick_voxel`'s occupancy closure does — the independent solidity
 /// oracle the placement tests check the dropped node against.
 fn absolute_voxel_is_solid(chunks: &[([i32; 3], Arc<TwoLayerChunk>)], v: [i64; 3]) -> bool {
@@ -173,7 +173,7 @@ fn a_cursor_on_geometry_places_a_node_seated_on_the_entered_face() {
 
     // The first empty voxel just outside the entered face — where the seated node's base
     // must land (continuous seat: base on the surface `hit`, extending outward along the
-    // normal, ADR 0027).
+    // normal).
     let pick = fixture
         .app_core
         .pick_voxel(cursor, VIEWPORT, &fixture.frame())
@@ -310,10 +310,10 @@ fn a_cursor_over_the_ground_places_a_node_on_it() {
     let t = -absolute_origin.z / direction.z;
     assert!(t > 0.0, "the ground must be in front of the ray (t = {t})");
     let ground_point = absolute_origin + direction * t;
-    // The node drops BOTTOM-CENTERED on the ground point (ADR 0027 continuous seat): the
+    // The node drops BOTTOM-CENTERED on the ground point (the continuous seat): the
     // authoring pivot (base center) lands on the ground point, so the corner offset is the
     // pivot minus half the footprint in X/Y, base-aligned in Z — Voxel-snapped to the NEAREST
-    // lattice corner (round, not the old floor). The ground point stays inside
+    // lattice corner. The ground point stays inside
     // `[offset, offset + grid)`, so it is solid once dropped.
     let size = tool_shape().size_voxels;
     let expected_offset = [
@@ -433,27 +433,26 @@ fn a_cursor_over_the_ground_of_an_empty_scene_places_a_node() {
     );
 }
 
-/// **A downward cursor over visible ground never spuriously misses (bug 6),
-/// on BOTH projections at every angle.** The unprojected cursor ray's near-plane
-/// point sweeps a wide z-range at a far zoom and its lower half can sit past the
-/// ground plane; judging "in front" from that point made a downward foreground ray
-/// report `NoSurface` ("point toward the ground") even while the camera looked
-/// straight at the ground — placement silently died across the lower half of the
-/// screen. `place_primitive` now resolves reachability correctly per projection
-/// (perspective casts from the eye; orthographic asks the uniform directional
-/// question), so a view that faces the ground places across the WHOLE viewport.
+/// **A downward cursor over visible ground never spuriously misses, on BOTH projections at
+/// every angle.** The unprojected cursor ray's near-plane point sweeps a wide z-range at a
+/// far zoom and its lower half can sit past the ground plane; judging "in front" from that
+/// point makes a downward foreground ray report `NoSurface` ("point toward the ground") even
+/// while the camera looks straight at the ground — placement silently dying across the lower
+/// half of the screen. `place_primitive` resolves reachability per projection instead
+/// (perspective casts from the eye; orthographic asks the uniform directional question), so a
+/// view that faces the ground places across the WHOLE viewport.
 ///
-/// This sweeps the viewport for both projections across a spread of downward pitches,
-/// at a distance far enough that the pre-fix near-plane point sank below the ground
-/// (the exact condition of the bug), and asserts not one cursor over a ground-facing
-/// view returns `NoSurface`, and that real placements happen.
+/// This sweeps the viewport for both projections across a spread of downward pitches, at a
+/// distance far enough that the near-plane point sinks below the ground (the exact condition
+/// of the fault), and asserts not one cursor over a ground-facing view returns `NoSurface`,
+/// and that real placements happen.
 ///
-/// **STEEP views only (updated 2026-07-21).** Since the invisible vertical planes are no
-/// longer a placement target, a SHALLOW view's corner rays — which graze the ground and
-/// used to fall back to a vertical — now correctly report `NoSurface`. The bug-6 guard is
-/// about the ground being reachable across the foreground where the view *faces it*, so
-/// this now sweeps steep pitches (the ground well-faced everywhere on screen); the shallow
-/// grazing case is covered by `a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane`.
+/// **STEEP views only.** The invisible vertical planes are not placement targets, so a
+/// SHALLOW view's corner rays — which graze the ground and would otherwise fall back to a
+/// vertical — correctly report `NoSurface`. The guard here is about the ground being
+/// reachable across the foreground where the view *faces it*, so this sweeps steep pitches
+/// (the ground well-faced everywhere on screen); the shallow grazing case is covered by
+/// `a_grazing_ray_never_places_on_an_invisible_vertical_plane`.
 #[test]
 fn a_downward_cursor_over_ground_never_misses_in_either_projection() {
     for projection_mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
@@ -518,13 +517,12 @@ fn a_downward_cursor_over_ground_never_misses_in_either_projection() {
     }
 }
 
-/// **A geometry drop ALWAYS seats to the surface, whatever the orientation-snap setting (ADR
-/// 0027, owner ruling 2026-07-21).** "Seated placement": a node on a geometry surface contacts
-/// it with the surface's own normal — there is NO upright mode on geometry (upright is the
-/// world-plane tier's job). So both snap settings tilt the node's local +Z to the entered face
-/// normal; the setting will only pick the ANGLE-snap granularity (continuous vs 15°) once slice
-/// 6 wires it. (Guards the 2026-07-21 regression where `NoSnap` wrongly stood the node upright
-/// on geometry — burying it in a vertical wall / dropping it off the curved surface.)
+/// **A geometry drop ALWAYS seats to the surface, whatever the orientation-snap setting.**
+/// Seated placement: a node on a geometry surface contacts it with the surface's own normal —
+/// there is NO upright mode on geometry (upright is the world-plane tier's job). So both snap
+/// settings tilt the node's local +Z to the entered face normal; the setting picks only the
+/// ANGLE-snap granularity (continuous vs 15°). Standing the node upright on geometry instead
+/// would bury it in a vertical wall, or drop it off a curved surface.
 #[test]
 fn a_geometry_drop_always_seats_to_the_surface() {
     let fixture = placement_fixture(OrbitCamera::default());
@@ -570,7 +568,7 @@ fn a_geometry_drop_always_seats_to_the_surface() {
     }
 }
 
-/// **The 15° joint solve lands a quantized normal on a curved surface (ADR 0027 §2).** On a
+/// **The 15° joint solve lands a quantized normal on a curved surface.** On a
 /// cylinder the constant-normal contour is a vertical line, so a 15° target is reachable: a drop
 /// seeded at an off-lattice angle (37° around) must slide to a contact whose seated normal is ON
 /// the 15° lattice while staying seated on the surface. Continuous placement would keep the raw
@@ -612,11 +610,11 @@ fn the_15deg_joint_solve_lands_a_quantized_normal_on_a_curved_surface() {
     );
 }
 
-/// **NoSnap + Deg15 keeps the sub-voxel cursor position on a flat face (thread #1, 2026-07-22).**
-/// A flat face's normal is already a 15° multiple, so quantizing it is a no-op — the angle snap
-/// must not disturb the position. Before the fix, `Deg15` seeded its solve from the picked face
-/// CENTER (`stable_surface`) while `Continuous` seated at the cursor contact, so turning on 15°
-/// snap silently jumped a NoSnap drop to the voxel center. This pins the two paths to the SAME
+/// **NoSnap + Deg15 keeps the sub-voxel cursor position on a flat face.** A flat face's
+/// normal is already a 15° multiple, so quantizing it is a no-op — the angle snap must not
+/// disturb the position. Seeding `Deg15` from the picked face CENTER (`stable_surface`) while
+/// `Continuous` seats at the cursor contact would make turning on 15° snap silently jump a
+/// NoSnap drop to the voxel center. This pins the two paths to the SAME
 /// sub-voxel position under NoSnap. Top-down ortho onto the Box's flat +Z face, cursor off the
 /// face center so the fraction is observable.
 #[test]
@@ -692,7 +690,7 @@ fn nosnap_deg15_keeps_the_sub_voxel_cursor_position_on_a_flat_face() {
 }
 
 /// **Block position snap rounds the drop to block boundaries; voxel / no-snap keep the
-/// finest offset.** The offset math directly (owner ruling 2026-07-21).
+/// finest offset.** The offset math directly.
 #[test]
 fn block_snap_rounds_the_offset_to_block_boundaries() {
     // Density 8: each axis rounds to the nearest multiple of 8 (round-half via +d/2).
@@ -715,7 +713,7 @@ fn block_snap_rounds_the_offset_to_block_boundaries() {
     );
 }
 
-/// **An invisible world plane is not a placement target (owner ruling 2026-07-21).** The
+/// **An invisible world plane is not a placement target.** The
 /// same top-down cursor that lands on the ground when its floor grid is shown reports
 /// `NoSurface` (no intent) when it is hidden — a hidden plane can't be placed on.
 #[test]
@@ -773,12 +771,12 @@ fn a_hidden_ground_plane_places_nothing() {
     assert_eq!(hidden.intent, None, "hidden ground drops no node");
 }
 
-/// **A grazing ray no longer drops a node on an invisible vertical plane.** The two
-/// vertical world planes are never visualized, so a near-horizontal view that used to
-/// fall back to one (dropping a node vertical and centered on a far invisible plane —
-/// the 2026-07-21 bug) now reports `NoSurface`, even with the ground's floor grid on.
+/// **A grazing ray never drops a node on an invisible vertical plane.** The two vertical
+/// world planes are never visualized, so a near-horizontal view that would otherwise fall
+/// back to one — dropping a node vertical and centered on a far invisible plane — reports
+/// `NoSurface`, even with the ground's floor grid on.
 #[test]
-fn a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane() {
+fn a_grazing_ray_never_places_on_an_invisible_vertical_plane() {
     // Near-horizontal orthographic view: the ground grazes, so `select_world_plane`
     // would choose a vertical — which is invisible, hence not a target.
     let camera = OrbitCamera {

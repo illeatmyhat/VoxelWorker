@@ -198,12 +198,12 @@ pub struct ShortcutBindingConfig {
     pub shortcut: Option<egui::KeyboardShortcut>,
 }
 
-/// The serde-able mirror of the [`Shortcuts`] settings (ADR 0016: `ui` links no serde).
+/// The serde-able mirror of the [`Shortcuts`] settings (the `ui` crate links no serde).
 ///
-/// **Only the overrides are written**, the way Blender persists a keymap diff rather than a copy.
-/// A full snapshot would freeze today's built-ins into every existing config, so a binding improved
-/// next year would reach only the people who had never opened the settings. The complete inventory
-/// is never in the file because it is never in doubt — it comes from `ShortcutCommand::ALL`.
+/// **Only the overrides are written** — a keymap diff rather than a copy. A full snapshot would
+/// freeze the current built-ins into every existing config, so an improved binding would reach only
+/// the people who had never opened the settings. The complete inventory is never in the file because
+/// it is never in doubt — it comes from `ShortcutCommand::ALL`.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShortcutsConfig {
     /// The changed bindings, in command order. Empty for a user who has rebound nothing.

@@ -1,6 +1,6 @@
 //! Intent dispatch + undo/redo — the serializable mutation core of [`AppCore`].
 //!
-//! ADR 0003 Phase C. [`AppCore::apply_intent`] (with `capture_inverse`) records each
+//! [`AppCore::apply_intent`] (with `capture_inverse`) records each
 //! edit on the command stack; [`AppCore::undo`]/[`AppCore::redo`] shuttle commands
 //! between its two Vecs; `dispatch` is the single owner of every [`Scene`] field-write
 //! / edit op; [`AppCore::effect_of`] classifies the resolve cost of an intent kind.
@@ -17,7 +17,7 @@ use super::AppCore;
 
 /// What one [`dispatch`](AppCore::dispatch) produced, beyond the scene mutation itself.
 ///
-/// The two id channels are deliberately SEPARATE (ADR 0032): `minted_node` patches the
+/// The two id channels are deliberately SEPARATE: `minted_node` patches the
 /// add-family's [`Inverse::RemoveAdded`] placeholder, while `selection_steer` says where
 /// the workspace selection should land. They disagree for `RemoveNode` (a fallback
 /// survivor, nothing minted) and `GroupNode` (a Group minted, selection unmoved), so one
@@ -32,7 +32,7 @@ struct DispatchOutcome {
     selection_steer: Option<SelectionSteer>,
 }
 
-/// How an edit steers the workspace selection (ADR 0032: the document no longer owns it).
+/// How an edit steers the workspace selection (the document does not own it).
 #[derive(Clone, Copy)]
 enum SelectionSteer {
     /// Land the node selection here — a freshly-added node, or a post-removal fallback
@@ -142,22 +142,19 @@ fn point_field_inverse(
 }
 
 impl AppCore {
-    /// **The single serializable mutation boundary (ADR 0003 Phase C, slice C1).**
-    /// Apply one [`Intent`] to `scene` by dispatching to the SAME edit op / field
-    /// write the panel performs today, returning the [`IntentEffect`] (the typed
-    /// successor of [`PanelResponse`](ui::panel::PanelResponse)'s effect booleans)
-    /// the caller reacts to.
+    /// **The single serializable mutation boundary.**
+    /// Apply one [`Intent`] to `scene` by dispatching to the matching edit op / field
+    /// write, returning the [`IntentEffect`] the caller reacts to.
     ///
-    /// `apply_intent` borrows the scene (`&mut Scene`) rather than owning it — the
-    /// scene still lives in `PanelState` (A2d ownership boundary); it owns no command
-    /// stack yet (that is C2), so this is a pure dispatch + effect report. A field
-    /// write to a missing id (or a kind-mismatched node — a `SetShape` on a non-Tool,
-    /// a `SetCloudSeed` on a non-Clouds) is a no-op returning [`IntentEffect::none`].
+    /// `apply_intent` borrows the scene (`&mut Scene`) rather than owning it — the scene
+    /// lives in `PanelState`. A field write to a missing id (or a kind-mismatched node — a
+    /// `SetShape` on a non-Tool, a `SetCloudSeed` on a non-Clouds) is a no-op returning
+    /// [`IntentEffect::none`].
     ///
-    /// **The selection-keyed ops.** `GroupNode` / `MakeDefinition` used to read the
-    /// document's `active` selection; ADR 0032 deleted it, so they take their `target`
-    /// explicitly and steer the workspace selection to the result. The intents carry the
-    /// target so the value is self-contained / replayable.
+    /// **The selection-keyed ops.** `GroupNode` / `MakeDefinition` take their `target`
+    /// explicitly (the document owns no selection to read) and steer the workspace
+    /// selection to the result. The intents carry the target so the value is
+    /// self-contained / replayable.
     pub fn apply_intent(
         &mut self,
         scene: &mut Scene,
@@ -173,11 +170,11 @@ impl AppCore {
         }
 
         let (command, effect) = self.record(scene, selection, intent);
-        // ADR 0028 §4: while a sketch group is OPEN, every undoable edit routes into the
-        // session (fine-grained in-mode undo/redo) through this SAME apply door — so apply and
-        // undo can never disagree about which stack an in-mode edit lives on (the asymmetry a
-        // review flagged). Finish batches the whole session onto the main stack as one
-        // transaction; outside a group each edit is its own singleton transaction.
+        // While a sketch group is OPEN, every undoable edit routes into the session
+        // (fine-grained in-mode undo/redo) through this SAME apply door — so apply and undo
+        // can never disagree about which stack an in-mode edit lives on. Finish batches the
+        // whole session onto the main stack as one transaction; outside a group each edit is
+        // its own singleton transaction.
         if let Some(group) = self.command_stack.open_group.as_mut() {
             group.session_undo.push(vec![command]);
             group.session_redo.clear();
@@ -189,9 +186,8 @@ impl AppCore {
         effect
     }
 
-    /// Apply several [`Intent`]s as **one undo step** — the multi-target verbs' door
-    /// (ADR 0033: Delete over a multi-selection reverses as one press of Ctrl+Z, exactly
-    /// as the sketch multi-delete already does through its single `SetSketch`). Each
+    /// Apply several [`Intent`]s as **one undo step** — the multi-target verbs' door, so
+    /// Delete over a multi-selection reverses as one press of Ctrl+Z. Each
     /// intent goes through the same [`record`](Self::record) protocol as a lone apply;
     /// only the stack push differs. A coordinate-limit rejection skips just the offending
     /// intent, matching what N separate applies would have done.
@@ -229,7 +225,7 @@ impl AppCore {
         merged
     }
 
-    /// Land a dispatch's [`SelectionSteer`] on the workspace selection (ADR 0032). The
+    /// Land a dispatch's [`SelectionSteer`] on the workspace selection. The
     /// SINGLE write point for an edit's selection effect — no edit op writes selection.
     fn apply_selection_steer(selection: &mut Selection, steer: Option<SelectionSteer>) {
         match steer {
@@ -246,9 +242,9 @@ impl AppCore {
     /// apply go through, so the two can never diverge on capture ordering. Touches no
     /// stack; the caller decides where the command lands.
     ///
-    /// The selection is NOT captured (ADR 0033: the undo stack carries no selection).
-    /// What it gets instead is the forward steer, then a validity [`prune`] — the same
-    /// pair every mutation path runs.
+    /// The selection is NOT captured — the undo stack carries none. What it gets instead
+    /// is the forward steer, then a validity [`prune`], the same pair every mutation path
+    /// runs.
     ///
     /// [`prune`]: Selection::prune
     fn record(
@@ -282,7 +278,7 @@ impl AppCore {
     }
 
     /// Capture the [`Inverse`] of `intent` by reading the scene's pre-mutation state
-    /// (ADR 0003 Phase C C2). Called BEFORE [`dispatch`](Self::dispatch) so a field-set
+    /// Called BEFORE [`dispatch`](Self::dispatch) so a field-set
     /// reads the PRIOR value and a structural op reads the soon-to-be-detached shape.
     /// The add family's minted id is not known yet, so it returns an
     /// [`Inverse::RemoveAdded`] placeholder the caller patches with `dispatch`'s minted
@@ -368,9 +364,9 @@ impl AppCore {
             }),
             Intent::SetShape { target, .. } => node_field_inverse(scene, *target, |node| {
                 match &node.content {
-                    // `SdfShape` is no longer `Copy` (it owns an optional boxed
-                    // retained-size expression), so clone the prior shape so undo
-                    // replays the EXACT authored size (ADR 0003 §3f(0)).
+                    // `SdfShape` is not `Copy` (it owns an optional boxed retained-size
+                    // expression), so clone the prior shape and undo replays the EXACT
+                    // authored size.
                     NodeContent::Tool { shape, .. } => Some(Intent::SetShape {
                         target: *target,
                         shape: shape.clone(),
@@ -381,7 +377,7 @@ impl AppCore {
             Intent::SetSketch { target, .. } => node_field_inverse(scene, *target, |node| {
                 match &node.content {
                     // Clone the prior producer so undo replays the EXACT sketch +
-                    // extrude span (ADR 0003 §3i).
+                    // extrude span.
                     NodeContent::SketchTool { producer, .. } => Some(Intent::SetSketch {
                         target: *target,
                         producer: producer.clone(),
@@ -401,10 +397,9 @@ impl AppCore {
                     _ => None,
                 }
             }),
-            // The operation is meaningful on EVERY node kind (ADR 0017): a leaf folds
-            // its own body, a Group its sealed composed body (Decision 3, issue #74),
-            // and an Instance the referenced definition's finished body — the reusable
-            // cutter (issue #76). All capture the same field inverse.
+            // The operation is meaningful on EVERY node kind: a leaf folds its own body, a
+            // Group its sealed composed body, and an Instance the referenced definition's
+            // finished body — the reusable cutter. All capture the same field inverse.
             Intent::SetOperation { target, .. } => node_field_inverse(scene, *target, |node| {
                 Some(Intent::SetOperation {
                     target: *target,
@@ -412,10 +407,9 @@ impl AppCore {
                 })
             }),
             Intent::SetDefinitionFixture { def, .. } => match scene.def_by_id(*def) {
-                // A DEFINITION field write (ADR 0017 Decision 4, issue #77): the
-                // fixture flag lives on the AssemblyDef, so the inverse captures the
-                // definition's prior flag — the same field-inverse shape as the
-                // node-targeted writes above.
+                // A DEFINITION field write: the fixture flag lives on the AssemblyDef, so
+                // the inverse captures the definition's prior flag — the same field-inverse
+                // shape as the node-targeted writes above.
                 Some(definition) => Inverse::Field(Intent::SetDefinitionFixture {
                     def: *def,
                     fixture: definition.fixture,
@@ -425,7 +419,7 @@ impl AppCore {
             Intent::SetOffset { target, .. } => node_field_inverse(scene, *target, |node| {
                 // Capture the node's RETAINED per-axis measurements so undo replays the
                 // EXACT authored expression — voxel-granular and parametric, not the
-                // floored block view (ADR 0003 §3f(0)).
+                // floored block view.
                 Some(Intent::SetOffset {
                     target: *target,
                     offset_measurements: node.transform.offset_measurements(),
@@ -456,8 +450,8 @@ impl AppCore {
             }),
 
             // --- Global ---
-            // Density is a single document-level field (ADR 0003 §3f(0)), so the
-            // inverse is the same field-set carrying the prior `scene.voxels_per_block`
+            // Density is a single document-level field, so the inverse is the same
+            // field-set carrying the prior `scene.voxels_per_block`
             // — exactly like `SetGridMasters`, routed back through `dispatch`.
             Intent::SetDensity { .. } => Inverse::Field(Intent::SetDensity {
                 voxels_per_block: scene.voxels_per_block,
@@ -514,10 +508,10 @@ impl AppCore {
 
     /// Apply the top `undo` command's [`Inverse`] to `scene`, then restore the captured
     /// selection + id counter (the COUNTER RULE — see command.rs), and move the command
-    /// to the `redo` stack (ADR 0003 Phase C C2). Returns the forward intent's own
+    /// to the `redo` stack. Returns the forward intent's own
     /// [`effect_of`](Self::effect_of) (so undoing a rename re-resolves the scene but NOT
     /// the points overlay, and undoing a grid-master toggle re-resolves nothing — the
-    /// per-edit cost ADR 0003 optimizes against at 10k nodes), with `selection_changed`
+    /// per-edit cost that matters at 10k nodes), with `selection_changed`
     /// forced on (undo always restores `selection_before`, so the inspector mirror must
     /// re-sync). [`IntentEffect::none`] when the undo stack is empty.
     ///
@@ -526,7 +520,7 @@ impl AppCore {
     /// mutations — no parallel copy to drift), so only the structural arms live in
     /// [`Inverse::apply`].
     pub fn undo(&mut self, scene: &mut Scene, selection: &mut Selection) -> IntentEffect {
-        // ADR 0028 §4: in an OPEN sketch group, undo is FINE-GRAINED within the session —
+        // In an OPEN sketch group, undo is FINE-GRAINED within the session —
         // reverse the last coalesced vertex edit without leaving the mode — routed through the
         // group's own `session_undo`/`session_redo`, never the main stack.
         if self.command_stack.open_group.is_some() {
@@ -575,9 +569,9 @@ impl AppCore {
     /// routed back through [`dispatch`](Self::dispatch) (the single owner of the
     /// field-write mutations); only the structural arms live in [`Inverse::apply`].
     ///
-    /// ADR 0033: no selection is restored — undo touches only the document, and the
-    /// validity prune drops any target the reversal invalidated (undoing an add leaves
-    /// nothing selected, the Fusion rule).
+    /// No selection is restored — undo touches only the document, and the validity prune
+    /// drops any target the reversal invalidated, so undoing an add leaves nothing
+    /// selected.
     fn reverse_command(
         &mut self,
         scene: &mut Scene,
@@ -613,20 +607,20 @@ impl AppCore {
         let outcome = self.dispatch(scene, intent.clone());
         // Redo re-lands the forward edit's selection steer (a re-minted node arrives
         // selected again), matching what the original apply did — then prunes, matching
-        // what every mutation path does (ADR 0033).
+        // what every mutation path does.
         Self::apply_selection_steer(selection, outcome.selection_steer);
         selection.prune(scene);
         Self::effect_of(intent).merged_with(IntentEffect::selection())
     }
 
-    /// Re-apply the top `redo` command's forward `intent` to `scene` (ADR 0003 Phase C
-    /// C2). The counter was rewound on undo, so re-`dispatch` re-mints byte-identical
+    /// Re-apply the top `redo` command's forward `intent` to `scene`.
+    /// The counter was rewound on undo, so re-`dispatch` re-mints byte-identical
     /// ids. Moves the command back to the `undo` stack. Returns the forward intent's own
     /// [`effect_of`](Self::effect_of) (with `selection_changed` forced on — redo restores
     /// the post-forward selection the caller must re-sync); [`IntentEffect::none`] when
     /// the redo stack is empty.
     pub fn redo(&mut self, scene: &mut Scene, selection: &mut Selection) -> IntentEffect {
-        // ADR 0028 §4: in an OPEN sketch group, redo re-applies the last in-mode-undone edit
+        // In an OPEN sketch group, redo re-applies the last in-mode-undone edit
         // through the group's own session stacks, never the main stack.
         if self.command_stack.open_group.is_some() {
             let Some(transaction) = self
@@ -664,7 +658,7 @@ impl AppCore {
         effect
     }
 
-    /// Open a sketch-editing undo GROUP (ADR 0028 §4) — the shell calls this on entering sketch
+    /// Open a sketch-editing undo GROUP — the shell calls this on entering sketch
     /// mode. Begins an empty in-session history into which every in-mode edit is then recorded
     /// (through the same [`apply_intent`](Self::apply_intent) door). A no-op if a group is
     /// already open (the shell prevents re-entry; guarding keeps the stack coherent).
@@ -674,12 +668,12 @@ impl AppCore {
         }
     }
 
-    /// Whether a sketch-editing group is currently open (ADR 0028 §4).
+    /// Whether a sketch-editing group is currently open.
     pub fn in_sketch_group(&self) -> bool {
         self.command_stack.open_group.is_some()
     }
 
-    /// FINISH the open sketch group (ADR 0028 §4): move the whole session onto the MAIN undo
+    /// FINISH the open sketch group: move the whole session onto the MAIN undo
     /// stack as ONE [`Transaction`](super::command_stack::Transaction), so a single undo past the
     /// sketch reverses all of it. The scene already sits at the session's final state (every
     /// edit was live), so this only re-files the history — it mutates nothing. A net-zero
@@ -699,7 +693,7 @@ impl AppCore {
         IntentEffect::none()
     }
 
-    /// CANCEL the open sketch group (ADR 0028 §4): reverse every session edit (each by its own
+    /// CANCEL the open sketch group: reverse every session edit (each by its own
     /// inverse, in reverse order — restoring the producer, the selection AND the id counter to
     /// the enter-state) and discard the session. Nothing reaches the main stack. Returns the
     /// merged effect of the reversed edits (`scene` → re-resolve) when the session was non-empty,
@@ -720,8 +714,8 @@ impl AppCore {
     }
 
     /// The [`IntentEffect`] an intent produces **when it applies** — the single source
-    /// of truth for "what does this mutation change" (ADR 0003 Phase C C2, code-review
-    /// fix). A pure classification keyed only on the intent KIND: structural / field /
+    /// of truth for "what does this mutation change". A pure classification keyed only on
+    /// the intent KIND: structural / field /
     /// global-density edits re-resolve (`scene`); the grid-master toggle is read live
     /// (`none`); a selection switch re-syncs the mirror (`selection`); a Point edit is
     /// overlay-only (`points`).
@@ -730,8 +724,7 @@ impl AppCore {
     /// [`IntentEffect::none`] when the specific mutation could not land — a missing id /
     /// kind-mismatch / stale index). [`undo`](Self::undo) / [`redo`](Self::redo) use it
     /// so undoing a trivial rename reports only `scene_changed`, not a blanket-true
-    /// rebuild of points too — the per-edit cost ADR 0003 optimizes against at 10k
-    /// nodes.
+    /// rebuild of points too — the per-edit cost that matters at 10k nodes.
     pub fn effect_of(intent: &Intent) -> IntentEffect {
         match intent {
             // Structural + node field writes + global density → re-resolve.
@@ -766,8 +759,8 @@ impl AppCore {
     }
 
     /// The raw dispatch of one [`Intent`] to the matching [`Scene`]
-    /// edit op / field write (ADR 0003 Phase C — the C1 match, now factored out so both
-    /// `apply_intent` and `redo` drive it). The success effect is
+    /// edit op / field write — factored out so both `apply_intent` and `redo` drive it.
+    /// The success effect is
     /// [`effect_of`](Self::effect_of) (the single source of truth); a mutation that
     /// could not land (missing id / kind-mismatch / stale index) downgrades to
     /// [`IntentEffect::none`]. Also returns, for the add family (AddNode / AddChild /
@@ -790,10 +783,9 @@ impl AppCore {
                 rotation_quaternion,
             } => {
                 // Build the node exactly as AddNode, then override its identity transform with
-                // the picked placement (ADR 0008 absolute voxel frame), the sub-voxel pivot
-                // remainder (ADR 0027 continuous placement), AND — when the drop supplied one —
-                // its continuous rotation (ADR 0027: the exact tilt to the gradient normal),
-                // before the same add op mints its id.
+                // the picked placement (in the absolute voxel frame), the sub-voxel pivot
+                // remainder, AND — when the drop supplied one — its continuous rotation (the
+                // exact tilt to the gradient normal), before the same add op mints its id.
                 let mut node = content.into_node();
                 let mut transform = NodeTransform::from_offset_voxels(offset_voxels);
                 transform.offset_local_voxels = offset_local;
@@ -859,7 +851,7 @@ impl AppCore {
             }
             Intent::SetMaterial { target, material } => {
                 // Sketch nodes carry the same shared material field, so the material
-                // edit applies to them too (ADR 0003 §3i).
+                // edit applies to them too.
                 node_write(scene, target, full_effect, |node| match &mut node.content {
                     NodeContent::Tool {
                         material: node_material,
@@ -876,20 +868,19 @@ impl AppCore {
                 })
             }
             Intent::SetOperation { target, operation } => {
-                // ADR 0017: the combine operation applies to EVERY node kind — a
-                // leaf folds its own body, a Group its sealed composed body
-                // (Decision 3, issue #74), and an Instance the referenced
-                // definition's finished body: a definition instanced with Subtract
-                // is the reusable cutter (issue #76). The resolver honored the
-                // Instance operation since #74; this is its edit surface.
+                // The combine operation applies to EVERY node kind — a leaf folds
+                // its own body, a Group its sealed composed body, and an Instance
+                // the referenced definition's finished body: a definition instanced
+                // with Subtract is the reusable cutter. The resolver honors the
+                // Instance operation; this is its edit surface.
                 node_write(scene, target, full_effect, |node| {
                     node.operation = operation;
                     true
                 })
             }
             Intent::SetDefinitionFixture { def, fixture } => {
-                // ADR 0017 Decision 4 (issue #77): sealed↔spliced is what the part
-                // IS, so this writes the DEFINITION's flag. Every placement changes
+                // Sealed↔spliced is what the part IS, so this writes the
+                // DEFINITION's flag. Every placement changes
                 // composition at once; the resolver's leaf fingerprints carry the
                 // scope path, which this flip changes for every expanded leaf, so
                 // the store re-classifies each instance's chunks.
@@ -900,8 +891,8 @@ impl AppCore {
                 target,
                 offset_measurements,
             } => {
-                // The intent carries the per-axis authored measurement (ADR 0003
-                // §3f(0)). Derive the canonical voxel offset at the document density
+                // The intent carries the per-axis authored measurement. Derive the
+                // canonical voxel offset at the document density
                 // and RETAIN the expression — the measurement→voxel rule has one
                 // owner in `NodeTransform::from_measurements`. The inspector
                 // validated each axis lands on a whole voxel before emitting.
@@ -932,30 +923,27 @@ impl AppCore {
             }
             // --- Global ---
             Intent::SetDensity { voxels_per_block } => {
-                // Density is a document-level attribute (ADR 0003 §3f(0)): one field
-                // on the scene that every resolve sources its density param from —
-                // no per-Tool fan-out.
+                // Density is a document-level attribute: one field on the scene that
+                // every resolve sources its density param from — no per-Tool fan-out.
                 //
-                // Placement is stored as canonical voxels at the authoring density
-                // (ADR 0003 §3f(0)). A density change must keep every node's
-                // placement coherent, but the RIGHT way to do that depends on
-                // whether the node carries a retained authored expression:
+                // Placement is stored as canonical voxels at the authoring density. A
+                // density change must keep every node's placement coherent, but the RIGHT
+                // way to do that depends on whether the node carries a retained authored
+                // expression:
                 //
-                // * RETAINED measurement (`Some`): RE-EVALUATE the authored
-                //   expression at the new density via `from_measurements`. This is
-                //   the ADR's lossless re-target — block terms scale (`3.5 blocks`:
-                //   56 vx at d16 → 112 at d32) and voxel terms stay EXACT (`3 blocks
-                //   8 voxels`: 56 at d16 → 3*32+8 = 104 at d32, NOT the integer
-                //   rescale's 112). A non-dividing re-target (e.g. d16→d15) floors
-                //   and resynthesises that axis inside `from_measurements`, so the
+                // * RETAINED measurement (`Some`): RE-EVALUATE the authored expression at
+                //   the new density via `from_measurements` — the lossless re-target. Block
+                //   terms scale (`3.5 blocks`: 56 vx at d16 → 112 at d32) and voxel terms
+                //   stay EXACT (`3 blocks 8 voxels`: 56 at d16 → 3*32+8 = 104 at d32, NOT
+                //   the integer rescale's 112). A non-dividing re-target (e.g. d16→d15)
+                //   floors and resynthesizes that axis inside `from_measurements`, so the
                 //   retained expression and `offset_voxels` can never disagree.
-                // * NO retained measurement (`None` — old docs, drags, pure-voxel
-                //   offsets): keep the legacy integer rescale, which PRESERVES the
-                //   physical position (and stays on the mating lattice for
-                //   block-multiple offsets). The field stays `None`.
+                // * NO retained measurement (`None` — drags, pure-voxel offsets): integer
+                //   rescale, which PRESERVES the physical position (and stays on the mating
+                //   lattice for block-multiple offsets). The field stays `None`.
                 //
-                // The explicit, warned, DESTRUCTIVE "re-target to a different game
-                // grid" remains a SEPARATE future Slice-2 op, not this.
+                // A destructive re-target onto a different block grid would be a separate,
+                // warned operation, not this.
                 let old_density = scene.voxels_per_block.max(1) as i64;
                 let new_density = voxels_per_block as i64;
                 for node in scene.arena.values_mut() {
@@ -973,15 +961,15 @@ impl AppCore {
                         }
                     }
 
-                    // A Tool's SIZE is now voxel-granular (ADR 0003 §3f(0)), so it
-                    // must be re-targeted on a density change EXACTLY like the offset
-                    // — otherwise the physical size would change (an 80-voxel = 5-block
-                    // box at d16 would stay 80 voxels = 2.5 blocks at d32). Same split:
+                    // A Tool's SIZE is voxel-granular, so it must be re-targeted on a
+                    // density change EXACTLY like the offset — otherwise the physical size
+                    // would change (an 80-voxel = 5-block box at d16 would stay 80 voxels =
+                    // 2.5 blocks at d32). Same split:
                     //  * RETAINED authored size: re-evaluate via `from_measurements`
                     //    (block terms scale, voxel terms stay exact, non-dividing axes
-                    //    floor+resynthesise — never disagree with `size_voxels`).
-                    //  * NO retained size (old docs / pure-voxel): integer rescale to
-                    //    preserve physical size; the field stays `None`.
+                    //    floor+resynthesize — never disagree with `size_voxels`).
+                    //  * NO retained size (pure-voxel): integer rescale to preserve
+                    //    physical size; the field stays `None`.
                     if let NodeContent::Tool { shape, .. } = &mut node.content {
                         if shape.has_retained_size_measurements() {
                             *shape = SdfShape::from_measurements(
@@ -1002,7 +990,7 @@ impl AppCore {
                         }
                     }
 
-                    // A SKETCH's geometry is voxel-granular too (#101): re-target every
+                    // A SKETCH's geometry is voxel-granular too: re-target every
                     // profile point (a retained measurement re-evaluates losslessly; a
                     // plain point rescales its continuous position) AND the extrude
                     // height, or the physical shape would warp — a re-targeted profile
@@ -1056,9 +1044,8 @@ impl AppCore {
             }
             Intent::RemovePoint { index } => {
                 scene.remove_point(index);
-                // Selection lands on the survivor at the removed slot, or the new last when
-                // the removed Point was it — the post-removal fallback the panel used to
-                // predict against a list it had not shrunk yet.
+                // Selection lands on the survivor at the removed slot, or on the new last
+                // when the removed Point was it.
                 let remaining = scene.points.len();
                 let survivor = (remaining > 0)
                     .then(|| index.min(remaining - 1))

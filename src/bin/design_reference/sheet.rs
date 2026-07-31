@@ -173,7 +173,7 @@ impl Sheet {
 
     /// Every token, with its hex and the meaning it is permitted to carry — iterated straight from
     /// the [`color_palette::SWATCHES`] registry, so a color appears here BY CONSTRUCTION: adding a
-    /// token to the palette adds its row, and a token can't exist without one (owner 2026-07-23).
+    /// token to the palette adds its row, and a token can't exist without one.
     fn palette(&self, ui: &mut Ui) {
         for swatch in color_palette::SWATCHES {
             let name = swatch.name.to_lowercase().replace('_', "-");

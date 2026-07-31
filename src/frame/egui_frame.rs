@@ -407,9 +407,9 @@ pub fn run_egui_frame(
                         // the explicit orbit mode both simply end it: navigating IS the result and
                         // it has already happened, so there is nothing left to discard.
                         //
-                        // The unrelated verbs a running command still wants to reach are planned
-                        // to live in a Fusion/Maya-style PIE MENU above this list, not in it —
-                        // which is what keeps this list exactly two rows.
+                        // The unrelated verbs a running command still wants to reach belong in a
+                        // radial menu above this list, not in it — which is what keeps this list
+                        // exactly two rows.
                         if panel_state.orbit_mode.is_on() {
                             if context_menu_row(
                                 ui,

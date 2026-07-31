@@ -1,6 +1,6 @@
 //! The shell's per-edit GPU geometry rebuild: it delegates the headless resolve to
 //! [`AppCore::rebuild`] and consumes the output into the display orchestrator + camera
-//! recenter compensation + layer-band rescale. Split out of `windowed/mod.rs` (ADR 0016).
+//! recenter compensation + layer-band rescale.
 
 use super::*;
 
@@ -12,7 +12,7 @@ impl WindowedState {
         profiling::scope!("rebuild_geometry");
         let density = self.panel_state.geometry.voxels_per_block;
 
-        // Delegate the headless resolve (S2/S3 targeted invalidation + assemble) to
+        // Delegate the headless resolve (targeted invalidation + assemble) to
         // `AppCore::rebuild`, then consume its output here in the shell: build the
         // GPU cuboid mesh (the camera is NOT touched). A density whose
         // single-chunk voxel capacity exceeds the bound is rejected with the store
@@ -41,21 +41,20 @@ impl WindowedState {
         // rescale below (Z-up: layers are Z-slices, index 2).
         let previous_grid_z = self.region_dimensions[2];
         let grid_dimensions = region_dimensions;
-        // Issue #60 M2: the effective layer-clip band the render path will apply this frame.
-        // The async worker builds the mesh already clipped to this band so the swap frame's
-        // `rebuild_for_band` is a no-op (no full main-thread re-mesh — the hitch #60 removed).
+        // The effective layer-clip band the render path will apply this frame. The async
+        // worker builds the mesh already clipped to this band so the swap frame's
+        // `rebuild_for_band` is a no-op, sparing a full main-thread re-mesh.
         let clip = self.current_mesh_clip(grid_dimensions[2]);
-        // ADR 0022 live placement: keep this rebuild's resident chunks (and the band
-        // they were drawn at) so the per-frame placement resolve has a `PickFrame` to
-        // march. The clone is Arc refcount bumps; the originals move into the display
-        // orchestrator below.
+        // Keep this rebuild's resident chunks (and the band they were drawn at) so the
+        // per-frame placement resolve has a `PickFrame` to march. The clone is Arc refcount
+        // bumps; the originals move into the display orchestrator below.
         self.resident_chunks = two_layer_chunks.clone();
         self.last_pick_band = clip.band;
-        // Map item 2: delegate the display-artifact rebuild (the brick sink + the fallback
-        // cuboid mesh + the F1 brick-display handover reconcile) to the orchestrator. The shell
-        // keeps the camera recenter-shift compensation, the layer-band rescale, and the region /
-        // measurement bookkeeping below. ADR 0018 Decision 5: the async mesh build region-scopes
-        // via `clip.region` (the brick sink's region parity is the next slice #85).
+        // Delegate the display-artifact rebuild (the brick sink + the fallback cuboid mesh +
+        // the F1 brick-display handover reconcile) to the orchestrator. The shell keeps the
+        // camera recenter-shift compensation, the layer-band rescale, and the region /
+        // measurement bookkeeping below. The async mesh build region-scopes via
+        // `clip.region`.
         self.display.rebuild(
             two_layer_chunks,
             incremental_dirty_chunks,
@@ -86,7 +85,7 @@ impl WindowedState {
                 recenter_shift_voxels[2] as f32,
             );
         }
-        // Issue #12: clamp/rescale the layer band to the new grid_z (re-snapping to block
+        // Clamp/rescale the layer band to the new grid_z (re-snapping to block
         // multiples when snapping is on) so the render path draws the rescaled band this frame
         // (the render path runs after this rebuild returns and reads the rescaled band).
         // Z-up: index 2. `previous_grid_z` was captured before `grid` was reassigned.
@@ -96,14 +95,14 @@ impl WindowedState {
             density,
         );
 
-        // ADR 0012: onion skin is now a per-frame ghost pass on the display paths (no
-        // occupancy build/upload here) — a band scrub is a pure uniform update.
+        // Onion skin is a per-frame ghost pass on the display paths (no occupancy
+        // build/upload here) — a band scrub is a pure uniform update.
 
-        // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
-        // node in the per-frame render path (it must track selection changes, which
-        // don't trigger a geometry rebuild), not here. The per-object block lattice +
-        // floor grid (issue #29 S3) is likewise (re)batched per frame from the
-        // grid-enabled nodes — a per-node toggle needs no scene re-resolve.
+        // The transform gizmo is sized + positioned from the SELECTED node in the per-frame
+        // render path (it must track selection changes, which don't trigger a geometry
+        // rebuild), not here. The per-object block lattice + floor grid is likewise
+        // (re)batched per frame from the grid-enabled nodes — a per-node toggle needs no
+        // scene re-resolve.
 
         self.region_dimensions = region_dimensions;
         self.recenter_voxels = recenter_voxels;

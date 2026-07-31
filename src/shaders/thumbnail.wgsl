@@ -1,11 +1,11 @@
-// Block thumbnail shader (Milestone 6).
+// Block thumbnail shader.
 //
 // Draws a textured unit cube at a fixed 45° orthographic view into a small
 // offscreen texture, with simple hemisphere-ish lighting (ambient + one
 // directional term). Unlike the main voxel shader there is NO per-voxel slice:
 // the WHOLE block texture is shown on each face (this is just a material preview
 // tile). The view-projection is supplied as a uniform so the CPU controls the
-// azimuth/elevation (prototype `thumbCam`).
+// azimuth/elevation.
 
 struct ThumbnailUniforms {
     view_projection: mat4x4<f32>,

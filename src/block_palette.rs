@@ -1,4 +1,4 @@
-//! The block palette, split across the shell/UI boundary (ADR 0016 Phase 8b).
+//! The block palette, split across the shell/UI boundary.
 //!
 //! The palette has two halves that this module keeps index-aligned:
 //!
@@ -12,7 +12,7 @@
 //!     cannot name: the [`ThumbnailRenderer`] that draws each 45° cube thumbnail, the
 //!     `wgpu::Texture` keep-alives (egui only holds a view/bind-group internally, so
 //!     dropping the texture would invalidate the tile), and the scanned
-//!     [`BlockGroup`]s (kept so M7 per-face resolution can re-key on apply). It renders
+//!     [`BlockGroup`]s (kept so per-face resolution can re-key on apply). It renders
 //!     + registers a thumbnail with egui, then pushes one entry to ALL THREE vecs.
 //!
 //! The INVARIANT the host upholds: `ui.tiles`, `keepalive`, and `groups` are always
@@ -36,10 +36,10 @@ pub struct PaletteHost {
     /// holds a view/bind-group internally, so dropping the texture invalidates it.
     /// Index-aligned with `ui.tiles`.
     keepalive: Vec<wgpu::Texture>,
-    /// The scanned group behind each tile (M7 per-face resolution re-keys on apply).
+    /// The scanned group behind each tile (per-face resolution re-keys on apply).
     /// Index-aligned with `ui.tiles`.
     groups: Vec<BlockGroup>,
-    /// Offscreen renderer for the 45° palette cube thumbnails (M6).
+    /// Offscreen renderer for the 45° palette cube thumbnails.
     thumbnail_renderer: ThumbnailRenderer,
 }
 
@@ -90,7 +90,7 @@ impl PaletteHost {
         self.ui.pick_variant(tile_index)
     }
 
-    /// The scanned [`BlockGroup`] behind tile `tile_index` (for M7 per-face
+    /// The scanned [`BlockGroup`] behind tile `tile_index` (for per-face
     /// resolution), or `None` if out of range.
     pub fn group(&self, tile_index: usize) -> Option<&BlockGroup> {
         self.groups.get(tile_index)

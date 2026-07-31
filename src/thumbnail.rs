@@ -1,8 +1,8 @@
 //! The palette PREVIEW thumbnail renderer — a shell-side GPU sink, NOT a scene view.
 //!
 //! [`ThumbnailRenderer`] is a tiny offscreen pipeline that draws a textured unit
-//! cube at a fixed 45° orthographic view (prototype `thumbCam`: azimuth π/4,
-//! elevation 0.62) into a ~96×96 `Rgba8Unorm` texture. The rendered texture is
+//! cube at a fixed 45° orthographic view (azimuth π/4, elevation 0.62) into a
+//! ~96×96 `Rgba8Unorm` texture. The rendered texture is
 //! returned to the caller ([`crate::block_palette::PaletteHost`]), which registers
 //! it with the UI layer as a palette tile's thumbnail.
 //!
@@ -19,13 +19,13 @@ use wgpu::util::DeviceExt;
 use assets::DecodedRgba;
 use display::block_texture::block_texture_bind_group_layout;
 
-/// Edge length (pixels) of each square thumbnail texture (prototype 96×96).
+/// Edge length (pixels) of each square thumbnail texture.
 pub const THUMBNAIL_SIZE: u32 = 96;
 
 /// Thumbnail offscreen format. MUST be `Rgba8Unorm` (NOT sRGB): the UI layer's
 /// `register_native_texture` requires it. We therefore sample the block texture
 /// as raw bytes (also `Rgba8Unorm`) and apply lighting in that same space, so the
-/// thumbnail reads like the prototype's preview without a double sRGB encode.
+/// thumbnail shades correctly without a double sRGB encode.
 const THUMBNAIL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// One thumbnail-cube vertex (the textured cube used only for the preview render).
@@ -272,8 +272,7 @@ impl ThumbnailRenderer {
     }
 }
 
-/// The fixed thumbnail camera view-projection (prototype `thumbCam`): an
-/// orthographic box `[-0.92, 0.92]` looking from azimuth π/4, elevation 0.62.
+/// The fixed thumbnail camera view-projection: an orthographic box `[-0.92, 0.92]` looking from azimuth π/4, elevation 0.62.
 fn thumbnail_view_projection() -> glam::Mat4 {
     let azimuth = std::f32::consts::FRAC_PI_4;
     let elevation = 0.62f32;
@@ -284,7 +283,7 @@ fn thumbnail_view_projection() -> glam::Mat4 {
         elevation.cos() * azimuth.cos() * radius,
     );
     let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Y);
-    // Orthographic frustum half-extent 0.92 (prototype), near/far around the cube.
+    // Orthographic frustum half-extent 0.92, near/far around the cube.
     let projection = glam::Mat4::orthographic_rh(-0.92, 0.92, -0.92, 0.92, 0.1, 10.0);
     projection * view
 }

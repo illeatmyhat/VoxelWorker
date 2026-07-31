@@ -61,7 +61,7 @@ fn tool_node(shape: SdfShape, material: MaterialChoice) -> Node {
 }
 
 /// A normalized two-Tool scene with stable ids minted + an Origin point. The workspace
-/// selection a test pairs with it comes from `selection_of_first_root` (ADR 0032).
+/// selection a test pairs with it comes from `selection_of_first_root`.
 fn two_tool_scene() -> Scene {
     let mut scene = Scene::from_nodes(vec![
         tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone),
@@ -300,7 +300,7 @@ fn set_material_round_trips() {
 
 #[test]
 fn set_operation_round_trips() {
-    // ADR 0017 (#73): flipping a leaf's combine operation to Subtract reverses
+    // Flipping a leaf's combine operation to Subtract reverses
     // via the field-inverse pattern — undo restores the prior Union, redo
     // re-applies the Subtract.
     let mut scene = two_tool_scene();
@@ -316,7 +316,7 @@ fn set_operation_round_trips() {
 
 #[test]
 fn set_operation_on_group_round_trips() {
-    // ADR 0017 Decision 3 (#74): a GROUP's operation is meaningful (its composed
+    // A GROUP's operation is meaningful (its composed
     // body folds under it), so the flip must capture the same field inverse —
     // undo restores the group's prior Union, redo re-applies the Subtract.
     let mut scene = two_tool_scene();
@@ -334,7 +334,7 @@ fn set_operation_on_group_round_trips() {
 
 #[test]
 fn set_operation_on_instance_round_trips() {
-    // ADR 0017 / issue #76: an INSTANCE's operation is meaningful (the referenced
+    // An INSTANCE's operation is meaningful (the referenced
     // definition's finished body folds under it — the reusable cutter), so the
     // flip captures the same field inverse as leaves and Groups.
     let mut scene = two_tool_scene();
@@ -353,7 +353,7 @@ fn set_operation_on_instance_round_trips() {
 
 #[test]
 fn set_definition_fixture_round_trips() {
-    // ADR 0017 Decision 4 (#77): the fixture flag is a DEFINITION field write,
+    // The fixture flag is a DEFINITION field write,
     // so the flip captures a definition-targeted field inverse — undo restores
     // the sealed default, redo re-applies the splice.
     let mut scene = two_tool_scene();
@@ -368,7 +368,7 @@ fn set_definition_fixture_round_trips() {
 
 #[test]
 fn placing_a_subtract_instance_undoes_to_intact_hosts() {
-    // Issue #76 acceptance: the reusable-cutter placement gesture — AddInstance
+    // The reusable-cutter placement gesture — AddInstance
     // then SetOperation(Subtract) on the minted node — undoes cleanly: two undos
     // restore the pre-placement scene byte-for-byte (both hosts intact, the
     // instance gone), and two redos re-apply the carve placement.
@@ -413,7 +413,7 @@ fn placing_a_subtract_instance_undoes_to_intact_hosts() {
 
 #[test]
 fn set_operation_intersect_round_trips() {
-    // ADR 0017 (#75): the Intersect arm rides the SAME field-inverse pattern —
+    // The Intersect arm rides the SAME field-inverse pattern —
     // undo restores the prior Union, redo re-applies the Intersect — on a leaf
     // and on a Group (the scope's composed body folds under Intersect).
     let mut scene = two_tool_scene();
@@ -512,7 +512,7 @@ fn set_offset_round_trips() {
 
 /// Applying a `SetOffset` with a blocks+voxels expression derives the canonical
 /// voxel offset at the document density, and the same expression refines
-/// losslessly at a denser document (ADR 0003 §3f(0)). `3.5 blocks` → 56 voxels
+/// losslessly at a denser document. `3.5 blocks` → 56 voxels
 /// at d16, 112 at d32; a signed `-2 blocks 4 voxels` axis derives signed.
 #[test]
 fn set_offset_apply_derives_voxels_at_density() {
@@ -564,9 +564,8 @@ fn set_offset_apply_derives_voxels_at_density() {
 }
 
 /// Undo of a `SetOffset` replays the node's prior RETAINED measurement exactly
-/// — voxel-granular and parametric, not the floored block view (ADR 0003
-/// §3f(0)). A prior `2 blocks 8 voxels` axis is restored verbatim, not flattened
-/// to whole blocks.
+/// — voxel-granular and parametric, not the floored block view. A prior
+/// `2 blocks 8 voxels` axis is restored verbatim, not flattened to whole blocks.
 #[test]
 fn set_offset_undo_restores_retained_measurement() {
     let mut scene = two_tool_scene();
@@ -665,10 +664,10 @@ fn set_node_grids_round_trips() {
 
 #[test]
 fn set_density_round_trips() {
-    // Density is a single document-level field now (ADR 0003 §3f(0)); start from a
-    // non-default prior so the inverse must restore the exact prior value, not 16.
-    // Size is now voxel-granular and SetDensity RE-TARGETS each Tool's size at the
-    // new density (ADR 0003 §3f(0)), so the fixture's shapes must be built at the
+    // Density is a single document-level field; start from a non-default prior so the
+    // inverse must restore the exact prior value, not 16. Size is voxel-granular and
+    // SetDensity RE-TARGETS each Tool's size at the
+    // new density, so the fixture's shapes must be built at the
     // SAME density the scene runs at (5) — a `2 blocks` shape is 10 voxels at d5,
     // not the d16 default's 32 — otherwise the density round-trip would normalize
     // the inconsistency and undo could not restore it byte-for-byte.
@@ -698,11 +697,9 @@ fn set_density_round_trips() {
     );
 }
 
-/// A density change must PRESERVE each node's block placement (ADR 0003 §3f(0)):
-/// the casual density control is fineness-only, so a node at block 5 stays at
-/// block 5 — its canonical voxel offset rescales old→new density. (The explicit
-/// destructive game-re-target is a separate future op.) Undo rescales back exactly
-/// for block-multiple offsets.
+/// A density change must PRESERVE each node's block placement: the casual density control
+/// is fineness-only, so a node at block 5 stays at block 5 — its canonical voxel offset
+/// rescales old→new density. Undo rescales back exactly for block-multiple offsets.
 #[test]
 fn set_density_preserves_block_position() {
     let mut node = tool_node(box_shape([1, 1, 1]), MaterialChoice::Stone);
@@ -754,7 +751,7 @@ fn set_density_preserves_block_position() {
 /// A `SetOffset` undo across an interleaved density change still restores the
 /// node's prior placement: the inverse captures the prior RETAINED measurement
 /// (`5 blocks`), which re-evaluates at the new density to the same block 5, so
-/// the density between apply and undo does not corrupt it (ADR 0003 §3f(0)).
+/// the density between apply and undo does not corrupt it.
 #[test]
 fn set_offset_undo_across_density_change() {
     let mut node = tool_node(box_shape([1, 1, 1]), MaterialChoice::Stone);
@@ -797,7 +794,7 @@ fn set_offset_undo_across_density_change() {
 
 /// `SetDensity` RE-EVALUATES a node's RETAINED expression at the new density
 /// (the seam fix): `3 blocks 8 voxels` (56 vx at d16) becomes 3*32 + 8 = 104 at
-/// d32 — the voxel term stays exact, NOT the legacy integer rescale's 112 — and
+/// d32 — the voxel term stays exact, NOT the plain integer rescale's 112 — and
 /// the retained measurement and canonical voxels stay consistent.
 #[test]
 fn set_density_re_evaluates_retained_measurement_exactly() {
@@ -843,9 +840,9 @@ fn set_density_re_evaluates_retained_measurement_exactly() {
     );
 }
 
-/// `SetDensity` on a node with NO retained measurement (a `None` transform, the
-/// legacy/drag path) KEEPS the integer rescale, preserving the physical block
-/// position, and leaves the field `None` (existing behavior untouched).
+/// `SetDensity` on a node with NO retained measurement (a `None` transform — the drag
+/// path) KEEPS the integer rescale, preserving the physical block position, and leaves the
+/// field `None`.
 #[test]
 fn set_density_integer_rescales_non_retained_offset() {
     let mut node = tool_node(box_shape([1, 1, 1]), MaterialChoice::Stone);
@@ -972,11 +969,6 @@ fn set_point_position_round_trips() {
         },
     );
 }
-
-// ADR 0032 deleted `Intent::SelectNode` / `SelectPoint` (and the two tests that pinned
-// "a selection intent pushes no command"). Selecting is a VIEW action carried on
-// `PanelResponse::select` and applied by the shell — it never reaches the undo stack
-// because it never reaches `apply_intent` at all.
 
 // === No-op forward → no-op inverse (still pushes a command, undo restores nothing) ===
 
@@ -1108,13 +1100,13 @@ fn redo_cleared_after_apply() {
     assert_eq!(core.redo_depth(), 0, "a fresh edit clears the redo stack");
 }
 
-// === ADR 0033: the undo stack carries no selection; the validity prune replaces it ===
+// === The undo stack carries no selection; the validity prune replaces it ===
 
 #[test]
 fn undoing_an_add_leaves_nothing_selected() {
-    // The Fusion rule. The minted node arrived selected (the forward steer); undoing
-    // the add removes it from the scene, and the prune — not a restore — empties the
-    // selection rather than resurrecting what was picked before.
+    // The minted node arrived selected (the forward steer); undoing the add removes it
+    // from the scene, and the prune — not a restore — empties the selection rather than
+    // resurrecting what was picked before.
     let mut scene = two_tool_scene();
     let mut core = test_core();
     let mut selection = selection_of_first_root(&scene);
@@ -1146,9 +1138,9 @@ fn undoing_an_add_leaves_nothing_selected() {
 }
 
 #[test]
-fn undo_no_longer_collapses_a_multi_selection() {
-    // The collapse ADR 0033 exists to kill: with two nodes picked, undoing an unrelated
-    // field edit used to restore a single captured primary, silently shrinking the set.
+fn undo_does_not_collapse_a_multi_selection() {
+    // The collapse to avoid: with two nodes picked, restoring a single captured primary on
+    // an unrelated field edit's undo would silently shrink the set.
     let mut scene = two_tool_scene();
     let mut core = test_core();
     let first = scene.roots[0];
@@ -1177,7 +1169,7 @@ fn undo_no_longer_collapses_a_multi_selection() {
 #[test]
 fn undo_of_field_edit_reports_scene_not_points() {
     // A trivial rename re-resolves the scene but must NOT force a points rebuild
-    // (the per-edit cost ADR 0003 optimizes against at 10k nodes).
+    // (the per-edit cost that matters at 10k nodes).
     let mut scene = two_tool_scene();
     let mut core = test_core();
     let target = scene.roots[0];
@@ -1198,10 +1190,10 @@ fn undo_of_field_edit_reports_scene_not_points() {
     );
     assert!(
         !undo_effect.selection_changed,
-        "ADR 0033: undo carries no selection, and a rename invalidates no target — \
+        "undo carries no selection, and a rename invalidates no target — \
          nothing pruned, nothing to re-sync"
     );
-    // And it is not the old blanket-true effect.
+    // And it is not a blanket-true effect.
     assert_ne!(
         undo_effect,
         IntentEffect {
@@ -1289,7 +1281,7 @@ fn undo_of_grid_masters_does_not_claim_scene_changed() {
         !undo_effect.points_changed,
         "grid masters do not touch points"
     );
-    // ADR 0033: undo carries no selection; nothing invalidated means nothing pruned.
+    // Undo carries no selection; nothing invalidated means nothing pruned.
     assert!(!undo_effect.selection_changed);
     let redo_effect = core.redo(&mut scene, &mut selection);
     assert!(
@@ -1298,17 +1290,17 @@ fn undo_of_grid_masters_does_not_claim_scene_changed() {
     );
 }
 
-/// Count the on-face-grid-flagged voxels (ADR 0003 §3c `grid_overlay` marker) in a
+/// Count the on-face-grid-flagged voxels (the `grid_overlay` marker) in a
 /// fresh `rebuild` of `scene` at `density`. `rebuild` routes through the per-chunk
 /// store (the chunk cache), so this exercises the SAME invalidation path the live app
 /// uses — not the always-full `resolve_region`.
 fn rebuild_grid_overlay_count(core: &mut AppCore, scene: &Scene, density: u32) -> usize {
     match core.rebuild(scene, density) {
         RebuildOutcome::Built(output) => {
-            // ADR 0011 G5: `rebuild` no longer returns a dense grid. Expand the resident
-            // two-layer chunks it DID return (the cache's output, so this still exercises
-            // the S3 invalidation path) through the test-oracle expander, then count the
-            // flagged voxels — the property under test is unchanged.
+            // `rebuild` returns no dense grid. Expand the resident two-layer chunks it
+            // DID return (the cache's output, so this still exercises the targeted
+            // invalidation path) through the test-oracle expander, then count the flagged
+            // voxels.
             let grid = evaluation::two_layer_store::expand_resident_chunks_into_grid(
                 &output.two_layer_chunks,
                 output.region_dimensions,
@@ -1393,11 +1385,10 @@ fn rebuild_reports_recenter_shift_across_extent_change() {
     );
 }
 
-/// ADR 0011 G5 startup door (the OOM-hang regression guard): the startup door builds NO
-/// `VoxelGrid` at all — it returns only the region dimensions + resolve recenter. The
-/// persisted 8000×800×800 scene can therefore no longer build a dense ~5.1-billion-cell
-/// grid at startup, on EITHER binary (the door is `gpu`-feature-agnostic). The dims match
-/// the placed region and the recenter matches the resolve frame the camera + fog consume.
+/// The startup door builds NO `VoxelGrid` at all — it returns only the region dimensions +
+/// resolve recenter, so an 8000×800×800 scene cannot expand a dense ~5.1-billion-cell grid
+/// at startup on either binary (the door is `gpu`-feature-agnostic). The dims match the
+/// placed region and the recenter matches the resolve frame the camera consumes.
 #[test]
 fn startup_region_returns_dims_and_recenter_no_grid() {
     let density = 16u32;
@@ -1419,12 +1410,11 @@ fn startup_region_returns_dims_and_recenter_no_grid() {
     );
 }
 
-/// ADR 0011 G5 retirement assertion (load-bearing): a rebuild yields ONLY the sparse
-/// two-layer covering chunks + scalar metadata — there is NO dense `VoxelGrid` in the
-/// output type at all (the field is gone, compile-enforced). This pins the retirement at
-/// runtime: even the multi-producer scene that streamed a whole-region grid before G5 now
-/// produces the sparse set the mesher + brick sink consume, and the region dimensions
-/// still match the scene's placed region (the camera / scrubber consumer contract).
+/// A rebuild yields ONLY the sparse two-layer covering chunks + scalar metadata — there is
+/// NO dense `VoxelGrid` in the output type at all (compile-enforced). This pins it at
+/// runtime: a multi-producer scene produces the sparse set the mesher + brick sink consume,
+/// and the region dimensions still match the scene's placed region (the camera / scrubber
+/// consumer contract).
 #[test]
 fn rebuild_yields_sparse_two_layer_output_no_dense_grid() {
     let density = 16u32;
@@ -1466,9 +1456,8 @@ fn rebuild_frame_corner_bbox(shape: SdfShape, density: u32) -> ([i64; 3], [i64; 
     let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
         panic!("density {density} unexpectedly rejected");
     };
-    // ADR 0011 G5: `rebuild` returns no dense grid. Expand its OWN resident two-layer
-    // chunks (the exact windowed-app path) through the test-oracle expander — bit-identical
-    // to the retired rebuild grid, so the pinned render-frame coordinates are unchanged.
+    // `rebuild` returns no dense grid. Expand its OWN resident two-layer chunks (the exact
+    // windowed-app path) through the test-oracle expander.
     let grid = evaluation::two_layer_store::expand_resident_chunks_into_grid(
         &output.two_layer_chunks,
         output.region_dimensions,
@@ -1489,19 +1478,17 @@ fn rebuild_frame_corner_bbox(shape: SdfShape, density: u32) -> ([i64; 3], [i64; 
     (min, max)
 }
 
-/// PERMANENT GUARD (corrects the coordinator's mistaken premise). A shape placed
-/// at world offset `[0, 0, 0]` is rendered CENTERED ON THE WORLD ORIGIN through
-/// the `AppCore::rebuild` / per-chunk store path — the exact path the windowed app
-/// renders. This pins the EMPIRICAL render-frame coordinates so the convention can
-/// never be misdescribed again.
+/// PERMANENT GUARD. A shape placed at world offset `[0, 0, 0]` is rendered CENTERED ON THE
+/// WORLD ORIGIN through the `AppCore::rebuild` / per-chunk store path — the exact path the
+/// windowed app renders. This pins the EMPIRICAL render-frame coordinates so the convention
+/// cannot be misdescribed.
 ///
-/// The per-chunk store applies the composite recenter (`Store::bind_region`
-/// rebases every chunk to the composite's recenter / floating origin), so the
-/// rebuild grid is in the SAME centered frame as the monolithic `resolve_region`
-/// (bit-identical for a near scene — proven by the goldens). The #30 lattice shift
-/// snaps the producer grid onto the block lattice in the PRODUCER-TRUE
-/// (pre-recenter) frame, but the recenter then re-symmetrises the composite about
-/// the origin — so the shape the user sees is centered, NOT corner-at-origin.
+/// The per-chunk store applies the composite recenter (`Store::bind_region` rebases every
+/// chunk to the composite's recenter / floating origin), so the rebuild grid is in the SAME
+/// centered frame as the monolithic `resolve_region`. The lattice shift snaps the producer
+/// grid onto the block lattice in the PRODUCER-TRUE (pre-recenter) frame, but the recenter
+/// then re-symmetrizes the composite about the origin — so the shape the user sees is
+/// centered, NOT corner-at-origin.
 ///
 /// Measured coordinates (this test pins them):
 ///   * 1×1×1 box  @ d16 → `[−8, 8)`  per axis  (d8 → `[−4, 4)`)  — centered, NOT `[0, 16)`.
@@ -1558,16 +1545,14 @@ fn shapes_render_centered_on_origin_in_rebuild_frame() {
     );
 }
 
-/// Regression (FIX 1): toggling ONLY `voxel_grid_on_faces` must make the on-face
-/// grid appear on the FIRST rebuild — no unrelated edit needed to evict the
-/// stale cached chunks.
+/// Toggling ONLY `voxel_grid_on_faces` must make the on-face grid appear on the FIRST
+/// rebuild — no unrelated edit needed to evict the stale cached chunks.
 ///
-/// The flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`, but it had
-/// been OMITTED from the leaf content fingerprint. So a lone toggle produced an
-/// identical fingerprint → `edit_aabb_since` found nothing dirty → `rebuild`
-/// evicted no chunks → the cached (grid-less) chunks were reused, and the grid
-/// only "caught up" when a later move/resize/etc. happened to evict them. Folding
-/// the flag into the fingerprint dirties the leaf's AABB on the toggle itself.
+/// The flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`, so it must also be in
+/// the leaf content fingerprint. Omit it and a lone toggle yields an identical fingerprint →
+/// `edit_aabb_since` finds nothing dirty → `rebuild` evicts no chunks → the cached
+/// (grid-less) chunks are reused, and the grid only "catches up" when a later move/resize
+/// happens to evict them.
 #[test]
 fn toggling_voxel_grid_on_faces_appears_on_first_rebuild() {
     let mut scene = Scene::from_nodes(vec![tool_node(box_shape([3, 3, 3]), MaterialChoice::Stone)]);

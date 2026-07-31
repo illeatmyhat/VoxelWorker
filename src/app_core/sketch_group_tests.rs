@@ -1,12 +1,11 @@
-//! Tests for the sketch-editing undo GROUP (ADR 0028 §4, issue #94).
+//! Tests for the sketch-editing undo GROUP.
 //!
-//! The group is the tracer bullet's transaction core: a mode opens it on enter, in-mode edits
-//! route into its own session history through the SAME [`apply_intent`] door (so apply and undo
-//! never disagree on which stack an edit lives on), fine-grained in-mode undo/redo reverse
-//! individual edits, Finish moves the whole session onto the main stack as ONE transaction, and
-//! Cancel reverses the session back to the enter-state and discards it. Every assertion maps to
-//! one of #94's acceptance criteria and runs headless (no GPU — these only touch the borrowed
-//! scene + the owned command stack).
+//! A mode opens the group on enter, in-mode edits route into its own session history through
+//! the SAME [`apply_intent`] door (so apply and undo never disagree on which stack an edit
+//! lives on), fine-grained in-mode undo/redo reverse individual edits, Finish moves the whole
+//! session onto the main stack as ONE transaction, and Cancel reverses the session back to the
+//! enter-state and discards it. All headless — these only touch the borrowed scene + the owned
+//! command stack.
 //!
 //! [`apply_intent`]: super::AppCore::apply_intent
 
@@ -146,10 +145,9 @@ fn cancel_rolls_the_session_back_to_enter() {
 
 #[test]
 fn cancel_leaves_the_selection_where_it_stood() {
-    // ADR 0033 reverses the review's old finding [5]: Cancel restores the DOCUMENT and
-    // touches the selection only through the validity prune. Reversing a SetSketch
-    // invalidates nothing the user picked, so whatever selection stood at Cancel time
-    // stands after it — the Fusion rule, replacing "restore the enter selection".
+    // Cancel restores the DOCUMENT and touches the selection only through the validity
+    // prune. Reversing a SetSketch invalidates nothing the user picked, so whatever selection
+    // stood at Cancel time stands after it.
     let mut core = test_core();
     let (mut scene, target) = single_sketch_scene();
     let mut selection = selection_of_first_root(&scene);
@@ -323,7 +321,7 @@ fn edits_outside_a_group_stay_singleton_main_transactions() {
 
 #[test]
 fn begin_does_not_mutate_the_document() {
-    // The group is non-document (ADR 0022): opening it mutates NOTHING in the scene.
+    // The group is non-document state: opening it mutates NOTHING in the scene.
     let mut core = test_core();
     let (scene, _target) = single_sketch_scene();
     let before = scene.clone();
@@ -355,10 +353,10 @@ fn a_fresh_in_mode_edit_clears_the_in_mode_redo() {
     );
 }
 
-/// One authoring act is ONE press of Ctrl+Z in the mode (owner 2026-07-29). A sketch click that
-/// both edits the profile and re-anchors the node emits two intents through
-/// `apply_transaction`; before this they became two in-mode steps, so the first undo left the
-/// profile at its new shape but the node at its old offset — a state the author never authored.
+/// One authoring act is ONE press of Ctrl+Z in the mode. A sketch click that both edits the
+/// profile and re-anchors the node emits two intents through `apply_transaction`; splitting
+/// them into two in-mode steps would let the first undo leave the profile at its new shape
+/// but the node at its old offset — a state the author never authored.
 #[test]
 fn one_authoring_act_is_one_in_mode_undo_step() {
     let mut core = test_core();

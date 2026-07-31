@@ -1,11 +1,10 @@
 //! The shell's async-worker poll seams: the diameter/widest-run measurement, the background
-//! VS block scan drain + bounded thumbnail build, and the `.vox` export completion poll. Split
-//! out of `windowed/mod.rs` (ADR 0016).
+//! block scan drain + bounded thumbnail build, and the `.vox` export completion poll.
 
 use super::*;
 
 impl WindowedState {
-    /// ADR 0010 E5 follow-up: poll the diameter worker for a finished widest-run measurement
+    /// Poll the diameter worker for a finished widest-run measurement
     /// and, if it is still the newest dispatched (not superseded by a later scrub/edit), swap
     /// it into `measured_diameter` + request a redraw so the readout updates this frame.
     /// Non-blocking — the app never waits on the worker; the previous (stale) value shows

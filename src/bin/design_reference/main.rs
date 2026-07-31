@@ -5,7 +5,7 @@
 //! the same [`egui::Style`] the application installs — if a token changes, this window changes
 //! with it. The glyphs are [`ui::icons`]' data-driven `Mark`s, which is a SEPARATE authoring
 //! from the live rail's own hand-painted glyphs in `signal_chrome.rs`; the two are meant to
-//! agree with the same design mock but are not the same code, so a glyph illegible here is not
+//! agree on the same shapes but are not the same code, so a glyph illegible here is not
 //! proof the live rail draws the same shape (check `signal_chrome.rs` too).
 //!
 //! It is deliberately a *separate* binary rather than a debug panel inside the app. The

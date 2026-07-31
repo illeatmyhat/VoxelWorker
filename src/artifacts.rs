@@ -272,7 +272,7 @@ pub struct SettingsArtifact {
     /// Whether the Points' axes draw on top of the model vs occluded (ADR 0031).
     #[serde(default = "default_true")]
     pub axes_on_top: bool,
-    /// The applied VS block's **label** only. Re-resolving its texture on load is heavy
+    /// The applied block's **label** only. Re-resolving its texture on load is heavy
     /// (a folder scan plus JSON resolution), so the label is restored best-effort for the
     /// readout and the material reverts to procedural until the user re-applies. An
     /// intentional lazy re-apply, recorded here because it looks like a bug otherwise.

@@ -87,7 +87,7 @@ fn replay_add_then_offset_places_new_node() {
         .expect("the added node exists at its minted id");
     assert_eq!(
         // The block-granular intent is stored as canonical voxels; the derived
-        // block view round-trips it exactly (block-aligned, ADR 0003 §3f(0)).
+        // block view round-trips it exactly (block-aligned).
         added.transform.blocks(scene.voxels_per_block),
         [7, -2, 4],
         "SetOffset moved the just-added node to the requested offset"

@@ -1,22 +1,20 @@
-//! **Cursor → placed node** — turning a screen position into the `PlaceNode` intent
-//! an armed tool would drop (`docs/design/direct-manipulation.md`, the placed point;
-//! `crates/raycast/src/placement.rs`, the three-world-plane model).
+//! **Cursor → placed node** — turning a screen position into the `PlaceNode` intent an
+//! armed tool would drop. The three-world-plane model it falls back to lives in
+//! `crates/raycast/src/placement.rs`.
 //!
 //! [`AppCore::place_primitive`] is the logic core of placement, one step above
 //! [`pick_voxel`](AppCore::pick_voxel): pick answers *what voxel is under the cursor*;
-//! this answers *where would a new node land, and what intent places it there*. It is
-//! the headless half a live click will call — the viewport click handler
-//! (`src/windowed/events.rs`) is a later slice that only forwards the cursor here and
-//! drains the returned intent.
+//! this answers *where would a new node land, and what intent places it there*. It is the
+//! headless half a live click calls — the viewport click handler
+//! (`src/windowed/events.rs`) only forwards the cursor here and drains the returned intent.
 //!
 //! **Two tiers, matching [`resolve_placement`].** A geometry hit is unambiguous, so
 //! tier 1 is [`pick_voxel`](AppCore::pick_voxel) and the node lands on the OUTER side
-//! of the entered face (`absolute_voxel + face_normal` — the empty Minecraft-style
-//! neighbor). Missing geometry falls to tier 3, the built-in world planes, via
-//! [`resolve_placement`] fed a ray rebased into the absolute voxel frame. (Tier 2,
-//! user-created planes, is not wired yet.)
+//! of the entered face (`absolute_voxel + face_normal` — the empty neighbor). Missing
+//! geometry falls to tier 3, the built-in world planes, via [`resolve_placement`] fed a ray
+//! rebased into the absolute voxel frame. (Tier 2, user-created planes, is unwired.)
 //!
-//! **The frame (ADR 0008).** [`pick_voxel`](AppCore::pick_voxel) already returns `absolute_voxel` in the
+//! **The frame.** [`pick_voxel`](AppCore::pick_voxel) returns `absolute_voxel` in the
 //! absolute lattice, and a node's `offset_voxels` IS that absolute frame (a producer
 //! emits `[offset, offset + grid)` corner-anchored — verified by the end-to-end tests
 //! below, which drop a node and confirm its occupancy lands where the cursor pointed),
@@ -38,10 +36,10 @@ use voxel_core::core_geom::MaterialChoice;
 use super::picking::PickFrame;
 use super::AppCore;
 
-/// Snap a corner-anchored voxel offset to the grain the armed tool requests (owner ruling
-/// 2026-07-21): whole **voxels** (the finest, no change) or whole **blocks** (offset a
-/// multiple of the density, for clean inter-part mating). `NoSnap` is voxel-granular for now —
-/// the freest placement the voxel document can store.
+/// Snap a corner-anchored voxel offset to the grain the armed tool requests: whole
+/// **voxels** (the finest, no change) or whole **blocks** (offset a multiple of the density,
+/// for clean inter-part mating). `NoSnap` is voxel-granular — the freest placement the voxel
+/// document can store.
 fn snap_offset(offset: [i64; 3], position: PositionSnap, density: u32) -> [i64; 3] {
     match position {
         PositionSnap::NoSnap | PositionSnap::Voxel => offset,
@@ -92,15 +90,15 @@ fn position_lattice_step(position: PositionSnap, density: u32) -> f32 {
 /// tradeoff frontier for the scorer.
 const JOINT_SOLVE_ROUNDS: usize = 4;
 
-/// Seat a 15° angle-snapped drop (ADR 0027 §2): find the surface contact whose quantized seat
+/// Seat a 15° angle-snapped drop: find the surface contact whose quantized seat
 /// minimizes the **combined** position + angle error, and return `(contact, quantized_normal)` to
 /// hand to the seat.
 ///
 /// Position and angle are two views of one degree of freedom — *where the contact sits on the
 /// surface* — so on a curved surface the constant-normal contour (a curve) and the position lattice
-/// (a grid) generically do not intersect: no contact satisfies both exactly. Per the owner ruling
-/// (2026-07-22) the solve therefore **minimizes the combined error** rather than favoring one
-/// constraint. The two errors are made commensurable without a magic weight by charging the angular
+/// (a grid) generically do not intersect: no contact satisfies both exactly. The solve
+/// therefore **minimizes the combined error** rather than favoring one constraint. The two
+/// errors are made commensurable without a magic weight by charging the angular
 /// error at the object's rim: an angle error `δ` displaces the rim by `≈ rim · δ`, so both terms are
 /// world (voxel) distances.
 ///
@@ -221,11 +219,11 @@ impl AppCore {
         let aspect_ratio = viewport[2] / viewport[3];
         let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
         let normalized_y = 1.0 - (cursor[1] - viewport[1]) / viewport[3] * 2.0;
-        // Unproject through the RAY FRAME (a06d215's wide-baseline fix): under perspective the
-        // full scene VP's inverse melts the `/w` divide at a ~10^5-voxel recenter, so use the
-        // camera-relative `ray_unprojection` (precise eye-relative ray) and add `ray_eye` back
-        // outside the matrix math — the same as the brick shader's `camera_ray` and the CPU pick.
-        // Ortho is bit-identical to the old full-VP path (`ray_unprojection == view_projection`,
+        // Unproject through the RAY FRAME: under perspective the full scene VP's inverse
+        // melts the `/w` divide at a ~10^5-voxel recenter, so use the camera-relative
+        // `ray_unprojection` (precise eye-relative ray) and add `ray_eye` back outside the
+        // matrix math — the same as the brick shader's `camera_ray` and the CPU pick. Ortho is
+        // bit-identical to the full-VP unprojection (`ray_unprojection == view_projection`,
         // `ray_eye == 0`). The direction is what surface intersection needs precise;
         // `cursor_ray_origin_absolute` casts perspective from the eye regardless.
         let scene_matrices = self.scene_matrices(aspect_ratio, frame.region_dimensions);
@@ -278,9 +276,8 @@ impl AppCore {
         // world plane is "in front" of that point is the crux, and it is NOT the same question for
         // the two projections — so the ray's reachability is resolved per projection.
         //
-        // Precision caveat (ADR 0008): `recenter_voxels as f32` loses integer precision past ~16M
-        // voxels. Correct for the small scenes this placement slice targets; the eventual fix is the
-        // i64 origin-rebase, not a fudge here.
+        // Precision caveat: `recenter_voxels as f32` loses integer precision past ~16M
+        // voxels. The fix is an i64 origin-rebase, not a fudge here.
         let Some((render_ray, recenter_vec, unit_direction)) =
             self.cursor_pick_ray(cursor, viewport, frame)
         else {
@@ -337,7 +334,7 @@ impl AppCore {
             }
         };
 
-        // Only place on a world plane the user can SEE (owner ruling 2026-07-21): the two
+        // Only place on a world plane the user can SEE: the two
         // vertical planes are never visualized, so they are never a placement target — a
         // grazing ray that would fall back to one reports NoSurface ("point at a surface")
         // instead of dropping a node, vertical and centered, on an invisible plane far away.
@@ -429,7 +426,7 @@ impl AppCore {
     }
 
     /// Resolve where an armed primitive would drop for a cursor position, and the
-    /// [`Intent`] that places it there (`docs/design/direct-manipulation.md`).
+    /// [`Intent`] that places it there.
     ///
     /// `cursor` / `viewport` are the same physical-pixel space
     /// [`pick_voxel`](AppCore::pick_voxel) takes (`[x, y, width, height]`); `frame` is
@@ -453,7 +450,7 @@ impl AppCore {
         ground_plane_visible: bool,
         snap: PlacementSnap,
     ) -> PlacementOutcome {
-        // A drop's rotation is written as a CONTINUOUS quaternion (ADR 0027) — surface placement
+        // A drop's rotation is written as a CONTINUOUS quaternion — surface placement
         // tilts the node's local +Z to the true gradient normal; a world-plane / upright drop
         // leaves it `None`. The whole tilt lives in the quaternion, which the classifier resolves
         // for any angle (a tube on a cylinder's curved side seats to the radial normal, not the
@@ -473,8 +470,8 @@ impl AppCore {
         };
 
         // Seat a node at `contact` with its local +Z turned to `surface_normal` — the ONE seating
-        // definition, shared by the geometry tier and the world-plane tier (owner ruling
-        // 2026-07-21: there is NO upright mode; every drop orients to the surface it lands on). The
+        // definition, shared by the geometry tier and the world-plane tier: there is NO
+        // upright mode; every drop orients to the surface it lands on. The
         // authoring PIVOT (where the object's centroid goes relative to the contact) is `snap.pivot`
         // via `seated_world_offset`. The pivot is CONTINUOUS: a `NoSnap` drop keeps the sub-voxel
         // remainder (origin integer part in `offset_voxels`, pivot fraction in `offset_local`),
@@ -492,7 +489,7 @@ impl AppCore {
             let rotation = Quat::from_rotation_arc(Vec3::Z, surface_normal);
             let world_offset = seated_world_offset(contact, surface_normal, full_size, snap.pivot);
             let (offset_voxels, offset_local) = match snap.position {
-                // Continuous placement (ADR 0027): keep the pivot exactly under the cursor by
+                // Continuous placement: keep the pivot exactly under the cursor by
                 // carrying its sub-voxel fraction. The integer floor is the far-world-safe origin;
                 // the remainder is always in `[0, 1)` per axis.
                 PositionSnap::NoSnap => {
@@ -529,7 +526,7 @@ impl AppCore {
         // surface: build the composed SDF, project the pick onto it, and turn the node's local +Z
         // to the exact gradient normal, so a tube on a curved side lies along the radial normal.
         //
-        // `snap.angle` selects the ANGLE-snap granularity (ADR 0027 §2): `Continuous` seats to the
+        // `snap.angle` selects the ANGLE-snap granularity: `Continuous` seats to the
         // exact gradient normal, `Deg15` runs the joint solve that trades the contact against the
         // 15° angle lattice. Neither ever means "upright on geometry" — that is the world-plane
         // tier's job.
@@ -574,8 +571,8 @@ impl AppCore {
                 .map(|surface_hit| surface_hit.point)
                 .unwrap_or(stable_surface);
 
-            // Seat and snap on the SDF, never the rendered voxel geometry (owner ruling: quantizing
-            // the continuous field simplifies the assumptions). The tilt is the composed field's
+            // Seat and snap on the SDF, never the rendered voxel geometry — quantizing the
+            // continuous field simplifies the assumptions. The tilt is the composed field's
             // gradient, but sampled at the CORNER-SAFE `stable_surface` (the entered face's interior)
             // — reading it at the raw contact would pick up the diagonal at a box corner, which the
             // cursor sits on under an orbit view. The DDA face only chooses WHERE to sample; the
@@ -623,11 +620,11 @@ impl AppCore {
             .unwrap_or(Vec3::NEG_Z);
 
         let intent = match target {
-            // A world plane seats exactly like a geometry surface (owner ruling 2026-07-21): the
-            // node orients to the plane normal facing the side it is placed FROM, so a drop on the
-            // ground's UNDERSIDE hangs it upside down. `-sign(dir·n)` selects the approach-facing
-            // normal — identity rotation for the ground seen from above (upright), a 180° flip from
-            // below. The old face-anchored "world-vertical" rule is retired.
+            // A world plane seats exactly like a geometry surface: the node orients to the
+            // plane normal facing the side it is placed FROM, so a drop on the ground's
+            // UNDERSIDE hangs it upside down. `-sign(dir·n)` selects the approach-facing
+            // normal — identity rotation for the ground seen from above (upright), a 180°
+            // flip from below.
             PlacementTarget::OnWorldPlane { point, plane } => {
                 let plane_normal = plane.normal();
                 let facing_normal = if unit_direction.dot(plane_normal) > 0.0 {

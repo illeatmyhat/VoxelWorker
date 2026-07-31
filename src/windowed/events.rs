@@ -175,7 +175,7 @@ impl ApplicationHandler for App {
                 } else {
                     // Release: a press that started in the cube and DIDN'T become a
                     // drag (stayed within the threshold) selects the picked hot-zone
-                    // element and snaps to it (prototype pointerup). A cube-drag has
+                    // element and snaps to it. A cube-drag has
                     // already orbited the camera, so it snaps nothing.
                     if state.press_in_view_cube && !state.view_cube_drag_active {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
@@ -447,8 +447,8 @@ impl ApplicationHandler for App {
                         .unwrap_or(false);
                     // A right-click on a sketch ENTITY opens the menu even though the vertex handle
                     // registers as chrome (a handle rect is in the chrome set) — the entity
-                    // hit-test tells a sketch handle from the real Signal chrome (ADR 0030, Fusion:
-                    // the same menu comes up on an entity as in empty sketch space).
+                    // hit-test tells a sketch handle from the real Signal chrome, so the same menu
+                    // comes up on an entity as in empty sketch space.
                     let on_sketch_entity = state.panel_state.sketch_mode.is_some()
                         && position
                             .map(|(x, y)| state.cursor_over_sketch_entity(x, y))
@@ -471,7 +471,7 @@ impl ApplicationHandler for App {
                         state.context_menu_open_at = at;
                         state.viewport_menu_at = None;
                     } else if !in_chrome {
-                        // Fusion: right-clicking a sketch entity selects it first, so the menu's
+                        // Right-clicking a sketch entity selects it first, so the menu's
                         // Delete acts on it (an already-selected entity keeps the whole set).
                         if on_sketch_entity {
                             if let Some((x, y)) = position {
@@ -631,10 +631,9 @@ impl ApplicationHandler for App {
                         current.1 as f32,
                         || state.pick_view_cube_element(current.0, current.1),
                     ) {
-                        // #13 Step 6.6: rotate arrows are a face-relative affordance —
-                        // only offer them when the view is constrained to a face
-                        // (Fusion behavior). Off-face hovers over a rotate gutter
-                        // don't light up.
+                        // Rotate arrows are a face-relative affordance — only offer
+                        // them when the view is constrained to a face. Off-face hovers
+                        // over a rotate gutter don't light up.
                         Some(CubeChromeZone::RotateArrow(_))
                             if !state.app_core.camera.is_face_constrained() =>
                         {

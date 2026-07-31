@@ -1,12 +1,12 @@
 //! The shell's `.vox` export dispatch: the save dialog + palette-color assembly stay on the
 //! main thread, but the multi-second [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build + streaming resolve + serialize +
 //! write move to the background [`VoxExportWorker`]. The `.vox` palette helpers live here beside
-//! their only caller. Split out of `windowed/mod.rs` (ADR 0016).
+//! their only caller.
 
 use super::*;
 
-/// The per-`block_id` `.vox` palette over the three procedural materials (ADR 0003
-/// §3a): slot `material_id` carries that material's average color, so a multi-material
+/// The per-`block_id` `.vox` palette over the three procedural materials: slot
+/// `material_id` carries that material's average color, so a multi-material
 /// scene exports each block in its own color.
 fn vox_export_procedural_palette() -> interchange::vox_export::BlockPaletteColors {
     use voxel_core::core_geom::MaterialChoice;
@@ -25,12 +25,11 @@ fn default_vox_filename(shape: &SdfShape, voxels_per_block: u32) -> String {
 }
 
 impl WindowedState {
-    /// Open the `.vox` save dialog and DISPATCH the export to the background worker
-    /// (slow-paths item 2 — the build + write used to run inline here and freeze the UI
-    /// for the whole multi-second export). The default filename encodes the shape + voxel
-    /// dims (e.g. `cylinder_80x16x80.vox`). The palette color is the active material's
-    /// representative color (a loaded block's average, or the procedural one), computed
-    /// here on the main thread exactly as before.
+    /// Open the `.vox` save dialog and DISPATCH the export to the background worker, so a
+    /// multi-second export never freezes the UI. The default filename encodes the shape +
+    /// voxel dims (e.g. `cylinder_80x16x80.vox`). The palette color is the active material's
+    /// representative color (a loaded block's average, or the procedural one), computed here
+    /// on the main thread.
     ///
     /// The dialog (a native modal, not the slow part) stays on this thread; everything
     /// after it — [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build, streaming resolve, serialize, write — moves to
@@ -49,19 +48,17 @@ impl WindowedState {
         }
         let density = self.panel_state.geometry.voxels_per_block;
         let shape = SdfShape::from_geometry(self.panel_state.geometry.clone());
-        // ADR 0010 E4: the old `exceeds_voxel_cap` guard (the dense whole-region 6M
-        // ceiling) is GONE on the export path — the streaming export never materialises
-        // a dense interior, so an 800×800-revolve-class solid exports successfully. A
-        // pathological per-CHUNK density is still bounded by the resolver itself.
+        // No whole-region voxel cap on the export path — the streaming export never
+        // materializes a dense interior, so an 800×800-revolve-class solid exports
+        // successfully. A pathological per-CHUNK density is still bounded by the resolver.
 
         let representative = match &self.loaded_material {
             Some(loaded) => loaded.average_color,
             None => procedural_material_average_color(self.panel_state.material),
         };
-        // ADR 0003 §3a: map each categorical `block_id` to its color. The palette is
-        // the three procedural materials' colors; the ACTIVE material's slot takes the
-        // representative (a loaded VS block's average, when applied), so a single-active-
-        // material scene exports byte-identically to the old single-color `.vox`.
+        // Map each categorical `block_id` to its color. The palette is the three procedural
+        // materials' colors; the ACTIVE material's slot takes the representative (a loaded
+        // block's average, when applied).
         let mut palette_colors = vox_export_procedural_palette();
         palette_colors[self.panel_state.material.material_id() as usize] = representative;
 
@@ -76,8 +73,8 @@ impl WindowedState {
 
         // Size the progress denominator (covering chunks) + a large-export warning WITHOUT
         // resolving any occupancy — the worker's per-chunk counter counts up to exactly
-        // this total (the streaming build ingests one covering chunk at a time; ADR 0010
-        // E4). `0` for a VoxelBody-only / empty scene (still exports a valid empty `.vox`).
+        // this total (the streaming build ingests one covering chunk at a time). `0` for a
+        // VoxelBody-only / empty scene (still exports a valid empty `.vox`).
         let total_chunks = self.panel_state.scene.covering_chunk_count(density);
         let region_dimensions = self.panel_state.scene.placed_region_dimensions(density);
         // Large-export warning (non-blocking text, NOT a modal): the user's 8000³ scene is

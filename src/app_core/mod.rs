@@ -1,20 +1,14 @@
 //! Headless orchestrator owning store + camera — the AppCore keystone.
 //!
-//! ADR 0003 (foundation rework). `AppCore` is the headless half of the app: it
-//! owns the [`TwoLayerResidentCache`] (boundary-aware residency + per-chunk resolve;
-//! ADR 0010 E5 — the SOLE runtime display path) and the [`OrbitCamera`], and exposes
-//! the headless scene queries both binaries drive. The windowed
-//! shell (`WindowedState`) and `bin/shot` keep the GPU renderers + winit/egui
-//! plumbing and delegate to `AppCore` for the headless work; in **A3** `shot`
-//! re-points here, at which point the golden net tests the real app instead of a
-//! parallel render copy.
+//! `AppCore` is the headless half of the app: it owns the [`TwoLayerResidentCache`]
+//! (boundary-aware residency + per-chunk resolve — the SOLE runtime display path) and the
+//! [`OrbitCamera`], and exposes the headless scene queries both binaries drive. The windowed
+//! shell (`WindowedState`) and `bin/shot` keep the GPU renderers + winit/egui plumbing and
+//! delegate to `AppCore` for the headless work.
 //!
-//! **Ownership boundary (A2d).** `AppCore` owns the store + camera but BORROWS
-//! the scene (`&Scene`) — the scene still lives in `PanelState` until Phase B/C
-//! moves it here. The scene-query associated functions below therefore take
-//! `&Scene` as a parameter; they become `&self` methods once `AppCore` owns the
-//! scene. Resolve state + the borrow-sensitive `AppCore::rebuild` land in
-//! **A2e**; `render` reads all headless data from here in **A2f**.
+//! **Ownership boundary.** `AppCore` owns the store + camera but BORROWS the scene
+//! (`&Scene`), which lives in `PanelState`. The scene-query associated functions below
+//! therefore take `&Scene` as a parameter rather than reading `self`.
 
 use std::sync::Arc;
 
@@ -49,8 +43,8 @@ mod sketch_group_tests;
 mod undo_tests;
 
 /// The workspace [`Selection`](ui::panel::Selection) a test fixture arrives with: its first
-/// top-level node picked. ADR 0032 made selection workspace state, so a test seeds it
-/// explicitly instead of reading it back off the scene.
+/// top-level node picked. Selection is workspace state, so a test seeds it explicitly
+/// instead of reading it back off the scene.
 #[cfg(test)]
 pub(crate) fn selection_of_first_root(scene: &document::scene::Scene) -> ui::panel::Selection {
     use ui::panel::{Selection, SelectionTarget};
@@ -60,50 +54,49 @@ pub(crate) fn selection_of_first_root(scene: &document::scene::Scene) -> ui::pan
 /// The headless orchestrator: owns the per-chunk resolve `Store` and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
 pub struct AppCore {
-    /// The **boundary-aware two-layer** resolve cache (ADR 0010 E5 — the SOLE runtime
-    /// display path; the dense `Store` is retired to a test oracle). The resolve
-    /// mechanism behind the shell's geometry rebuild: it classifies each covering
-    /// chunk's blocks air / coarse-solid / boundary via the one evaluator, keeps the
-    /// two-layer chunks resident, and re-derives only the chunks an edit's world-AABB
-    /// intersects (chunk-granular incremental, #54).
+    /// The **boundary-aware two-layer** resolve cache — the SOLE runtime display path
+    /// (a dense `Store` survives only as a test oracle). The resolve mechanism behind the
+    /// shell's geometry rebuild: it classifies each covering chunk's blocks air /
+    /// coarse-solid / boundary via the one evaluator, keeps the two-layer chunks resident,
+    /// and re-derives only the chunks an edit's world-AABB intersects (chunk-granular
+    /// incremental).
     pub two_layer_cache: TwoLayerResidentCache,
     /// The orbit camera (orbit angles + distance + projection). The windowed shell
     /// drives it from input; `shot` sets it from CLI flags.
     pub camera: OrbitCamera,
-    /// The leaf spatial index (issue #27 S3) the LAST [`rebuild`](Self::rebuild)
+    /// The leaf spatial index the LAST [`rebuild`](Self::rebuild)
     /// resolved from, kept so the next rebuild can diff against it to compute the
     /// edit's dirty world-AABB. `None` before the first rebuild (which clears
     /// wholesale).
     previous_leaf_index: Option<LeafSpatialIndex>,
     /// The composite recenter (floating origin, in voxels) the LAST rebuild resolved
-    /// at (issue #20 S6c-2c): the resolve bookkeeping that records whether the
-    /// floating origin shifted. `None` before the first rebuild.
+    /// at: the resolve bookkeeping that records whether the floating origin shifted.
+    /// `None` before the first rebuild.
     previous_recenter_voxels: Option<[i64; 3]>,
-    /// The density the LAST rebuild resolved at (issue #40). A density change re-keys
+    /// The density the LAST rebuild resolved at. A density change re-keys
     /// every chunk (chunk extent = `CHUNK_BLOCKS × density`), so even when the recenter
     /// happens to land at `[0,0,0]` at both densities the per-chunk buffers are in a
     /// different frame and the incremental cuboid path is unsafe — this gates it off.
     /// `None` before the first rebuild.
     previous_density: Option<u32>,
-    /// The linear inverse-command stack behind undo/redo (ADR 0003 Phase C C2). Every
+    /// The linear inverse-command stack behind undo/redo. Every
     /// non-selection-only `apply_intent` pushes a [`Command`](document::command::Command)
     /// here; `undo`/`redo` shuttle commands between its two Vecs. Empty until the first
     /// undoable edit.
     command_stack: CommandStack,
 }
 
-/// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e;
-/// ADR 0010 E5). Holds ONLY the **two-layer** covering chunks (owned) the shell meshes
-/// through
+/// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild). Holds ONLY the
+/// **two-layer** covering chunks (owned) the shell meshes through
 /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks),
 /// plus the region dimensions + recenter the display frame is sized from.
 ///
-/// **ADR 0011 G5 — the dense grid is gone.** A rebuild NO LONGER assembles a whole-region
-/// `VoxelGrid`. The display meshes from `two_layer_chunks` and the brick sink packs from the
-/// same set — neither needs a dense occupancy array. The only surviving dense resolves are the
-/// compile-gated `oracle`-feature resolvers the parity tests cross-check against
-/// (`Store::resolve_region` / `resolve_region_two_layer`), never a production path. So this
-/// output is purely sparse + scalar metadata.
+/// **No dense grid.** A rebuild never assembles a whole-region `VoxelGrid`. The display
+/// meshes from `two_layer_chunks` and the brick sink packs from the same set — neither needs
+/// a dense occupancy array. The only dense resolves left are the compile-gated
+/// `oracle`-feature resolvers the parity tests cross-check against (`Store::resolve_region` /
+/// `resolve_region_two_layer`), never a production path. So this output is purely sparse +
+/// scalar metadata.
 pub struct RebuildOutput {
     /// The region's voxel dimensions, read from the SCENE (see
     /// [`AppCore::region_dimensions_for`]) — what the camera auto-frame, gizmo,
@@ -114,23 +107,21 @@ pub struct RebuildOutput {
     /// deep copy. The shell meshes them through
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks)
     /// (coarse one-box + microblock cuboids + seam-flag culling) — the sole runtime
-    /// display mesh path (ADR 0010 E5) — and the brick sink packs its records from the same
-    /// set (ADR 0011 G3). Empty for a VoxelBody-only scene (no covering range).
+    /// display mesh path — and the brick sink packs its records from the same set. Empty
+    /// for a VoxelBody-only scene (no covering range).
     ///
-    /// **Why `Arc`, not owned chunks.** Every rebuild used to deep-clone EVERY resident
-    /// chunk into an owned `Vec` here (O(all-blocks) per edit) purely so the set could
-    /// outlive the cache borrow / be moved into the async mesh request. Since the brick
-    /// display's mesh route is `Skip`, the owned set is consumed only by borrowing readers
-    /// on the primary path, so that deep clone was pure waste; sharing an `Arc` per chunk
-    /// makes it an O(chunks) refcount bump and composes with the brick readers directly.
+    /// **Why `Arc`, not owned chunks.** Owning the set would mean deep-cloning EVERY
+    /// resident chunk per edit (O(all-blocks)) purely so it could outlive the cache borrow.
+    /// The set is consumed only by borrowing readers, so an `Arc` per chunk makes the hand-
+    /// out an O(chunks) refcount bump and composes with the brick readers directly.
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
-    /// The composite recenter (floating origin, voxels; ADR 0008) the two-layer mesh
+    /// The composite recenter (floating origin, voxels) the two-layer mesh
     /// lands its geometry in — the SAME frame the brick sink packs its records in. Carried
     /// as [`RecenterVoxels`] so the frame value travels compile-checked through the async
     /// display flow, unwrapped only at the point of positional arithmetic (a chunk rebase,
     /// a leaf stamp) and the GPU uniform packing.
     pub recenter_voxels: RecenterVoxels,
-    /// **The chunk-granular incremental GPU-buffer re-mesh hint (issue #55).** `Some(dirty)`
+    /// **The chunk-granular incremental GPU-buffer re-mesh hint.** `Some(dirty)`
     /// when this rebuild LOCALIZED — the edit's dirty world-AABB evicted exactly the `dirty`
     /// chunks (from [`TwoLayerResidentCache::invalidate_aabb`]) and the density did NOT change
     /// — so the shell can re-mesh + re-upload ONLY `dirty ∪ 26-neighborhood(dirty) ∩ resident`
@@ -170,16 +161,16 @@ pub enum RebuildOutcome {
 }
 
 impl AppCore {
-    /// The core's field-role ledger — the shell ledger's reach into the one struct it
-    /// used to file whole (`WindowedState::every_shell_field_has_a_role`, which calls
-    /// this from the capture seam). No `..`: a field added here fails the build until
-    /// somebody files it. The core is the grab-bag between document and shell, which is
-    /// exactly where an unclassified authority would hide next — and the one deliberate
-    /// loss is named where it happens rather than filed silently.
+    /// The core's field-role ledger — the shell ledger's reach into this struct, called
+    /// from `WindowedState::every_shell_field_has_a_role` at the capture seam. No `..`: a
+    /// field added here fails the build until somebody files it. The core is the grab-bag
+    /// between document and shell, which is exactly where an unclassified authority would
+    /// hide next — and the one deliberate loss is named where it happens rather than filed
+    /// silently.
     pub(crate) fn every_core_field_has_a_role(&self) {
         let AppCore {
             // Derived resolve cache: reconstructible from the classified scene; dropping
-            // it changes only how long the next rebuild takes (ADR 0023's admission test).
+            // it changes only how long the next rebuild takes.
             two_layer_cache: _,
             // CLASSIFIED view state: captured into `AppConfig` (via `as_chart`) at the
             // very seam this ledger is called from.
@@ -196,9 +187,9 @@ impl AppCore {
         } = self;
     }
 
-    /// Assemble the headless core from a camera (ADR 0010 E5). The two-layer resolve
-    /// cache is constructed here (ENABLED — the sole runtime display path); the caller
-    /// supplies only the camera (restored orbit/projection).
+    /// Assemble the headless core from a camera. The two-layer resolve cache is
+    /// constructed here (ENABLED — the sole runtime display path); the caller supplies only
+    /// the camera (restored orbit/projection).
     pub fn new(camera: OrbitCamera) -> Self {
         Self {
             two_layer_cache: TwoLayerResidentCache::enabled(),
@@ -211,8 +202,8 @@ impl AppCore {
     }
 
     /// An `AppCore` whose two-layer resolve cache is PRE-WARMED with the startup covering
-    /// set (async-brick startup follow-up to epic #64). The windowed shell builds its
-    /// startup chunks THROUGH this cache so a pre-first-edit display seam — the fallback
+    /// set. The windowed shell builds its startup chunks THROUGH this cache so a
+    /// pre-first-edit display seam — the fallback
     /// mesh rebuild after an async brick build lands `Empty` — hands out the
     /// RESIDENT chunks as O(chunks) `Arc` bumps instead of synchronously re-resolving the
     /// whole covering set on the main thread (the multi-second frame-one freeze). Edit-time
@@ -229,13 +220,13 @@ impl AppCore {
         }
     }
 
-    /// The number of commands on the undo stack (ADR 0003 Phase C C2 test support).
+    /// The number of commands on the undo stack.
     #[cfg(test)]
     pub(crate) fn undo_depth(&self) -> usize {
         self.command_stack.undo.len()
     }
 
-    /// The number of commands on the redo stack (ADR 0003 Phase C C2 test support).
+    /// The number of commands on the redo stack.
     #[cfg(test)]
     pub(crate) fn redo_depth(&self) -> usize {
         self.command_stack.redo.len()

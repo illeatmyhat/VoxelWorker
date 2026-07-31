@@ -1,12 +1,11 @@
-//! **Cursor picking** — turning a screen position into the voxel under it
-//! (`docs/design/direct-manipulation.md`, the picked point).
+//! **Cursor picking** — turning a screen position into the voxel under it.
 //!
 //! Every tool in the grammar needs the same primitive: *what is under the cursor, and which way
 //! is its surface facing.* The armed preview lands there, the sketch plane aligns to the normal
 //! it returns, and the manipulator hit-tests against it. Written once here rather than per tool,
 //! because tools that each answer "what did I click" their own way would disagree.
 //!
-//! **This queries CPU truth, never a display artifact** (ADR 0006). The occupancy comes from the
+//! **This queries CPU truth, never a display artifact.** The occupancy comes from the
 //! resident two-layer chunks — the same set the mesher and the brick sink read — through
 //! [`TwoLayerChunk::voxel_occupied`]. It deliberately does not march the brick field: the shell
 //! uploads its bricks and drops the CPU build, so there is nothing on this side to march, and
@@ -34,8 +33,8 @@ use super::AppCore;
 /// no fallback case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoxelPick {
-    /// The hit voxel's ABSOLUTE lattice coordinate (ADR 0008 — absolute, not render-frame, so
-    /// the caller never has to know which frame it came back in).
+    /// The hit voxel's ABSOLUTE lattice coordinate — not render-frame, so the caller never
+    /// has to know which frame it came back in.
     pub absolute_voxel: [i64; 3],
     /// The outward normal of the face the ray entered through.
     pub face_normal: [i32; 3],
@@ -47,7 +46,7 @@ pub struct VoxelPick {
 pub struct PickFrame<'a> {
     /// The region's voxel dimensions, whose floored half corner-anchors the render frame.
     pub region_dimensions: [u32; 3],
-    /// The floating origin the render frame is expressed against (ADR 0008).
+    /// The floating origin the render frame is expressed against.
     pub recenter_voxels: [i64; 3],
     /// Voxels per block.
     pub density: u32,
@@ -99,12 +98,12 @@ impl AppCore {
         let aspect_ratio = viewport[2] / viewport[3];
         let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
         let normalized_y = 1.0 - (cursor[1] - viewport[1]) / viewport[3] * 2.0;
-        // Unproject through the RAY FRAME, not the full scene VP (a06d215's wide-baseline fix,
-        // now for the CPU pick): under perspective `ray_unprojection` is the camera-relative,
-        // camera-bracketed matrix whose inverse yields an EYE-RELATIVE ray — small, precise even
-        // when the render frame puts the eye ~10^5 voxels out — and `ray_eye` carries the one
-        // large term added back OUTSIDE the melting `/w` divide. This is the CPU mirror of the
-        // brick shader's `camera_ray`. Under ortho it is bit-identical to the old full-VP path
+        // Unproject through the RAY FRAME, not the full scene VP: under perspective
+        // `ray_unprojection` is the camera-relative, camera-bracketed matrix whose inverse
+        // yields an EYE-RELATIVE ray — small, precise even when the render frame puts the eye
+        // ~10^5 voxels out — and `ray_eye` carries the one large term added back OUTSIDE the
+        // melting `/w` divide. This is the CPU mirror of the brick shader's `camera_ray`.
+        // Under ortho it is bit-identical to the full-VP unprojection
         // (`ray_unprojection == view_projection`, `ray_eye == 0`).
         let scene_matrices = self.scene_matrices(aspect_ratio, region_dimensions);
         let eye_relative_ray = unproject_screen_point_to_ray(
@@ -383,12 +382,11 @@ mod tests {
         );
     }
 
-    /// **The LOWER half of a centered object is pickable under a FULL band (2026-07-21
-    /// regression).** The band→march conversion once added a spurious `half_z` floor
-    /// (`band_min − shading_to_absolute + half`), clipping every voxel below the region
-    /// mid-plane — so a pick could never name a voxel in an object's lower half even under a
-    /// FULL (mask-nothing) band. The owner hit this trying to place a tube on the bottom half of
-    /// a tall cylinder. This sweeps a tall box and asserts a hit lands BELOW the region mid.
+    /// **The LOWER half of a centered object is pickable under a FULL band.** A spurious
+    /// `half_z` floor in the band→march conversion (`band_min − shading_to_absolute + half`)
+    /// clips every voxel below the region mid-plane, so a pick can never name a voxel in an
+    /// object's lower half even under a FULL (mask-nothing) band. This sweeps a tall box and
+    /// asserts a hit lands BELOW the region mid.
     #[test]
     fn the_lower_half_of_a_centered_object_is_pickable() {
         // A tall box viewed SIDE-ON (horizontal orthographic), so its whole near face — top to
@@ -444,21 +442,22 @@ mod tests {
         );
     }
 
-    /// **A pick at a WIDE BASELINE hits the far object (2026-07-24 melt guard).** With two
-    /// objects near the ±1M-block authoring cap the composite recenter is ~10^7 voxels, so the
-    /// render frame puts the eye ~10^7 out. The old pick unprojected through the FULL scene
-    /// view-projection; inverting a matrix carrying that eye translation melts the `/w` divide (the
-    /// same disease a06d215 fixed for rendering), yielding a garbage ray direction that misses the
-    /// object or names a phantom non-solid voxel. The fix unprojects through the camera-relative
-    /// RAY FRAME (`SceneMatrices::ray_unprojection`) and adds `ray_eye` back outside the matrix
-    /// math. Verified: at this baseline the old full-VP path scored 0/49 hits; the ray-frame path
-    /// connects on nearly every ray. (Nearer baselines melt sub-voxel and pass either way — the
-    /// cap-adjacent distance is what makes the guard bite.)
+    /// **A pick at a WIDE BASELINE hits the far object — the melt guard.** With two objects
+    /// near the ±1M-block authoring cap the composite recenter is ~10^7 voxels, so the render
+    /// frame puts the eye ~10^7 out. Unprojecting through the FULL scene view-projection
+    /// inverts a matrix carrying that eye translation, which melts the `/w` divide and yields
+    /// a garbage ray direction that misses the object or names a phantom non-solid voxel. The
+    /// pick therefore unprojects through the camera-relative RAY FRAME
+    /// (`SceneMatrices::ray_unprojection`) and adds `ray_eye` back outside the matrix math.
+    /// Measured: at this baseline the full-VP route scores 0/49 hits; the ray-frame route
+    /// connects on nearly every ray. (Nearer baselines melt sub-voxel and pass either way —
+    /// the cap-adjacent distance is what makes the guard bite.)
     ///
-    /// This targets the FAR box and sweeps a grid of cursors: every hit must be a genuinely SOLID
-    /// voxel IN the far box's absolute AABB (the near box sits ~160k voxels behind the camera, off
-    /// screen), and enough rays must connect for the solidity check to bite. Under the melt the
-    /// direction is wrong, so the far box is missed entirely (0 hits) or a hit lands on air.
+    /// This targets the FAR box and sweeps a grid of cursors: every hit must be a genuinely
+    /// SOLID voxel IN the far box's absolute AABB (the near box sits ~160k voxels behind the
+    /// camera, off screen), and enough rays must connect for the solidity check to bite. Under
+    /// the melt the direction is wrong, so the far box is missed entirely (0 hits) or a hit
+    /// lands on air.
     #[test]
     fn a_wide_baseline_pick_hits_the_far_object() {
         use document::scene::{Node, NodeContent, NodeTransform, Scene};
@@ -577,7 +576,7 @@ mod tests {
         );
     }
 
-    /// **ADR 0032 slice 3: the pick names the node you clicked.** The shell's viewport-select
+    /// **The pick names the node you clicked.** The shell's viewport-select
     /// gesture is exactly this composition — `pick_voxel` names the solid absolute voxel under
     /// the cursor, `Scene::picked_node_at_voxel` names the node that owns it — and the two halves
     /// were built against different frames, so composing them is where a frame error would show.

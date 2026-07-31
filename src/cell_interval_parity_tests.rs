@@ -1,4 +1,4 @@
-//! ADR 0010 E1 — the STANDALONE exactness parity for the conservative cell-interval
+//! The STANDALONE exactness parity for the conservative cell-interval
 //! bound primitive ([`VoxelProducer::cell_field_interval`]).
 //!
 //! The bound is op-stack math wired to nothing yet; its whole point is that a coarse
@@ -115,7 +115,7 @@ fn fuzz_cells(full_dimensions: [u32; 3], voxels_per_block: u32, seed: u64) -> Ve
     cells.push(VoxelAabb::new([0, 0, 0], dims));
 
     // Block-sized cells tiling the grid on the block lattice (this is the real
-    // classification granularity ADR 0010 uses), PLUS overhang cells past the edge.
+    // classification granularity), PLUS overhang cells past the edge.
     let mut z = -block;
     while z < dims[2] + block {
         let mut y = -block;
@@ -224,12 +224,12 @@ fn sdf_cell_interval_never_misclassifies() {
     );
 }
 
-/// **Issue #62 — interior soundness under an UNDER-ESTIMATED Lipschitz constant.**
+/// **Interior soundness under an UNDER-ESTIMATED Lipschitz constant.**
 ///
-/// The ADR 0010-core audit flagged that the SDF widening `L = max_semi / min_semi` is not
-/// actually an upper bound on the IQ-ellipsoid's gradient: deep inside a thin ellipsoid the
-/// true gradient runs far above it. Today that is still SOUND, but only via three
-/// circumstances the audit enumerated — (a) field magnitude dominates in the interior, (b)
+/// The SDF widening `L = max_semi / min_semi` is not actually an upper bound on the
+/// IQ-ellipsoid's gradient: deep inside a thin ellipsoid the true gradient runs far above
+/// it. That is still SOUND, but only via three circumstances — (a) field magnitude dominates
+/// in the interior, (b)
 /// near the surface the gradient stays under the claimed `L`, and (c) for strongly
 /// anisotropic shapes the widened `L` makes every block `Boundary` anyway. The coverage gap
 /// was that `sdf_cell_interval_never_misclassifies` above fuzzes anisotropy only to 8:1 and
@@ -560,15 +560,14 @@ fn sketch_revolve_cell_interval_never_misclassifies() {
     );
 }
 
-/// The cloud field is BOUNDABLE (ADR 0021) — it was documented as unboundable on the
-/// mistaken grounds that fBm cannot be bracketed over a cell. Only the noise's global range
-/// is needed; the radial term supplies the rest, so cells classify from puff geometry with
-/// no noise evaluation.
+/// The cloud field is BOUNDABLE, contrary to the intuition that fBm cannot be bracketed
+/// over a cell. Only the noise's global range is needed; the radial term supplies the rest,
+/// so cells classify from puff geometry with no noise evaluation.
 ///
 /// Two things are asserted. Soundness: no coarse verdict may disagree with brute force,
 /// which is what would break if the noise range bound were wrong. And usefulness: the fuzz
 /// must actually produce AIR verdicts, since a bound that never decides anything would pass
-/// the soundness half while delivering exactly the elision the old `None` did.
+/// the soundness half while eliding nothing at all.
 #[test]
 fn debug_cloud_field_is_boundable_and_sound() {
     use document::debug_clouds::DebugCloudField;
@@ -616,13 +615,12 @@ fn debug_cloud_field_is_boundable_and_sound() {
 }
 
 /// The cell bracket must be **metric**, not merely sign-correct: it has to CONTAIN the true
-/// signed distance over the cell, so that shifting it by `−N` is a sound outset (ADR 0019
-/// Decision 7).
+/// signed distance over the cell, so that shifting it by `−N` is a sound outset.
 ///
-/// This is the guard for the trap ADR 0019 Decision 1 named. `SketchSolid` used to answer
-/// with sentinels — `(1,2)` air, `(-2,-1)` solid, `(-1,1)` boundary — carrying no distance
-/// at all. Under those, an outset of `N >= 2` turns air `(1,2)` into `(1−N, 2−N)` and
-/// classifies provably-empty space **solid**, with no type error to catch it. A bracket that
+/// This is the guard for the sentinel trap: answering with sentinels — `(1,2)` air,
+/// `(-2,-1)` solid, `(-1,1)` boundary — carries no distance at all. Under those, an outset of
+/// `N >= 2` turns air `(1,2)` into `(1−N, 2−N)` and classifies provably-empty space
+/// **solid**, with no type error to catch it. A bracket that
 /// contains the real distance cannot fail that way: air more than `N` from the body stays
 /// air because its lower bound really is its clearance.
 #[test]
@@ -686,11 +684,11 @@ fn sketch_cell_interval_brackets_the_true_distance() {
     eprintln!("Sketch metric bracket: {checked} probes, widest bracket {widest_slack}");
 }
 
-/// **The outset parity gate** (ADR 0020 Decision 7).
+/// **The outset parity gate.**
 ///
 /// The fold exists twice — over voxel sets in `document::scene::producers` and over intervals
-/// in `substrate::solids::cell_classification` — and the ADR warns they diverge SILENTLY if
-/// only one learns a new operation. Outset sidesteps that by being a producer decorator
+/// in `substrate::solids::cell_classification` — and the two diverge SILENTLY if only one
+/// learns a new operation. Outset sidesteps that by being a producer decorator
 /// rather than a fold arm, so both folds consume one definition of it through the ordinary
 /// `VoxelProducer` interface. This test is what proves the two still agree: it runs the
 /// same interval-versus-brute-force oracle the other producers use, against an OUTSET
@@ -711,8 +709,7 @@ fn outset_producer_cell_interval_never_misclassifies() {
     let mut boundary = 0u64;
 
     // Both metrics and both signs. Chebyshev (box, extrude) dilates square; Euclidean
-    // (sphere) dilates round — ADR 0019 Decision 6, the shape of an offset follows the
-    // body's metric.
+    // (sphere) dilates round: the shape of an offset follows the body's metric.
     for outset in [-3i64, -1, 1, 4] {
         let producers: Vec<(String, Box<dyn VoxelProducer>)> = vec![
             (

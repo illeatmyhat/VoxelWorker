@@ -1,5 +1,5 @@
-//! Boolean-operand ghost derivation (ADR 0018 Decision 6 — "Show booleans" mode):
-//! selection → ghost bodies + frame.
+//! Boolean-operand ghost derivation for "Show booleans" mode: selection → ghost bodies
+//! + frame.
 //!
 //! The app_core half of the seam: read the boolean-operand body slices of the ACTIVE
 //! selection's subtree from the document ([`Scene::boolean_operand_body_slices`]) —
@@ -8,7 +8,7 @@
 //! operand's covering chunks — never a whole-scene resolve, and never a dense grid), and
 //! hand the display layer plain meshes-to-be + styles
 //! ([`display::mesh::SelectedOperandGhostBody`]). Display renders, app_core derives, the
-//! document stays pure (ADR 0016).
+//! document stays pure.
 //!
 //! Re-derived only on selection / geometry / MODE change (the shell + `shot` call this at
 //! those seams), never per frame. The mode gate (only Show-booleans mode ghosts) lives at
@@ -24,9 +24,9 @@ use voxel_core::voxel::RecenterVoxels;
 use super::AppCore;
 
 /// Everything the display's [`SelectedOperandGhostRenderer`] rebuild needs: the ghost
-/// bodies plus the COMPOSED scene's frame (ADR 0008 — the slice chunks are in absolute
-/// composite coords, so meshing them against the composed recenter lands the ghost
-/// voxel-exact on the operand's place in the render frame).
+/// bodies plus the COMPOSED scene's frame — the slice chunks are in absolute composite
+/// coords, so meshing them against the composed recenter lands the ghost voxel-exact on the
+/// operand's place in the render frame.
 ///
 /// [`SelectedOperandGhostRenderer`]: display::mesh::SelectedOperandGhostRenderer
 pub struct SelectedOperandGhost {
@@ -42,7 +42,7 @@ pub struct SelectedOperandGhost {
 }
 
 /// Map the document's combine operation onto display's ghost-style vocabulary (the
-/// display layer never reads `CombineOp` — ADR 0016 layering). The boolean-operand walk
+/// display layer never reads `CombineOp`). The boolean-operand walk
 /// only ever emits mask operands, so Union never reaches here.
 fn operand_ghost_style_for(operation: CombineOp) -> OperandGhostStyle {
     match operation {
@@ -58,9 +58,9 @@ fn operand_ghost_style_for(operation: CombineOp) -> OperandGhostStyle {
     }
 }
 
-/// Everything the display's [`SelectionOutlineRenderer`] rebuild needs (ADR 0032 —
-/// viewport selection feedback): the selected nodes' standalone bodies plus the COMPOSED
-/// scene's frame (ADR 0008, same contract as [`SelectedOperandGhost`]).
+/// Everything the display's [`SelectionOutlineRenderer`] rebuild needs for viewport
+/// selection feedback: the selected nodes' standalone bodies plus the COMPOSED scene's
+/// frame (same contract as [`SelectedOperandGhost`]).
 ///
 /// [`SelectionOutlineRenderer`]: display::mesh::SelectionOutlineRenderer
 pub struct SelectedBodyCel {
@@ -315,9 +315,8 @@ fn collect_junction_segments_true_world(
 }
 
 impl AppCore {
-    /// Derive the boolean-operand ghost for `target`'s subtree (ADR 0018 Decision 6 —
-    /// "Show booleans" mode), or `None` when the subtree covers no boolean with
-    /// geometry.
+    /// Derive the boolean-operand ghost for `target`'s subtree ("Show booleans" mode), or
+    /// `None` when the subtree covers no boolean with geometry.
     ///
     /// Cost bound: each operand slice is evaluated over ITS OWN covering chunk range
     /// (the operand body's extent) via the stateless two-layer evaluator — a selection
@@ -331,8 +330,8 @@ impl AppCore {
         evaluate_operand_ghost_slices(scene, scene.boolean_operand_body_slices(target), density)
     }
 
-    /// Derive the selection-cel bodies for `targets` (ADR 0032 — viewport selection
-    /// feedback, all view modes), or `None` when no target yields a body with geometry.
+    /// Derive the selection-cel bodies for `targets` (viewport selection feedback, all
+    /// view modes), or `None` when no target yields a body with geometry.
     ///
     /// Selection-roots filtered: a target with a selected ancestor is skipped (the
     /// ancestor's composed body already covers it — drawing both would double the cel
@@ -401,8 +400,8 @@ impl AppCore {
 /// The evaluation half of the ghost derivation: run each `(operation, slice)` through the
 /// stateless two-layer evaluator — bounded by the SLICE's covering chunks, never a
 /// whole-scene resolve, never a dense grid — and package the surviving bodies with the
-/// COMPOSED scene's frame (ADR 0008: the slices are in absolute composite coords, so
-/// meshing against the composed recenter lands each ghost voxel-exact).
+/// COMPOSED scene's frame (the slices are in absolute composite coords, so meshing against
+/// the composed recenter lands each ghost voxel-exact).
 fn evaluate_operand_ghost_slices(
     scene: &Scene,
     slices: Vec<(CombineOp, Scene)>,
@@ -514,7 +513,7 @@ mod tests {
             1,
             "the 2-block cutter covers ONE chunk; the far host's extent is never evaluated"
         );
-        // The frame handed to display is the COMPOSED scene's (ADR 0008), so the ghost
+        // The frame handed to display is the COMPOSED scene's, so the ghost
         // mesh lands in the same render frame as the solid.
         assert_eq!(
             ghost.grid_dimensions,
@@ -544,7 +543,7 @@ mod tests {
         );
     }
 
-    /// ADR 0032 selection cel: every selected node derives its OWN standalone body —
+    /// The selection cel: every selected node derives its OWN standalone body —
     /// including a Union host (which never ghosts in Show-booleans) and a Subtract
     /// cutter (its root op neutralised so the body resolves constructively).
     #[test]
@@ -580,7 +579,7 @@ mod tests {
         assert!(AppCore::selected_body_cel(&scene, &[host], DENSITY).is_none());
     }
 
-    /// Analytic edge catalog (ADR 0032 V1): a box lists its 12 straight edges on
+    /// Analytic edge catalog: a box lists its 12 straight edges on
     /// the `[0, full]` corners; a sphere and a torus are smooth and list nothing.
     #[test]
     fn box_catalogs_twelve_edges_and_smooth_kinds_none() {

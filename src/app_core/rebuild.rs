@@ -1,4 +1,4 @@
-//! The headless geometry rebuild — [`AppCore::rebuild`] (ADR 0010 E5 / ADR 0011 G5).
+//! The headless geometry rebuild — [`AppCore::rebuild`].
 
 use std::sync::Arc;
 
@@ -10,10 +10,10 @@ use voxel_core::voxel::chunk_extent_exceeds_bound;
 use super::{AppCore, RebuildOutcome, RebuildOutput};
 
 impl AppCore {
-    /// **The headless geometry rebuild (A2e).** Route the resolve through the
-    /// per-chunk store with issue #27 S3 TARGETED invalidation: build the new
-    /// scene's leaf spatial index, diff it against the last rebuild's to get the
-    /// edit's dirty world-AABB, and evict ONLY the chunks that AABB touches (every
+    /// **The headless geometry rebuild.** Route the resolve through the per-chunk store
+    /// with TARGETED invalidation: build the new scene's leaf spatial index, diff it
+    /// against the last rebuild's to get the edit's dirty world-AABB, and evict ONLY the
+    /// chunks that AABB touches (every
     /// other cached chunk stays resident). Fall back to a wholesale `clear()` when a
     /// precise AABB can't be computed — the first rebuild (no previous index), a
     /// density change, or a region-spanning VoxelBody edit (no localizable box, see
@@ -27,17 +27,16 @@ impl AppCore {
     /// is rejected WITHOUT touching the store, returning the offending count so the shell can
     /// surface the cap warning (AppCore never writes panel state).
     ///
-    /// **ADR 0011 G5 — no dense grid is ever assembled.** A rebuild produces ONLY the sparse
-    /// two-layer covering chunks + scalar metadata; the whole-region `VoxelGrid` expansion
-    /// (ADR 0010's flagged per-edit densify debt) is GONE. The brick sink packs from the same
-    /// `two_layer_chunks` the display meshes from, and the camera / scrubber read
-    /// `region_dimensions` — nothing reads a dense occupancy array. The only surviving dense
-    /// resolve is the test oracles.
+    /// **No dense grid is ever assembled.** A rebuild produces ONLY the sparse two-layer
+    /// covering chunks + scalar metadata — no whole-region `VoxelGrid` expansion. The brick
+    /// sink packs from the same `two_layer_chunks` the display meshes from, and the camera /
+    /// scrubber read `region_dimensions` — nothing reads a dense occupancy array. The only
+    /// dense resolve left is the test oracles.
     pub fn rebuild(&mut self, scene: &Scene, density: u32) -> RebuildOutcome {
         profiling::scope!("app_core_rebuild");
-        // Issue #27 S2: the resolve is chunked + lazy, so the voxel bound is a
-        // PER-CHUNK bound, not a whole-scene total. Only a pathological density
-        // (one chunk's voxel capacity alone exceeds the bound) is rejected.
+        // The resolve is chunked + lazy, so the voxel bound is a PER-CHUNK bound, not a
+        // whole-scene total. Only a pathological density (one chunk's voxel capacity alone
+        // exceeds the bound) is rejected.
         if chunk_extent_exceeds_bound(density) {
             let chunk_extent = (CHUNK_BLOCKS * density.max(1)) as u64;
             let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
@@ -46,17 +45,16 @@ impl AppCore {
             };
         }
 
-        // ADR 0010 E5: S3 targeted invalidation on the TWO-LAYER resident cache (#54).
-        // `invalidate_aabb` evicts the edit's dirty chunks (so the next
-        // `resident_two_layer_chunks` re-classifies only them); `clear()` handles the
-        // first build / density change / region-spanning VoxelBody edit where there is no
-        // localizable AABB. A two-layer chunk is chunk-local-integer (ADR 0008), so —
-        // unlike the retired dense store — a floating-origin SHIFT does NOT invalidate
-        // the cache (the recenter is a pure index offset applied at expand/mesh time).
+        // Targeted invalidation on the TWO-LAYER resident cache. `invalidate_aabb` evicts
+        // the edit's dirty chunks (so the next `resident_two_layer_chunks` re-classifies only
+        // them); `clear()` handles the first build / density change / region-spanning
+        // VoxelBody edit where there is no localizable AABB. A two-layer chunk is
+        // chunk-local-integer, so a floating-origin SHIFT does NOT invalidate the cache (the
+        // recenter is a pure index offset applied at expand/mesh time).
         let new_leaf_index = scene.build_leaf_spatial_index(density);
-        // The ONE mint point returns the recenter already carrying its frame (finding #7);
-        // unwrap to the raw triple only for the shift arithmetic + the `[i64; 3]` previous
-        // recenter state below. The `RecenterVoxels` itself flows straight into the output.
+        // The ONE mint point returns the recenter already carrying its frame; unwrap to the
+        // raw triple only for the shift arithmetic + the `[i64; 3]` previous recenter state
+        // below. The `RecenterVoxels` itself flows straight into the output.
         let new_recenter = scene.recenter_voxels_for_resolve(density);
         let new_recenter_voxels = new_recenter.voxels();
         // The floating-origin shift since the last rebuild (render-frame voxels). The
@@ -69,7 +67,7 @@ impl AppCore {
             new_recenter_voxels[1] - previous_recenter[1],
             new_recenter_voxels[2] - previous_recenter[2],
         ];
-        // The chunk-granular GPU-buffer incremental (#55) reuses UNTOUCHED chunks' baked
+        // The chunk-granular GPU-buffer incremental reuses UNTOUCHED chunks' baked
         // buffers verbatim, so it is only valid when those buffers are still in the right
         // frame. Two guards force a wholesale re-mesh even for a localizable edit:
         //   * DENSITY change — re-keys every chunk (chunk extent = CHUNK_BLOCKS × density),
@@ -77,14 +75,14 @@ impl AppCore {
         //   * RECENTER (floating-origin) SHIFT — although a two-layer chunk is chunk-local-
         //     integer (so the resident CACHE stays valid across a shift), the MESHER bakes the
         //     recenter into each vertex's world position at emit time. A shift therefore
-        //     staleens every kept buffer's vertices (an untouched chunk's mesh would sit at the
-        //     old origin), exactly the dense `incremental_rebuild_from_chunks` precondition.
-        //     The cache invalidation below still runs (it is frame-independent); only the
+        //     stales every kept buffer's vertices (an untouched chunk's mesh would sit at the
+        //     previous origin). The cache invalidation below still runs (it is
+        //     frame-independent); only the
         //     GPU-buffer incremental falls back.
         let density_changed = self.previous_density != Some(density);
         let recenter_shifted = recenter_shift_voxels != [0; 3];
         let buffers_reframed = density_changed || recenter_shifted;
-        // The incremental GPU-buffer re-mesh hint (#55): `Some(evicted_dirty)` only when the
+        // The incremental GPU-buffer re-mesh hint: `Some(evicted_dirty)` only when the
         // edit LOCALIZED (an `invalidate_aabb` path) AND the resident buffers stayed in frame.
         // Any wholesale `clear()` — first build, region-spanning VoxelBody edit — and any reframing
         // (density change / recenter shift) yields `None`, so the shell re-meshes wholesale.
@@ -121,17 +119,14 @@ impl AppCore {
         // Ensure every covering chunk is resident (re-classifying only the dirty /
         // missing ones); the SAME `Arc`-shared set feeds both the mesher and the brick
         // sink in the shell (classified once). The two-layer mesher re-meshes wholesale from
-        // this set each rebuild (the resident cache is the incremental seam).
-        //
-        // ADR 0011 G5: NO whole-region `VoxelGrid` is expanded here anymore — the last
-        // per-edit densify (ADR 0010's flagged debt) is retired. The resident set is the sole
-        // display truth.
+        // this set each rebuild (the resident cache is the incremental seam). NO whole-region
+        // `VoxelGrid` is expanded here — the resident set is the sole display truth.
         let two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)> = {
             profiling::scope!("resident_two_layer_chunks");
             // The resident cache hands out an OWNED, `Arc`-shared covering set (an O(1)
-            // refcount bump per chunk — NOT the old O(all-blocks) deep clone). It already
-            // outlives the `&mut self` cache borrow, so it becomes `RebuildOutput.
-            // two_layer_chunks` directly, with no further copy.
+            // refcount bump per chunk, not an O(all-blocks) deep clone). It already outlives
+            // the `&mut self` cache borrow, so it becomes `RebuildOutput.two_layer_chunks`
+            // directly, with no further copy.
             self.two_layer_cache
                 .resident_two_layer_chunks(scene, density, 0)
         };

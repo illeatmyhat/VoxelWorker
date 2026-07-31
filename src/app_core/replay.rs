@@ -1,4 +1,4 @@
-//! Intent-script replay — the testable core of `shot --replay` (ADR 0003 Phase C, C3).
+//! Intent-script replay — the testable core of `shot --replay`.
 
 use camera::OrbitCamera;
 use document::intent::Intent;
@@ -6,8 +6,8 @@ use document::scene::Scene;
 
 use super::AppCore;
 
-/// The **default seed scene** the windowed app starts from (ADR 0003 Phase C, slice
-/// C3 — the base a `shot --replay` script is applied against). A single Tool node
+/// The **default seed scene** the windowed app starts from — the base a `shot
+/// --replay` script is applied against. A single Tool node
 /// from the default geometry/material, the Origin Point synthesized, stable
 /// [`NodeId`](document::scene::NodeId)s minted — i.e. exactly `PanelState::with_view_cube_default().scene`
 /// (which runs `Scene::from_geometry(default)` + `ensure_origin_point` +
@@ -17,8 +17,8 @@ pub fn default_replay_seed_scene() -> Scene {
     ui::panel::PanelState::with_view_cube_default().scene
 }
 
-/// Replay a **newline-delimited-JSON Intent script** into a [`Scene`] (ADR 0003
-/// Phase C, slice C3 — the testable core of `shot --replay`).
+/// Replay a **newline-delimited-JSON Intent script** into a [`Scene`] — the testable
+/// core of `shot --replay`.
 ///
 /// The `script` is one [`Intent`] per line: each non-empty line is parsed with
 /// `serde_json::from_str::<Intent>` and applied IN ORDER, via

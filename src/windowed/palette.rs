@@ -1,12 +1,11 @@
-//! The shell's palette-interaction seams: applying a clicked VS block variant (resolving its
+//! The shell's palette-interaction seams: applying a clicked block variant (resolving its
 //! per-face textures into a bound 6-layer material) and reacting to this frame's palette
-//! `PanelResponse` (apply / connect-folder / revert-to-procedural / export). Split out of
-//! `windowed/mod.rs` (ADR 0016).
+//! `PanelResponse` (apply / connect-folder / revert-to-procedural / export).
 
 use super::*;
 
 impl WindowedState {
-    /// Apply palette interactions from this frame's [`PanelResponse`](ui::panel::PanelResponse) (M6):
+    /// Apply palette interactions from this frame's [`PanelResponse`](ui::panel::PanelResponse):
     /// applying a block loads + binds its texture; "Connect folder…" opens the OS
     /// picker and starts a custom scan; selecting a procedural material clears the
     /// applied block.
@@ -29,7 +28,7 @@ impl WindowedState {
                 self.scan_total = None;
                 self.scan_source_name = None;
                 self.palette.ui.status = "Scanning folder…".to_string();
-                // Re-point the M7 face resolver at the same folder.
+                // Re-point the face resolver at the same folder.
                 self.face_resolver = FaceResolver::custom_folder(folder.clone());
                 self.scan_handle = Some(spawn_custom_folder_scan(folder));
             }
@@ -39,9 +38,8 @@ impl WindowedState {
         }
     }
 
-    /// Resolve `variant_path`'s per-face textures (M7) and bind the 6-layer
-    /// material. Uniform blocks resolve to the same PNG on all faces (the M6
-    /// path); per-face blocks (e.g. a log: end-grain top, bark sides) bind each
+    /// Resolve `variant_path`'s per-face textures and bind the 6-layer material.
+    /// Uniform blocks resolve to the same PNG on all faces; per-face blocks (e.g. a log: end-grain top, bark sides) bind each
     /// face's own PNG.
     fn apply_block_variant(&mut self, variant_path: &std::path::Path, tile_index: usize) {
         let Some(tile) = self.palette.ui.tiles.get(tile_index) else {
