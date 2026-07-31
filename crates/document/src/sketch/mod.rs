@@ -1136,19 +1136,69 @@ impl Sketch {
         }
     }
 
-    /// Move the point `id` to `at` — the drag write path. Reports whether the point exists.
+    /// Move the point `id` to `at` and settle the drawing around it — the drag write path.
+    /// Reports whether the point exists.
     ///
     /// Dragging an arc's CENTRE moves only the centre: the endpoints hold still and the arc's
     /// radius follows the cursor ([`resweep_arc_to_center`](Self::resweep_arc_to_center)). Every
-    /// other point simply takes `at`.
+    /// other point simply takes `at`, and then the standing constraints are re-solved with it
+    /// pinned there — see [`settle_under_the_hand`](Self::settle_under_the_hand). A constraint
+    /// that only held at the moment it was asserted is not a constraint; it has to survive the
+    /// next drag, which is the first thing the author does to test it (owner 2026-07-30).
     pub fn move_point(&mut self, id: EntityId, at: SketchPoint) -> bool {
         let Some(index) = self.point_index(id) else {
             return false;
         };
         match self.arcs.iter().position(|arc| arc.center == id) {
-            Some(arc_index) => self.resweep_arc_to_center(arc_index, at.in_plane()),
-            None => self.points[index].at = at,
+            // An arc's centre is DERIVED from its ends and its sweep, so there is no pinning it:
+            // the resweep is the whole edit and no constraint can hold the result anywhere else.
+            Some(arc_index) => {
+                self.resweep_arc_to_center(arc_index, at.in_plane());
+                self.sync_arc_centers();
+            }
+            None => {
+                let before = self.points.clone();
+                self.points[index].at = at;
+                self.sync_arc_centers();
+                if !self.settle_under_the_hand(id, at) {
+                    self.points = before;
+                }
+            }
         }
+        true
+    }
+
+    /// Re-solve the standing constraints with the point `held` pinned at `at`, writing the result
+    /// back only if the residuals are met. Reports whether they were.
+    ///
+    /// This is the live tier of ADR 0035 Decision 11: the assertions hold DURING the gesture, not
+    /// merely at the moment they were made. The pin is an ephemeral [`ConstraintKind::Fix`] that
+    /// is never stored — the author's hand is a constraint for exactly as long as it is on the
+    /// point, which is what makes the rest of the drawing follow rather than the grabbed vertex
+    /// snapping back.
+    ///
+    /// **The standing constraints win a fight.** When the pinned system cannot be met — dragging a
+    /// point that is already `Fix`ed, or one whose freedom is spent — the drawing is left exactly
+    /// where it was and the vertex does not move. Refusing the drag is the honest answer: the
+    /// alternative is to move it and let the next solve haul it back, which reads as the drag being
+    /// broken rather than as the geometry being determined.
+    fn settle_under_the_hand(&mut self, held: EntityId, at: SketchPoint) -> bool {
+        if self.constraints.is_empty() {
+            return true;
+        }
+        let mut pinned = self.constraints.clone();
+        pinned.push(Constraint {
+            id: self.next_id,
+            kind: ConstraintKind::Fix { point: held, at },
+            redundant: false,
+        });
+        let mut points = self.points.clone();
+        let report = constraint::solve_in_place(&mut points, &self.segment_ends(), &pinned);
+        // Judged on the RESIDUALS, never on why the search stopped — see [`SATISFIED_RESIDUAL`].
+        if report.is_some_and(|report| report.residual_norm > SATISFIED_RESIDUAL) {
+            return false;
+        }
+        self.points = points;
         self.sync_arc_centers();
         true
     }

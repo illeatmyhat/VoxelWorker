@@ -69,6 +69,63 @@ fn horizontal_levels_a_segment_by_meeting_in_the_middle() {
     assert_eq!(sketch.degrees_of_freedom(), 3, "one assertion, one freedom");
 }
 
+/// A constraint holds through a DRAG, not merely at the moment it was asserted (ADR 0035
+/// Decision 11). The grabbed end goes exactly where the hand put it and the free end follows to
+/// keep the segment level — the drag is a pin, so the rest of the drawing moves around it.
+///
+/// The regression for the second half of the same complaint (owner 2026-07-30): the level was
+/// applied, and then moving one of the line's own points tilted it straight back off. `move_point`
+/// wrote the coordinate and never re-solved, so every assertion survived exactly until it was
+/// tested.
+#[test]
+fn a_level_segment_stays_level_when_an_end_is_dragged() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(40, 0));
+    let segment = sketch.connect(tail, head).expect("a fresh segment");
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment })
+        .expect("a lone level on a lone segment");
+
+    assert!(sketch.move_point(tail, SketchPoint::new(-7, -18)));
+
+    let (dragged, follower) = (position(&sketch, tail), position(&sketch, head));
+    assert!(
+        (dragged[0] + 7.0).abs() < 1e-6 && (dragged[1] + 18.0).abs() < 1e-6,
+        "the hand holds the grabbed end: {dragged:?}"
+    );
+    assert!(
+        (dragged[1] - follower[1]).abs() < 1e-6,
+        "still level after the drag: {dragged:?} to {follower:?}"
+    );
+    assert!(
+        (follower[0] - 40.0).abs() < 1e-6,
+        "the follower moves only as far as the level asks: {follower:?}"
+    );
+}
+
+/// A drag the standing constraints cannot admit leaves the drawing alone. `Fix` says the point is
+/// where it is; the hand does not outrank it, and the vertex sits still rather than moving and
+/// being hauled back.
+#[test]
+fn a_fixed_point_does_not_move_under_the_hand() {
+    let (mut sketch, tail, head, _) = slanted();
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::new(0, 0),
+        })
+        .expect("nothing else is asserted");
+
+    assert!(sketch.move_point(tail, SketchPoint::new(25, 25)));
+    assert_eq!(position(&sketch, tail), [0.0, 0.0], "the fix wins");
+    assert_eq!(
+        position(&sketch, head),
+        [10.0, 4.0],
+        "and nothing else moved"
+    );
+}
+
 /// **Geometry the constraint does not name must not be able to break it.** A lone segment gets
 /// levelled the same whether it is alone on the plane or surrounded by a drawing.
 ///

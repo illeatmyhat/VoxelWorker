@@ -247,6 +247,21 @@ small (tens to low hundreds of DOF), where a dense solve is well under a millise
 Accepted risk: a mid-drag round that oscillates at a cell boundary would show as jitter. Measure it
 on a deliberately hostile sketch; the fallback is deferring only the integer tier to release.
 
+**Shipped as a hard pin, not a weight, and the standing constraints win a fight** (2026-07-30). The
+continuous tier is live: `Sketch::move_point` writes the coordinate and then re-solves with the
+grabbed point held by an ephemeral `Fix` that is never stored — the hand is a constraint for exactly
+as long as it is on the point. A weight was considered and dropped: with the pin the grabbed vertex
+sits precisely under the cursor and the *rest* of the drawing absorbs the constraint, which is the
+reading the author expects from a direct-manipulation handle. The lag the paragraph above describes
+becomes a refusal instead — when the pinned system cannot be met (dragging a `Fix`ed point, or one
+whose freedom is spent) the drawing is left exactly where it was and the vertex does not move at
+all, rather than moving and being hauled back, which reads as the drag being broken.
+
+Until this landed, a constraint survived only until it was tested: the level was asserted, the
+author moved one of the line's own points, and the drawing tilted straight back off, because the
+drag write path never re-solved. An assertion that does not hold through the next gesture is not an
+assertion.
+
 ### 12. Quantities become a crate, and carry a dimension
 
 **`crates/parametric`** holds the quantity and expression layer: it absorbs today's
