@@ -1,4 +1,4 @@
-//! Pure-CPU view-cube mesh + wireframe generation (no wgpu): the labelled-cube
+//! Pure-CPU view-cube mesh + wireframe generation (no wgpu): the labeled-cube
 //! geometry, the Signal silhouette/axis-edge line list, and the thick-line quad
 //! expansion the GPU renderer uploads. Returns plain `Vec`s so the geometry is
 //! testable without a device.
@@ -33,7 +33,7 @@ pub(super) fn expand_thick_lines(segments: &[LineVertex]) -> Vec<ThickLineVertex
     out
 }
 
-/// Build the labelled-cube geometry (side 1.4, centered on origin). Face order +X,
+/// Build the labeled-cube geometry (side 1.4, centered on origin). Face order +X,
 /// -X, +Y, -Y, +Z, -Z (matches `materialIndex` / `CubeFace`).
 pub(crate) fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
     const HALF: f32 = 0.7; // side 1.4

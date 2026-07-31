@@ -102,7 +102,7 @@ impl LatticeOrientation {
     }
 
     /// Permute a non-negative **extent** (grid dimensions) by the turn, ignoring sign — a
-    /// box's side lengths are orientation-invariant in magnitude, only relabelled. `out[o]`
+    /// box's side lengths are orientation-invariant in magnitude, only relabeled. `out[o]`
     /// is the input extent along the axis that lands on output `o`. This is the world span of
     /// a turned producer grid, still corner-anchored at its world offset.
     pub fn turn_extent(&self, extent: [u32; 3]) -> [u32; 3] {

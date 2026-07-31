@@ -328,7 +328,7 @@ mod tests {
             },
         ];
         let groups = group_block_textures(textures);
-        // Two distinct keys → two groups, both labelled "Granite".
+        // Two distinct keys → two groups, both labeled "Granite".
         assert_eq!(groups.len(), 2);
         let rock = groups
             .iter()

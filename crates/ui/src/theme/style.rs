@@ -17,25 +17,22 @@ use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, Style, TextStyle, 
 
 use super::color_palette::*;
 
-// --- Typography sizes (design points; §Tokens: monospace, 10–11 px) ---
-/// Body / control text (~10.5 px). Sized so a full blocks+voxels readout
-/// (`"10 blocks 0 voxels"`) fits the inspector's value boxes without truncating (issue
-/// #90) while staying inside the §Tokens 10–11 px band.
+// --- Typography sizes (design points) ---
+/// Body and control text. Sized to keep a full blocks-plus-voxels readout inside the
+/// inspector's value boxes.
 const BODY_SIZE: f32 = 10.5;
 /// Small hints / readouts (~9.5 px).
 const SMALL_SIZE: f32 = 9.5;
-/// The DISPLAY stack's body text (mode readout, projection toggle, grid checkboxes) — mono
-/// at the same body tier as the sidebar so the floating stack reads as one instrument panel
-/// with it (issue #90; the stack previously fell back to egui's ~14 px proportional Body).
+/// Display-stack body text, kept at the sidebar's scale so both surfaces read as one panel.
 const STACK_BODY_SIZE: f32 = 10.0;
 /// The sidebar title block heading.
 const HEADING_SIZE: f32 = 15.0;
 
-/// The Signal WIDGET visuals shared by both the app-wide style and the DISPLAY stack's
-/// scoped style. This pins EVERY knob of egui's five-state widget matrix
+/// Widget visuals shared by the app-wide style and the display stack. This pins egui's
+/// five-state widget matrix
 /// (`noninteractive`/`inactive`/`hovered`/`active`/`open` × `bg_fill`/`weak_bg_fill`/
 /// `bg_stroke`/`fg_stroke`/`corner_radius`/`expansion`) so NOTHING falls back to egui's
-/// bright gray-white defaults (issue #90 — an unset `open.bg_stroke` or `active.weak_bg_fill`
+/// bright defaults (an unset `open.bg_stroke` or `active.weak_bg_fill`
 /// leaks a `gray(60)`/`gray(210)` outline onto combos, buttons and text boxes). Zero corner
 /// radius and zero expansion everywhere (flat, aligned cells — no growing-on-hover), hairline
 /// `#2b3238` frames at rest, the accent outline on hover/active, and the accent SELECTION with

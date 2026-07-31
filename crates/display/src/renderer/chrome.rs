@@ -1,8 +1,6 @@
-//! #13 Step 2 — ViewCube chrome overlay (the rotate + roll arrows). Screen-space,
-//! fixed to the cube rect; the layout fractions mirror `camera::classify_cube_point`
-//! EXACTLY so the rendered glyphs sit on the Step-1 hit zones. Also owns the CPU
-//! rasterisation of the glyph textures. (Home/Fit left the cube for the Signal icon
-//! rail — ADR 0018 Decision 8 — so this overlay no longer draws badge glyphs.)
+//! View-cube chrome overlay for the rotate and roll arrows. The glyphs are fixed to
+//! the cube rectangle, and the layout uses the same zones as cube hit-testing.
+//! This module also owns CPU rasterization of the glyph textures.
 
 use super::*;
 
@@ -23,10 +21,9 @@ pub(crate) struct ChromeVertex {
     pub(crate) layer: u32,
 }
 
-/// The chrome-glyph texture-array layers (#13 Step 2), in upload order. The four
-/// rotate arrows draw persistently when the view is face-constrained; the two roll
-/// arrows draw only when their zone is hovered. (Home/Fit moved to the Signal icon
-/// rail — ADR 0018 Decision 8.)
+/// The chrome-glyph texture-array layers, in upload order. The four
+/// rotate arrows draw when the view is face-constrained; the two roll arrows draw
+/// only when their zone is hovered.
 #[derive(Debug, Clone, Copy)]
 enum ChromeGlyph {
     ArrowUp,

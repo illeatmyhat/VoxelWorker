@@ -24,7 +24,7 @@ pub struct MeasurementCommit {
     pub voxels: i64,
 }
 
-/// A labelled blocks+voxels text field that commits on Enter or click-away.
+/// A labeled blocks+voxels text field that commits on Enter or click-away.
 ///
 /// ## Why this is a component and not a `fn(&mut Ui, …)`
 ///

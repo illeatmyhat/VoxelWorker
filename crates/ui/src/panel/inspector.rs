@@ -287,7 +287,7 @@ fn build_voxel_body_inspector_section(
 ///
 ///   * **Extrude**: a **Height (vx)** field (the extrude span along the plane normal).
 ///     Rebuilds `SketchSolid::extrude`.
-///   * **Revolve**: a **RevolveAxis** picker (the two in-plane world axes, labelled in
+///   * **Revolve**: a **RevolveAxis** picker (the two in-plane world axes, labeled in
 ///     world-axis terms, e.g. "about X" / "about Y") plus a **Turn (deg)** field
 ///     (`1..=360`, default 360). Rebuilds `SketchSolid::revolve`.
 ///

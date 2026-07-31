@@ -62,7 +62,7 @@ fn main() {
 
 /// Recurse a source root, recording every `.rs` file longer than the limit.
 ///
-/// Only `src` directories are ever visited, so build artefacts and the stale worktree copies
+/// Only `src` directories are ever visited, so build artifacts and stale worktree copies
 /// under `.claude/` are out of reach by construction rather than by an exclusion list that
 /// could drift.
 fn collect_offenders(directory: &Path, offenders: &mut Vec<(PathBuf, usize)>) {

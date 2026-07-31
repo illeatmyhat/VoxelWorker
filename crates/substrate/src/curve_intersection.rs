@@ -207,7 +207,7 @@ impl PlanarCurve {
             return vec![*self];
         }
         if self.is_closed() {
-            // A closed curve's seam is an artefact of how it was written down, not a place on it.
+            // A closed curve's seam is an artifact of how it was written down, not a place on it.
             // So the pieces run between consecutive cuts and the last one WRAPS through the seam
             // back to the first — otherwise the seam would become a spurious degree-two vertex in
             // the arrangement, splitting one piece into two for no geometric reason. One cut

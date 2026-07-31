@@ -114,7 +114,7 @@ struct CubeLineUniforms {
 const CUBE_LINE_HALF_WIDTH_PX: f32 = 0.7;
 const CUBE_LINE_FEATHER_PX: f32 = 1.0;
 
-/// The corner view cube: a labelled cube mirroring the main camera's orientation, plus
+/// The corner view cube: a labeled cube mirroring the main camera's orientation, plus
 /// a silhouette + axis-colored edge wireframe (Signal style, see the module doc).
 /// Rendered into a scissored top-right viewport in its own pass (depth cleared there
 /// first).

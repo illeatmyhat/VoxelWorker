@@ -46,7 +46,7 @@ Two hard blockers make a *wholesale* GPU-authoritative pipeline wrong here, not 
 
 So the honest framing is not "CPU vs GPU" wholesale. It is: **the GPU is the right place for the *display*
 derivation; the CPU is the right place for the *authoritative* one.** A GPU sculpt brush is welcome — but
-as a *human input transducer that synthesises an `Intent`*, recorded CPU-side, never as the source of
+as a *human input transducer that synthesizes an `Intent`*, recorded CPU-side, never as the source of
 truth. That reconciliation is what preserves ADR 0003 §7 (`apply_intent` writes the sparse delta and marks
 chunks dirty; the GPU sits *downstream* of resolve, never upstream of the journal).
 
@@ -70,7 +70,7 @@ and the lib-test/golden spine) reads the CPU resolved occupancy.
 This is the ADR 0003 read seam.
 
 **2. One `Intent` door, many sources.** All mutation flows through the serializable `Intent` enum into
-`AppCore`. Human gizmo drags, a GPU sculpt brush, and the agent/LLM/solver **all synthesise `Intent`s**
+`AppCore`. Human gizmo drags, a GPU sculpt brush, and the agent/LLM/solver **all synthesize `Intent`s**
 recorded on one journal. There is no `Raycast`/`Brush`/voxel-coordinate `Intent` variant and there must not
 be one: a GPU edit **lowers to an integer-addressed `Intent`** (e.g. an override-layer region), recorded
 CPU-side. The recorded artifact is always the integer `Intent`, so replay is deterministic regardless of

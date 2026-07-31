@@ -1,11 +1,11 @@
-//! Viewport background gradient (issue #91, item 1; `docs/design/viewport-chrome-signal.md`).
+//! Viewport background gradient.
 //!
 //! A dependency-free fullscreen pass that paints the Signal "field" — a cool near-black
 //! radial gradient biased above-left of center — as the viewport's background. It draws
 //! FIRST in the shared 3D MSAA pass (before the voxels, depth-test off), so both display
 //! paths (cuboid mesh + brick raymarch) and the headless `shot` composite the scene over
-//! an identical background. See `shaders/background_gradient.wgsl` for the stops + the
-//! sRGB-correct evaluation.
+//! an identical background. The shader evaluates the gradient in sRGB space before
+//! converting it to linear color.
 
 use super::*;
 

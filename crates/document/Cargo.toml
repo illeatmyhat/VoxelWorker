@@ -3,23 +3,14 @@ name = "document"
 version = "0.1.0"
 edition = "2021"
 
-# The authored-TRUTH crate: everything the user's edits produce and nothing they
-# derive. The scene graph (nodes, groups, instances, transforms, combine ops), the
-# producers that turn authored intent into voxels (SdfShape + the sketch→extrude/
-# revolve solid, the debug-cloud part), the 2D sketch, the serializable Intent
-# mutation boundary, and the inverse-command undo stack. A component belongs here
-# iff it is part of what the user AUTHORS — expressible without any evaluation,
-# derivation, display, or wgpu concept. It sits ABOVE `voxel_core` (whose value
-# vocabulary it is phrased in) and BELOW everything else in the app. The dependency
-# edge is one-way: `voxel_core <- document <- the rest of the app`; the truth layer
-# imports no evaluation/display/wgpu, so an upward `use` (store, chunk_cache,
-# renderer, brick_*, workers, panel, gpu…) fails to compile. See
-# docs/architecture/01-document.md for the layer this crate realises and
-# docs/design/per-layer-crates-extraction-map.md (the document row) for provenance.
+# The authored-truth crate: the scene graph, authoring producers, 2D sketches,
+# serializable intents, and inverse-command undo stack. It contains what the user
+# authors, without evaluation, display, or wgpu concerns. Its one-way dependency
+# edge is `voxel_core <- document <- the rest of the app`; the boundary prevents
+# document code from importing runtime evaluation or rendering systems.
 
 [dependencies]
-# The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
-# algebra, and the exact-rational expression language (ADR 0035).
+# Authored block/voxel measurements, dimension algebra, and exact-rational expressions.
 parametric = { path = "../parametric" }
 # The foundational value vocabulary (one layer down): the resolved Voxel + sparse
 # VoxelGrid, the ShapeKind tag + signed-distance functions the producers sample, the
@@ -44,17 +35,10 @@ rayon = "1"
 profiling = "1"
 
 [features]
-# The dense whole-region resolve oracle (`Scene::resolve_region`) — the O(volume)
-# reference the sparse runtime path is cross-checked against — is compile-gated out of
-# production builds behind this feature (document's own tests reach it via cfg(test)).
-# The app forwards its `oracle` feature here (and its dev-dependency turns it on for
-# `cargo test`) so the app-crate parity tests and the `shot` golden tool can see it.
-# See the proof chapter's "Oracles" section (docs/architecture/05-proof.md).
+# The dense whole-region resolve oracle is test-only; production builds use the
+# sparse runtime path.
 oracle = []
-# Cross-crate TEST helpers: a handful of `pub` fixtures (positional root-node access,
-# a whole-block offset builder) that the truth crate's own tests use AND the app crate's
-# tests reach across the boundary. Off in production (they never ship); the app's
-# dev-dependency turns it on so `cargo test --lib` sees them, exactly like `oracle`.
+# Test-only helpers shared by the document and application test suites.
 test-support = []
 
 [dev-dependencies]
