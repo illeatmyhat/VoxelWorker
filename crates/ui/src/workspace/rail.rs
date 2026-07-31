@@ -237,6 +237,9 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
             // The gesture's picks ARE the selection while it runs, so it starts from empty.
             // Inheriting whatever was picked before would fill slots the author never aimed at.
             state.selection.clear_sketch_entities();
+            // The last refusal answered the last gesture. Leaving it on the viewport notice while
+            // a new one starts would read as this tool having already said no.
+            state.sketch_constraint_refusal = None;
         }
     }
     rail_heading(ui, "Op");

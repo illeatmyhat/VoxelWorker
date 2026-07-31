@@ -54,8 +54,8 @@ pub enum SlotKind {
 }
 
 impl SlotKind {
-    /// What the status line asks for when this slot is the one waiting.
-    fn wanted(self) -> &'static str {
+    /// What the prompt asks for when this slot is the one waiting.
+    pub fn wanted(self) -> &'static str {
         match self {
             SlotKind::Point => "a point",
             SlotKind::Segment => "a line",
@@ -177,13 +177,18 @@ impl ArmedConstraint {
     }
 
     /// The slot still waiting, or `None` when every slot is filled.
-    fn next_slot(&self) -> Option<SlotKind> {
+    ///
+    /// The shell hit-tests THROUGH this: a gesture waiting for a line looks for lines and ignores
+    /// the vertices sitting on them, rather than resolving the click by the general
+    /// most-specific-thing-wins rule and then refusing what it found. A question that already
+    /// knows what kind of answer it wants should not be able to pick up the wrong kind.
+    pub fn wants(&self) -> Option<SlotKind> {
         self.verb.slots().get(self.picked.len()).copied()
     }
 
     /// What the status line says while this gesture runs.
     pub fn prompt(&self) -> String {
-        match self.next_slot() {
+        match self.wants() {
             Some(slot) => format!("pick {}", slot.wanted()),
             None => "done".to_string(),
         }
@@ -195,7 +200,7 @@ impl ArmedConstraint {
     /// earlier slot, and geometry the sketch does not hold (a selection that went stale between
     /// the hit-test and here). All three leave the gesture exactly as it was.
     pub fn offer(&mut self, candidate: SketchEntity, sketch: &Sketch) -> Offer {
-        let Some(slot) = self.next_slot() else {
+        let Some(slot) = self.wants() else {
             return Offer::Refused("already complete");
         };
         if candidate.kind() != slot {
@@ -211,7 +216,7 @@ impl ArmedConstraint {
             return Offer::Refused("that geometry is gone");
         }
         self.picked.push(candidate);
-        match self.next_slot() {
+        match self.wants() {
             Some(_) => Offer::Taken,
             None => Offer::Complete,
         }
@@ -224,7 +229,7 @@ impl ArmedConstraint {
     /// finishes asking for it. [`ConstraintVerb::HorizontalOrVertical`] reads the drawing for a
     /// different reason: to decide WHICH of its two constraints was meant.
     pub fn kind(&self, sketch: &Sketch) -> Option<ConstraintKind> {
-        if self.next_slot().is_some() {
+        if self.wants().is_some() {
             return None;
         }
         match (self.verb, self.picked.first()?) {
@@ -306,6 +311,22 @@ mod tests {
             armed.kind(&sketch),
             Some(ConstraintKind::Horizontal { segment })
         );
+    }
+
+    /// The gesture names the kind of thing it is waiting for BEFORE a click resolves, which is
+    /// what lets the shell hit-test for that kind alone instead of resolving by the general
+    /// vertex-beats-edge rule and refusing what it finds.
+    #[test]
+    fn a_running_gesture_says_what_kind_of_pick_it_is_waiting_for() {
+        let (sketch, _, _, segment) = one_segment();
+        let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
+        assert_eq!(armed.wants(), Some(SlotKind::Segment));
+        assert_eq!(SlotKind::Segment.wanted(), "a line");
+        armed.offer(SketchEntity::Segment(segment), &sketch);
+        assert_eq!(armed.wants(), None, "a filled gesture asks for nothing");
+
+        let fix = ArmedConstraint::new(ConstraintVerb::Fix);
+        assert_eq!(fix.wants(), Some(SlotKind::Point));
     }
 
     /// The refusal that motivates the whole gesture: a pick of the wrong kind is turned away and

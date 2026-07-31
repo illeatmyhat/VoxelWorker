@@ -177,19 +177,22 @@ fn readouts(ui: &egui::Ui, state: &PanelState, band: egui::Rect, middle: f32) {
 }
 
 /// The readouts that only exist while a sketch is open: how many ways the drawing can still
-/// move, and — when the last constraint was refused — why (ADR 0035).
+/// move (ADR 0035).
 ///
 /// Degrees of freedom is the number a constraint tool is FOR. Without it the author presses
 /// Horizontal and watches a line rotate, with no way to tell whether the sketch is now pinned
 /// or still has eleven freedoms left; "fully constrained" is a claim only this readout makes.
+///
+/// A constraint REFUSAL used to sit here too and no longer does: the author's eyes are on the
+/// drawing, and a reason parked in the top-right bar beside the passive readouts read as no
+/// answer at all. It draws over the viewport now — see [`ui::chrome::viewport_notice`].
+///
+/// [`ui::chrome::viewport_notice`]: crate::chrome::viewport_notice
 fn sketch_readouts(state: &PanelState) -> Vec<(&'static str, String, bool)> {
     let Some(target) = state.sketch_mode else {
         return Vec::new();
     };
     let mut readouts = Vec::new();
-    if let Some(why) = state.sketch_constraint_refusal {
-        readouts.push(("Refused", why.to_string(), true));
-    }
     if let Some(document::scene::NodeContent::SketchTool { producer, .. }) =
         state.scene.node_by_id(target).map(|node| &node.content)
     {

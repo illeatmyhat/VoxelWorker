@@ -330,10 +330,39 @@ the tool misfiring rather than as an instruction obeyed. So the rule is the near
 tie at exactly 45° going to horizontal — a coin toss resolved once and stated rather than left to
 whichever comparison happened to be written, and one badge deletion away from the other answer.
 
-This splits the cell's glyph from the badge's. The cell carries a mark of its own — the two
-axis marks superimposed, so it is nothing new to learn — and the badge carries a plain `Horizontal`
-or `Vertical`: **the cell asks the question, the badge reports the answer.** A level line is marked
-level, not marked "level or plumb".
+This splits the cell's glyph from the badge's. The cell carries a mark of its own and the badge
+carries a plain `Horizontal` or `Vertical`: **the cell asks the question, the badge reports the
+answer.** A level line is marked level, not marked "level or plumb".
+
+The cell's mark is the only one in the set that asks, and its ink says so. Under the two-tone rule
+white is the reference and red is the entity that moves, so the cell draws the **two axes in white
+as a corner** — each arm the exact length of the bar in `Horizontal` and `Vertical`, quoting the
+two answers it stands for — with the author's own segment in **red, at exactly 45° across it**. The
+angle is the point: the question is symmetric between the two axes, and a segment drawn tilted
+toward either one would have answered it already. The two bars *superimposed* were tried first and
+rejected — that is a plus with four nodes, which is what `Snap to voxel` already is, and it needed
+its nodes shrunk below the pair's own to survive its own crossing.
+
+**The waiting slot drives the hit-test, and does not merely check its result.** Every other click
+in the sketch resolves by "the most specific thing under the cursor wins", which puts a vertex
+ahead of the segments meeting at it. That is right for Select and wrong here: the vertex grab
+radius is the wider of the two, so on a polyline of short edges most of a segment's length lies
+inside one endpoint's circle. Resolving the general question and *then* refusing what came back
+made `pick a line` refuse nearly every click on a line — the tool read as simply not working
+(owner, 2026-07-30). A question that already knows the kind of answer it wants asks for that kind:
+a slot waiting for a line looks only for lines, and there is no dead zone left to fall into.
+
+**A miss reports.** A click that lands on nothing used to return in silence, on the reasoning that
+it asked for nothing. But a tool that answers a miss with no sign at all cannot be told from a
+tool that is broken, and that is how it was read. Every click with a constraint armed now leaves
+either an assertion or a sentence.
+
+Refusals draw **over the viewport**, in a floating box that takes the bottom-left slot the status
+line otherwise holds. They lived in the top bar first, beside the passive readouts, where the
+author — whose eyes are on the drawing they just clicked — never saw them. A refusal is the only
+thing on screen that has to be acted on, and mode · dims · density is the least urgent; so the
+urgent thing takes the established slot rather than opening a second one to compete for the same
+glance. The readout returns the moment the refusal clears.
 
 An armed constraint **overrides** the drawing tool for the duration of its gesture rather than
 joining `SketchTool`'s enum. It hit-tests the same entities Select does but answers a different

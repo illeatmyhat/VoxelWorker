@@ -2307,12 +2307,24 @@ impl WindowedState {
         let Some(mut armed) = self.panel_state.armed_constraint.clone() else {
             return;
         };
-        // A vertex beats an edge under the same cursor, the same precedence the Select tool and
-        // the vertex grab both use — the most specific thing under the pointer wins.
-        let candidate = match self.sketch_entity_at(cursor_x, cursor_y) {
+        // The gesture's own question decides what the click can resolve to — see
+        // `sketch_entity_for_slot`. A gesture with every slot filled cannot reach here (a
+        // completed offer disarms), so `wants` answering `None` means nothing is being asked.
+        let Some(slot) = armed.wants() else {
+            return;
+        };
+        let candidate = match self.sketch_entity_for_slot(slot, cursor_x, cursor_y) {
             Some(candidate) => candidate,
-            // A click on empty plane is not a refusal to report; it asks for nothing.
-            None => return,
+            // A click that lands on nothing REPORTS, where it used to return in silence. A tool
+            // that answers a miss with no sign at all is indistinguishable from a tool that is
+            // broken, which is exactly how it read (owner 2026-07-30).
+            None => {
+                self.panel_state.sketch_constraint_refusal = Some(match slot {
+                    ui::panel::SlotKind::Point => "nothing under the cursor — pick a point",
+                    ui::panel::SlotKind::Segment => "nothing under the cursor — pick a line",
+                });
+                return;
+            }
         };
 
         match armed.offer(candidate, &producer.sketch) {
@@ -2371,23 +2383,35 @@ impl WindowedState {
         }
     }
 
-    /// The sketch entity under the physical-px cursor as a constraint names it — vertex first,
-    /// then edge, the same most-specific-thing-under-the-pointer precedence the Select tool uses.
+    /// The sketch entity of the kind `slot` accepts under the physical-px cursor, or `None`.
+    ///
+    /// **Not the general hit-test filtered afterwards.** A click resolves elsewhere by "the most
+    /// specific thing under the cursor wins", which puts a vertex ahead of the segments meeting
+    /// at it — right for Select, wrong for a gesture that already knows it wants a line. The
+    /// vertex grab radius is wider than the segment's, so on a polyline of short edges most of a
+    /// segment's length sits inside one endpoint's circle: asking the general question and
+    /// refusing the answer made "pick a line" refuse nearly every click on a line (owner
+    /// 2026-07-30, and the reason the tool read as broken). Asking only for what the slot takes
+    /// has no such dead zone, and it is what Fusion does.
     ///
     /// An arc answers `None`, so clicking one reads as clicking nothing. No shipped constraint
     /// slot accepts an arc; the honest alternative is a refusal naming what arcs *can* carry, and
     /// nothing can carry them until Tangent and Concentric have residuals.
-    fn sketch_entity_at(&self, cursor_x: f64, cursor_y: f64) -> Option<ui::panel::SketchEntity> {
-        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
-            return self
-                .sketch_point_ids
-                .get(index)
-                .copied()
-                .map(ui::panel::SketchEntity::Point);
-        }
-        match self.nearest_sketch_edge(cursor_x, cursor_y)? {
-            SketchEdgeHit::Segment(id) => Some(ui::panel::SketchEntity::Segment(id)),
-            SketchEdgeHit::Arc(_) => None,
+    fn sketch_entity_for_slot(
+        &self,
+        slot: ui::panel::SlotKind,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<ui::panel::SketchEntity> {
+        match slot {
+            ui::panel::SlotKind::Point => self
+                .sketch_vertex_at(cursor_x, cursor_y)
+                .and_then(|index| self.sketch_point_ids.get(index).copied())
+                .map(ui::panel::SketchEntity::Point),
+            ui::panel::SlotKind::Segment => match self.nearest_sketch_edge(cursor_x, cursor_y)? {
+                SketchEdgeHit::Segment(id) => Some(ui::panel::SketchEntity::Segment(id)),
+                SketchEdgeHit::Arc(_) => None,
+            },
         }
     }
 
