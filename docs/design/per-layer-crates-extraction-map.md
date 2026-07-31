@@ -1,194 +1,48 @@
-# Per-layer crates extraction map (2026-07-14)
+# The layer split — what was left uncarved
 
-**Provenance:** owner direction — "move most if not all of the files in `src/` out into crates,
-if only to make the connections between components easier to understand," followed by a
-grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
-The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
+Every layer is now its own library and the flow is compiler-enforced; that law and the layer
+chain live in `docs/architecture/README.md`. The migration itself is finished, so what follows
+is only the residue: the things deliberately not done, and the one boundary that came out
+different from how it was drawn.
 
-**Status (2026-07-15): EPIC COMPLETE + a "display = scene view" refinement pass (Phases 8–9).** All 8
-layers cut into workspace crates and every production mega-file carved; then, applying the principle
-that **`display` is 1:1 the scene view** (wgpu rendering only), two more crates were split out:
-- **`ui`** (`2b65170`, Phase 8b) — the egui control surface: the inspector `panel/` + the block-palette
-  UI state. Links ONLY egui + document/voxel_core/camera; NEVER wgpu/display. Preceded by **8a**
-  (`d3c0d95`): display's `block_palette` split — GPU half → `display::block_texture` (`ThumbnailRenderer`
-  /`LoadedMaterial`), UI half → shell, and egui + egui-wgpu DROPPED from display. The palette is split
-  ui-facing (`PaletteTile{label,variant_count,thumbnail_id,variants}` in `ui`) vs a shell `PaletteHost`
-  holding the index-aligned `wgpu::Texture` keep-alive + `BlockGroup` + the render→register bridge.
-- **`assets`** (`92a569e`, Phase 9) — the pluggable block-content loader (VS scan + PNG decode). A pure
-  CPU LEAF crate (deps: image/walkdir/serde_json, ZERO workspace deps), was misfiled in display; now
-  consumed downward by display/work/shell. display dropped image/walkdir/serde_json.
+## The boundary that moved: the work layer links graphics
 
-Workspace is now 11 library crates + the `voxel_worker` shell. `display` links no egui and no content-
-loading deps — it is the scene view (mesh/brick GPU sinks + renderer chrome + texture atlas + shaders).
-**No-mega-files polish pass (2026-07-15, after the crate split):**
-- `f0f67ff` — `block_texture::ThumbnailRenderer` (palette PREVIEW rendering — UI, not scene) moved from
-  `display` → shell `src/thumbnail.rs` + `src/shaders/thumbnail.wgsl`. `display` now has zero UI code.
-  `LoadedMaterial` + the bind-group layout (genuine scene material) stay in display.
-- `2e0550d` — the three biggest test modules carved into topic folders: `scene/tests/`
-  (graph/resolve/placement/grids), `brick/tests/` (field/incremental/record_packing/mixed_material/
-  pipeline_probe), `mesh/tests/` (cuboid/apron/two_layer).
-- `5fbde05` — `src/main.rs` (1866) → `src/windowed/` shell-lib modules (mod/geometry/workers/palette/
-  export/view_cube/render/events); `main.rs` is now an 11-line entry.
-- `87f374e` — `src/bin/shot.rs` (2348) → bin FOLDER `src/bin/shot/` (main/options/demos/capture); the
-  `[[bin]]` path updated, `required-features=["oracle"]` kept.
-- `e339107` — `document/src/sketch.rs` (1661) → `sketch/` (mod/solid/produce/tests); the two remaining
-  large evaluation test modules → `two_layer_store/tests/` + `store/tests/` folders.
+The split was drawn expecting exactly one library to link the graphics API. The survey found
+otherwise — the geometry worker builds meshes on its own thread and the orchestrator owns the
+device, so both hold it directly. The work layer therefore links graphics too, deliberately.
 
-Deliberately left WHOLE (cohesive single units, not mega-files worth splitting): `brick/raymarch.rs` +
-`mesh/pipeline.rs` (one GPU renderer type each), `run_capture` (one driver with interleaved GPU
-lifetimes), `scene/graph.rs` (1292) + `vox_export.rs` (1283, ~half tests). No production library module
-above ~1300 lines that isn't a single cohesive type remains.
+Three ways out existed and the cheapest was taken: cut the layer anyway and revise the law.
+Folding work into the shell was rejected (the shell would swallow the tempo discipline), and
+decoupling the workers from the device by passing it per call remains available as a real
+refactor if the boundary is ever wanted clean. Nothing needs it yet.
 
- Phase 7 landed: `app_core`(3090)→`app_core/` (`40e62c1`) and `panel`(2060)→`panel/`
-(`4bee3a6`). Workspace: `substrate·camera·raycast ← voxel_core ← document ← evaluation ← {display,
-interchange} ← work ← voxel_worker(shell)`. 428 tests reconcile across the crates; all gates green.
+## Deliberately not separate libraries
 
-**Remaining large files (deliberately NOT carved — not production library mega-files):** the per-module
-`tests.rs` suites (scene 2959, brick 1899, mesh 1871 — test code travels as one file per owner-accepted
-orchestrator judgment); the two bins `src/bin/shot.rs` (2349, golden oracle) + `src/main.rs` (1868,
-winit/egui event loop); and `display/brick/raymarch.rs` (1884 — ONE cohesive GPU renderer type, like
-`mesh/pipeline.rs`). Optional future follow-ups if desired: split the big test suites, carve the two
-bins. None blocks the epic.
+A register of restraint, so each is not re-proposed:
 
-**Phase 6 landed** (`bffe329`): cut **work** = `workers/*` + `engagement/*` (deps display/interchange/
-evaluation/document/voxel_core/substrate + wgpu/profiling; wgpu INTENTIONAL per owner — see the ADR law
-revision). Enforced boundary: work imports no shell. `build_brick_rebuild`/`BrickDisplayInstall` were in
-`workers/brick.rs` (not shell), so no upward edge. Recon 110+21+93+93+64+18+29=428. The shell
-(`voxel_worker`) now = `app_core`, `panel`, `settings`, `gpu`, `main`+`shot` bins, lib.rs facade, 2
-parity-test modules.
+- **Mesh and brick as siblings of display.** They interoperate through one orchestrator;
+  folders, not libraries.
+- **Proof and oracles.** Parity tests travel with the code they check; the capture bin stays a
+  bin.
+- **Measurement queries.** They fold into the evaluator's query surface.
+- **Device creation.** It is born from the window surface, so it belongs to the shell.
 
-**Phase 5 landed** (`693d650`): cut **interchange** (`vox_export`, the headless `.vox` sink; deps
-evaluation/document/voxel_core, ZERO wgpu — the no-wgpu law that earns it a crate holds). Recon
-139+21+93+93+64+18=428.
+## Files left whole
 
-**Phase 6 DESIGN FORK (open, needs owner):** the survey found `workers/geometry.rs` AND
-`engagement/orchestrator.rs` both hold `wgpu::Device`/`Queue` directly (the geometry worker builds GPU
-meshes on its thread; the orchestrator owns the device + the display renderers). So a `work` crate
-CANNOT be wgpu-free — which revises the ADR's headline "display is the only crate that links wgpu."
-Options: (a) cut a `work` crate that DOES link wgpu (workers + engagement); (b) fold work/engagement
-into the shell (no separate work crate — the shell legitimately owns the device); (c) decouple the
-workers from the device (pass it per-call) so the work layer purifies — a real refactor. No cycle
-exists (workers reference engagement only in doc-comments; orchestrator→workers via flat re-exports).
+No production library module remains above roughly thirteen hundred lines that is not a single
+cohesive type. What is still large is large on purpose:
 
-**Phase 4b–4d landed** (`c0e4b9f`, `3f73f27`, `b7963c1`): the three display mega-files carved into
-folders — `cuboid_mesh`(4907)→`mesh/` (geometry/builder/two_layer/emit/pipeline/tests, module renamed
-`cuboid_mesh`→`mesh`); `brick_field`(3901)+`brick_raymarch`(2696) MERGED→`brick/` (clipmap/occupancy/
-record/build/incremental/atlas/gpu_record/raymarch/cpu_march/tests, modules collapsed to one `brick`);
-`renderer`(3389)→`renderer/` (materials/view_cube/chrome/lines/gizmo/grid/points/infinite_grid/targets/
-onion/tests, name kept so zero consumer churn). No non-test submodule is a mega-file. Test counts
-unchanged (=428) throughout; all gates incl. GPU golden/parity green.
+- Per-module test suites (the scene, brick and mesh suites), where test code travels as one
+  file per owner.
+- The two binaries — the window event loop and the capture oracle.
+- The brick raymarcher, which is one renderer type, like the mesh pipeline beside it.
 
-**Phase 4a landed** (`04f0a37`): cut **display** — the ONLY crate that links wgpu — moving the seven
-GPU-sink modules (`renderer`, `cuboid_mesh`, `brick_field`, `brick_raymarch`, `texture_atlas`,
-`block_palette`), `assets/`, and `shaders/`. The mega-files moved WHOLE; carving them into folders is
-Phases 4b–4d (decomposed because a cut + three ~4k-line carves exceeds one agent's ~200k budget). Recon
-157+21+93+93+64=428.
-**SEAM CORRECTION (discovered in 4a):** the old `src/display/` orchestrator+routing are NOT display —
-`DisplayOrchestrator` OWNS `GeometryWorker`+`BrickWorker` and drives them, so it is WORK-layer. The
-original ADR-0016 survey missed this upward edge because the worker types are imported via flat
-crate-root re-exports (`crate::BrickWorker`, not `crate::workers::BrickWorker`). They were kept in the
-app crate, renamed `src/display/` → `src/engagement/` (to avoid colliding with the new extern `display`
-crate), and will be placed at the Phase-6 work-crate cut (orchestrator → work; routing → work-or-display,
-decide then). So the file→crate table below is corrected: orchestrator/routing move OUT of the display row.
+Splitting the test suites and carving the two binaries are the optional follow-ups. Neither
+blocks anything.
 
-**Phases 1–3 landed** (all gated + pushed): `199ad8d` cut **voxel_core** (the foundational value
-vocabulary); `90a69f2` cut **document** (the authored-TRUTH layer); this Phase 3 commit cut
-**evaluation** (the one evaluator). Phase 3 also carved the two evaluation mega-files into folders:
-`store.rs` (2299) → `store/` (`mod`/`key`/`cache`/`rebuild_plan`/`tests`) and `two_layer_store.rs`
-(3366) → `two_layer_store/` (`mod`/`chunk`/`classify`/`builder`/`resident_cache`/`stream`/`tests`).
-The one upward test edge — a brick-pipeline perf probe that packs GPU records from two-layer
-chunks — was relocated up into the app crate's `brick_raymarch.rs` (it names DISPLAY types the
-evaluator's law forbids), reaching the classifier via the public `evaluation::two_layer_store`
-path. The dense `Store::resolve_region` / `resolve_region_two_layer` oracles gate behind
-`evaluation/oracle`; the `expand_resident_chunks_into_grid` cross-crate test oracle behind
-`evaluation/test-support` (the app's dev-dependency turns both on).
+## The standard each library is held to
 
-**Phase 0 landed 2026-07-14** (`b7d3c13`→`521c216`, all gated + pushed): the four untangle
-relocations are done and the module graph is now a clean DAG.
-1. `b7d3c13` — cell-key codec `cuboid_mesh` → `core_geom` as the `CellKey(u16)` newtype.
-2. `8cb14b6` — `incremental_rebuild_plan` `renderer` → `store` (retired `store → renderer`).
-3. `604ade0` — `decode_rgba`/`DecodedRgba` `workers/scan` → `assets::decode` (retired `block_palette → workers`).
-4. `521c216` — `voxel.rs` split into `voxel/value.rs` (foundational) + `voxel/producer.rs`
-   (document-bound), re-exported from `voxel/mod.rs` so call sites are unchanged; `mesh_cell_key`
-   folded onto `Voxel::cell_key()` in the value half (retired the last `cuboid → cuboid_mesh` edge);
-   the `AppCore`-importing dispatch test moved `intent` → `app_core` (retired the test-only
-   `document → shell` edge). Call-site paths kept as `crate::voxel::*` via explicit re-exports — the
-   crate cut rewrites them to the real `voxel_core::`/`document::` paths in one ast-grep pass, so the
-   split isn't churned twice.
-
-## The dependency law
-
-Each crate boundary carries the architecture's downward-only flow law. A crate may import only
-crates below it in this chain; an upward `use` fails to compile:
-
-```
-substrate · camera · raycast
-      ▲
-   voxel_core
-      ▲
-   document
-      ▲
-   evaluation
-      ▲            ▲
-   display      interchange        (parallel sinks over evaluation; display links wgpu, interchange never does)
-      ▲            ▲
-   work
-      ▲
-   voxel_worker (shell: composition root + bins)
-```
-
-## File → crate assignment
-
-| Crate | Files (today) | Law / chapter |
-|---|---|---|
-| **voxel_core** | `core_geom` (+ the `CellKey` codec moved from cuboid_mesh), the value half of `voxel.rs` (`Voxel`, `VoxelGrid`, `RecentreVoxels`, constants, `signed_distance*`, `ShapeKind`), `spatial_index`, `units` | foundational vocabulary; no behavior contract |
-| **document** | `scene/*`, `sketch`, the producer half of `voxel.rs` (`VoxelProducer` trait, `SdfShape`, `GeometryParams`), `debug_clouds`, `intent`, `command` | 01 — truth; imports no evaluation/display/wgpu |
-| **evaluation** | `two_layer_store`, `store`, `chunk_cache`, `chunk_storage`, `disk_chunk_store`, `cuboid`, `incremental_rebuild_plan` (from renderer), measurement queries (`widest_run_in_band`, diameter) | 02 — one evaluator → boundary set |
-| **display** | `renderer`, `cuboid_mesh`, `brick_field`, `brick_raymarch`, `texture_atlas`, `block_palette`, `assets/*` (+ `decode_rgba`); `gpu` handed in from the shell. (NOT orchestrator/routing — see seam correction) | 03 — the only crate that links wgpu |
-| **interchange** | `vox_export` | 03 (export) — headless sink; never wgpu |
-| **work** | `workers/*`, `engagement/orchestrator` (owns the workers), `engagement/routing` | 04 — tempos, generations, staleness |
-| **voxel_worker** | `app_core`, `panel`, `settings`, `gpu`, `main` + `shot` bins | shell — composition root |
-
-## Phase 0 — untangle (in the current crate, before any crate is cut)
-
-Four relocations + one split make the graph a clean DAG. Each is a gated commit:
-
-1. **CellKey codec** (`compose_cell_key`/`clean_block_id`/`cell_key_has_overlay`/`MESH_GRID_OVERLAY_BIT`/`mesh_cell_key`) `cuboid_mesh.rs` → `core_geom` as a `CellKey` type, renamed off the mesh. Retires `two_layer_store`/`cuboid`/`brick_*` → `cuboid_mesh`.
-2. **`incremental_rebuild_plan`** (+ `IncrementalRebuildPlan`) `renderer.rs` → the residency module (evaluation-to-be). Retires `store → renderer`.
-3. **`decode_rgba`/`DecodedRgba`** `workers/scan.rs` → `assets`. Retires `block_palette → workers`.
-4. **Split `voxel.rs`** into the value half (→ voxel_core-to-be) and the producer half (`VoxelProducer` + `SdfShape` → document-to-be); relocate the `intent` test that imports `AppCore`.
-
-After phase 0 the modules still live in one crate but respect the layer DAG; the crate cuts become mechanical.
-
-## Phases 1–7 — cut crates bottom-up
-
-Each slice: create the workspace crate, `git mv` its modules, add the `lib.rs` law-statement + chapter citation, add per-crate clippy/test CI gates, run the full gate baseline, push.
-
-1. **voxel_core** — the foundation. (Substrate/camera/raycast already sit below it.)
-2. **document** — truth. Law compile-checked: no evaluation/display import.
-3. **evaluation** — the evaluator + residency + queries.
-4. **display** — the wgpu sinks. **Break the mega-files into folders here**: `cuboid_mesh` (4955) → `mesh/`, `brick_field` (3901) → `brick/`, `renderer` (3461) → `renderer/` (device/pipelines/passes/rasterizer), `two_layer_store`'s display-facing pieces already left. Sub-structure `brick/`, `mesh/`, `atlas/` as module folders — NOT crates (they interoperate through the engagement orchestrator).
-5. **interchange** — `vox_export`; the headless-sink law (no wgpu) compile-checked.
-6. **work** — the worker pool.
-7. **voxel_worker** — thins to `app_core` + `panel` + `settings` + `gpu` + bins.
-
-## Mega-file split targets (as their crate lands)
-
-`cuboid_mesh` 4955, `brick_field` 3901, `renderer` 3461, `app_core` 2400, `panel` 2059,
-`sketch` 1783 — each breaks into a folder of cohesive submodules under its crate. Owner rule
-(2026-07-14): no mega-files; folders for organization. **Done as their crate landed:**
-`two_layer_store` (3366) and `store` (2299) carved into folders when evaluation was cut (Phase 3).
-
-## Deliberately NOT crates (restraint, per ADR 0016 + 0014)
-
-- **display sub-crates** (mesh vs brick) — they interoperate; module folders, not crates.
-- **assets** — a display folder until a second (e.g. headless texture-baker) consumer appears.
-- **proof / oracles** — parity tests travel `#[cfg(test)]` with their code; `shot` stays a bin.
-- **measurement queries as a crate** — fold into evaluation's query surface.
-- **`gpu` as its own crate** — device creation is shell-owned (born from the winit surface).
-
-## Documentation standard (definition-of-done, owner 2026-07-14)
-
-Every crate ships a `lib.rs` naming its law and citing its architecture chapter; module docs carry
-the rationale/citation voice of substrate/camera/raycast. As each file moves, its docs come up to
-that bar — the substrate/camera/raycast "readable spec" vibe, maintained throughout the project.
+Every library states its law in its root and cites the chapter it implements, and its module
+documentation carries the rationale-and-citation voice rather than a restatement of the
+signatures. As a file moves, its documentation comes up to that bar — the bar being the
+"readable spec" the pure computer-science libraries set.

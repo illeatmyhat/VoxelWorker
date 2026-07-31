@@ -88,6 +88,41 @@ can say, theorems for the pure kernel, oracles for the world. The parity gates r
 even where a theorem exists — a theorem verifies the mathematics; the gate verifies
 that the shipping binary still implements it.
 
+### Which prover a property goes to
+
+Proving the kernel is itself three instruments, and the choice is made by **where the
+defect can live**, never by how mathematical the statement sounds.
+
+- **Bounded model checking on the real code** takes anything whose domain is finite and
+  small — a bit-packing round trip, a key ordering, an index bijection, a float endpoint
+  rounding the wrong way. The bound is often not an approximation at all: where a
+  parameter is itself bounded by a document law, checking the whole range *is* the
+  general result. This is also the only tier that sees machine floats, so anything whose
+  risk is a rounding direction belongs here and nowhere else.
+- **Deductive verification on the real code** takes stateful invariants that survive an
+  operation — a sorted-disjoint interval set after an insert, a free list that never
+  hands out a live slot, a generation protocol that never accepts stale state. These are
+  exactly the properties the bounded tier chokes on, because a heavy collection mutation
+  makes the checker model the allocator.
+- **An algebraic model in a proof assistant** takes statements over unbounded or exact
+  domains — a division fold nesting across every level, a reduction yielding canonical
+  form for every integer. It is the right tier precisely when the property must hold at
+  sizes no bounded check reaches, and the wrong one when the property is about the
+  machine's arithmetic rather than the mathematics it approximates.
+
+Two constraints shape what is written rather than what is chosen. A bounded checker
+wants **constant divisors**: a symbolic divide is the difference between a solve in under
+a second and a timeout, so a harness is anchored at concrete sizes and the generality is
+recovered by an argument about which sizes exist. And a model that needs a library of
+mathematics is a heavy commitment that is repeatedly asserted and repeatedly wrong —
+the rule is to attempt the core-only proof first and reach for the library only against
+a concrete proof that demonstrably stalls without it.
+
+One boundary stands over all three: **the graphics side is not a proof target.** No
+source-level theorem catches a shader compiler that miscompiles correct source, which is
+a defect that has actually happened here. Verification hardens the kernels; the oracle
+gates remain regardless.
+
 ## Golden images
 
 Above occupancy sits rendering, and rendering is proven visually: **golden images** —

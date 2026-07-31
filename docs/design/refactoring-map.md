@@ -118,17 +118,16 @@ cleanup findings — a dead raw recentre return leg in `stream_vox_occupancy`, d
 unwrap doors — are applied). Deliberately still raw: `recentre_shift_voxels` (a frame
 *delta*) and `previous_recentre_voxels` (a comparison cache) — positional arithmetic,
 not transport — and the dense-oracle grid. **Next increment:** the next frame-bearing
-value (the sculpt-delta Intent's addresses, per ADR 0008, when sculpt lands).
+value — the sculpt-delta intent's addresses, when sculpt lands.
 
-**(b) Verify the kernel — future, unchanged in shape:** Kani for the packed world-key
-round-trip and the row-bitmask operations (now real code, from 5a); Creusot/Verus for
-the generation-tracker supersede protocol and the routing table (now ONE table, from
-item 3); a small Lean model for interval-bound conservatism. Still deliberately not
-attempted: proving the GPU side. That stance got fresh evidence this cycle — the
-long-standing nondeterministic shader-compile flake was diagnosed as legacy FXC
-nondeterministically rejecting byte-identical HLSL (fixed at the WGSL layer, `d3ea9cf`);
-no source-level theorem would have touched it, which is why the oracle gates remain
-permanent regardless of how far verification goes.
+**(b) Verify the kernel — DONE.** The bounded, deductive and algebraic tiers are all
+stood up and their named targets discharged; what remains is listed in
+`docs/design/substrate-extraction-map.md`. The one stance that did not move: the GPU
+side is not a proof target, and it got fresh evidence this cycle — the long-standing
+nondeterministic shader-compile flake was a legacy compiler nondeterministically
+rejecting byte-identical input (fixed at the shader-source layer, `d3ea9cf`). No
+source-level theorem would have touched it, which is why the oracle gates are permanent
+regardless of how far verification goes.
 
 ## 11. A common fixture crate for integration tests — **DONE** (`6f895d8`, with item 1)
 
@@ -137,13 +136,17 @@ permanent regardless of how far verification goes.
 
 ## 12. Keep the documentation contract honest — **DONE / STANDING**
 
-The roles stand: `CONTEXT.md` defines terms; `docs/adr/` records decisions append-only;
-`docs/architecture/` describes the current shape and is edited freely; `docs/design/`
-holds dated analysis inputs like this one. The specific alignment this item named —
-pruning the dead volumetric-fog glossary from `CONTEXT.md` — was already done when
-checked (one legitimate historical mention remains inside an ADR reference). The
-standing rules: new ADRs describe deltas against the architecture set; new doc comments
-reference architecture chapters, not ADR numbers.
+Four places, four roles. `CONTEXT.md` defines terms and nothing else. `docs/adr/` records
+point-in-time decisions and is append-only. `docs/design/` records what is still to do and
+what was done to learn something, and is **pruned as its content folds into architecture**.
+`docs/architecture/` is the final home: it describes the system as it is, with no history, no
+roadmap, and no reference to anything outside itself — not to decision records, not to other
+products.
+
+Standing rules that follow from those roles: a decision record describes a delta against the
+architecture set, and the architecture set is updated in the same change that ships the
+decision; a design file may point at architecture but architecture points at nothing; and a
+doc comment cites the architecture chapter it implements rather than a decision number.
 
 ## 13. File-size guard sweep — **DONE** (2026-07-22)
 

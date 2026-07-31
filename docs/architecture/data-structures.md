@@ -253,6 +253,24 @@ by fractions of a voxel, which in a chiseling tool is corruption, not noise. Int
 positions cannot drift, and carrying the reference point explicitly means two parts of
 the system can never disagree about where "here" is: the value says so itself.
 
+**Where it ends.** The document can name a coordinate long after a display can draw it,
+so the buildable envelope is three nested ceilings and the tightest is not the document's:
+
+| Ceiling | Limit | Bound by | Failure |
+| --- | --- | --- | --- |
+| Brick record key | ~±1M blocks, **absolute** | Three 21-bit lanes in a 64-bit sortable key, biased by 2²⁰ | The object stops rendering on the brick path |
+| Recentre-relative f32 | ~±2²⁴ voxels **from the recentre**; composite span under ~2M blocks | f32 stops resolving adjacent integers | Voxels become unnameable; the raymarch and the grid melt |
+| Document | ~9×10¹⁸ | 64-bit lattice integers | Never the binding one |
+
+The first is bound by *absolute position*, the second by *span and distance from the
+recentre*, and they fail on different scenes: a lone object a few million blocks out hits
+the first, while a pair of objects a few million blocks apart, each near the origin, hits
+the second — the floating origin is the composite's midpoint, and a midpoint cannot be
+near both ends of a span wider than twice its own reach. Authoring is bounded well inside
+the first ceiling and **rejects geometry that would cross it**, which turns a silent
+disappearance into a legible error at the moment it is authored. The packing itself
+panics rather than wrapping, so the aliasing case cannot be reached quietly.
+
 ---
 
 ## Substrate — the structures as pure computer science
@@ -284,10 +302,10 @@ component's own definition carries the explanation of the structure and the
 citations to the canonical literature, noting where the local variant deviates.
 The domain's own words survive only at the adapter seams.
 
-**Where the inventory lives.** Which structures move, in what order, and with
-which oracles is a dated engineering input, not a timeless fact, so it lives apart
-from this chapter in `docs/design/substrate-extraction-map.md`. This section
-states the shape; that map tracks the migration.
+**What it is not.** Substrate is not where a structure goes to be reused; it is
+where a structure goes once its correctness can be argued without the domain
+present. That is why the same discipline pays twice: a structure stated in
+textbook terms can be handed to a proof tool, and several here have been.
 
 ## The shape of the whole
 

@@ -133,6 +133,26 @@ operation that would be genuinely infinite, and an unbounded producer under it i
 rejected.** Where a producer is unbounded, the region an edit dirties is computed from
 the accumulator's bounds rather than the producer's.
 
+### A field rotates; an array resamples
+
+A leaf is one of two things, and which one it is decides what may be done to it.
+
+**A parametric producer is a field.** A box, a cylinder, a sketch lifted to volume — these
+are evaluated, never stored. A rotation is applied to the field and the voxelization happens
+*after* it, so the result is not an approximation of a rotation; it is the rotated shape,
+sampled. That holds at any density and at any angle, which is why rotation here is a
+continuous quantity rather than a choice among the lattice's own orientations.
+
+**A static body is an array.** It has no field behind it, so rotating one would mean sampling
+between voxels — a resample, and lossy. Rotation of a body is therefore restricted to the
+orientations the lattice already contains, where the mapping is a permutation of voxels and
+nothing is invented.
+
+The two live under one rule rather than as a special case: what a node offers follows from
+what a node is. The cost of the freedom lands in evaluation, not in the document — a rotated
+shape's axis-aligned bound is looser than an axis-aligned one's, so more cells answer "cannot
+say" and the boundary set grows. That is a price in work, never in exactness.
+
 ## Constraints — what holds a sketch in place
 
 A sketch's positions are held by **constraints**: entities in their own right, with stable

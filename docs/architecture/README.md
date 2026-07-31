@@ -90,9 +90,18 @@ writes upward. When a lower layer needs to influence the document (a GPU-side br
 an agent proposal), it does so by emitting an intent at the top like everyone else —
 that is what "one door" means.
 
+**Each layer is a separate library, so the flow is enforced by the compiler rather than
+by convention** — an upward import does not fail review, it fails to build. Each library
+states its own law in its root and holds only what that law admits: the truth layer links
+no evaluator, the export sink links no graphics, and the pure computer-science structures
+link nothing of the domain at all. Where a layer legitimately needs something from above,
+that is a boundary being revised deliberately and in the open, not a dependency drifting
+in unnoticed.
+
 ## Scope
 
-This set describes the **core planner**: document, evaluation, display, work, proof.
+This set describes the **core planner**: document, evaluation, display, work, proof, and
+the authoring grammar the shell presents them through.
 One companion layer is deliberately outside it: the agent-authoring kit — the
 vocabulary an autonomous builder needs *above* the intent door (connectors and joints
 between parts, spatial queries, design diagnostics, generative patterns). That layer
@@ -109,6 +118,7 @@ client of the same intent door.
 | [03 — Display](03-display.md) | The brick field, the pyramid, the mesh understudy, engagement and handover, viewer modes |
 | [04 — Work](04-work.md) | Tempos, the worker pattern, generations, the staleness law |
 | [05 — Proof](05-proof.md) | Oracles, parity gates, goldens, probes — how exactness is kept |
+| [06 — Authoring](06-authoring.md) | Selection, modes, gestures, navigation, picking, feedback, chrome — the grammar of the shell |
 | [Data structures](data-structures.md) | The load-bearing structures and the quality each one buys |
 
 Terminology is defined once, in the root `CONTEXT.md` glossary; these documents use it

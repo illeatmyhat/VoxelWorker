@@ -1,143 +1,33 @@
-# Sketch selection — the Fusion-style select/delete model
+# Sketch selection — what is left to build
 
-How a user selects and deletes entities inside a sketch (ADR 0030 — a sketch is a collection of
-points, segments, later arcs and derived faces). Decided with the owner 2026-07-23; supersedes the
-tool grammar ADR 0028 shipped for sketch editing (the three-tool Select / Add-point / **Delete**
-rail). This is the living spec; it graduates to an ADR 0030 amendment once the slices land.
+The selection model is folded into `docs/architecture/06-authoring.md`: the four gestures, the
+single mixed set, hit priority, the directional marquee, delete as an action on the selection,
+and the mode-dispatched menu. All of that is shipped and described there as it stands.
 
-The premise, in the owner's words: *Fusion's selection is the model.* Select is the one place you
-touch geometry; delete is something you **do to a selection**, not a mode you enter.
+Two things remain, plus one departure worth keeping written down.
 
-## The correction this replaces
+## Move the whole selection
 
-ADR 0028 (#95) made **Delete a mode** — a rail tool you arm, then click an entity to remove it,
-with a warn-`✕` hover to show what a click would take. That was shipped, including a segment
-delete-hover (2026-07-23). Fusion has no delete mode: delete lives only on the selection, reached
-by the **Delete key** or the **right-click context menu**. Keeping delete as a mode fights muscle
-memory and burns a rail slot. So Delete stops being a tool; its warn-`✕` visual survives as the
-"armed to remove" cue, but its *trigger* moves from tool-hover to the selection.
+Shipped: the single-vertex drag, which is the degenerate case of *propose a delta → solve →
+apply*. Not shipped: proposing a delta for a multi-entity selection. The gesture and the apply
+are unchanged; the work is in the solve step, which now has a real solver behind it to correct
+against.
 
-## What is selectable
+## Scene-node marquee
 
-A **selection set** of mixed entities held on the sketch editing session:
+The sketch marquee is shipped with both window and crossing semantics. Scene nodes do not have
+one yet, and it should be built once against both rather than twice.
 
-- **Points** and **segments** — first-class, directly selectable (ADR 0030 entities with stable ids).
-- **Faces** — a *derived* entity (graph → faces, ADR 0030 §region). **Pickable, but NOT a member of
-  the selection set** — the one place #100 departed from this spec when it shipped (2026-07-29). A
-  face's identity is a SET of boundary-edge origin ids, and `SelectionTarget` is a `Copy` value
-  passed by value everywhere; a `Vec`-carrying payload would break that across the whole shell.
-  Since a region's only verb is pick/unpick, and that verb was always going to live on the context
-  menu, the face never needed to enter the set to be operated on.
+## The departure: a region is pickable but not a selection member
 
-Selecting a point and selecting the segment between two points are different: a segment in the set
-carries its own id; deleting it removes only the line, while deleting a point cascades its incident
-segments (ADR 0030 delete semantics, already built).
+Worth recording because the shipped code deliberately differs from what was first specified.
+A region was originally to be a selection-set member like a point or a segment. It is not.
 
-## Building the selection
+A region's identity is a **set** of boundary-edge ids, while a selection target is a small
+value copied by hand throughout the shell. Admitting a variable-length payload would change
+that representation everywhere it is passed. Since a region's only verb is pick / unpick, and
+that verb was always going to live on the context menu, it never needed to enter the set to be
+operated on.
 
-The Select tool, no mode switch:
-
-1. **Click an entity** → the selection becomes exactly that entity.
-2. **Shift-click** → toggle that entity in/out of the set (accumulate).
-3. **Click empty space** → clear the set.
-4. **Marquee drag from empty space** → box-select (below).
-
-Vertices keep priority over segments in every hit-test (a click or box near a shared endpoint
-resolves to the point), matching the existing Select-grab and delete hit order.
-
-## Move is a constraint-mediated request
-
-Press + move on a selection **requests** a translation; it is not a direct set. The constraint
-solver (ADR 0029/0030, deferred) corrects the request — clamping, projecting, or rejecting it, so an
-over-constrained selection may not move at all. The move path is therefore built as **propose delta →
-solve → apply**, never "write the new positions." Today there is no solver, so *solve* is the
-identity and a request applies verbatim; the existing single-vertex drag (#94) is exactly this
-degenerate case. When the solver lands it slots into the *solve* step with no change to the gesture
-or the apply.
-
-- **Slice 1 scope:** selection (click / shift-click / clear) + the existing single-vertex #94 drag,
-  unchanged. **Move-the-whole-selection is a later slice** (it wants the solver step to be real, and
-  the owner scoped multi-select's delivered action to Delete, not Move).
-
-## The gesture split (Select tool)
-
-| Gesture | Result |
-| --- | --- |
-| Press + release *stationary* (a click) | **Select** that entity; Shift = toggle it in/out of the set |
-| Press + *move* | **Move request** (constraint-corrected); today the #94 single-vertex drag |
-| Click empty space | **Clear** the selection |
-| Click a segment (stationary) | **Select** the segment (segments do not drag) |
-
-Selection resolves on the **stationary release**, so it never fights a drag; vertices keep priority
-over segments in the hit-test.
-
-## The directional marquee (window vs crossing)
-
-Fusion's two-direction box, so the user picks the semantic by drag direction and reads it by style:
-
-| Drag direction | Mode | Selects | Outline | Fill |
-| --- | --- | --- | --- | --- |
-| **left → right** | **Window** | entities **fully enclosed** by the box | **solid** | faint **accent** |
-| **right → left** | **Crossing** | entities the box **intersects** (any overlap) | **dashed** | lighter |
-
-- **Window** (drag right): points inside the box; **segments with ≥1 endpoint inside** (the segment
-  rides its selected point — later also segments tied by constraint logic); and any other entity
-  fully enclosed. The "I meant this whole thing" box.
-- **Crossing** (drag left): **any entity the box intersects**, so a segment passing *through* the box
-  with both endpoints outside still selects — you can grab *part* of a face or a run of edges without
-  enclosing all of it. The "reach across" box.
-- These genuinely differ: a segment crossing the box with both endpoints outside is **crossing-only**
-  (window needs an endpoint inside).
-- **Two distinct styles are required**, not decorative: the user must tell window from crossing at a
-  glance mid-drag. Solid-outline/filled = window; dashed-outline/lighter = crossing. Dashed already
-  means "looser / uncommitted" in the gizmo family (`dashed_segment`, `dashed_rect`), so it reads as
-  the reaching box without a new idiom. Colours are Signal tokens (`ACCENT`), never Fusion's literal
-  blue/green.
-
-**Resolved (owner 2026-07-23):** window selects a segment with **≥1 endpoint inside**; crossing
-selects a segment the box **intersects at all**.
-
-## Delete as an action
-
-- **Delete / Backspace key** with a non-empty selection → delete every selected entity (points
-  cascade their segments, ADR 0030), one undo step.
-- **Right-click → Delete** in the context menu, same effect.
-- The Delete **tool is removed** from the sketch rail. Rail becomes Select + Add-point; **Add-point
-  stays as its own tool** (owner 2026-07-23), unchanged.
-
-## The context menu
-
-No viewport context menu exists today (only the ViewCube's own right-click menu). Build a
-**general-purpose viewport right-click menu** for all modes, its contents **overridden per mode**:
-
-- **Delete is a shared base action** — present in *every* mode's menu, drawn identically (a red `✕`,
-  the one destructive glyph, owner 2026-07-23). Its *effect* is mode-dispatched: in normal mode it
-  deletes the **selected scene node**; in sketch mode it deletes the **selected sketch entities**
-  (points cascade). One verb, one glyph, one place in the menu — the target is whatever "the
-  selection" means in the current mode.
-- **Sketch mode adds** its own entries beyond Delete: **Carve hole here / Fill this region**, shown
-  only when the right-click landed inside a derived face (#100). The row's label and glyph follow
-  the face's current state, so it is one row and not two.
-
-This is the surface #100 (region pick/unpick) and future sketch verbs hang off, so it is built as a
-mode-dispatched menu, not a sketch-only widget.
-
-## Slices (tracer-bullet order)
-
-1. **Selection set + click / shift-click / clear** — selection state on the session; a `Selected`
-   visual for points *and* segments (define the token, distinct from Idle/Hover); Select-tool click
-   wiring; vertices-over-segments hit priority.
-2. **Delete as action** — Delete key + a general context menu (infra) with a sketch Delete override;
-   remove the Delete tool from the rail; retire the now-dead delete-hover trigger.
-3. **Directional marquee** — window/crossing predicates + the two-style rubber band; resolve the
-   window-segment predicate first.
-4. **Faces as derived regions** — SHIPPED as #100 (2026-07-29), with the departure noted above:
-   faces are derived by a DCEL walk, badged at their centroids (filled = picked, hollow = a hole),
-   and carved / filled from the context menu's own row. Not selection-set members.
-
-## What this reuses / retires
-
-- **Keeps:** segment-line rendering (an open sketch's edges must show); the Select-hover highlight
-  (it *is* the selection hover); the `marked_segment` / `Marked` gizmos (repurposed to "armed to
-  delete" for a selection); the entity-id delete ops (`with_point_deleted` / `with_segment_deleted`).
-- **Retires:** the Delete rail tool and its hover trigger; the tool-armed delete press path.
+The cost is real and is accepted: any future verb that wants to act on "the selection,
+including regions" has to reopen this. Nothing wants that yet.

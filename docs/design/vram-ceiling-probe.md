@@ -38,7 +38,7 @@ would come *after* a stretch of silently degrading, paging frames.
 
 - **A reactive catch is not a strategy.** On DX12 the first catchable signal is device loss —
   too late. The guard must be **an app-side byte budget checked BEFORE allocating**: the app
-  knows every atlas's exact size (`atlas_dim³`, and ADR 0013's material pool likewise), so a
+  knows every atlas's exact size (`atlas_dim³`, and a future material pool likewise), so a
   running GPU-bytes ledger against a budget is cheap and exact. (The deleted fog subsystem's
   `MAX_FOG_ATLAS_BYTES` was this pattern; the brick pipeline currently has no equivalent.)
 - **Budget size is not queryable through wgpu 29** (no VRAM size / memory-budget API), so the
@@ -53,8 +53,8 @@ would come *after* a stretch of silently degrading, paging frames.
   `max_texture_dimension_3d` toward the adapter limit is a sculpt-design decision that only
   makes sense together with the byte budget.
 - **What degradation *does* (refuse the edit? stale display? coarser LOD-only residency?) is
-  the open design question** — deliberately deferred to the sculpt grill, alongside ADR 0013's
-  note that the material pool shares whatever policy is chosen.
+  the open design question** — deliberately deferred to the sculpt design, which is also where
+  a material pool would have to share whatever policy is chosen.
 
 Probe source: session scratchpad `vram-probe/` (standalone crate, not part of the repo build);
 re-run recipe: `vram-probe [validate|pressure|panic]`, `WGPU_BACKEND=dx12` for the DX12 arm.

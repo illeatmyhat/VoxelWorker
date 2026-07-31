@@ -13,7 +13,7 @@ have quietly killed a viable approach.
 ## The duplication is one function, not one per shape
 
 **61 lines of WGSL cover all five `ShapeKind` variants**, because the `Field` trait already
-unifies them (ADR 0019) — the GPU side is one dispatcher over a kind tag plus a parameter block,
+unifies them — the GPU side is one dispatcher over a kind tag plus a parameter block,
 not a mirror per shape. All five compiled and rendered correctly on the **first attempt with
 zero iteration on the math**: `glam::Vec3` → `vec3<f32>`, `.max()` → `max()`, `.length()` →
 `length()`, essentially character for character.
@@ -72,7 +72,7 @@ over the sampling lattice:
 
 **f32 is verdict-identical to f64 up to ~10⁶ voxels of offset**, collapsing only past f32's 2²⁴
 exact-integer ceiling — the far-lands regime this codebase already solves everywhere else by
-rebasing to a local frame in i64 before the downcast (ADR 0008). A preview uploads profile
+rebasing to a local frame in wide integers before the downcast. A preview uploads profile
 vertices rebased to the shape's own origin, where f32 is exact.
 
 The genuine `SketchSolid` risks are elsewhere, and two of them are real:
