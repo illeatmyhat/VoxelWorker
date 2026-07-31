@@ -1,4 +1,4 @@
-//! Arming a constraint, and collecting the entities it needs (ADR 0035, ADR 0030 §5).
+//! Arming a constraint, and collecting the entities it needs.
 //!
 //! A constraint ARMS like every other sketch tool: press the rail cell, then pick the geometry it
 //! is about. It is not a verb over whatever happened to be selected first. The two models differ
@@ -15,16 +15,13 @@
 //! open would make every constraint need an explicit end the author has no reason to expect.
 //!
 //! A verb is not one-to-one with a constraint. `Horizontal / Vertical` is ONE cell that asserts
-//! either of two kinds, picked from the drawing — Fusion's arrangement, and the right one: the
-//! author is saying "line this up with an axis", and which axis is already visible in what they
-//! drew. The badge then reports the answer rather than the question.
+//! either of two kinds, picked from the drawing: the author is saying "line this up with an
+//! axis", and which axis is already visible in what they drew. The badge then reports the answer
+//! rather than the question.
 //!
-//! Only the kinds whose residuals ship are here. The glyphs still missing from the rail —
-//! Concentric, Tangent, Curvature, Symmetry and `Quantize` — are drawn and named on the design
-//! sheet but have no residual behind them yet
-//! (`crates/document/src/sketch/constraint.rs`), and an armable verb that asserts nothing is worse
-//! than a cell that is not there. The first three wait on arcs and circles entering the
-//! parameter vector.
+//! Only the kinds carrying a residual in `document::sketch::constraint` are here. A verb whose
+//! glyph is drawn but whose residual is absent stays off the rail — an armable verb that asserts
+//! nothing is worse than a cell that is not there.
 
 use document::sketch::{ConstraintKind, EntityId, Sketch};
 
@@ -75,7 +72,7 @@ impl SlotKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstraintVerb {
     /// The picked segment lies along ONE of the plane's two in-plane axes — whichever it is
-    /// already nearer (Fusion's arrangement: one tool, two constraints).
+    /// already nearer — one tool, two constraints.
     HorizontalOrVertical,
     /// The picked point stays where it is.
     Fix,
@@ -149,7 +146,7 @@ impl ConstraintVerb {
     }
 }
 
-/// The glyph that stands for a constraint already on the drawing (ADR 0035). The badge is the
+/// The glyph that stands for a constraint already on the drawing. The badge is the
 /// only thing that makes an assertion visible after the solve has moved the geometry and the
 /// evidence of the constraint is a line that merely *looks* level.
 pub fn constraint_icon(kind: ConstraintKind) -> Icon {
@@ -196,8 +193,8 @@ impl ArmedConstraint {
         }
     }
 
-    /// Rebuild a gesture from its parts — the door a dump comes back through (ADR 0024: a
-    /// mid-pick repro must re-enter with the same question on screen).
+    /// Rebuild a gesture from its parts — the door a dump comes back through, so a mid-pick
+    /// repro re-enters with the same question on screen.
     ///
     /// Picks past the verb's slot count are DROPPED rather than trusted: a dump written by a
     /// build whose slot list was longer would otherwise hand back a gesture that reports itself
@@ -243,9 +240,8 @@ impl ArmedConstraint {
     /// the hit-test and here). All three leave the gesture exactly as it was.
     ///
     /// An arc's CENTER is not among them. It is a point the drawing derives rather than one the
-    /// author places, and it was briefly refused here on the grounds that a constraint on it could
-    /// not hold; the residual system now reads it as the function of the arc's ends that it is, so
-    /// a constraint on it moves the arc and holds like any other (owner, 2026-07-31).
+    /// author places, but the residual system reads it as the function of the arc's ends that it
+    /// is, so a constraint on it moves the arc and holds like any other.
     pub fn offer(&mut self, candidate: SketchEntity, sketch: &Sketch) -> Offer {
         let Some(slot) = self.wants() else {
             return Offer::Refused("already complete");
@@ -482,10 +478,9 @@ mod tests {
         assert_eq!(armed.kind(&sketch), None);
     }
 
-    /// An arc's center is a point the DRAWING owns — it is re-derived from the arc's ends and its
-    /// sweep — but it fills a point slot like any other, because a constraint naming it is met by
-    /// moving the arc. It was briefly refused here; the residual system reads it as the function it
-    /// is now, so the gesture has nothing to say no to (owner 2026-07-31).
+    /// An arc's center is a point the DRAWING owns — it is re-derived from the arc's ends and
+    /// its sweep — but it fills a point slot like any other, because a constraint naming it is
+    /// met by moving the arc.
     #[test]
     fn an_arcs_center_fills_a_point_slot() {
         let mut sketch = Sketch::empty(PlaneAxis::Z);

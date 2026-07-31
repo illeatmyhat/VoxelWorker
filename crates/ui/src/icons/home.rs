@@ -4,10 +4,8 @@
 //! mark reading as a house rather than as a triangle stacked on a box at 15 pt.
 //!
 //! Sits on the set's dominant 2.5–15.5 box — the square `fit`, `part`, `density`, `material`
-//! and `outset` share — so it carries the same optical weight as the rest of the rail. It was
-//! previously drawn on a 12 × 11 box, smaller than every other mark in its own Navigation
-//! group, for no reason anyone had recorded. The body keeps the sheet's 3-to-4 ratio against
-//! the roof's span.
+//! and `outset` share — so it carries the same optical weight as the rest of the rail. The body
+//! keeps a 3-to-4 ratio against the roof's span.
 
 use super::{Ink, Mark};
 

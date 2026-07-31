@@ -1,8 +1,7 @@
 //! The **Signal** icon set, painted with `egui` strokes rather than shipped as textures.
 //!
 //! Every glyph is authored on an **18-unit grid** at a stroke of one [`STROKE_RATIO`]th of that
-//! grid, square caps, miter joins, zero rounding — the rules in
-//! `docs/design/viewport-chrome-signal.md` §Icon set. A
+//! grid, square caps, miter joins, zero rounding. A
 //! glyph is a `&'static [`[`Mark`]`]` — DATA, painted through [`IconPainter::at`] — so the same
 //! source draws at a 15 pt rail button and at a 44 pt palette tile with no second asset and no
 //! resampling. Color is never baked in: the host passes it, which is what lets one glyph be
@@ -18,7 +17,7 @@
 //! moon sits at `on_orbit(MOON_ANGLE)` — a trigonometric position. `f32::cos` is not a
 //! `const fn`, so the only way to make them data is to freeze those positions as literals, which
 //! would decouple the numbers from the `MOON_ANGLE` the module explains. A glyph whose constants
-//! no longer match its own reasoning is worse than a glyph that traces. They carry no unbounded
+//! do not match its own reasoning is worse than a glyph that traces. They carry no unbounded
 //! loop: the sampling is a fixed `0..=32`. [`Icon::marks`] answers an empty slice for these
 //! three and for nothing else, which `glyphs_are_data` gates.
 //!
@@ -32,11 +31,11 @@
 //! what the `design_reference` binary displays, and it is the difference between an icon sheet
 //! and a set of shapes nobody can assign a meaning to.
 //!
-//! Two glyphs deliberately depart from the harvested sheet, and the reasons are rulings:
+//! Two glyphs the set deliberately does NOT have:
 //!
 //!   * there is no `sealed_part` — every part is a sealed scope, so the word carries no
-//!     information in an interface (`docs/design/color-vocabulary.md` reasons about the same
-//!     scarcity for color). The glyph that survives is [`Icon::ComposedPart`], which says the
+//!     information in an interface, the same scarcity argument the color vocabulary makes.
+//!     The glyph that survives is [`Icon::ComposedPart`], which says the
 //!     thing a user can verify: a part folds in as ONE body.
 //!   * there is no `emboss_ridge`. Emboss moves an accumulated surface within a footprint, and
 //!     a ridge glyph would lie the moment the amount goes negative, so the footprint mark is
@@ -179,18 +178,14 @@ pub use mark::{Ink, InkRole, Mark};
 pub const GRID: f32 = 18.0;
 
 /// **The house stroke rule**: a glyph's stroke is its authoring grid divided by this, so every
-/// family in the set — rail, tile, and the SVG design sheets — draws at one weight relative to
-/// its own drawing, and the number is stated once instead of being re-picked per family.
+/// family in the set draws at one weight relative to its own drawing, and the number is stated
+/// once instead of being re-picked per family.
 ///
-/// It exists because the families had drifted apart and nobody could see it: the rail set was
-/// traced at 1.25 on 18 units (1:14.4) and the tile set at 1.1 on 26 (1:23.6), a 60% difference
-/// in relative weight that read as "the small icons are heavy". It stayed invisible while the
-/// rail glyph box was 19 pt, because the stroke scales with the box and 1.25 × (19/18) is a
-/// hairline either way. Taking the box to 32 pt scaled the same ratio to 2.2 px and the drift
-/// became the first thing you notice (owner 2026-07-30).
-///
-/// 24 is the tile family's existing weight, which was the one that read correctly. The rail
-/// family moves to match it; the tile family barely moves at all.
+/// Stating it once is what keeps the families from drifting. A rail set traced at 1.25 on 18
+/// units (1:14.4) beside a tile set at 1.1 on 26 (1:23.6) is a 60% difference in relative weight
+/// that reads as "the small icons are heavy", and it hides at small glyph boxes because the
+/// stroke scales with the box — it only becomes obvious once the box is large enough for the
+/// ratio to reach a couple of pixels. 24 is the weight that reads correctly at tile size.
 pub const STROKE_RATIO: f32 = 24.0;
 
 /// The Signal rail glyph stroke, in design points — [`GRID`] at the house ratio.
@@ -235,8 +230,8 @@ impl<'a> IconPainter<'a> {
         stroke_width: f32,
     ) -> Self {
         // The stroke scales with the glyph so a 44 pt tile is not drawn with a hairline meant
-        // for a 15 pt rail button — the large-format sheet's own finding, that a large mark
-        // rides a proportionally lighter stroke, is why this is a ratio and not a constant.
+        // for a 15 pt rail button. A large mark rides a proportionally lighter stroke, which is
+        // why this is a ratio and not a constant.
         let scale = rect.width() / grid;
         Self {
             painter,
@@ -435,10 +430,10 @@ impl<'a> IconPainter<'a> {
                 continue;
             }
             let direction = span / length;
-            // Dashes are placed by INDEX, never by advancing a cursor. The cursor form landed
-            // exactly on a dash boundary every step, so whenever rounding put it one ULP short
-            // the next advance (~1e-7) was smaller than the cursor's own precision: the cursor
-            // did not move and the walk span forever. A hang, not a cosmetic error — it hung
+            // Dashes are placed by INDEX, never by advancing a cursor. A cursor lands exactly
+            // on a dash boundary every step, so whenever rounding puts it one ULP short the next
+            // advance (~1e-7) is smaller than the cursor's own precision: the cursor stops moving
+            // and the walk spins forever. A hang, not a cosmetic error — it hung
             // `design_reference` on a plain 18 pt dashed line.
             let dashes = ((length + phase_at_segment_start) / period).floor() as i64 + 1;
             for dash_index in 0..dashes {
@@ -600,9 +595,9 @@ pub enum Group {
     Structure,
     /// Authoring tools.
     Tools,
-    /// The sketch-mode rail: the profile-vertex tools and their position snap (ADR 0028).
+    /// The sketch-mode rail: the profile-vertex tools and their position snap.
     Sketch,
-    /// Sketch tools that ADD an entity to the sketch (ADR 0035).
+    /// Sketch tools that ADD an entity to the sketch.
     SketchCreate,
     /// Sketch tools that change entities already there — every one needs curve–curve
     /// intersection, which is why they land as one group and not scattered through the rail.
@@ -615,7 +610,7 @@ pub enum Group {
     SketchOperator,
     /// The constraint palette: what the solver is told, rather than what is drawn.
     SketchConstraint,
-    /// Dimension gizmos — the authored quantities a constraint is driven by (ADR 0029).
+    /// Dimension gizmos — the authored quantities a constraint is driven by.
     SketchDimension,
     /// Interface furniture.
     Chrome,
@@ -624,9 +619,9 @@ pub enum Group {
 impl Group {
     /// Every shelf, in catalog order.
     ///
-    /// The design_reference sheet walks THIS rather than a list of its own. A sheet that kept its
-    /// own list is how five shipped shelves stayed off it: the glyphs were authored, gated and
-    /// committed, and the one place anybody looks at them never mentioned them.
+    /// The `design_reference` binary walks THIS rather than a list of its own, so a shelf cannot
+    /// be authored, gated and committed yet stay missing from the one place anybody looks at the
+    /// set.
     pub const ALL: &'static [Group] = &[
         Group::Navigation,
         Group::ViewerModes,
@@ -679,7 +674,7 @@ impl Group {
             Group::SketchModify => "changes what is already drawn — each one needs curve–curve intersection",
             Group::SketchOperator => "reads a selection and emits more of it: the glyph has to show source AND copies",
             Group::SketchConstraint => "what the solver is told; a constraint produces no geometry of its own — white is the reference entity, RED is the one it drives",
-            Group::SketchDimension => "authored quantities (ADR 0029) — the parametric handles a solver drives",
+            Group::SketchDimension => "authored quantities — the parametric handles a solver drives",
             Group::Chrome => "furniture: disclosure, commit, drawer, search",
         }
     }
@@ -1617,7 +1612,7 @@ impl Icon {
             }
             Icon::SnapNone => {
                 "Sketch position snap — none: the vertex rides sub-voxel under the cursor, the \
-                 fraction on offset_local (ADR 0027 reuse)."
+                 fraction on offset_local."
             }
             Icon::SnapVoxel => "Sketch position snap — voxel: the vertex locks to the fine lattice crossing. The default.",
             Icon::SnapBlock => "Sketch position snap — block: the vertex locks to block boundaries, for clean inter-part mating.",

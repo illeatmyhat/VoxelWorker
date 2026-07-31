@@ -1,12 +1,11 @@
 //! Sketch-mode on-canvas manipulators and cursor states, as reusable `egui` painters.
 //!
-//! These are the gizmos and pointer states of the sketch scope (ADR 0028) — the profile vertex
+//! These are the gizmos and pointer states of the sketch scope — the profile vertex
 //! handle, the open/committed segments, the snap indicators, the close-loop ring, and the pieces
 //! the four cursor states are built from. They are **not** [`icons`](crate::icons): a glyph in
 //! that set is a single `currentColor` outline on the 18-unit grid, but a manipulator is
 //! **two-tone** (a dark thumb with an accent border, filling accent when selected) and
-//! **stateful**, so it cannot be one of that family. That is why the design authored them on a
-//! separate sheet (`sketch-gizmos.html`) rather than in the icon sheet.
+//! **stateful**, so it cannot be one of that family.
 //!
 //! **One gizmo per file**, under `gizmos/`, exactly as `icons/` keeps one glyph per file: the
 //! file is the unit a designer edits, and `mod.rs` holds only the shared vocabulary (the palette,
@@ -27,13 +26,13 @@
 //! The **working plane itself is NOT here**: it is 3D geometry that foreshortens with the camera,
 //! drawn projected (or by the GPU grid renderers, `SceneGridRenderer` / `InfiniteGridRenderer`),
 //! never as a flat screen-space rectangle. The `design_reference` catalog draws a flat plane grid
-//! as a stage backdrop only because the sheet has no camera; that flat grid is reference decoration,
-//! not a reusable gizmo.
+//! as a stage backdrop only because it has no camera; that flat grid is reference decoration, not
+//! a reusable gizmo.
 //!
 //! One authoring, two consumers: the live sketch overlay and the `design_reference` catalog,
-//! with no second copy to drift. The **second channel is texture, not a second hue**
-//! (`docs/design/color-vocabulary.md`): dashed = uncommitted / a felt boundary, solid = a real
-//! placed entity. Snapping IS the constraint vocabulary (ADR 0028 §5), so a snap indicator names
+//! with no second copy to drift. The **second channel is texture, not a second hue**: dashed =
+//! uncommitted / a felt boundary, solid = a real placed entity. Snapping IS the constraint
+//! vocabulary, so a snap indicator names
 //! *why* a point locked — hence the axis-colored guides and the label chips.
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
@@ -97,9 +96,8 @@ impl Axis {
 pub(crate) const HANDLE_FILL: Color32 = color_palette::BG;
 /// The handle border / selected fill: the accent.
 pub(crate) const HANDLE_ACCENT: Color32 = color_palette::ACCENT;
-/// A hovered handle's / edge's fill+stroke — now the [`color_palette::HANDLE_HOVER`] Signal token, so it
-/// appears in the design_reference palette by construction (owner 2026-07-23). Was a raw `#c7d3e0`
-/// here, outside the token map.
+/// A hovered handle's / edge's fill+stroke. A [`color_palette`] token rather than a literal, so
+/// it appears in the palette by construction.
 pub(crate) const HANDLE_HOVER: Color32 = color_palette::HANDLE_HOVER;
 
 /// The manipulator stroke (handles, rings) — the 1.25 pt family weight.

@@ -5,7 +5,7 @@
 //! dimension is the thing being authored — the geometry is what it moves.
 //!
 //! Drawn as a full dimension apparatus and not as a bare arrow: this is a stored, solver-visible
-//! Measurement (ADR 0029), not a readout, and [`measure`](super::measure) is the readout.
+//! Measurement, not a readout, and [`measure`](super::measure) is the readout.
 
 use super::{Ink, Mark};
 

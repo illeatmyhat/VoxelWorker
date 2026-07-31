@@ -1,18 +1,17 @@
 //! `select-vertex` — the default sketch arrow, over the geometry it picks FROM.
 //!
-//! Re-drawn from the sheet (owner, 2026-07-30). The shipped glyph was an arrow carrying a node
-//! at its tip, which said "pick a vertex" by decorating the cursor. This one says it by showing
-//! the situation instead: a two-segment profile with three vertices, the middle one accented,
-//! and the arrow beside it. The accent is doing the work — one of three identical squares is
-//! lit, so the glyph means "pick ONE of these" rather than "a pick happens here".
+//! It shows the situation rather than decorating the cursor: a two-segment profile with three
+//! vertices, the middle one accented, and the arrow beside it. The accent is doing the work —
+//! one of three identical squares is lit, so the glyph means "pick ONE of these" rather than "a
+//! pick happens here".
 //!
 //! The picked vertex is drawn LARGER as well as accented (3.2 against 2.2). At 15 pt the accent
 //! alone is two pixels of hue; the size difference is what survives, and it is the same
-//! selected-handle idiom the viewport already uses. ADR 0028 slice 1, the mode's default tool.
+//! selected-handle idiom the viewport already uses.
 
 use super::{Ink, Mark};
 
-/// An unpicked profile vertex, and the picked one. Both sizes are the sheet's.
+/// An unpicked profile vertex, and the picked one.
 const VERTEX: f32 = 2.2;
 const PICKED: f32 = 3.2;
 

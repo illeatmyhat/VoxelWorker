@@ -1,10 +1,9 @@
-//! The workspace selection — one mixed-kind set of picked targets (ADR 0032).
+//! The workspace selection — one mixed-kind set of picked targets.
 //!
-//! ADR 0032 repeals the node side's law (`Scene::active`, document state restored by undo)
-//! in favor of the sketch side's: selection is **workspace** state. It never travels in a
-//! shared file, never enters undo history, and rides the dump. Edits still *steer* it as an
-//! effect — a created node arrives selected, undoing a delete re-selects what came back —
-//! but that is a workspace write, not document truth.
+//! Selection is **workspace** state, never document state. It never travels in a shared file,
+//! never enters undo history, and rides the dump. Edits still *steer* it as an effect — a
+//! created node arrives selected, undoing a delete re-selects what came back — but that is a
+//! workspace write, not document truth.
 //!
 //! One set holds every kind of [`SelectionTarget`] rather than one set per kind, so a marquee
 //! over a box and a Point returns both. Which kinds may enter is a property of the editing
@@ -13,31 +12,31 @@
 use document::scene::{NodeContent, NodeId, PointId, Scene};
 use document::sketch::EntityId;
 
-/// One picked thing. ADR 0032 keeps these in ONE set: mode exclusivity is an admission
-/// filter, not a reason for parallel structures.
+/// One picked thing. These live in ONE set: mode exclusivity is an admission filter, not a
+/// reason for parallel structures.
 ///
 /// The sketch variants carry their owning sketch node, not just the entity id, because an
-/// [`EntityId`] is minted from a per-sketch counter and means nothing without its scope —
-/// the same law ADR 0008 states for spatial values. It also makes a target self-contained
+/// [`EntityId`] is minted from a per-sketch counter and means nothing without its scope — the
+/// same law spatial values keep about their frame. It also makes a target self-contained
 /// for the one consumer that must find the owning producer to edit it (the sketch delete),
 /// and it lets a restore sweep drop targets whose sketch left the scene, at the seam where
 /// `to_panel_state` already drops a stale `sketch_mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SelectionTarget {
-    /// A scene-graph node, at any depth (ADR 0001) — but an instance picks as itself, never
-    /// into its definition (ADR 0017).
+    /// A scene-graph node, at any depth — but an instance picks as itself, never into its
+    /// definition.
     Node(NodeId),
-    /// A reference Point, by its stable id (ADR 0033) — never its `Vec` slot, which
+    /// A reference Point, by its stable id — never its `Vec` slot, which
     /// shifts on `RemovePoint` and would silently re-point at a different Point.
     ReferencePoint(PointId),
-    /// A vertex of a sketch profile (ADR 0030), addressable only from inside that sketch.
+    /// A vertex of a sketch profile, addressable only from inside that sketch.
     SketchPoint {
         /// The sketch node that owns the entity counter this id came from.
         sketch: NodeId,
         /// The point's id within that sketch.
         entity: EntityId,
     },
-    /// An edge of a sketch profile (ADR 0030). Deleting one leaves its endpoints as free
+    /// An edge of a sketch profile. Deleting one leaves its endpoints as free
     /// points, unlike deleting a vertex — which is why the kind is a variant, not a flag.
     SketchSegment {
         /// The sketch node that owns the entity counter this id came from.
@@ -45,7 +44,7 @@ pub enum SelectionTarget {
         /// The segment's id within that sketch.
         entity: EntityId,
     },
-    /// An ARC edge of a sketch profile (ADR 0030 §5, #102). A separate variant from
+    /// An ARC edge of a sketch profile. A separate variant from
     /// [`SketchSegment`](Self::SketchSegment) because it deletes out of a different store —
     /// the id spaces are shared but the vectors are not.
     SketchArc {
@@ -54,7 +53,7 @@ pub enum SelectionTarget {
         /// The arc's id within that sketch.
         entity: EntityId,
     },
-    /// A CONSTRAINT on a sketch (ADR 0035 Decision 3). It draws no geometry, but it is an
+    /// A CONSTRAINT on a sketch. It draws no geometry, but it is an
     /// entity in the same id space as the rest and it is picked the same way — by clicking the
     /// badge that stands for it. Being selectable is what makes it deletable one at a time,
     /// which is the only way to release one assertion without releasing the drawing's others.
@@ -102,7 +101,7 @@ impl SelectionTarget {
     }
 }
 
-/// How a click asked the selection to change (ADR 0032). A VIEW action, not an
+/// How a click asked the selection to change. A VIEW action, not an
 /// [`Intent`](document::intent::Intent): selecting is not an edit, so it rides on
 /// [`PanelResponse`](super::PanelResponse) and the shell applies it — the same route
 /// `focus_node` and `arm_tool` take.
@@ -111,7 +110,7 @@ pub enum SelectionRequest {
     /// A plain click: replace the whole selection with this target.
     Only(SelectionTarget),
     /// A Shift-click: add this target, or drop it if it was already picked. Multi-select
-    /// exists the moment this does (ADR 0032) — there is no separate "add" gesture.
+    /// exists the moment this does — there is no separate "add" gesture.
     Toggle(SelectionTarget),
     /// A click on empty space, or a deselect: drop everything.
     Clear,
@@ -170,9 +169,9 @@ impl Selection {
         })
     }
 
-    /// Every picked node id, in pick order — the multi-target verbs' read (Delete acts
-    /// on all of these, ADR 0033), where [`primary_node_id`](Self::primary_node_id) is
-    /// the single-target consumers'.
+    /// Every picked node id, in pick order — the multi-target verbs' read (Delete acts on all
+    /// of these), where [`primary_node_id`](Self::primary_node_id) is the single-target
+    /// consumers'.
     pub fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.targets.iter().filter_map(|target| match target {
             SelectionTarget::Node(id) => Some(*id),
@@ -258,7 +257,7 @@ impl Selection {
         })
     }
 
-    /// The picked ARC ids of `sketch`, in pick order (#102).
+    /// The picked ARC ids of `sketch`, in pick order.
     pub fn sketch_arcs(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
         self.targets.iter().filter_map(move |target| match *target {
             SelectionTarget::SketchArc {
@@ -269,7 +268,7 @@ impl Selection {
         })
     }
 
-    /// The picked CONSTRAINT ids of `sketch`, in pick order (ADR 0035 Decision 3).
+    /// The picked CONSTRAINT ids of `sketch`, in pick order.
     pub fn sketch_constraints(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
         self.targets.iter().filter_map(move |target| match *target {
             SelectionTarget::SketchConstraint {
@@ -296,11 +295,10 @@ impl Selection {
             .retain(|target| target.owning_sketch().is_none());
     }
 
-    /// Drop every target that no longer resolves against `scene`, returning whether
-    /// anything was dropped. The ADR 0033 rule: the undo stack carries no selection, so
-    /// this — run after any document mutation (apply, undo, redo) — is the ONE place
-    /// selection learns the document changed. Undoing an add leaves nothing selected,
-    /// exactly like Fusion.
+    /// Drop every target that no longer resolves against `scene`, returning whether anything
+    /// was dropped. The undo stack carries no selection, so this — run after any document
+    /// mutation (apply, undo, redo) — is the ONE place selection learns the document changed.
+    /// Undoing an add therefore leaves nothing selected.
     pub fn prune(&mut self, scene: &Scene) -> bool {
         let before = self.targets.len();
         self.targets.retain(|target| match *target {
@@ -355,7 +353,7 @@ mod tests {
     }
 
     /// The primary is the most recently picked target OF ITS KIND, so a mixed selection
-    /// answers both questions at once — the reason ADR 0032 holds one set, not two.
+    /// answers both questions at once — the reason there is one set and not two.
     #[test]
     fn primaries_are_per_kind_and_newest_wins() {
         let mut selection = Selection::default();
@@ -398,8 +396,7 @@ mod tests {
         assert_eq!(selection.primary_node_id(), None);
     }
 
-    /// A plain click **replaces**: selecting a second vertex leaves only it (ADR 0030). Ported
-    /// from the retired `SketchSelection`, which stated the same law over its own set.
+    /// A plain click **replaces**: selecting a second vertex leaves only it.
     #[test]
     fn selecting_a_second_vertex_replaces_the_first() {
         let mut selection = Selection::default();
@@ -447,8 +444,8 @@ mod tests {
         }
     }
 
-    /// #102: arcs live in their own store, so the same id as a vertex and as a segment is a
-    /// third distinct target and answers only its own query.
+    /// Arcs live in their own store, so the same id as a vertex and as a segment is a third
+    /// distinct target and answers only its own query.
     #[test]
     fn an_arc_is_its_own_kind() {
         let mut selection = Selection::default();
@@ -471,8 +468,8 @@ mod tests {
         }
     }
 
-    /// ADR 0035 Decision 3: a constraint is a sketch entity in the same id space as the geometry,
-    /// so the same id is a FOURTH distinct target and answers only its own query. This is what
+    /// A constraint is a sketch entity in the same id space as the geometry, so the same id is
+    /// a FOURTH distinct target and answers only its own query. This is what
     /// makes a constraint deletable one at a time rather than only as a side effect of deleting
     /// what it names.
     #[test]
@@ -562,7 +559,7 @@ mod tests {
         assert_eq!(selection.primary_point_id(), None);
     }
 
-    /// ADR 0032: the three requests a click can make, through the one door the shell uses.
+    /// The three requests a click can make, through the one door the shell uses.
     /// `Toggle` is what makes multi-select exist — a Shift-click accumulates, and Shift-clicking
     /// an already-picked target removes it rather than re-picking it.
     #[test]

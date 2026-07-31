@@ -10,11 +10,11 @@ pub use color_palette::*;
 pub use style::{apply_app_style, apply_stack_style};
 pub use text::{letter_spaced, section_heading};
 
-/// A selectable UI theme. One today; a light / OS-scheme theme would join as a variant supplying its
+/// A selectable UI theme. A light / OS-scheme theme would join as a second variant supplying its
 /// own [`color_palette`] values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
-    /// The Signal design language — the dark instrument-panel look (ADR 0018).
+    /// The Signal design language — the dark instrument-panel look.
     #[default]
     Signal,
 }

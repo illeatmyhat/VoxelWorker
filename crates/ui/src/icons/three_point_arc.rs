@@ -1,16 +1,13 @@
 //! `three-point-arc` — the arc tool: two endpoints and a point the curve passes through.
 //!
-//! Re-drawn from the sheet (owner, 2026-07-30). The old glyph drew an arc bulging over a chord
-//! with its three inputs in line art; this one draws the arc that ACTUALLY passes through its
-//! three marks. The center and radius below are the circumcircle of the three nodes, not a
-//! convenient curve with points laid near it — which is the difference between a glyph that
-//! depicts the tool and one that depicts its result.
+//! The arc drawn is the one that ACTUALLY passes through its three marks: the center and radius
+//! below are the circumcircle of the three nodes, not a convenient curve with points laid near
+//! it — the difference between a glyph that depicts the tool and one that depicts its result.
 //!
-//! **This departs from ADR 0030 §5**, which reserves a disc for a pick consumed at creation and
-//! a square for an authored vertex: the through-point is consumed, so the old drawing gave it a
-//! disc. The sheet makes all three accented squares, on the create shelf's own rule that the
-//! accent names what the tool will ask you for. Both readings are defensible and the sheet's is
-//! the consistent one within the shelf — but it is an ADR departure and is flagged as one.
+//! All three picks are accented SQUARES, on the create shelf's rule that the accent names what
+//! the tool will ask you for. The set's wider convention reserves a square for an authored
+//! vertex and a disc for a pick consumed at creation, and the through-point is consumed — this
+//! glyph takes the shelf's reading over that one deliberately.
 
 use super::{Ink, Mark};
 

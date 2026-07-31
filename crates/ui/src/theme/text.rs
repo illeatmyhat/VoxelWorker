@@ -1,5 +1,5 @@
 //! `theme::text` — the Signal design language's reusable text painters: UPPERCASE letter-spaced
-//! captions and the sidebar section heading (issue #89; ADR 0018).
+//! captions and the sidebar section heading.
 
 use egui::{Color32, FontId, TextFormat};
 use std::sync::Arc;

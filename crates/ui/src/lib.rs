@@ -21,8 +21,7 @@
 //! earns it its own crate: a widget here cannot accidentally reach into a render pipeline,
 //! because the crate cannot name one. The GPU/asset half of the palette (the thumbnail
 //! renderer, the texture keep-alives, the scanned block groups) stays in the shell's
-//! `PaletteHost`, which drives this state. See
-//! `docs/design/per-layer-crates-extraction-map.md` (the ui row) for provenance.
+//! `PaletteHost`, which drives this state.
 
 // A public item's doc may link to a private helper to explain how the two relate; that
 // cross-reference is deliberate and stays a navigable link under `--document-private-items`.

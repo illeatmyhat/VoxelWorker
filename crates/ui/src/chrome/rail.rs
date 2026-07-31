@@ -11,14 +11,14 @@ const RAIL_WIDTH: f32 = 42.0;
 const BUTTON_HEIGHT: f32 = 40.0;
 const RAIL_GAP: f32 = 6.0;
 /// The rail's glyph box. The marks are authored on an 18-unit grid and this is the size that grid
-/// is drawn AT — the answer to "does this mark read?" is always about this number, so it is the one
-/// the `design_reference` sheet judges against too.
+/// is drawn AT — the answer to "does this mark read?" is always about this number, so it is the
+/// one `design_reference` judges against too.
 const GLYPH_BOX: f32 = 24.0;
 /// Height of the orbit-type button's dropdown half, which sits BELOW the face rather than beside
-/// it. Taking the strip off the side left the mark an off-center 23 pt of a 34 pt rail to live in,
-/// and every legibility problem the pair had was really that: a glyph authored for a square box,
-/// judged in a letterbox. The button grows by this much instead, so the face stays a full,
-/// centered, rail-width square and the caret costs the mark nothing.
+/// it. A caret strip taken off the SIDE would leave the mark an off-center 23 pt of a 34 pt rail
+/// to live in — a glyph authored for a square box, judged in a letterbox. The button grows by
+/// this much instead, so the face stays a full, centered, rail-width square and the caret costs
+/// the mark nothing.
 const CARET_HEIGHT: f32 = 13.0;
 /// The caret's own glyph box — smaller than [`GLYPH_BOX`], because a chevron is a pointer at the
 /// menu and must not read as a second subject beside the face's mark.
@@ -26,8 +26,8 @@ const CARET_BOX: f32 = 11.0;
 /// The rail index of the orbit-type split button.
 const ORBIT_TYPE_BUTTON: usize = 3;
 
-/// A rail button the user clicked this frame — the shell maps Home / Fit onto the same camera
-/// actions the retired cube badges dispatched, and CycleMode onto the next viewport mode.
+/// A rail button the user clicked this frame — the shell maps Home / Fit onto camera actions and
+/// CycleMode onto the next viewport mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RailClick {
     Home,
@@ -36,10 +36,9 @@ pub enum RailClick {
     /// The orbit-type split button's FACE half — TOGGLE the explicit orbit mode, turning as the
     /// type the face is showing.
     ///
-    /// It neither names a type nor writes the default (`docs/design/tool-modes-and-navigation.md`,
-    /// the entry-path table): entering from a split button's face means "start an orbit as what
-    /// this says", and what it says is already the default. The viewport menu's Constrained Orbit
-    /// is the entry that names one.
+    /// It neither names a type nor writes the default: entering from a split button's face means
+    /// "start an orbit as what this says", and what it says is already the default. The viewport
+    /// menu's Constrained Orbit is the entry that names one.
     OrbitType,
     /// The orbit-type split button's CARET half — opens the type menu, which is the ONE place the
     /// DEFAULT orbit type is written. Every other entry into an orbit either uses the default or

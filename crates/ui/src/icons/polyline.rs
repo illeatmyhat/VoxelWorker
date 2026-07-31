@@ -1,8 +1,7 @@
 //! `polyline` — click to place connected profile points, the organic value prop.
 //!
 //! A run of segments with a square node at each joint: the profile is built vertex by vertex,
-//! and the nodes sit on the drawn line to say "these are the points you placed". ADR 0028
-//! slice 3.
+//! and the nodes sit on the drawn line to say "these are the points you placed".
 
 use super::{Ink, Mark};
 

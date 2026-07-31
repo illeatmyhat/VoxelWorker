@@ -1,4 +1,4 @@
-//! The sketch-mode overlay painters (ADR 0028/0030): the exit control + immersive border, the
+//! The sketch-mode overlay painters: the exit control + immersive border, the
 //! add-point insert marker, the committed segment lines, and the profile vertex handles. Drawn at
 //! shell-projected positions; the shell owns projection, hit-testing and the drag.
 
@@ -109,7 +109,7 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
     gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
 }
 
-/// Draw a drawing-tool preview (#99): dashed segments through `points` in order — the
+/// Draw a drawing-tool preview: dashed segments through `points` in order — the
 /// polyline's rubber line to the cursor, or the rectangle ghost (five points closing the
 /// box). Dashed is the family's "uncommitted" read; the release is what commits. Not chrome —
 /// a passive preview, so the press/release passes through to the shell.
@@ -123,8 +123,7 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
     }
 }
 
-/// One constraint badge, as the overlay draws it and as the shell's hit-test reads it
-/// (ADR 0035 Decisions 3 and 16).
+/// One constraint badge, as the overlay draws it and as the shell's hit-test reads it.
 ///
 /// The id travels WITH the position rather than beside it in a parallel array, because the badge
 /// is how a constraint gets picked: a click resolves to a `constraint`, and nothing about that
@@ -142,7 +141,7 @@ pub struct ConstraintBadge {
 }
 
 /// Draw the constraint badges: each asserted relation's own glyph, standing beside the geometry
-/// it names (ADR 0035 Decision 16). Positions are shell-projected, so a badge tracks its entity
+/// it names. Positions are shell-projected, so a badge tracks its entity
 /// through every camera move — the mark belongs to the entity graph, not to the screen.
 ///
 /// It is the same glyph as the rail cell that made the constraint, in the constraint ink. That
@@ -182,7 +181,7 @@ pub fn sketch_constraint_badges(ui: &egui::Ui, badges: &[ConstraintBadge]) {
     }
 }
 
-/// Draw the directional marquee rubber band (sketch-selection slice 3). `window` (drag
+/// Draw the directional marquee rubber band. `window` (drag
 /// left→right, fully-enclosed semantic) = solid accent outline + the stronger fill; crossing
 /// (right→left, any-intersection) = dashed outline + lighter fill — dashed already means
 /// "looser" in the gizmo family, so the semantic is legible mid-drag. Not chrome — a passive
@@ -221,7 +220,7 @@ pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, gizmos::HandleS
     }
 }
 
-/// Draw the committed arc curves as polylines through their projected chords (ADR 0030 §5). Same
+/// Draw the committed arc curves as polylines through their projected chords. Same
 /// idle-then-emphasised ordering and the same [`gizmos::HandleState`] vocabulary the segment lines
 /// use, so an arc and a straight edge answer the pointer identically. A `Marked` arc stamps its
 /// warn `✕` once, at the curve's midpoint, rather than once per chord.

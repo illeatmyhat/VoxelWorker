@@ -5,8 +5,8 @@
 //! is correct: symmetry has no privileged side.
 //!
 //! Near-identical to [`mirror`](super::mirror), and safely so — Mirror GENERATES entities, this
-//! asserts a relation between entities that already exist. Onshape's warning applies: symmetry
-//! binds the underlying curves, not their endpoints.
+//! asserts a relation between entities that already exist. Symmetry binds the underlying curves,
+//! not their endpoints.
 
 use super::{Ink, Mark};
 

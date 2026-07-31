@@ -1,8 +1,6 @@
 //! The workspace: the app's information architecture.
 //!
-//! This is the layout the six forked UX concepts converged on (the owner's claude.ai/design
-//! project "VoxelWorker — Future UX", `synthesis.html`). It replaces the prototype's single
-//! right-hand sidebar + bottom palette dock with five regions:
+//! Five regions:
 //!
 //! ```text
 //!   +-----------------------------------------------------------------+
@@ -35,9 +33,8 @@
 //! [`PanelResponse`] — the architecture's third law, *one door for change*. A region NEVER
 //! mutates the scene, and never edits "the active node": it takes the target
 //! [`NodeId`](document::scene::NodeId) explicitly, because an edit that resolves its own
-//! target through the selection silently retargets when the selection moves. (That is why
-//! `Scene::active_node_mut` was deleted, and ADR 0032 took the rest of the document's
-//! selection with it; see the tombstone in `document`'s `scene::graph`.)
+//! target through the selection silently retargets when the selection moves. The document
+//! carries no selection at all, so there is no `active node` for a region to reach for.
 //!
 //! Viewer state — which mode, what is folded, where the insert cursor sits — is view state
 //! and stays on `PanelState`: never serialized, never in undo history.

@@ -14,10 +14,9 @@ use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
 /// The inspector: switches on the active node. A **Tool** shows the shape chips,
-/// size sliders, density slider and material selector (editing the active Tool node;
-/// ADR 0003 Phase C C4a routes each edit to a `SetShape`/`SetDensity`/`SetMaterial`
-/// intent the loop applies). A **Clouds VoxelBody** shows its name + seed instead. With no
-/// active node, a hint.
+/// size sliders, density slider and material selector (each edit routed to a
+/// `SetShape`/`SetDensity`/`SetMaterial` intent the loop applies). A **Clouds VoxelBody**
+/// shows its name + seed instead. With no active node, a hint.
 pub(super) fn build_inspector_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -30,7 +29,7 @@ pub(super) fn build_inspector_section(
         VoxelBody,
         Group,
         Instance,
-        /// The reified root part (ADR 0018 Decision 2): a minimal name-only editor —
+        /// The reified root part: a minimal name-only editor —
         /// its operation / offset / grids are inert (the fold walks `roots` directly,
         /// never the root's own transform or op), so no dead controls are shown.
         RootPart,
@@ -41,7 +40,7 @@ pub(super) fn build_inspector_section(
     } else {
         match state.selected_node().map(|node| &node.content) {
             Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
-            // ADR 0003 §3i: a sketch node shows the rectangle-profile editor
+            // A sketch node shows the rectangle-profile editor
             // (Plane / Width / Depth / Height) — or, for a hand-built non-rectangular
             // profile, a read-only note + Plane/Height — plus the shared material /
             // placement / grids sections (see `build_sketch_inspector_section`).
@@ -53,8 +52,8 @@ pub(super) fn build_inspector_section(
         }
     };
 
-    // ADR 0032: a multi-selection announces itself; the editors below still bind to the
-    // per-kind primary (newest of kind), which is what a Delete or steer acts from.
+    // A multi-selection announces itself; the editors below bind to the per-kind primary
+    // (newest of kind), which is what a Delete or steer acts from.
     if state.selection.len() > 1 {
         ui.add_space(8.0);
         ui.label(
@@ -69,18 +68,16 @@ pub(super) fn build_inspector_section(
 
     match kind {
         ActiveKind::Tool => {
-            // ADR 0017: the combine-operation selector shows on every node kind —
-            // leaves (Tool / Sketch / Clouds VoxelBody), Groups (sealed scopes, issue
-            // #74), and Instances (reusable cutters, issue #76).
+            // The combine-operation selector shows on every node kind — leaves (Tool /
+            // Sketch / Clouds VoxelBody), Groups (sealed scopes) and Instances (reusable
+            // cutters).
             build_operation_section(ui, state, response);
-            // ADR 0003 Phase C C4a: the inspector still binds the widgets to the
-            // `geometry`/`material` mirror buffer (egui needs the `&mut`), but a change
-            // now EMITS the matching intent instead of calling `write_mirror_to_active`.
-            // The active id is known (this is the Tool arm). `SetShape` carries the FULL
-            // updated buffer (`from_geometry`) onto the active node — covering both a
-            // shape-chip switch (no auto-frame, guard #1) and a size/wall edit
-            // (auto-frame). Density is GLOBAL → `SetDensity` (rewrites every Tool);
-            // material → `SetMaterial`. The mirror is now ONLY the widget buffer.
+            // The widgets bind to the `geometry`/`material` mirror buffer (egui needs the
+            // `&mut`) and a change EMITS the matching intent — the mirror is a widget buffer
+            // and nothing else. `SetShape` carries the FULL updated buffer (`from_geometry`)
+            // onto the active node, covering both a shape-chip switch (no auto-frame) and a
+            // size/wall edit (auto-frame). Density is GLOBAL → `SetDensity` (rewrites every
+            // Tool); material → `SetMaterial`.
             let active = state.selection.primary_node_id();
             let shape_changed = build_shape_section(ui, state);
             let size_changed = build_size_section(ui, state);
@@ -99,7 +96,7 @@ pub(super) fn build_inspector_section(
                         response.emit(intent);
                     }
                 }
-                // Density is a document-level attribute (ADR 0003 §3f(0)): the slider's
+                // Density is a document-level attribute: the slider's
                 // transient value drives the single `scene.voxels_per_block` via
                 // SetDensity. Auto-frames like a size change.
                 if density_changed {
@@ -115,8 +112,8 @@ pub(super) fn build_inspector_section(
                     });
                 }
             }
-            // Placement (ADR 0001 step 3) is on the node's transform, common to all
-            // node kinds; it emits its own `SetOffset` intent.
+            // Placement is on the node's transform, common to all node kinds; it emits its
+            // own `SetOffset` intent.
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
@@ -133,28 +130,25 @@ pub(super) fn build_inspector_section(
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Group => {
-            // ADR 0017 Decision 3 (issue #74): a Group is a sealed composition scope,
-            // so its OWN operation is meaningful — the group's composed body folds
-            // into its parent under it. The selector therefore shows on Groups too.
+            // A Group is a sealed composition scope, so its OWN operation is meaningful —
+            // the group's composed body folds into its parent under it.
             build_operation_section(ui, state, response);
             build_group_inspector_section(ui, state, "Part", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::RootPart => {
-            // ADR 0018 Decision 2: the root part edits only its name. Its operation,
+            // The root part edits only its name. Its operation,
             // offset and grids never enter the fold (which walks `roots` directly), so
             // showing them would be dead controls.
             build_group_inspector_section(ui, state, "Part", response);
         }
         ActiveKind::Instance => {
-            // ADR 0017 / issue #76: an Instance folds the referenced definition's
-            // finished (pre-composed) body under its OWN operation — a definition
-            // instanced with Subtract is the reusable cutter — so the selector
-            // shows on Instances too. EXCEPT for an instance of a FIXTURE
-            // definition (Decision 4, issue #77), whose operation is INERT (the
-            // spliced children fold under their own operations): the selector is
-            // HIDDEN there — no dead control.
+            // An Instance folds the referenced definition's finished (pre-composed) body
+            // under its OWN operation — a definition instanced with Subtract is the reusable
+            // cutter. EXCEPT for an instance of a FIXTURE definition, whose operation is
+            // INERT (the spliced children fold under their own operations): the selector is
+            // HIDDEN there rather than shown as a dead control.
             let operation_inert = state
                 .selected_node()
                 .is_some_and(|node| state.scene.node_operation_is_inert(node));
@@ -177,12 +171,10 @@ pub(super) fn build_inspector_section(
     }
 }
 
-/// Inspector for a Group or Instance active node (ADR 0001 step 4): its name (and,
-/// for an Instance, the definition it references). The offset is edited by the
-/// shared [`build_offset_section`], so Group/Instance get at least name + offset. ADR
-/// 0003 Phase C C4a: the name widget binds to a LOCAL buffer; a change emits `SetName`
-/// WITHOUT an auto-frame (the old rename mutated `node.name` with no response flag, so
-/// the camera never moved on rename).
+/// Inspector for a Group or Instance active node: its name (and, for an Instance, the
+/// definition it references). The offset is edited by the shared [`build_offset_section`], so
+/// Group/Instance get at least name + offset. The name widget binds to a LOCAL buffer; a change
+/// emits `SetName` WITHOUT an auto-frame, so the camera does not move on a rename.
 fn build_group_inspector_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -233,10 +225,9 @@ fn build_group_inspector_section(
 }
 
 /// Inspector for a Clouds VoxelBody active node: its name and seed (its one knob). A
-/// seed change re-resolves the scene. ADR 0003 Phase C C4a: the name/seed widgets bind
-/// to LOCAL buffers (read from the active node each frame); a change emits `SetName` /
-/// `SetCloudSeed` instead of mutating the node. A seed edit auto-frames like the old
-/// `scene_changed`.
+/// seed change re-resolves the scene. The name/seed widgets bind to LOCAL buffers (read from
+/// the active node each frame); a change emits `SetName` / `SetCloudSeed` rather than mutating
+/// the node, and a seed edit auto-frames.
 fn build_voxel_body_inspector_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -279,7 +270,7 @@ fn build_voxel_body_inspector_section(
     ui.separator();
 }
 
-/// Inspector for a sketch→solid active node (ADR 0003 §3i): edits the node's
+/// Inspector for a sketch→solid active node: edits the node's
 /// [`SketchSolid`] producer. A change rebuilds the whole producer and emits a
 /// `SetSketch` (auto-framed, since the solid's AABB — and thus the composite extent —
 /// changes), then the shared material section emits `SetMaterial`. The offset / grids
@@ -305,13 +296,10 @@ fn build_voxel_body_inspector_section(
 ///   * **Rectangle** (the Add-menu default): editable **Width** / **Depth** (the two
 ///     in-plane spans, along the plane's [`in_plane_axes`]). A rebuild regenerates a
 ///     fresh `Sketch::rectangle` on the chosen plane at the edited spans.
-///   * **Custom profile** (a hand-built polygon — not authorable from the UI yet, but
-///     it can exist in code/tests): a read-only "Custom profile (N points)" note. A
-///     rebuild PRESERVES the existing profile points (swapping only plane / operation
-///     parameters), so a hand-built polygon is never clobbered into a rectangle.
-///
-/// DEFERRED (ADR 0003 §3i, Slices 2b/2c): free-polyline point add/move/delete editing,
-/// the sweep producer, and on-surface sketching are not built here.
+///   * **Custom profile** (a hand-built polygon, authored in sketch mode or in code): a
+///     read-only "Custom profile (N points)" note. A rebuild PRESERVES the existing profile
+///     points (swapping only plane / operation parameters), so a hand-built polygon is never
+///     clobbered into a rectangle.
 ///
 /// [`in_plane_axes`]: document::sketch::PlaneAxis::in_plane_axes
 fn build_sketch_inspector_section(
@@ -353,12 +341,11 @@ fn build_sketch_inspector_section(
         },
     );
 
-    // ADR 0028: the entry into sketch mode. Editing a profile directly is a MODE (the rail
-    // swaps to the sketch toolset, non-sketch ops withdraw, a floating CANCEL | FINISH SKETCH
-    // appears), not an inspector control — so this button hands the shell the node to enter on
-    // (a VIEW action on the response, never a document intent). The inspector's numeric fields
-    // below stay the parametric mirror for a rectangle profile; the mode is where free vertex
-    // editing lives (slice 1/#94+).
+    // The entry into sketch mode. Editing a profile directly is a MODE (the rail swaps to the
+    // sketch toolset, non-sketch ops withdraw, a floating CANCEL | FINISH SKETCH appears), not
+    // an inspector control — so this button hands the shell the node to enter on (a VIEW action
+    // on the response, never a document intent). The numeric fields below stay the parametric
+    // mirror for a rectangle profile; the mode is where free vertex editing lives.
     ui.add_space(2.0);
     if ui
         .add_sized(
@@ -579,16 +566,15 @@ fn build_sketch_inspector_section(
     }
 }
 
-/// Combine-operation selector (ADR 0017): how the active node folds into the
+/// Combine-operation selector: how the active node folds into the
 /// result accumulated before it among its siblings — `Union` adds (later-wins
 /// material on overlap), `Subtract` carves, `Intersect` keeps only the cells the
 /// node's body also covers (both booleans are occupancy-only masks that never
 /// stamp material). Shown on EVERY node kind: leaf nodes (Tool / Sketch / Clouds
 /// VoxelBody), Groups (a Group is a sealed composition scope whose composed body folds
-/// under its own operation — ADR 0017 Decision 3, issue #74), and Instances (the
-/// referenced definition's finished body folds under the INSTANCE's operation, so
-/// a definition instanced with Subtract is the reusable cutter — issue #76; the
-/// #77 fixture flag will hide it again for fixture instances). A
+/// under its own operation) and Instances (the referenced definition's finished body folds
+/// under the INSTANCE's operation, so a definition instanced with Subtract is the reusable
+/// cutter — except for a fixture definition, whose instance operation is inert and hidden). A
 /// change emits `Intent::SetOperation` WITHOUT an auto-frame (a cutter flip never
 /// changes the composite extent — the cutter's AABB already contributes to it —
 /// so the camera stays put, like a material pick).
@@ -634,7 +620,7 @@ fn build_operation_section(
     ui.separator();
 }
 
-/// Offset (placement) section (ADR 0003 §3f(0)): three per-axis
+/// Offset (placement) section: three per-axis
 /// [`MeasurementField`]s (X/Y/Z) over the node's transform offset. The fields are
 /// SIGNED — an offset moves either way — so no minimum is set. The commit protocol
 /// (local buffer, `lost_focus()` as the single trigger, inline error, unfocused
@@ -685,15 +671,15 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
     ui.separator();
 }
 
-/// Per-node grid toggles (issue #29 S3/S4): the active node's own
+/// Per-node grid toggles: the active node's own
 /// `voxel_grid_on_faces` / `block_lattice` / `floor_grid` flags, each ANDed with
 /// its scene-wide master (in the Display section) to decide whether that node draws
 /// the grid.
 ///
 /// The block-lattice / floor toggles only need a per-frame batch rebuild — those
 /// lines are re-walked from the scene every frame — so they signal NO scene
-/// re-resolve, keeping a grid flip cheap. The **voxel-grid-on-faces** toggle (S4) is
-/// different: the on-face-grid flag bit is baked onto each voxel's `material_id` at
+/// re-resolve, keeping a grid flip cheap. The **voxel-grid-on-faces** toggle is different:
+/// the on-face-grid flag bit is baked onto each voxel's `material_id` at
 /// RESOLVE time (so it survives chunk bucketing and the cuboid box-decomposition
 /// key), so flipping it MUST re-resolve the scene — it signals `scene_changed`.
 fn build_node_grids_section(
@@ -709,14 +695,12 @@ fn build_node_grids_section(
     };
     ui.add_space(8.0);
     theme::section_heading(ui, "Grids (this object)");
-    // ADR 0003 Phase C C4a: the three checkboxes bind to a LOCAL copy of the node's
-    // grids; a change emits ONE `SetNodeGrids` carrying all three. The on-face-grid
-    // flag is baked at RESOLVE time, so flipping it must re-resolve AND it auto-framed
-    // before (it set `scene_changed`); the lattice/floor flags are read by the
-    // per-frame line batch, so they did NOT auto-frame. We therefore auto-frame ONLY
-    // when `voxel_grid_on_faces` flips. (`SetNodeGrids`'s effect is `scene_changed`, so
-    // a lattice/floor toggle now also re-resolves — an identical grid, no camera move,
-    // so the visible result is unchanged; the cost is a redundant re-resolve.)
+    // The three checkboxes bind to a LOCAL copy of the node's grids; a change emits ONE
+    // `SetNodeGrids` carrying all three. The on-face-grid flag is baked at RESOLVE time, so
+    // flipping it must re-resolve and re-frame; the lattice/floor flags are read by the
+    // per-frame line batch, so they do not frame. `SetNodeGrids`'s effect is `scene_changed`
+    // either way, so a lattice/floor toggle re-resolves to an identical grid — a redundant
+    // re-resolve with no visible difference.
     let mut grids = node.grids;
     let mut voxel_grid_changed = false;
     let mut other_changed = false;
@@ -735,10 +719,9 @@ fn build_node_grids_section(
     ui.separator();
 }
 
-/// Shape chips. Selecting a shape sets [`GeometryParams::shape`] ONLY — it never
-/// touches the size or the camera (Milestone 3 guard #1). Shown only for a Tool
-/// active node. ADR 0003 Phase C C4a: returns `true` when the buffer's shape changed
-/// (the inspector then emits a `SetShape` WITHOUT an auto-frame).
+/// Shape chips. Selecting a shape sets [`GeometryParams::shape`] ONLY — it never touches the
+/// size or the camera. Shown only for a Tool active node. Returns `true` when the buffer's
+/// shape changed (the inspector then emits a `SetShape` WITHOUT an auto-frame).
 ///
 /// [`GeometryParams::shape`]: document::voxel::GeometryParams::shape
 fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
@@ -760,7 +743,7 @@ fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     changed
 }
 
-/// Size section (ADR 0003 §3f(0)): three per-axis [`MeasurementField`]s (X/Y/Z) over
+/// Size section: three per-axis [`MeasurementField`]s (X/Y/Z) over
 /// the geometry buffer's size, mirroring [`build_offset_section`]. Unlike an offset a
 /// size is not signed, so each field carries a `>= 1 voxel` bound. The commit protocol
 /// itself belongs to [`MeasurementField`]; this section only decides what a commit
@@ -826,9 +809,8 @@ fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     changed
 }
 
-/// Density slider. Changes fineness ONLY — never the block size (guard #2). ADR 0003
-/// Phase C C4a: returns `true` when the buffer's density changed (the inspector then
-/// emits a global `SetDensity` AND auto-frames).
+/// Density slider. Changes fineness ONLY — never the block size. Returns `true` when the
+/// buffer's density changed (the inspector then emits a global `SetDensity` AND auto-frames).
 fn build_density_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
     theme::section_heading(ui, "Density");
@@ -842,12 +824,11 @@ fn build_density_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     changed
 }
 
-/// Material selector: selects which procedural texture binds (M4). Selecting any
-/// procedural material clears an applied loaded VS block (M6) and reverts to it. ADR
-/// 0003 Phase C C4a: returns `true` when the buffer's material changed (the inspector
-/// then emits a `SetMaterial`). Still sets `selected_procedural_material` for the
-/// caller's M6 palette side-effect (clearing the applied loaded block — NOT a scene
-/// mutation, so it stays a response flag, not an intent).
+/// Material selector: which procedural texture binds. Picking one clears any applied
+/// palette block and reverts to the procedural material. Returns `true` when the buffer's
+/// material changed (the inspector then emits a `SetMaterial`), and sets
+/// `selected_procedural_material` for the caller's palette side-effect — clearing the applied
+/// block is NOT a scene mutation, so it stays a response flag rather than an intent.
 fn build_material_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,

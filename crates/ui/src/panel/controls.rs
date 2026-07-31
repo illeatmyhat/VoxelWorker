@@ -7,8 +7,8 @@ use camera::ProjectionMode;
 use document::intent::Intent;
 
 /// The camera projection toggle (display-only: no rebuild) — the **body** of the Signal
-/// stack's VIEWPORT section (issue #88). The section header + framing are drawn by the
-/// stack; this only lays out the Perspective / Orthographic segmented control.
+/// stack's VIEWPORT section. The section header + framing are drawn by the stack; this only
+/// lays out the Perspective / Orthographic segmented control.
 pub(super) fn build_camera_body(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.horizontal(|ui| {
         ui.selectable_value(
@@ -25,30 +25,28 @@ pub(super) fn build_camera_body(ui: &mut egui::Ui, state: &mut PanelState) {
 }
 
 /// The display MASTER toggles (voxel grid on faces, block lattice, floor grid, view cube,
-/// debug faces) — the **body** of the Signal stack's GRIDS section (issue #88). M4 added
-/// the voxel-grid overlay; M5 wired the view cube; M8 wired the block lattice + fine floor
-/// grid (#10). The section header is drawn by the stack; this only lays out the checkboxes.
+/// debug faces) — the **body** of the Signal stack's GRIDS section. The section header is drawn
+/// by the stack; this only lays out the checkboxes.
 pub(super) fn build_display_body(
     ui: &mut egui::Ui,
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
-    // ADR 0003 Phase C C4a: the three grid MASTERS are scene fields, so they bind to
-    // LOCAL copies and a change emits ONE `SetGridMasters`. The masters are read live
-    // by the per-frame line batch / mesh shader (no re-resolve), so `SetGridMasters`'s
-    // effect is `none()` — no rebuild, no auto-frame — matching the old direct writes.
-    // `axes_on_top` / `debug_face_orientation` are PanelState DISPLAY fields (not
-    // scene mutations), so they keep mutating in place.
+    // The three grid MASTERS are scene fields, so they bind to LOCAL copies and a change
+    // emits ONE `SetGridMasters`. The masters are read live by the per-frame line batch / mesh
+    // shader (no re-resolve), so `SetGridMasters`'s effect is `none()` — no rebuild, no
+    // auto-frame. `axes_on_top` / `debug_face_orientation` are PanelState DISPLAY fields, not
+    // scene mutations, so they mutate in place.
     let mut voxel = state.scene.master_voxel_grid;
     let mut lattice = state.scene.master_block_lattice;
     let mut floor = state.scene.master_floor_grid;
     let mut masters_changed = false;
-    // Issue #29 S4: the on-face voxel grid is per-object; this is the scene-wide
-    // MASTER, ANDed (in the mesh shaders) with each node's own flag.
+    // The on-face voxel grid is per-object; this is the scene-wide MASTER, ANDed (in the mesh
+    // shaders) with each node's own flag.
     masters_changed |= ui
         .checkbox(&mut voxel, "Voxel grid on faces (master)")
         .changed();
-    // Issue #29 S3: scene-wide MASTERS for the per-object lattice / floor grids.
+    // Scene-wide MASTERS for the per-object lattice / floor grids.
     masters_changed |= ui
         .checkbox(&mut lattice, "Block lattice (master)")
         .changed();
@@ -60,10 +58,10 @@ pub(super) fn build_display_body(
             floor,
         });
     }
-    // ADR 0031: the Points' axes as a nav marker through the model (on) vs occluded scaffold (off).
+    // The Points' axes as a nav marker through the model (on) vs occluded scaffold (off).
     ui.checkbox(&mut state.axes_on_top, "Axes on top");
-    // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
-    // active node), so it no longer has a Display toggle.
+    // The transform gizmo is selection-driven (drawn on the active node), so it has no
+    // Display toggle of its own.
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
     // Grazing-rim brick diagnostic (face-axis color + UV checkerboard). Keeps the brick
     // path engaged (unlike the mesh-only face-orientation debug above) so the raymarch under
@@ -71,8 +69,8 @@ pub(super) fn build_display_body(
     ui.checkbox(&mut state.debug_brick_faces, "Debug: brick faces");
 }
 
-/// Export section (M8): a single "Export .vox" button plus a progress / status line
-/// (slow-paths item 2). The click is reported via [`PanelResponse::clicked_export_vox`];
+/// Export section: a single "Export .vox" button plus a progress / status line.
+/// The click is reported via [`PanelResponse::clicked_export_vox`];
 /// the caller opens the OS save dialog and dispatches the write to the background export
 /// worker (so the panel stays free of file-system concerns). While an export is in flight
 /// the button is disabled — the shell serializes exports — and `export.status_line`

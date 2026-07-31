@@ -4,8 +4,8 @@
 //! result: nothing is added, nothing is removed, and one entity becomes two that happen to lie
 //! exactly where the one did. A mark that drew a gap would be describing Trim.
 //!
-//! The square is the set's authored-vertex mark (ADR 0030 §5) — a disc would say the pick was
-//! consumed rather than kept.
+//! The square is the set's authored-vertex mark — a disc would say the pick was consumed
+//! rather than kept.
 
 use super::{Ink, Mark};
 

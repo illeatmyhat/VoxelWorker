@@ -1,10 +1,10 @@
 //! `constraint-quantize` — the value is an integer multiple of a voxel.
 //!
-//! A DOT LATTICE, after AutoCAD, which is the only prior art anywhere for this. A magnet would say
-//! "assistive while dragging"; this is persistent and the solver can see it.
+//! A DOT LATTICE. A magnet would say "assistive while dragging"; this is persistent and the
+//! solver can see it.
 //!
 //! That is exactly the split from [`snap_voxel`](super::snap_voxel), which is modal and leaves no
-//! record. ADR 0035 D1 insists on the distinction, and here the ink enforces it: the quantized
+//! record. The distinction is load-bearing, and here the ink enforces it: the quantized
 //! vertex is driven and takes the constraint red, the lattice around it is only a reference.
 //!
 //! The center of the lattice is left to the node — a ninth dot under a square is mush at 16 px.

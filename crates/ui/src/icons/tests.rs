@@ -246,13 +246,13 @@ fn ink(a: Ink, b: Ink) -> bool {
 /// Every glyph in BOTH families paints across the whole range of sizes the app and the design
 /// reference render at — and, more to the point, terminates.
 ///
-/// The size sweep is the whole value of this test. [`IconPainter::dash_path`] once walked a
-/// polyline by advancing a cursor, and the cursor landed exactly on a dash boundary at every
-/// step; wherever rounding then put the phase one ULP short of the boundary, the next advance
-/// (~1e-7) was smaller than the cursor's own precision, the cursor stopped moving, and the walk
-/// span forever. It reproduced at 184 of 532 simulated size/grid combinations — including a
-/// plain dashed line at 18 pt, the rail's own natural size — and it hung `design_reference` on
-/// a white window with no output at all. A two-size smoke test sailed straight past it.
+/// The size sweep is the whole value of this test. A [`IconPainter::dash_path`] that walks a
+/// polyline by advancing a cursor lands exactly on a dash boundary at every step; wherever
+/// rounding then puts the phase one ULP short of the boundary, the next advance (~1e-7) is
+/// smaller than the cursor's own precision, the cursor stops moving, and the walk spins forever.
+/// That form reproduced at 184 of 532 simulated size/grid combinations — including a plain
+/// dashed line at 18 pt, the rail's own natural size — and hung `design_reference` on a white
+/// window with no output at all. A two-size smoke test sails straight past it.
 ///
 /// The work runs on its own thread behind a watchdog because the failure mode is a HANG, not a
 /// wrong pixel: an assertion at the end of a stalled loop is never reached.

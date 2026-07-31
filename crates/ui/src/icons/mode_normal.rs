@@ -5,11 +5,10 @@
 //! Normal shows the resolved surface, where its siblings show slabs (`mode-onion`) and
 //! operand ghosts (`mode-booleans`).
 //!
-//! It was previously the bare outlined cube, which was **the same drawing as `box`** — a
-//! primitive body and a viewer mode sharing one silhouette, found at 100% geometric overlap
-//! by a measured pass over the set. Shading is the way out, and it is true rather than
-//! decorative: the fill does structural work (solid versus wireframe), which is the only kind
-//! of fill that survives rail size.
+//! The shading is what separates this from `box`: a bare outlined cube is the same drawing as
+//! the primitive body, so a viewer mode and a producer would share one silhouette. The fill does
+//! structural work (solid versus wireframe), which is the only kind of fill that survives rail
+//! size.
 
 use super::{Ink, Mark};
 

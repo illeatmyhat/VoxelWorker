@@ -177,15 +177,15 @@ fn readouts(ui: &egui::Ui, state: &PanelState, band: egui::Rect, middle: f32) {
 }
 
 /// The readouts that only exist while a sketch is open: how many ways the drawing can still
-/// move (ADR 0035).
+/// move.
 ///
 /// Degrees of freedom is the number a constraint tool is FOR. Without it the author presses
 /// Horizontal and watches a line rotate, with no way to tell whether the sketch is now pinned
 /// or still has eleven freedoms left; "fully constrained" is a claim only this readout makes.
 ///
-/// A constraint REFUSAL used to sit here too and no longer does: the author's eyes are on the
-/// drawing, and a reason parked in the top-right bar beside the passive readouts read as no
-/// answer at all. It draws over the viewport now — see [`ui::chrome::viewport_notice`].
+/// A constraint REFUSAL is deliberately NOT here: the author's eyes are on the drawing, and a
+/// reason parked in the top-right bar beside the passive readouts reads as no answer at all. It
+/// draws over the viewport instead — see [`ui::chrome::viewport_notice`].
 ///
 /// [`ui::chrome::viewport_notice`]: crate::chrome::viewport_notice
 fn sketch_readouts(state: &PanelState) -> Vec<(&'static str, String, bool)> {

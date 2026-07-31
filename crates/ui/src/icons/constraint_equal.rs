@@ -1,8 +1,8 @@
 //! `constraint-equal` — equal length, or equal radius.
 //!
-//! The constraint ink is the member that TAKES the other's size. A member already carrying a dimension
-//! wins, which is Onshape's rule and respects work already done; with no dimensioned member the
-//! first selected wins, which is Fusion's. The same rule governs
+//! The constraint ink is the member that TAKES the other's size. A member already carrying a
+//! dimension wins, which respects work already done; with no dimensioned member the first
+//! selected wins. The same rule governs
 //! [`constraint_coincident`](super::constraint_coincident).
 
 use super::{Ink, Mark};

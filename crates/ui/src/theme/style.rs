@@ -1,5 +1,4 @@
-//! `theme::style` — the Signal design language applied as an egui [`Style`] (issue #89; ADR 0018,
-//! `docs/design/viewport-chrome-signal.md`).
+//! `theme::style` — the Signal design language applied as an egui [`Style`].
 //!
 //! Two entry points feed the two surfaces:
 //!

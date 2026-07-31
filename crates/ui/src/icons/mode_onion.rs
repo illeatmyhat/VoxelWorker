@@ -1,10 +1,8 @@
 //! `mode-onion` — lifted layer slices: two faint carets above a SOLID band, one faint below.
 //!
-//! Ported verbatim from the shipped chrome (`signal_chrome::draw_layers`), which is the glyph
-//! the owner approved in the prototype round; the harvested sheet's redraw is deliberately not
-//! used here. The filled band is the active layer and the carets are the layers it sits
-//! between — the one place in the set where opacity carries meaning rather than depth, because
-//! "the band you are standing on" is precisely a contrast statement.
+//! The filled band is the active layer and the carets are the layers it sits between — the one
+//! place in the set where opacity carries meaning rather than depth, because "the band you are
+//! standing on" is precisely a contrast statement.
 
 use super::{Ink, Mark};
 

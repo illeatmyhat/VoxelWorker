@@ -1,8 +1,8 @@
 //! `constraint-fix` — position frozen in sketch space.
 //!
-//! A padlock, following Fusion. The alternatives both collide with things this app already has:
-//! SolidWorks' anchor reads as a viewport gizmo, and Onshape's hatched ground symbol drawn over a
-//! viewport that CONTAINS a ground plane is a real misread, not a theoretical one.
+//! A padlock. The two alternatives both collide with things this app already has: an anchor
+//! reads as a viewport gizmo, and a hatched ground symbol drawn over a viewport that CONTAINS a
+//! ground plane is a real misread, not a theoretical one.
 //!
 //! Fix is one of the fundamental constraints and is authorable like any other — it pins the
 //! remaining freedoms of a point rather than marking it as special.

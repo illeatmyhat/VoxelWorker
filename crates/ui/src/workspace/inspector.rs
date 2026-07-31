@@ -1,11 +1,7 @@
 //! The inspector column: the selected node's own dialog.
 //!
-//! For now this region HOSTS the existing sidebar sections rather than replacing them. The
-//! new information architecture is the thing being proved here — where the regions are, what
-//! belongs in each, and that the viewport keeps the room it needs — and re-authoring the
-//! node dialog at the same time would confound the two changes. The sections move into this
-//! column's own vocabulary (a per-kind field list, the signed Measurement fields, the
-//! authorship probe beneath) in the slices that follow.
+//! The region HOSTS the shared sidebar sections rather than owning a second copy of them, so
+//! the two columns cannot drift apart.
 
 use super::{hairline, region_frame, Edge, INSPECTOR_WIDTH};
 use crate::palette::BlockPalette;

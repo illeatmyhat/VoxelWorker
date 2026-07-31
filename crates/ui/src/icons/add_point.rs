@@ -2,15 +2,11 @@
 //!
 //! A **target reticle**: four inward ticks with a center gap converging on a node — "a point
 //! lands here". General placement, NOT edge-splitting: Add Point drops a point anywhere on the
-//! grid (free or snapped), which is one verb of the entity-based sketch model (ADR 0028; owner
-//! reframe 2026-07-23).
+//! grid (free or snapped), which is one verb of the entity-based sketch model.
 //!
-//! Re-drawn from the sheet (owner, 2026-07-30). Three changes, each making it agree with the
-//! rest of the create shelf: the center is a [`Mark::Node`] rather than a hand-spelled `Fill`
-//! quad, which is the square-vertex law (ADR 0030 §5) said in the type rather than by four
-//! corners; it is ACCENT, because on this shelf the accent is what the tool will produce; and
-//! the reticle centers on 9,9 instead of 9,10, where the old drawing sat a half unit low
-//! against every other mark in the set.
+//! The center is a [`Mark::Node`] rather than a hand-spelled `Fill` quad, so the square-vertex
+//! law is stated by the type rather than by four corners, and it is ACCENT because on the
+//! create shelf the accent is what the tool will produce.
 //!
 //! Distinct from `snap-voxel` (full through-lines, no gap) and from `select-vertex` (an arrow
 //! over a profile).

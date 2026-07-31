@@ -1,9 +1,7 @@
-//! The floating **Signal display stack** (issue #88; ADR 0018 Decision 8,
-//! `docs/design/viewport-chrome-signal.md` §Chrome layout — the display-panel bullet).
+//! The floating **Signal display stack**.
 //!
 //! A near-black instrument panel floating at the top-right of the 3D viewport (the view
-//! cube + icon rail slide to its left). It hosts the DISPLAY stack the display sections
-//! left the sidebar for:
+//! cube + icon rail slide to its left). It hosts the DISPLAY stack:
 //!
 //!   * **VIEWPORT** — the viewer-mode readout (accent) + the camera projection toggle.
 //!   * **ONION FOG** — the layer scrubber + onion depth + widest-run stat, mounted ONLY in
@@ -17,8 +15,8 @@
 //! section bodies are ordinary egui widgets restyled through a scoped Signal
 //! [`egui::Style`] override (dark fills, zero corner radius, the onion-haze accent).
 //!
-//! Folded, the whole stack collapses to vertical edge tabs (Blender N-panel style):
-//! rotated glyphs, one per section plus a `«` expander; clicking a tab expands the stack
+//! Folded, the whole stack collapses to vertical edge tabs: rotated glyphs, one per section
+//! plus a `«` expander; clicking a tab expands the stack
 //! with that section opened. Folded/open state is [`SignalStackState`](super::state::SignalStackState) viewer state (never
 //! serialized, like [`ViewMode`]). The cube + rail slide with the stack via
 //! [`cube_right_inset_points`], fed back to `view_cube_corner` so the anchor tracks the
@@ -44,8 +42,8 @@ const CUBE_GAP: f32 = 10.0;
 const HEADER_BAR_HEIGHT: f32 = 24.0;
 /// A collapsible section header row height.
 const SECTION_HEADER_HEIGHT: f32 = 22.0;
-/// Vertical padding (points) above + below the rotated caption inside a folded tab
-/// (issue #91 item 5): the tab HEIGHT is the rotated galley's width plus 2× this.
+/// Vertical padding (points) above + below the rotated caption inside a folded tab: the tab
+/// HEIGHT is the rotated galley's width plus 2× this.
 const TAB_TEXT_PAD: f32 = 9.0;
 
 /// The stack's current width (points) — expanded vs the folded tab strip.
@@ -60,12 +58,12 @@ fn stack_width(folded: bool) -> f32 {
 /// The horizontal distance (egui points) from the viewport's RIGHT edge to the view cube's
 /// right edge, so the cube + rail slide left of the stack and track its fold state. Fed to
 /// `view_cube_corner` (converted to pixels) so the drawn cube, its hit-rect and the egui
-/// rail all share one anchor (issue #88 — the slide).
+/// rail all share one anchor.
 pub fn cube_right_inset_points(folded: bool) -> f32 {
     STACK_MARGIN + stack_width(folded) + CUBE_GAP
 }
 
-/// Build the floating Signal display stack into `root_ui` (issue #88). `central_rect` is
+/// Build the floating Signal display stack into `root_ui`. `central_rect` is
 /// the post-panel 3D viewport rect (egui points); the stack anchors to its top-right
 /// corner. Mutates `state` (fold / section-open toggles, projection, layer band, grid
 /// masters) and pushes any `SetGridMasters` intent onto `response`.
@@ -101,9 +99,8 @@ pub fn build_signal_stack(
     );
 
     let mut stack_ui = root_ui.new_child(UiBuilder::new().max_rect(max_rect));
-    // The stack's scoped Signal style (promoted to `theme`, issue #89): built
-    // from `Style::default` so the floating stack stays byte-identical to its #80
-    // rendering regardless of the app-wide restyle around it.
+    // The stack's scoped Signal style, built from `Style::default` so the floating stack
+    // renders the same regardless of the app-wide restyle around it.
     theme::apply_stack_style(&mut stack_ui);
     if folded {
         build_folded_tabs(&mut stack_ui, state);
@@ -199,7 +196,7 @@ fn build_expanded_stack(
                 });
             }
 
-            // --- ONION FOG: mounted only in Onion-fog mode (ADR 0018 Decision 5). ---
+            // --- ONION FOG: mounted only in Onion-fog mode. ---
             if state.view_mode == ViewMode::OnionFog {
                 if section_header(ui, "ONION FOG", "4", state.stack.onion_open) {
                     state.stack.onion_open = !state.stack.onion_open;
@@ -305,10 +302,10 @@ fn build_folded_tabs(ui: &mut egui::Ui, state: &mut PanelState) {
 /// One vertical edge tab: a hairline-bordered near-black cell with a rotated (top-to-bottom)
 /// caption. Idle muted, hover brightens on the hover fill. Returns `true` when clicked.
 ///
-/// Issue #91 item 5: the tab box is sized from the ROTATED galley's bounds (a 90° rotation
-/// swaps width/height, so the box is `TAB_WIDTH` wide and `galley_width + 2·pad` tall) and
-/// the galley is positioned so it sits CENTERED INSIDE the box — the old
-/// `with_angle_and_anchor` placement dropped the caption outside its rectangle.
+/// The tab box is sized from the ROTATED galley's bounds — a 90° rotation swaps width/height,
+/// so the box is `TAB_WIDTH` wide and `galley_width + 2·pad` tall — and the galley is positioned
+/// explicitly so it sits CENTERED INSIDE the box. `with_angle_and_anchor` drops the caption
+/// outside its rectangle.
 fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
     let size = if expander { 13.0 } else { 10.0 };
     let spacing = if expander { 0.0 } else { 1.5 };
@@ -380,14 +377,12 @@ mod tests {
     use super::*;
     use crate::panel::{PanelResponse, PanelState};
 
-    /// ADR 0018 #88 input regression: the floating stack must NOT allocate in the root
-    /// ui. egui 0.34's `run_ui` records the root's final `available_rect_before_wrap`
-    /// as the "not over egui" input region; a stack drawn via `scope_builder` advances
-    /// the root cursor past its bottom edge, carving a FULL-WIDTH band above it out of
-    /// that region — and the shell's orbit/pan/zoom (all gated on egui pointer
-    /// consumption) go dead across the top of the viewport, growing with the stack
-    /// (tallest in Onion-fog, where the bug was reported). Pins the non-allocating
-    /// `new_child` draw across view modes and fold states.
+    /// The floating stack must NOT allocate in the root ui. egui 0.34's `run_ui` records the
+    /// root's final `available_rect_before_wrap` as the "not over egui" input region; a stack
+    /// drawn via `scope_builder` advances the root cursor past its bottom edge, carving a
+    /// FULL-WIDTH band above it out of that region — and the shell's orbit/pan/zoom (all gated
+    /// on egui pointer consumption) go dead across the top of the viewport, growing with the
+    /// stack. Pins the non-allocating `new_child` draw across view modes and fold states.
     #[test]
     fn stack_leaves_root_cursor_untouched() {
         for (view_mode, folded) in [

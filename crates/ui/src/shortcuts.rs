@@ -1,10 +1,10 @@
 //! The keyboard-shortcut settings — **the one place a keybind is written down**.
 //!
 //! Every command the keyboard can reach is a [`ShortcutCommand`], and each one carries its own
-//! built-in binding ([`ShortcutCommand::built_in`]) the way a Krita `<Action>` carries its
-//! `<shortcut>` next to its label. [`Shortcuts`] is that inventory plus the user's overrides. A
-//! command with `None` is not an omission; it is a command the keyboard cannot reach yet, listed
-//! so the settings stay the complete inventory rather than a list of the ones somebody remembered.
+//! built-in binding ([`ShortcutCommand::built_in`]) beside its own label. [`Shortcuts`] is that
+//! inventory plus the user's overrides. A command with `None` is not an omission; it is a command
+//! the keyboard cannot reach, listed so the settings stay the complete inventory rather than a
+//! list of the ones somebody remembered.
 //!
 //! **Why a registry rather than a literal at each site.** A menu row that spelled its own binding
 //! ("Esc", flushed right) and a shell handler that matched its own key are two facts about one
@@ -24,25 +24,18 @@
 //! a Mac and `Ctrl+Shift+P` elsewhere. What egui has no opinion about, and what this module is, is
 //! *which commands exist* and *which binding each one holds*.
 //!
-//! # The shape, and where it comes from
+//! # The four properties the registry holds
 //!
-//! Blender and Krita converge on the same four properties, and this module takes all four:
-//!
-//! 1. **Keyed by command, never by position.** Blender's keymap items name an operator `idname`;
-//!    Krita's actions have a `name`. A positional table where row 4 silently means "reset orbit
-//!    center" is the thing both avoid.
-//! 2. **The default is declared beside the command's own metadata.** Krita puts `<shortcut>` in the
-//!    same `<Action>` block as `<text>` and `<toolTip>`; here [`ShortcutCommand::built_in`] sits
-//!    next to [`ShortcutCommand::label`], and both platforms' answers for one command are in one
-//!    match arm where they can be compared.
-//! 3. **The user's changes are stored as a sparse override.** Blender persists a *diff* of
-//!    add/remove items against the defaults rather than a copy, so a default that improves reaches
-//!    the people who never rebound it. [`Shortcuts`] holds only the overrides, and only those are
-//!    persisted.
-//! 4. **A whole alternative set is a first-class thing.** Blender ships entire keyconfigs
-//!    ("Industry Compatible", Maya); Krita ships shortcut schemes (Photoshop, Paint Tool Sai).
-//!    [`ShortcutPlatform`] is that seam here — today it selects the two platform sets, and a
-//!    "Fusion-like" or "Blender-like" scheme would enter the same way.
+//! 1. **Keyed by command, never by position.** A positional table where row 4 silently means
+//!    "reset orbit center" is what a keyed one avoids.
+//! 2. **The default is declared beside the command's own metadata.**
+//!    [`ShortcutCommand::built_in`] sits next to [`ShortcutCommand::label`], and both platforms'
+//!    answers for one command are in one match arm where they can be compared.
+//! 3. **The user's changes are stored as a sparse override.** [`Shortcuts`] holds only the
+//!    overrides, and only those are persisted, so a default that improves reaches the people who
+//!    never rebound it.
+//! 4. **A whole alternative set is a first-class thing.** [`ShortcutPlatform`] is that seam: it
+//!    selects the two platform sets, and an entire alternative scheme enters the same way.
 //!
 //! # The platform law: each platform's set is written on its own merits
 //!
@@ -63,9 +56,9 @@
 //! Windows one and hides the question of what the Mac binding should be. Each arm names its own
 //! platform's real modifiers, and the tests hold it to that.
 //!
-//! The bindings are **settings** in the ADR 0022 sense: preference that outlives any one project,
-//! persisted through a serde mirror out in the shell (this crate links no serde, ADR 0016 — the
-//! shortcut type itself is serde-able, so only the command inventory needs mirroring).
+//! The bindings are **settings**: preference that outlives any one project, persisted through a
+//! serde mirror out in the shell, because this crate links no serde. The shortcut type itself is
+//! serde-able, so only the command inventory needs mirroring.
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use std::collections::BTreeMap;
@@ -127,8 +120,8 @@ const fn command_shift(key: Key) -> KeyboardShortcut {
 ///
 /// Two variants, not one per OS: Windows and Linux agree with each other about every shortcut in
 /// this application, and macOS is the one that does not. This is also the seam an alternative
-/// *scheme* would enter through — Blender's keyconfig presets and Krita's shortcut schemes are the
-/// same idea, a whole set swapped as a unit rather than a binding patched at a time.
+/// *scheme* enters through: a whole set swapped as a unit rather than a binding patched at a
+/// time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutPlatform {
     /// macOS.
@@ -229,7 +222,7 @@ impl ShortcutCommand {
             },
 
             // Undo agrees across platforms up to the application modifier; Redo is the case the
-            // platform law exists for again — Windows' convention (and Fusion's) is `Ctrl+Y`, the
+            // platform law exists for again — the Windows convention is `Ctrl+Y`, the
             // Mac's is `⌘⇧Z`, and neither is a modifier-substitution of the other.
             Self::Undo => match platform {
                 ShortcutPlatform::WindowsAndLinux => Some(ctrl(Key::Z)),
@@ -277,9 +270,9 @@ fn specificity(shortcut: KeyboardShortcut) -> u32 {
 
 /// The keyboard-shortcut settings: a platform's built-in bindings plus the user's overrides.
 ///
-/// Only the overrides are stored, Blender-style. Holding a full copy of the table would freeze
-/// today's defaults into every existing config, so a binding improved next year would reach only
-/// people who had never opened the settings.
+/// Only the overrides are stored. Holding a full copy of the table would freeze the current
+/// defaults into every existing config, so an improved binding would reach only the people who
+/// had never opened the settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shortcuts {
     /// Whose built-in set the overrides sit on top of.

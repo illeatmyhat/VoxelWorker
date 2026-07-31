@@ -1,15 +1,15 @@
 //! A glyph as DATA rather than as code.
 //!
-//! A glyph used to be a `fn(&IconPainter)` — readable, but executable, and executable code can
-//! fail to terminate. It did: a float-accumulating dash walk hung the whole reference binary on
-//! a white window. A glyph is now a `&'static [Mark]`, so a glyph file contains no control flow
-//! at all and the closure property is a fact about the TYPE rather than a convention someone has
-//! to keep. There is no loop to write, so there is no loop to get wrong.
+//! A glyph is a `&'static [Mark]`, so a glyph file contains no control flow at all and
+//! termination is a fact about the TYPE rather than a convention someone has to keep. An
+//! executable glyph can fail to terminate, and one did: a float-accumulating dash walk hung the
+//! whole reference binary on a white window. There is no loop to write, so there is no loop to
+//! get wrong.
 //!
-//! [`Mark`] deliberately describes no geometry of its own: every variant dispatches to the
-//! [`IconPainter`] method the imperative form already called, with the same arguments. The
-//! size-adaptive sampling, the stroke floor and the per-family grid all stay exactly where they
-//! were, which is what makes the migration provably a change of representation and nothing else.
+//! [`Mark`] deliberately describes no geometry of its own: every variant dispatches to an
+//! [`IconPainter`] method with the same arguments. The size-adaptive sampling, the stroke floor
+//! and the per-family grid all live in the painter, which keeps this layer a description of
+//! WHAT is drawn and nothing else.
 
 use super::{IconPainter, Stroke};
 
@@ -33,13 +33,11 @@ pub enum InkRole {
     Construction,
     /// The entity a CONSTRAINT drives. Red, against the reference entity's line art.
     ///
-    /// This one was collapsed into [`Accent`](Self::Accent) when the constraint shelf was first
-    /// transposed, on the argument that the Signal language has exactly one accent. That was the
-    /// wrong reading of the sheet (owner, 2026-07-30). A constraint glyph's whole content is
-    /// which of two entities MOVED, and the accent already means "picked" everywhere else in the
-    /// set — so drawing the driven entity in it said nothing the reference entity did not also
-    /// say. The role is what the sheet drew, and it is not a second accent: nothing is ever
-    /// selected in this ink, and it appears on no glyph outside the constraint shelf.
+    /// It is not a second accent: nothing is ever selected in this ink, and it appears on no
+    /// glyph outside the constraint shelf. A constraint glyph's whole content is which of two
+    /// entities MOVED, and the accent already means "picked" everywhere else in the set — so
+    /// drawing the driven entity in the accent would say nothing the reference entity did not
+    /// also say.
     Constraint,
 }
 
@@ -174,7 +172,7 @@ pub enum Mark {
     /// A filled square centered on a grid point: an authored VERTEX.
     ///
     /// The sketch set draws a vertex as a square and never as a disc — a disc is reserved for a
-    /// pick that is consumed at creation and never becomes an entity (ADR 0030 §5). Naming the
+    /// pick that is consumed at creation and never becomes an entity. Naming the
     /// concept rather than spelling it as a 2-unit `Rect` is what lets the accent role attach to
     /// it, and what keeps every vertex in the set the same size by construction.
     Node {

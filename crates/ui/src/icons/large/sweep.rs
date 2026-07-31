@@ -1,8 +1,8 @@
 //! `sweep` (tile) — a profile carried along a path to a dashed destination.
 //!
-//! The far profile is dashed because sweep is the reserved third lift: the mark stays
-//! honest that the far end is not yet a body the app will build. Same construction as the
-//! rail twin, with room for both profiles to be squares rather than ticks.
+//! The far profile is dashed because sweep is a reserved lift: the mark stays honest that the
+//! far end is not a body the app builds. Same construction as the rail twin, with room for both
+//! profiles to be squares rather than ticks.
 
 use crate::icons::{Ink, Mark};
 

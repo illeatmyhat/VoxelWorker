@@ -1,10 +1,9 @@
-//! The Layers section (issue #12): the layer-range scrubber widget.
+//! The Layers section: the layer-range scrubber widget.
 
 use super::{LayerRange, PanelState};
 
 /// The layer-range scrubber + onion-depth controls + widest-run stat — the **body** of the
-/// Signal stack's ONION FOG section (issue #88, ADR 0018 Decision 5). The scrubber (issue
-/// #12) subsumes the old 2D mid-vertical slice map: Z-up, layers are Z-slices, a
+/// Signal stack's ONION FOG section. Z-up, so layers are Z-slices: a
 /// video-clip-style track over `0..grid_z` with two trim handles (lower/upper), the
 /// selected band highlighted, block-boundary ticks, the layers/blocks readout, the snap +
 /// onion controls, and the measured-diameter stat line (widest occupied run in the band).
@@ -60,8 +59,8 @@ pub(super) fn build_onion_body(
         }
     }
 
-    // Measured-diameter stat line: the widest occupied voxel run in the active
-    // band (the chisel-diameter readout the old 2D slice carried).
+    // Measured-diameter stat line: the widest occupied voxel run in the active band — the
+    // chisel-diameter readout.
     let blocks = measured_diameter as f32 / voxels_per_block as f32;
     ui.label(
         egui::RichText::new(format!("Ø {measured_diameter} vx · {blocks:.2} bl"))
@@ -70,7 +69,7 @@ pub(super) fn build_onion_body(
     );
 }
 
-/// Custom range-scrubber widget (issue #12). Z-up: layers are Z-slices, so it paints
+/// Custom range-scrubber widget. Z-up: layers are Z-slices, so it paints
 /// a track spanning `0..grid_z` with block-boundary ticks, the selected band
 /// highlighted, and two draggable trim handles (lower/upper). Drag is handled via
 /// `ui.interact` + the pointer: the nearer handle to the press grabs, then follows

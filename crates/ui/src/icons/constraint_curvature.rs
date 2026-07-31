@@ -1,7 +1,6 @@
 //! `constraint-curvature` — curvature matches across a joint (G2).
 //!
-//! A COMB, which is what Alias, Rhino and Onshape all use. Three properties make it read as
-//! curvature rather than as hatching:
+//! A COMB. Three properties make it read as curvature rather than as hatching:
 //!
 //! 1. the hairs are normal to the curve, on its convex side;
 //! 2. their lengths are proportional to actual κ, so the comb peaks where the curve is tightest;

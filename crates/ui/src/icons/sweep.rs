@@ -1,7 +1,7 @@
 //! `sweep` — a profile carried along a curved path to a dashed destination.
 //!
-//! The far profile is dashed because sweep is the reserved third lift: the mark is honest that
-//! the far end is not yet a body the app will build.
+//! The far profile is dashed because sweep is a reserved lift: the mark is honest that the far
+//! end is not a body the app builds.
 
 use super::{Ink, Mark};
 

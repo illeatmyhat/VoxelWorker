@@ -5,9 +5,9 @@
 //! visible origin the axis-colored edges share, by owner ruling — so the mark says the cube
 //! has addressable regions, and where they are counted from.
 //!
-//! It previously carried two hairline zone rules on the near face, which at 15 pt closed up
-//! and left it indistinct from the plain `box` cube; a measured pass found this glyph 82%
-//! overlapping both `box` and `mode-normal`. A filled cell survives where rules do not.
+//! The lit cell does that work alone. Hairline zone rules on the near face close up at 15 pt
+//! and leave the mark indistinct from the plain `box` cube and from `mode-normal`; a filled cell
+//! survives where rules do not.
 
 use super::{Ink, Mark};
 

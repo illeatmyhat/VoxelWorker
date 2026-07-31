@@ -2,7 +2,7 @@
 //!
 //! One mark apart from [`super::carve_region`], the way `sculpt-add` and `carve` are a pair: the
 //! inner face is FILLED here and dashed there, so picked and unpicked read against each other
-//! rather than each on its own (ADR 0030 §3, #100).
+//! rather than each on its own.
 
 use super::{Ink, Mark};
 

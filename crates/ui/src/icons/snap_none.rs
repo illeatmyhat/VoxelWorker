@@ -1,8 +1,8 @@
 //! `snap-none` — the vertex rides sub-voxel, exactly under the cursor.
 //!
 //! A free node inside a loose (dashed) region: no lattice holds it, and the fraction lives on
-//! `offset_local`. The 2D reuse of ADR 0027's position snap for profile vertices (ADR 0028
-//! §5); its glyph twin among the placement snaps.
+//! `offset_local`. The 2D reuse of the placement position snap for profile vertices; its glyph
+//! twin among the placement snaps.
 
 use super::{Ink, Mark};
 

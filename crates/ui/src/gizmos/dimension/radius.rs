@@ -7,8 +7,8 @@
 //! center — deriving the arc point means no anchor position can break that, whereas storing the
 //! two beside each other means every edit has to remember to keep them agreeing.
 //!
-//! That is the same discipline as ADR 0008 and the anchored-DDA law: carry the frame, never
-//! re-derive a value that has to agree with another.
+//! That is the same discipline the spatial frames keep: carry the value, never re-derive one
+//! that has to agree with another.
 
 use egui::{Pos2, Vec2};
 

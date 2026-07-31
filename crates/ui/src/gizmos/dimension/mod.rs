@@ -1,6 +1,6 @@
 //! Dimension gizmos — spans, radii and angles drawn in the viewport at true scale.
 //!
-//! Authored on the `dimension-gizmos` design sheet. Unlike the rest of
+//! Unlike the rest of
 //! [`gizmos`](crate::gizmos), a dimension is not one shape with a state: it is a small LAYOUT
 //! problem whose answer changes with the size of the thing being dimensioned, so this module is
 //! split in two. [`span()`], [`radius()`] and [`angle()`] each answer a [`Drawing`] — pure geometry,

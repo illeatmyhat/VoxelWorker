@@ -1,10 +1,10 @@
-//! The **Points** section (issue #29 S5): the world reference grid's frames.
+//! The **Points** section: the world reference grid's frames.
 
 use super::{PanelResponse, PanelState};
 use crate::theme;
 use document::intent::Intent;
 
-/// The **Points** section (issue #29 S5): the world reference grid's frames. Lists
+/// The **Points** section: the world reference grid's frames. Lists
 /// every [`Point`](document::scene::Point) with a visibility checkbox (bound to
 /// `!hidden`) and a selectable name; **+ Add Point** appends a Point at the camera
 /// target (falling back to the origin); and — for the selected Point — XZ/XY/YZ plane
@@ -74,11 +74,9 @@ pub(super) fn build_points_section(
         });
     }
 
-    // + Add Point — a fresh Point at the camera target (whole blocks), else the
-    // origin. ADR 0003 Phase C C4a: described as an `AddPoint` intent; the panel
-    // names it after the soon-to-be index (matching the old `format!`). The dispatch
-    // steers the selection onto the new Point (ADR 0032), so the panel no longer has to
-    // predict an index for a Point that does not exist yet.
+    // + Add Point — a fresh Point at the camera target (whole blocks), else the origin,
+    // described as an `AddPoint` intent. The dispatch steers the selection onto the new Point,
+    // so the panel never predicts an index for a Point that does not exist yet.
     if ui
         .button("+ Add Point")
         .on_hover_text("Add a reference Point at the camera target")
@@ -92,13 +90,13 @@ pub(super) fn build_points_section(
     }
 
     // The selected Point's editor: plane/axis toggles, position (hidden for Origin),
-    // and a delete button (hidden for the Origin). ADR 0003 Phase C C4a: each widget
-    // binds to a LOCAL copy of the Point's fields (egui needs the `&mut`); a change
-    // emits the matching `SetPoint*` intent instead of mutating the Point. The buffer
+    // and a delete button (hidden for the Origin). Each widget binds to a LOCAL copy of the
+    // Point's fields (egui needs the `&mut`); a change emits the matching `SetPoint*` intent
+    // rather than mutating the Point. The buffer
     // is read fresh from the scene each frame, so it always reflects the live value.
     if let Some(active_id) = state.selection.primary_point_id() {
-        // The SetPoint* intents are index-keyed (transient, so an index is sound there);
-        // the selection is id-keyed (ADR 0033). Resolve id → row here.
+        // The SetPoint* intents are index-keyed (transient, so an index is sound there); the
+        // selection is id-keyed. Resolve id → row here.
         if let Some((active, point)) = state
             .scene
             .points
@@ -129,8 +127,8 @@ pub(super) fn build_points_section(
                 });
             }
 
-            // Per-axis toggles (issue #29 fix): X/Y/Z each toggle independently →
-            // `SetPointAxes` (carrying all three).
+            // Per-axis toggles: X/Y/Z each toggle independently → `SetPointAxes` (carrying
+            // all three).
             let mut axis_x = point.axis_x;
             let mut axis_y = point.axis_y;
             let mut axis_z = point.axis_z;
@@ -181,8 +179,8 @@ pub(super) fn build_points_section(
         }
     }
 
-    // Apply deferred mutations after the read/borrow walk. ADR 0003 Phase C C4a: each
-    // is described as an intent the loop applies.
+    // Apply deferred mutations after the read/borrow walk; each is described as an intent the
+    // loop applies.
     if let Some(index) = toggle_hidden {
         // The visibility checkbox is bound to `!hidden`; a toggle flips it. Read the
         // current flag and emit the explicit `SetPointHidden` for the new value (the
@@ -196,8 +194,8 @@ pub(super) fn build_points_section(
     }
     if let Some(index) = delete {
         // `RemovePoint` is a no-op on the Origin (the UI already hides its delete
-        // affordances). The dispatch steers the selection onto the survivor (ADR 0032),
-        // so the panel no longer re-derives an index against a list it has not yet shrunk.
+        // affordances). The dispatch steers the selection onto the survivor, so the panel
+        // never re-derives an index against a list it has not yet shrunk.
         let was_origin = state
             .scene
             .points
@@ -209,8 +207,8 @@ pub(super) fn build_points_section(
         }
     } else if let Some(index) = select {
         // The row is index-addressed (it IS a row), but the selection keys by the
-        // stable id (ADR 0033). Ctrl-click (Cmd on mac — egui's command modifier)
-        // toggles membership in the set (ADR 0032 multi-select), as does Shift.
+        // stable id. Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in
+        // the set, as does Shift.
         if let Some(point) = state.scene.points.get(index) {
             let target = crate::panel::SelectionTarget::ReferencePoint(point.id);
             response.select = Some(

@@ -2,7 +2,7 @@
 //!
 //! Three committed sides solid, the closing run dashed (uncommitted until clicked), and the
 //! start node emphasised — the "click here to close" affordance, drawn in the family's
-//! dashed-means-uncommitted idiom. ADR 0028 slice 3.
+//! dashed-means-uncommitted idiom.
 
 use super::{Ink, Mark};
 

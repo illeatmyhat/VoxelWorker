@@ -1,6 +1,6 @@
 //! `constraint-horizontal-vertical` — along an axis, whichever axis the line is already nearer.
 //!
-//! ONE cell, TWO constraints (Fusion's arrangement): the author says "line this up with an axis"
+//! ONE cell, TWO constraints: the author says "line this up with an axis"
 //! and the drawing decides which axis it meant. What gets asserted is a plain
 //! [`Horizontal`](super::constraint_horizontal) or [`Vertical`](super::constraint_vertical), and
 //! the badge left behind carries THAT mark rather than this one — this glyph belongs to the

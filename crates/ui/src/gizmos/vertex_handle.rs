@@ -6,8 +6,8 @@ use super::snap_ticks::snap_ticks;
 use super::{HANDLE_ACCENT, HANDLE_FILL, HANDLE_HOVER, STROKE_HANDLE};
 use crate::theme::color_palette;
 
-/// A profile vertex handle's state — the four the design sheet demonstrates, plus the
-/// destructive-hover state the Delete tool arms (#95).
+/// A profile vertex handle's state — the four resting/pointer states, plus the destructive-hover
+/// state the Delete tool arms.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HandleState {
     /// At rest on the working plane.
@@ -19,7 +19,7 @@ pub enum HandleState {
     /// Selected AND engaged with the lattice — the filled thumb, ringed by the snap tick-cross.
     Snapped,
     /// The **Delete** tool is armed and the pointer is over this vertex — the border and an
-    /// overlaid `✕` go warn-red to say "clicking removes this one" (ADR 0028, #95). The warn
+    /// overlaid `✕` go warn-red to say "clicking removes this one". The warn
     /// hue is the destructive channel of the palette, distinct from the accent every other
     /// state uses, so a delete-hover can never be mistaken for a draggable hover.
     Marked,
@@ -33,8 +33,8 @@ pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleSt
     let (fill, border) = match state {
         HandleState::Idle => (HANDLE_FILL, HANDLE_ACCENT),
         // Hover FILLS with the bright hover color, and Selected fills accent — the same two
-        // colors the hovered / selected lines use, so a point and an edge answer alike (owner
-        // 2026-07-23). Idle stays hollow (dark fill, accent border), so the three read distinctly.
+        // colors the hovered / selected lines use, so a point and an edge answer alike. Idle
+        // stays hollow (dark fill, accent border), so the three read distinctly.
         HandleState::Hover => (HANDLE_HOVER, HANDLE_HOVER),
         HandleState::Selected | HandleState::Snapped => (HANDLE_ACCENT, HANDLE_ACCENT),
         // Destructive hover: dark thumb, warn-red border, so it reads as "armed to remove"

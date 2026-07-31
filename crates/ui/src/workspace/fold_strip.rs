@@ -7,13 +7,11 @@
 //!
 //! ## The insert cursor is deliberately absent
 //!
-//! The design synthesis puts a first-class **insert cursor** in the gaps between cards: new
-//! nodes land AT it rather than at the end, and nodes past it are dropped from the evaluation
-//! without being deleted. That is the whole meaning of an edit under later-wins, and it is
-//! genuinely new state — per-scope, view-ish but evaluation-affecting, and named nowhere in
-//! `docs/adr/` or `docs/architecture/`. It needs a decision before it exists in code, so this
-//! strip currently shows the fold and its selection only. Adding a cursor silently here would
-//! be deciding an architecture question inside a widget.
+//! An **insert cursor** in the gaps between cards — new nodes landing AT it rather than at the
+//! end, and nodes past it dropped from the evaluation without being deleted — is genuinely new
+//! state: per-scope, view-ish but evaluation-affecting. The strip shows the fold and its
+//! selection only, because adding a cursor here would be deciding an architecture question
+//! inside a widget.
 
 use document::scene::{NodeId, Scene};
 
@@ -25,7 +23,7 @@ use crate::theme;
 const CARD_WIDTH: f32 = 150.0;
 /// Card height, leaving room for the strip header above it.
 const CARD_HEIGHT: f32 = 104.0;
-/// The gap between cards — where the insert cursor will live once it is decided.
+/// The gap between cards.
 const CARD_GAP: f32 = 10.0;
 
 /// Build the fold strip band.
@@ -144,9 +142,8 @@ fn card(
     ui.painter()
         .galley(egui::pos2(rect.left() + 10.0, rect.top() + 30.0), name, ink);
 
-    // Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in the set
-    // (ADR 0032 multi-select); a plain click replaces. Shift toggles too, matching the
-    // viewport's Shift-accumulate — until row range-select claims it.
+    // Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in the set; a plain
+    // click replaces. Shift toggles too, matching the viewport's Shift-accumulate.
     if hit.clicked() {
         if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
             response.select = Some(crate::panel::SelectionRequest::Toggle(

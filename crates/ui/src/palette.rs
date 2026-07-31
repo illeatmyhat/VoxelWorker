@@ -1,6 +1,6 @@
 //! The UI-facing block palette state: the tiles + status + click counter.
 //!
-//! This is the egui-facing half of the block palette (ADR 0016 Phase 8b). It owns the
+//! This is the egui-facing half of the block palette. It owns the
 //! palette STATE — the list of [`PaletteTile`]s (label, variant count, thumbnail
 //! `egui::TextureId`, variant paths) plus the click counter that picks a deterministic
 //! pseudo-random variant. It links NO wgpu: the tiles reference their thumbnails only as
@@ -30,25 +30,24 @@ pub struct PaletteTile {
 #[derive(Default)]
 pub struct BlockPalette {
     pub tiles: Vec<PaletteTile>,
-    /// Status line text ("Scanning…", "N blocks loaded", "No VS install found…").
+    /// Status line text: scanning, a loaded count, or a nothing-found message.
     pub status: String,
     /// Incrementing click counter → deterministic pseudo-random variant pick
-    /// (`variants[counter % len]`), since `Math.random` isn't desired for
-    /// reproducible screenshots.
+    /// (`variants[counter % len]`), because a genuinely random pick would not be
+    /// reproducible in a screenshot.
     pub click_counter: usize,
 }
 
 impl BlockPalette {
-    /// Map a categorical [`BlockId`](voxel_core::core_geom::BlockId) (ADR 0003 §3a) to the
-    /// procedural [`MaterialChoice`](voxel_core::core_geom::MaterialChoice) it renders as.
+    /// Map a categorical [`BlockId`](voxel_core::core_geom::BlockId) to the procedural
+    /// [`MaterialChoice`](voxel_core::core_geom::MaterialChoice) it renders as.
     ///
-    /// This is the categorical block-palette resolution the per-voxel cell now routes
-    /// through: the three procedural materials ARE the palette today (`block_id` ⇒
-    /// Stone/Wood/Plain), so the mapping is `MaterialChoice::from_material_id`. The rich
-    /// VS palette CONTENT (a real `block_id` → texture table) is the deferred part; this
-    /// is the seam it will replace, so the renderer + `.vox` export call one resolver
-    /// rather than reading the id directly. `&self` is taken so a future palette with
-    /// real content resolves against THIS palette's loaded tiles, not a global table.
+    /// This is the categorical block-palette resolution the per-voxel cell routes through: the
+    /// three procedural materials ARE the palette (`block_id` ⇒ Stone/Wood/Plain), so the mapping
+    /// is `MaterialChoice::from_material_id`. It is the seam a real `block_id` → texture table
+    /// would replace, so the renderer + `.vox` export call one resolver rather than reading the id
+    /// directly. `&self` is taken so a palette with real content resolves against THIS palette's
+    /// loaded tiles, not a global table.
     pub fn material_for_block(
         &self,
         block_id: voxel_core::core_geom::BlockId,

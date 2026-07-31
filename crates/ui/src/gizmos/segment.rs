@@ -21,7 +21,7 @@ pub fn segment(painter: &Painter, a: Pos2, b: Pos2) {
 const STROKE_SEGMENT_HOVER: f32 = 2.75;
 /// The picked-edge stroke weight — thickest of the three, so a selected edge is unmistakable next
 /// to both an idle (thin accent) and a hovered (medium bright) one. Thickness is the primary cue
-/// (owner 2026-07-23: the color-only contrast was too weak to see what was selected).
+/// — color-only contrast is too weak to see what is selected.
 const STROKE_SEGMENT_SELECTED: f32 = 4.0;
 
 /// A committed profile segment drawn in an interaction [`HandleState`] — the edge analog of
@@ -46,7 +46,8 @@ pub fn styled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState) {
 /// vertex, which would take priority). The whole line goes warn-red with a warn `✕` at its
 /// midpoint: the line analog of the vertex handle's [`Marked`](super::HandleState::Marked)
 /// state, so a segment delete-hover carries the same destructive vocabulary as a vertex one
-/// (color the line, not just an overlay — the Fusion-style "this edge goes" cue in our warn hue).
+/// The whole line colors rather than taking an overlay, so the "this edge goes" cue survives at
+/// any zoom.
 pub fn marked_segment(painter: &Painter, a: Pos2, b: Pos2) {
     warn_segment(painter, a, b);
     warn_cross(painter, a + (b - a) * 0.5);

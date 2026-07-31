@@ -9,9 +9,9 @@
 //! no tile drawing. The two families are separate drawings of the same noun rather than one
 //! asset scaled, so the fallback is designed rather than a gap.
 //!
-//! A cell whose verb the document cannot yet express is drawn RESERVED — dimmed and inert,
-//! the treatment the design mock gives `sweep`. It is deliberately not hidden: the shape of
-//! the finished set is information, and a verb that silently appears later reads as a bug.
+//! A cell whose verb the document cannot express is drawn RESERVED — dimmed and inert. It is
+//! deliberately not hidden: the shape of the finished set is information, and a verb that
+//! silently appears later reads as a bug.
 
 use document::intent::Intent;
 use document::scene::NodeContent;
@@ -37,13 +37,12 @@ const TOOL_GLYPH: f32 = 32.0;
 /// Opacity of a reserved cell — present, legible, plainly not yet clickable.
 const RESERVED_DIM: f32 = 0.35;
 
-/// The shape set, in the order the design sheet pins it: the authoring atom first, then the
-/// lifts, then the primitives that are sugar over them.
+/// The shape set, in catalog order: the authoring atom first, then the lifts, then the
+/// primitives that are sugar over them.
 ///
-/// `Some(kind)` is a shape the document can express today, and clicking it ARMS live
-/// placement of that primitive (ADR 0022). `None` is a producer that has a glyph but no
-/// cursor-snap placement yet — sketch-family verbs are authored through "+ Add" and the
-/// inspector, and `sweep` is reserved.
+/// `Some(kind)` is a shape the document can express, and clicking it ARMS live placement of that
+/// primitive. `None` is a producer that has a glyph but no cursor-snap placement — sketch-family
+/// verbs are authored through "+ Add" and the inspector, and `sweep` is reserved.
 const SHAPES: &[(Icon, Option<ShapeKind>)] = &[
     (Icon::Sketch, None),
     (Icon::Extrude, None),
@@ -68,11 +67,9 @@ const TOOLS: &[(Icon, bool)] = &[
     (Icon::Measure, false),
 ];
 
-/// The sketch-mode rail toolset (ADR 0028): the direct-manipulation vertex tools, each ARMING
-/// its [`SketchTool`] on click (#94 select/move, #95 add-point, #99 polyline/rectangle).
-/// Rendered in place of `SHAPES`/`TOOLS` while a sketch is being edited. Delete is NOT a tool:
-/// it acts on the selection via the Delete key or context menu
-/// (`docs/design/sketch-selection.md`).
+/// The sketch-mode rail toolset: the direct-manipulation vertex tools, each ARMING its
+/// [`SketchTool`] on click. Rendered in place of `SHAPES`/`TOOLS` while a sketch is being
+/// edited. Delete is NOT a tool: it acts on the selection via the Delete key or context menu.
 const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
     (
         Icon::SelectVertex,
@@ -122,13 +119,13 @@ const SKETCH_SNAPS: &[(Icon, &str, PositionSnap)] = &[
     ),
 ];
 
-/// The constraint verbs on the sketch rail (ADR 0035 Decision 15). These ARM like the drawing
-/// tools do: the cell lights, and the picks that follow fill the constraint's slots until it is
-/// complete, at which point it applies and the cell goes dark again.
+/// The constraint verbs on the sketch rail. These ARM like the drawing tools do: the cell
+/// lights, and the picks that follow fill the constraint's slots until it is complete, at which
+/// point it applies and the cell goes dark again.
 ///
-/// Three of the constraint shelf's fourteen glyphs. The rest are drawn and named but have no
-/// residual behind them yet, and an armable verb that asserts nothing is worse than no cell.
-/// Ordered by how often a drawing reaches for them, not alphabetically and not by arity:
+/// Only the verbs carrying a residual are here — an armable verb that asserts nothing is worse
+/// than no cell. Ordered by how often a drawing reaches for them, not alphabetically and not by
+/// arity:
 /// Coincident and Horizontal/Vertical carry most of the work on a real profile, the angle pair
 /// comes next, and the two that place one thing against another sit last.
 const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
@@ -142,16 +139,16 @@ const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
     ConstraintVerb::Fix,
 ];
 
-/// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
-/// the SAME fused node, moved here from the deleted right panel). Extrude + Revolve ship and
-/// switch the edited node's operation on click (#97); Sweep is the reserved arm (drawn dimmed).
+/// The set-operation picker on the sketch rail — the operation is a property of the same fused
+/// node. Extrude and Revolve switch the edited node's operation on click; Sweep is the reserved
+/// arm, drawn dimmed.
 const SKETCH_OPS: &[(Icon, &str, bool)] = &[
     (Icon::Extrude, "Extrude (set operation)", false),
     (Icon::Revolve, "Revolve (set operation)", false),
     (Icon::Sweep, "Sweep — reserved", true),
 ];
 
-/// Build the pinned rail column. In **sketch mode** (ADR 0028) it swaps to the sketch toolset;
+/// Build the pinned rail column. In **sketch mode** it swaps to the sketch toolset;
 /// otherwise it shows the normal Shape + Tool sets.
 pub(super) fn build_rail(
     root_ui: &mut egui::Ui,
@@ -186,12 +183,11 @@ pub(super) fn build_rail(
         });
 }
 
-/// The swapped rail while a sketch is being edited (ADR 0028): the accent `SKETCH` head (the
-/// whole-mode indicator), the vertex tools, then an `OP` separator and the set-operation
-/// picker. The armable vertex tools select [`PanelState::sketch_tool`] on click and light the
-/// active one; Polyline / Rectangle read reserved (slice 3), the current operation reads active
-/// and clicking the other one SWITCHES the edited node's operation (#97); `Sweep` reads
-/// reserved.
+/// The swapped rail while a sketch is being edited: the accent `SKETCH` head (the whole-mode
+/// indicator), the vertex tools, then an `OP` separator and the set-operation picker. The
+/// armable vertex tools select [`PanelState::sketch_tool`] on click and light the active one;
+/// the current operation reads active and clicking the other one SWITCHES the edited node's
+/// operation; `Sweep` reads reserved.
 fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     // The edited node's producer: lights the matching OP cell and seeds an operation switch.
     let target = state.sketch_mode;
@@ -308,9 +304,8 @@ fn rail_heading(ui: &mut egui::Ui, title: &str) {
 }
 
 /// The **active** rail heading — the accent-filled `SKETCH` label that is the whole mode
-/// indicator (ADR 0028, C2 mock's `.railhead`): dark text on the accent fill, spanning the
-/// rail. Distinct from [`rail_heading`]'s faint hairline label so entering the mode is
-/// unmistakable at a glance.
+/// indicator: dark text on the accent fill, spanning the rail. Distinct from
+/// [`rail_heading`]'s faint hairline label so entering the mode is unmistakable at a glance.
 fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
     let galley = theme::letter_spaced(ui, title, theme::BG, 9.0, 1.6);
     let (rect, _) = ui.allocate_exact_size(
@@ -325,7 +320,7 @@ fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
     ui.painter().galley(at, galley, theme::BG);
 }
 
-/// One **armable** sketch-tool rail cell (ADR 0028, #95): a clickable tool glyph that lights
+/// One **armable** sketch-tool rail cell: a clickable tool glyph that lights
 /// when `active`. Returns `true` the frame it is clicked, so the caller arms the tool. The
 /// active bar / hover fill are the shared rail treatment ([`paint_cell`]).
 fn sketch_tool_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> bool {
@@ -342,9 +337,9 @@ fn sketch_tool_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> b
     cell.clicked()
 }
 
-/// One **inert** sketch-mode rail cell (ADR 0028): a glyph whose verb is reserved for a later
-/// slice — drawn with the active accent bar and the reserved dim treatment, reporting hover +
-/// tooltip but arming nothing. Live op cells go through [`sketch_tool_cell`] instead (#97).
+/// One **inert** sketch-mode rail cell: a glyph whose verb is reserved — drawn with the active
+/// accent bar and the reserved dim treatment, reporting hover + tooltip but arming nothing. Live
+/// op cells go through [`sketch_tool_cell`] instead.
 fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved: bool) {
     let (rect, cell) = ui.allocate_exact_size(
         egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
@@ -363,12 +358,11 @@ fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved:
     cell.on_hover_text(tip);
 }
 
-/// One shape cell. Clicking an expressible shape ARMS live placement of that primitive
-/// (ADR 0022) — the same flow as the scene panel's "+ Add" chips: a ghost follows the
-/// cursor and a stationary click drops a node, staying armed for repeats. Clicking the
-/// already-armed cell disarms. The cell is unrelated to the selection (owner ruling
-/// 2026-07-28) and leaves the inspector's mirror alone — the armed spec takes the kind's
-/// own default size at current density/wall/material.
+/// One shape cell. Clicking an expressible shape ARMS live placement of that primitive — the
+/// same flow as the scene panel's "+ Add" chips: a ghost follows the cursor and a stationary
+/// click drops a node, staying armed for repeats. Clicking the already-armed cell disarms. The
+/// cell is unrelated to the selection and leaves the inspector's mirror alone — the armed spec
+/// takes the kind's own default size at current density/wall/material.
 fn shape_cell(
     ui: &mut egui::Ui,
     icon: Icon,

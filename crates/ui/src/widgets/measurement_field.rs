@@ -14,7 +14,7 @@ const FIELD_WIDTH_POINTS: f32 = 142.0;
 ///
 /// Both halves matter and neither is derivable from the other at the call site — the
 /// `measurement` is RETAINED on the document (lossless density re-targeting and
-/// exact-expression undo, ADR 0003 §3f(0)), while `voxels` is the canonical value the
+/// exact-expression undo), while `voxels` is the canonical value the
 /// resolve actually uses. See [`crate::widgets::measurement_field`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeasurementCommit {

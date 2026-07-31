@@ -1,7 +1,7 @@
 //! `carve-region` — unpick a sketch region: the face inside the boundary becomes a hole.
 //!
 //! The additive twin of [`super::fill_region`], one mark apart: the inner face is dashed rather
-//! than filled, the set's "authored, but not what you are looking at" (ADR 0030 §3, #100).
+//! than filled, the set's "authored, but not what you are looking at".
 
 use super::{Ink, Mark};
 

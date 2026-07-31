@@ -1,12 +1,10 @@
-//! The Signal viewport chrome painters (ADR 0018): the icon [`rail`], the floating [`notice`],
-//! and the sketch [`sketch_overlay`]. Pure egui painting at shell-computed positions — the shell
-//! owns the projection, hit-testing and interaction routing; these only draw and report clicks.
+//! The Signal viewport chrome painters: the icon [`rail`], the floating [`notice`], and the
+//! sketch [`sketch_overlay`]. Pure egui painting at shell-computed positions — the shell owns the
+//! projection, hit-testing and interaction routing; these only draw and report clicks.
 //!
-//! A persistent `VIEWPORT <mode> · <dims> · <density>` line held the viewport's bottom-left
-//! corner until 2026-07-30, when the owner deleted it: the mode is already on the top bar, the
-//! extent and the density are inspector facts, and none of the three changes often enough to earn
-//! a permanent seat over the drawing. The corner is now the [`notice`]'s, which is only there
-//! when it has something to say.
+//! The viewport's bottom-left corner belongs to the [`notice`], which is only there when it has
+//! something to say. Nothing persistent stands over the drawing: the viewer mode is on the top
+//! bar, and the extent and the density are inspector facts.
 
 mod notice;
 mod rail;

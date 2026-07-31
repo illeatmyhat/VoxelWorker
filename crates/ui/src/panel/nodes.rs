@@ -27,7 +27,7 @@ fn node_row_label(node: &Node) -> String {
     }
 }
 
-/// The scene node list (ADR 0001 step 4): the assembly rendered as an INDENTED
+/// The scene node list: the assembly rendered as an INDENTED
 /// TREE so [`Group`](NodeContent::Group) children are visible and selectable at
 /// any depth (not just top-level nodes). Each row carries a visibility checkbox, a
 /// selectable name (indented by depth), and a per-row delete ✕. Beneath the tree:
@@ -61,10 +61,9 @@ pub(super) fn build_node_list_section(
     // undoable document intent).
     let mut focus: Option<NodeId> = None;
 
-    // Walk the tree depth-first; each row is indented by its depth.
-    // ADR 0003 Phase B4: each row carries its node's stable NodeId, so the
-    // select/delete/visibility ops (now NodeId-typed) are fed it directly — the
-    // path is kept only for depth/indentation.
+    // Walk the tree depth-first; each row is indented by its depth and carries its node's
+    // stable NodeId, so the select/delete/visibility ops are fed it directly — the path is
+    // kept only for depth/indentation.
     let rows = state.scene.tree_rows();
     // Selection is keyed by NodeId; the highlight shows MEMBERSHIP, not the primary, so
     // every picked row stays lit in a multi-selection.
@@ -72,7 +71,7 @@ pub(super) fn build_node_list_section(
         let is_active = state
             .selection
             .contains(crate::panel::SelectionTarget::Node(*id));
-        // ADR 0018 Decision 2: the root part is the top row — selectable like any node,
+        // The root part is the top row — selectable like any node,
         // but undeletable and with no visibility toggle (it always folds; hiding it is
         // meaningless). Its child count is `roots.len()` (its real spine), since the
         // container node's own `Group` payload is unused.
@@ -127,10 +126,9 @@ pub(super) fn build_node_list_section(
         });
     }
 
-    // ADR 0003 Phase C C4a: the toggle is described as a `SetEnabled` intent (the loop
-    // applies it), not a direct `set_node_enabled`. It re-resolves + auto-frames exactly
-    // as before (the old `scene_changed`) — the flag gates participation in the fold, so
-    // a re-resolve is not optional polish, it is what makes the edit visible at all.
+    // The toggle is described as a `SetEnabled` intent the loop applies. It re-resolves and
+    // auto-frames: the flag gates participation in the fold, so a re-resolve is not optional
+    // polish, it is what makes the edit visible at all.
     if let Some((id, enabled)) = set_enabled {
         response.emit_and_frame(Intent::SetEnabled {
             target: id,
@@ -157,19 +155,18 @@ pub(super) fn build_node_list_section(
     build_definitions_section(ui, state, response);
 
     // Apply the deferred selection / delete after the walk. Delete is an intent
-    // (`RemoveNode`); selection is a VIEW action on `PanelResponse::select` (ADR 0032),
-    // so the panel never mutates either the scene or the workspace selection here — the
+    // (`RemoveNode`); selection is a VIEW action on `PanelResponse::select`, so the panel
+    // never mutates either the scene or the workspace selection here — the
     // shell applies both and re-syncs the inspector mirror on the returned effect.
     if let Some(id) = delete {
         response.emit_and_frame(Intent::RemoveNode { target: id });
     } else if let Some(clicked_id) = select {
-        // ADR 0003 Phase B4: a clicked row reports its node's stable NodeId; select
-        // THAT, so the highlight and inspector follow the node through later
-        // structural edits. Ctrl-click (Cmd on mac — egui's command modifier) toggles
-        // membership in the set (ADR 0032 multi-select), as does Shift (matching the
-        // viewport's Shift-accumulate, until row range-select claims it); a plain click
-        // replaces, and only when it actually changes the selection (the old guard) — a
-        // selection click is selection-only (no re-resolve, no auto-frame).
+        // A clicked row reports its node's stable NodeId; select THAT, so the highlight and
+        // inspector follow the node through later structural edits. Ctrl-click (Cmd on mac —
+        // egui's command modifier) toggles membership in the set, as does Shift (matching the
+        // viewport's Shift-accumulate); a plain click replaces, and only when it actually
+        // changes the selection — a selection click is selection-only (no re-resolve, no
+        // auto-frame).
         if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
             response.select = Some(crate::panel::SelectionRequest::Toggle(
                 crate::panel::SelectionTarget::Node(clicked_id),
@@ -191,7 +188,7 @@ pub(super) fn build_node_list_section(
 /// sensible default ([`ShapeKind::default_size_blocks`]) rather than the one shared size —
 /// a Sphere is a round ball, a Cylinder a pillar, a Torus a flat donut, instead of every
 /// kind squashed to the current slab. Density, wall, and material still come from the
-/// current state so it renders immediately (ADR 0003 Phase C C4a). The spec's `into_node`
+/// current state so it renders immediately. The spec's `into_node`
 /// names the node after the shape kind.
 pub(crate) fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
     NodeSpec::Tool {
@@ -208,7 +205,7 @@ pub(crate) fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
 }
 
 /// A [`NodeSpec`] for a fresh sketch→extrude node sized to the current Size — a
-/// footprint-extrude-up rectangle on the XY ground (ADR 0003 §3i). The current size
+/// footprint-extrude-up rectangle on the XY ground. The current size
 /// in voxels `[size_x, size_y, size_z]` maps onto a `PlaneAxis::Z` sketch: the
 /// in-plane axes for Z are `[0, 1]` = X, Y, so the rectangle's in-plane width is
 /// `size_x` and depth is `size_y`, extruded `size_z` voxels up along +Z. This is the
@@ -234,8 +231,8 @@ fn sketch_node_spec(state: &PanelState) -> NodeSpec {
 fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     ui.add_space(4.0);
 
-    // Whether the root part is the active selection (ADR 0018 Decision 2): it is a
-    // container but NOT a "+ Add child" / Group / Make-definition target — its children
+    // Whether the root part is the active selection: it is a container but NOT a
+    // "+ Add child" / Group / Make-definition target — its children
     // are added via the top-level "+ Add", and it can neither be wrapped nor turned
     // into a definition.
     let root_active = state.selection.primary_node_id() == Some(ROOT_NODE_ID);
@@ -251,17 +248,16 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
     let has_active_non_root = state.selection.primary_node_id().is_some() && !root_active;
 
     ui.horizontal_wrapped(|ui| {
-        // + Add — a top-level Tool or Clouds VoxelBody. ADR 0003 Phase C C4a: described as
-        // `AddNode` intents (`NodeSpec` carries the same shape+material/Clouds the old
-        // `new_tool_node` / `Node::new` built). The new node becomes active inside the
-        // add op, so the loop re-syncs the inspector mirror on the returned effect.
+        // + Add — a top-level Tool or Clouds VoxelBody, described as `AddNode` intents. The
+        // new node becomes active inside the add op, so the loop re-syncs the inspector mirror
+        // on the returned effect.
         ui.menu_button("+ Add", |ui| {
             for (kind, label) in SHAPE_CHIPS {
                 if ui.button(*label).clicked() {
-                    // Live placement (ADR 0022): a primitive chip ARMS the tool rather
-                    // than adding immediately — the shell then follows the cursor with a
-                    // ghost and drops the node on a click. Sketch/Clouds below stay
-                    // immediate (they have no cursor-snap placement yet).
+                    // Live placement: a primitive chip ARMS the tool rather than adding
+                    // immediately — the shell then follows the cursor with a ghost and drops
+                    // the node on a click. Sketch/Clouds below are immediate; they have no
+                    // cursor-snap placement.
                     response.arm_tool = Some(tool_node_spec(*kind, state));
                     ui.close();
                 }
@@ -283,8 +279,8 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
 
         // + Add child — into the active Group (only shown when one is selected).
         if active_is_group {
-            // ADR 0003 Phase B4: `AddChild` targets a NodeId; this block only shows
-            // when a Group is active, so the active selection IS the group's id.
+            // `AddChild` targets a NodeId; this block only shows when a Group is active, so
+            // the active selection IS the group's id.
             let group_id = state.selection.primary_node_id();
             ui.menu_button("+ Add child", |ui| {
                 for (kind, label) in SHAPE_CHIPS {
@@ -363,10 +359,9 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
     });
 }
 
-/// The **Definitions** list (ADR 0001 step 4): the reusable [`AssemblyDef`]s, each
-/// with an **Add instance** button that places another `Instance` of it at a
-/// nudged offset (the village workflow: one stored body placed at several offsets)
-/// and a **Fixture** toggle (ADR 0017 Decision 4, issue #77) — whether the
+/// The **Definitions** list: the reusable [`AssemblyDef`]s, each with an **Add instance**
+/// button that places another `Instance` of it at a nudged offset (one stored body placed at
+/// several offsets) and a **Fixture** toggle — whether the
 /// definition splices its children into each hosting scope's fold (a window that
 /// cuts its opening AND fills its frame with one placement) instead of
 /// pre-composing sealed. The toggle sits on the DEFINITION row because being a
@@ -435,13 +430,13 @@ fn build_definitions_section(
         });
     }
 
-    // ADR 0003 Phase C C4a: described as an `AddInstance` intent. The placed Instance
-    // becomes active inside the add op, so the loop re-syncs the mirror on the effect.
+    // Described as an `AddInstance` intent. The placed Instance becomes active inside the add
+    // op, so the loop re-syncs the mirror on the effect.
     if let Some(id) = add_instance_of {
         response.emit_and_frame(Intent::AddInstance { def: id });
     }
-    // ADR 0017 Decision 4 (issue #77): a definition-field write — every placement's
-    // composition changes at once (no auto-frame; the geometry stays in place).
+    // A definition-field write — every placement's composition changes at once (no auto-frame;
+    // the geometry stays in place).
     if let Some((id, fixture)) = set_fixture_of {
         response.emit(Intent::SetDefinitionFixture { def: id, fixture });
     }

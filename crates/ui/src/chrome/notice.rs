@@ -11,10 +11,9 @@ const INSET: f32 = 10.0;
 
 /// Draw `REFUSED · <why>` as a bordered box in the viewport's bottom-left.
 ///
-/// It took that corner from the persistent status line and then outlived it: a refusal is the one
-/// thing on screen the author has to act on, and it belongs where they are looking rather than in
-/// the top bar beside the passive readouts, where it went unread (owner 2026-07-30). Nothing else
-/// stands there now, so the corner is empty until something has to be said.
+/// A refusal is the one thing on screen the author has to act on, so it belongs where they are
+/// looking rather than in the top bar beside the passive readouts, where it goes unread. Nothing
+/// else stands in that corner, so it is empty until something has to be said.
 ///
 /// `viewport_rect` is the central 3D rect in egui points. Foreground `layer_painter` at an
 /// absolute position, so it renders on `shot`.

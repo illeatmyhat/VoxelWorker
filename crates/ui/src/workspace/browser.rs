@@ -6,9 +6,9 @@
 //! than drawn.
 //!
 //! Selecting a row asks for a [`SelectionRequest`](crate::panel::SelectionRequest) on the
-//! [`PanelResponse`]. ADR 0032: selection is WORKSPACE state,
-//! not a document edit — it re-resolves nothing and never enters undo history — so it takes
-//! the view-action channel, not the intent door.
+//! [`PanelResponse`]. Selection is WORKSPACE state, not a document edit — it re-resolves
+//! nothing and never enters undo history — so it takes the view-action channel, not the intent
+//! door.
 
 use document::scene::{NodeContent, NodeId, Scene};
 
@@ -77,7 +77,7 @@ fn heading(ui: &mut egui::Ui, title: &str) {
     hairline(ui.painter(), rect, Edge::Bottom, theme::RULE);
 }
 
-/// One node row: glyph, name, and the selected treatment. In **sketch mode** (ADR 0028) the
+/// One node row: glyph, name, and the selected treatment. In **sketch mode** the
 /// node being edited (`sketch_mode == Some(id)`) carries an accent `EDITING` tag — the browser
 /// stays open so the author can see and reach external scene geometry to snap to, and this
 /// marks which node the mode is scoped to.
@@ -140,9 +140,8 @@ fn node_row(
         ui.painter().galley(tag_rect.min + pad, tag, theme::BG);
     }
 
-    // Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in the set
-    // (ADR 0032 multi-select); a plain click replaces. Shift toggles too, matching the
-    // viewport's Shift-accumulate — until row range-select claims it.
+    // Ctrl-click (Cmd on mac — egui's command modifier) toggles membership in the set; a plain
+    // click replaces. Shift toggles too, matching the viewport's Shift-accumulate.
     if row.clicked() {
         if ui.input(|input| input.modifiers.command || input.modifiers.shift) {
             response.select = Some(crate::panel::SelectionRequest::Toggle(

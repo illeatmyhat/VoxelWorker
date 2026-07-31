@@ -10,7 +10,7 @@ use voxel_core::core_geom::MaterialChoice;
 
 use super::ArmedConstraint;
 
-/// The armed-tool **placement ghost** (ADR 0022): the translucent analytic-SDF preview of
+/// The armed-tool **placement ghost**: the translucent analytic-SDF preview of
 /// where a primitive's voxels will land, drawn without recomposing the scene ("render a
 /// colored transparent SDF where the voxels will be"). Lives INSIDE [`ArmedTool`] as its
 /// [`pending_drop`](ArmedTool::pending_drop) — `Some` while the armed tool is pointed at a
@@ -20,8 +20,8 @@ use super::ArmedConstraint;
 /// node would take — the SAME frame `Intent::PlaceNode { offset_voxels }` uses
 /// (`src/app_core/placement.rs`). The render-frame field center the shader needs is
 /// DERIVED at draw time from the live resolve's recenter via [`center_world`], keeping the
-/// frame law (ADR 0008) in one place rather than baked into stored state that a later
-/// rebuild would stale.
+/// frame law in one place rather than baked into stored state that a later rebuild would
+/// stale.
 ///
 /// [`center_world`]: PlacementGhost::center_world
 #[derive(Debug, Clone, PartialEq)]
@@ -32,13 +32,13 @@ pub struct PlacementGhost {
     /// `offset_voxels = V` occupies absolute `[V, V + turn_extent(grid))` (the placement
     /// frame, `src/app_core/placement.rs`).
     pub offset_voxels: [i64; 3],
-    /// The **sub-voxel** remainder of the corner offset (ADR 0027) — the continuous fraction a
+    /// The **sub-voxel** remainder of the corner offset — the continuous fraction a
     /// `NoSnap` drop keeps under the cursor while `offset_voxels` holds the integer floor. The
     /// committed node seats at `offset_voxels + offset_local`, so the ghost MUST carry it too or
     /// it snaps to the integer voxel while the real geometry lands a fraction off (the confusing
     /// off-by-a-few-voxels mismatch in `NoSnap` mode). Zero for Voxel / Block snap.
     pub offset_local: [f32; 3],
-    /// The node's **continuous** rotation (ADR 0027) — the exact tilt the drop would apply, so
+    /// The node's **continuous** rotation — the exact tilt the drop would apply, so
     /// the ghost previews the shape the way it will actually land (a tube tilted to a cylinder's
     /// curved radial normal, not merely the nearest of the 24 lattice turns). Identity for a
     /// world-plane or upright drop.
@@ -49,7 +49,7 @@ impl PlacementGhost {
     /// The field center in the display's render frame — the box center of the placed node, seated
     /// through the **SAME** corner-anchored affine the classifier folds occupancy through
     /// ([`substrate::spatial::LeafPlacement`], the `LeafAffine` alias), so the ghost coincides with
-    /// the solid drop BY CONSTRUCTION rather than by a kept-in-sync mirror (ADR 0008 + ADR 0027).
+    /// the solid drop BY CONSTRUCTION rather than by a kept-in-sync mirror.
     ///
     /// Seat the continuous corner `offset_voxels + offset_local` (integer floor plus the sub-voxel
     /// `NoSnap` remainder) via `LeafPlacement`, ask it where the producer-local center `full/2`
@@ -95,7 +95,7 @@ impl PlacementGhost {
     }
 
     /// The **inverse** rotation as column-major `f32` columns for the shader's `mat3x3<f32>`
-    /// uniform (ADR 0027). The ghost stores the forward rotation; the shader maps a world sample
+    /// uniform. The ghost stores the forward rotation; the shader maps a world sample
     /// back into the shape's local frame with its inverse, so `rotation_inverse · (world − center)`
     /// lands in the un-turned SDF frame. Each column is padded to a `vec4` (std140 mat3 stride);
     /// the `w` lane is unused.
@@ -118,10 +118,9 @@ impl PlacementGhost {
 
 /// The **armed tool** and everything it carries: the [`NodeSpec`] a stationary viewport
 /// click drops, plus the pending-drop [`PlacementGhost`] the per-frame arm pass derives
-/// from it. One field, nested by construction, so the F9 bug class — a dump carrying the
-/// ghost (the mirror) without the tool (its authority), leaving frame 1 to re-derive from
-/// nothing and clobber the restored drop — is unrepresentable: the ghost cannot outlive,
-/// precede, or travel without its tool.
+/// from it. One field, nested by construction, so a dump cannot carry the ghost (the mirror)
+/// without the tool (its authority) and leave frame 1 re-deriving from nothing: the ghost cannot
+/// outlive, precede, or travel without its tool.
 #[derive(Debug, Clone)]
 pub struct ArmedTool {
     /// What a stationary click places — the authority the arm pass re-derives
@@ -132,9 +131,9 @@ pub struct ArmedTool {
     pub pending_drop: Option<PlacementGhost>,
 }
 
-/// How a placed node's **position** snaps to the lattice (owner ruling 2026-07-21). A
-/// **session** setting, durable across adds and relaunch (ADR 0024), set from the armed-tool
-/// `Add <shape>` dialog. Progressively coarsens the drop point from the raycast hit.
+/// How a placed node's **position** snaps to the lattice. A **session** setting, durable across
+/// adds and relaunch, set from the armed-tool `Add <shape>` dialog. Progressively coarsens the
+/// drop point from the raycast hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PositionSnap {
     /// Drop at the raycast surface hit itself, at the finest (voxel) granularity — the freest
@@ -148,8 +147,8 @@ pub enum PositionSnap {
     Voxel,
 }
 
-/// How a placed node's **seated rotation** snaps in angle (owner ruling 2026-07-21, ADR 0027
-/// slice 6). A **session** setting like [`PositionSnap`]. The node ALWAYS seats to the surface
+/// How a placed node's **seated rotation** snaps in angle. A **session** setting like
+/// [`PositionSnap`]. The node ALWAYS seats to the surface
 /// normal — that part is not a choice — this only picks the angle granularity of that seated
 /// rotation: exact (any angle) or quantized to 15° steps. The quantization itself is applied by
 /// the placement spine (`place_primitive`), not here; this enum only names the choice.
@@ -158,11 +157,11 @@ pub enum AngleSnap {
     /// Use the seated rotation exactly, at any angle. The default.
     #[default]
     Continuous,
-    /// Quantize the seated rotation's angle to 15° steps (position-dominant, ADR 0027 §2).
+    /// Quantize the seated rotation's angle to 15° steps, position-dominant.
     Deg15,
 }
 
-/// Which authoring **pivot** a placed node seats by (owner ruling 2026-07-21) — the continuous
+/// Which authoring **pivot** a placed node seats by — the continuous
 /// handle the drop lands at and rotates about. A **session** setting like [`PositionSnap`]. The
 /// node ALWAYS seats to the surface normal — that part is not a choice — this only picks which
 /// point of the object touches the contact. Centering yields a FRACTIONAL sub-voxel offset that
@@ -191,36 +190,32 @@ pub struct PlacementSnap {
     pub pivot: PlacementPivot,
 }
 
-/// The viewer's exclusive rendering mode (ADR 0018 Decision 3). The viewer is always in
-/// exactly one of these three; the mode is **never document state** — it follows the
-/// active selection, is not saved with the scene, and never enters undo history (the
-/// [`PanelState`] display-param precedent, like [`ProjectionMode`]). Sticky across
-/// selection changes; default [`Normal`](Self::Normal).
+/// The viewer's exclusive rendering mode. The viewer is always in exactly one of these three;
+/// the mode is **never document state** — it follows the active selection, is not saved with the
+/// scene, and never enters undo history, like [`ProjectionMode`] and the other [`PanelState`]
+/// display params. Sticky across selection changes; default [`Normal`](Self::Normal).
 ///
-/// It **is** restored across relaunch, as *session* state (ADR 0024): out of the document,
-/// into the dump. ADR 0018 Decision 3 said "not saved with the scene" and the code read
-/// that as "not saved at all", which is the narrower claim it never made.
+/// It **is** restored across relaunch, as *session* state: out of the document, into the dump.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ViewMode {
-    /// The finished look: no ghosts, no band clip, anywhere (ADR 0018 Decision 4).
+    /// The finished look: no ghosts, no band clip, anywhere.
     #[default]
     Normal,
-    /// Onion fog: the selected object clips to the layer band with ghost haze outside it
-    /// (ADR 0018 Decision 5). The scrubber's `lower`/`upper` are object-relative over the
-    /// selected object's Z extent (the shell's `AppCore::mesh_clip` derives the region-scoped
-    /// clip from them); selecting the root part recovers the pre-Decision-5 scene-wide
-    /// meaning.
+    /// Onion fog: the selected object clips to the layer band with ghost haze outside it. The
+    /// scrubber's `lower`/`upper` are object-relative over the selected object's Z extent (the
+    /// shell's `AppCore::mesh_clip` derives the region-scoped clip from them); selecting the
+    /// root part makes the band scene-wide.
     OnionFog,
     /// Show booleans: every Subtract/Intersect operand in the selected subtree x-rays
-    /// over the finished scene (ADR 0018 Decision 6). Selecting the root part covers the
+    /// over the finished scene. Selecting the root part covers the
     /// whole scene.
     ShowBooleans,
 }
 
 impl ViewMode {
-    /// The next mode in the Signal icon rail's cycle order (ADR 0018 Decision 8 /
-    /// `docs/design/viewport-chrome-signal.md`): Normal -> Onion fog -> Show booleans ->
-    /// Normal. The viewport-mode button steps through this; it is pure display state (no
+    /// The next mode in the Signal icon rail's cycle order: Normal -> Onion fog -> Show
+    /// booleans -> Normal. The viewport-mode button steps through this; it is pure display
+    /// state (no
     /// rebuild, never serialized, never undone), so cycling it only re-derives the
     /// display overlays at the shell's existing mode-change seam.
     pub fn next(self) -> Self {
@@ -242,23 +237,21 @@ impl ViewMode {
     }
 }
 
-/// How the author leaves **sketch mode** (ADR 0028 §2, §4) — the two arms of the floating
-/// `CANCEL | FINISH SKETCH` exit control.
+/// How the author leaves **sketch mode** — the two arms of the floating `CANCEL | FINISH
+/// SKETCH` exit control.
 ///
-/// The mode opens an undo GROUP on enter (ADR 0028 §4); these are the two ways it closes.
-/// In slice 1's mode-shell (#93) no edits are grouped yet, so both arms simply drop the mode
-/// — the group machinery arrives with the vertex-edit slice (#94), at which point `Finish`
-/// collapses the session to one main-history entry and `Cancel` rolls it back to enter-state.
+/// The mode opens an undo GROUP on enter; these are the two ways it closes. `Finish` collapses
+/// the session to one main-history entry, `Cancel` rolls it back to the enter-state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SketchExit {
-    /// Commit the sketch edits — closes the undo group as one main-stack entry (#94).
+    /// Commit the sketch edits — closes the undo group as one main-stack entry.
     Finish,
-    /// Discard the sketch edits — rolls the undo group back to the enter-state (#94).
+    /// Discard the sketch edits — rolls the undo group back to the enter-state.
     Cancel,
 }
 
 /// What the viewport context menu asked of the **orbit center** — the pivot Shift+MMB turns
-/// about (`docs/design/tool-modes-and-navigation.md`).
+/// about.
 ///
 /// The two menu items are the entire set of things that may move it. Every other camera verb
 /// (pan, zoom, the view cube, the explicit orbit mode) operates on `camera.target` instead, and
@@ -278,8 +271,8 @@ pub enum OrbitCenterRequest {
 ///
 /// While a modal command is up, the viewport menu is REPLACED by this pair — there is no third
 /// choice, because a menu that offered unrelated verbs mid-command would be offering to start a
-/// second one. Fusion's marking menu behaves the same way, and this is the general seam every
-/// future modal command reports through, not an orbit-mode detail.
+/// second one. This is the general seam every modal command reports through, not an orbit-mode
+/// detail.
 ///
 /// The two are distinct in general: `Accept` keeps what the command produced, `Cancel` discards
 /// it. A command with nothing pending to discard — the explicit orbit mode is one; navigating IS
@@ -292,51 +285,48 @@ pub enum ModeCommand {
     Cancel,
 }
 
-/// The armed **sketch-mode tool** (ADR 0028) — which direct-manipulation verb a viewport
-/// click performs while a sketch is being edited (#94 vertex drag, #95 add-point, #99
-/// polyline / rectangle drawing). Delete is an ACTION on the selection (Delete key / context
-/// menu), not a tool — `docs/design/sketch-selection.md` retired the Delete mode.
+/// The armed **sketch-mode tool** — which direct-manipulation verb a viewport click performs
+/// while a sketch is being edited. Delete is an ACTION on the selection (Delete key / context
+/// menu), not a tool.
 ///
 /// **Session** state on the same footing as [`PanelState::armed_tool`] and
 /// [`PanelState::sketch_mode`]: which tool was armed is how the workspace was left, never
 /// document state, and it rides into the dump so a mid-edit repro re-enters the mode with the
-/// same tool in hand (the ADR 0024 route the armed ghost and the sketch mode itself take).
+/// same tool in hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SketchTool {
-    /// Select / move a profile vertex — press a handle and drag it on the plane (#94). The
-    /// default, and the only tool that grabs a vertex on press.
+    /// Select / move a profile vertex — press a handle and drag it on the plane. The default,
+    /// and the only tool that grabs a vertex on press.
     #[default]
     Select,
     /// Add a point: click a profile **segment** to insert a new vertex there, splitting the
-    /// edge at the grid-snapped click (owner ruling 2026-07-22, #95).
+    /// edge at the grid-snapped click.
     AddPoint,
-    /// Draw a polyline (#99): each click places a grid-snapped point chained to the previous
+    /// Draw a polyline: each click places a grid-snapped point chained to the previous
     /// one by a segment; a click on an existing point joins it (coincidence = shared id);
     /// clicking the chain's first point closes the loop and ends the chain; clicking the
     /// last point again ends it open.
     Polyline,
-    /// Draw a rectangle (#99): press one corner, drag, release at the opposite corner to
+    /// Draw a rectangle: press one corner, drag, release at the opposite corner to
     /// append the closed four-segment loop. A degenerate (zero-span) drag draws nothing.
     Rectangle,
-    /// Draw a 3-point arc (#102): click the start, the end, then a point the arc passes
-    /// THROUGH. The through-point is consumed — the stored form is the two endpoints plus
-    /// the solved included angle (ADR 0030 §5).
+    /// Draw a 3-point arc: click the start, the end, then a point the arc passes THROUGH. The
+    /// through-point is consumed — the stored form is the two endpoints plus the solved included
+    /// angle.
     ThreePointArc,
 }
 
-/// The floating Signal **display stack**'s viewer state (issue #88; ADR 0018 Decision 8,
-/// `docs/design/viewport-chrome-signal.md` §Chrome layout — display panel bullet).
+/// The floating Signal **display stack**'s viewer state.
 ///
 /// The stack is the near-black instrument panel that floats top-right of the 3D viewport
 /// (the cube + rail slide left of it). Whether it is folded to edge tabs, and which
 /// sections are open, are **never document state** — like [`ViewMode`], they are not saved
-/// with the scene and never enter undo history. They follow the *session*, and since
-/// ADR 0024 that is a category with a route rather than a figure of speech: the fold state
+/// with the scene and never enter undo history. They are *session* state, so the fold state
 /// is restored on relaunch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalStackState {
     /// When `true` the whole stack is collapsed to vertical edge tabs hugging the
-    /// viewport's right edge (Blender N-panel style); the `»` header button folds it and a
+    /// viewport's right edge; the `»` header button folds it and a
     /// `«` tab (or any section tab) expands it again.
     pub folded: bool,
     /// The VIEWPORT section (mode readout + camera projection) is expanded.
@@ -360,10 +350,9 @@ impl Default for SignalStackState {
     }
 }
 
-/// Layer-range scrubber state (issue #12).
+/// Layer-range scrubber state.
 ///
-/// The layer-range scrubber subsumes the old 2D mid-vertical slice map. Z-up: layers
-/// run along **Z** (height). `lower`/`upper` are voxel Z-layer indices selected on a
+/// Z-up: layers run along **Z** (height). `lower`/`upper` are voxel Z-layer indices selected on a
 /// track `0..grid_z`; the visible band is layers `[lower, upper]` INCLUSIVE on both
 /// ends (so `lower == upper` shows a single layer). Default = the full range.
 ///
@@ -449,17 +438,17 @@ impl LayerRange {
 /// (no rebuild). The binaries own one of these and feed it to the panel each
 /// frame; [`PanelResponse`] tells them what changed.
 ///
-/// Every field is **classified** (ADR 0022): it declares which persistence artifacts it
-/// reaches, and a new field that declares nothing does not compile. This struct is where
-/// the scheme earns its keep, because it is the one the shell hands to `AppConfig::capture`
-/// — the exact seam at which the camera's pan target once went quietly missing from a repro.
+/// Every field is **classified**: it declares which persistence artifacts it reaches, and a new
+/// field that declares nothing does not compile. This struct is where the scheme earns its keep,
+/// because it is the one the shell hands to `AppConfig::capture` — the exact seam at which a
+/// camera pan target can go quietly missing from a repro.
 /// Each category applies to the whole object and does not recurse: `layer_range` is view
 /// state entire, and nothing inside [`LayerRange`] is annotated, because serialization
 /// already carries what is inside a saved object.
 #[derive(Debug, Clone, Default, snapshot::Snapshot)]
 pub struct PanelState {
-    /// The scene (ADR 0001): the flat node list that is now the panel's source of
-    /// truth. The node list section adds/selects/deletes nodes; the inspector
+    /// The scene: the flat node list that is the panel's source of truth.
+    /// The node list section adds/selects/deletes nodes; the inspector
     /// edits the ACTIVE node. [`geometry`](Self::geometry) / [`material`](Self::material)
     /// are the inspector's working mirror of the active Tool node (synced both
     /// ways) so the renderer/export call sites that read voxel dims + density keep
@@ -480,7 +469,7 @@ pub struct PanelState {
     /// project, so it is settings rather than view.
     #[snapshot(settings)]
     pub projection_mode: ProjectionMode,
-    /// Material selection (display-only: selects the M4 procedural texture).
+    /// Material selection (display-only: selects the procedural texture).
     ///
     /// Settings, because this field is the *picker's* current value and persists across
     /// projects; the document's copy of a material lives on the node the pick was applied
@@ -488,8 +477,8 @@ pub struct PanelState {
     #[snapshot(settings)]
     pub material: MaterialChoice,
     /// Whether the Points' axes draw ON TOP of the model (depth off, through it — a nav marker)
-    /// vs occluded by it (depth-tested scaffold). ON by default; screen-stable either way
-    /// (ADR 0031). A display preference that outlives a project, so settings like the view cube.
+    /// vs occluded by it (depth-tested scaffold). ON by default; screen-stable either way. A
+    /// display preference that outlives a project, so settings like the view cube.
     #[snapshot(settings)]
     pub axes_on_top: bool,
     /// Whether the voxel cubes render in face-orientation debug mode (color by
@@ -497,10 +486,9 @@ pub struct PanelState {
     /// by default; the standard way to verify face winding/culling.
     ///
     /// **Session** state, on the same footing as [`view_mode`](Self::view_mode): it
-    /// describes what the workspace was doing, not what the model is and not what the
-    /// user prefers. The note that used to sit here — "a debug mode a fault was observed
-    /// under is precisely the sort of thing a dump must carry" — was right, and ADR 0024
-    /// is where it stopped being an observation and became a route.
+    /// describes what the workspace was doing, not what the model is and not what the user
+    /// prefers. A debug mode a fault was observed under is precisely the sort of thing a dump
+    /// must carry.
     #[snapshot(session)]
     pub debug_face_orientation: bool,
     /// Grazing-rim DIAGNOSTIC for the BRICK raymarch (`set_debug_mode`): shade every hit
@@ -509,19 +497,18 @@ pub struct PanelState {
     /// drops to the mesh path), this keeps the brick path ENGAGED — it IS the path under
     /// investigation. Display toggle, OFF by default.
     ///
-    /// **Session** state (ADR 0024). This one makes the argument by itself: the diagnostic
-    /// exists to be on while a rendering fault is being chased, so an F9 dump taken during
-    /// that chase and replayed without it reproduces the wrong picture — the pan-target
-    /// bug wearing a different hat.
+    /// **Session** state. This one makes the argument by itself: the diagnostic exists to be
+    /// on while a rendering fault is being chased, so a dump taken during that chase and
+    /// replayed without it reproduces the wrong picture.
     #[snapshot(session)]
     pub debug_brick_faces: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
     ///
-    /// **Derived**, and it passes ADR 0023's admission test literally: the value is a
-    /// function of the scene and its density, both classified, recomputed by the caller at
-    /// every rebuild. Dropping it costs one more count and changes nothing else.
+    /// **Derived**: the value is a function of the scene and its density, both classified, and
+    /// recomputed by the caller at every rebuild. Dropping it costs one more count and changes
+    /// nothing else.
     #[snapshot(derived)]
     pub voxel_cap_warning_millions: Option<f32>,
     /// When `true`, the last authored edit was REJECTED because it would push a node
@@ -534,7 +521,7 @@ pub struct PanelState {
     #[snapshot(derived)]
     pub coordinate_limit_warning: bool,
     /// When `Some`, the last constraint the author asked for was REFUSED, and the value says
-    /// why (ADR 0035). The top bar shows it while a sketch is open; the next constraint that
+    /// why. The top bar shows it while a sketch is open; the next constraint that
     /// lands clears it. A fixed string rather than an owned one, because the refusals are a
     /// closed set and nothing about them is per-sketch.
     ///
@@ -555,15 +542,13 @@ pub struct PanelState {
     /// The viewer's exclusive rendering mode: Normal / Onion fog / Show booleans. No
     /// rebuild, never in undo, sticky across selection changes; defaults to Normal.
     ///
-    /// **Session** state, and the field the category was named for (ADR 0024, superseding
-    /// ADR 0018 Decision 3). It stays out of the document exactly as Decision 3 required —
-    /// what changed is that "not document state" was being read as "not persisted at all",
-    /// and those are different claims. Leaving the app in Onion fog and finding it in
-    /// Normal on relaunch is losing work, in the small.
+    /// **Session** state, and the field the category was named for. It stays out of the
+    /// document, which is not the same claim as "not persisted at all": leaving the app in
+    /// Onion fog and finding it in Normal on relaunch is losing work, in the small.
     #[snapshot(session)]
     pub view_mode: ViewMode,
-    /// The floating Signal display stack's state (issue #88): folded-to-edge-tabs and
-    /// per-section open/closed.
+    /// The floating Signal display stack's state: folded-to-edge-tabs and per-section
+    /// open/closed.
     ///
     /// **Session** state alongside [`view_mode`](Self::view_mode) — where the furniture
     /// was left, which is not a preference the user would want imposed on a project and
@@ -571,11 +556,11 @@ pub struct PanelState {
     /// it are not annotated, and do not need to be.
     #[snapshot(session)]
     pub stack: SignalStackState,
-    /// Layer-range scrubber state (issue #12): the visible band along Z (Z-up: layers
+    /// Layer-range scrubber state: the visible band along Z (Z-up: layers
     /// are Z-slices) plus the snap/onion controls. Bounds clamped/rescaled on rebuild.
     #[snapshot(view)]
     pub layer_range: LayerRange,
-    /// Where **+ Add Point** drops a new Point (issue #29 S5), in whole world blocks.
+    /// Where **+ Add Point** drops a new Point, in whole world blocks.
     /// The caller refreshes it each frame from the camera target (rounded to blocks)
     /// so a new Point lands where the user is looking; it defaults to the world origin
     /// (`[0, 0, 0]`) when the caller does not set it (e.g. the headless harness).
@@ -585,36 +570,34 @@ pub struct PanelState {
     /// admission test, met exactly.
     #[snapshot(derived)]
     pub point_add_position_blocks: [i64; 3],
-    /// The **armed tool** (ADR 0022): the [`NodeSpec`] a stationary viewport click drops
+    /// The **armed tool**: the [`NodeSpec`] a stationary viewport click drops
     /// plus its pending-drop ghost, or `None` when nothing is armed. See [`ArmedTool`].
     ///
     /// **Session** state, on the same footing as [`view_mode`](Self::view_mode): an armed
     /// tool is how the workspace was left, not what the model is and not a preference. A
-    /// dump taken mid-gesture and replayed must show the same pending drop — so the tool
-    /// (WITH its drop) travels into the dump (and never the shared document), the ADR 0024
-    /// route the viewer mode blazed. The authority and its derived ghost are ONE field, so
-    /// the capture cannot carry one without the other.
+    /// dump taken mid-gesture and replayed must show the same pending drop, so the tool (WITH
+    /// its drop) travels into the dump and never into the shared document. The authority and
+    /// its derived ghost are ONE field, so the capture cannot carry one without the other.
     #[snapshot(session)]
     pub armed_tool: Option<ArmedTool>,
-    /// The armed-tool placement snap settings (owner ruling 2026-07-21): position (no snap /
-    /// block / voxel) and orientation (no snap / surface). **Session** state — durable across
-    /// adds and relaunch (ADR 0024), edited in the `Add <shape>` dialog, read by
-    /// `place_primitive`.
+    /// The armed-tool placement snap settings: position (no snap / block / voxel) and
+    /// orientation (no snap / surface). **Session** state — durable across adds and relaunch,
+    /// edited in the `Add <shape>` dialog, read by `place_primitive`.
     #[snapshot(session)]
     pub placement_snap: PlacementSnap,
-    /// The sketch node currently being edited in **sketch mode** (ADR 0028), or `None` when
+    /// The sketch node currently being edited in **sketch mode**, or `None` when
     /// the workspace is in its normal chrome. `Some(id)` swaps the rail to the sketch toolset,
     /// withdraws the non-sketch operations, marks the node "editing" in the browser, and shows
     /// the floating `CANCEL | FINISH SKETCH` exit control.
     ///
     /// **Session** state, on the same footing as [`view_mode`](Self::view_mode) and
     /// [`armed_tool`](Self::armed_tool): the mode follows what you are editing, is
-    /// never document state (ADR 0022 — a saved document is byte-identical whether or not a
+    /// never document state (a saved document is byte-identical whether or not a
     /// sketch was being edited), and rides into the dump so a mid-edit repro re-enters the same
     /// sketch. Cleared when the id leaves the scene (a stale node can never trap the mode).
     #[snapshot(session)]
     pub sketch_mode: Option<NodeId>,
-    /// The armed sketch-mode tool (ADR 0028, #95): which vertex verb a viewport click performs
+    /// The armed sketch-mode tool: which vertex verb a viewport click performs
     /// while [`sketch_mode`](Self::sketch_mode) is `Some`. Ignored (but retained) outside the
     /// mode, exactly like [`placement_snap`](Self::placement_snap) is retained with nothing
     /// armed. Defaults to [`SketchTool::Select`].
@@ -625,7 +608,7 @@ pub struct PanelState {
     /// with the same tool in hand.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
-    /// The armed **constraint** and the entities picked for it so far (ADR 0035 Decision 15).
+    /// The armed **constraint** and the entities picked for it so far.
     ///
     /// Held apart from [`sketch_tool`](Self::sketch_tool) rather than joining its enum, because
     /// the two arm different things and one does not replace the other: a constraint gesture
@@ -638,10 +621,10 @@ pub struct PanelState {
     /// the same question on screen.
     #[snapshot(session)]
     pub armed_constraint: Option<ArmedConstraint>,
-    /// The sketch-mode **position snap** (#96): how a vertex edit quantizes on the sketch
-    /// plane's own grid — sub-voxel continuous ([`PositionSnap::NoSnap`], the fraction rides
-    /// the vertex, #101), whole-voxel (the default), or block boundaries. Reuses ADR 0027's
-    /// [`PositionSnap`]; per ADR 0028 §5 the lattice stands in for a constraint solver.
+    /// The sketch-mode **position snap**: how a vertex edit quantizes on the sketch plane's
+    /// own grid — sub-voxel continuous ([`PositionSnap::NoSnap`], the fraction rides the
+    /// vertex), whole-voxel (the default), or block boundaries. Reuses the placement
+    /// [`PositionSnap`]; the lattice stands in for a constraint solver.
     ///
     /// **Session** state alongside [`sketch_tool`](Self::sketch_tool) and on the same footing
     /// as [`placement_snap`](Self::placement_snap): an editing preference that is never
@@ -649,22 +632,18 @@ pub struct PanelState {
     #[snapshot(session)]
     pub sketch_snap: PositionSnap,
     /// The workspace **selection** — every picked target, whatever its kind: scene nodes,
-    /// reference Points, and (ADR 0030) sketch vertices and edges. The successor of BOTH the
-    /// document's `Scene::active` / `Scene::active_point` AND the retired `SketchSelection`,
-    /// folded into one set by ADR 0032: mode exclusivity is an admission filter, not a reason
-    /// for parallel structures. Edits steer it as an effect, but it is never document truth
-    /// and undo never restores it as such.
+    /// reference Points, sketch vertices and sketch edges. One set for every kind: mode
+    /// exclusivity is an admission filter, not a reason for parallel structures. Edits steer it
+    /// as an effect, but it is never document truth and undo never restores it as such.
     ///
     /// **Session** state alongside [`sketch_mode`](Self::sketch_mode): what you had picked is
     /// where you left the workspace, never travels in a shared file, and rides the dump so a
     /// repro re-enters with the same thing selected.
     ///
     /// The SKETCH-kind targets are the exception, and deliberately: `SelectionConfig` drops
-    /// them on capture, keeping the reasoning the old `sketch_selection` field carried as its
-    /// Transient justification — in-mode picks are momentary, cleared on entering and leaving
-    /// a sketch, and persisting an `EntityId` is the one way a target could go stale against
-    /// an edited profile. Folding the data structure does not oblige folding the persistence
-    /// policy.
+    /// them on capture. In-mode picks are momentary, cleared on entering and leaving a sketch,
+    /// and persisting an `EntityId` is the one way a target could go stale against an edited
+    /// profile. Folding the data structure does not oblige folding the persistence policy.
     #[snapshot(session)]
     pub selection: super::Selection,
     /// The **default orbit type**: what an orbit gesture turns as when nothing named a type.
@@ -674,7 +653,7 @@ pub struct PanelState {
     /// here, so the two differ whenever an override is running. Only the display rail's orbit
     /// split button writes this: picking from a split button re-faces it, which is the same act
     /// as setting the default, whereas invoking a command has never meant "make this the
-    /// default". (`docs/design/tool-modes-and-navigation.md`, the entry-path table.)
+    /// default".
     ///
     /// **Session** state alongside [`sketch_tool`](Self::sketch_tool): how the author was last
     /// steering the view is where they left the workspace — never Settings (it is a
@@ -699,8 +678,7 @@ pub struct PanelState {
     pub shortcuts: crate::shortcuts::Shortcuts,
 }
 
-/// Whether the explicit **orbit mode** is running, and what it turns as
-/// (`docs/design/tool-modes-and-navigation.md`).
+/// Whether the explicit **orbit mode** is running, and what it turns as.
 ///
 /// While it runs the left button turns the camera about `camera.target` instead of selecting, a
 /// targeting reticle marks that target, and a stationary click re-centers the view on the surface
@@ -771,12 +749,12 @@ impl PanelState {
         if self.scene.roots.is_empty() {
             self.scene = Scene::from_geometry(self.geometry.clone(), self.material);
         }
-        // issue #29 (grid rework S1): every scene carries exactly one Origin Point.
-        // Idempotent, so calling it on an already-seeded scene is a no-op.
+        // Every scene carries exactly one Origin Point. Idempotent, so calling it on an
+        // already-seeded scene is a no-op.
         self.scene.ensure_origin_point();
-        // ADR 0003 Phase B: mint a stable NodeId for every node (idempotent).
+        // Mint a stable NodeId for every node (idempotent).
         self.scene.ensure_node_ids();
-        // ADR 0032: the workspace arrives with the seed node picked, so the inspector has
+        // The workspace arrives with the seed node picked, so the inspector has
         // something to mirror on a fresh launch. Only when nothing is picked yet — a
         // config-restored selection wins.
         if self.selection.is_empty() {
@@ -802,9 +780,9 @@ impl PanelState {
         self.armed_tool.as_ref()?.pending_drop.as_ref()
     }
 
-    /// The primary selected node (ADR 0032) — the successor of `Scene::active_node()`, now
-    /// resolved against the workspace [`selection`](Self::selection) rather than a document
-    /// field. `None` when no node is picked, or when the picked id has left the scene.
+    /// The primary selected node, resolved against the workspace
+    /// [`selection`](Self::selection) rather than any document field. `None` when no node is
+    /// picked, or when the picked id has left the scene.
     pub fn selected_node(&self) -> Option<&document::scene::Node> {
         self.selection
             .primary_node_id()
@@ -829,7 +807,7 @@ impl PanelState {
             if let NodeContent::Tool { shape, material } = &node.content {
                 self.geometry = GeometryParams {
                     shape: shape.kind,
-                    // Size is voxel-granular (ADR 0003 §3f(0)): carry the canonical
+                    // Size is voxel-granular: carry the canonical
                     // voxels AND the retained authored expression so the inspector
                     // seeds / re-emits the exact size the user typed.
                     size_voxels: shape.size_voxels,
@@ -838,7 +816,7 @@ impl PanelState {
                     } else {
                         None
                     },
-                    // Density is document-level (ADR 0003 §3f(0)): the slider's
+                    // Density is document-level: the slider's
                     // transient mirror value comes from the scene, not the shape.
                     voxels_per_block: self.scene.voxels_per_block,
                     wall_blocks: shape.wall_blocks,
@@ -851,33 +829,29 @@ impl PanelState {
 
 /// What changed during a [`build_panel`](super::build_panel) call, so the caller can react.
 ///
-/// **ADR 0003 Phase C, slice C4a.** The panel no longer mutates `state.scene`
-/// directly; instead every document mutation this frame is DESCRIBED as an
-/// [`Intent`] pushed onto [`intents`](Self::intents), which the loop applies through
-/// the shell's `AppCore::apply_intent` and folds the returned `IntentEffect`s into its
-/// rebuild / points / selection
-/// decisions. The remaining fields are NON-scene side effects (palette / export /
-/// folder picker) the panel still only flags, plus the
-/// [`frame_after_apply`](Self::frame_after_apply) auto-frame hint (which is a panel
-/// UX concern — a size-slider `SetShape` re-frames, a shape-chip `SetShape` does
-/// not, even though both are the same intent KIND — so it cannot be derived from the
-/// intent alone and stays on the response).
+/// The panel never mutates `state.scene` directly: every document mutation this frame is
+/// DESCRIBED as an [`Intent`] pushed onto [`intents`](Self::intents), which the loop applies
+/// through the shell's `AppCore::apply_intent`, folding the returned `IntentEffect`s into its
+/// rebuild / points / selection decisions. The remaining fields are NON-scene side effects
+/// (palette / export / folder picker) the panel only flags, plus the
+/// [`frame_after_apply`](Self::frame_after_apply) auto-frame hint — a panel UX concern, since a
+/// size-slider `SetShape` re-frames and a shape-chip `SetShape` does not even though both are
+/// the same intent KIND, so it cannot be derived from the intent alone.
 #[derive(Debug, Clone, Default)]
 pub struct PanelResponse {
-    /// The document mutations the user made this frame, in emission order (ADR 0003
-    /// Phase C C4a). The loop applies each through `AppCore::apply_intent` and merges
-    /// the effects; the panel itself performs NONE of them.
+    /// The document mutations the user made this frame, in emission order. The loop applies
+    /// each through `AppCore::apply_intent` and merges the effects; the panel itself performs
+    /// NONE of them.
     pub intents: Vec<Intent>,
     /// The caller should auto-frame the camera after applying this frame's intents
-    /// (the typed successor of the old `size_or_density_changed || scene_changed`
-    /// auto-frame trigger). Set by the panel for every emitted intent EXCEPT a pure
-    /// shape-chip switch and a material pick (guard #1: a shape switch re-resolves at
-    /// the same size and must NOT move the camera). A panel-level signal because the
+    /// Set by the panel for every emitted intent EXCEPT a pure shape-chip switch and a
+    /// material pick — a shape switch re-resolves at the same size and must NOT move the
+    /// camera. A panel-level signal because the
     /// same intent KIND (`SetShape`) auto-frames from a size slider but not from a
     /// shape chip.
     pub frame_after_apply: bool,
     /// A palette tile was clicked this frame → apply a pseudo-random variant of
-    /// this tile index as the active loaded material (M6).
+    /// this tile index as the active loaded material.
     pub clicked_palette_tile: Option<usize>,
     /// The "Connect folder…" button was clicked → open the OS folder picker and
     /// scan the chosen folder via `CustomFolderSource` (M6).
@@ -906,7 +880,7 @@ pub struct PanelResponse {
     /// exclusively at the source (the cell reads the armed mirror), and the shell lets an
     /// explicit disarm win if a future second source ever sets both in one frame.
     pub disarm_tool: bool,
-    /// The sketch node the user asked to **enter sketch mode** on this frame (ADR 0028), via
+    /// The sketch node the user asked to **enter sketch mode** on this frame, via
     /// the inspector's "Edit sketch" button. A VIEW action, NOT a document `Intent` (entering
     /// a mode mutates nothing in the document), so it rides on the response like `focus_node`.
     /// The shell sets [`PanelState::sketch_mode`](PanelState::sketch_mode) to it. `None` when
@@ -914,21 +888,21 @@ pub struct PanelResponse {
     pub enter_sketch: Option<NodeId>,
     /// The user chose **Delete** from the general viewport context menu this frame → the shell
     /// removes what is picked. WHAT that means is the shell's to decide, not the panel's: inside a
-    /// sketch it deletes the picked entities as one edit with points cascading their segments (ADR
-    /// 0030), and outside one it removes the picked node. Routed as a flag rather than an
+    /// sketch it deletes the picked entities as one edit with points cascading their segments,
+    /// and outside one it removes the picked node. Routed as a flag rather than an
     /// `Intent`, because the selection and the sketch commit path both live on the shell — and
     /// because the keyboard binding for the same command reaches the same door
     /// (`ui::shortcuts::ShortcutCommand::DeleteSelection`), which a menu-built intent could not.
     /// `false` when no delete was requested.
     pub delete_selection: bool,
     /// The user chose **Carve hole / Fill region** from the viewport menu this frame → the shell
-    /// flips the pick state of the face the menu opened over (#100, ADR 0030 §3). A flag rather
+    /// flips the pick state of the face the menu opened over. A flag rather
     /// than a key, for the same reason `delete_selection` is: WHICH face the right-click landed
     /// in is a screen-space hit-test only the shell can answer, and it already answered it to
     /// decide whether to offer the row at all. `false` when the row was not chosen.
     pub toggle_sketch_face: bool,
     /// How the user asked to move the **orbit center** this frame from the general viewport
-    /// context menu (`docs/design/tool-modes-and-navigation.md`) — the deliberate act that is
+    /// context menu — the deliberate act that is
     /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW
     /// action, not an `Intent`: the camera is not the document. `None` when neither menu item
     /// was chosen.
@@ -938,12 +912,12 @@ pub struct PanelResponse {
     /// each modal command's accept and cancel actually mean. `None` when no command was running
     /// or the menu was dismissed without a choice.
     pub mode_command: Option<ModeCommand>,
-    /// How the user asked to **leave sketch mode** this frame (ADR 0028), via the floating
+    /// How the user asked to **leave sketch mode** this frame, via the floating
     /// `CANCEL | FINISH SKETCH` control — `Finish` commits, `Cancel` discards. A VIEW action:
-    /// the shell clears [`PanelState::sketch_mode`](PanelState::sketch_mode) (and, from #94,
-    /// closes/rolls-back the undo group). `None` when no exit was requested.
+    /// the shell clears [`PanelState::sketch_mode`](PanelState::sketch_mode) and closes or
+    /// rolls back the undo group. `None` when no exit was requested.
     pub exit_sketch: Option<SketchExit>,
-    /// How the user asked the **workspace selection** to change this frame (ADR 0032) — a
+    /// How the user asked the **workspace selection** to change this frame — a
     /// clicked browser/tree/points row, or a deselect. A VIEW action, NOT a document
     /// `Intent`: selecting is not an edit and reverses nothing, so it rides on the response
     /// like [`focus_node`](Self::focus_node) and the shell lands it on
@@ -953,15 +927,14 @@ pub struct PanelResponse {
 }
 
 impl PanelResponse {
-    /// Push a mutation the user described this frame (ADR 0003 Phase C C4a). The loop
-    /// applies it through `AppCore::apply_intent`; the panel never mutates the scene.
+    /// Push a mutation the user described this frame. The loop applies it through
+    /// `AppCore::apply_intent`; the panel never mutates the scene.
     pub(crate) fn emit(&mut self, intent: Intent) {
         self.intents.push(intent);
     }
 
-    /// Push a mutation AND request an auto-frame after this frame's intents apply (the
-    /// old `scene_changed` / `size_or_density_changed` behavior). Used for structural
-    /// edits and size/density edits — everything that re-frames; a shape-chip switch
+    /// Push a mutation AND request an auto-frame after this frame's intents apply. Used for
+    /// structural edits and size/density edits — everything that re-frames; a shape-chip switch
     /// and a material pick use [`emit`](Self::emit) instead so the camera stays put.
     pub(crate) fn emit_and_frame(&mut self, intent: Intent) {
         self.frame_after_apply = true;

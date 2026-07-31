@@ -6,7 +6,7 @@
 //! both marks put the red on the same side of the relation.
 //!
 //! The node is a square, this app's authored-vertex mark — a disc would say "a through-point",
-//! which is a different thing (ADR 0030 §5).
+//! which is a different thing.
 
 use super::{Ink, Mark};
 
