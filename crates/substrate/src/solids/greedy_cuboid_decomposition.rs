@@ -30,19 +30,14 @@
 //!
 //! The result is *not* guaranteed minimal in cuboid count. That is a deliberate,
 //! informed trade: partitioning a rectilinear region into the **fewest** axis-aligned
-//! boxes is NP-hard (Soltan & Gorpinevich 1993, *Minimum dissection of a rectilinear
-//! polygon with arbitrary holes into rectangles*), so an exact optimum is not
-//! affordable per invocation. Greedy growth is `O(cells)` amortized, deterministic,
-//! and empirically collapses a solid `n³` block to a single box — enough of the win
-//! for a fraction of the cost.
+//! boxes is NP-hard, so an exact optimum is not affordable per invocation. Greedy growth
+//! is `O(cells)` amortized, deterministic, and empirically collapses a solid `n³` block to
+//! a single box — enough of the win for a fraction of the cost.
 //!
-//! Cite: the greedy-meshing lineage — Lysenko, *Meshing in a Minecraft Game* (0fps,
-//! 2012) — merges same-attribute voxels into maximal quads/boxes by exactly this
-//! grow-and-consume sweep; the 3D box-cover reading is its natural extension.
-//! Hardness of the minimal cover: Soltan & Gorpinevich 1993 (rectilinear box cover
-//! is NP-hard). Deviation: a fixed `Z→Y→X` seed order (for determinism, not a cost
-//! heuristic) and a plain `Vec<bool>` consumed mask over the grid's flat layout
-//! (not a bitset) — the grids are per-boundary-block-sized, so the simple mask wins.
+//! Two departures from the usual greedy mesher: a fixed `Z→Y→X` seed order (for
+//! determinism, not as a cost heuristic) and a plain `Vec<bool>` consumed mask over the
+//! grid's flat layout rather than a bitset — the grids are per-boundary-block-sized, so
+//! the simple mask wins.
 
 /// One axis-aligned integer cuboid carrying a single label, over the cell lattice
 /// of a [`CellGrid`].

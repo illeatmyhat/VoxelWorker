@@ -27,11 +27,9 @@
 //! range without overflow; nothing in either type is parameterised by the meaning of
 //! a coordinate.
 //!
-//! Cite: Ericson, *Real-Time Collision Detection* (2005), ch. 4 (AABBs and the
-//! separating-axis overlap test). `RealAabb` is the textbook floating-point form;
-//! `LatticeAabb` deviates by integer cells and the half-open `[min, max)` ownership
-//! convention, so its `intersects` is a strict-inequality test on every axis and
-//! touching faces do not overlap.
+//! `RealAabb` is the textbook floating-point form; `LatticeAabb` deviates by integer cells
+//! and the half-open `[min, max)` ownership convention, so its `intersects` is a
+//! strict-inequality test on every axis and touching faces do not overlap.
 
 use glam::Vec3;
 
@@ -61,8 +59,8 @@ impl LatticeAabb {
 
     /// Whether two half-open boxes overlap (share at least one integer cell). Touching
     /// faces (one box's `max` equals the other's `min`) do **not** overlap — the
-    /// half-open convention. This is the per-axis separating-axis test of Ericson 2005
-    /// ch. 4, with strict inequalities because the boxes are half-open.
+    /// half-open convention. This is the per-axis separating-axis test, with strict
+    /// inequalities because the boxes are half-open.
     pub fn intersects(&self, other: &LatticeAabb) -> bool {
         if self.is_empty() || other.is_empty() {
             return false;

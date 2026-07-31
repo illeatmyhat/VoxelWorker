@@ -1,11 +1,10 @@
-//! Async wholesale brick-pipeline worker (perf follow-up to epic #64, on the issue #60
-//! stale-while-rebuilding pattern).
+//! Async wholesale brick-pipeline worker, on the stale-while-rebuilding pattern.
 //!
 //! A WHOLESALE brick rebuild — `build_brick_field` (records + sculpted atlas bytes) +
-//! the [`ClipmapPyramid`] + the representability classify + the GPU record pack — ran
-//! synchronously inside `rebuild_geometry` and cost ~2s of main-thread hitch per
-//! wholesale route on a giant scene (8000³ vx: record build ~1.15s, pyramid ~0.7s,
-//! classify ~0.17s). This module moves the WHOLE CPU side onto a background worker: the
+//! the [`ClipmapPyramid`] + the representability classify + the GPU record pack — costs
+//! ~2s on a giant scene (8000³ vx: record build ~1.15s, pyramid ~0.7s, classify ~0.17s),
+//! which is a main-thread hitch per wholesale route if run inside `rebuild_geometry`.
+//! This module keeps the WHOLE CPU side on a background worker: the
 //! main thread keeps drawing the CURRENT display (the stale brick field, or the mesh)
 //! until the freshly built artifacts arrive, then installs them — only the GPU upload
 //! (`install_brick_field`, milliseconds) stays on the main thread. Incremental edits
@@ -60,7 +59,7 @@ pub struct BrickRebuildRequest {
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
-    /// The composite recenter (floating origin, voxels; ADR 0008) the field lands in.
+    /// The composite recenter (floating origin, voxels) the field lands in.
     /// Carried as [`RecenterVoxels`] through to the result so the install uses the recenter
     /// THIS build was resolved at, never a re-derived one (the frame law).
     pub recenter_voxels: RecenterVoxels,
@@ -86,9 +85,9 @@ pub enum BrickRebuildOutcome {
     },
     /// The full display install set, ready for the main-thread install upload. Boxed so the
     /// enum stays small on the channel (the install set dwarfs the other variants). Every
-    /// non-empty scene reaches this arm — the representability gate is deleted, so
-    /// mixed-material and overlay-disagreeing scenes engage the brick path too (ADR material
-    /// atlas), carrying their per-voxel cell-key side atlas in `cell_key_atlas`.
+    /// non-empty scene reaches this arm — there is no representability gate, so
+    /// mixed-material and overlay-disagreeing scenes engage the brick path too, carrying
+    /// their per-voxel cell-key side atlas in `cell_key_atlas`.
     Display(Box<BrickDisplayInstall>),
 }
 
@@ -96,14 +95,14 @@ pub enum BrickRebuildOutcome {
 /// argument the main-thread `install_brick_field` upload needs, built off-thread.
 pub struct BrickDisplayInstall {
     /// The sculpted-atlas UPLOAD payload — the ONE copy of the flat atlas bytes crossing the
-    /// channel (item 9: the mirror is the single owner of records + tiles, so the former
-    /// duplicate `BrickFieldBuild` is gone; the install reads records from `mirror`).
+    /// channel — the mirror is the single owner of records + tiles, and the install reads
+    /// records from `mirror`.
     pub atlas: SculptedAtlasPayload,
     /// The per-voxel cell-key side-atlas UPLOAD payload for the scene's MIXED bricks — empty when
     /// no block mixes materials/overlay. The install seam uploads it via
     /// `install_brick_field_with_cell_keys` so mixed bricks shade per-voxel (material atlas).
     pub cell_key_atlas: SculptedCellKeyAtlasPayload,
-    /// The packed GPU record set (all-resident, surface-only per ADR 0011).
+    /// The packed GPU record set (all-resident, surface-only).
     pub gpu_records: Vec<BrickGpuRecord>,
     /// The L1–L3 clip-map pyramid derived from the same chunks.
     pub pyramid: ClipmapPyramid,
@@ -153,7 +152,7 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
         return BrickRebuildOutcome::MirrorOnly { mirror };
     }
     let pyramid = ClipmapPyramid::from_chunks(&request.two_layer_chunks);
-    // Surface-only by construction (ADR 0011 interior elision fused into emission) — a plain
+    // Surface-only by construction (interior elision is fused into emission) — a plain
     // all-resident 1:1 pack, read from the mirror's records. A mixed record carries its cell-key
     // slot; the cell-key side atlas below holds those slots' per-voxel tiles.
     let gpu_records = pack_gpu_records(mirror.records(), |_| false);

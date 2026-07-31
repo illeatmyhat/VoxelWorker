@@ -1,4 +1,4 @@
-//! Background block scanning (Milestone 6).
+//! Background block scanning.
 //!
 //! Detection + walkdir + PNG decode are CPU work that must NOT block startup, so
 //! they run on a worker thread. The worker streams results to the main thread
@@ -141,7 +141,7 @@ pub fn run_auto_scan_blocking() -> (Vec<(BlockGroup, DecodedRgba)>, Option<Strin
     (results, source_name)
 }
 
-/// Per-face texture resolver (Milestone 7).
+/// Per-face texture resolver.
 ///
 /// Holds the detected [`BlockSource`]s alive so the main thread can resolve a
 /// clicked block's per-face textures on demand (each VS source caches its parsed
@@ -169,7 +169,7 @@ impl FaceResolver {
     /// Resolve a group's per-face textures, picking the source by matching the
     /// group key against the source's scanned groups. `chosen_variant` is the
     /// specific PNG the palette picked. Falls back to a uniform mapping if no
-    /// source recognizes the group (the M6 behavior).
+    /// source recognizes the group.
     pub fn resolve(
         &self,
         group: &BlockGroup,

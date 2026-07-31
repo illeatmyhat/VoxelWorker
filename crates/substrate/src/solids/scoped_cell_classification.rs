@@ -41,19 +41,11 @@
 //! whole fold returns `None` (cannot classify) — an unbounded operand could place the surface
 //! anywhere, at any scope depth.
 //!
-//! ## Literature
-//!
-//! The per-cell interval fold is **Duff 1992** (*Interval arithmetic and recursive subdivision
-//! for implicit functions and constructive solid geometry*, SIGGRAPH) exactly as in
-//! [`cell_classification`](super::cell_classification); the three-way verdict is the black /
-//! white / gray node classification of the region-octree literature (**Samet 2006**, ch. 2).
-//! The *flattened-list-with-stack* evaluation shape — a CSG expression linearized depth-first
-//! and evaluated left-to-right with a scope stack instead of tree recursion — is the Boolean
-//! list formulation of **Rossignac 1999** (*Blist: a Boolean list formulation of CSG trees*,
-//! GVU tech report GIT-GVU-99-04), and is the convergent evaluator of the ordered-edit-list SDF
-//! sculptors (Nijhoff's WebGPU SDF editor stores primitives as a depth-first ordered list
-//! evaluated with an accumulator plus a group push/pop stack; see
-//! `docs/design/csg-prior-art-study.md`, round 2).
+//! The per-cell interval fold is the one in
+//! [`cell_classification`](super::cell_classification). The *flattened-list-with-stack*
+//! evaluation shape — a CSG expression linearized depth-first and evaluated left-to-right with
+//! a scope stack instead of tree recursion — is the Boolean-list formulation, and is what
+//! ordered-edit-list SDF editors converge on independently.
 
 use crate::interval::field_interval::{FieldClassification, FieldInterval};
 

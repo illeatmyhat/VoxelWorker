@@ -380,10 +380,10 @@ mod kani_proofs {
         let _ = a_numerator * b_denominator + b_numerator * a_denominator;
     }
 
-    /// The raw-boundary probe that FOUND the `i128::MIN` overflow (`new` used to sign-normalize by
-    /// `numerator * sign` / `denominator * sign`, and `i128::MIN * -1` is unrepresentable, so it
-    /// panicked before the `Option` guard could reject it). Now magnitude-normalized, `new` returns
-    /// a value where one exists and `None` where none does — asserted here at every corner of the
+    /// The raw-boundary probe of the `i128::MIN` corner. Sign-normalizing by
+    /// `numerator * sign` / `denominator * sign` would panic on `i128::MIN * -1` before the
+    /// `Option` guard could reject it; `new` normalizes in magnitudes, so it returns a value
+    /// where one exists and `None` where none does — asserted here at every corner of the
     /// asymmetric two's-complement range. Concrete inputs, so this solves in seconds.
     #[kani::proof]
     fn new_handles_the_i128_min_boundary_without_overflow() {
@@ -489,9 +489,8 @@ mod tests {
     }
 
     /// The asymmetric two's-complement boundary. `|i128::MIN|` is `2^127`, one past `i128::MAX`, so
-    /// normalizing the sign by multiplying through by `-1` used to OVERFLOW here (a panic escaping a
-    /// `pub fn` whose contract is to return `None` instead). Found by the Kani harness
-    /// `new_handles_the_i128_min_boundary_without_overflow`; `new` now normalizes in magnitudes.
+    /// normalizing the sign by multiplying through by `-1` would overflow — a panic escaping a
+    /// `pub fn` whose contract is to return `None` instead. `new` normalizes in magnitudes.
     #[test]
     fn new_handles_i128_min_without_overflowing() {
         // No canonical i128 form ⇒ None (rather than a panic).
@@ -511,7 +510,7 @@ mod tests {
             (most_negative.numerator(), most_negative.denominator()),
             (i128::MIN, 1)
         );
-        // Reduces to 1/1 — and exercises a gcd of 2^127, which the old `as i128` cast wrapped
+        // Reduces to 1/1 — and exercises a gcd of 2^127, which an `as i128` cast wraps
         // negative.
         let unity = Rational::new(i128::MIN, i128::MIN).expect("MIN/MIN is 1");
         assert_eq!((unity.numerator(), unity.denominator()), (1, 1));

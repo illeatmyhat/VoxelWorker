@@ -10,8 +10,7 @@
 //! integers are unavailable there.
 //!
 //! This is a **space-filling linearization** of a 3D lattice, in the lineage of Morton
-//! (Z-order) codes. Cite: Morton 1966 (space-filling linearization of a multidimensional
-//! index); Samet, *Foundations of Multidimensional and Metric Data Structures* (2006).
+//! (Z-order) codes.
 //! **Deviation from a Morton code:** the axes are laid out **z-major lexicographically**
 //! (whole-axis lanes, z highest), NOT bit-interleaved. Interleaving would give locality
 //! in every axis at once but destroys the plain lexicographic order; the whole-lane
@@ -67,9 +66,9 @@ pub fn split_key_hi_lo(key: u64) -> [u32; 2] {
 /// verified over the WHOLE representable coordinate space, not just the handful of points the
 /// unit test happens to name. A packing bug is exactly the silent kind that corrupts a sparse
 /// lookup (a key that aliases two cells, or a sort order the binary search disagrees with),
-/// which no differential render would reliably surface; the doctrine (ADR 0014 decision 6,
-/// `docs/architecture/05-proof.md` §"Prove the kernel") assigns Kani to these finite bit/index
-/// kernels. `#[cfg(kani)]` keeps them inactive in ordinary builds. Run under WSL:
+/// which no differential render would reliably surface. `docs/architecture/05-proof.md`
+/// §"Prove the kernel" assigns Kani to finite bit/index kernels like these. `#[cfg(kani)]`
+/// keeps them inactive in ordinary builds. Run under WSL:
 /// `cargo kani -p substrate`.
 #[cfg(kani)]
 mod kani_proofs {

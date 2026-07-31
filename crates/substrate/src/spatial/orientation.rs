@@ -17,7 +17,7 @@
 //! in integers it is **exact**: it relabels and negates coordinate axes, so it preserves an
 //! axis-aligned box's shape, a field's Lipschitz bound (it is an isometry), and integer
 //! occupancy. That exactness is what lets the domain apply it inside the classifier without
-//! disturbing the SDF parity surface (see `docs/adr/0026`).
+//! disturbing the SDF parity surface.
 //!
 //! ## Representation — the gather form
 //!
@@ -30,8 +30,7 @@
 /// One of the 24 axis-aligned rotations of the integer lattice (the proper cube rotations,
 /// group *O*). Lattice-exact: applying it relabels and negates axes and never resamples.
 ///
-/// See the module docs for the group-theory framing and `docs/adr/0026` for why placement
-/// orientation is one of these and not a general float rotation.
+/// See the module docs for the group-theory framing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LatticeOrientation {
     /// `source[o]` — the input axis output axis `o` reads from (a permutation of `0,1,2`).
@@ -48,7 +47,7 @@ impl Default for LatticeOrientation {
 
 impl LatticeOrientation {
     /// The identity turn — every axis maps to itself, unturned. A node with this orientation
-    /// is world-aligned; the built-in world planes always place at identity (ADR 0026).
+    /// is world-aligned; the built-in world planes always place at identity.
     pub const IDENTITY: Self = Self {
         source: [0, 1, 2],
         sign: [1, 1, 1],
@@ -111,7 +110,7 @@ impl LatticeOrientation {
     }
 
     /// [`turn_extent`](Self::turn_extent) for an `i64` span — the domain carries grid extents
-    /// as `i64` for its offset arithmetic (ADR 0008); the values are magnitudes, so this is
+    /// as `i64` for its offset arithmetic; the values are magnitudes, so this is
     /// the same sign-ignoring permutation.
     pub fn turn_extent_i64(&self, extent: [i64; 3]) -> [i64; 3] {
         std::array::from_fn(|o| extent[self.source[o] as usize])
@@ -121,7 +120,7 @@ impl LatticeOrientation {
     /// in the turned box `[0, turn_extent(extent))`, re-anchored so the low corner stays at the
     /// origin. A positive axis passes through; a negated axis is **reversed in place**
     /// (`ext−1−l`) rather than sent negative — which is what keeps a turned producer grid
-    /// corner-anchored at its world offset, exactly like an un-turned one (ADR 0008 frame).
+    /// corner-anchored at its world offset, exactly like an un-turned one.
     pub fn turn_point_in_box(&self, local: [i64; 3], extent: [u32; 3]) -> [i64; 3] {
         std::array::from_fn(|o| {
             let s = self.source[o] as usize;
@@ -222,7 +221,7 @@ impl LatticeOrientation {
     }
 
     /// Whether this is the identity turn (world-aligned). The world-plane placement path
-    /// asserts this — those planes position only, never orient (ADR 0026).
+    /// asserts this — those planes position only, never orient.
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
     }

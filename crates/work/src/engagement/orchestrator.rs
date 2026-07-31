@@ -66,7 +66,7 @@ pub struct DisplayRefreshContext<'a> {
     /// The effective layer-clip band the render path will apply this frame (so a stale-mesh
     /// rebuild builds already clipped to it — no swap-frame re-mesh).
     pub band: LayerBand,
-    /// The onion-fog region the band is confined to this frame (ADR 0018 Decision 5), or
+    /// The onion-fog region the band is confined to this frame, or
     /// `None` for a scene-wide band / no clip.
     pub region: Option<RegionClip>,
     /// Whether debug-face orientation mode is active (the mesh-only display flag that drops
@@ -87,42 +87,42 @@ pub struct DisplayOrchestrator {
     /// The color target format the renderers build against (the shared sRGB surface format,
     /// so the live window and the headless capture stay pixel-identical).
     color_format: wgpu::TextureFormat,
-    /// The cuboid mesh renderer — the sole voxel render path (part of #20; the legacy
-    /// instanced mesher was removed). Rebuilt from the resolve cache's per-chunk
+    /// The cuboid mesh renderer — the sole voxel render path. Rebuilt from the
+    /// resolve cache's per-chunk
     /// accessor on every geometry change in `rebuild_geometry`.
     cuboid_mesh_renderer: CuboidMeshRenderer,
-    /// Brick-display perf follow-up to epic #64: whether `cuboid_mesh_renderer` currently
-    /// holds a STALE (skipped / empty) mesh because the ADR 0011 brick raymarch is the live
+    /// Whether `cuboid_mesh_renderer` currently
+    /// holds a STALE (skipped / empty) mesh because the brick raymarch is the live
     /// display and the fallback mesh was not worth the ~333ms serial build. While `true` the
     /// mesh must NOT be drawn (it isn't — the brick pass replaces it) and must NOT be
     /// inline-patched by an incremental edit (its buffers don't reflect the latest resolve);
     /// the next edit that needs the mesh — or [`Self::ensure_display_mesh_current`] on a
-    /// debug-face / loaded-material transition — rebuilds it WHOLESALE. Composed into the C1
+    /// debug-face / loaded-material transition — rebuilds it WHOLESALE. Composed into the
     /// interlock via [`route_mesh_build`].
     mesh_stale: bool,
-    /// F1 (brick-display perf follow-up to epic #64): a DEFERRED brick-display handover is
+    /// A DEFERRED brick-display handover is
     /// pending. When an edit drops brick representability while the replacement cuboid mesh
     /// builds ASYNC, the (now stale) brick field is KEPT drawing so the model never blanks for
     /// the seconds the worker takes — `clear_brick_field` is deferred to the mesh-install seam
     /// ([`Self::complete_brick_display_handover`], run from [`Self::finish_mesh_install`]).
     /// `true` only while such a handover is outstanding.
     brick_display_pending_clear: bool,
-    /// ADR 0011 G1: the brick raymarch display sink. Created on first engagement
+    /// The brick raymarch display sink. Created on first engagement
     /// (any non-empty chunkable scene) and kept — per-edit
     /// work is `install_brick_field` (records + atlas swap, no pipeline rebuild).
     /// When it holds a field and no mesh-only mode is active (debug-faces, a loaded
     /// VS material), the frame's voxel model draws from the brick atlas INSTEAD of
-    /// the cuboid mesh; the mesh keeps rebuilding as the fallback + A/B reference
-    /// (ADR 0011 Decision 6). `None` until the first engagement.
+    /// the cuboid mesh; the mesh keeps rebuilding as the fallback + A/B reference.
+    /// `None` until the first engagement.
     brick_raymarch_renderer: Option<BrickRaymarchRenderer>,
-    /// ADR 0011 G3: the PERSISTENT incremental brick field mirroring the boundary set —
+    /// The PERSISTENT incremental brick field mirroring the boundary set —
     /// the CPU truth an incremental edit patches (dirty chunks re-evaluated, only their
     /// slots written) instead of rebuilding the whole field. `Some` for any chunkable
     /// scene; reset from a wholesale `build_brick_field` on a wholesale edit,
     /// patched in place on an incremental edit, and dropped when the scene leaves the
-    /// gate / empties. `to_build()` always equals the resident atlas (ADR 0011 G3 gate).
+    /// gate / empties. `to_build()` always equals the resident atlas.
     incremental_brick_field: Option<IncrementalBrickField>,
-    /// Issue #60 (ADR 0003 §7): the background geometry-rebuild worker. A WHOLESALE
+    /// The background geometry-rebuild worker. A WHOLESALE
     /// rebuild whose covering-chunk count exceeds [`ASYNC_REBUILD_CHUNK_THRESHOLD`] —
     /// the ~3s large-object build — is dispatched here (cloned `device`/`queue`) instead
     /// of built inline, so the UI never freezes. The main thread keeps rendering the
@@ -130,12 +130,12 @@ pub struct DisplayOrchestrator {
     /// freshly-built renderer arrives, then swaps it in. Small / incremental edits stay
     /// synchronous.
     geometry_worker: GeometryWorker,
-    /// Issue #60: the monotonic generation bookkeeping behind supersede. Each async
+    /// The monotonic generation bookkeeping behind supersede. Each async
     /// dispatch stamps a fresh generation; a received result is swapped in only when its
     /// generation is still the newest dispatched (an edit mid-build supersedes the older
     /// in-flight build, whose result is then discarded — see [`GenerationTracker`]).
     geometry_generation: GenerationTracker,
-    /// Issue #60 C1: whether an async WHOLESALE build is OUTSTANDING — dispatched but not
+    /// Whether an async WHOLESALE build is OUTSTANDING — dispatched but not
     /// yet accepted/installed. While `true` the currently-installed `cuboid_mesh_renderer`
     /// does NOT reflect the latest resolve (it is still S0 while the worker builds S1), so an
     /// incremental edit must NOT inline-patch it (that strands every chunk that differs
@@ -144,8 +144,8 @@ pub struct DisplayOrchestrator {
     /// [`route_geometry_rebuild`](crate::engagement::routing::route_geometry_rebuild)). Cleared
     /// when `poll_geometry_worker` accepts + installs a result.
     geometry_async_outstanding: bool,
-    /// The async wholesale brick-pipeline worker (perf follow-up to epic #64, issue #60
-    /// pattern): a WHOLESALE brick rebuild whose covering-chunk count exceeds
+    /// The async wholesale brick-pipeline worker: a WHOLESALE brick rebuild whose
+    /// covering-chunk count exceeds
     /// [`ASYNC_REBUILD_CHUNK_THRESHOLD`] — the ~2s record-build + pyramid + classify on a
     /// giant scene — is dispatched here (pure CPU, no GPU handles) instead of built inline.
     /// The main thread keeps drawing the CURRENT display (the stale brick field, or the
@@ -160,7 +160,7 @@ pub struct DisplayOrchestrator {
     /// accepted/installed). While `true` the resident `incremental_brick_field` mirror and
     /// the renderer's live field are STALE (S0 while the worker builds S1), so an
     /// incremental edit must NOT patch them — [`route_brick_rebuild`] sends every edit to
-    /// a fresh wholesale dispatch instead (the brick analog of the C1 interlock).
+    /// a fresh wholesale dispatch instead (the brick analog of the interlock).
     /// Cleared when `poll_brick_worker` accepts a result, or when an inline wholesale
     /// build supersedes the in-flight one.
     brick_async_outstanding: bool,
@@ -172,7 +172,7 @@ impl DisplayOrchestrator {
     /// seed all display state. Takes cloned wgpu handles + the startup covering set + frame
     /// params — no window, no scene ownership. See `docs/architecture/03-display.md`.
     ///
-    /// Perf follow-up to epic #64: the brick decision is made BEFORE the fallback cuboid mesh
+    /// The brick decision is made BEFORE the fallback cuboid mesh
     /// so that, when the brick display engages, the ~333ms serial mesh build (and its memory)
     /// is SKIPPED at startup — the persisted 8000×800×800 scene installs the brick sink and
     /// never meshes.
@@ -193,10 +193,10 @@ impl DisplayOrchestrator {
         // the side atlas, so mixed-material and overlay-disagreeing scenes engage too. Later
         // edits refresh it in `rebuild_geometry`.
         let mut brick_raymarch_renderer: Option<BrickRaymarchRenderer> = None;
-        // ADR 0011 G3: the persistent incremental field seeded from the startup wholesale
+        // The persistent incremental field seeded from the startup wholesale
         // build (kept in lock-step with `brick_raymarch_renderer`).
         let mut incremental_brick_field: Option<IncrementalBrickField> = None;
-        // Perf follow-up to epic #64 (issue #60 pattern): the async brick-pipeline worker,
+        // The async brick-pipeline worker,
         // spawned BEFORE the startup brick decision so a giant persisted scene dispatches
         // its first wholesale build here instead of freezing the pre-first-frame startup
         // for the ~2s record build + pyramid + classify.
@@ -205,7 +205,7 @@ impl DisplayOrchestrator {
         let mut brick_async_outstanding = false;
         // The startup covering set is non-empty iff the scene is chunkable with geometry
         // (`resident_two_layer_chunks` yields nothing for a non-chunkable / VoxelBody-only scene),
-        // so `!is_empty()` matches the old `has_chunkable_extent && !is_empty()` gate.
+        // so `!is_empty()` matches a `has_chunkable_extent && !is_empty()` gate.
         if !two_layer_chunks.is_empty() {
             if two_layer_chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD {
                 // A giant persisted scene: dispatch the wholesale brick build ASYNC so the
@@ -278,13 +278,13 @@ impl DisplayOrchestrator {
                 }
             }
         }
-        // ADR 0010 E5: the cuboid mesh is the fallback voxel render path AND it meshes THROUGH
+        // The cuboid mesh is the fallback voxel render path AND it meshes THROUGH
         // the two-layer store (coarse one-box + microblock cuboids + seam-flag culling) — the
         // SAME path `rebuild_geometry` takes on every later edit, so the startup frame it draws
         // is pixel-identical to the two-layer runtime path. `build_covering_chunks` returns
         // empty for a VoxelBody-only scene (the windowed startup default is always chunkable).
         //
-        // Brick-display perf follow-up to epic #64: when the brick raymarch engaged above and no
+        // When the brick raymarch engaged above and no
         // mesh-only mode is active (a config may persist `debug_face_orientation`; a material is
         // never loaded at startup), the mesh is NOT drawn — so SKIP its build entirely and mark
         // it stale. `ensure_display_mesh_current` (or an edit that drops brick engagement) builds
@@ -315,7 +315,7 @@ impl DisplayOrchestrator {
             density,
         );
 
-        // Issue #60 (ADR 0003 §7): spawn the background geometry-rebuild worker with
+        // Spawn the background geometry-rebuild worker with
         // cloned GPU handles (wgpu 29 `Device`/`Queue` are `Send + Sync + Clone`, so the
         // worker builds the mesh's GPU buffers off the main thread). A large wholesale
         // rebuild dispatches here; the shell keeps rendering the current mesh until the
@@ -341,13 +341,13 @@ impl DisplayOrchestrator {
         }
     }
 
-    /// Is the ADR 0011 brick raymarch the live voxel display (so the fallback cuboid mesh is
+    /// Is the brick raymarch the live voxel display (so the fallback cuboid mesh is
     /// NOT drawn)? \[pure\] The SINGLE engagement predicate behind every gate — startup, the
     /// rebuild skip, [`Self::ensure_display_mesh_current`], and the per-frame draw gate — so
     /// they can never drift term-for-term. Engaged iff a live brick field is resident AND
     /// debug-face orientation is off.
     ///
-    /// ADR 0011 G2 — a loaded VS material NO LONGER disengages the brick display: the block
+    /// A loaded VS material does NOT disengage the brick display: the block
     /// texture is a pure function of the lattice (the owner's determinism rule), so the
     /// raymarch shades solid hits per-face from the block's 6-layer D2Array by the SAME rule
     /// the merged mesh uses (`face_layer` + per-face UV + `fract`), with zero per-brick data.
@@ -374,7 +374,7 @@ impl DisplayOrchestrator {
         )
     }
 
-    /// F1: complete a DEFERRED brick-display handover. When an edit dropped brick
+    /// Complete a DEFERRED brick-display handover. When an edit dropped brick
     /// representability while a large replacement mesh built ASYNC, the stale brick field was
     /// kept drawing (`brick_display_pending_clear`) so the model never blanked. Once the fresh
     /// mesh installs (this seam, via [`Self::finish_mesh_install`]) the stale field is cleared
@@ -388,8 +388,8 @@ impl DisplayOrchestrator {
         }
     }
 
-    /// Apply a pure [`BrickDisplayHandover`] decision (F1) to the resident brick display state —
-    /// the ONE mutation the handover sites share: the rebuild's F1 reconcile, and the brick
+    /// Apply a pure [`BrickDisplayHandover`] decision to the resident brick display state —
+    /// the ONE mutation the handover sites share: the rebuild's reconcile, and the brick
     /// worker's `Empty` arrival. `KeepAsDisplay`/`ClearNow` cancel any
     /// pending deferred clear (and `ClearNow` also drops the live field this frame); `DeferUntilInstall`
     /// arms the deferred clear so the stale brick keeps drawing until the replacement mesh lands
@@ -408,11 +408,11 @@ impl DisplayOrchestrator {
         }
     }
 
-    /// The mesh-install seam (issue #60 supersede + brick-display perf follow-up). EVERY path
+    /// The mesh-install seam. EVERY path
     /// that makes a freshly built/patched cuboid mesh the CURRENT display funnels through here:
     /// bump the generation (so a superseded in-flight worker result is discarded on arrival),
     /// drop the async-outstanding flag, clear `mesh_stale` (the mesh now reflects the latest
-    /// resolve), and complete any deferred brick-display handover (F1). This is the SOLE writer
+    /// resolve), and complete any deferred brick-display handover. This is the SOLE writer
     /// that clears `mesh_stale`; the only other `mesh_stale` writer is the Skip arm's set-true.
     fn finish_mesh_install(&mut self) {
         self.geometry_generation.next_generation();
@@ -460,11 +460,11 @@ impl DisplayOrchestrator {
     }
 
     /// Dispatch a WHOLESALE cuboid-mesh rebuild to the async geometry worker: mint the next
-    /// generation, mark the build OUTSTANDING (the C1 interlock — every edit routes wholesale
+    /// generation, mark the build OUTSTANDING (the interlock — every edit routes wholesale
     /// until the result installs), and send the owned covering set + frame params. The mesh
     /// analog of [`Self::dispatch_wholesale_brick_rebuild`], shared by [`Self::rebuild`]'s
     /// WholesaleAsync arm and [`Self::rebuild_stale_display_mesh`]. The generation is minted
-    /// BEFORE the outstanding flag is set BEFORE the dispatch — the C1 interlock depends on
+    /// BEFORE the outstanding flag is set BEFORE the dispatch — the interlock depends on
     /// that exact ordering.
     fn dispatch_wholesale_mesh_rebuild(
         &mut self,
@@ -489,7 +489,7 @@ impl DisplayOrchestrator {
     }
 
     /// Refresh the display artifacts for a rebuild the shell has already resolved: the brick
-    /// sink (mirror + display field) and the fallback cuboid mesh, plus the F1 brick-display
+    /// sink (mirror + display field) and the fallback cuboid mesh, plus the deferred brick-display
     /// handover reconcile. The shell has already run `AppCore::rebuild`, captured the frame
     /// params, and computed the effective `band`; it hands the owned covering set + the edit's
     /// dirty-chunk hint here. See `docs/architecture/03-display.md` for the two-pipeline model
@@ -509,11 +509,11 @@ impl DisplayOrchestrator {
     ) {
         // The brick mirror (`incremental_brick_field`, plain CPU) is maintained for ANY
         // chunkable scene. The DISPLAY raymarch keeps its stricter conditions inside the block.
-        // ADR 0011 G2 — a loaded VS material no longer gates the display (it textures the
-        // raymarch per-face); ADR 0012 retired the onion fog occupancy consumer of the mirror.
+        // A loaded VS material does not gate the display (it textures the
+        // raymarch per-face); nothing else consumes the mirror.
         let brick_gate = chunkable;
 
-        // Issue #60 C1: classify the edit ONCE (shared by the brick sink and the mesh path).
+        // Classify the edit ONCE (shared by the brick sink and the mesh path).
         // While an async wholesale build is OUTSTANDING every edit routes to a fresh
         // wholesale-async dispatch (never inline-patch a stale artifact); only with nothing
         // outstanding do the inline fast-paths resume.
@@ -539,7 +539,7 @@ impl DisplayOrchestrator {
             ASYNC_REBUILD_CHUNK_THRESHOLD,
         );
 
-        // ADR 0011 G1/G3/G5: refresh the brick field from THIS rebuild's resident chunk set
+        // Refresh the brick field from THIS rebuild's resident chunk set
         // (the same boundary set the mesher consumes), before the mesh route can move
         // `two_layer_chunks`. `PatchInline` (an incremental edit, a resident mirror, no
         // brick build outstanding) PATCHES the field (G3): only the dirty chunks are
@@ -581,14 +581,14 @@ impl DisplayOrchestrator {
                 // the mesh and kicks its rebuild. A first build shows nothing until the field lands
                 // (~seconds, window responsive) — the same pop-in as the async startup.
                 // NOTE: deliberately NOT predicted from `has_brick_field()` — a live field
-                // can be a stale F1 pending-clear placeholder, and treating that as "the
+                // can be a stale pending-clear placeholder, and treating that as "the
                 // display" would Skip-cancel the replacement mesh the handover waits on.
                 {
                     brick_display_installed = true;
                 }
             } else if brick_gate {
                 profiling::scope!("brick_field_build");
-                // (A) Maintain the CPU brick MIRROR (ADR 0011 G5), built for any chunkable
+                // (A) Maintain the CPU brick MIRROR, built for any chunkable
                 // scene regardless of display representability. Patch iff the brick route is
                 // PatchInline (an incremental edit + a resident mirror + no brick build
                 // outstanding — `route_brick_rebuild` folds all three in). `update` (the GPU
@@ -648,7 +648,7 @@ impl DisplayOrchestrator {
                     // EVERY non-empty scene engages the brick path, including mixed-material and
                     // overlay-disagreeing ones — the texel carries the overlay bit and records
                     // carry material + overlay per-record, and a mixed brick's per-voxel cell keys
-                    // ride in the side atlas. ADR 0011 G2 — a loaded VS material does not skip the
+                    // ride in the side atlas. A loaded VS material does not skip the
                     // install either (the raymarch textures per-face from the block's D2Array).
                     {
                         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
@@ -658,7 +658,7 @@ impl DisplayOrchestrator {
                             .incremental_brick_field
                             .as_ref()
                             .expect("records_empty false ⇒ a resident mirror");
-                        // ADR 0011 interior elision: the record set is SURFACE-ONLY by
+                        // Interior elision: the record set is SURFACE-ONLY by
                         // construction (`build_brick_field` fuses the occlusion decision
                         // into emission — a fully-occluded interior block never becomes a
                         // record, so nothing here needs a second mask pass). For a large
@@ -669,9 +669,9 @@ impl DisplayOrchestrator {
                         // renderer actually HOLDS A LIVE, CURRENT FIELD; otherwise (wholesale,
                         // or the display re-engaging from a mesh fallback) install fresh. The
                         // staleness rules live in `brick_patch_in_place` (pure, unit-tested):
-                        // F2 — a cleared/present-but-empty field must re-install, never patch;
+                        // A cleared/present-but-empty field must re-install, never patch;
                         // and a PENDING deferred clear (`brick_display_pending_clear`) marks
-                        // the live field a stale F1 placeholder that must also re-install.
+                        // the live field a stale placeholder that must also re-install.
                         let renderer_holds_live_field = self
                             .brick_raymarch_renderer
                             .as_ref()
@@ -735,7 +735,7 @@ impl DisplayOrchestrator {
                         brick_display_installed = true;
                     } // end display-install block
                       // `build` (this rebuild's boundary set) is consumed only by the display
-                      // install above; ADR 0012 retired the fog occupancy consumer.
+                      // install above; nothing else consumes it.
                 }
                 // Inline install seam: the resident mirror/field now reflect THIS resolve;
                 // discard any superseded in-flight async brick result on arrival.
@@ -750,20 +750,20 @@ impl DisplayOrchestrator {
             // NOTE: the gpu raymarch display is NOT cleared here anymore. When it did not install
             // the display must hand back to the mesh, but clearing NOW (before the replacement
             // mesh is current) blanked the model for the seconds a large async rebuild takes.
-            // The handover is reconciled AFTER the mesh route is decided below (F1) — cleared
+            // The handover is reconciled AFTER the mesh route is decided below — cleared
             // immediately when the mesh is current this frame, DEFERRED to the install seam when
             // the replacement builds async and the stale brick can keep drawing.
             brick_display_installed
         };
 
-        // Brick-display perf follow-up to epic #64: the fallback cuboid mesh is DRAWN only when
+        // The fallback cuboid mesh is DRAWN only when
         // the brick raymarch is not engaged. Engagement mirrors the per-frame gate
         // (`brick_raymarch_engaged`): a field installed this rebuild AND no debug-face mode.
-        // ADR 0011 G2 — a loaded VS material now KEEPS the brick display (it textures the
-        // raymarch per-face), so it no longer forces the mesh; with the representability gate
+        // A loaded VS material KEEPS the brick display (it textures the
+        // raymarch per-face), so it does not force the mesh; with the representability gate
         // deleted only an EMPTY scene (no field installed ⇒ `brick_display_installed` false)
         // meshes. When engaged the mesh
-        // is redundant → SKIP the build and mark it stale; the C1 interlock composes via
+        // is redundant → SKIP the build and mark it stale; the interlock composes via
         // `route_mesh_build` (a stale mesh, like an outstanding async build, is never inline-
         // patched — it rebuilds wholesale when next needed).
         let brick_display_engaged =
@@ -775,7 +775,7 @@ impl DisplayOrchestrator {
             edit_shape,
             ASYNC_REBUILD_CHUNK_THRESHOLD,
         );
-        // F1: does the mesh become CURRENT this frame (an inline build/patch), vs building async
+        // Does the mesh become CURRENT this frame (an inline build/patch), vs building async
         // (WholesaleAsync) or being skipped (brick still the display)? The brick-handover
         // reconcile below reads it to decide whether to clear the stale brick now or defer.
         let mesh_became_current = matches!(
@@ -795,7 +795,7 @@ impl DisplayOrchestrator {
                 self.mesh_stale = true;
             }
             MeshBuildRoute::Build(RebuildRoute::InlineIncremental) => {
-                // Issue #54/#55 fast path: an incremental dirty-chunk re-mesh is already a
+                // Fast path: an incremental dirty-chunk re-mesh is already a
                 // few chunks — build it inline (no worker hop, no added latency). Reached ONLY
                 // when nothing is outstanding, so the installed renderer reflects the latest
                 // resolve and patching it in place is sound.
@@ -820,12 +820,12 @@ impl DisplayOrchestrator {
                 self.finish_mesh_install();
             }
             MeshBuildRoute::Build(RebuildRoute::WholesaleAsync) => {
-                // Issue #60: dispatch a WHOLESALE rebuild to the worker so the UI never
+                // Dispatch a WHOLESALE rebuild to the worker so the UI never
                 // freezes (the ~3s classify ran above on the main thread; the heavy mesh CPU
                 // build + GPU upload is what goes async). Stamp a fresh generation, send the
                 // owned FULL covering set (the `AppCore` resident cache is always current on
                 // the main thread, so a full wholesale is correct even when the edit itself
-                // was incremental — the C1 interlock), and keep the CURRENT renderer drawing
+                // was incremental — the interlock), and keep the CURRENT renderer drawing
                 // (stale-while-rebuilding). Mark the async build OUTSTANDING so the NEXT edit
                 // also routes here instead of inline-patching the still-stale renderer. The
                 // result is polled + swapped in the event loop (`poll_geometry_worker`).
@@ -837,7 +837,7 @@ impl DisplayOrchestrator {
                     band,
                     region,
                 );
-                // The worker owns the (re)build now; the outstanding flag carries the C1
+                // The worker owns the (re)build now; the outstanding flag carries the
                 // interlock. `mesh_stale` is intentionally NOT cleared here (cleanup b: only
                 // `finish_mesh_install` clears it, and only the Skip arm sets it true) — leaving
                 // it set while the async build is outstanding is harmless (the outstanding flag
@@ -849,7 +849,7 @@ impl DisplayOrchestrator {
                 // build inline — cheap enough not to hitch a frame, and it avoids the worker's
                 // one-frame swap latency. Bump the generation so any phantom in-flight result
                 // is discarded on arrival. Build at the active band so the mesh matches the
-                // render path immediately (no swap-frame re-mesh — same M2 reasoning). The
+                // render path immediately (no swap-frame re-mesh — same reasoning). The
                 // install seam bumps the generation + clears `mesh_stale`.
                 self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks_banded(
                     &self.device,
@@ -866,7 +866,7 @@ impl DisplayOrchestrator {
             }
         }
 
-        // F1 brick-display handover reconcile (a no-op while `brick_raymarch_renderer` is
+        // Brick-display handover reconcile (a no-op while `brick_raymarch_renderer` is
         // `None`). When brick did NOT install this rebuild, the display must hand back to the
         // cuboid mesh. Clear the stale brick field NOW when the replacement mesh is already
         // current this frame (inline), OR the brick can't/needn't draw (a mesh-only mode is
@@ -880,7 +880,7 @@ impl DisplayOrchestrator {
                 .brick_raymarch_renderer
                 .as_ref()
                 .is_some_and(|renderer| renderer.has_brick_field());
-            // ADR 0011 G2 — a loaded VS material now keeps drawing as textured bricks, so it no
+            // A loaded VS material keeps drawing as textured bricks, so it no
             // longer forces a handover to the mesh (mirrors the flipped engagement predicate).
             let brick_would_draw_if_kept = !debug_face_orientation;
             self.apply_brick_display_handover(brick_display_handover(
@@ -892,7 +892,7 @@ impl DisplayOrchestrator {
         }
     }
 
-    /// Issue #60 (ADR 0003 §7): poll the geometry worker for a finished wholesale
+    /// Poll the geometry worker for a finished wholesale
     /// rebuild and, if it is NOT stale, swap it in. Returns whether a fresh renderer was
     /// installed (the shell requests the redraw). Called each frame in the event loop.
     /// Non-blocking — the app never waits on the worker.
@@ -915,7 +915,7 @@ impl DisplayOrchestrator {
             // touch `geometry_async_outstanding` here.
             return false;
         }
-        // Issue #60 M1: a `None` renderer means the worker's build PANICKED (it logged to
+        // A `None` renderer means the worker's build PANICKED (it logged to
         // stderr and stayed alive). Keep the current (stale) mesh and leave the outstanding
         // flag SET so the next edit re-dispatches a fresh wholesale — never silently wedge.
         let Some(renderer) = result.renderer else {
@@ -923,19 +923,18 @@ impl DisplayOrchestrator {
         };
         // Fresh: swap the freshly-built renderer in (GPU buffers already uploaded on the
         // worker). The install seam drops the async-outstanding flag (the inline fast-paths
-        // resume — issue #60 C1), clears `mesh_stale` (a freshly built worker mesh reflects
-        // the latest resolve), and completes any deferred brick-display handover (F1 — clear
+        // resume — the interlock), clears `mesh_stale` (a freshly built worker mesh reflects
+        // the latest resolve), and completes any deferred brick-display handover (clear
         // the stale brick kept drawing during the rebuild, now the fresh mesh takes the frame).
         self.cuboid_mesh_renderer = renderer;
         self.finish_mesh_install();
         true
     }
 
-    /// Poll the async brick-pipeline worker (perf follow-up to epic #64, issue #60
-    /// pattern) and, if a finished wholesale build is still the newest dispatched, install
-    /// its artifacts: the CPU mirror always; the display field (a milliseconds install upload —
-    /// the multi-second CPU build already happened on the worker) for every non-empty scene (the
-    /// representability gate is deleted — mixed scenes install their cell-key side atlas too).
+    /// Poll the async brick-pipeline worker and, if a finished wholesale build is still the
+    /// newest dispatched, install its artifacts: the CPU mirror always; the display field (a
+    /// milliseconds install upload — the multi-second CPU build already happened on the worker)
+    /// for every non-empty scene, mixed scenes installing their cell-key side atlas too.
     /// Returns whether anything was installed (the shell requests the redraw). A superseded result
     /// is discarded via the [`GenerationTracker`]; a panicked build (`outcome == None`) keeps the
     /// stale field and LEAVES the outstanding flag set so the next edit re-dispatches.
@@ -990,7 +989,7 @@ impl DisplayOrchestrator {
                     let mirror = self.incremental_brick_field.insert(mirror);
                     // Wholesale semantics: always a fresh INSTALL (never a patch) — the
                     // worker built the complete field, and a cleared/stale resident field
-                    // must not be patched (the F2 gate's lesson).
+                    // must not be patched — the stale-patch gate.
                     let renderer = self.brick_raymarch_renderer.get_or_insert_with(|| {
                         BrickRaymarchRenderer::new(&self.device, &self.queue, self.color_format)
                     });
@@ -1018,19 +1017,19 @@ impl DisplayOrchestrator {
     }
 
     /// Rebuild the fallback cuboid mesh IF it is stale and about to become the display
-    /// (brick-display perf follow-up to epic #64). The mesh is skipped while the ADR 0011 brick
+    /// this frame. The mesh is skipped while the brick
     /// raymarch is engaged; a debug-face toggle or a loaded-material change are pure per-frame
     /// display flags that can drop that engagement WITHOUT a `scene_changed` rebuild, so the
     /// skipped mesh would otherwise be drawn stale/empty. This closes that gap: called every
     /// frame before the voxel draw, it is a no-op unless the mesh is stale AND the brick will
     /// not draw.
     ///
-    /// F3: the rebuild REUSES the resident two-layer cache (the scene is unchanged, so this is an
+    /// The rebuild REUSES the resident two-layer cache (the scene is unchanged, so this is an
     /// O(chunks) `Arc`-refcount handout — NOT a stateless from-scratch `build_covering_chunks`
     /// re-resolve, which FROZE the main thread for seconds on a large scene the instant a
     /// material tile / debug-face toggled). A small covering set builds inline; a large one is
     /// dispatched to the async geometry worker so the UI never freezes (the current display —
-    /// the mesh, or the deferred brick raymarch of F1 — keeps drawing until the fresh mesh lands).
+    /// the mesh, or the deferred brick raymarch — keeps drawing until the fresh mesh lands).
     pub fn ensure_display_mesh_current(&mut self, context: DisplayRefreshContext) {
         if !self.mesh_stale {
             return;
@@ -1059,7 +1058,7 @@ impl DisplayOrchestrator {
     /// Rebuild the stale fallback mesh from the RESIDENT two-layer cache — the body of
     /// [`Self::ensure_display_mesh_current`] WITHOUT its brick-engagement gate, factored out so
     /// the deferred-handover path (where the stale brick field is DELIBERATELY kept drawing under
-    /// F1 so the model never blanks) can rebuild the mesh without the engagement gate — which
+    /// so the model never blanks) can rebuild the mesh without the engagement gate — which
     /// would see the live field and skip — applying. A no-op when the mesh is already current or a
     /// build is in flight.
     fn rebuild_stale_display_mesh(&mut self, context: DisplayRefreshContext) {
@@ -1144,7 +1143,7 @@ impl DisplayOrchestrator {
 
     /// Both voxel-model renderers mutably in ONE borrow: the cuboid mesh and the optional brick
     /// raymarch. The two `_mut` accessors above each take `&mut self` exclusively, so a caller
-    /// that must upload BOTH this frame (the shared `upload_voxel_uniforms`, ADR 0031) cannot hold
+    /// that must upload BOTH this frame (the shared `upload_voxel_uniforms`) cannot hold
     /// them at once — this splits the borrow once so it can. Engagement (whether the brick draw
     /// REPLACES the mesh this frame) is a separate, caller-side decision via
     /// [`brick_display_engaged`](Self::brick_display_engaged); a present-but-not-engaged brick

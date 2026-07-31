@@ -43,7 +43,7 @@ pub struct VoxExportRequest {
     pub scene: Scene,
     /// The document density (voxels per block) the export resolves at.
     pub density: u32,
-    /// The per-`block_id` `.vox` palette (ADR 0003 §3a), computed on the main thread from
+    /// The per-`block_id` `.vox` palette, computed on the main thread from
     /// the active material's representative color, exactly as the inline path did.
     pub palette_colors: BlockPaletteColors,
     /// The user-chosen destination file (from the rfd save dialog, which stays on the main
@@ -56,7 +56,7 @@ pub struct VoxExportRequest {
     pub progress_chunks: Arc<AtomicU64>,
 }
 
-/// The three numbers the old inline `println!` reported, plus the path, for the shell's
+/// The three numbers the export reports, plus the path, for the shell's
 /// completion readout.
 pub struct VoxExportSummary {
     /// The file that was written.
@@ -82,7 +82,7 @@ pub struct VoxExportResult {
 pub type VoxExportWorker = Worker<VoxExportRequest, VoxExportResult>;
 
 /// Spawn the `.vox` export worker on a dedicated thread. The closure mirrors the body of
-/// the old synchronous `export_vox` AFTER the save dialog: build the always-on
+/// a synchronous `export_vox` would do AFTER the save dialog: build the always-on
 /// [`TwoLayerStore`], pre-create the [`VoxExportBuilder`] model set from the region
 /// dimensions, [`stream_vox_occupancy`] each covering chunk into it (bumping
 /// `progress_chunks` per chunk), finish, and write. The whole build runs under

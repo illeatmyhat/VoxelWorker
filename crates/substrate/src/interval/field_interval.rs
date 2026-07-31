@@ -34,14 +34,8 @@
 //! here (`min`/`max`/negation/compare) is exact in IEEE-754, so containment is rigorous
 //! throughout, not merely display-grade.
 //!
-//! Cite: Moore 1966 / Moore, Kearfott & Cloud, *Introduction to Interval Analysis*
-//! (2009) — interval arithmetic and the containment (inclusion) property. Duff 1992,
-//! *Interval arithmetic and recursive subdivision for implicit functions and
-//! constructive solid geometry* (SIGGRAPH) — exactly this classify-a-cell-under-CSG
-//! use, the source of the black/white/gray subdivision. Hart 1996, *Sphere tracing* —
-//! the Lipschitz bound that makes a distance field's center-plus-radius interval sound.
-//! Deviation: bounds are `f32` rather than a wider type, and the classify threshold is a
-//! plain parameter rather than a fixed constant.
+//! Two departures from textbook interval arithmetic: bounds are `f32` rather than a wider
+//! type, and the classify threshold is a plain parameter rather than a fixed constant.
 
 /// A conservative interval `[minimum, maximum]` bounding a signed scalar field over a
 /// region. Conservative means the true field range over the region is CONTAINED in

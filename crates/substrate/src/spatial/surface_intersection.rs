@@ -1,5 +1,5 @@
 //! Intersection-curve tracing between two implicit surfaces — the CSG junction
-//! curves of ADR 0032 selection feedback: where one body's surface crosses
+//! curves selection feedback creases along: where one body's surface crosses
 //! another's (a cutter's wall meeting the face it carved), the composed surface
 //! creases along the space curve `{ F = 0 } ∩ { G = 0 }`. No per-shape catalog
 //! contains that curve, and most shape pairs have no closed form (two turned
@@ -15,7 +15,7 @@
 //! (near-parallel-gradient) contact — a flush face — is not a crease and is
 //! discarded by the same guard that keeps the pseudo-inverse well-conditioned.
 //!
-//! ## Verification note (ADR 0014 DoD exemption)
+//! ## Verification note
 //!
 //! The SOUNDNESS half — "a pruned cell contains no surface point" — reduces to the
 //! bracket contract plus the prune's [`PRUNE_SLOP`]. The `#[cfg(kani)]` lemma

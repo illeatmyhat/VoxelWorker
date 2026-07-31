@@ -9,9 +9,8 @@
 //!
 //! [`Ray::intersect_box_slab`] tests the ray against a closed continuous box (a
 //! [`RealAabb`]) and returns the entry/exit parameters `(t_enter, t_exit)`
-//! of the overlapped segment. It is the **slab method** (Kay & Kajiya, "Ray Tracing
-//! Complex Scenes", SIGGRAPH 1986; Ericson, *Real-Time Collision Detection* 2005
-//! §5.3.3): an AABB is the intersection of three axis-aligned slabs, so the ray's
+//! of the overlapped segment. It is the **slab method**: an AABB is the intersection of
+//! three axis-aligned slabs, so the ray's
 //! interval inside the box is the intersection of its three per-axis slab
 //! intervals. For each axis the two slab planes are hit at
 //! `t = (corner - origin) / direction`; the near/far pair is the ordered
@@ -23,10 +22,9 @@
 //! ## Zero direction components (the load-bearing robustness detail)
 //!
 //! A direction component of exactly `0` makes the ray parallel to that pair of
-//! slab planes, and `(corner - origin) / 0` is an IEEE infinity. Williams, Barrs,
-//! Morley & Shirley ("An Efficient and Robust Ray–Box Intersection Algorithm",
-//! JGT 2005) note the genuine hazard is not the infinities themselves — a signed
-//! infinity still orders correctly under `min`/`max` — but the `0 · inf = NaN`
+//! slab planes, and `(corner - origin) / 0` is an IEEE infinity. The genuine hazard is
+//! not the infinities themselves — a signed infinity still orders correctly under
+//! `min`/`max` — but the `0 · inf = NaN`
 //! that appears when the origin lies *exactly on* a slab plane (`corner - origin`
 //! is `0` on an axis whose reciprocal is infinite), since `NaN` silently defeats
 //! every subsequent comparison.

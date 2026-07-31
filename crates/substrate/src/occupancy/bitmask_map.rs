@@ -19,17 +19,11 @@
 //! done directly on a bare `[u32; MASK_WORDS]` via the free [`set_mask_bit`] / [`mask_bit_is_set`]
 //! helpers (a producer scatters bits into per-key masks, then emits the finished triples).
 //!
-//! ## Literature
-//!
-//! This is the classic **sorted table searched by binary search** (Knuth, *The Art of Computer
-//! Programming* vol. 1 §2.2.6 on sequential-allocation tables, and vol. 3 §6.2.1 *Searching an
-//! Ordered Table* — binary search over a sorted key array), stored in the **structure-of-arrays /
-//! parallel-array** idiom (Knuth vol. 1 §2.2.2 on parallel arrays of linked data). The bitmask
-//! value is a word-packed bitset addressed by the textbook word/bit split (Warren, *Hacker's
-//! Delight* 2003, ch. 2 — the `>>5` / `&31` indexing of a bit within a 32-bit-word array). There is
-//! **no single canonical name** for "a sorted-key map whose values are fixed-width bitmasks plus a
-//! side scalar"; it is an association of these well-known pieces, so the type carries a descriptive
-//! name rather than a borrowed one.
+//! The shape is a **sorted table searched by binary search**, stored in the
+//! **structure-of-arrays** idiom, whose values are word-packed bitsets addressed by the usual
+//! word/bit split (`>>5` / `&31` within a 32-bit-word array). There is **no single canonical
+//! name** for "a sorted-key map whose values are fixed-width bitmasks plus a side scalar", so
+//! the type carries a descriptive name rather than a borrowed one.
 //!
 //! ## Genericity
 //!

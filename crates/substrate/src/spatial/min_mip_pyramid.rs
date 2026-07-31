@@ -16,19 +16,11 @@
 //! functions of the key set and the edge list — no traversal of any source structure lives here;
 //! a producer walks its own domain data, emits keys, and hands them to this fold.
 //!
-//! ## Literature
-//!
-//! This is the **clip-map / mip-pyramid over a sparse voxel occupancy set** of the volumetric-
-//! rendering literature. Cite: Tanner, Migdal & Jones 1998, *The Clipmap: a virtual mipmap* (the
-//! clip-map); Losasso & Hoppe 2004, *Geometry clipmaps* (the terrain-LOD pyramid); Crassin,
-//! Neyret, Lefebvre & Eisemann 2009, *GigaVoxels* (a brick/occupancy pyramid traversed by a
-//! hierarchical DDA); Amanatides & Woo 1987, *A fast voxel traversal algorithm* (the per-cell DDA a
-//! consumer runs against a level); Museth 2013, *VDB: high-resolution sparse volumes* (the sparse-
-//! hierarchy prior art). **Deviation:** the levels are **world-fixed** min-mip occupancy sets over
-//! a *sparse* key set — not the camera-centered, dense, toroidally-updated rings of the original
-//! clipmap. There is no clip region and no re-centering; each level is simply the deduplicated fold
-//! of the key set at its edge, so its footprint is proportional to the *occupied* cell count, not
-//! to a window size.
+//! The shape is a **mip-pyramid over a sparse voxel occupancy set**, traversed by a
+//! hierarchical DDA. Unlike the clip-map it descends from, the levels are **world-fixed** over a
+//! *sparse* key set rather than camera-centered, dense and toroidally updated: there is no clip
+//! region and no re-centering, and each level is the deduplicated fold of the key set at its
+//! edge, so its footprint is proportional to the *occupied* cell count, not to a window size.
 
 use rayon::prelude::*;
 

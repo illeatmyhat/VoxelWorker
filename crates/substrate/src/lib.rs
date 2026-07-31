@@ -8,8 +8,7 @@
 //! compile-enforced by the crate boundary.
 //!
 //! See the **Substrate** section of `docs/architecture/data-structures.md` for
-//! the timeless statement of the same rules; the dated component inventory and
-//! slice order live in `docs/design/substrate-extraction-map.md`.
+//! the same rules stated over the whole structure set.
 //!
 //! ## The boundary law
 //!

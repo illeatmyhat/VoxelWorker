@@ -3,7 +3,7 @@
 //! and that an UNclassified field cannot be compiled at all.
 //!
 //! The second half is the one that matters, and it is why `trybuild` is here. The
-//! derive's whole contribution is a diagnostic (ADR 0022's amendment: the macro buys
+//! derive's whole contribution is a diagnostic (the macro buys
 //! reviewability, not safety), so the diagnostic is pinned as a fixture. A test that
 //! only checked "unclassified fields fail" would pass just as happily against a bare
 //! `error: unknown attribute`, which is exactly the outcome the fixture exists to stop.
@@ -68,7 +68,7 @@ fn the_document_carries_only_document_state_and_the_dump_is_its_superset() {
         .iter()
         .map(|field| field.name)
         .collect();
-    // ADR 0022 decision 1: the dump is a SUPERSET of the document, not a variant.
+    // The dump is a SUPERSET of the document, not a variant.
     assert_eq!(dump, ["body", "window_size", "rollback_cursor"]);
     assert!(document.iter().all(|name| dump.contains(name)));
 }

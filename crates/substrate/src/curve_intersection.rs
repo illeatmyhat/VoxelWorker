@@ -24,13 +24,9 @@
 //! boundary of the shared piece. [`CurveCrossing::overlapping`] marks those so a caller that wants
 //! to treat a shared edge differently from a transverse crossing can.
 //!
-//! ## Literature
-//!
-//! Segment–segment is the standard parametric cross-product solve (Goldman, *Graphics Gems* 1990;
-//! Ericson, *Real-Time Collision Detection* 2005 §5.1.9). Segment–circle is the quadratic
-//! substitution; circle–circle is the radical-line construction (Bourke, *Intersection of two
-//! circles*, 1997). Each is then clipped to its curve's own parameter range, which is where arcs
-//! differ from the full primitives the literature solves.
+//! Segment–segment is the standard parametric cross-product solve; segment–circle the quadratic
+//! substitution; circle–circle the radical-line construction. Each is then clipped to its curve's
+//! own parameter range, which is where arcs differ from the full primitives those solves assume.
 
 use std::f64::consts::TAU;
 

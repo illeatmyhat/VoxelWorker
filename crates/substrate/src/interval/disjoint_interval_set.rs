@@ -108,13 +108,10 @@ impl DisjointIntervalSet {
     }
 }
 
-// NOTE (verification): the `insert` normalization invariant (sorted ∧ disjoint ∧ non-touching
-// after any insert) is NOT a Kani target. A `Vec::splice`-backed insert makes CBMC model the
-// drain + reallocation machinery, which exploded to thousands of VCCs on a 3-interval set — a
-// known bounded-model-checking pathology for heavy std-collection mutation, not a property
-// failure. This is exactly why the extraction map (docs/design/substrate-extraction-map.md,
-// decision-6) assigns this stateful invariant to a DEDUCTIVE prover (Creusot/Verus), not Kani;
-// it waits for that tier to be stood up. The unit tests below pin the behavior meanwhile.
+// The `insert` normalization invariant (sorted ∧ disjoint ∧ non-touching after any insert) is
+// NOT a Kani target: a `Vec::splice`-backed insert makes CBMC model the drain + reallocation
+// machinery, which explodes to thousands of VCCs on a 3-interval set. Stateful invariants over
+// std-collection mutation belong to the deductive tier; the unit tests below pin the behavior.
 
 /// Kani probes of the MACHINE-INTEGER edges of this type — the edges the Verus proof of `insert`
 /// deliberately assumed away in its preconditions, and which the deductive tier therefore never
@@ -198,9 +195,8 @@ mod tests {
     }
 
     /// A maximally wide interval is legal input to `insert` (`lo < hi` is the only constraint), but
-    /// its true width (`2^64 − 1`) does not fit an `i64`, so the plain `hi - lo` used to overflow
-    /// and PANIC here. Found by the Kani harness
-    /// `widest_span_does_not_overflow_on_a_legal_interval`; the width now saturates.
+    /// its true width (`2^64 − 1`) does not fit an `i64`, so a plain `hi - lo` would overflow
+    /// and panic. The width saturates instead.
     #[test]
     fn widest_span_saturates_instead_of_overflowing() {
         let mut set = DisjointIntervalSet::new();

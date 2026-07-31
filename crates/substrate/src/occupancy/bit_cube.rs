@@ -22,11 +22,9 @@
 //! 64 — this avoids the shift-overflow the naive `(1 << (max_x + 1)) - 1` form hits when
 //! `max_x == 63`.
 //!
-//! Cite: Warren, *Hacker's Delight* (2nd ed. 2013) — bit-run masks, population count, and
-//! the shift-overflow avoidance; Knuth, TAOCP vol. 4A §7.1 (bitwise techniques, packed
-//! subsets). Deviation from a general word-packed bitset: the edge is bounded at 64 so a
-//! whole X-row is one word (the run-set becomes a single masked OR), and the structure is a
-//! cube rather than a flat set — the caller addresses it by `(x, y, z)`.
+//! What departs from a general word-packed bitset: the edge is bounded at 64 so a whole X-row
+//! is one word (the run-set becomes a single masked OR), and the structure is a cube rather
+//! than a flat set — the caller addresses it by `(x, y, z)`.
 
 /// A cubic bitset of edge `1..=64`, one `u64` per X-row. `PartialEq`/`Eq` are exact: two
 /// cubes are equal iff every row word matches (unused high bits are always clear).
@@ -152,10 +150,10 @@ fn expand_row_word_into(word: u64, out_row: &mut [u8], set_byte: u8) {
 /// the **overflow-safe run mask** and **row isolation** — verified over the whole bounded input
 /// space rather than the handful of fixtures the unit test names. The run mask is exactly the
 /// place a naive `(1 << (max + 1)) - 1` form wraps at `max == 63`; a wrong mask sets stray
-/// occupancy bits that no differential render reliably samples. The doctrine (ADR 0014 decision
-/// 6 / `docs/architecture/05-proof.md`) assigns Kani to these finite bit kernels; the density
-/// bound `1..=64` doubles as the verification bound. `#[cfg(kani)]` keeps them inactive in
-/// ordinary builds. Run under WSL: `cargo kani -p substrate`.
+/// occupancy bits that no differential render reliably samples. `docs/architecture/05-proof.md`
+/// assigns Kani to finite bit kernels like these; the density bound `1..=64` doubles as the
+/// verification bound. `#[cfg(kani)]` keeps them inactive in ordinary builds. Run under WSL:
+/// `cargo kani -p substrate`.
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;

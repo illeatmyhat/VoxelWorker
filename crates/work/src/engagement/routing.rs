@@ -1,5 +1,5 @@
 //! Display routing policy — the pure per-edit decision functions for the two display
-//! pipelines (the cuboid fallback mesh and the ADR 0011 brick raymarch).
+//! pipelines (the cuboid fallback mesh and the brick raymarch).
 //!
 //! Each function decides, for one edit, WHERE its derived display artifacts are
 //! (re)built — inline on the main thread, or dispatched to a background worker
@@ -34,7 +34,7 @@
 //! unit-testable.
 
 /// The covering-chunk count above which a WHOLESALE geometry rebuild is dispatched to
-/// the background worker instead of built inline (issue #60).
+/// the background worker instead of built inline.
 ///
 /// A rebuild covering at most this many chunks is cheap enough to build synchronously on
 /// the main thread without a perceptible hitch (the small-object common case), so it
@@ -43,11 +43,11 @@
 /// case the issue targets — goes async. Chosen conservatively: at the default density a
 /// chunk is `4×4×4` blocks, so 128 chunks is a large multi-hundred-block object, well
 /// past the point where an inline build stalls a frame. (Incremental dirty-chunk edits —
-/// the #54/#55 fast path — stay inline REGARDLESS of this threshold; only WHOLESALE
+/// the incremental fast path — stay inline REGARDLESS of this threshold; only WHOLESALE
 /// rebuilds consult it.)
 pub const ASYNC_REBUILD_CHUNK_THRESHOLD: usize = 128;
 
-/// The shape of the edit the resolve produced (issue #60 C1), consumed by
+/// The shape of the edit the resolve produced, consumed by
 /// [`route_geometry_rebuild`]. Either the edit localized to a few dirty chunks (an inline
 /// incremental fast-path candidate) or it needs a wholesale rebuild of `chunk_count`
 /// covering chunks (threshold-gated between inline and async).
@@ -60,20 +60,20 @@ pub enum EditShape {
     Wholesale { chunk_count: usize },
 }
 
-/// Where an edit's geometry rebuild is routed (issue #60 C1). Extracted as a pure decision
-/// so the C1 interlock — "do NOT inline-patch the currently-installed renderer while an
+/// Where an edit's geometry rebuild is routed. Extracted as a pure decision
+/// so the interlock — "do NOT inline-patch the currently-installed renderer while an
 /// async wholesale build is OUTSTANDING" — is unit-testable without a live window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildRoute {
     /// Apply an incremental dirty-chunk re-mesh to the CURRENTLY-installed renderer in
-    /// place (the #54/#55 fast path). Sound ONLY when no async build is outstanding — the
+    /// place (the incremental fast path). Sound ONLY when no async build is outstanding — the
     /// installed renderer then reflects the latest resolve.
     InlineIncremental,
     /// Rebuild the WHOLE renderer inline on the main thread (small wholesale, at/below the
     /// async threshold — cheap enough not to hitch a frame).
     WholesaleInline,
     /// Dispatch a WHOLESALE rebuild from the CURRENT full covering set to the async worker
-    /// (stale-while-rebuilding). Chosen for a large wholesale edit AND — the C1 interlock —
+    /// (stale-while-rebuilding). Chosen for a large wholesale edit AND — the interlock —
     /// for ANY edit (even an incremental one) while an async build is outstanding: the
     /// installed renderer is STALE (S0) while the worker builds S1, so inline-patching it
     /// would strand every chunk that differs S0→S1 but isn't in the new dirty set (the
@@ -163,11 +163,11 @@ pub fn route_derived_artifact(
     }
 }
 
-/// Decide where an edit's geometry rebuild is routed (issue #60 C1), given whether an async
+/// Decide where an edit's geometry rebuild is routed, given whether an async
 /// wholesale build is currently OUTSTANDING (dispatched but not yet accepted/installed) and the
 /// [`EditShape`] the resolve produced. A thin wrapper over [`route_derived_artifact`]: the
 /// installed renderer is always current and always inline-patchable, so an outstanding build is
-/// geometry's only stale-forcing input (the C1 interlock). Pure — no GPU, no window.
+/// geometry's only stale-forcing input (the interlock). Pure — no GPU, no window.
 pub fn route_geometry_rebuild(
     async_outstanding: bool,
     edit: EditShape,
@@ -175,7 +175,7 @@ pub fn route_geometry_rebuild(
 ) -> RebuildRoute {
     // The installed renderer is always current on the main thread and always inline-patchable
     // (re-meshable buffers), and geometry has no inline supersede seam — so an outstanding async
-    // build is the only thing that forces a stale rebuild here (the C1 interlock).
+    // build is the only thing that forces a stale rebuild here (the interlock).
     route_derived_artifact(
         DerivedArtifactState {
             current: true,
@@ -189,7 +189,7 @@ pub fn route_geometry_rebuild(
 }
 
 /// Whether — and how — an edit must (re)build the fallback CUBOID MESH, given that the
-/// ADR 0011 brick raymarch is the actual display sink (perf follow-up to epic #64). The
+/// brick raymarch is the actual display sink. The
 /// mesh is drawn ONLY when the brick raymarch is not engaged (no installed field, debug-face
 /// mode, or a loaded VS material); when the brick IS the display the mesh is pure redundant
 /// per-edit work — the ~333ms serial build on a big scene — and is SKIPPED, leaving it stale.
@@ -197,7 +197,7 @@ pub fn route_geometry_rebuild(
 /// A skipped-stale mesh is exactly as untrustworthy as a still-building async result: it does
 /// NOT reflect the latest resolve, so an incremental edit must NOT inline-patch it (that would
 /// strand every chunk that changed while the mesh was skipped — the same Frankenstein-mesh
-/// hazard the C1 interlock guards). Staleness therefore composes into the interlock by OR-ing
+/// hazard the interlock guards). Staleness therefore composes into the interlock by OR-ing
 /// with `async_outstanding` before delegating to [`route_geometry_rebuild`], forcing a fresh
 /// wholesale build the moment the mesh is next needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,15 +210,15 @@ pub enum MeshBuildRoute {
     Build(RebuildRoute),
 }
 
-/// Decide whether the fallback cuboid mesh needs building for this edit (the brick-display
-/// perf follow-up to epic #64). Pure — no GPU, no window — so the skip/stale/interlock rule
-/// is unit-testable in the lib, like [`route_geometry_rebuild`].
+/// Decide whether the fallback cuboid mesh needs building for this edit. Pure — no GPU, no
+/// window — so the skip/stale/interlock rule is unit-testable in the lib, like
+/// [`route_geometry_rebuild`].
 ///
 /// * `brick_display_engaged` — the brick raymarch will draw this frame (a field is installed,
 ///   no debug-face mode, no loaded VS material). When `true` the mesh is redundant → `Skip`.
 /// * `mesh_stale` — the currently-installed mesh was previously SKIPPED (or otherwise does not
 ///   reflect the latest resolve). A stale mesh cannot be inline-patched, so it is OR-ed into
-///   the C1 interlock, forcing a wholesale build.
+///   the interlock, forcing a wholesale build.
 pub fn route_mesh_build(
     brick_display_engaged: bool,
     mesh_stale: bool,
@@ -244,8 +244,8 @@ pub fn route_mesh_build(
     ))
 }
 
-/// The brick display's fate when a rebuild did NOT (re)install it (F1 — the deferred handover
-/// decision, brick-display perf follow-up to epic #64). Pure so the "keep the stale brick
+/// The brick display's fate when a rebuild did NOT (re)install it — the deferred-handover
+/// decision. Pure so the "keep the stale brick
 /// drawing until the async replacement mesh installs" rule is unit-testable without a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrickDisplayHandover {
@@ -256,13 +256,13 @@ pub enum BrickDisplayHandover {
     /// Chosen when the replacement mesh is already current, OR the brick can't/needn't draw (a
     /// mesh-only display mode is active — debug-face / loaded material), OR no live field remains.
     ClearNow,
-    /// DEFER the clear (F1): a stale brick field is still live, the replacement mesh is building
+    /// DEFER the clear: a stale brick field is still live, the replacement mesh is building
     /// ASYNC, and the brick would still draw — keep it on-screen so the model never blanks for the
     /// seconds the worker takes, and clear it in the mesh-install seam once the fresh mesh lands.
     DeferUntilInstall,
 }
 
-/// Decide the brick display's handover when a rebuild did not (re)install the brick sink (F1).
+/// Decide the brick display's handover when a rebuild did not (re)install the brick sink.
 /// Pure — no GPU, no window — so the deferred-clear rule is unit-testable like the routing.
 ///
 /// * `brick_reinstalled_this_rebuild` — the brick installed/patched a field this rebuild (it is
@@ -271,7 +271,7 @@ pub enum BrickDisplayHandover {
 ///   inline build/patch). Then the brick can be cleared immediately (the mesh draws instead).
 /// * `brick_would_draw_if_kept` — the brick WOULD draw if its field were kept (no debug-face,
 ///   no loaded material). When false, keeping a stale field is pointless AND risks a stale patch
-///   (F2), so clear now.
+///   so clear now.
 /// * `has_live_brick_field` — a non-empty brick field is actually resident to keep. When false
 ///   there is nothing to defer, so clear now (a no-op on the empty field).
 ///
@@ -294,16 +294,16 @@ pub fn brick_display_handover(
 }
 
 /// Whether an incremental brick edit may PATCH the resident GPU field in place, or must INSTALL
-/// a fresh field (F2 — brick-display perf follow-up to epic #64). Pure so the "a cleared/empty/
+/// a fresh field. Pure so the "a cleared/empty/
 /// placeholder field cannot be patched" rule is unit-testable.
 ///
 /// Patch iff an incremental `update` was produced AND the renderer actually HOLDS A LIVE FIELD
 /// AND that field is not a stale handover placeholder. The two staleness inputs:
 /// * `renderer_holds_live_field` — gating on live residency (not merely renderer-present) is
-///   the F2 fix: during a loaded-material (or any cleared) window the renderer's field was
-///   zeroed while the CPU mirror kept patching, so a patch would write only the LAST edit's
+///   load-bearing: during a loaded-material (or any cleared) window the renderer's field is
+///   zeroed while the CPU mirror keeps patching, so a patch would write only the LAST edit's
 ///   slots over an empty field — a stale atlas. A present-but-empty renderer must re-INSTALL.
-/// * `field_pending_replacement` — during an F1 deferred-handover window the live field is a
+/// * `field_pending_replacement` — during a deferred-handover window the live field is a
 ///   STALE visual placeholder kept drawing only until the replacement mesh lands; it does not
 ///   reflect the latest resolve, so an edit that restores representability must INSTALL a
 ///   fresh field, never patch the placeholder (the same Frankenstein hazard, one level up).
@@ -399,7 +399,7 @@ mod tests {
 
     const THRESHOLD: usize = ASYNC_REBUILD_CHUNK_THRESHOLD;
 
-    /// C1 interlock — the core fix. With an async wholesale build OUTSTANDING, an
+    /// interlock — the core fix. With an async wholesale build OUTSTANDING, an
     /// incremental edit must NOT inline-patch the stale (S0) renderer (that strands every
     /// chunk that differs S0→S1 but isn't in the new dirty set — the Frankenstein mesh).
     /// It routes to a fresh WHOLESALE-async dispatch from the current resident cache.
@@ -415,7 +415,7 @@ mod tests {
         assert_ne!(route, RebuildRoute::InlineIncremental);
     }
 
-    /// C1 — a SMALL wholesale edit that would normally build inline ALSO routes to async
+    /// A SMALL wholesale edit that would normally build inline ALSO routes to async
     /// while outstanding: building it inline would overwrite the S0 renderer just as the
     /// outstanding S1 is about to (or the reverse), so route to the worker for convergence.
     #[test]
@@ -428,7 +428,7 @@ mod tests {
         );
     }
 
-    /// C1 — a large wholesale edit while outstanding is also async (it would be anyway).
+    /// A large wholesale edit while outstanding is also async (it would be anyway).
     #[test]
     fn outstanding_large_wholesale_routes_to_wholesale_async() {
         let large = EditShape::Wholesale {
@@ -464,7 +464,7 @@ mod tests {
         );
     }
 
-    /// No build outstanding + a LARGE wholesale (exceeds threshold) → async (the #60 case).
+    /// No build outstanding + a LARGE wholesale (exceeds threshold) → async.
     #[test]
     fn not_outstanding_large_wholesale_routes_async() {
         let large = EditShape::Wholesale {
@@ -526,7 +526,7 @@ mod tests {
     /// The core new rule: an incremental edit onto a SKIPPED-STALE mesh must NOT inline-patch
     /// (the mesh was skipped, so its buffers are stranded/empty — patching strands every
     /// intervening change, the Frankenstein mesh). Staleness forces a wholesale build exactly
-    /// like the C1 interlock does for an outstanding async build.
+    /// like the interlock does for an outstanding async build.
     #[test]
     fn stale_mesh_incremental_forces_wholesale_not_inline() {
         let route = route_mesh_build(false, true, false, EditShape::Incremental, THRESHOLD);
@@ -556,14 +556,14 @@ mod tests {
             ),
             MeshBuildRoute::Build(RebuildRoute::WholesaleAsync),
         );
-        // Not-stale but outstanding: the existing C1 interlock still forces async.
+        // Not-stale but outstanding: the interlock still forces async.
         assert_eq!(
             route_mesh_build(false, false, true, EditShape::Incremental, THRESHOLD),
             MeshBuildRoute::Build(RebuildRoute::WholesaleAsync),
         );
     }
 
-    // --- brick_display_handover: the F1 deferred-clear rule ---
+    // --- brick_display_handover: the deferred-clear rule ---
 
     /// When the brick (re)installed this rebuild it IS the live display — keep it, cancel any
     /// pending deferred clear, regardless of the other flags.
@@ -582,8 +582,9 @@ mod tests {
         }
     }
 
-    /// THE F1 CASE: brick disengaged, the replacement mesh is building ASYNC (not current this
-    /// frame), the brick would still draw, and a live field remains → DEFER the clear so the
+    /// THE DEFERRED-HANDOVER CASE: brick disengaged, the replacement mesh is building ASYNC
+    /// (not current this frame), the brick would still draw, and a live field remains → DEFER
+    /// the clear so the
     /// stale brick keeps drawing until the fresh mesh installs (the model never blanks).
     #[test]
     fn disengaged_async_live_brick_defers_clear() {
@@ -606,8 +607,8 @@ mod tests {
     }
 
     /// A mesh-only mode is active (debug-face / loaded material) so the brick would NOT draw even
-    /// if kept → clear now (keeping a stale field is pointless and risks a stale patch, F2). This
-    /// preserves the pre-F1 behavior for the loaded-material window.
+    /// if kept → clear now (keeping a stale field is pointless and risks a stale patch). This
+    /// is what the loaded-material window needs.
     #[test]
     fn disengaged_brick_would_not_draw_clears_now() {
         assert_eq!(
@@ -628,23 +629,23 @@ mod tests {
         );
     }
 
-    // --- brick_patch_in_place: the F2 stale-patch gate ---
+    // --- brick_patch_in_place: the stale-patch gate ---
 
     /// Patch only when an incremental update exists AND the renderer holds a LIVE field
-    /// AND that field is not a stale F1-handover placeholder.
+    /// AND that field is not a stale handover placeholder.
     #[test]
     fn patch_requires_update_and_live_current_field() {
         assert!(
             brick_patch_in_place(true, true, false),
             "an incremental update onto a live, current resident field patches in place"
         );
-        // F2: a present-but-CLEARED renderer (no live field) must INSTALL fresh, never patch —
+        // A present-but-CLEARED renderer (no live field) must INSTALL fresh, never patch —
         // patching would write only the last edit's slots over the emptied atlas (a stale atlas).
         assert!(
             !brick_patch_in_place(true, false, false),
             "an update onto a cleared/empty field must re-install, not patch (F2)"
         );
-        // F1 placeholder: a live field awaiting a deferred handover clear is a STALE visual
+        // Handover placeholder: a live field awaiting a deferred clear is a STALE visual
         // placeholder — an edit that restores representability must INSTALL fresh, never patch
         // the placeholder (patching writes one edit's slots over a field reflecting neither
         // the old nor the new resolve).

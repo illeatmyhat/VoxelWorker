@@ -1,5 +1,5 @@
-// The second half of the guarantee, and the one the derive cannot give (ADR 0022,
-// amendment 2026-07-20). Classifying a field proves somebody DECIDED where it goes; it
+// The second half of the guarantee, and the one the derive cannot give.
+// Classifying a field proves somebody DECIDED where it goes; it
 // says nothing about whether the capture function took it there. This fixture is the
 // missing step: a field that is properly classified, and reaches no artifact anyway,
 // because the dump's capture does not mention it.

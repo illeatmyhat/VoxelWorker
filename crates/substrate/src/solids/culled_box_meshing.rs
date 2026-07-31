@@ -36,17 +36,13 @@
 //! mixture of the two collapses into this one predicate at the caller's seam; the kernel
 //! cannot tell which, and does not care.
 //!
-//! ## Literature
-//!
-//! This is the **culled meshing** of Lysenko, *Meshing in a Minecraft Game* (0fps, 2012) —
-//! the culled-vs-greedy voxel-meshing taxonomy — and the older hidden-surface face-culling
-//! folklore: emit a face only when the cell across it is empty. **Deviation:** the canonical
-//! culled mesher culls the six faces of each individual *voxel*; here we cull the six faces
-//! of pre-decomposed disjoint *boxes* — the output of the greedy box cover
-//! ([`GreedyCuboidDecomposition`](crate::solids::GreedyCuboidDecomposition), the same Lysenko greedy
-//! lineage). Culling merged-box faces is why the slab is scanned across the box's full
-//! in-plane extent and why a partially-exposed face is reported whole, rather than the
-//! single-cell test a per-voxel mesher uses.
+//! The rule is the usual one: emit a face only when the cell across it is empty. The deviation
+//! is that a canonical culled mesher culls the six faces of each individual *voxel*, and this
+//! culls the six faces of pre-decomposed disjoint *boxes* — the output of
+//! [`GreedyCuboidDecomposition`](crate::solids::GreedyCuboidDecomposition). Culling merged-box
+//! faces is why the slab is scanned across the box's full in-plane extent and why a
+//! partially-exposed face is reported whole, rather than the single-cell test a per-voxel
+//! mesher uses.
 
 use crate::solids::greedy_cuboid_decomposition::Cuboid;
 

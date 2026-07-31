@@ -25,7 +25,7 @@
 //! The **predicate** half ([`orient2d`], [`segments_intersect`],
 //! [`segment_intersects_rect`], [`rectangle_inside_polygon`]) stays `f64`. It is CPU-only
 //! and will never be mirrored: it answers "is this whole cell inside?", which is the
-//! coarse-solid classifier question (ADR 0010), and a shader never asks it — a raymarch
+//! coarse-solid classifier question, and a shader never asks it — a raymarch
 //! asks about points, not cells. It is also where the extra width genuinely earns its
 //! keep. Checked against exact `i128` arithmetic, `f32` starts returning **wrong
 //! orientation signs from about ±4096 voxels outward** (0 wrong at 2¹², 453 at 2²⁰, 8,817
@@ -33,7 +33,7 @@
 //! surface: it makes the classifier **over-claim solid**, which is unsound rather than
 //! conservative, and a whole cell is then filled without ever being sampled.
 //!
-//! This is the line ADR 0019 draws: **predicates classify, fields measure.** A predicate
+//! That is the line: **predicates classify, fields measure.** A predicate
 //! must be exact or it lies; a measurement only has to be accurate, and accuracy is
 //! cheaper than exactness.
 //!
@@ -277,7 +277,7 @@ impl Metric {
 
     /// The circumradius of an axis-aligned 3D cell with the given per-axis `half_extent`, measured
     /// in THIS metric — the radius a field's 1-Lipschitz bound multiplies to bracket the cell's
-    /// coarse AIR/SOLID interval (ADR 0010/0019). Under **Chebyshev** (L∞) it is the largest
+    /// coarse AIR/SOLID interval. Under **Chebyshev** (L∞) it is the largest
     /// half-extent (`h`), under **Euclidean** (L2) the half-diagonal (`h√3` for a cube) — the
     /// tightening that makes interior elision cheaper for rectilinear bodies. The 3D sibling of
     /// [`length`](Self::length), and the ONE place this metric split lives, so a new `Metric`
@@ -414,7 +414,7 @@ pub enum LoopRole {
 /// Carrying the arc instead removes the question. [`signed_distance_to_region`] measures to the
 /// true curve, [`point_in_region`] classifies against the true curve, and a length scale enters
 /// only where something discrete is actually produced (a voxel grid, a crease polyline). It is also
-/// cheaper: one arc replaces the twenty-odd chords that used to stand in for it.
+/// cheaper: one arc stands where twenty-odd chords otherwise would.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RegionEdge {
     /// A straight span from `start` to `end`.

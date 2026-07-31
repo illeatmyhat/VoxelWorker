@@ -1,4 +1,4 @@
-//! Voxel COORDINATE-FRAME newtypes (the frame-invariant law, ADR 0008): a spatial value CARRIES
+//! Voxel COORDINATE-FRAME newtypes — the frame-invariant law: a spatial value CARRIES
 //! the frame it was authored in, and the ONLY way to cross frames is an explicit, named conversion
 //! that adds or subtracts the [`RecenterVoxels`] offset (or, for the producer-local crossing, folds
 //! through the [`LeafPlacement`] affine). Making the frames distinct **zero-cost**
@@ -93,7 +93,7 @@ fn recenter_as_vec3(recenter: RecenterVoxels) -> Vec3 {
     Vec3::new(voxels[0] as f32, voxels[1] as f32, voxels[2] as f32)
 }
 
-/// The absolute producer/world voxel coordinate (ADR 0008). Cross into another frame ONLY via a
+/// The absolute producer/world voxel coordinate. Cross into another frame ONLY via a
 /// named conversion — [`to_recentered`](Self::to_recentered) for the recenter translation, or
 /// [`LeafPlacement::local_of`](crate::spatial::LeafPlacement::local_of) for the producer-local
 /// affine.
@@ -146,7 +146,7 @@ impl RecenteredVoxelPoint {
     }
 }
 
-/// A voxel coordinate inside a leaf's local `[0, full)` box, BEFORE the placement affine (ADR 0027).
+/// A voxel coordinate inside a leaf's local `[0, full)` box, BEFORE the placement affine.
 /// It reaches the true-world frame only by folding through
 /// [`LeafPlacement::world_of`](crate::spatial::LeafPlacement::world_of) — never by a bare add.
 #[repr(transparent)]

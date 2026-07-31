@@ -1,4 +1,4 @@
-//! Async diameter / widest-run measurement worker (ADR 0010 E5 follow-up).
+//! Async diameter / widest-run measurement worker.
 //!
 //! The layer-scrubber readout ("Ø N vx") is the widest occupied run in the current layer
 //! band, computed by [`streamed_widest_run_in_band`].

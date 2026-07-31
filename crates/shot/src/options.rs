@@ -22,57 +22,56 @@ pub(crate) struct ShotOptions {
     /// Whether the voxel/block grid overlay is drawn.
     pub(crate) show_grid_overlay: bool,
     /// Whether `--gizmo` was passed: draw the transform gizmo ON the active/
-    /// selected node (issue #29 S2). No-op-safe when nothing is selected or the
-    /// selection has no extent. The field name is kept for minimal churn.
+    /// selected node. No-op-safe when nothing is selected or the selection has no extent.
     pub(crate) show_origin_gizmo: bool,
-    /// `--select-node N` (issue #29 S2): override the scene's active selection to
+    /// `--select-node N`: override the scene's active selection to
     /// the top-level node at index N, so a headless capture can prove the transform
     /// gizmo FOLLOWS a chosen (non-origin) node. `None` keeps the scene's default
     /// selection. Out-of-range clears the selection (gizmo hidden).
     pub(crate) select_node: Option<usize>,
-    /// `--select-root` (ADR 0018 Decision 2): override the scene's active selection to the
+    /// `--select-root`: override the scene's active selection to the
     /// ROOT PART ([`voxel_worker::ROOT_NODE_ID`]), so a headless capture can prove a
     /// view mode applies scene-wide (Show-booleans x-rays every boolean). Takes precedence
     /// over `--select-node`.
     pub(crate) select_root: bool,
-    /// `--selection-cel` (ADR 0032): draw the selection-cel feedback over the selected
+    /// `--selection-cel`: draw the selection-cel feedback over the selected
     /// nodes' derived bodies, exactly as the windowed shell does in every view mode.
     /// Opt-in (like `--gizmo`), so the existing goldens stay byte-identical.
     pub(crate) selection_cel: bool,
-    /// `--view-mode <normal|onion|booleans>` (ADR 0018 Decision 3): the viewer's exclusive
+    /// `--view-mode <normal|onion|booleans>`: the viewer's exclusive
     /// rendering mode. Default Normal (the finished look, no ghosts). Show-booleans x-rays
     /// the selected subtree's boolean operands; Onion-fog keeps its scene-wide band meaning
     /// this slice.
     pub(crate) view_mode: ViewMode,
-    /// Was `--view-mode` actually passed? Since ADR 0024 a dump carries the viewer mode,
-    /// so `--from-config` has one to adopt — and the two sources need an order. An
+    /// Was `--view-mode` actually passed? A dump carries the viewer mode, so
+    /// `--from-config` has one to adopt — and the two sources need an order. An
     /// explicit flag wins; silence lets the dump speak. Without this marker the default
     /// `Normal` would be indistinguishable from a chosen `Normal` and would quietly
     /// override every repro.
     pub(crate) view_mode_explicit: bool,
-    /// `--orbit-type <constrained|free>` (ADR 0032): the DEFAULT orbit type the icon rail's
+    /// `--orbit-type <constrained|free>`: the DEFAULT orbit type the icon rail's
     /// split button shows. Camera behavior is unaffected — the capture takes no drags — so
     /// this exists to render the rail in its other state.
     pub(crate) orbit_type: OrbitType,
-    /// `--stack-folded` (issue #88): start the floating Signal display stack FOLDED to its
+    /// `--stack-folded`: start the floating Signal display stack FOLDED to its
     /// vertical edge tabs (the cube + rail slide right toward the edge). There is no pointer
     /// input on the single `shot` frame, so this flag is how the folded-state golden is
     /// pinned. Default `false` (the expanded stack).
     pub(crate) stack_folded: bool,
     /// Whether the block lattice is drawn (M8 `--lattice`).
     pub(crate) show_block_lattice: bool,
-    /// Whether the fine floor grid is drawn (M8 `--floor`).
+    /// Whether the fine floor grid is drawn (`--floor`).
     pub(crate) show_floor_grid: bool,
     /// Whether the world reference grid (the Points: analytic infinite ground plane
-    /// plus axes) is drawn (issue #29 S5 `--points`). DEFAULT OFF so the existing
-    /// goldens (which never pass `--points`) stay byte-identical; `--points` enables
+    /// plus axes) is drawn (`--points`). DEFAULT OFF so goldens that never pass
+    /// `--points` stay byte-identical; `--points` enables
     /// the Origin Point (and any others) so a deliberate Points golden can be captured.
     pub(crate) show_points: bool,
-    /// Whether the Points' axes draw ON TOP of the model (ADR 0031). DEFAULT true (the app
+    /// Whether the Points' axes draw ON TOP of the model. DEFAULT true (the app
     /// default); `--axes-occluded` flips it to the depth-tested scaffold path.
     pub(crate) axes_on_top: bool,
-    /// An OPTIONAL extra Point at the given world BLOCK position (issue #29 Points
-    /// fast-follow `--point-at X Y Z`), with its XY ground plane (Z-up) + axes ON, so a
+    /// An OPTIONAL extra Point at the given world BLOCK position (`--point-at X Y Z`),
+    /// with its XY ground plane (Z-up) + axes ON, so a
     /// headless capture can verify a second analytic grid plane at a different height
     /// / offset. Only meaningful together with `--points`.
     pub(crate) extra_point_blocks: Option<[i64; 3]>,
@@ -83,12 +82,11 @@ pub(crate) struct ShotOptions {
     /// When `Some`, write the resolved grid to this `.vox` path (M8
     /// `--export-vox`) instead of (or in addition to) rendering a PNG.
     pub(crate) export_vox_path: Option<PathBuf>,
-    /// When `Some`, set the camera directly to this element's snapped angles (M5
-    /// `--snap`), overriding `--theta`/`--phi` so the snap table can be verified
-    /// headlessly (no tween). Faces, edges (`front-top`) and corners
-    /// (`front-top-right`) are all accepted (#13a).
+    /// When `Some`, set the camera directly to this element's snapped angles (`--snap`),
+    /// overriding `--theta`/`--phi` so the snap table can be verified headlessly (no
+    /// tween). Faces, edges (`front-top`) and corners (`front-top-right`) are all accepted.
     pub(crate) snap_element: Option<ViewCubeElement>,
-    /// `--cube-hover <zone>` (#13 Step 2): force a ViewCube chrome zone to read as
+    /// `--cube-hover <zone>`: force a ViewCube chrome zone to read as
     /// hovered so a golden can show a highlighted rotate/roll arrow. `None` = the
     /// normal render (Home/Fit only, no arrows).
     pub(crate) cube_hover: Option<camera::CubeChromeZone>,
@@ -96,7 +94,7 @@ pub(crate) struct ShotOptions {
     pub(crate) theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
     pub(crate) phi: f32,
-    /// View roll about the forward axis (radians, #13 Step 5). Default 0 (upright).
+    /// View roll about the forward axis (radians). Default 0 (upright).
     /// `--roll <radians>` twists the whole scene AND the ViewCube together.
     pub(crate) roll: f32,
     /// Orbit distance. `None` = auto-frame from the grid.
@@ -118,84 +116,83 @@ pub(crate) struct ShotOptions {
     /// its texture stem (e.g. `wood/treetrunk/oak`) even if it is outside the
     /// chiselable allow-list, to demonstrate per-face rendering on a known block.
     pub(crate) force_demo_stem: Option<String>,
-    /// Layer-range scrubber lower bound (issue #12), a voxel Z-layer index. When
+    /// Layer-range scrubber lower bound, a voxel Z-layer index. When
     /// `None`, defaults to the full range (0). Raw voxel index — no snapping.
     pub(crate) layer_lower: Option<u32>,
-    /// Layer-range scrubber upper bound (issue #12), a voxel Z-layer index. When
+    /// Layer-range scrubber upper bound, a voxel Z-layer index. When
     /// `None`, defaults to the full range (grid_z). Raw voxel index — no snapping.
     pub(crate) layer_upper: Option<u32>,
-    /// Onion-skin depth (issue #12): 0 = off (hard band clip), N = ghost N layers
+    /// Onion-skin depth: 0 = off (hard band clip), N = ghost N layers
     /// on each side of the band with screen-door dither.
     pub(crate) onion_depth: u32,
     /// `--shape debug-clouds`: replace the parametric producer with the debug
     /// cloud field (several distinct billowy blobs in a mostly-empty volume) at
     /// the requested size/density. The grid dims still come from size×density.
     pub(crate) debug_clouds: bool,
-    /// `--demo-scene` (ADR 0001 step 3): ignore the single-shape options and build
+    /// `--demo-scene`: ignore the single-shape options and build
     /// a hardcoded multi-node PLACED scene (a sphere at the origin, a box offset
     /// +8 blocks in X, and a clouds VoxelBody offset in Z) so the headless capture can
     /// confirm nodes appear separated in space (not overlapping at the origin).
     /// Useful for future headless multi-node checks.
     pub(crate) demo_scene: bool,
-    /// `--demo-village` (ADR 0001 step 4): ignore the single-shape options and
+    /// `--demo-village`: ignore the single-shape options and
     /// build an INSTANCED scene — one "house" `AssemblyDef` placed by four
     /// `Instance` nodes at four offsets — so the headless capture can confirm the
     /// repeated assembly appears at multiple separated locations from a single
     /// stored definition (reuse by reference).
     pub(crate) demo_village: bool,
-    /// `--demo-village-far` (ADR 0010 D0 / ADR 0003 §G3, Phase D0): the SAME
+    /// `--demo-village-far`: the SAME
     /// instanced `--demo-village` scene, but its whole composite is offset to the FAR
     /// end of the anisotropic horizontal extent ([`crate::demos::FAR_SCENE_BASE_BLOCKS`] ≈
     /// XZ 10,000 blocks, vertical Y bounded at 0). The near goldens cannot see
     /// far-scene f32 precision loss — at XZ~10k the absolute voxel center has barely a
     /// mantissa bit below the voxel — so this golden establishes the far-scene baseline
-    /// the §3a chunk-local-integer payload move (#48) must preserve. It renders crisp
-    /// TODAY because `resolve_chunk_rebased` subtracts the floating origin in i64 BEFORE
-    /// the f32 downcast (S4b); a regression of that rebase would smear this golden.
+    /// a chunk-local-integer payload move must preserve. It renders crisp because
+    /// `resolve_chunk_rebased` subtracts the floating origin in i64 BEFORE the f32
+    /// downcast; a regression of that rebase would smear this golden.
     /// Overrides --shape/--size/--density.
     pub(crate) demo_village_far: bool,
-    /// `--debug-chunks` (ADR 0002 E2, part of #19): after the per-frame frustum
+    /// `--debug-chunks`: after the per-frame frustum
     /// cull, print `chunks: drew X / Y` (visible / total) so the chunking + cull
     /// can be verified headlessly. Zooming/rotating a large scene off-screen draws
     /// fewer chunks; a small scene draws all of them.
     pub(crate) debug_chunks: bool,
-    /// `--demo-far-offset` (ADR 0002 streaming S1, part of #18): build a small
+    /// `--demo-far-offset`: build a small
     /// recognizable box placed at a LARGE block offset (a block offset of
     /// [100_000, 0, 0]) so the far-lands f32-precision question can be observed.
-    /// This is the precision baseline the S4 64-bit/origin-rebasing work regresses
-    /// against. NOTE: today's `resolve_region` recenters the composite on its own
-    /// center, so a LONE far node is recentered back to the origin — see the S1
-    /// PROGRESS note. The durable artifact is the CPU placement test in `scene.rs`
-    /// (the node resolves to absolute coords around 100_000); this render flag is
-    /// the visual baseline that S4 must keep jitter-free once the recenter is
+    /// This is the precision baseline origin-rebasing work regresses against.
+    /// `resolve_region` recenters the composite on its own center, so a LONE far node
+    /// is recentered back to the origin. The durable artifact is the CPU placement test
+    /// in `scene.rs` (the node resolves to absolute coords around 100_000); this render
+    /// flag is the visual baseline that must stay jitter-free once the recenter is
     /// removed. Overrides --shape/--size/--density.
     pub(crate) far_offset: bool,
-    /// `--demo-far-offset-near` (ADR 0002 streaming S1): the SAME small box as
+    /// `--demo-far-offset-near`: the SAME small box as
     /// `--demo-far-offset` but placed at the ORIGIN (a block offset of [0, 0, 0]),
     /// for A/B comparison against the far render. Overrides --shape/--size/--density.
     pub(crate) far_offset_near: bool,
-    /// `--demo-sketch-extrude` (ADR 0003 §3i Slice 2a): build a scene containing a
+    /// `--demo-sketch-extrude`: build a scene containing a
     /// single **sketch → extrude** producer with a RECOGNIZABLE non-box (L-shaped)
     /// footprint extruded up, so the headless capture confirms the new producer
     /// resolves + renders through the same pipeline as `SdfShape`. Overrides
     /// --shape/--size/--density.
     pub(crate) demo_sketch_extrude: bool,
-    /// `--demo-sketch-revolve` (ADR 0003 §3i): build a scene containing a single
+    /// `--demo-sketch-revolve`: build a scene containing a single
     /// **sketch → revolve** producer — a stepped (vase-like) radial profile revolved a
     /// full 360° about the vertical Z axis into a solid of revolution, so the headless
     /// capture confirms the revolve producer resolves + renders through the same
     /// pipeline as `SdfShape`. Overrides --shape/--size/--density.
     pub(crate) demo_sketch_revolve: bool,
-    /// `--demo-sketch-circle` (ADR 0035 Decision 7): a single whole-CIRCLE entity extruded.
+    /// `--demo-sketch-circle`: a single whole-CIRCLE entity extruded.
     /// A circle has no on-curve vertex and bounds a face on its own, so a disc in the render
     /// is the evidence the closed-curve path derives, resolves and displays. Overrides
     /// --shape/--size/--density.
     pub(crate) demo_sketch_circle: bool,
-    /// `--demo-sketch-donut` (ADR 0035 Decision 7): a square with a circle inside it, the
+    /// `--demo-sketch-donut`: a square with a circle inside it, the
     /// circle UNPICKED. A visible hole is the evidence a closed curve takes part in the
     /// region's ordered fold like any other face. Overrides --shape/--size/--density.
     pub(crate) demo_sketch_donut: bool,
-    /// `--demo-sketch-lens` (ADR 0035 Decision 8): two overlapping circles sharing no point,
+    /// `--demo-sketch-lens`: two overlapping circles sharing no point,
     /// with the LENS of overlap unpicked — three regions where the drawing has two curves.
     pub(crate) demo_sketch_lens: bool,
     /// `--demo-sketch-box <edge_voxels>`: a solid cube of the given voxel edge, built
@@ -203,105 +200,96 @@ pub(crate) struct ShotOptions {
     /// large-scene fixture for the two-layer / brick display + fog at scale. `Some(N)`
     /// overrides --shape/--size/--density-shape (density still sets the voxel grain).
     pub(crate) demo_sketch_box: Option<i64>,
-    /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
+    /// `--demo-groups`: build a scene with a
     /// top-level `Group` that has two child Tools, plus a sibling top-level Tool
     /// and one `Instance` of a definition — so the headless PANEL capture shows the
     /// INDENTED TREE (a Group with its children nested under it) and the
     /// Definitions list. Overrides --shape/--size/--density.
     pub(crate) demo_groups: bool,
-    /// `--synthetic-block` (part of #20 verification): build a LoadedMaterial from
-    /// SIX distinct solid-color faces in-process (no VS install needed) and apply
-    /// it as the active material. Lets the headless harness prove the cuboid path
-    /// now renders a loaded per-face D2Array (and that cuboid vs instanced match per
-    /// face). Overrides --scan-vs/--apply-block material selection.
+    /// `--synthetic-block`: build a LoadedMaterial from SIX distinct solid-color faces
+    /// in-process (no VS install needed) and apply it as the active material. Lets the
+    /// headless harness prove the cuboid path renders a loaded per-face D2Array.
+    /// Overrides --scan-vs/--apply-block material selection.
     pub(crate) synthetic_block: bool,
-    /// `--demo-overlap` (ADR 0010 E3 / #50): two solid boxes of DIFFERENT materials that
+    /// `--demo-overlap`: two solid boxes of DIFFERENT materials that
     /// OVERLAP, so the overlap region resolves last-writer-wins (document order). The golden
     /// pins that an overlapping multi-material scene renders identically on the dense and
-    /// two-layer paths (the E2 carry-over). Overrides --shape/--size/--density.
+    /// two-layer paths. Overrides --shape/--size/--density.
     pub(crate) demo_overlap: bool,
-    /// `--demo-subtract` (ADR 0017 / #73): a solid Stone box carved by a smaller
+    /// `--demo-subtract`: a solid Stone box carved by a smaller
     /// Subtract box placed AFTER it (the ordered document-order fold) — a crisp cubic
     /// notch bitten out of the corner, its newly-exposed faces still STONE (a Subtract
     /// never stamps material). The CSG tracer-bullet golden. Overrides
     /// --shape/--size/--density.
     pub(crate) demo_subtract: bool,
-    /// `--demo-cylinder-subtract` (ADR 0032 selection feedback): a Stone box drilled by a
+    /// `--demo-cylinder-subtract`: a Stone box drilled by a
     /// Subtract CYLINDER through its top face — the CURVED junction case: the selection
     /// cel's traced crease is the circular bore mouth, no straight catalog edge could
     /// stand in for it. Overrides --shape/--size/--density.
     pub(crate) demo_cylinder_subtract: bool,
-    /// `--demo-group-subtract` (ADR 0017 Decision 3 / #74): a Group holding a Stone body
+    /// `--demo-group-subtract`: a Group holding a Stone body
     /// plus a Subtract cutter (a corner notch carved INSIDE the group), with a Wood
     /// bystander box BEFORE the group overlapping the cutter's volume — rendered intact,
     /// the visible proof that a boolean inside a sealed scope cannot escape it. Overrides
     /// --shape/--size/--density.
     pub(crate) demo_group_subtract: bool,
-    /// `--demo-intersect` (ADR 0017 / #75): a Stone body box and an overlapping Intersect
+    /// `--demo-intersect`: a Stone body box and an overlapping Intersect
     /// mask box placed AFTER it (the ordered document-order fold) — only the overlap
     /// volume survives, rendered STONE (an Intersect keeps the ACCUMULATED material and
     /// never stamps its own). The intersect golden. Overrides --shape/--size/--density.
     pub(crate) demo_intersect: bool,
-    /// `--demo-cutter-def` (ADR 0017 / #76): ONE cutter definition placed by TWO Instance
+    /// `--demo-cutter-def`: ONE cutter definition placed by TWO Instance
     /// nodes under Subtract, each carving its own separated Stone host's corner — two
     /// identical notches from a single stored definition (the reusable cutter). The def
     /// body's Wood material appears nowhere (a Subtract instance is an occupancy-only
     /// mask). Overrides --shape/--size/--density.
     pub(crate) demo_cutter_def: bool,
-    /// `--demo-window-fixture` (ADR 0017 Decision 4 / #77): a Stone wall plus ONE
+    /// `--demo-window-fixture`: a Stone wall plus ONE
     /// placement of a FIXTURE definition [opening cutter Subtract, Wood frame Union]
     /// whose children splice into the wall's scope at the instance's position — the
     /// hole is cut AND the frame filled by a single Instance node (the window
     /// golden). The instance's own operation is inert.
     pub(crate) demo_window_fixture: bool,
-    /// `--demo-buried-cutter` (issue #78): a Stone host box carrying a Subtract cutter
+    /// `--demo-buried-cutter`: a Stone host box carrying a Subtract cutter
     /// ENTIRELY inside it — an internal void invisible by success — with the CUTTER
     /// selected, so the selected-operand ghost renders it wholly in the LOUD occluded
     /// style (the buried-cutter golden). Overrides --shape/--size/--density.
     pub(crate) demo_buried_cutter: bool,
-    /// `--demo-child-booleans` (ADR 0018 Decision 6): a Group whose Stone body carries an
+    /// `--demo-child-booleans`: a Group whose Stone body carries an
     /// exposed corner cutter AND a strictly-interior buried cutter. In Show-booleans mode
     /// with the root part selected (`--select-root --view-mode booleans`) both cutters
     /// x-ray as operand ghosts (the buried one wholly loud); in Normal mode the render is
     /// the finished carved look with zero ghosts. Overrides --shape/--size/--density.
     pub(crate) demo_child_booleans: bool,
-    /// `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials placed
+    /// `--demo-two-material`: two solid boxes of DISTINCT materials placed
     /// SEPARATED so no block is shared — every rendered block is single-material, the
-    /// brick-representable multi-producer scene the G2 per-record-material golden locks
+    /// brick-representable multi-producer scene the per-record-material golden locks
     /// (brick == mesh). Unlike `--demo-overlap` (which mixes materials INSIDE a block and
     /// correctly stays on the mesh path), this engages the brick sink. Overrides
     /// --shape/--size/--density.
     pub(crate) demo_two_material: bool,
-    /// `--demo-mixed-material` (material atlas / ADR 0013): two DISTINCT-material boxes whose
+    /// `--demo-mixed-material`: two DISTINCT-material boxes whose
     /// second is offset a SUB-BLOCK voxel amount, so a straddling block MIXES both materials —
-    /// the case the deleted representability gate routed to the mesh. Now engages the brick sink
-    /// (per-voxel cell-key shading). Overrides --shape/--size/--density.
+    /// the case a representability gate would route to the mesh. It engages the brick sink
+    /// instead (per-voxel cell-key shading). Overrides --shape/--size/--density.
     pub(crate) demo_mixed_material: bool,
-    /// `--two-layer` (ADR 0010 E3 / #50): now the **DEFAULT** mesh path — this flag is a
-    /// kept-for-compat no-op (the golden cross-checks still pass it explicitly). shot renders
-    /// through the two-layer path the LIVE APP drives, so a headless render matches what the
-    /// window shows — including the ADR 0027 continuous rotation the dense oracle drops. Opt OUT
-    /// with [`dense`](Self::dense) for the A/B parity oracle.
-    ///
-    /// Historically: render the voxel mesh THROUGH the two-layer
-    /// path — build each covering chunk's [`evaluation::two_layer_store::TwoLayerChunk`]
-    /// (coarse one-box + microblock cuboids + seam-solidity flags) and mesh from it via
-    /// [`voxel_worker::CuboidMeshRenderer::new_from_two_layer_chunks`], instead of the dense per-chunk
-    /// `VoxelGrid`. PROVES the two-layer mesher renders pixel-identical to the dense path
-    /// (the E3 golden gate). DEFAULT OFF — the live renderer stays on the dense path until
-    /// E5. Only the voxel MESH source changes; fog / overlays / export are unaffected.
+    /// `--two-layer`: the **DEFAULT** mesh path, so this flag is a no-op the golden
+    /// cross-checks still pass explicitly. shot renders through the two-layer path the LIVE
+    /// APP drives, so a headless render matches what the window shows — including the
+    /// continuous rotation the dense oracle drops. Opt OUT with [`dense`](Self::dense) for
+    /// the A/B parity oracle.
     pub(crate) two_layer: bool,
     /// `--dense`: opt OUT of the (now default) two-layer path and mesh through the retired dense
     /// reference `Store` (`stamp_producer_into_chunk`) — the A/B parity oracle. NOTE the dense
-    /// stamp applies only translation, NOT the ADR 0027 continuous rotation, so a `--dense` render
+    /// stamp applies only translation, NOT the continuous rotation, so a `--dense` render
     /// of a seated (rotated) leaf is deliberately upright; it exists to cross-check the two-layer
     /// path on axis-aligned scenes, not to display rotation.
     pub(crate) dense: bool,
-    /// `--brick` (ADR 0011 G1): source the voxel display from the **brick raymarch**
+    /// `--brick`: source the voxel display from the **brick raymarch**
     /// instead of the CPU cuboid mesh — build the two-layer boundary set, pack it into
-    /// the G0 brick field (sorted records + R8 sculpted atlas) and render via the
+    /// the brick field (sorted records + R8 sculpted atlas) and render via the
     /// fullscreen block-DDA pass. Engages for a chunkable
-    /// single-producer scene with a uniform render cell (the G1 gate); otherwise it
+    /// single-producer scene with a uniform render cell; otherwise it
     /// prints why and falls back to the mesh path. The mesh renderer is built EMPTY
     /// when bricks engage, so the PNG provably comes from the brick atlas.
     pub(crate) brick: bool,
@@ -309,7 +297,7 @@ pub(crate) struct ShotOptions {
     /// non-resident atlas-slot sentinel, forcing the residency-miss contract's coarse
     /// fallback — the degraded-but-correct all-block-cubes render, for visual checks.
     pub(crate) brick_force_miss: bool,
-    /// `--replay <path>` (ADR 0003 Phase C, slice C3): build the scene by REPLAYING a
+    /// `--replay <path>`: build the scene by REPLAYING a
     /// newline-delimited-JSON Intent script through `AppCore::apply_intent` instead of
     /// from a `--shape`/`--demo-*` source. The file is one [`voxel_worker::Intent`] per
     /// non-empty line, applied IN ORDER to the default seed scene (the same base the
@@ -318,18 +306,18 @@ pub(crate) struct ShotOptions {
     /// render -> write PNG to `--out`). `--replay` takes precedence over the demo/shape
     /// scene sources (it is the scene SOURCE); the camera/projection flags
     /// (`--proj`, `--theta`, `--phi`, `--dist`, ...) still apply. `None` keeps the
-    /// existing demo/shape behavior, byte-identical to today.
+    /// demo/shape behavior byte-identical.
     pub(crate) replay_path: Option<PathBuf>,
-    /// `--placement-ghost` (ADR 0022): arm the translucent placement ghost of the current
+    /// `--placement-ghost`: arm the translucent placement ghost of the current
     /// `--shape`/`--size`/`--density` geometry at `--ghost-offset` (default the origin), so
     /// a headless capture can render the ghost and check it COINCIDES with an equivalent
     /// solid node at the same offset (the frame-error guard). Default OFF.
     pub(crate) placement_ghost: bool,
-    /// `--ghost-offset X Y Z` (ADR 0022): the ABSOLUTE, corner-anchored voxel offset the
+    /// `--ghost-offset X Y Z`: the ABSOLUTE, corner-anchored voxel offset the
     /// armed placement ghost drops at (the `Intent::PlaceNode` frame). Only meaningful with
     /// `--placement-ghost`; default `[0, 0, 0]`.
     pub(crate) ghost_offset: [i64; 3],
-    /// `--ghost-face X Y Z` (ADR 0026): the entered face normal (an axis vector) the armed
+    /// `--ghost-face X Y Z`: the entered face normal (an axis vector) the armed
     /// ghost is oriented against — the node's local +Z turns to it, so a cylinder on `1 0 0`
     /// lies on its side. Only meaningful with `--placement-ghost`; default `None` = the
     /// upright identity orientation of a world-plane / `+Z`-face drop.
@@ -462,10 +450,9 @@ fn parse_snap_element(value: &str) -> ViewCubeElement {
     }
 }
 
-/// Parse a `--cube-hover` value (#13 Step 2) into the forced hovered chrome zone.
+/// Parse a `--cube-hover` value into the forced hovered chrome zone.
 /// Accepts the rotate/roll arrows and a cube-body `element:` so a golden can show any
-/// highlighted chrome element. (Home/Fit left the cube for the Signal icon rail — ADR
-/// 0018 Decision 8 — so they are no longer cube zones.)
+/// highlighted chrome element. Home/Fit live on the Signal icon rail, not the cube.
 fn parse_cube_hover(value: &str) -> camera::CubeChromeZone {
     use camera::{ArrowDir, CubeChromeZone, RollDir};
     match value.to_ascii_lowercase().as_str() {
@@ -475,7 +462,7 @@ fn parse_cube_hover(value: &str) -> camera::CubeChromeZone {
         "rotate-right" | "right" => CubeChromeZone::RotateArrow(ArrowDir::Right),
         "roll-cw" | "cw" => CubeChromeZone::RollArrow(RollDir::Cw),
         "roll-ccw" | "ccw" => CubeChromeZone::RollArrow(RollDir::Ccw),
-        // #13 Step 6.2: an `element:<spec>` value forces a hovered face/edge/corner
+        // An `element:<spec>` value forces a hovered face/edge/corner
         // so a golden can show the element highlight on the cube body. Reuses the
         // `--snap` element parser (`front`, `front-top`, `front-top-right`).
         other if other.starts_with("element:") => {
@@ -510,7 +497,7 @@ fn parse_material(value: &str) -> MaterialChoice {
     }
 }
 
-/// Parse a `--view-mode` value into a [`ViewMode`] (ADR 0018 Decision 3).
+/// Parse a `--view-mode` value into a [`ViewMode`].
 fn parse_view_mode(value: &str) -> ViewMode {
     match value.to_ascii_lowercase().as_str() {
         "normal" => ViewMode::Normal,
@@ -520,7 +507,7 @@ fn parse_view_mode(value: &str) -> ViewMode {
     }
 }
 
-/// Parse an `--orbit-type` value into an [`OrbitType`] (ADR 0032).
+/// Parse an `--orbit-type` value into an [`OrbitType`].
 fn parse_orbit_type(value: &str) -> OrbitType {
     match value.to_ascii_lowercase().as_str() {
         "constrained" => OrbitType::Constrained,
@@ -541,7 +528,7 @@ fn parse_projection(value: &str) -> ProjectionMode {
 pub(crate) fn parse_options() -> ShotOptions {
     let mut options = ShotOptions::default();
     // The `--size-*` flags are BLOCK counts (the CLI's whole-block ergonomics); the
-    // geometry mirror is now voxel-canonical (ADR 0003 §3f(0)), so collect the block
+    // geometry mirror is voxel-canonical, so collect the block
     // sizes here and finalise `size_voxels = blocks · density` AFTER the loop (so the
     // flags are order-independent with `--density`). Default 5×1×5 blocks.
     let mut size_blocks_cli: [u32; 3] = [5, 1, 5];
@@ -960,51 +947,51 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20  --demo-scene  build a hardcoded multi-node placed scene\n\
                      \x20                (sphere at origin + box offset +8 blocks in X\n\
                      \x20                + clouds offset in Z) to verify separated, non-\n\
-                     \x20                overlapping placement (ADR 0001 step 3). Overrides\n\
+                     \x20                overlapping placement. Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-village build an INSTANCED scene: one 'house' definition\n\
                      \x20                placed by 4 Instances at 4 offsets, proving reuse-\n\
-                     \x20                by-reference (ADR 0001 step 4). Overrides\n\
+                     \x20                by-reference. Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-village-far the SAME instanced village, but its whole\n\
                      \x20                composite is offset to ~XZ 10,000 blocks (vertical\n\
-                     \x20                bounded) — the far-scene golden baseline the §3a\n\
-                     \x20                chunk-local payload move must preserve (ADR 0010 D0).\n\
+                     \x20                bounded) — the far-scene golden baseline a\n\
+                     \x20                chunk-local payload move must preserve.\n\
                      \x20                Overrides --shape/--size/--density.\n\
                      \x20  --demo-groups build a scene with a top-level Group (2 child\n\
                      \x20                Tools), a sibling Tool and an Instance, so the\n\
-                     \x20                captured PANEL shows the indented tree + Definitions\n\
-                     \x20                (ADR 0001 step 4 UI). Overrides --shape/--size/--density.\n\
+                     \x20                captured PANEL shows the indented tree +\n\
+                     \x20                Definitions. Overrides --shape/--size/--density.\n\
                      \x20  --demo-sketch-extrude build a single 2D-sketch→extrude producer\n\
-                     \x20                with an L-shaped footprint extruded up (ADR 0003 §3i\n\
-                     \x20                Slice 2a) — a non-box a primitive can't make. Overrides\n\
+                     \x20                with an L-shaped footprint extruded up — a non-box\n\
+                     \x20                a primitive can't make. Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-sketch-revolve build a single 2D-sketch→revolve producer:\n\
                      \x20                a stepped (vase) radial profile revolved 360° about\n\
-                     \x20                +Z into a solid of revolution (ADR 0003 §3i). Overrides\n\
+                     \x20                +Z into a solid of revolution. Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-sketch-circle  build a single whole-CIRCLE sketch extruded —\n\
-                     \x20                a closed curve bounds a face with no on-curve vertex\n\
-                     \x20                (ADR 0035 D7). Overrides --shape/--size/--density.\n\
+                     \x20                a closed curve bounds a face with no on-curve\n\
+                     \x20                vertex. Overrides --shape/--size/--density.\n\
                      \x20  --demo-sketch-lens    two OVERLAPPING circles sharing no point, the\n\
                      \x20                lens of overlap UNPICKED — the arrangement cuts both\n\
                      \x20                curves at the crossings, so a two-curve drawing is\n\
-                     \x20                three pickable regions (ADR 0035 D8). Overrides\n\
+                     \x20                three pickable regions. Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-sketch-donut   the same circle inside a square, UNPICKED, so\n\
-                     \x20                the closed curve carves a hole (ADR 0035 D7). Overrides\n\
+                     \x20                the closed curve carves a hole. Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\
-                     \x20                blocks (ADR 0002 streaming S1). Precision baseline:\n\
-                     \x20                today's recenter maps it to the origin, so far jitter\n\
-                     \x20                is hidden until S4. Overrides --shape/--size/--density.\n\
+                     \x20                blocks. Precision baseline: the recenter maps it\n\
+                     \x20                to the origin, so far jitter stays hidden.\n\
+                     \x20                Overrides --shape/--size/--density.\n\
                      \x20  --demo-far-offset-near the SAME box at the origin, for A/B compare.\n\
                      \x20  --replay <path>  build the scene by replaying a newline-delimited\n\
                      \x20                JSON Intent script (one Intent per line) through\n\
                      \x20                AppCore::apply_intent, applied in order to the default\n\
                      \x20                seed scene; the final post-replay frame is rendered to\n\
                      \x20                --out. Takes precedence over --shape/--demo-* (the scene\n\
-                     \x20                SOURCE); camera/projection flags still apply (ADR 0003 C3)."
+                     \x20                SOURCE); camera/projection flags still apply."
                 );
                 std::process::exit(0);
             }
@@ -1014,7 +1001,7 @@ pub(crate) fn parse_options() -> ShotOptions {
         }
     }
     // Finalise the voxel-canonical size from the requested BLOCK counts at the final
-    // density, retaining each axis as a whole-block measurement (ADR 0003 §3f(0)).
+    // density, retaining each axis as a whole-block measurement.
     let built = SdfShape::from_blocks(
         options.geometry.shape,
         size_blocks_cli,

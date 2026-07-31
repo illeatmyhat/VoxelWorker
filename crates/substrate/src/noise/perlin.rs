@@ -198,7 +198,7 @@ mod tests {
         );
     }
 
-    /// The PROVEN range bound (ADR 0021 Decision 1): `|noise| <= NOISE_BOUND`, and hence
+    /// The proven range bound: `|noise| <= NOISE_BOUND`, and hence
     /// `|fractal_noise| <= NOISE_BOUND` for every octave count, lacunarity and gain.
     ///
     /// The argument is four steps and needs no literature constant:

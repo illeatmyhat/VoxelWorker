@@ -3,11 +3,11 @@
 //! The workspace's first proc-macro crate, and it exists for a reason worth stating
 //! plainly because it is not the obvious one: **this macro does not make persistence
 //! safe.** Hand-written exhaustive destructuring catches a forgotten field just as
-//! well, and ADR 0022 says so outright. What the macro buys is that the decision is
+//! well. What the macro buys is that the decision is
 //! recorded *at the field*, in review-visible form. `#[snapshot(transient)]` on the
 //! line above a field is something a reviewer trips over; the same decision expressed
-//! as an omission inside somebody's `capture` function is invisible, and ADR 0022
-//! identifies review as the only force keeping `transient` honest.
+//! as an omission inside somebody's `capture` function is invisible, and review is the
+//! only force keeping `transient` honest.
 //!
 //! Everything here follows from that. The generated code is a classification table and
 //! nothing more — no capture, no serialization, no traversal of field types. The one
@@ -68,7 +68,7 @@ const CATEGORIES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Derive the classification table for a struct of application state (ADR 0022).
+/// Derive the classification table for a struct of application state.
 ///
 /// Every field must carry exactly one `#[snapshot(<category>)]` attribute; a field
 /// without one is a compile error naming the field and listing the categories, and a
@@ -78,7 +78,7 @@ const CATEGORIES: &[(&str, &str, &str)] = &[
 /// rather than state that must all be accounted for.
 ///
 /// Classification does not recurse. The category describes the field's whole object;
-/// serialization carries what is inside it (ADR 0022 amendment 2026-07-20).
+/// serialization carries what is inside it.
 #[proc_macro_derive(Snapshot, attributes(snapshot))]
 pub fn derive_snapshot(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -243,10 +243,10 @@ fn category_list() -> String {
 ///
 /// It is written long on purpose. A developer meets it while adding a field, which is
 /// exactly the moment the decision is cheapest to make and the moment they are least
-/// likely to go and read an ADR — so the message carries the choice, the consequence of
-/// each option, the warning about the escape hatches, and the one rule (no recursion)
-/// that stops people from over-applying the scheme. The pointer to ADR 0022 is last,
-/// for the reader who wants the argument rather than the answer.
+/// likely to go looking for the reasoning — so the message carries the choice, the
+/// consequence of each option, the warning about the escape hatches, and the one rule
+/// (no recursion) that stops people from over-applying the scheme. The pointer to the
+/// decision record is last, for the reader who wants the argument rather than the answer.
 fn unclassified_field_error(field: &Field, field_name: &str) -> syn::Error {
     let mut message = format!(
         "field `{field_name}` is not classified: every field of application state must say \

@@ -8,9 +8,8 @@
 //! sequence turned into a space-filling placement — specialized to rectangles laid
 //! on rows rather than cubes stacked in a grid.
 //!
-//! Shelf packing is chosen over the denser rectangle-bin packers (MaxRects,
-//! guillotine; see Jylänki, "A Thousand Ways to Pack the Bin", 2010) deliberately:
-//! for a small set of near-uniform tiles the packing-density win of a smarter
+//! Shelf packing is chosen over the denser rectangle-bin packers (MaxRects, guillotine)
+//! deliberately: for a small set of near-uniform tiles the packing-density win of a smarter
 //! packer is irrelevant, and the shelf heuristic has no failure modes. The shelf
 //! quota is `tiles_per_shelf = ceil(sqrt(count))`, so `n` equal tiles form an
 //! `r × c` grid with `r ≈ c` — a near-square sheet, which keeps either dimension

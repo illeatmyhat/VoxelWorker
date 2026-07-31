@@ -6,27 +6,24 @@ use voxel_worker::{
     Scene, SdfShape, ShapeKind, Sketch, SketchLength, SketchPoint, SketchSolid,
 };
 
-/// The block offset of the far-offset demo box (ADR 0002 streaming S1; S4b makes it
-/// jitter-free). A large block offset, resolved through the now-`i64` voxel offset
-/// (widened in S4a). At
-/// density 16 this is **16 million voxels** from the origin — past the f32
-/// exact-integer ceiling (2²⁴ ≈ 16.7M), where the old recenter-AFTER-f32-add path
-/// lost the voxel-center `.5` fraction on EVERY voxel (the real precision breakdown
-/// the S1 flag exists to expose). The S4b camera-relative rebase (subtract the
-/// floating origin in i64 BEFORE the f32 downcast) renders this byte-identical to the
-/// near box. (At the previous 100_000 the f32 ULP at 1.6M is 0.125, so `.5` survived
-/// and the box never actually jittered — only the demo's UI text differed.)
+/// The block offset of the far-offset demo box — a large offset resolved through the
+/// `i64` voxel offset. At density 16 this is **16 million voxels** from the origin,
+/// past the f32 exact-integer ceiling (2²⁴ ≈ 16.7M), where a recenter-AFTER-f32-add
+/// would lose the voxel-center `.5` fraction on EVERY voxel. The camera-relative rebase
+/// (subtract the floating origin in i64 BEFORE the f32 downcast) renders this
+/// byte-identical to the near box. An offset of 100_000 would not exercise it: the f32
+/// ULP at 1.6M is 0.125, so `.5` survives and the box never jitters.
 pub(crate) const FAR_OFFSET_BLOCKS: [i64; 3] = [1_000_000, 0, 0];
 
 /// The block offset that places the `--demo-village-far` composite at the FAR end of
-/// the anisotropic horizontal extent (ADR 0010 D0 / ADR 0003 §G3): ~10,000 blocks on
+/// the anisotropic horizontal extent: ~10,000 blocks on
 /// both horizontal axes (X and Z), with the VERTICAL axis (Z-up → index 2 is vertical;
 /// the horizontal ground plane is X/Y) bounded. Per the project's Z-up convention the
 /// two HORIZONTAL axes are X (index 0) and Y (index 1), and the VERTICAL axis is Z
 /// (index 2) — so the far horizontal offset goes on X and Y and the vertical Z stays at
 /// 0. At density 16 this sits 160,000 voxels from the origin per horizontal axis, where
 /// an absolute f32 voxel center has barely a fractional bit left (the precision loss the
-/// §3a chunk-local-integer payload exists to remove). The composite SPAN stays small (a
+/// a chunk-local-integer payload removes). The composite SPAN stays small (a
 /// ~20-block row of houses), so only the OFFSET is far — the resolved grid is the same
 /// size as the near `--demo-village`.
 pub(crate) const FAR_SCENE_BASE_BLOCKS: [i64; 3] = [10_000, 10_000, 0];
@@ -91,17 +88,17 @@ fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Mint stable [`NodeId`](document::scene::NodeId)s for a freshly-built demo scene, so the
-/// fixture can name its arriving selection by id (ADR 0003 Phase B3: selection is keyed by
+/// fixture can name its arriving selection by id. Selection is keyed by
 /// [`NodeId`](document::scene::NodeId), so a demo built with positional intent — "select node
-/// 0" — resolves that to an id here). The later `ensure_node_ids` on the load path is
+/// 0" — resolves that to an id here. The later `ensure_node_ids` on the load path is
 /// idempotent.
 fn with_node_ids(mut scene: Scene) -> Scene {
     scene.ensure_node_ids();
     scene
 }
 
-/// A demo fixture: the scene AND how the workspace arrives — which node is selected. ADR 0032
-/// moved selection out of the document, so a demo can no longer smuggle it on the scene.
+/// A demo fixture: the scene AND how the workspace arrives — which node is selected.
+/// Selection lives outside the document, so a demo cannot smuggle it on the scene.
 pub(crate) struct DemoScene {
     /// The built scene.
     pub scene: Scene,
@@ -123,18 +120,17 @@ impl DemoScene {
     }
 }
 
-/// Build the `--demo-scene` (ADR 0001 step 3): a hardcoded multi-node PLACED
+/// Build the `--demo-scene`: a hardcoded multi-node PLACED
 /// scene proving disjoint placement. A sphere at the origin, a box offset +8
 /// blocks in X, and a torus offset +6 blocks in Z. Each Tool is 5 blocks, so the
 /// offsets open clear gaps and the three solids sit visibly apart (no overlap at
 /// the origin) — the headless check the demo exists to confirm.
 ///
-/// NOTE (ADR deviation): the task example named a clouds VoxelBody as the third node.
-/// The `DebugClouds` VoxelBody has no intrinsic bounded size — it fills whatever region
-/// it is handed (a bounded stored body is a later VoxelBody variant), so as a region-
-/// filling fog it would densely OCCLUDE the sphere and box and defeat the very
-/// separation the demo verifies. A third SDF Tool (torus) is a crisp, bounded
-/// solid that makes the disjoint placement unambiguous in the PNG. VoxelBody placement
+/// The third node is an SDF Tool rather than a `DebugClouds` VoxelBody: that body has no
+/// intrinsic bounded size — it fills whatever region it is handed — so as a region-filling
+/// fog it would densely OCCLUDE the sphere and box and defeat the very separation the demo
+/// verifies. A torus is a crisp, bounded solid that makes the disjoint placement
+/// unambiguous in the PNG. VoxelBody placement
 /// itself is covered by the scene.rs unit tests (a VoxelBody stamps under its offset),
 /// and the in-app inspector offsets both Tools and Parts.
 pub(crate) fn build_demo_scene(voxels_per_block: u32) -> DemoScene {
@@ -149,13 +145,13 @@ pub(crate) fn build_demo_scene(voxels_per_block: u32) -> DemoScene {
         make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
         make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
     ]));
-    // Density is document-level (ADR 0003 §3f(0)).
+    // Density is document-level.
     scene.voxels_per_block = voxels_per_block;
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-overlap` (ADR 0010 E3 / #50): two solid boxes of DIFFERENT materials
-/// placed so they OVERLAP, exercising the multi-material overlap case (the E2 carry-over).
+/// Build the `--demo-overlap`: two solid boxes of DIFFERENT materials
+/// placed so they OVERLAP, exercising the multi-material overlap case.
 /// The overlap region resolves last-writer-wins by document order (the Wood box is second,
 /// so it wins where they overlap), and the golden pins that the dense and two-layer paths
 /// render this IDENTICALLY. The boxes are 4 blocks each, offset 2 blocks in X+Y so a corner
@@ -175,7 +171,7 @@ pub(crate) fn build_demo_overlap(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-subtract` (ADR 0017 / #73): a solid Stone box CARVED by a smaller
+/// Build the `--demo-subtract`: a solid Stone box CARVED by a smaller
 /// box placed AFTER it under [`CombineOp::Subtract`] — the ordered-fold tracer golden. The
 /// cutter is a 2³-block box overlapping the Stone box's top +X/+Y corner octant, so the
 /// render shows a crisp cubic NOTCH bitten out of the corner. The cutter deliberately
@@ -214,7 +210,7 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-cylinder-subtract` (ADR 0032 selection feedback): a solid Stone box
+/// Build the `--demo-cylinder-subtract`: a solid Stone box
 /// DRILLED by a Subtract cylinder standing through its top face — a blind bore. The bore
 /// mouth is a CIRCLE on the top face: the curved junction the selection cel must trace
 /// (no straight catalog edge could stand in for it), while the cylinder's own rim
@@ -253,13 +249,13 @@ pub(crate) fn build_demo_cylinder_subtract(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-buried-cutter` (issue #78): a solid 4³-block Stone host carrying a
+/// Build the `--demo-buried-cutter`: a solid 4³-block Stone host carrying a
 /// 2³-block Subtract cutter placed ENTIRELY inside it (blocks `[1,3)³` within `[0,4)³`) —
 /// an internal void that is invisible by success: the composed render is just the host's
 /// unbroken outer surface. The CUTTER is the active selection (not the host), so the
 /// selected-operand ghost must render the cutter's whole body in the LOUD occluded style
-/// — the buried-cutter golden, deliberately more obvious than Fusion's invisible internal
-/// voids. The cutter carries the Wood material, which must appear nowhere (a Subtract is
+/// — the buried-cutter golden, deliberately more obvious than leaving an internal void
+/// invisible. The cutter carries the Wood material, which must appear nowhere (a Subtract is
 /// an occupancy-only mask).
 ///
 /// [`CombineOp::Subtract`]: voxel_worker::CombineOp
@@ -296,7 +292,7 @@ pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> DemoScene {
     DemoScene::selecting(scene, cutter)
 }
 
-/// Build the `--demo-child-booleans` scene (ADR 0018 Decision 6): a Group whose 4³-block
+/// Build the `--demo-child-booleans` scene: a Group whose 4³-block
 /// Stone body carries TWO Subtract cutters — a corner cutter whose carve faces are exposed
 /// (ghosting QUIET where camera-visible) and a 1³-block cutter buried STRICTLY inside the
 /// body (an invisible-by-success void, ghosting wholly LOUD). The scene itself is finished
@@ -351,7 +347,7 @@ pub(crate) fn build_demo_child_booleans(voxels_per_block: u32) -> DemoScene {
     DemoScene::selecting(scene, None)
 }
 
-/// Build the `--demo-intersect` (ADR 0017 / #75): a solid Stone body box INTERSECTED by an
+/// Build the `--demo-intersect`: a solid Stone body box INTERSECTED by an
 /// overlapping box placed AFTER it under [`CombineOp::Intersect`]. Only the cells present in
 /// BOTH bodies survive, so the render shows exactly the overlap volume — a 2³-block cube at
 /// blocks `[2,4)³` — floating where the two boxes met. The mask deliberately carries the WOOD
@@ -389,7 +385,7 @@ pub(crate) fn build_demo_intersect(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-group-subtract` (ADR 0017 Decision 3 / #74): the SEALED-SCOPE golden.
+/// Build the `--demo-group-subtract`: the SEALED-SCOPE golden.
 /// A Group holds a Stone body plus a cutter placed AFTER it under [`CombineOp::Subtract`],
 /// so the cutter bites a corner-octant notch out of the body — INSIDE the group. A sibling
 /// Wood "bystander" box sits BEFORE the group in document order and overlaps the cutter's
@@ -446,7 +442,7 @@ pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-cutter-def` (ADR 0017 / #76): the REUSABLE CUTTER golden. ONE
+/// Build the `--demo-cutter-def`: the REUSABLE CUTTER golden. ONE
 /// "corner cutter" definition (a 2³-block Wood box) placed by TWO `Instance` nodes under
 /// [`CombineOp::Subtract`], each overlapping its own separated 4³-block Stone host's top
 /// corner octant — so the render shows two hosts wearing IDENTICAL notches carved from a
@@ -503,7 +499,7 @@ pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-window-fixture` (ADR 0017 Decision 4 / #77): THE WINDOW golden.
+/// Build the `--demo-window-fixture`: THE WINDOW golden.
 /// A Stone wall (8×1×6 blocks, standing in the XZ plane — Z-up), then ONE `Instance`
 /// of a FIXTURE definition "Window" = [opening cutter `Subtract` (3×1×3, Plain),
 /// frame `Union` (3×1×1, Wood)] placed AFTER the wall at the opening's low corner.
@@ -572,7 +568,7 @@ pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials
+/// Build the `--demo-two-material`: two solid boxes of DISTINCT materials
 /// placed SEPARATED (a whole chunk of air between them) so NO block is shared — every
 /// rendered block is single-material. This is the brick-representable multi-producer scene
 /// (per-record material ids shade each block from its own record); the golden locks its
@@ -596,10 +592,10 @@ pub(crate) fn build_demo_two_material(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-mixed-material` (material atlas / ADR 0013): two solid boxes of DISTINCT
+/// Build the `--demo-mixed-material`: two solid boxes of DISTINCT
 /// materials whose second box is offset by a SUB-BLOCK voxel amount, so a block STRADDLES the
 /// boundary and its microblocks MIX both materials — the genuinely-non-representable case that
-/// the deleted representability gate used to route to the mesh. With the gate gone this engages
+/// a representability gate would have routed to the mesh. There is no such gate: this engages
 /// the brick sink and shades each voxel from its cell-key side atlas (last-writer-wins gives the
 /// Wood box the overlap voxels; the Stone voxels the offset leaves uncovered stay Stone in the
 /// same block). The golden pins its brick render == its mesh render — the proof the mixed-material
@@ -642,7 +638,7 @@ pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-village` (ADR 0001 step 4): an **instanced** scene that
+/// Build the `--demo-village`: an **instanced** scene that
 /// proves reuse-by-reference. One small "house" [`AssemblyDef`](document::scene::AssemblyDef) (a Box body Tool
 /// with a Cylinder "chimney" Tool offset on top, as a `Group`) is stored ONCE in
 /// `definitions`; the top-level scene places it by FOUR [`NodeContent::Instance`]
@@ -651,20 +647,19 @@ pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> DemoScene {
 /// headless capture confirms the repeated assembly shows up at multiple disjoint
 /// locations.
 pub(crate) fn build_demo_village(voxels_per_block: u32) -> DemoScene {
-    // The default village sits at the origin; the far-scene golden (ADR 0010 D0)
+    // The default village sits at the origin; the far-scene golden
     // reuses the SAME builder with a far base offset.
     build_demo_village_at(voxels_per_block, [0, 0, 0])
 }
 
-/// Build the `--demo-village-far` (ADR 0010 D0 / ADR 0003 §G3, Phase D0): the SAME
+/// Build the `--demo-village-far`: the SAME
 /// instanced village as [`build_demo_village`], but with its whole composite shifted
 /// to [`FAR_SCENE_BASE_BLOCKS`] (~XZ 10,000 blocks, vertical bounded). The composite
 /// SPAN is unchanged (the row of four houses), so only the OFFSET is far — the
 /// resolved grid is the same size as the near village, but every absolute voxel center
 /// now lives ~160k voxels out, where the f32 payload is lossy. The render is still
-/// crisp today because the resolve rebases to the composite floating-origin in i64
-/// before the f32 downcast (S4b); this golden is the baseline the §3a chunk-local
-/// payload move (#48) must preserve.
+/// crisp because the resolve rebases to the composite floating-origin in i64 before the
+/// f32 downcast; this golden is the baseline a chunk-local payload move must preserve.
 pub(crate) fn build_demo_village_far(voxels_per_block: u32) -> DemoScene {
     build_demo_village_at(voxels_per_block, FAR_SCENE_BASE_BLOCKS)
 }
@@ -731,7 +726,7 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-sketch-extrude` (ADR 0003 §3i Slice 2a): a single
+/// Build the `--demo-sketch-extrude`: a single
 /// **sketch → extrude → volume** producer with a RECOGNIZABLE non-box footprint —
 /// an L-shaped (plus a notch) profile on the GROUND plane, extruded UP several
 /// blocks. A box obviously cannot make this footprint, so the headless capture
@@ -796,7 +791,7 @@ pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-sketch-revolve` (ADR 0003 §3i): a single **sketch → revolve →
+/// Build the `--demo-sketch-revolve`: a single **sketch → revolve →
 /// volume** producer that is visibly a SOLID OF REVOLUTION — a stepped, vase-like
 /// silhouette revolved a full 360° about the vertical Z axis. A box / extrude cannot
 /// make a round, axially-symmetric, varying-radius body, so the headless capture
@@ -844,7 +839,7 @@ pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-sketch-circle` (ADR 0035 Decision 7): ONE whole-circle entity, extruded.
+/// Build the `--demo-sketch-circle`: ONE whole-circle entity, extruded.
 ///
 /// A circle has no on-curve vertex to hang a loop from, so nothing about the graph walk that
 /// derives faces from segments and arcs applies to it — it closes on itself and IS a face. A round
@@ -866,7 +861,7 @@ pub(crate) fn build_demo_sketch_circle(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-sketch-donut` (ADR 0035 Decision 7): a square with a circle inside it, the
+/// Build the `--demo-sketch-donut`: a square with a circle inside it, the
 /// circle UNPICKED.
 ///
 /// Two faces, one of them closed-curve, folded smallest-area-first — so the disc carves the square
@@ -911,7 +906,7 @@ pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-sketch-lens` (ADR 0035 Decision 8): two overlapping circles, whose LENS —
+/// Build the `--demo-sketch-lens`: two overlapping circles, whose LENS —
 /// the almond of overlap — is unpicked.
 ///
 /// The headline of the arrangement. Nothing here shares a point: the circles simply cross, and the
@@ -949,7 +944,7 @@ pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
+/// Build the `--demo-groups`: a scene that
 /// exercises the indented TREE in the panel. A top-level `Group` ("Cluster") holds
 /// two child Tools (a Sphere + a Box at a small offset); a sibling top-level Box
 /// Tool sits beside it; and one `Instance` of a small "Widget" definition sits
@@ -1023,8 +1018,8 @@ pub(crate) fn build_demo_groups(voxels_per_block: u32) -> DemoScene {
     DemoScene::first_node(scene)
 }
 
-/// Build the `--demo-far-offset` / `--demo-far-offset-near` scene (ADR 0002
-/// streaming S1, part of #18): a single small recognizable box Tool placed either
+/// Build the `--demo-far-offset` / `--demo-far-offset-near` scene: a single small
+/// recognizable box Tool placed either
 /// at the FAR offset ([`FAR_OFFSET_BLOCKS`], i.e. 100_000 blocks in X) or at the
 /// ORIGIN, for an A/B precision baseline.
 ///
@@ -1032,12 +1027,11 @@ pub(crate) fn build_demo_groups(voxels_per_block: u32) -> DemoScene {
 /// At density 16 the far placement sits 1.6M voxels from the origin in ABSOLUTE
 /// composite space — which the CPU placement test in `scene.rs` asserts directly.
 ///
-/// IMPORTANT (today's render math): `Scene::resolve_region` recenters the
-/// composite on its OWN center, so a lone far box is recentered straight back to
-/// the origin before rendering. The far and near renders therefore look identical
-/// today — f32 jitter from the large offset cannot show up in the live render
-/// until S4 removes the recenter / adds origin-rebasing. This flag exists to be
-/// the visual regression target for S4 (it must STAY jitter-free once S4 lands).
+/// `Scene::resolve_region` recenters the composite on its OWN center, so a lone far
+/// box is recentered straight back to the origin before rendering. The far and near
+/// renders therefore look identical, and f32 jitter from the large offset cannot show
+/// up in the live render while the recenter stands. The flag is the visual regression
+/// target for origin-rebasing work: it must STAY jitter-free.
 pub(crate) fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
     let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
     let mut node = Node::new(

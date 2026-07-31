@@ -1,4 +1,4 @@
-//! Async wholesale geometry rebuild worker (issue #60, ADR 0003 §7).
+//! Async wholesale geometry rebuild worker.
 //!
 //! The live app's WHOLESALE geometry rebuild — two-layer classify + the per-chunk
 //! cuboid mesh's CPU build + GPU buffer upload — is ~3s for a large object on an
@@ -42,7 +42,7 @@ use display::renderer::{LayerBand, RegionClip};
 use evaluation::two_layer_store::TwoLayerChunk;
 use voxel_core::voxel::RecenterVoxels;
 
-/// A request to build a wholesale cuboid mesh on the worker (issue #60). Carries the
+/// A request to build a wholesale cuboid mesh on the worker. Carries the
 /// OWNED two-layer chunks the resolve produced plus the frame parameters
 /// [`CuboidMeshRenderer::new_from_two_layer_chunks`] needs — all `Send` plain data.
 pub struct GeometryRebuildRequest {
@@ -57,14 +57,14 @@ pub struct GeometryRebuildRequest {
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The whole composite grid's voxel dims (the band-clip layer mapping).
     pub grid_dimensions: [u32; 3],
-    /// The composite recenter (floating origin, voxels; ADR 0008) the mesh lands in.
+    /// The composite recenter (floating origin, voxels) the mesh lands in.
     /// Carried as [`RecenterVoxels`] (the frame law): the `CuboidMeshRenderer` builder now
     /// takes the newtype, so the worker hands the frame value straight through — the unwrap
     /// happens only at the mesher's positional rebase arithmetic.
     pub recenter_voxels: RecenterVoxels,
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
-    /// The CURRENT layer-clip band at dispatch (issue #60 M2). The worker builds the
+    /// The CURRENT layer-clip band at dispatch. The worker builds the
     /// renderer already clipped to THIS band, so the swap frame does NOT trigger a full
     /// synchronous `rebuild_for_band` re-mesh on the main thread (the multi-second hitch
     /// #60 removed). During onion-skin scrubbing a clipped band is common, so a swapped-in
@@ -72,34 +72,34 @@ pub struct GeometryRebuildRequest {
     /// band moved between dispatch and swap the per-frame `rebuild_for_band` still corrects
     /// it — this only optimizes the common stable-band case.
     pub band: LayerBand,
-    /// The onion-fog region the band is confined to (ADR 0018 Decision 5), or `None` for a
+    /// The onion-fog region the band is confined to, or `None` for a
     /// scene-wide band / no clip. Carried alongside `band` so the worker's wholesale build
-    /// already region-scopes and the swap frame does not re-mesh (M2).
+    /// already region-scopes and the swap frame does not re-mesh.
     pub region: Option<RegionClip>,
 }
 
-/// A finished wholesale mesh built by the worker (issue #60): the whole
+/// A finished wholesale mesh built by the worker: the whole
 /// [`CuboidMeshRenderer`] (GPU buffers included) tagged with the request generation it
 /// was built for, so the shell can discard a stale result and swap in a fresh one.
 pub struct GeometryRebuildResult {
     /// The generation of the [`GeometryRebuildRequest`] this result was built for.
     pub generation: u64,
     /// The freshly built renderer, or `None` if the build PANICKED on the worker (issue
-    /// #60 M1: GPU OOM, an internal assert, a bad dimension). A panicked build is caught
+    /// GPU OOM, an internal assert, a bad dimension). A panicked build is caught
     /// (the worker stays alive) and surfaced as a `None` result + a stderr log rather than
     /// silently wedging the worker forever. The shell keeps its current (stale) renderer on
     /// a `None` and does NOT clear the outstanding flag, so the next edit re-dispatches.
     pub renderer: Option<CuboidMeshRenderer>,
 }
 
-/// The background geometry worker (issue #60): a [`Worker`] whose build closure owns the
+/// The background geometry worker: a [`Worker`] whose build closure owns the
 /// cloned `device`/`queue` and turns each [`GeometryRebuildRequest`] into a
 /// [`GeometryRebuildResult`]. Spawn it via [`spawn_geometry_worker`]. The shell dispatches
 /// requests and polls each frame; the shared drain-to-latest/supersede loop is
 /// [`Worker`]'s.
 pub type GeometryWorker = Worker<GeometryRebuildRequest, GeometryRebuildResult>;
 
-/// Spawn the geometry worker with cloned GPU handles (issue #60). `device`/`queue` are
+/// Spawn the geometry worker with cloned GPU handles. `device`/`queue` are
 /// cloned (wgpu 29 Arc-backed) so the worker can create the mesh's GPU buffers off the main
 /// thread; `color_format` is the render target format the pipelines are built for. The
 /// closure captures all three and builds via the SAME
@@ -129,7 +129,7 @@ pub fn spawn_geometry_worker(
     )
 }
 
-/// Build the wholesale cuboid mesh for a request (issue #60) — the SAME call the
+/// Build the wholesale cuboid mesh for a request — the SAME call the
 /// synchronous path makes, so the built renderer is byte-identical (the build-equivalence
 /// net asserts this). Factored out so the worker loop and the build-equivalence test share
 /// one build entry.
@@ -139,7 +139,7 @@ pub fn build_geometry(
     color_format: wgpu::TextureFormat,
     request: &GeometryRebuildRequest,
 ) -> CuboidMeshRenderer {
-    // Issue #60 M2: build already clipped to the request's band so the swap frame does not
+    // Build already clipped to the request's band so the swap frame does not
     // re-mesh on the main thread. `LayerBand::FULL` (the common no-onion case) is identical
     // to the plain `new_from_two_layer_chunks` output, so goldens/parity stay pixel-exact.
     CuboidMeshRenderer::new_from_two_layer_chunks_banded(

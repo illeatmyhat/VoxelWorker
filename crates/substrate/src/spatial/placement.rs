@@ -1,10 +1,9 @@
-//! Continuous leaf placement (ADR 0027): the world↔producer-local affine that a rotated,
-//! corner-anchored leaf folds through. **ONE definition** shared by every voxel sink — the dense
-//! reference oracle (`document`), the two-layer classifier (`evaluation`) and the brick field — so
-//! they can never disagree on where a producer's cells land. Splitting this into a per-sink
-//! reimplementation is what let the dense path silently drop the rotation (it lived below the
-//! evaluation-layer `LeafAffine` it needed and only ever had a translation); hoisting the math to
-//! substrate lets both layers construct the identical placement.
+//! Continuous leaf placement: the world↔producer-local affine that a rotated, corner-anchored
+//! leaf folds through. **ONE definition** shared by every voxel sink — the dense reference oracle
+//! (`document`), the two-layer classifier (`evaluation`) and the brick field — so they can never
+//! disagree on where a producer's cells land. A per-sink reimplementation is how a sink comes to
+//! silently drop the rotation; the math sits in substrate, below every layer that needs it, so
+//! all of them construct the identical placement.
 //!
 //! **Corner-anchor convention.** A producer emits its cells in its LOCAL box `[0, full]`. The
 //! placement rotates that box and RE-ANCHORS its lowest rotated corner back onto `world_offset`,
@@ -40,7 +39,7 @@ const CORNER_SNAP_TOLERANCE: f32 = 1e-3;
 /// a coordinate within [`CORNER_SNAP_TOLERANCE`] of an integer snaps to it (so an integer-landing
 /// box is recovered EXACTLY — bit-identical to round-to-nearest, every golden holds); otherwise the
 /// min FLOORS and the max CEILS so the box never sheds a boundary voxel. Unlike a plain round, a
-/// half-integer box (an axis-aligned leaf under an ADR 0027 sub-voxel seat) WIDENS rather than
+/// half-integer box (an axis-aligned leaf under a sub-voxel seat) WIDENS rather than
 /// rounding-to-nearest, which would drop the boundary chunk/voxel on the shrunk side.
 fn conservative_box(low: Vec3, high: Vec3) -> ([i64; 3], [i64; 3]) {
     let snap_floor = |value: f32| {
@@ -67,8 +66,8 @@ fn conservative_box(low: Vec3, high: Vec3) -> ([i64; 3], [i64; 3]) {
 
 /// Whether `rotation` is one of the 24 axis-aligned lattice turns (to a `1e-4` tolerance): each of
 /// `rotation · {X, Y, Z}` lands on a signed unit axis (exactly one component `≈ ±1`, the other two
-/// `≈ 0`). An axis-aligned leaf takes the EXACT integer paths (byte-identical to the ADR 0026
-/// permutation — the whole existing golden suite); a genuinely-rotated one resamples (ADR 0027 §4).
+/// `≈ 0`). An axis-aligned leaf takes the EXACT integer paths (byte-identical to the lattice-turn
+/// permutation, which the golden suite pins); a genuinely-rotated one resamples.
 pub fn is_axis_aligned(rotation: Quat) -> bool {
     const TOLERANCE: f32 = 1e-4;
     [Vec3::X, Vec3::Y, Vec3::Z].into_iter().all(|axis| {
@@ -87,9 +86,9 @@ pub fn is_axis_aligned(rotation: Quat) -> bool {
     })
 }
 
-/// Whether a placed leaf is **in phase** with the absolute voxel lattice (ADR 0027): an
-/// axis-aligned rotation AND a whole-voxel `offset_local` (no sub-voxel slide). An in-phase leaf
-/// emits one-cell-per-absolute-cell by a pure translation — the byte-identical ADR 0026
+/// Whether a placed leaf is **in phase** with the absolute voxel lattice: an axis-aligned
+/// rotation AND a whole-voxel `offset_local` (no sub-voxel slide). An in-phase leaf emits
+/// one-cell-per-absolute-cell by a pure translation — the byte-identical lattice-turn
 /// forward-emit path; an out-of-phase one (a genuine rotation OR a fractional `offset_local`) must
 /// be inverse-resampled by gather. The dense oracle (`document`) and the live two-layer classifier
 /// (`evaluation`) MUST agree on this split or the two paths disagree on rotated / sub-voxel seats,
@@ -98,17 +97,16 @@ pub fn is_in_phase(rotation: Quat, offset_local_voxels: [f32; 3]) -> bool {
     is_axis_aligned(rotation) && offset_local_voxels.iter().all(|slide| slide.fract() == 0.0)
 }
 
-/// The corner-anchored world↔producer-local affine of a placed leaf (ADR 0027). Pure `glam`
+/// The corner-anchored world↔producer-local affine of a placed leaf. Pure `glam`
 /// arithmetic over the leaf's `rotation`, local `full` extent, and a **wandering-origin** world
 /// offset split into an integer [`origin_voxels`](Self::origin_voxels) and a fractional
 /// `offset_local`; construct it via [`from_origin_and_local`](Self::from_origin_and_local) (the
 /// precision-preserving door) or [`new`](Self::new) (a combined-`f32` convenience).
 ///
-/// **Wandering origin (ADR 0027 §1 / ADR 0008).** The integer origin is carried as `i64` and every
-/// large translation is done in `i64` (exact), so the rotation math only ever touches
-/// origin-*relative* coordinates (magnitude `≈ full`). A leaf placed millions of voxels from the
-/// world origin therefore keeps full sub-voxel precision — collapsing the origin into an `f32` up
-/// front (the old field) silently lost it, the `(c)`-re-derive failure ADR 0008 forbids.
+/// **Wandering origin.** The integer origin is carried as `i64` and every large translation is
+/// done in `i64` (exact), so the rotation math only ever touches origin-*relative* coordinates
+/// (magnitude `≈ full`). A leaf placed millions of voxels from the world origin therefore keeps
+/// full sub-voxel precision; collapsing the origin into an `f32` up front silently loses it.
 #[derive(Clone, Copy, Debug)]
 pub struct LeafPlacement {
     rotation: Quat,
@@ -130,7 +128,7 @@ impl LeafPlacement {
     /// `origin_voxels` (the wandering i64 origin — a node's `world_offset_voxels`) and fractional
     /// `offset_local` (its `offset_local_voxels` sub-voxel slide). This is the precision-preserving
     /// door: the integer origin stays `i64`, so a leaf arbitrarily far from the world origin never
-    /// loses sub-voxel precision (ADR 0027 §1). `min_rotated_corner` is derived so the low rotated
+    /// loses sub-voxel precision. `min_rotated_corner` is derived so the low rotated
     /// corner anchors on the world offset.
     pub fn from_origin_and_local(
         rotation: Quat,
@@ -262,12 +260,12 @@ impl LeafPlacement {
 
     /// The integer world AABB `[min, max)` (in absolute voxels) enclosing the placed box — the ONE
     /// extent every sink and the coverage/broadphase walk must agree on. For an AXIS-ALIGNED
-    /// rotation with a whole-voxel offset the corners land on integers, recovered exactly (bit-
-    /// identical to the pre-0027 `turn_extent` permutation, so every golden holds); an axis-aligned
-    /// leaf under an ADR 0027 sub-voxel seat lands on half-integers and WIDENS (floor-min/ceil-max)
-    /// so the fractional side never sheds its boundary chunk; a genuine rotation likewise floors the
-    /// min and ceils the max to conservatively enclose the rotated box (SOUND: the true occupied set
-    /// ⊆ this AABB, ADR 0027 §4).
+    /// rotation with a whole-voxel offset the corners land on integers, recovered exactly
+    /// (bit-identical to the `turn_extent` permutation, so every golden holds); an axis-aligned
+    /// leaf under a sub-voxel seat lands on half-integers and WIDENS (floor-min/ceil-max) so the
+    /// fractional side never sheds its boundary chunk; a genuine rotation likewise floors the min
+    /// and ceils the max to conservatively enclose the rotated box (SOUND: the true occupied set
+    /// ⊆ this AABB).
     ///
     /// The enclosing box is computed in the ORIGIN-RELATIVE frame and the integer origin is added
     /// back in `i64`, so a far-out leaf's extent stays exact (the wandering-origin fold).
@@ -292,11 +290,10 @@ impl LeafPlacement {
     /// The producer-LOCAL integer box `[min, max)` enclosing the inverse image of an absolute voxel
     /// box `[abs_min, abs_max)` — the frame `resolve_into` / `cell_field_interval` expect (the
     /// producer never learns the leaf is turned). The inverse of [`world_aabb`](Self::world_aabb):
-    /// a whole-phase axis-aligned leaf recovers integers exactly (bit-identical to the pre-0027
+    /// a whole-phase axis-aligned leaf recovers integers exactly (bit-identical to the integer
     /// unturn); a sub-voxel-seated or genuinely-rotated one floors the min and ceils the max to
-    /// conservatively enclose the preimage (SOUND — the isometry keeps the cell radius invariant,
-    /// ADR 0027 §4; the box may fall partly outside `[0, full]`, which the producer bounds/clamps
-    /// exactly as before).
+    /// conservatively enclose the preimage (SOUND — the isometry keeps the cell radius invariant;
+    /// the box may fall partly outside `[0, full]`, which the producer bounds and clamps).
     ///
     /// Each absolute corner is rebased against the integer origin in `i64` before the rotation, so
     /// a far-out box maps to producer-local without precision loss (the output is producer-local,
@@ -338,10 +335,10 @@ fn min_rotated_corner(rotation: Quat, full: Vec3) -> Vec3 {
 /// Fold the eight `corners` through `transform`, then snap the enclosing float box to
 /// an integer `[min, max)`: an axis-aligned `rotation` recovers exact integers (a
 /// whole-phase leaf) or half-integer widens via [`conservative_box`]; a genuine
-/// rotation floors the min and ceils the max to conservatively enclose the box (SOUND,
-/// ADR 0027 §4). The shared skeleton of [`LeafPlacement::world_aabb`] (forward
-/// transform) and [`LeafPlacement::local_aabb`] (inverse) — the floor/ceil-vs-
-/// `conservative_box` dispatch most at risk of silent drift now lives once.
+/// rotation floors the min and ceils the max to conservatively enclose the box (SOUND).
+/// The shared skeleton of [`LeafPlacement::world_aabb`] (forward transform) and
+/// [`LeafPlacement::local_aabb`] (inverse), so the floor/ceil-vs-`conservative_box`
+/// dispatch — the part most at risk of silent drift — lives once.
 fn enclosing_box(
     rotation: Quat,
     corners: [Vec3; 8],
@@ -374,7 +371,7 @@ fn enclosing_box(
 
 /// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`, rotated
 /// by `rotation`, so its local CENTER `full/2` lands at world `target_center` under the SAME
-/// corner-anchored [`LeafPlacement`] the classifier folds through (ADR 0027 §5 placement). It is
+/// corner-anchored [`LeafPlacement`] the classifier folds through. It is
 /// the inverse of [`LeafPlacement::new`]`(rotation, full, result).world_of(full/2) == target_center`.
 pub fn seat_center_at(rotation: Quat, full: Vec3, target_center: Vec3) -> Vec3 {
     target_center - rotation * (full * 0.5) + min_rotated_corner(rotation, full)
@@ -384,15 +381,15 @@ pub fn seat_center_at(rotation: Quat, full: Vec3, target_center: Vec3) -> Vec3 {
 mod tests {
     use super::*;
 
-    /// A voxel offset (`> 2^24`) at which the OLD collapse of the integer origin into an `f32`
-    /// world offset loses whole voxels of precision — the wandering-origin fold must survive it.
+    /// A voxel offset (`> 2^24`) at which collapsing the integer origin into an `f32` world
+    /// offset would lose whole voxels of precision — the wandering-origin fold must survive it.
     const FAR: i64 = 100_000_000;
 
-    /// The wandering-origin fold (ADR 0027 §1): mapping an absolute cell back to producer-local is
+    /// The wandering-origin fold: mapping an absolute cell back to producer-local is
     /// TRANSLATION-INVARIANT — a leaf placed `FAR` from the world origin resolves the identical
-    /// local coordinate as the same leaf at the origin. The pre-fold path (integer origin + fraction
-    /// collapsed to one `f32`) failed this: `abs_center − world_offset` canceled catastrophically
-    /// far out, so a placed body drifted / fragmented past ~16M voxels.
+    /// local coordinate as the same leaf at the origin. Collapsing the integer origin and the
+    /// fraction into one `f32` fails this: `abs_center − world_offset` cancels catastrophically
+    /// far out, and a placed body drifts / fragments past ~16M voxels.
     #[test]
     fn local_of_abs_cell_is_translation_invariant_arbitrarily_far_out() {
         let rotation = Quat::from_rotation_z(0.37) * Quat::from_rotation_x(0.11);

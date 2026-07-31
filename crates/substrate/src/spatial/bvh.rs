@@ -23,11 +23,8 @@
 //! the standard flattened-DFS layout that makes traversal an index walk with no
 //! per-node pointers.
 //!
-//! Cite: Kay & Kajiya 1986 (bounding-volume hierarchies for ray tracing); Ericson,
-//! *Real-Time Collision Detection* (2005), ch. 6 (BVH construction, the median/mean
-//! split rules, and flattened node storage). Deviation: spatial-median split on the
-//! centroid of the longest axis, fixed leaf cap 8, no SAH — the build-speed-over-query
-//! trade for a hierarchy rebuilt per use.
+//! The build policy is the build-speed-over-query trade for a hierarchy rebuilt per use:
+//! spatial-median split on the centroid of the longest axis, fixed leaf cap 8, no SAH.
 
 use crate::spatial::aabb::LatticeAabb;
 

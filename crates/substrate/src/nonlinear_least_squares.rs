@@ -11,16 +11,11 @@
 //!
 //! Gauss-Newton converges quadratically near the answer and diverges cheerfully far from it.
 //! Levenberg–Marquardt fixes that by damping, but its damping parameter has no geometric meaning,
-//! so a bad λ shows up as a step that is silently far too short. Powell's Dog Leg (1970) keeps an
+//! so a bad λ shows up as a step that is silently far too short. Powell's Dog Leg keeps an
 //! explicit TRUST REGION radius instead: it takes the Gauss-Newton step when that step fits inside
 //! the region, the steepest-descent step when even that does not, and the point where the segment
 //! between them leaves the region otherwise. The radius is in the same units as the parameters, so
 //! "the solver is taking 0.01-voxel steps" is a statement anyone can act on.
-//!
-//! The literature is Madsen, Nielsen & Tingleff, *Methods for Non-Linear Least Squares Problems*
-//! (2nd edition, 2004) §3.3 for the Dog Leg and §3.2 for LM; Powell, *A new algorithm for
-//! unconstrained optimization* (1970) for the original. Both are what SolveSpace, FreeCAD's
-//! Sketcher (via planegcs) and Fusion's solver descend from.
 //!
 //! ## The LM fallback is not an alternative, it is a repair
 //!

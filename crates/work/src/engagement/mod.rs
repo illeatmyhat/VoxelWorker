@@ -1,5 +1,5 @@
 //! The display subsystem — the policy that decides how the two display pipelines (the
-//! cuboid fallback mesh and the ADR 0011 brick raymarch) turn each edit into fresh
+//! cuboid fallback mesh and the brick raymarch) turn each edit into fresh
 //! on-screen geometry.
 //!
 //! This subsystem owns the *decisions* AND the state machine that acts on them. The pure

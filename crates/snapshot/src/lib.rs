@@ -4,8 +4,8 @@
 //! target went missing from the F9 repro dump exactly that way: nobody decided a
 //! panned view did not matter, the decision simply never came up, because a capture
 //! function that reads the fields it happens to know about has no place where the
-//! omission shows. ADR 0022 answers that with two mechanisms that are deliberately
-//! not one mechanism:
+//! omission shows. The answer is two mechanisms that are deliberately not one
+//! mechanism:
 //!
 //! * **Completeness** comes from exhaustive destructuring — a capture that binds
 //!   every field with no `..` rest pattern stops compiling the day a field is added.
@@ -15,13 +15,13 @@
 //! The second is why the derive exists at all. It is not the safety mechanism, and
 //! pretending otherwise would oversell it. `#[snapshot(transient)]` sitting on the
 //! field is *visible in review*; the same decision buried as a `skipped:` line inside
-//! a hand-written `classify` function is not, and ADR 0022 is explicit that review is
-//! the only thing keeping `transient` honest.
+//! a hand-written `classify` function is not, and review is the only thing keeping
+//! `transient` honest.
 //!
 //! ## Classification does not recurse
 //!
 //! A category is attached to a **whole object** and says nothing about that object's
-//! own fields, by design (ADR 0022, amendment 2026-07-20). Classifying
+//! own fields, by design. Classifying
 //! `camera: OrbitCamera` as [`StateCategory::View`] finishes the job: serialization
 //! already carries every field inside it, so the level-down version of the pan-target
 //! bug cannot occur. That bug was never "a field was added and not serialized" — it
@@ -35,8 +35,8 @@
 //! artifact, but they are not equally trustworthy. `Transient` asserts something
 //! unfalsifiable — "this genuinely does not need to survive" — and marking a field
 //! transient will always be the cheapest way to make the compiler stop complaining,
-//! so ADR 0022 names it as the scheme's most likely rot. `Derived` carries a
-//! *checkable* claim (ADR 0023): reconstructible from classified state alone, such
+//! it is the scheme's most likely rot. `Derived` carries a
+//! *checkable* claim: reconstructible from classified state alone, such
 //! that dropping it changes how long something takes and nothing else. A reviewer can
 //! ask "reconstructible from what?" and get either a real answer or a real bug. Prefer
 //! `Derived` whenever the claim is actually true.
@@ -49,8 +49,7 @@
 
 pub use snapshot_derive::Snapshot;
 
-/// Which persistence artifacts a piece of application state reaches (ADR 0022
-/// decision 4, extended with [`Derived`](Self::Derived) by ADR 0023).
+/// Which persistence artifacts a piece of application state reaches.
 ///
 /// The categories are about *destination*, not about data type or lifetime. Two fields
 /// of the same Rust type routinely land in different categories — the scene's density
@@ -84,7 +83,7 @@ pub enum StateCategory {
     /// against `Settings` is **preference versus circumstance** — a setting is something
     /// the user chose and would want honored in every project, whereas session state is
     /// merely where they happened to leave things. Restoring a session is the browser's
-    /// bargain (ADR 0024): your tabs come back, and nobody calls that a preference.
+    /// bargain: your tabs come back, and nobody calls that a preference.
     Session,
     /// Reaches neither artifact, on the grounds that it is genuinely momentary —
     /// whether the mouse is currently held mid-drag, a warning computed fresh each
@@ -92,7 +91,7 @@ pub enum StateCategory {
     /// never used to silence the compiler; see this module's header.
     Transient,
     /// Reaches neither artifact because it is reconstructible from classified state
-    /// alone. The admission test (ADR 0023) is falsifiable and should be applied
+    /// alone. The admission test is falsifiable and should be applied
     /// literally: **dropping the field must change how long something takes and
     /// nothing else.** A cache that cannot be rebuilt from classified state is not
     /// derived — it is undeclared truth, and the compiler is right to demand a real
@@ -139,7 +138,7 @@ impl StateCategory {
 ///
 /// Deliberately a flat name/category pair rather than anything type-aware: the
 /// classification is about where an object goes, and walking into its type would be
-/// the recursion ADR 0022's amendment rules out.
+/// the recursion classification deliberately rules out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClassifiedField {
     /// The field's identifier as written in the struct.

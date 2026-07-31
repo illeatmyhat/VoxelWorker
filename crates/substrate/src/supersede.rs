@@ -21,17 +21,12 @@
 //! build finishing *after* a newer dispatch) from installing stale output — and correct
 //! supersede needs both.
 //!
-//! ## Literature
-//!
-//! This pattern has no single canonical name: it is the confluence of *work coalescing*
-//! (collapse a burst of pending work to its latest representative — the "conflation" of
-//! event/market-data queues), *stale-while-revalidate* (serve the current value while a
-//! fresh one is computed), and a *monotonic version counter* used as a lost-update guard.
-//! The monotonic-counter reasoning — a strictly increasing generation totally orders the
-//! dispatches, so "newest wins" is well-defined and a superseded generation can never be
-//! mistaken for current — is the standard versioned-state argument; see Herlihy & Shavit,
-//! *The Art of Multiprocessor Programming* (2nd ed., 2021), on monotonic counters and
-//! sequence/version numbers for coordinating concurrent readers and writers.
+//! The pattern has no single canonical name: it is the confluence of *work coalescing*
+//! (collapse a burst of pending work to its latest representative), *stale-while-revalidate*
+//! (serve the current value while a fresh one is computed), and a *monotonic version counter*
+//! used as a lost-update guard. A strictly increasing generation totally orders the dispatches,
+//! so "newest wins" is well-defined and a superseded generation can never be mistaken for
+//! current.
 //!
 //! Everything in THIS module is `std`-only (`std::thread`, `std::sync::mpsc`,
 //! `std::panic::catch_unwind`) — no third-party crate. (The substrate crate as a whole has one

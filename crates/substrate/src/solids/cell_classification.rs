@@ -42,17 +42,11 @@
 //! one-sided soundness is what lets a caller elide the interior of a solid and the exterior of a
 //! void while remaining bit-exact against brute force.
 //!
-//! ## Literature
-//!
-//! This is the interval-arithmetic CSG cell classification of **Duff 1992**, *Interval arithmetic
-//! and recursive subdivision for implicit functions and constructive solid geometry* (SIGGRAPH) —
-//! the direct ancestor: fold a CSG tree's per-primitive interval bounds over a cell, then decide the
-//! cell against the surface. The three-way *empty / full / partial* verdict is the **black / white /
-//! gray** node classification of the region-octree literature (**Samet 2006**, *Foundations of
-//! Multidimensional and Metric Data Structures*, ch. 2 — a node is white/empty, black/full, or
-//! gray/mixed). A voxel domain's *air / coarse-solid / boundary* trichotomy **is** exactly this
-//! black/white/gray classification; the mapping to [`FieldClassification`]'s `Air` / `CoarseSolid` /
-//! `Boundary` lives in the shared [`FieldInterval::classify`] verdict this kernel returns.
+//! The shape is interval-arithmetic CSG cell classification: fold a CSG tree's per-primitive
+//! interval bounds over a cell, then decide the cell against the surface. A voxel domain's
+//! *air / coarse-solid / boundary* trichotomy **is** the region-octree *white / black / gray*
+//! classification; the mapping to [`FieldClassification`]'s `Air` / `CoarseSolid` / `Boundary`
+//! lives in the shared [`FieldInterval::classify`] verdict this kernel returns.
 
 use crate::interval::field_interval::{FieldClassification, FieldInterval};
 
