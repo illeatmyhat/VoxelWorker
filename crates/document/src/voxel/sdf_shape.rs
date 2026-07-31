@@ -1,7 +1,4 @@
 //! The parametric SDF primitive producer: `Box`, `Sphere`, `Cylinder`, `Tube`, `Torus`.
-//!
-//! Carved out of `voxel.rs` so the producer seam, the field seam and this concrete
-//! producer each stand alone.
 
 use glam::Vec3;
 use rayon::prelude::*;
@@ -13,23 +10,22 @@ use voxel_core::voxel::{
 
 use super::{clamp_window_to_grid, Field, FieldInterval, VoxelProducer};
 
-/// Geometry parameters â€” the *only* params that trigger a voxel rebuild.
+/// Geometry parameters — the *only* params that trigger a voxel rebuild.
 ///
 /// The UI-side mirror of [`SdfShape`] (the panel edits this; `SdfShape::from_geometry`
 /// turns it into a producer).
 ///
-/// **Size is voxel-granular** (ADR 0003 Â§3f(0)): the canonical [`size_voxels`] is the
-/// bounding-box span in VOXELS at the document density, and [`size_measurements`]
-/// retains the authored blocks+voxels expression the inspector typed (so a density
-/// re-target is lossless). A whole-block size has `size_voxels = blocks Â· d`, so the
-/// resolved geometry is identical to the old block-granular path.
+/// **Size is voxel-granular**: the canonical [`size_voxels`] is the bounding-box span in
+/// VOXELS at the document density, and [`size_measurements`] retains the authored
+/// blocks+voxels expression the inspector typed (so a density re-target is lossless). A
+/// whole-block size has `size_voxels = blocks · d`.
 ///
 /// `voxels_per_block` is the **transient UI control value** for the density slider
-/// only â€” density is a document-level attribute on [`Scene`](crate::scene::Scene)
-/// (ADR 0003 Â§3f(0)), so this field is mirrored from / written to the scene via
+/// only — density is a document-level attribute on [`Scene`](crate::scene::Scene), so
+/// this field is mirrored from / written to the scene via
 /// [`Intent::SetDensity`](crate::intent::Intent::SetDensity) and is NOT copied onto
-/// the produced [`SdfShape`]. Fineness only â€” it never changes the object's physical
-/// size (the density bug — see `docs/architecture/01-document.md`).
+/// the produced [`SdfShape`]. Fineness only — it never changes the object's physical
+/// size (see `docs/architecture/01-document.md`).
 ///
 /// [`size_voxels`]: GeometryParams::size_voxels
 /// [`size_measurements`]: GeometryParams::size_measurements
@@ -37,13 +33,13 @@ use super::{clamp_window_to_grid, Field, FieldInterval, VoxelProducer};
 pub struct GeometryParams {
     /// Selected primitive.
     pub shape: ShapeKind,
-    /// Bounding-box size in **voxels** (X, Y, Z) at the document density â€” the
-    /// canonical size the producer resolves (a whole-block size is `blocks Â· d`).
+    /// Bounding-box size in **voxels** (X, Y, Z) at the document density — the
+    /// canonical size the producer resolves (a whole-block size is `blocks · d`).
     pub size_voxels: [u32; 3],
-    /// The RETAINED authored size expression per axis (ADR 0003 Â§3f(0)), or `None`
-    /// when the size carries no parametric block expression (a pure-voxel size). The
-    /// canonical `size_voxels` always wins for geometry; this is retention/display
-    /// only, kept so a density re-target re-evaluates losslessly.
+    /// The RETAINED authored size expression per axis, or `None` when the size carries no
+    /// parametric block expression (a pure-voxel size). The canonical `size_voxels` always
+    /// wins for geometry; this is retention/display only, kept so a density re-target
+    /// re-evaluates losslessly.
     pub size_measurements: Option<Box<[parametric::units::Measurement; 3]>>,
     /// Voxels per block (chisel fineness): the density slider's transient UI value,
     /// mirrored to/from [`Scene::voxels_per_block`](crate::scene::Scene). Default 16.
@@ -54,10 +50,9 @@ pub struct GeometryParams {
 
 impl Default for GeometryParams {
     fn default() -> Self {
-        // Default size 5Ã—1Ã—5 BLOCKS at the default density 16 â†’ voxel-granular canonical.
         Self {
             shape: ShapeKind::Cylinder,
-            // 5Ã—1Ã—5 BLOCKS at the default density 16 â†’ voxel-granular canonical.
+            // 5×1×5 BLOCKS at the default density 16 → voxel-granular canonical.
             size_voxels: [80, 16, 80],
             size_measurements: None,
             voxels_per_block: 16,
@@ -66,16 +61,12 @@ impl Default for GeometryParams {
     }
 }
 
-/// A single parametric SDF primitive — the original producer; the document layer now
-/// also resolves `SketchSolid` (sketch→extrude/revolve) and `DebugCloudField`, composed
-/// through `CompositeProducer` / `OutsetProducer`.
+/// A single parametric SDF primitive.
 ///
-/// **Size is voxel-granular** (ADR 0003 Â§3f(0)): the canonical [`size_voxels`] is
-/// the bounding-box span in VOXELS at the document density. Density
-/// (`voxels_per_block`) is NOT stored here â€” it is a document-level attribute on
-/// [`Scene`](crate::scene::Scene) (one grid fineness for the whole plan), passed in
-/// to the size / resolve methods. A whole-block size is `blocks Â· d`, so the
-/// resolved grid is identical to the old block-granular store (goldens unchanged).
+/// **Size is voxel-granular**: the canonical [`size_voxels`] is the bounding-box span in
+/// VOXELS at the document density. Density (`voxels_per_block`) is NOT stored here — it is
+/// a document-level attribute on [`Scene`](crate::scene::Scene) (one grid fineness for the
+/// whole plan), passed in to the size / resolve methods. A whole-block size is `blocks · d`.
 ///
 /// [`size_measurements`] RETAINS the authored blocks+voxels expression (parametric)
 /// alongside the canonical voxels, mirroring
@@ -90,19 +81,19 @@ impl Default for GeometryParams {
 pub struct SdfShape {
     #[serde(default = "default_shape_kind")]
     pub kind: ShapeKind,
-    /// Bounding-box size in **voxels** (X, Y, Z) at the document density â€” the
+    /// Bounding-box size in **voxels** (X, Y, Z) at the document density — the
     /// canonical span the producer resolves over. Always `>= 1` per axis.
     #[serde(default = "default_shape_size_voxels")]
     pub size_voxels: [u32; 3],
     /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
     #[serde(default = "default_shape_wall")]
     pub wall_blocks: u32,
-    /// The RETAINED authored size expression per axis (ADR 0003 Â§3f(0)).
+    /// The RETAINED authored size expression per axis.
     ///
-    /// `serde(default)` makes this `None` on an OLD document predating the field, so
-    /// old scenes still load; the accessor [`size_measurements`](SdfShape::size_measurements)
-    /// then SYNTHESISES a pure-voxel measurement from `size_voxels`. Boxed so the
-    /// common (`None`) case keeps `SdfShape` small.
+    /// `serde(default)` makes this `None` for a document that stores no expression, and the
+    /// accessor [`size_measurements`](SdfShape::size_measurements) then SYNTHESIZES a
+    /// pure-voxel measurement from `size_voxels`. Boxed so the common (`None`) case keeps
+    /// `SdfShape` small.
     #[serde(default)]
     size_measurements: Option<Box<[parametric::units::Measurement; 3]>>,
 }
@@ -114,7 +105,7 @@ fn default_shape_kind() -> ShapeKind {
     ShapeKind::Cylinder
 }
 /// The default canonical voxel size for a config load missing `size_voxels`: the
-/// historical 5Ã—1Ã—5-block default at the default density 16.
+/// 5×1×5-block default at the default density 16.
 fn default_shape_size_voxels() -> [u32; 3] {
     [80, 16, 80]
 }
@@ -125,7 +116,7 @@ fn default_shape_wall() -> u32 {
 /// Clamp a per-axis voxel size so every axis is at least 1 voxel (a 0-voxel axis
 /// would resolve an empty / degenerate grid). The UI rejects sub-1 sizes before
 /// emitting; this is the constructor-side guard so a `from_*` caller can never
-/// build a degenerate shape (ADR 0003 Â§3f(0)).
+/// build a degenerate shape.
 fn clamp_size_voxels(size_voxels: [u32; 3]) -> [u32; 3] {
     [
         size_voxels[0].max(1),
@@ -140,8 +131,8 @@ impl SdfShape {
     /// This is the single place geometry params become a producer; the split in
     /// `panel.rs` guarantees display/camera params never reach here. The canonical
     /// `size_voxels` and the retained `size_measurements` ride straight across (the
-    /// inspector already validated the size lands on a whole voxel â‰¥ 1). Density is
-    /// NOT copied â€” it lives on the [`Scene`](crate::scene::Scene), not the shape.
+    /// inspector already validated the size lands on a whole voxel ≥ 1). Density is
+    /// NOT copied — it lives on the [`Scene`](crate::scene::Scene), not the shape.
     pub fn from_geometry(geometry: GeometryParams) -> Self {
         let size_voxels = clamp_size_voxels(geometry.size_voxels);
         Self {
@@ -153,7 +144,7 @@ impl SdfShape {
     }
 
     /// Build a shape from a whole-**block** size at density `voxels_per_block`
-    /// (`size_voxels = blocks Â· d`). The terse whole-block entry point for demos,
+    /// (`size_voxels = blocks · d`). The terse whole-block entry point for demos,
     /// tests and `GroupSpec` placement (mirrors
     /// [`NodeTransform::from_blocks`](crate::scene::NodeTransform::from_blocks)). It
     /// retains each axis as a whole-block measurement so a later density re-target
@@ -190,10 +181,10 @@ impl SdfShape {
     }
 
     /// Build a shape from a pure-**voxel** size with NO retained authored expression
-    /// (the synthesis / integer-rescale path â€” e.g. an old document, or a density
-    /// re-target of a size that had no parametric block expression). Each axis is
+    /// (the synthesis / integer-rescale path — a document that stores no expression, or a
+    /// density re-target of a size that had no parametric block expression). Each axis is
     /// clamped to `>= 1` voxel. The retained field stays `None`, so its measurement
-    /// is synthesised from `size_voxels` (re-evaluates to the same voxels at any
+    /// is synthesized from `size_voxels` (re-evaluates to the same voxels at any
     /// density). Mirrors the `from_voxels` synthesis on the offset side.
     pub fn from_voxels(kind: ShapeKind, size_voxels: [u32; 3], wall_blocks: u32) -> Self {
         Self {
@@ -205,15 +196,14 @@ impl SdfShape {
     }
 
     /// Build a shape from a per-axis authored [`Measurement`](parametric::units::Measurement)
-    /// size at density `voxels_per_block` (ADR 0003 Â§3f(0)). The canonical voxel size
-    /// is DERIVED via [`Measurement::to_voxels`](parametric::units::Measurement::to_voxels)
-    /// and clamped to `>= 1`; the measurements are RETAINED for lossless density
-    /// re-targeting. Mirrors
+    /// size at density `voxels_per_block`. The canonical voxel size is DERIVED via
+    /// [`Measurement::to_voxels`](parametric::units::Measurement::to_voxels) and clamped to
+    /// `>= 1`; the measurements are RETAINED for lossless density re-targeting. Mirrors
     /// [`NodeTransform::from_measurements`](crate::scene::NodeTransform::from_measurements),
-    /// including the self-consistency rule: a non-landing axis floors AND
-    /// resynthesises its retained measurement to the pure-voxel form, so
-    /// `size_voxels` and the retained expression never disagree. (A size that floors
-    /// below 1 voxel is clamped to 1 and resynthesised to the pure-voxel `1`.)
+    /// including the self-consistency rule: a non-landing axis floors AND resynthesizes its
+    /// retained measurement to the pure-voxel form, so `size_voxels` and the retained
+    /// expression never disagree. (A size that floors below 1 voxel is clamped to 1 and
+    /// resynthesized to the pure-voxel `1`.)
     pub fn from_measurements(
         kind: ShapeKind,
         measurements: [parametric::units::Measurement; 3],
@@ -232,7 +222,7 @@ impl SdfShape {
             };
             // A size must be at least 1 voxel: clamp negatives / zero up to 1. If the
             // authored measurement landed cleanly AND is >= 1 keep it verbatim; any
-            // floor or clamp resynthesises to the pure-voxel form of the final value.
+            // floor or clamp resynthesizes to the pure-voxel form of the final value.
             let clamped = raw.0.max(1) as u32;
             let landed_exact = raw.1.is_some() && raw.0 == clamped as i64;
             if landed_exact {
@@ -254,9 +244,9 @@ impl SdfShape {
     }
 
     /// Normalize the retained measurements to `None` when every axis is exactly the
-    /// pure-voxel measurement of its derived voxels â€” i.e. there is NO parametric
+    /// pure-voxel measurement of its derived voxels — i.e. there is NO parametric
     /// block content beyond the voxel count. Keeps a pure-voxel size in the same
-    /// canonical form as a freshly-loaded shape (`None`) so applyâ†’undo is
+    /// canonical form as a freshly-loaded shape (`None`) so apply→undo is
     /// byte-identical and serde gains no redundant husk. Mirrors
     /// `NodeTransform::retained_or_none`.
     fn retained_or_none(
@@ -274,10 +264,9 @@ impl SdfShape {
         }
     }
 
-    /// The RETAINED per-axis authored size measurement (ADR 0003 Â§3f(0)). When the
-    /// shape carries no stored expression (an OLD scene, or a pure-voxel size), this
-    /// SYNTHESISES a pure-voxel measurement equal to `size_voxels` per axis (correct
-    /// at any density, just non-parametric). Mirrors
+    /// The RETAINED per-axis authored size measurement. When the shape carries no stored
+    /// expression (a pure-voxel size), this SYNTHESIZES a pure-voxel measurement equal to
+    /// `size_voxels` per axis (correct at any density, just non-parametric). Mirrors
     /// `NodeTransform::offset_measurements`.
     pub fn size_measurements(&self) -> [parametric::units::Measurement; 3] {
         use parametric::units::Measurement;
@@ -293,17 +282,17 @@ impl SdfShape {
 
     /// Whether this shape carries a GENUINELY retained authored size expression
     /// (the stored field is `Some`) versus a pure-voxel size whose measurement is
-    /// only SYNTHESISED. The density re-target uses this to choose between
+    /// only SYNTHESIZED. The density re-target uses this to choose between
     /// re-evaluating the authored block expression and an integer rescale that
     /// preserves physical size. Mirrors `NodeTransform::has_retained_measurements`.
     pub fn has_retained_size_measurements(&self) -> bool {
         self.size_measurements.is_some()
     }
 
-    /// Grid dimensions in voxels: the canonical `size_voxels` directly (ADR 0003
-    /// Â§3f(0); size is now voxel-granular, so density no longer scales it here â€” a
-    /// whole-block size already stored `blocks Â· d`). The `voxels_per_block` argument
-    /// is retained for call-site symmetry but unused.
+    /// Grid dimensions in voxels: the canonical `size_voxels` directly. Size is
+    /// voxel-granular, so density does not scale it here — a whole-block size already
+    /// stores `blocks · d`. The `voxels_per_block` argument is taken for call-site
+    /// symmetry but unused.
     pub fn grid_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         let _ = voxels_per_block;
         self.size_voxels
@@ -349,7 +338,7 @@ impl VoxelProducer for SdfShape {
         grid.dimensions = [grid_x, grid_y, grid_z];
 
         // Shape inscribed in the box: semi-axes are half the voxel-space dims. ALL
-        // per-cell math is derived from the FULL dims â€” the window only narrows the
+        // per-cell math is derived from the FULL dims — the window only narrows the
         // iteration range, never the sampling frame.
         let semi_axes = Vec3::new(
             grid_x as f32 / 2.0,
@@ -362,18 +351,16 @@ impl VoxelProducer for SdfShape {
         let half_y = grid_y as f32 / 2.0;
         let half_z = grid_z as f32 / 2.0;
 
-        // Clamp the window to `[0, full_dim)`; a full-window call reproduces the
-        // historical `0..grid_*` loops exactly.
+        // Clamp the window to `[0, full_dim)`; a full-window call spans `0..grid_*`.
         let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
             clamp_window_to_grid(window_local_voxels, [grid_x, grid_y, grid_z]);
 
-        // The outer `j` slices are order-independent (each samples a disjoint set
-        // of voxels and writes nothing shared), so M8 parallelises them with
-        // rayon: each slice produces a local `Vec<Voxel>` and the results are
-        // concatenated. The voxel ORDER may differ from the serial version, but
-        // the SET is identical â€” the renderer doesn't care about order, and the
-        // 2D slice / `.vox` export recover indices from each voxel's position.
-        // Windowing parallelises over the WINDOWED outer-axis range.
+        // The outer `j` slices are order-independent (each samples a disjoint set of
+        // voxels and writes nothing shared), so rayon parallelizes them: each slice
+        // produces a local `Vec<Voxel>` and the results are concatenated. The voxel
+        // ORDER is unspecified but the SET is exact — the renderer doesn't care about
+        // order, and the 2D slice / `.vox` export recover indices from each voxel's
+        // position.
         let kind = self.kind;
         grid.occupied = (win_y_lo..win_y_hi)
             .into_par_iter()
@@ -381,14 +368,13 @@ impl VoxelProducer for SdfShape {
                 let mut local = Vec::new();
                 for k in win_z_lo..win_z_hi {
                     for i in win_x_lo..win_x_hi {
-                        // The shape geometry is still inscribed symmetric about the
-                        // grid's center, so SAMPLE the SDF at the centered coordinate
-                        // (`idx + 0.5 âˆ’ grid/2`). But STORE the voxel CORNER-ANCHORED
+                        // The shape geometry is inscribed symmetric about the grid's
+                        // center, so SAMPLE the SDF at the centered coordinate
+                        // (`idx + 0.5 − grid/2`). But STORE the voxel CORNER-ANCHORED
                         // (`idx + 0.5`): the local occupied span is `[0, grid)` and the
                         // center is a HALF-INTEGER for any grid size, so it always sits
-                        // inside its voxel cell `[idx, idx+1)` â€” on the global voxel
-                        // lattice at any parity. (Was centered at `idx + 0.5 âˆ’ grid/2`,
-                        // which lands on integers for an odd grid and straddles cells.)
+                        // inside its voxel cell `[idx, idx+1)` — on the global voxel
+                        // lattice at any parity.
                         let sample = Vec3::new(
                             i as f32 + 0.5 - half_x,
                             j as f32 + 0.5 - half_y,
@@ -416,18 +402,12 @@ impl VoxelProducer for SdfShape {
             .collect();
     }
 
-    /// Conservative 1-Lipschitz field interval over a cell (ADR 0010 Decision 2). The
-    /// resolve samples the SDF at the CENTERED coordinate `idx + 0.5 âˆ’ full_dim/2`, so
-    /// this maps the cell box (local voxel-index frame, ADR 0008) into that SAME centered
-    /// frame, evaluates the field at the cell's geometric center, and brackets the
-    /// variation over the cell by the (widened) circumradius.
-    ///
-    /// `signed_distance_box` and the torus SDF are exactly 1-Lipschitz, but the IQ
-    /// ellipsoid and the elliptical-cylinder/tube SDFs have gradient magnitude up to
-    /// the semi-axis ANISOTROPY `max_semi / min_semi` (â‰¥ 1; = 1 for an isotropic shape).
-    /// To stay conservative for EVERY kind we WIDEN the circumradius by that anisotropy
-    /// factor â€” never narrower than the true field range, so a coarse AIR/SOLID verdict
-    /// can never misclassify (proven by the E1 parity gate).
+    /// Conservative 1-Lipschitz field interval over a cell. The resolve samples the SDF at
+    /// the CENTERED coordinate `idx + 0.5 − full_dim/2`, so this maps the cell box (local
+    /// voxel-index frame) into that SAME centered frame, evaluates the field at the cell's
+    /// geometric center, and brackets the variation over the cell by the circumradius,
+    /// widened per kind by a conservative Lipschitz constant. Widening never narrows the
+    /// true field range, so a coarse AIR/SOLID verdict can never misclassify.
     fn cell_field_interval(
         &self,
         cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
@@ -446,8 +426,8 @@ impl VoxelProducer for SdfShape {
         let half = semi_axes;
 
         // The cell's geometric center in the producer's CENTERED sampling frame: a cell
-        // sample at integer index `idx` sits at `idx + 0.5 âˆ’ half`, so the center of the
-        // half-open cell box `[min, max)` is `(min + max) / 2 âˆ’ half`.
+        // sample at integer index `idx` sits at `idx + 0.5 − half`, so the center of the
+        // half-open cell box `[min, max)` is `(min + max) / 2 − half`.
         let center = Vec3::new(
             (cell_local_voxels.min[0] + cell_local_voxels.max[0]) as f32 / 2.0 - half.x,
             (cell_local_voxels.min[1] + cell_local_voxels.max[1]) as f32 / 2.0 - half.y,
@@ -455,10 +435,10 @@ impl VoxelProducer for SdfShape {
         );
 
         // Circumradius = half the cell's space-diagonal. The brute-force seam SAMPLES
-        // each voxel at its own center `idx + 0.5 âˆ’ half`, so the farthest sample from
-        // the cell center is half the diagonal across the SPAN OF SAMPLE CENTERS â€” which
-        // is `(extent âˆ’ 1)` voxels per axis. Using the full extent (`extent`) is strictly
-        // wider, so we keep it: a wider radius is always conservative.
+        // each voxel at its own center `idx + 0.5 − half`, so the farthest sample from
+        // the cell center is half the diagonal across the SPAN OF SAMPLE CENTERS — which
+        // is `(extent − 1)` voxels per axis. Using the full extent is strictly wider, and
+        // a wider radius is always conservative.
         let extent = Vec3::new(
             (cell_local_voxels.max[0] - cell_local_voxels.min[0]) as f32,
             (cell_local_voxels.max[1] - cell_local_voxels.min[1]) as f32,
@@ -466,29 +446,28 @@ impl VoxelProducer for SdfShape {
         );
         let circumradius = (extent * 0.5).length();
 
-        // Conservative Lipschitz constant. Always >= the true constant â‡’ never narrows.
+        // Conservative Lipschitz constant. Always >= the true constant ⇒ never narrows.
         let lipschitz_constant = match self.kind {
-            // The elliptical CYLINDER and TUBE are exactly 1-Lipschitz, so they belong here
-            // with the box and torus rather than carrying the anisotropy widening (issue #62).
-            // The radial term is `(k âˆ’ 1)Â·m` with `k = |(x/ax, y/ay)|` and `m = min(ax, ay)`;
-            // writing `u = (x/ax, y/ay)`, its gradient is
-            //     |âˆ‡k| = |(uâ‚“/ax, u_y/ay)| / |u| â‰¤ max(1/ax, 1/ay) = 1/m
-            // so `|âˆ‡radial| = mÂ·|âˆ‡k| â‰¤ 1` â€” the `min(ax, ay)` scale factor exactly cancels the
-            // worst-case gradient along the SHORTER cross-section axis, which is precisely
-            // where the old widening feared it steepened. The axial term `|z| âˆ’ half_height`
-            // is 1-Lipschitz outright, and `max` / `min` / the positive-part norm / negation
-            // all preserve the constant â€” so the tube's `outer.max(âˆ’inner)` is 1-Lipschitz too.
+            // The elliptical CYLINDER and TUBE are exactly 1-Lipschitz, so they need no
+            // anisotropy widening. The radial term is `(k − 1)·m` with `k = |(x/ax, y/ay)|`
+            // and `m = min(ax, ay)`; writing `u = (x/ax, y/ay)`, its gradient is
+            //     |∇k| = |(uₓ/ax, u_y/ay)| / |u| ≤ max(1/ax, 1/ay) = 1/m
+            // so `|∇radial| = m·|∇k| ≤ 1` — the `min(ax, ay)` scale factor exactly cancels the
+            // worst-case gradient along the SHORTER cross-section axis, which is where an
+            // anisotropic cross-section would otherwise steepen it. The axial term
+            // `|z| − half_height` is 1-Lipschitz outright, and `max` / `min` / the
+            // positive-part norm / negation all preserve the constant — so the tube's
+            // `outer.max(−inner)` is 1-Lipschitz too.
             //
-            // Empirically confirmed before the change: the constant these kinds actually
-            // REQUIRE measures 0.93â€“1.00 across anisotropies to 32:1, never above 1. The old
-            // `max_semi / min_semi` was over-conservative by exactly the anisotropy factor
-            // (8â€“33Ã— headroom), which is what suppressed interior elision for long cylinders.
+            // Measured: the constant these kinds actually REQUIRE is 0.93–1.00 across
+            // anisotropies to 32:1, never above 1. Widening by `max_semi / min_semi` here
+            // would cost 8–33× headroom and suppress interior elision for long cylinders.
             ShapeKind::Box | ShapeKind::Torus | ShapeKind::Cylinder | ShapeKind::Tube => 1.0,
-            // The IQ ellipsoid is a genuine APPROXIMATION, not a true distance field, and its
-            // gradient really does blow up deep inside a thin shape â€” measured at 277 against
-            // a claimed 32 for a 32:1 ellipsoid, i.e. this widening is ALREADY an
+            // The ellipsoid field is a genuine APPROXIMATION, not a true distance field, and
+            // its gradient really does blow up deep inside a thin shape — measured at 277
+            // against a claimed 32 for a 32:1 ellipsoid, i.e. this widening is ALREADY an
             // under-estimate. It survives on magnitude dominance (the field's whole range is
-            // bounded by the minor semi-axis while `LÂ·R` scales with the major one), which the
+            // bounded by the minor semi-axis while `L·R` scales with the major one), which the
             // `strongly_anisotropic_sdf_cells_stay_sound_where_lipschitz_is_underestimated`
             // parity test pins. Do NOT tighten this one; if anything it wants widening.
             ShapeKind::Sphere => {
@@ -497,7 +476,7 @@ impl VoxelProducer for SdfShape {
                 if smallest > 0.0 {
                     (largest / smallest).max(1.0)
                 } else {
-                    // A degenerate zero-thickness axis: fall back to BOUNDARY (None) â€” we
+                    // A degenerate zero-thickness axis: fall back to BOUNDARY (None) — we
                     // cannot bound the gradient, so let the per-voxel seam decide.
                     return None;
                 }
@@ -580,15 +559,15 @@ impl VoxelProducer for SdfShape {
 
 impl Field for SdfShape {
     /// Signed distance in the producer's `[0, full_dim)` voxel frame. The shape is inscribed
-    /// symmetric about the grid center, so the sample is re-centered to `point âˆ’ grid/2` â€”
+    /// symmetric about the grid center, so the sample is re-centered to `point − grid/2` —
     /// the same frame [`resolve_into`](VoxelProducer::resolve_into) samples in.
     ///
     /// `Box` is measured in **Chebyshev** and every other kind in **Euclidean**, matching
-    /// [`metric`](Field::metric). A box's Lâˆž distance is the plain
-    /// `max(|páµ¢| âˆ’ halfáµ¢)` â€” exact, with none of the corner-rounding correction the Euclidean
+    /// [`metric`](Field::metric). A box's L∞ distance is the plain
+    /// `max(|pᵢ| − halfᵢ)` — exact, with none of the corner-rounding correction the Euclidean
     /// form needs outside. The two **agree in sign everywhere**, since both are negative
-    /// exactly when every axis is within its half-extent, so occupancy is untouched: this
-    /// changes what the field *measures*, never what the producer resolves.
+    /// exactly when every axis is within its half-extent, so the metric decides what the
+    /// field *measures*, never what the producer resolves.
     fn signed_distance(&self, point_local_voxels: [f32; 3], voxels_per_block: u32) -> f32 {
         let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
         let semi_axes = Vec3::new(
@@ -612,9 +591,9 @@ impl Field for SdfShape {
         }
     }
 
-    /// A box is rectilinear and has an exact Lâˆž field, so it outsets **square**. The curved
-    /// kinds have no closed-form Lâˆž distance and stay Euclidean, so they outset **round** â€”
-    /// which is also what one would want of them (ADR 0019 Decision 6).
+    /// A box is rectilinear and has an exact L∞ field, so it outsets **square**. The curved
+    /// kinds have no closed-form L∞ distance and stay Euclidean, so they outset **round** —
+    /// which is also what one would want of them.
     fn metric(&self) -> substrate::geom2d::Metric {
         match self.kind {
             voxel_core::voxel::ShapeKind::Box => substrate::geom2d::Metric::Chebyshev,
@@ -623,27 +602,22 @@ impl Field for SdfShape {
     }
 }
 
-/// ADR 0003 Â§3f(0): voxel-granular Size with parametric Measurement retention,
-/// mirroring the Offset tests in `scene.rs`. These pin the canonical
-/// `size_voxels`, the retained-expression round-trip, the density re-target, serde
-/// back-compat, and (the high-risk area) the occupied-voxel set / centering at
-/// ODD / EVEN / MIXED-parity voxel-granular sizes.
+/// Voxel-granular Size with parametric Measurement retention, mirroring the Offset tests
+/// in `scene.rs`. These pin the canonical `size_voxels`, the retained-expression
+/// round-trip, the density re-target, serde back-compat, and (the high-risk area) the
+/// occupied-voxel set / centering at ODD / EVEN / MIXED-parity voxel-granular sizes.
 #[cfg(test)]
 mod sdf_size_units_tests {
     use super::*;
     use parametric::units::{DisplayUnit, ExactRational, Measurement};
 
-    /// A whole-**block** size built via `from_blocks` derives `size_voxels =
-    /// blocks Â· d` (byte-identical to the OLD block-granular store), and retains
-    /// each axis as a whole-block measurement so a density re-target is lossless.
+    /// A whole-**block** size built via `from_blocks` derives `size_voxels = blocks · d`,
+    /// and retains each axis as a whole-block measurement so a density re-target is
+    /// lossless.
     #[test]
     fn from_blocks_matches_legacy_block_size() {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [5, 1, 5], 1, 16);
-        assert_eq!(
-            shape.size_voxels,
-            [80, 16, 80],
-            "blocks Â· d, identical to the old store"
-        );
+        assert_eq!(shape.size_voxels, [80, 16, 80], "blocks · d");
         // grid_dimensions returns the canonical voxels directly.
         assert_eq!(shape.grid_dimensions(16), [80, 16, 80]);
         // The retained expression re-evaluates losslessly at a denser document.
@@ -651,13 +625,13 @@ mod sdf_size_units_tests {
         assert_eq!(
             dense.size_voxels,
             [160, 32, 160],
-            "5 blocks Â· 32 = 160 (lossless block refine)"
+            "5 blocks · 32 = 160 (lossless block refine)"
         );
     }
 
     /// `from_measurements` derives the canonical voxel size from a per-axis authored
-    /// expression and retains it. `3.5 blocks` lands on `3.5Â·d`; a `2 blocks 8
-    /// voxels` axis is `2Â·d + 8`; a pure-voxel axis is exact.
+    /// expression and retains it. `3.5 blocks` lands on `3.5·d`; a `2 blocks 8
+    /// voxels` axis is `2·d + 8`; a pure-voxel axis is exact.
     #[test]
     fn from_measurements_derives_voxels_and_retains_expression() {
         let measurements = [
@@ -673,14 +647,14 @@ mod sdf_size_units_tests {
             "expression retained verbatim"
         );
         assert!(shape.has_retained_size_measurements());
-        // The SAME measurements refine at a denser document: 3.5Â·32 = 112; the
-        // pure-voxel 83 stays 83; 2Â·32 + 8 = 72.
+        // The SAME measurements refine at a denser document: 3.5·32 = 112; the
+        // pure-voxel 83 stays 83; 2·32 + 8 = 72.
         let dense = SdfShape::from_measurements(ShapeKind::Box, measurements, 1, 32);
         assert_eq!(dense.size_voxels, [112, 83, 72]);
     }
 
     /// A `2 blocks 8 voxels` size (56 vx at d16) re-evaluated at the integer-multiple
-    /// d32 keeps the VOXEL TERM EXACT: 2Â·32 + 8 = 72, NOT the integer rescale 112.
+    /// d32 keeps the VOXEL TERM EXACT: 2·32 + 8 = 72, NOT the integer rescale 112.
     #[test]
     fn from_measurements_integer_multiple_density_keeps_voxel_term_exact() {
         let measurements = [
@@ -693,7 +667,7 @@ mod sdf_size_units_tests {
         let at32 = SdfShape::from_measurements(ShapeKind::Box, at16.size_measurements(), 1, 32);
         assert_eq!(
             at32.size_voxels[0], 72,
-            "2Â·32 + 8, NOT the integer rescale 80"
+            "2·32 + 8, NOT the integer rescale 80"
         );
         assert_eq!(
             at32.size_measurements()[0],
@@ -702,8 +676,8 @@ mod sdf_size_units_tests {
         );
     }
 
-    /// A `3.5 blocks` size re-evaluated at the NON-dividing d15 (3.5Â·15 = 52.5) must
-    /// not panic, floors to a whole voxel, and resynthesises its retained measurement
+    /// A `3.5 blocks` size re-evaluated at the NON-dividing d15 (3.5·15 = 52.5) must
+    /// not panic, floors to a whole voxel, and resynthesizes its retained measurement
     /// to stay CONSISTENT with `size_voxels` (the self-consistency rule).
     #[test]
     fn from_measurements_non_dividing_density_stays_self_consistent() {
@@ -715,7 +689,7 @@ mod sdf_size_units_tests {
         let at15 = SdfShape::from_measurements(ShapeKind::Box, measurements, 1, 15);
         assert_eq!(
             at15.size_voxels[0], 52,
-            "3.5Â·15 = 52.5 floored to 52, no panic"
+            "3.5·15 = 52.5 floored to 52, no panic"
         );
         let retained = at15.size_measurements();
         assert_eq!(
@@ -726,7 +700,7 @@ mod sdf_size_units_tests {
     }
 
     /// Size must be at least 1 voxel: a 0 / negative / sub-1 authored size clamps to
-    /// 1 voxel and resynthesises to the pure-voxel `1` (the constructor-side guard).
+    /// 1 voxel and resynthesizes to the pure-voxel `1` (the constructor-side guard).
     #[test]
     fn size_clamps_to_at_least_one_voxel() {
         // A `0 voxels` axis clamps to 1.
@@ -770,9 +744,9 @@ mod sdf_size_units_tests {
         );
         assert!(
             !pure.has_retained_size_measurements(),
-            "pure-voxel size is synthesisable â†’ None"
+            "pure-voxel size is synthesizable → None"
         );
-        // The accessor still synthesises the correct per-axis pure-voxel measurement.
+        // The accessor still synthesizes the correct per-axis pure-voxel measurement.
         assert_eq!(pure.size_measurements()[0], Measurement::from_voxels(83));
     }
 
@@ -791,11 +765,9 @@ mod sdf_size_units_tests {
         }
     }
 
-    /// An OLD `SdfShape` JSON predating `size_measurements` (and even predating
-    /// `size_voxels`, carrying the legacy `size_blocks`... NO â€” the legacy field is
-    /// gone; the realistic old-document shape carries `size_voxels` but NO
-    /// `size_measurements`) deserializes (serde default â†’ `None`) and the accessor
-    /// synthesises a pure-voxel measurement from `size_voxels`.
+    /// An `SdfShape` JSON carrying `size_voxels` but NO `size_measurements` deserializes
+    /// (serde default → `None`) and the accessor synthesizes a pure-voxel measurement from
+    /// `size_voxels`.
     #[test]
     fn serde_back_compat_synthesises_measurements_from_voxels() {
         let old_json = r#"{ "kind": "Box", "size_voxels": [83, 17, 80], "wall_blocks": 1 }"#;
@@ -811,8 +783,7 @@ mod sdf_size_units_tests {
         }
     }
 
-    /// A shape carrying retained size measurements round-trips through serde
-    /// unchanged (the new field persists for a forward-saved document).
+    /// A shape carrying retained size measurements round-trips through serde unchanged.
     #[test]
     fn serde_round_trips_with_retained_size() {
         let shape = SdfShape::from_measurements(
@@ -851,12 +822,12 @@ mod sdf_size_units_tests {
 
     /// PARITY: a Box fully fills its bounding box, so a voxel-granular size of ANY
     /// parity (odd / even / mixed) emits EXACTLY `prod(size_voxels)` voxels spanning
-    /// `[0, size_voxels)` per axis in the producer-true (corner-anchored) frame â€” no
+    /// `[0, size_voxels)` per axis in the producer-true (corner-anchored) frame — no
     /// straddle, no drop. This covers whole-block (even), odd, and mixed sizes.
     #[test]
     fn voxel_granular_box_fills_its_exact_extent_all_parities() {
         let cases: [[u32; 3]; 5] = [
-            [80, 16, 80], // whole-block 5Ã—1Ã—5 @ d16 (all even)
+            [80, 16, 80], // whole-block 5×1×5 @ d16 (all even)
             [81, 17, 81], // all odd
             [83, 17, 80], // mixed: odd, odd, even
             [56, 1, 1],   // a flat axis (1 voxel) + even
@@ -883,8 +854,8 @@ mod sdf_size_units_tests {
     }
 }
 
-/// The [`Field`] seam (ADR 0019 / ADR 0020 Decision 1): a producer's distance field must
-/// agree in SIGN with what it resolves, and must be honest about the metric it measures in.
+/// The [`Field`] seam: a producer's distance field must agree in SIGN with what it
+/// resolves, and must be honest about the metric it measures in.
 #[cfg(test)]
 mod field_tests {
     use super::*;
@@ -941,8 +912,8 @@ mod field_tests {
     }
 
     /// A box is rectilinear and measured in Chebyshev; the curved kinds have no closed-form
-    /// L∞ distance and stay Euclidean (ADR 0019 Decision 6, as amended — the shape's
-    /// character decides, and for lifted bodies it is the lift that decides).
+    /// L∞ distance and stay Euclidean. The shape's character decides, and for a lifted body
+    /// it is the lift that decides.
     #[test]
     fn box_is_chebyshev_and_curved_kinds_are_euclidean() {
         for kind in KINDS {
@@ -983,8 +954,8 @@ mod field_tests {
     }
 
     /// `as_field` returning `None` is a real state, not a placeholder: the debug cloud
-    /// brackets every cell exactly (ADR 0021) yet has no usable pointwise distance, which is
-    /// precisely why the two capabilities are separate traits.
+    /// brackets every cell exactly yet has no usable pointwise distance, which is precisely
+    /// why the two capabilities are separate traits.
     #[test]
     fn producers_without_a_distance_field_report_none() {
         let cloud = crate::debug_clouds::DebugCloudField {

@@ -16,8 +16,8 @@ pub(super) fn to_profile_points(profile: &[SketchPoint]) -> Vec<[f64; 2]> {
 /// [`SketchPoint::in_plane_measured`](super::SketchPoint::in_plane_measured) keeps on the
 /// measurement side: `i64 → f64 → f32` can land a vertex on a different `f32` than
 /// `i64 → f32`, reintroducing the CPU/GPU divergence the direct narrowing removes. Each cast
-/// widens the integer in ITS OWN width before adding the fraction (#101); a zero fraction adds
-/// exactly nothing, so a whole-voxel profile is byte-identical to the pre-#101 path.
+/// widens the integer in ITS OWN width before adding the fraction; a zero fraction adds exactly
+/// nothing, so a whole-voxel profile is unaffected.
 fn profile_points_as<T>(profile: &[SketchPoint], cast: impl Fn(i64, f32) -> T) -> Vec<[T; 2]> {
     profile
         .iter()
@@ -31,11 +31,11 @@ fn profile_points_as<T>(profile: &[SketchPoint], cast: impl Fn(i64, f32) -> T) -
 }
 
 /// The whole tagged region FLATTENED into the **predicate** width — one polygon per loop, keeping
-/// each loop's `Fill`/`Hole` role (#100). Converted ONCE per resolve and handed to the region
-/// predicates by reference, so the per-cell hot loop neither re-derives faces nor re-allocates.
+/// each loop's `Fill`/`Hole` role. Converted ONCE per resolve and handed to the region predicates
+/// by reference, so the per-cell hot loop neither re-derives faces nor re-allocates.
 ///
 /// This is the one terminal adapter inside the resolve. The coarse cell classifier is exact-`f64`
-/// over straight edges (ADR 0019's predicate half), so it wants vertices; everything else in the
+/// over straight edges (the predicate half), so it wants vertices; everything else in the
 /// resolve reads the field and keeps the curve. Pair it with [`to_region_curve_bounds`] —
 /// [`substrate::geom2d::rectangle_inside_region`] needs both to stay sound where an arc was cut.
 pub(super) fn to_region_points(
@@ -86,9 +86,9 @@ pub(super) fn to_region_edges_measured(
 /// distance-to-the-extent: a sound lower bound, and zero for any box that touches or overlaps
 /// the extent (which then contributes nothing and leaves the Lipschitz bound in charge).
 ///
-/// This is what carries real CLEARANCE into an outside cell's interval. The sentinel form
-/// answered `(1, 2)` for every outside cell regardless of how far away it was, which is why
-/// shifting it by an outset was unsound (ADR 0019 Decision 1).
+/// This is what carries real CLEARANCE into an outside cell's interval, and what makes outset
+/// sound: a sentinel that answered the same constant for every outside cell however far away it
+/// was could not be shifted by an outset without classifying empty space solid.
 fn box_clearance(
     center: [f32; 3],
     half_extent: [f32; 3],
@@ -114,7 +114,7 @@ fn box_clearance(
 /// radial world axes `(radial_a, radial_b)` in ASCENDING index, matching
 /// [`SketchSolid::resolve_revolve`](SketchSolid::resolve_revolve)'s `centered[radial_a]` /
 /// `centered[radial_b]` — lies ENTIRELY inside the swept arc `[0, turn_degrees]` (partial
-/// coarse-solid condition 2, ADR 0010 Decision 2).
+/// coarse-solid condition 2).
 ///
 /// The resolve keeps a voxel iff its sweep angle `theta = atan2(centered[radial_b],
 /// centered[radial_a])` (normalized to `[0, 360)`) satisfies `theta <= turn_degrees`. A cell
@@ -205,18 +205,16 @@ impl VoxelProducer for SketchSolid {
         }
     }
 
-    /// Conservative field interval over a block cell (ADR 0010 Decision 2), honoring the
-    /// interior-elision contract for BOTH extrude and revolve (this FINISHES the
-    /// boundary-residency rollout for `SketchSolid` — see ADR 0009 §3–§4 / ADR 0010).
+    /// Conservative field interval over a block cell, honoring the interior-elision contract
+    /// for BOTH extrude and revolve.
     ///
-    /// **The interval is METRIC: it brackets the true signed distance over the cell.** It used
-    /// to carry sentinels instead — `(1,2)` air, `(-2,-1)` solid, `(-1,1)` boundary — which
-    /// were sign-correct but distance-free, and ADR 0019 Decision 1 named the trap that armed:
-    /// the natural implementation of **outset** shifts the interval, turning sketch air
-    /// `(1,2)` into `(1−N, 2−N)` and classifying empty space SOLID for `N >= 2`, silently and
-    /// with no type error. A bracket containing the real distance cannot fail that way — air
-    /// survives a dilation of `N` exactly when its clearance exceeds `N`, and the clearance is
-    /// now the number itself.
+    /// **The interval is METRIC: it brackets the true signed distance over the cell.**
+    /// Sign-correct but distance-free sentinels — `(1,2)` air, `(-2,-1)` solid, `(-1,1)`
+    /// boundary — will not do, because the natural implementation of **outset** shifts the
+    /// interval: air `(1,2)` becomes `(1−N, 2−N)` and classifies empty space SOLID for
+    /// `N >= 2`, silently and with no type error. A bracket containing the real distance cannot
+    /// fail that way — air survives a dilation of `N` exactly when its clearance exceeds `N`,
+    /// and the clearance is the number itself.
     ///
     /// The bracket is the Lipschitz bound about the cell's center sample, in the metric the
     /// field is exact in ([`field_metric`](SketchSolid::field_metric)), then NARROWED by the
@@ -226,19 +224,18 @@ impl VoxelProducer for SketchSolid {
     /// what preserves interior elision — a cell exactly filling the body would otherwise
     /// bracket to `[−2r, 0]` and go boundary).
     ///
-    /// Metricising STRENGTHENED classification rather than costing it. The sentinel could
-    /// claim AIR only for a cell wholly outside the grid AABB, so empty regions *inside* the
-    /// AABB — the corners around a revolved cylinder, the notch of a concave L — always fell
-    /// back to a per-voxel resolve. Real distance proves them empty: over the parity fuzz,
-    /// revolve's boundary cells roughly halved (8139 → 4045) and its air verdicts rose
-    /// 11053 → 15131.
+    /// Being metric STRENGTHENS classification rather than costing it. A sentinel can claim AIR
+    /// only for a cell wholly outside the grid AABB, so empty regions *inside* the AABB — the
+    /// corners around a revolved cylinder, the notch of a concave L — would always fall back to
+    /// a per-voxel resolve. Real distance proves them empty, roughly halving revolve's boundary
+    /// cell count.
     ///
     /// CONSERVATIVE-NEVER-NARROW: coarse-solid is claimed ONLY when provably fully solid; on
     /// any doubt the boundary interval is returned (always correct). A cell that pokes
     /// outside the extent on ANY axis holds clamped-away air (`resolve_into` clamps the
     /// window to `[0, full_dim)`), so it can never be coarse — only a cell wholly inside the
     /// extent is a coarse candidate. The frame is the producer's local voxel-index frame
-    /// `[0, full_dim)` (ADR 0008 — carried, never re-derived).
+    /// `[0, full_dim)` — carried, never re-derived.
     fn cell_field_interval(
         &self,
         cell_local_voxels: voxel_core::spatial_index::VoxelAabb,

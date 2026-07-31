@@ -23,9 +23,8 @@ fn extrude_field_cases() -> Vec<(&'static str, SketchSolid)> {
         SketchPoint::new(4, 3),
         SketchPoint::new(0, 6),
     ];
-    // Two triangles meeting at ONE shared point — the bowtie the crossing rule (ADR 0030 §2)
-    // says is only a region once the crossing is a real vertex. It derives TWO faces, so one
-    // producer resolves DISJOINT occupancy (§4).
+    // Two triangles meeting at ONE shared point: the bowtie derives TWO faces, so a single
+    // producer resolves DISJOINT occupancy.
     let mut figure_eight = Sketch::empty(PlaneAxis::Z);
     let waist = figure_eight.add_point(SketchPoint::new(3, 3));
     for corners in [
@@ -55,8 +54,8 @@ fn extrude_field_cases() -> Vec<(&'static str, SketchSolid)> {
     ]
 }
 
-/// The contract the whole field layer rests on (ADR 0019 Decision 4): the field must
-/// agree with the resolve, over EVERY voxel of the grid rather than a sample.
+/// The contract the whole field layer rests on: the field must agree with the resolve,
+/// over EVERY voxel of the grid rather than a sample.
 ///
 /// Occupancy is read from the SIGN BIT, not `< 0.0`. A voxel center can land exactly on a
 /// profile edge — a diagonal between integer vertices passes through half-integer points,
@@ -313,8 +312,8 @@ fn revolve_signed_distance_is_one_lipschitz_in_euclidean() {
     }
 }
 
-/// The 135 degree closing edge must be INCLUSIVE - the seam the f64 to f32 narrowing
-/// repaired.
+/// The 135 degree closing edge must be INCLUSIVE - a seam that stays closed only while this
+/// path is computed in f32.
 ///
 /// Occupancy is `field <= SURFACE_ISOLEVEL`, so a sample lying exactly ON the closing
 /// edge of the swept wedge is inside. At `turn = 135` that edge runs along the

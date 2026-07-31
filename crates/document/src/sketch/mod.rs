@@ -1,30 +1,23 @@
-//! 2D **sketch → extrude → volume** — the sketch-to-volume authoring atom
-//! (ADR 0003 §3i, Slice 2a).
+//! 2D **sketch → extrude → volume** — the sketch-to-volume authoring atom.
 //!
-//! This is a SECOND [`VoxelProducer`](crate::voxel::VoxelProducer), added
-//! **alongside** [`SdfShape`](crate::voxel::SdfShape) (NOT replacing it). It takes
-//! a grid-aligned plane plus a closed polygon *profile* of voxel-granular points
-//! and extrudes that profile a whole number of voxels along the plane normal,
-//! producing a prism. It is the engine the §3i build arc reframes primitives as
-//! sugar over — a rectangle profile extruded *is* a box, a circle profile extruded
-//! *is* a cylinder — so it resolves through the SAME stamp / `CombineOp` / chunk
-//! path the SDF producer already uses.
+//! This is a SECOND [`VoxelProducer`](crate::voxel::VoxelProducer), alongside
+//! [`SdfShape`](crate::voxel::SdfShape). It takes a grid-aligned plane plus a closed polygon
+//! *profile* of voxel-granular points and extrudes that profile a whole number of voxels along
+//! the plane normal, producing a prism. Primitives are sugar over it — a rectangle profile
+//! extruded *is* a box, a circle profile extruded *is* a cylinder — so it resolves through the
+//! SAME stamp / `CombineOp` / chunk path the SDF producer uses.
 //!
-//! **Leak-free by construction (§3i leak-retirement).** The profile points and the
-//! extrude span are integer voxels on the lattice/sub-lattice — there is no
-//! implicit center anchor and so no half-block correction. The producer samples
-//! CORNER-ANCHORED: the resolve tests the profile at `bbox_min + idx + 0.5` (no
-//! `grid/2` centering anywhere — a revolve centers only its two RADIAL axes), and
-//! its placement does NOT route through `leaf_lattice_shift_voxels`: a sketch's
-//! footprint is corner-anchored, so the block-lattice shift the implicit-center
-//! model needed is identically zero. (The
-//! resolve path treats a sketch leaf like a VoxelBody — no intrinsic block size, no
-//! lattice snap — see `Scene::resolve_*`.)
+//! **Leak-free by construction.** The profile points and the extrude span are integer voxels on
+//! the lattice/sub-lattice — there is no implicit center anchor and so no half-block correction.
+//! The producer samples CORNER-ANCHORED: the resolve tests the profile at `bbox_min + idx + 0.5`
+//! (no `grid/2` centering anywhere — a revolve centers only its two RADIAL axes), and a sketch's
+//! footprint is corner-anchored, so the block-lattice shift an implicit-center model would need is
+//! identically zero. The resolve path treats a sketch leaf like a VoxelBody — no intrinsic block
+//! size, no lattice snap — see `Scene::resolve_*`.
 //!
-//! 2a SCOPE: AXIS-ALIGNED planes only (the normal is one of ±X / ±Y / ±Z). A
-//! free-angle sketch plane is the deferred plane-orientation milestone (§3f(a)).
-//! The profile is a closed simple polygon (≥3 points); a degenerate profile
-//! (fewer than 3 points, or zero area) resolves to nothing rather than panicking.
+//! Planes are AXIS-ALIGNED: the normal is one of ±X / ±Y / ±Z. The profile is a closed simple
+//! polygon (≥3 points); a degenerate profile (fewer than 3 points, or zero area) resolves to
+//! nothing rather than panicking.
 
 mod constraint;
 mod edges;
@@ -44,7 +37,7 @@ pub use substrate::nonlinear_least_squares::{SolveOutcome, SolveReport};
 use parametric::units::{AngleMeasurement, Measurement};
 
 /// Which axis the sketch plane's normal points along — i.e. the axis the profile
-/// is EXTRUDED along (ADR 0003 §3i, 2a axis-aligned scope).
+/// is EXTRUDED along.
 ///
 /// The two in-plane axes (the ones the 2D profile lives in) are the OTHER two
 /// world axes, taken in ascending order so the mapping is unambiguous:
@@ -56,9 +49,7 @@ use parametric::units::{AngleMeasurement, Measurement};
 /// | `Z`    | X               | Y               |
 ///
 /// Sign of the normal does not change the resolved occupancy (an axis-aligned
-/// prism is symmetric about its own grid), so 2a stores the bare axis; a signed
-/// normal is only meaningful once on-surface sketching (§3i, Slice 2b) needs a
-/// facing direction, which is a later concern.
+/// prism is symmetric about its own grid), so only the bare axis is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PlaneAxis {
     /// Profile in the YZ plane, extruded along X.
@@ -93,10 +84,9 @@ impl PlaneAxis {
 }
 
 /// One vertex of a sketch profile — a 2D point on the plane's in-plane axes (see
-/// [`PlaneAxis::in_plane_axes`]), carried as the full node-position representation
-/// (#101, mirroring `NodeTransform`, ADR 0027/0029): a canonical integer voxel
-/// coordinate, a sub-voxel remainder, and an optionally-retained authored
-/// [`Measurement`] per axis.
+/// [`PlaneAxis::in_plane_axes`]), carried as the full node-position representation, mirroring
+/// `NodeTransform`: a canonical integer voxel coordinate, a sub-voxel remainder, and an
+/// optionally-retained authored [`Measurement`] per axis.
 ///
 /// The in-plane position is `offset_voxels + offset_local_voxels`
 /// ([`in_plane`](Self::in_plane) — integer first, then the fraction, the same
@@ -109,13 +99,13 @@ pub struct SketchPoint {
     /// In-plane voxel coordinates `[axis0, axis1]` at the document density `d`.
     pub offset_voxels: [i64; 2],
     /// Sub-voxel remainder per axis, in `[0, 1)` — written by `snap = None`
-    /// authoring; a voxel/block snap zeroes it (#101).
+    /// authoring; a voxel/block snap zeroes it.
     #[serde(default)]
     pub offset_local_voxels: [f32; 2],
-    /// The RETAINED authored `Length` expression per axis (ADR 0029), or `None` for
-    /// a plain snapped point. `SetDensity` re-evaluates a retained expression so a
-    /// measurement-authored profile keeps its physical shape across a density
-    /// re-target; the canonical `offset_voxels` always wins for geometry.
+    /// The RETAINED authored `Length` expression per axis, or `None` for a plain snapped
+    /// point. `SetDensity` re-evaluates a retained expression so a measurement-authored
+    /// profile keeps its physical shape across a density re-target; the canonical
+    /// `offset_voxels` always wins for geometry.
     #[serde(default)]
     pub offset_measurements: Option<[Measurement; 2]>,
 }
@@ -132,8 +122,8 @@ impl SketchPoint {
     }
 
     /// A profile vertex at a CONTINUOUS in-plane coordinate: floor lands in
-    /// `offset_voxels`, the fraction in `offset_local_voxels` (#101 — the
-    /// `snap = None` authoring door). A non-finite coordinate is sanitised to zero:
+    /// `offset_voxels`, the fraction in `offset_local_voxels` (the `snap = None`
+    /// authoring door). A non-finite coordinate is sanitized to zero:
     /// a `NaN` fraction would poison every position-equality the producer guards
     /// no-op commits with.
     pub fn from_continuous(axis0: f64, axis1: f64) -> Self {
@@ -167,7 +157,7 @@ impl SketchPoint {
     ///
     /// `i64 → f64 → f32` can land a vertex on a different `f32` than `i64 → f32` does, and a
     /// double-rounded vertex reintroduces exactly the CPU/GPU divergence the narrowing exists to
-    /// remove (#101). Two conversions from one integer truth, not one conversion and a cast.
+    /// remove. Two conversions from one integer truth, not one conversion and a cast.
     pub fn in_plane_measured(&self) -> [f32; 2] {
         [
             self.offset_voxels[0] as f32 + self.offset_local_voxels[0],
@@ -175,21 +165,19 @@ impl SketchPoint {
         ]
     }
 
-    /// Whether two points sit at the SAME in-plane position — the coincidence
-    /// predicate (coincidence IS shared identity, ADR 0030). Position only: a
-    /// retained measurement is provenance, not location, so it never splits two
-    /// coincident points into twins.
+    /// Whether two points sit at the SAME in-plane position — the coincidence predicate
+    /// (coincidence IS shared identity). Position only: a retained measurement is provenance,
+    /// not location, so it never splits two coincident points into twins.
     pub fn coincides(&self, other: &SketchPoint) -> bool {
         self.offset_voxels == other.offset_voxels
             && self.offset_local_voxels == other.offset_local_voxels
     }
 
-    /// This point re-targeted from `old_density` to `new_density` (#101, the
-    /// `SetDensity` arm). A retained measurement RE-EVALUATES at the new density
-    /// (lossless block scaling; a non-dividing axis floors and resynthesises its
-    /// retained form, exactly `NodeTransform::from_measurements`). A plain point
-    /// rescales its continuous position so it keeps its physical place, the way the
-    /// legacy node rescale keeps a non-parametric offset's.
+    /// This point re-targeted from `old_density` to `new_density` — the `SetDensity`
+    /// arm. A retained measurement RE-EVALUATES at the new density (lossless block
+    /// scaling; a non-dividing axis floors and resynthesizes its retained form, exactly
+    /// `NodeTransform::from_measurements`). A plain point rescales its continuous position
+    /// so it keeps its physical place, the way a node rescale keeps a non-parametric offset's.
     pub fn retargeted(&self, old_density: u32, new_density: u32) -> Self {
         if let Some(measurements) = self.offset_measurements {
             let resolve_axis = |measurement: Measurement| -> (i64, Measurement) {
@@ -223,10 +211,10 @@ impl SketchPoint {
     }
 }
 
-/// A scalar sketch length — a circle's radius today, whatever else the tool suite dimensions
-/// later (ADR 0035 Decision 7). The one-dimensional twin of [`SketchPoint`], carried the same way
-/// for the same reasons: a canonical integer voxel count, a sub-voxel remainder, and an optionally
-/// retained authored [`Measurement`].
+/// A scalar sketch length — a circle's radius, and whatever else the tool suite dimensions. The
+/// one-dimensional twin of [`SketchPoint`], carried the same way for the same reasons: a canonical
+/// integer voxel count, a sub-voxel remainder, and an optionally retained authored
+/// [`Measurement`].
 ///
 /// It is a separate type rather than a bare `f64` because a radius has to survive a density
 /// re-target: `2 blocks` is a different voxel count at `d16` and `d32`, and only the retained
@@ -238,7 +226,7 @@ pub struct SketchLength {
     /// Sub-voxel remainder in `[0, 1)`.
     #[serde(default)]
     pub local_voxels: f32,
-    /// The RETAINED authored expression (ADR 0029), or `None` for a plain snapped length.
+    /// The RETAINED authored expression, or `None` for a plain snapped length.
     #[serde(default)]
     pub measurement: Option<Measurement>,
 }
@@ -254,7 +242,7 @@ impl SketchLength {
     }
 
     /// A CONTINUOUS length: floor lands in [`voxels`](Self::voxels), the fraction in
-    /// [`local_voxels`](Self::local_voxels). A non-finite input sanitises to zero, the same
+    /// [`local_voxels`](Self::local_voxels). A non-finite input sanitizes to zero, the same
     /// `NaN` guard [`SketchPoint::from_continuous`] keeps.
     pub fn from_continuous(voxels: f64) -> Self {
         if !voxels.is_finite() {
@@ -310,13 +298,12 @@ impl SketchLength {
 
 /// A stable, monotonically-allocated identifier for a sketch entity (a point or a
 /// segment). **Never a `Vec` index** — an index shifts when an entity is deleted, which
-/// would silently corrupt every reference; a stable id does not (ADR 0030). Ids are
-/// handed out once and never reused.
+/// would silently corrupt every reference; a stable id does not. Ids are handed out
+/// once and never reused.
 pub type EntityId = u32;
 
 /// Whether an entity is real geometry or a construction/reference line that never bounds
-/// a region (ADR 0030). Reserved: the toggle UI is a later slice, but the field rides the
-/// document now so it costs no second migration.
+/// a region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum EntityRole {
     /// Real geometry — participates in region derivation.
@@ -327,7 +314,7 @@ pub enum EntityRole {
 }
 
 /// One loop of the profile: a closed boundary of [`ProfileEdge`]s plus how it contributes to the
-/// region (ADR 0030 §4). The unit the 2D CSG folds and the unit the overlay draws.
+/// region. The unit the 2D CSG folds and the unit the overlay draws.
 ///
 /// The boundary keeps its **curves**. Flattening happens at [`flatten`](Self::flatten), which only
 /// the consumers that genuinely produce something discrete call — a voxel grid, a crease polyline,
@@ -393,7 +380,7 @@ pub struct ProfileEdge {
 }
 
 /// The circle a curved [`ProfileEdge`] follows, solved once from the canonical endpoints-plus-bulge
-/// form (ADR 0030 §5).
+/// form.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProfileArc {
     /// The circle's center, in profile voxels.
@@ -402,7 +389,7 @@ pub struct ProfileArc {
     pub radius: f64,
     /// The bearing of the edge's tail from the center.
     pub start_radians: f64,
-    /// The signed angle travelled tail → head; positive counter-clockwise.
+    /// The signed angle traveled tail → head; positive counter-clockwise.
     pub sweep_radians: f64,
 }
 
@@ -437,8 +424,8 @@ impl ProfileEdge {
         }
     }
 
-    /// A whole circle as ONE closed edge (ADR 0035 Decision 7): tail and head are the same point,
-    /// and the arc sweeps a full turn counter-clockwise about `center`.
+    /// A whole circle as ONE closed edge: tail and head are the same point, and the arc
+    /// sweeps a full turn counter-clockwise about `center`.
     ///
     /// The seam sits at bearing zero — `center + [radius, 0]` — matching
     /// [`substrate::geom2d::RegionEdge`]'s convention so the CPU field and its WGSL mirror cut the
@@ -497,9 +484,9 @@ impl ProfileEdge {
     }
 
     /// The edge's contribution to the enclosed signed area, by Green's theorem
-    /// `½∮(x dy − y dx)`. **Exact for an arc**: integrating the parameterised circle gives
+    /// `½∮(x dy − y dx)`. **Exact for an arc**: integrating the parameterized circle gives
     /// `½[r²·sweep + cx·Δy − cy·Δx]`, so a bulge contributes the area it really encloses rather
-    /// than the area of the chords that used to stand in for it.
+    /// than the area of the chords approximating it.
     pub fn signed_area_term(&self) -> f64 {
         let (from, to) = (self.from.in_plane(), self.to.in_plane());
         match self.arc {
@@ -579,21 +566,21 @@ impl ProfileEdge {
 }
 
 /// A point entity: a first-class, independently add/delete-able vertex on the sketch
-/// plane, referenced by segments (and later arcs) through its stable [`id`](Self::id)
-/// (ADR 0030). A point with no incident edge is a legal FREE point.
+/// plane, referenced by segments and arcs through its stable [`id`](Self::id). A point
+/// with no incident edge is a legal FREE point.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point {
-    /// Stable identity (ADR 0030) — segments reference this, not the point's `Vec` slot.
+    /// Stable identity — segments reference this, not the point's `Vec` slot.
     pub id: EntityId,
     /// The point's in-plane position (see [`SketchPoint`]).
     pub at: SketchPoint,
-    /// Real vs construction geometry (reserved).
+    /// Real vs construction geometry.
     #[serde(default)]
     pub role: EntityRole,
 }
 
-/// A line-segment entity joining two [`Point`]s **by id** (ADR 0030). Coincidence IS
-/// shared identity: two segments meet because they name the same endpoint point, not
+/// A line-segment entity joining two [`Point`]s **by id**. Coincidence IS shared
+/// identity: two segments meet because they name the same endpoint point, not
 /// because a solver forced their coordinates equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
@@ -603,20 +590,20 @@ pub struct Segment {
     pub from: EntityId,
     /// Endpoint point id (head).
     pub to: EntityId,
-    /// Lineage id for region identity across edits (ADR 0030 §3): a fresh segment's
-    /// `origin` is its own `id`; on split, both children inherit the parent's `origin`,
-    /// so subdividing a loop edge leaves a face's boundary origin-SET unchanged.
+    /// Lineage id for region identity across edits: a fresh segment's `origin` is its own
+    /// `id`; on split, both children inherit the parent's `origin`, so subdividing a loop
+    /// edge leaves a face's boundary origin-SET unchanged.
     pub origin: EntityId,
-    /// Real vs construction geometry (reserved).
+    /// Real vs construction geometry.
     #[serde(default)]
     pub role: EntityRole,
 }
 
-/// A circular-arc entity joining two [`Point`]s **by id** (ADR 0030 §5, #102). The
-/// canonical stored form is the two endpoints plus one included-angle bulge — compact,
-/// unambiguous, fully parametric; center and radius are DERIVED. Creation tools (the
-/// 3-point tool today) compute this form; their extra inputs (the through-point) are
-/// consumed at creation, never persisted.
+/// A circular-arc entity joining two [`Point`]s **by id**. The canonical stored form is
+/// the two endpoints plus one included-angle bulge — compact, unambiguous, fully
+/// parametric; center and radius are DERIVED. Creation tools (the 3-point tool) compute
+/// this form; their extra inputs (the through-point) are consumed at creation, never
+/// persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Arc {
     /// Stable identity.
@@ -625,29 +612,28 @@ pub struct Arc {
     pub from: EntityId,
     /// Endpoint point id (head).
     pub to: EntityId,
-    /// The signed included angle (ADR 0029's `Angle` kind): the arc sweeps from
-    /// [`from`](Self::from) to [`to`](Self::to) **counter-clockwise in the plane's
-    /// in-plane basis for a positive angle**, clockwise for a negative one. Magnitude
-    /// strictly inside `(0, 360)` — zero and full-turn bulges are degenerate and erased
-    /// by [`Sketch::repair`].
+    /// The signed included angle: the arc sweeps from [`from`](Self::from) to
+    /// [`to`](Self::to) **counter-clockwise in the plane's in-plane basis for a positive
+    /// angle**, clockwise for a negative one. Magnitude strictly inside `(0, 360)` — zero
+    /// and full-turn bulges are degenerate and erased by [`Sketch::repair`].
     pub bulge: AngleMeasurement,
     /// The [`Point`] entity standing at the arc's center — a REIFIED derived value. Its
     /// coordinates are recomputed from the endpoints and the bulge by
     /// [`Sketch::sync_arc_centers`] and are never authored directly, but it is a real point
     /// entity with a stable id so it selects, snaps and drags exactly like every other
     /// sketch point. Always [`EntityRole::Construction`]: a center never bounds a region.
-    /// `serde(default)` yields [`ABSENT_CENTER`] for a pre-center document, which
-    /// [`Sketch::repair`] materialises on load.
+    /// `serde(default)` yields [`ABSENT_CENTER`] for a document that names no center, which
+    /// [`Sketch::repair`] materializes on load.
     #[serde(default = "absent_center")]
     pub center: EntityId,
-    /// Lineage id for region identity across edits (ADR 0030 §3), like [`Segment::origin`].
+    /// Lineage id for region identity across edits, like [`Segment::origin`].
     pub origin: EntityId,
-    /// Real vs construction geometry (reserved).
+    /// Real vs construction geometry.
     #[serde(default)]
     pub role: EntityRole,
 }
 
-/// A whole-circle entity: a center [`Point`] **by id** plus a radius (ADR 0035 Decision 7).
+/// A whole-circle entity: a center [`Point`] **by id** plus a radius.
 ///
 /// A closed curve is its own loop. There is no on-curve vertex to anchor it to and none is
 /// invented — a circle drawn on an empty plane bounds a face immediately, where an arc has to meet
@@ -666,34 +652,33 @@ pub struct Circle {
     pub center: EntityId,
     /// The radius, in voxels, optionally retaining the authored expression.
     pub radius: SketchLength,
-    /// Lineage id for region identity across edits (ADR 0030 §3), like [`Segment::origin`].
+    /// Lineage id for region identity across edits, like [`Segment::origin`].
     pub origin: EntityId,
     /// Real vs construction geometry.
     #[serde(default)]
     pub role: EntityRole,
 }
 
-/// The `center` of an arc that has no center point yet — a pre-center document, or an arc
-/// mid-construction. Ids are handed out monotonically from zero and never reused, so the top
+/// The `center` of an arc that has no center point yet — a document that names none, or an
+/// arc mid-construction. Ids are handed out monotonically from zero and never reused, so the top
 /// of the range can never collide with a live entity.
 pub const ABSENT_CENTER: EntityId = EntityId::MAX;
 
 /// A span the drawing needs — a segment's length, an arc's chord or its radius — that closes to
 /// less than this (in-plane voxels) has collapsed: the entity is no longer what the store calls
-/// it. Far below the 1/256-block granularity a polygon is flattened at (ADR 0019), so nothing an
-/// author draws can land under it by accident.
+/// it. Far below the 1/256-block granularity a polygon is flattened at, so nothing an author
+/// draws can land under it by accident.
 const COLLAPSED_SPAN: f64 = 1e-6;
 
 /// A trial solve whose residuals close to under this (the Euclidean norm, in in-plane voxels) has
 /// **met the constraints**, whatever stopped the search.
 ///
-/// The solver's own `Converged` flag is not the test, and reading it as one was a real bug. Its
-/// residual tolerance is absolute while its step tolerance is relative to the size of the
-/// parameter vector, so on a drawing with enough geometry in it the step test fires first: the
-/// search stops with the residuals at, say, 1.7e-10 voxels — satisfied by any measure this
-/// document can express — and reports `Stalled`, which read as "unsatisfiable" and refused the
-/// constraint. Two unrelated free points elsewhere in the sketch were enough to trigger it, which
-/// is to say it fired on nearly every real drawing (owner 2026-07-30).
+/// The solver's own `Converged` flag is not the test. Its residual tolerance is absolute while
+/// its step tolerance is relative to the size of the parameter vector, so on a drawing with enough
+/// geometry in it the step test fires first: the search stops with the residuals at, say, 1.7e-10
+/// voxels — satisfied by any measure this document can express — and reports `Stalled`, which
+/// reads as "unsatisfiable" and would refuse the constraint. Two unrelated free points elsewhere
+/// in the sketch are enough to trigger it, which is to say it fires on nearly every real drawing.
 ///
 /// So the question asked here is the one that is actually about the answer: are the residuals
 /// met? `SolveOutcome` says why the search stopped, which is a fact about the search. The same
@@ -708,7 +693,7 @@ struct Trial {
 }
 
 /// How a trial solve turned out. Three outcomes rather than two, because "converged" and
-/// "acceptable" are different questions (ADR 0035 Decision 4).
+/// "acceptable" are different questions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrialVerdict {
     /// A real drawing that meets every assertion.
@@ -723,44 +708,35 @@ fn absent_center() -> EntityId {
     ABSENT_CENTER
 }
 
-/// A grid-aligned PLANE plus a collection of sketch ENTITIES — points and segments
-/// (arcs, region picks, and sub-voxel/parametric coordinates arrive in later slices,
-/// ADR 0030). The extrudable **profile is DERIVED** from the closed loop the segments
-/// form (see [`flattened_loop`](Self::flattened_loop)); it is no longer a hand-maintained
-/// ordered vertex list.
-///
-/// **Slice-1 scope (issue #98):** a single closed loop, resolving byte-identical to the
-/// former `profile: Vec<SketchPoint>`. Multi-region pick/unpick (#100), sub-voxel /
-/// parametric coordinates (#101), and arcs (#102) build on this store.
+/// A grid-aligned PLANE plus a collection of sketch ENTITIES — points, segments, arcs and
+/// circles. The extrudable **profile is DERIVED** from the closed loops those entities bound
+/// (see [`region`](Self::region)); it is never a hand-maintained ordered vertex list.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sketch {
-    /// Which axis the plane normal points along (2a: axis-aligned only).
+    /// Which axis the plane normal points along (axis-aligned only).
     pub plane: PlaneAxis,
     /// The point entities (unordered; loop order is derived, never stored).
     points: Vec<Point>,
     /// The segment entities joining points by id.
     segments: Vec<Segment>,
-    /// The arc entities joining points by id (#102). `serde(default)` so a pre-arc
-    /// document loads with none.
+    /// The arc entities joining points by id. `serde(default)` so a document without arcs
+    /// loads with none.
     #[serde(default)]
     arcs: Vec<Arc>,
-    /// The whole-circle entities (ADR 0035 Decision 7). `serde(default)` so a pre-circle
-    /// document loads with none.
+    /// The whole-circle entities. `serde(default)` so a document without circles loads with
+    /// none.
     #[serde(default)]
     circles: Vec<Circle>,
-    /// The faces the author has UNPICKED, each named by a point inside it (ADR 0035
-    /// Decision 9). Every derived face is picked by default, so this holds only the
-    /// exceptions and is usually empty. A point inside no current face is inert, not an
-    /// error: it costs nothing and lets an unpick survive an edit that temporarily breaks
-    /// its boundary.
+    /// The faces the author has UNPICKED, each named by a point inside it. Every derived
+    /// face is picked by default, so this holds only the exceptions and is usually empty. A
+    /// point inside no current face is inert, not an error: it costs nothing and lets an
+    /// unpick survive an edit that temporarily breaks its boundary.
     ///
-    /// It is a `Vec` and not a set because `f32` is not `Ord`, and the field is renamed from
-    /// the origin-set `unpicked` it replaces so a pre-arrangement document loads with every
-    /// face picked rather than failing on a key it cannot parse.
+    /// It is a `Vec` and not a set because `f32` is not `Ord`.
     #[serde(default)]
     unpicked_points: Vec<FaceKey>,
-    /// The constraint entities (ADR 0035 Decision 3). `serde(default)` so a pre-constraint
-    /// document loads with none.
+    /// The constraint entities. `serde(default)` so a document without constraints loads
+    /// with none.
     ///
     /// Deliberately absent from [`region_memo`]'s snapshot: a constraint does not change what the
     /// drawing looks like, only where a SOLVE would move it, and a solve moves points — which the
@@ -804,10 +780,10 @@ impl Sketch {
         sketch
     }
 
-    /// A rectangle profile spanning `[0, width] × [0, height]` voxels on `plane`
-    /// (the degenerate "box footprint" — proves box = rectangle-extrude sugar,
-    /// §3i). The four corners are wound counter-clockwise; winding does not affect
-    /// the even-odd rasterizer.
+    /// A rectangle profile spanning `[0, width] × [0, height]` voxels on `plane` — the
+    /// degenerate box footprint, and the demonstration that a box IS a rectangle extruded.
+    /// The four corners are wound counter-clockwise; winding does not affect the even-odd
+    /// rasterizer.
     pub fn rectangle(plane: PlaneAxis, width_voxels: i64, height_voxels: i64) -> Self {
         Self::new(
             plane,
@@ -820,9 +796,9 @@ impl Sketch {
         )
     }
 
-    /// An empty sketch on `plane` — no entities. A totally-empty sketch is first-class
-    /// (ADR 0030): it is a valid scene object that resolves to nothing, the start state a
-    /// create-from-scratch sketch is authored into.
+    /// An empty sketch on `plane` — no entities. A totally-empty sketch is first-class: it is
+    /// a valid scene object that resolves to nothing, the start state a create-from-scratch
+    /// sketch is authored into.
     pub fn empty(plane: PlaneAxis) -> Self {
         Self {
             plane,
@@ -856,12 +832,12 @@ impl Sketch {
         &self.segments
     }
 
-    /// Read-only view of the arc entities (#102).
+    /// Read-only view of the arc entities.
     pub fn arcs(&self) -> &[Arc] {
         &self.arcs
     }
 
-    /// Read-only view of the whole-circle entities (ADR 0035 Decision 7).
+    /// Read-only view of the whole-circle entities.
     pub fn circles(&self) -> &[Circle] {
         &self.circles
     }
@@ -941,16 +917,16 @@ impl Sketch {
         self.points.iter().position(|point| point.id == id)
     }
 
-    /// The DERIVED bounded faces of the sketch's planar graph (ADR 0030 §2, #100), in a
-    /// deterministic order. Every face is a candidate region; whether it contributes solid or
-    /// void is [`face_is_picked`](Self::face_is_picked).
+    /// The DERIVED bounded faces of the sketch's planar graph, in a deterministic order. Every
+    /// face is a candidate region; whether it contributes solid or void is
+    /// [`face_is_picked`](Self::face_is_picked).
     pub fn faces(&self) -> Vec<Face> {
         faces::derive(self)
     }
 
     /// The region in the **measurement** width — the exact value
     /// [`substrate::geom2d::signed_distance_to_region`] folds, and the exact value the wash's
-    /// WGSL mirror is handed (ADR 0030 §3).
+    /// WGSL mirror is handed.
     ///
     /// One definition of the region, two evaluators of it: the resolve asks it per voxel on the
     /// CPU, the overlay asks it per pixel on the GPU. Curves arrive as curves, so neither is
@@ -966,7 +942,7 @@ impl Sketch {
     }
 
     /// Whether the face containing this key's point contributes solid. Faces default to PICKED —
-    /// the document stores only the unpicked exceptions (ADR 0030 §3, ADR 0035 Decision 9).
+    /// the document stores only the unpicked exceptions.
     pub fn face_is_picked(&self, key: &FaceKey) -> bool {
         let faces = self.nested_faces();
         match innermost_face_at(&faces, key.interior_point) {
@@ -1017,8 +993,7 @@ impl Sketch {
     /// Pick or unpick the face containing this key's point, carving or filling a pocket. Storing a
     /// point inside the face rather than its boundary's lineage means the intent survives
     /// re-derivation: a vertex drag, an edge split, and a curve drawn elsewhere all leave the same
-    /// ground under the point, while a face that shrinks past it reverts to picked
-    /// (ADR 0035 Decision 9).
+    /// ground under the point, while a face that shrinks past it reverts to picked.
     pub fn set_face_picked(&mut self, key: FaceKey, picked: bool) {
         let faces = self.nested_faces();
         let Some(index) = innermost_face_at(&faces, key.interior_point) else {
@@ -1071,8 +1046,8 @@ impl Sketch {
     }
 
     /// The DERIVED profile: one tagged loop per derived face, `Fill` where the face is picked and
-    /// `Hole` where it is not (ADR 0030 §4), each a closed loop of edges **with its arcs intact**,
-    /// ordered SMALLEST-AREA-FIRST.
+    /// `Hole` where it is not, each a closed loop of edges **with its arcs intact**, ordered
+    /// SMALLEST-AREA-FIRST.
     ///
     /// That order is [`substrate::geom2d::point_in_region`]'s contract: innermost-first, so each
     /// face decides its own area and nothing nested inside it. A face strictly inside another has
@@ -1144,7 +1119,7 @@ impl Sketch {
     /// other point simply takes `at`, and then the standing constraints are re-solved with it
     /// pinned there — see [`settle_under_the_hand`](Self::settle_under_the_hand). A constraint
     /// that only held at the moment it was asserted is not a constraint; it has to survive the
-    /// next drag, which is the first thing the author does to test it (owner 2026-07-30).
+    /// next drag, which is the first thing the author does to test it.
     pub fn move_point(&mut self, id: EntityId, at: SketchPoint) -> bool {
         let Some(index) = self.point_index(id) else {
             return false;
@@ -1171,8 +1146,7 @@ impl Sketch {
     /// Re-solve the standing constraints with the hand pulling `held` toward `at`, writing the
     /// result back only if the standing residuals are met. Reports whether they were.
     ///
-    /// This is the live tier of ADR 0035 Decision 11: the assertions hold DURING the gesture, not
-    /// merely at the moment they were made.
+    /// The assertions hold DURING the gesture, not merely at the moment they were made.
     ///
     /// **The hand is a PULL, not a demand — two stages.** The drag joins the system as one more
     /// least-squares row and the solve trades it off against everything standing; then the hand
@@ -1180,13 +1154,12 @@ impl Sketch {
     /// exactly while moving as little as it can. The grabbed point therefore lands at the nearest
     /// place the drawing allows, and only the standing residuals decide whether the drag stands.
     ///
-    /// It shipped as a hard pin, and that was the bug (owner, 2026-07-31). A hard pin makes the
-    /// whole drag all-or-nothing: a point free to slide along a line but not across it could not be
-    /// moved AT ALL, because the cursor is essentially never exactly on that line and the pinned
-    /// system was refused as unsatisfiable. The reported case was a vertical segment whose far end
-    /// was held by an arc that two `Fix`es had already determined — one real freedom left, its
-    /// length, and no way to use it. Sliding along the allowed direction is what every CAD tool
-    /// does and what the freedom count already promises.
+    /// **Not a hard pin.** A hard pin makes the whole drag all-or-nothing: a point free to slide
+    /// along a line but not across it could not be moved AT ALL, because the cursor is essentially
+    /// never exactly on that line and the pinned system reads as unsatisfiable. A vertical segment
+    /// whose far end is held by an arc that two `Fix`es have already determined has one real
+    /// freedom left — its length — and no way to use it. Sliding along the allowed direction is
+    /// what the freedom count already promises.
     ///
     /// A drag that IS achievable is unaffected: stage one meets the pull exactly, so stage two
     /// starts at a solution and moves nothing.
@@ -1265,8 +1238,8 @@ impl Sketch {
         }
     }
 
-    /// Delete a point by id and every segment/arc incident to it (ADR 0030 §6). The
-    /// edges' other endpoints survive as free points. No dangling reference can result.
+    /// Delete a point by id and every segment/arc incident to it. The edges' other
+    /// endpoints survive as free points. No dangling reference can result.
     /// Deleting an arc's CENTER deletes that arc: the center is the arc's own derived
     /// geometry, so there is no arc left for it to be the center of.
     pub fn delete_point_cascade(&mut self, id: EntityId) {
@@ -1283,11 +1256,10 @@ impl Sketch {
     /// Delete the segment with id `seg_id`, **and each of its ends that nothing else draws**.
     /// No-op if `seg_id` is unknown.
     ///
-    /// The ends used to survive unconditionally as free points, and that was wrong (owner,
-    /// 2026-07-31): a line deleted from a drawing left two dots behind that the author had never
-    /// placed and had no reason to want. A point the author *did* place stays — it is either an
-    /// end of some other edge, an arc's center, or a circle's, and [`point_is_still_drawn`] asks
-    /// exactly that question.
+    /// Ends that survived unconditionally as free points would leave two dots behind every
+    /// deleted line, dots the author never placed and has no reason to want. A point the author
+    /// *did* place stays — it is either an end of some other edge, an arc's center, or a
+    /// circle's, and [`point_is_still_drawn`] asks exactly that question.
     ///
     /// **A constraint does not keep a point alive.** An assertion about a point is not a reason
     /// for the point to outlive the geometry it was drawn for, and the cascade takes the
@@ -1435,7 +1407,7 @@ impl Sketch {
         }
     }
 
-    /// Add a constraint, trial-solving before it is kept (ADR 0035 Decision 4).
+    /// Add a constraint, trial-solving before it is kept.
     ///
     /// **Unsatisfiable is refused** and nothing changes, so the system is always solvable and every
     /// downstream feature gets to assume it rather than defend against it. **Redundant is accepted
@@ -1499,7 +1471,7 @@ impl Sketch {
     ///
     /// Asked structurally rather than by experiment because leave-one-out cannot answer it: an
     /// earlier solve has already moved the drawing, and releasing an assertion does not undo its
-    /// effect, so dropping the `Horizontal` that levelled a segment leaves the segment level and
+    /// effect, so dropping the `Horizontal` that leveled a segment leaves the segment level and
     /// `Vertical` still collapses it. "What else is holding this?" is a question about the graph,
     /// and it always has an answer.
     ///
@@ -1532,8 +1504,8 @@ impl Sketch {
     /// Re-run the trial with each standing constraint dropped in turn; any drop that lets the
     /// system succeed names a culprit. That is `n` solves of a system with at most a few dozen
     /// parameters, which at sketch scale is free, and it is an ANSWER rather than an estimate:
-    /// the alternative in the literature is a rank heuristic that picks the constraint appearing
-    /// in the most dependent groups, and it is known to blame the wrong one.
+    /// the alternative — a rank heuristic picking the constraint that appears in the most
+    /// dependent groups — blames the wrong one.
     ///
     /// An empty result means no SINGLE removal helps — a conflict needing two, or one whose
     /// effect on the geometry outlived the assertion that caused it. Saying nothing is right
@@ -1578,7 +1550,7 @@ impl Sketch {
         Trial { points, verdict }
     }
 
-    /// **One constraint of a kind per entity set** (ADR 0035 Decision 4).
+    /// **One constraint of a kind per entity set.**
     ///
     /// Stacking `Horizontal` on a segment that is already asserted horizontal adds a residual that
     /// says exactly what another residual already says. The rank test below would catch it and
@@ -1731,12 +1703,12 @@ impl Sketch {
         self.constraints.retain(|constraint| constraint.id != id);
     }
 
-    /// Solve the sketch against its constraints, writing the solution into the points
-    /// (ADR 0035 Decision 2's continuous tier; the integer loop sits above it).
+    /// Solve the sketch against its constraints, writing the solution into the points — the
+    /// continuous tier; the integer loop sits above it.
     ///
     /// `None` when there is nothing to solve. Solved positions are **authored** state, not
-    /// `Derived` (Decision 3): they are the solver's input as well as its output, and an
-    /// under-constrained sketch has freedoms only the stored position remembers.
+    /// `Derived`: they are the solver's input as well as its output, and an under-constrained
+    /// sketch has freedoms only the stored position remembers.
     pub fn solve(&mut self) -> Option<SolveReport> {
         let frame = self.frame();
         let constraints = self.constraints.clone();
@@ -1783,7 +1755,7 @@ impl Sketch {
     }
 
     /// Drop constraints naming geometry the store no longer holds. Called by every delete, so a
-    /// constraint never outlives what it constrains (ADR 0035 Decision 3's cascade).
+    /// constraint never outlives what it constrains.
     fn drop_dangling_constraints(&mut self) {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
         let segment_ids: Vec<EntityId> = self.segments.iter().map(|seg| seg.id).collect();
@@ -1801,8 +1773,8 @@ impl Sketch {
         });
     }
 
-    /// Split the segment with id `seg_id` by inserting a new point `at` on it (ADR 0030
-    /// add-point). The first half keeps the segment's id; the new second half inherits its
+    /// Split the segment with id `seg_id` by inserting a new point `at` on it. The first
+    /// half keeps the segment's id; the new second half inherits its
     /// `origin`, so a bounding face's origin-set is unchanged. No-op if `seg_id` is unknown.
     pub fn split_segment(&mut self, seg_id: EntityId, at: SketchPoint) {
         let Some(index) = self.segments.iter().position(|seg| seg.id == seg_id) else {
@@ -1822,23 +1794,21 @@ impl Sketch {
         });
     }
 
-    /// Add a FREE point entity at `at` — no incident segment — returning its fresh id
-    /// (ADR 0030: a free point is legal geometry; #99 polyline places one per click and
-    /// then connects them). The public door to [`add_point`](Self::add_point).
+    /// Add a FREE point entity at `at` — no incident segment — returning its fresh id. A free
+    /// point is legal geometry; the polyline tool places one per click and then connects them.
+    /// The public door to [`add_point`](Self::add_point).
     pub fn add_free_point(&mut self, at: SketchPoint) -> EntityId {
         self.add_point(at)
     }
 
-    /// Connect two existing points with a fresh segment, returning its id (ADR 0030 —
-    /// coincidence is shared point identity, so drawing to an existing point means naming
-    /// its id here, never minting a coordinate twin). `None` — and no mutation — for a
-    /// self-loop, an unknown endpoint, or a pair a SEGMENT already joins: a straight edge
-    /// between two points is unique geometry, so a second one is a duplicate.
+    /// Connect two existing points with a fresh segment, returning its id. Coincidence is
+    /// shared point identity, so drawing to an existing point means naming its id here, never
+    /// minting a coordinate twin. `None` — and no mutation — for a self-loop, an unknown
+    /// endpoint, or a pair a SEGMENT already joins: a straight edge between two points is
+    /// unique geometry, so a second one is a duplicate.
     ///
-    /// A pair an ARC joins is fine, and is the D-shape (a chord closing a curve). It was
-    /// refused until #100 because the single-loop walk of the time could not orient two
-    /// edges over one pair; the face derivation that replaced it traces the two-edge cycle
-    /// like any other, so the restriction went with the walk it was protecting.
+    /// A pair an ARC joins is fine, and is the D-shape (a chord closing a curve): the face
+    /// derivation traces that two-edge cycle like any other.
     pub fn connect(&mut self, from: EntityId, to: EntityId) -> Option<EntityId> {
         if from == to
             || self.point_index(from).is_none()
@@ -1850,15 +1820,14 @@ impl Sketch {
         Some(self.add_segment(from, to))
     }
 
-    /// Connect two existing points with a fresh arc of the given signed included angle
-    /// (#102), returning its id. `None` — and no mutation — for a self-loop, an unknown
+    /// Connect two existing points with a fresh arc of the given signed included angle,
+    /// returning its id. `None` — and no mutation — for a self-loop, an unknown
     /// endpoint, a degenerate bulge (zero or a full turn or more), or an arc that would
     /// trace a curve the store already holds.
     ///
     /// A pair already joined by a segment, or by an arc bulging differently, is legal: a
     /// chord plus its arc is a D, and two arcs over one pair are a lens. Both are ordinary
-    /// bounded faces to the derivation (see [`connect`](Self::connect) for why this was
-    /// once refused).
+    /// bounded faces to the derivation.
     pub fn connect_arc(
         &mut self,
         from: EntityId,
@@ -1888,9 +1857,9 @@ impl Sketch {
         Some(id)
     }
 
-    /// Draw a circle of `radius` about a FRESH construction center at `at`, returning the circle's
-    /// id (ADR 0035 Decision 7). `None` — and no mutation — for a non-positive or non-finite
-    /// radius, which is not a curve.
+    /// Draw a circle of `radius` about a FRESH construction center at `at`, returning the
+    /// circle's id. `None` — and no mutation — for a non-positive or non-finite radius, which
+    /// is not a curve.
     ///
     /// The center is minted here rather than taken as an id because that is what the center-radius
     /// tool does: one click plants the center, the drag sets the radius. Drawing about a point that
@@ -1959,8 +1928,8 @@ impl Sketch {
         self.prune_orphan_centers();
     }
 
-    /// Whether the drawing OWNS this point's coordinates — today, whether it is an arc's center,
-    /// which [`sync_arc_centers`](Self::sync_arc_centers) re-derives from the arc's ends and its
+    /// Whether the drawing OWNS this point's coordinates — whether it is an arc's center, which
+    /// [`sync_arc_centers`](Self::sync_arc_centers) re-derives from the arc's ends and its
     /// sweep. A derived point is selectable, draggable, snappable and **constrainable** like any
     /// other; what it is not is a freedom, which is why
     /// [`degrees_of_freedom`](Self::degrees_of_freedom) does not count it.
@@ -1984,8 +1953,8 @@ impl Sketch {
             .collect()
     }
 
-    /// Re-derive every arc's center point from its endpoints and bulge (ADR 0030 §5), minting
-    /// one for any arc that has none yet. The center is a real [`Point`] so it can be selected,
+    /// Re-derive every arc's center point from its endpoints and bulge, minting one for any
+    /// arc that has none yet. The center is a real [`Point`] so it can be selected,
     /// snapped to and dragged like any other, but its coordinates are OWNED here — every edit
     /// that can move an arc ends by calling this, so a center can never drift out of agreement
     /// with the curve it belongs to. An arc whose endpoints are missing or coincident is left
@@ -2065,7 +2034,7 @@ impl Sketch {
     }
 
     /// The lowest-id point entity sitting EXACTLY at `at`'s position, if any. The drawing
-    /// tools (#99) check this after snapping a click, so a click that lands on an existing
+    /// tools check this after snapping a click, so a click that lands on an existing
     /// point's coordinates reuses its id (coincidence = shared identity) instead of minting
     /// a twin point the region graph would read as a distinct vertex. Position-only
     /// ([`SketchPoint::coincides`]) — a retained measurement never splits coincidence.
@@ -2094,8 +2063,8 @@ impl Sketch {
         min
     }
 
-    /// Re-target every point entity from `old_density` to `new_density` (#101 — the
-    /// `SetDensity` arm). Per point: a retained measurement re-evaluates losslessly; a
+    /// Re-target every point entity from `old_density` to `new_density` — the `SetDensity`
+    /// arm. Per point: a retained measurement re-evaluates losslessly; a
     /// plain point rescales its continuous position ([`SketchPoint::retargeted`]).
     pub fn retarget_density(&mut self, old_density: u32, new_density: u32) {
         for point in &mut self.points {
@@ -2110,11 +2079,10 @@ impl Sketch {
 
     /// Erase every structurally-invalid segment or arc — one that references a point id not
     /// in the store, a self-loop (`from == to`), or (arcs) a degenerate bulge — returning
-    /// the number removed (ADR 0030 load
-    /// policy: erase invalid objects rather than fail the load). Points are never invalid; a
-    /// point left with no incident edge is a legal free point. The resolve already tolerates a
-    /// dangling reference (the missing vertex is filtered out of the flattened loop), so this
-    /// is a cleanup + audit, not a crash guard.
+    /// the number removed. The load policy is to erase invalid objects rather than fail the
+    /// load. Points are never invalid; a point left with no incident edge is a legal free point.
+    /// The resolve already tolerates a dangling reference (the missing vertex is filtered out of
+    /// the flattened loop), so this is a cleanup + audit, not a crash guard.
     pub fn repair(&mut self) -> usize {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
         let before = self.segments.len() + self.arcs.len() + self.circles.len();
@@ -2143,22 +2111,22 @@ impl Sketch {
             - self.arcs.len()
             - self.circles.len()
             - self.constraints.len();
-        // A pre-center document names no center at all, and a just-erased arc leaves one
-        // behind; both are settled here, so a loaded sketch always agrees with its arcs.
+        // A document may name no center at all, and a just-erased arc leaves one behind;
+        // both are settled here, so a loaded sketch always agrees with its arcs.
         self.prune_orphan_centers();
         self.sync_arc_centers();
         dropped
     }
 }
 
-/// Default arc flattening tolerance (#102): the maximum sagitta (chord-to-arc deviation), in
-/// voxels, of one chord.
+/// Default arc flattening tolerance: the maximum sagitta (chord-to-arc deviation), in voxels,
+/// of one chord.
 ///
-/// This is no longer the resolved meaning of a curve — the region carries its arcs, and the field
+/// This is NOT the resolved meaning of a curve — the region carries its arcs, and the field
 /// measures them ([`ProfileEdge`]). It is the default a **terminal adapter** flattens at when it
 /// has to produce something discrete and has nowhere to put a curve: a crease polyline, the
 /// exact-`f64` cell classifier's polygon, a test's outline. Nothing downstream of one of those
-/// inherits it, so it is a tuning knob again rather than a document-format constant.
+/// inherits it, so it is a tuning knob rather than a document-format constant.
 pub const ARC_SAGITTA_TOLERANCE_VOXELS: f64 = 1.0 / 16.0;
 
 /// Hard cap on chords per arc, so a huge-radius near-collinear arc cannot degenerate
@@ -2169,7 +2137,7 @@ const ARC_MAX_CHORDS: u32 = 512;
 /// turn in magnitude.
 ///
 /// The full turn stays excluded ON PURPOSE. A closed curve is a [`Circle`] — a center and a radius
-/// — not an arc bulged all the way round (ADR 0035 Decision 7): the endpoint-plus-bulge form
+/// — not an arc bulged all the way round: the endpoint-plus-bulge form
 /// degenerates there, its chord shrinking to nothing and taking the circle it was supposed to
 /// determine with it. Admitting a 360° bulge would put an unsolvable arc in the store to spare a
 /// tool one branch.
@@ -2192,8 +2160,8 @@ fn circle_radius_is_valid(radius_voxels: f64) -> bool {
     radius_voxels.is_finite() && radius_voxels > 0.0
 }
 
-/// The center and radius DERIVED from the canonical arc form (ADR 0030 §5): endpoints
-/// plus signed sweep, positive sweeping counter-clockwise about the center. `None` for a
+/// The center and radius DERIVED from the canonical arc form: endpoints plus signed
+/// sweep, positive sweeping counter-clockwise about the center. `None` for a
 /// degenerate chord (coincident endpoints) or an invalid sweep.
 pub fn arc_center_radius(
     from: [f64; 2],
@@ -2224,7 +2192,7 @@ pub fn arc_center_radius(
 }
 
 /// The arc's tessellated INTERIOR vertices from `from` to `to` (both endpoints
-/// exclusive), as continuous sub-voxel points (#101), each chord's sagitta within
+/// exclusive), as continuous sub-voxel points, each chord's sagitta within
 /// [`ARC_SAGITTA_TOLERANCE_VOXELS`]. Empty when the arc is degenerate — the callers
 /// then fall back to the straight chord.
 pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> Vec<SketchPoint> {
@@ -2237,7 +2205,7 @@ pub fn arc_interior_points(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> 
 /// screen: a 15-voxel arc earns nine chords whatever the zoom, which reads as a visible polygon.
 /// A screen-space painter that knows what a voxel is currently worth in pixels asks for a
 /// tolerance keeping the sagitta under a pixel instead. Neither is the curve's meaning — the
-/// region carries its arcs and the field measures them (ADR 0034). Every caller here is a
+/// region carries its arcs and the field measures them. Every caller here is a
 /// terminal adapter, so no tolerance chosen at one reaches anything downstream of it.
 pub fn arc_interior_points_within(
     from: [f64; 2],
@@ -2297,10 +2265,10 @@ fn arc_chord_count(radius: f64, sweep_degrees: f64, tolerance: f64) -> u32 {
     ((sweep_degrees.to_radians().abs() / max_step).ceil() as u32).clamp(1, ARC_MAX_CHORDS)
 }
 
-/// Solve the 3-POINT creation (#102): the signed included angle of the arc from `from`
-/// to `to` that passes through `through`. The through-point is consumed here — the
-/// canonical stored form is endpoints + this angle (ADR 0030 §5). `None` when the three
-/// points are collinear or coincident (no finite circle).
+/// Solve the 3-POINT creation: the signed included angle of the arc from `from` to `to`
+/// that passes through `through`. The through-point is consumed here — the canonical
+/// stored form is endpoints + this angle. `None` when the three points are collinear or
+/// coincident (no finite circle).
 pub fn included_angle_through_degrees(
     from: [f64; 2],
     to: [f64; 2],
@@ -2338,10 +2306,8 @@ pub fn included_angle_through_degrees(
     })
 }
 
-/// The OPERATION that turns a [`Sketch`]'s 2D profile into a 3D volume (ADR 0003
-/// §3i, the "Sketch + Operation" model). A [`SketchSolid`] pairs a sketch with one
-/// of these. Today the only operation is [`Extrude`](Operation::Extrude); revolve
-/// and sweep are later commits.
+/// The OPERATION that turns a [`Sketch`]'s 2D profile into a 3D volume — the
+/// "Sketch + Operation" model. A [`SketchSolid`] pairs a sketch with one of these.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Operation {
     /// Extrude the profile a whole number of voxels along its plane normal,
@@ -2351,7 +2317,7 @@ pub enum Operation {
         height_voxels: u32,
     },
     /// Revolve the profile around an in-plane axis, producing a solid of
-    /// revolution (ADR 0003 §3i). The sketch's two in-plane coordinates are
+    /// revolution. The sketch's two in-plane coordinates are
     /// reinterpreted as (axial, radial): one in-plane world axis becomes the
     /// REVOLVE AXIS (selected by [`RevolveAxis`]) and the profile is swept around
     /// it through [`RevolveSweep::turn_degrees`]. A rectangle revolved is a
@@ -2363,12 +2329,11 @@ pub enum Operation {
         /// How far around the axis the profile is swept.
         sweep: RevolveSweep,
     },
-    // future: Sweep { path }  (added in later commits — leave this comment)
 }
 
 /// Which of the plane's two in-plane world axes is the REVOLVE (axial) axis — the
-/// axis the profile is swept around (ADR 0003 §3i). The other in-plane axis plus
-/// the plane NORMAL become the two RADIAL world axes the swept disc lives in.
+/// axis the profile is swept around. The other in-plane axis plus the plane NORMAL
+/// become the two RADIAL world axes the swept disc lives in.
 ///
 /// The profile's two coordinates `[c0, c1]` (along [`PlaneAxis::in_plane_axes`]`[0]`
 /// and `[1]`) are reinterpreted as (axial, radial):
@@ -2388,9 +2353,9 @@ pub enum RevolveAxis {
     InPlane1,
 }
 
-/// How far the profile is swept around the revolve axis (ADR 0003 §3i). `360`
-/// degrees is a full solid of revolution; a smaller value `(0, 360]` is a partial
-/// wedge. `0` is degenerate (empty occupancy).
+/// How far the profile is swept around the revolve axis. `360` degrees is a full
+/// solid of revolution; a smaller value `(0, 360]` is a partial wedge. `0` is
+/// degenerate (empty occupancy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RevolveSweep {
     /// Sweep angle in whole degrees; `360` = full revolve, `(0, 360]` valid.

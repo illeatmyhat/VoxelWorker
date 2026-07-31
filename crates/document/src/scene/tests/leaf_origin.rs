@@ -1,7 +1,7 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
 
-// ---- ADR 0032: the walk reports which node each body came from ----
+// ---- The walk reports which node each body came from ----
 //
 // `LeafOrigin` answers the question a viewport pick asks: the ray lands on a voxel, the
 // voxel belongs to a leaf, and the leaf must name a node the user can select. Two facts
@@ -87,12 +87,12 @@ fn a_sealed_instances_bodies_pick_as_the_instance() {
     assert_eq!(
         picked,
         vec![instance, instance],
-        "both definition bodies pick as the ONE instance that placed them (ADR 0017)"
+        "both definition bodies pick as the ONE instance that placed them"
     );
 }
 
-/// A FIXTURE definition pushes no `ScopeFrame` (ADR 0017 Decision 4) — its children splice
-/// into the host's fold as if authored there. The redirect must still happen, or a spliced
+/// A FIXTURE definition pushes no `ScopeFrame` — its children splice into the host's fold
+/// as if authored there. The redirect must still happen, or a spliced
 /// body would be indistinguishable from a host leaf and pick into the shared definition.
 #[test]
 fn a_fixture_instances_bodies_still_pick_as_the_instance() {

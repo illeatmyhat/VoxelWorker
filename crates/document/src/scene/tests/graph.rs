@@ -10,9 +10,8 @@ use voxel_core::voxel::ShapeKind;
 use voxel_core::voxel::VoxelGrid;
 
 /// `from_measurements` derives the canonical voxel offset from the per-axis
-/// authored expression and retains the expression (ADR 0003 §3f(0)). A `3.5
-/// blocks` axis lands on `3.5 · d` voxels (56 at d16, 112 at d32 — the lossless
-/// parametric refine).
+/// authored expression and retains the expression. A `3.5 blocks` axis lands on
+/// `3.5 · d` voxels (56 at d16, 112 at d32 — the lossless parametric refine).
 #[test]
 fn transform_from_measurements_derives_voxels_and_retains_expression() {
     let measurements = [
@@ -32,8 +31,8 @@ fn transform_from_measurements_derives_voxels_and_retains_expression() {
 /// A retained NON-block-multiple offset (`3.5 blocks` on X = 56 vx at d16)
 /// re-evaluated at a NON-dividing density (d15, where 3.5·15 = 52.5) must not
 /// panic, floors X to a whole voxel, and keeps the retained measurement
-/// CONSISTENT with `offset_voxels` (the seam bug: they used to disagree). This
-/// is the lossy density-retarget path inside `from_measurements`.
+/// CONSISTENT with `offset_voxels`. This is the lossy density-retarget path
+/// inside `from_measurements`.
 #[test]
 fn from_measurements_non_dividing_density_stays_self_consistent() {
     let measurements = [
@@ -82,10 +81,10 @@ fn from_measurements_integer_multiple_density_keeps_voxel_term_exact() {
 }
 
 /// An OLD `NodeTransform` JSON that predates `offset_measurements` still
-/// deserializes (serde default → `None`), and the accessor SYNTHESISES a
+/// deserializes (serde default → `None`), and the accessor SYNTHESIZES a
 /// pure-voxel measurement equal to `offset_voxels` per axis — which
 /// re-evaluates back to exactly those voxels at any density (versioning:
-/// shared documents must load forward, ADR 0003 §3f(0)).
+/// shared documents must load forward).
 #[test]
 fn transform_serde_back_compat_synthesises_measurements_from_voxels() {
     let old_json = r#"{ "offset_voxels": [48, -16, 7] }"#;
@@ -101,7 +100,7 @@ fn transform_serde_back_compat_synthesises_measurements_from_voxels() {
 }
 
 /// A `NodeTransform` carrying retained measurements round-trips through serde
-/// unchanged (the new field persists for a forward-saved document).
+/// unchanged (the retained field persists for a forward-saved document).
 #[test]
 fn transform_serde_round_trips_with_retained_measurements() {
     let transform = NodeTransform::from_measurements(
@@ -122,9 +121,9 @@ fn transform_serde_round_trips_with_retained_measurements() {
     assert_eq!(restored.offset_voxels, transform.offset_voxels);
 }
 
-/// The identical-behavior guarantee (ADR 0001 step 1): a one-node Tool scene
-/// resolved over the node's full extent yields the SAME occupied count as
-/// calling `SdfShape::resolve` directly — and the same grid dimensions.
+/// The identical-behavior guarantee: a one-node Tool scene resolved over the
+/// node's full extent yields the SAME occupied count as calling
+/// `SdfShape::resolve` directly — and the same grid dimensions.
 #[test]
 fn tool_scene_matches_bare_producer() {
     let geometry = GeometryParams {
@@ -135,7 +134,7 @@ fn tool_scene_matches_bare_producer() {
         wall_blocks: 1,
     };
 
-    // Bare producer (today's path).
+    // Bare producer.
     let shape = SdfShape::from_geometry(geometry.clone());
     let mut bare = VoxelGrid::new(shape.grid_dimensions(geometry.voxels_per_block));
     shape.resolve(&mut bare, geometry.voxels_per_block);
@@ -157,8 +156,7 @@ fn tool_scene_matches_bare_producer() {
 }
 
 /// The same guarantee for a VoxelBody (the debug cloud field): a one-node VoxelBody
-/// scene matches `DebugCloudField::resolve` at the same dimensions. Step 2
-/// builds the VoxelBody node directly (the `debug_clouds` selector is gone).
+/// scene matches `DebugCloudField::resolve` at the same dimensions.
 #[test]
 fn part_scene_matches_bare_cloud_field() {
     let size_blocks = [4u32, 4, 4];
@@ -188,9 +186,8 @@ fn part_scene_matches_bare_cloud_field() {
 
 /// CORNER-ANCHORING (cloud producer): a PART-ONLY cloud at ODD density drops ZERO
 /// voxels — every occupied center is a HALF-INTEGER (on the voxel lattice) and
-/// every decoded index ∈ [0, dim). This is the case center-emit broke: at an odd
-/// region dim the centered bottom voxel decoded to index −1 and was dropped.
-/// Tested at d=1 and d=5 (odd densities → odd region dims for an odd block size).
+/// every decoded index ∈ [0, dim). Tested at d=1 and d=5 (odd densities → odd
+/// region dims for an odd block size).
 #[test]
 fn part_only_cloud_at_odd_density_drops_no_voxels() {
     // 5×5×5 blocks at odd density → region dims 5·d (odd). A 64-vx field has plenty
@@ -250,9 +247,8 @@ fn part_only_cloud_at_odd_density_drops_no_voxels() {
 
 /// CORNER-ANCHORING (mixed frame): a Tool and a Cloud in the SAME scene resolve in
 /// ONE frame — the cloud's voxels are NOT offset by `region_dim/2` from the Tool.
-/// Center-emit broke this: the Tool corner-anchored but the cloud center-emitted,
-/// so they sat in different frames. Now BOTH corner-anchor at `[0, region_dim)`, so
-/// a Tool placed at offset 0 and the region-filling cloud share the same low corner.
+/// BOTH corner-anchor at `[0, region_dim)`, so a Tool placed at offset 0 and the
+/// region-filling cloud share the same low corner.
 #[test]
 fn mixed_tool_and_cloud_resolve_in_one_frame() {
     // A Box Tool at offset 0 (size 3³) plus a Cloud. The Tool's voxel span and the
@@ -283,8 +279,8 @@ fn mixed_tool_and_cloud_resolve_in_one_frame() {
 
     // Decode in the recentered frame (low corner −floor(dim/2)). EVERY voxel —
     // whether from the Tool or the Cloud — must decode to an index in [0, dim) with
-    // a half-integer center. If the cloud were still center-emitting it would be
-    // offset by ~region_dim/2 and a slab would decode out of range.
+    // a half-integer center. A cloud offset by ~region_dim/2 would decode a slab
+    // out of range.
     let recenter = scene.recenter_voxels_for_resolve(vpb).voxels();
     for voxel in &grid.occupied {
         let position = voxel.world_position();
@@ -326,7 +322,7 @@ fn mixed_tool_and_cloud_resolve_in_one_frame() {
     );
 }
 
-/// ADR 0001 step 2: several leaf nodes composite into one region under union.
+/// Several leaf nodes composite into one region under union.
 /// A 2-node scene (a sphere Tool + a box Tool, both centered at origin) yields
 /// the SET-UNION of their occupied voxels: the union count is at least each
 /// node alone, and exactly equals the union of the two single-node sets.
@@ -391,7 +387,7 @@ fn two_node_scene_resolves_to_union() {
     assert!(union_set.len() > sphere_set.len());
 }
 
-/// ADR 0001 step 3 (per-voxel material): a Tool with `MaterialChoice::Wood`
+/// Per-voxel material: a Tool with `MaterialChoice::Wood`
 /// stamps voxels whose `material_id` equals the Wood id (1) — every voxel it
 /// emits carries the Tool's single material, so distinct nodes are distinct.
 #[test]
@@ -416,7 +412,7 @@ fn wood_tool_stamps_wood_material_id() {
     );
 }
 
-/// ADR 0001 step 3 (per-voxel material): a 2-Tool scene (Stone + Wood, placed
+/// Per-voxel material: a 2-Tool scene (Stone + Wood, placed
 /// disjointly) yields BOTH material ids present — proving the per-voxel id
 /// travels through compositing so the two nodes render in distinct materials.
 #[test]
@@ -460,7 +456,7 @@ fn two_material_scene_has_both_material_ids() {
     );
 }
 
-/// Issue #29 S4 (per-object on-face grid): the resolver sets each voxel's
+/// Per-object on-face grid: the resolver sets each voxel's
 /// `grid_overlay` attribute **iff** that node's `grids.voxel_grid_on_faces` is
 /// set — and the color index still round-trips to the real handle (≤2).
 /// Parametrized over density {1, 15, 16} so the flag survives every density's
@@ -511,7 +507,7 @@ fn voxel_grid_flag_bit_set_iff_node_opts_in() {
     }
 }
 
-/// Issue #29 S4: in a 2-node scene with the on-face grid enabled on ONE node
+/// In a 2-node scene with the on-face grid enabled on ONE node
 /// only, exactly that node's voxels carry the flag bit; the other node's don't —
 /// the per-object gating the headless capture verifies. Also confirms the bit
 /// travels through the chunked resolve path (`resolve_chunk`) identically.
@@ -616,7 +612,7 @@ fn boxed_block_positions(
         .collect()
 }
 
-/// ADR 0001 step 3 (a): a node placed at a whole-block offset `[N, 0, 0]` places
+/// A node placed at a whole-block offset `[N, 0, 0]` places
 /// its voxels shifted by exactly `N × voxels_per_block` in X versus offset 0.
 ///
 /// A two-node scene (a 1-block box at offset 0 and an identical box at offset
@@ -709,9 +705,9 @@ fn offset_node_shifts_voxels_by_blocks_times_density() {
     );
 }
 
-/// ADR 0001 step 3 (b): two nodes at non-overlapping offsets give an occupied
-/// count equal to the SUM of each alone (a disjoint union — the placement
-/// genuinely separates them in space, no longer overlapping at the origin).
+/// Two nodes at non-overlapping offsets give an occupied count equal to the SUM
+/// of each alone (a disjoint union — the placement genuinely separates them in
+/// space).
 #[test]
 fn disjoint_offsets_give_summed_occupancy() {
     let voxels_per_block = 8u32;
@@ -755,7 +751,7 @@ fn disjoint_offsets_give_summed_occupancy() {
     );
 }
 
-/// ADR 0001 step 3 (c): `full_extent_blocks` grows to encompass an offset node.
+/// `full_extent_blocks` grows to encompass an offset node.
 /// A single 2-block box pushed +4 blocks in X spans blocks `[3, 5]` in X (center
 /// 4, ±1), so the composite X extent is 6 blocks (`0..6` once recentered), while
 /// Y/Z stay at the box's 2 blocks. (A zero-offset single node would be just the
@@ -815,8 +811,8 @@ fn full_extent_encompasses_offset_node() {
     );
 }
 
-/// A 1×1×1 box Tool shape, used as a leaf in the step-4 recursion/instancing
-/// tests (the node carries the material; the shape does not).
+/// A 1×1×1 box Tool shape, used as a leaf in the recursion/instancing tests
+/// (the node carries the material; the shape does not).
 fn unit_box_shape() -> SdfShape {
     SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, 8)
 }
@@ -837,7 +833,7 @@ fn position_keys(grid: &VoxelGrid) -> std::collections::HashSet<[i64; 3]> {
         .collect()
 }
 
-/// ADR 0001 step 4 (nested transform composition): a leaf inside a `Group`
+/// Nested transform composition: a leaf inside a `Group`
 /// offset by `+A` blocks, with the leaf itself offset `+B`, lands at world
 /// `A + B` (× density). We compare the grouped scene against a FLAT scene whose
 /// single node sits directly at `A + B` — same composite, so the recenter is
@@ -889,7 +885,7 @@ fn nested_group_composes_transforms_down() {
     );
 }
 
-/// ADR 0001 step 4 (instancing): an `Instance` of a 1-node definition placed at
+/// Instancing: an `Instance` of a 1-node definition placed at
 /// offset `T` resolves to the SAME voxels as that node placed directly at `T`.
 #[test]
 fn instance_matches_direct_placement() {
@@ -938,7 +934,7 @@ fn instance_matches_direct_placement() {
     );
 }
 
-/// ADR 0001 step 4 (village): a 2-instance scene (the SAME def placed at two
+/// A 2-instance scene (the SAME def placed at two
 /// different offsets) yields `occupied_count == 2 × the def's own count`, at two
 /// DISJOINT locations (the two voxel clusters never overlap).
 #[test]
@@ -1027,7 +1023,7 @@ fn two_instance_village_doubles_occupancy_disjointly() {
     );
 }
 
-/// ADR 0001 step 4 (cycle guard): a definition that instances ITSELF resolves
+/// Cycle guard: a definition that instances ITSELF resolves
 /// without stack overflow. The self-instance is skipped on re-entry, so the def
 /// contributes only its non-cyclic leaves finitely (here: one box) — never
 /// infinitely.
@@ -1074,9 +1070,9 @@ fn self_referential_definition_does_not_overflow() {
     );
 }
 
-/// A small flat scene of two box Tools, the first selected — the fixture the
-/// tree-mutation UI helper tests build on. ADR 0003 Phase B3: ids are minted so
-/// the selection (and the `wrap_node_in_group` it drives) resolves by identity.
+/// A small flat scene of two box Tools — the fixture the tree-mutation UI helper
+/// tests build on. Ids are minted so a node (and the `wrap_node_in_group` driven
+/// from it) resolves by identity.
 fn two_box_scene(voxels_per_block: u32) -> Scene {
     let mut scene = with_minted_ids(Scene::from_nodes(vec![
         Node::new(
@@ -1098,10 +1094,10 @@ fn two_box_scene(voxels_per_block: u32) -> Scene {
     scene
 }
 
-/// ADR 0001 step 4 (UI helper): `wrap_node_in_group` wraps the target in a new
-/// Group, so the target becomes a CHILD of that Group. After grouping, the
-/// top-level node at the old slot is a `Group` whose sole child is the original
-/// node, still addressable by its own id at path `[0, 0]`.
+/// `wrap_node_in_group` wraps the target in a new Group, so the target becomes a
+/// CHILD of that Group. After grouping, the top-level node at the old slot is a
+/// `Group` whose sole child is the original node, still addressable by its own id
+/// at path `[0, 0]`.
 #[test]
 fn wrap_node_in_group_nests_node_under_new_group() {
     let mut scene = two_box_scene(8);
@@ -1112,7 +1108,7 @@ fn wrap_node_in_group_nests_node_under_new_group() {
         .expect("A has an id");
 
     let group_id = scene.wrap_node_in_group(node_a_id).expect("A resolves");
-    // B4: `wrap_node_in_group` returns the new Group's stable id; it resolves to
+    // `wrap_node_in_group` returns the new Group's stable id; it resolves to
     // the old top-level slot the Group took (path [0]).
     assert_eq!(
         scene.path_of(group_id),
@@ -1137,7 +1133,7 @@ fn wrap_node_in_group_nests_node_under_new_group() {
     }
     // The wrapped child is the SAME node "A" by identity, now living at path
     // [0, 0] inside the new Group — so a workspace selection holding its id follows
-    // it across the wrap without being rewritten (ADR 0032).
+    // it across the wrap without being rewritten.
     assert_eq!(
         scene.path_of(node_a_id),
         Some(NodePath::from_indices(vec![0, 0])),
@@ -1151,17 +1147,16 @@ fn wrap_node_in_group_nests_node_under_new_group() {
     ));
 }
 
-/// ADR 0001 step 4 (UI helper): `make_definition_from_node` creates an
-/// `AssemblyDef` in `scene.definitions` and replaces the active node with an
-/// `Instance` of it. The resolved occupancy is unchanged (one stored body
-/// resolved via one instance == the original single node).
+/// `make_definition_from_node` creates an `AssemblyDef` in `scene.definitions` and
+/// replaces the target node with an `Instance` of it. The resolved occupancy is
+/// unchanged (one stored body resolved via one instance == the original single
+/// node).
 #[test]
 fn make_definition_creates_def_and_instance() {
     let voxels_per_block = 8u32;
-    // The fixture already selects top-level node 0 (by id).
     let mut scene = two_box_scene(voxels_per_block);
 
-    // Occupancy of just the active node before the change (resolved alone).
+    // Occupancy of top-level node 0 before the change (resolved alone).
     let before = Scene::single_node(scene.root_node(0).clone())
         .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
         .occupied_count();
@@ -1204,10 +1199,10 @@ fn make_definition_creates_def_and_instance() {
     );
 }
 
-/// ADR 0001 step 4 (UI helper, the village): after `make_definition_from_node`,
-/// `add_instance` appends another `Instance` node referencing the SAME def, and
-/// the scene resolves with the EXPECTED MULTIPLIED occupancy — two disjoint
-/// instances of a one-box def give 2× the box's voxel count.
+/// After `make_definition_from_node`, `add_instance` appends another `Instance`
+/// node referencing the SAME def, and the scene resolves with the EXPECTED
+/// MULTIPLIED occupancy — two disjoint instances of a one-box def give 2× the
+/// box's voxel count.
 #[test]
 fn add_instance_multiplies_occupancy_via_one_definition() {
     let voxels_per_block = 8u32;
@@ -1237,7 +1232,7 @@ fn add_instance_multiplies_occupancy_via_one_definition() {
     assert!(one > 0);
 
     // Add a second instance — an Instance node referencing the same def appears.
-    // B4: `add_instance` now returns the new node's stable id; resolve it by id.
+    // `add_instance` returns the new node's stable id; resolve it by id.
     let instance_id = scene.add_instance(def_id).expect("the def exists");
     assert_eq!(
         scene.roots.len(),
@@ -1268,9 +1263,9 @@ fn add_instance_multiplies_occupancy_via_one_definition() {
     );
 }
 
-/// ADR 0001 step 4 (UI helper): `tree_rows` flattens the assembly depth-first,
-/// a parent immediately preceding its Group children at increasing depth, so the
-/// tree UI can render an indented list with selectable child nodes.
+/// `tree_rows` flattens the assembly depth-first, a parent immediately preceding
+/// its Group children at increasing depth, so the tree UI can render an indented
+/// list with selectable child nodes.
 #[test]
 fn tree_rows_lists_group_children_indented() {
     let mut scene = two_box_scene(8);
@@ -1299,8 +1294,8 @@ fn tree_rows_lists_group_children_indented() {
         .iter()
         .map(|(p, _id, d)| (p.indices.clone(), *d))
         .collect();
-    // ADR 0018 Decision 2: the root part is the top row (empty path, depth 0), and
-    // the former top-level nodes indent one level beneath it under their part.
+    // The root part is the top row (empty path, depth 0), and the top-level nodes
+    // indent one level beneath it under their part.
     assert_eq!(
         paths,
         vec![

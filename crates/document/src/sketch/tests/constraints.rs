@@ -1,4 +1,4 @@
-//! Constraint entities and the continuous solve (ADR 0035 Decisions 2, 3 and 4).
+//! Constraint entities and the continuous solve.
 
 use super::*;
 
@@ -69,14 +69,12 @@ fn horizontal_levels_a_segment_by_meeting_in_the_middle() {
     assert_eq!(sketch.degrees_of_freedom(), 3, "one assertion, one freedom");
 }
 
-/// A constraint holds through a DRAG, not merely at the moment it was asserted (ADR 0035
-/// Decision 11). The grabbed end goes exactly where the hand put it and the free end follows to
-/// keep the segment level — the drag is a pin, so the rest of the drawing moves around it.
+/// A constraint holds through a DRAG, not merely at the moment it was asserted. The grabbed end
+/// goes exactly where the hand put it and the free end follows to keep the segment level — the
+/// drag is a pin, so the rest of the drawing moves around it.
 ///
-/// The regression for the second half of the same complaint (owner 2026-07-30): the level was
-/// applied, and then moving one of the line's own points tilted it straight back off. `move_point`
-/// wrote the coordinate and never re-solved, so every assertion survived exactly until it was
-/// tested.
+/// `move_point` re-solves the standing system. Writing the coordinate alone would leave every
+/// assertion standing only until a drag of the geometry it names tilted it back off.
 #[test]
 fn a_level_segment_stays_level_when_an_end_is_dragged() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -134,15 +132,15 @@ fn a_fixed_point_does_not_move_under_the_hand() {
 }
 
 /// **Geometry the constraint does not name must not be able to break it.** A lone segment gets
-/// levelled the same whether it is alone on the plane or surrounded by a drawing.
+/// leveled the same whether it is alone on the plane or surrounded by a drawing.
 ///
-/// This is the regression for the bug that made the constraint tools read as simply not working
-/// (owner 2026-07-30). The verdict was taken from the solver's `SolveOutcome` rather than from its
-/// residuals; that flag's residual test is absolute while its step test is relative to the size of
-/// the whole parameter vector, so free points elsewhere in the sketch — contributing nothing to
-/// the residual and everything to the vector's length — made the step test fire first. It reported
-/// `Stalled` with the constraint satisfied to about 1e-10 voxels, and `Stalled` was refused as
-/// unsatisfiable. **Two** unrelated points were enough, which is to say every real drawing.
+/// The verdict has to be read from the RESIDUALS, never from the solver's `SolveOutcome`: that
+/// flag's residual test is absolute while its step test is relative to the size of the whole
+/// parameter vector, so free points elsewhere in the sketch — contributing nothing to the residual
+/// and everything to the vector's length — make the step test fire first. It then reports
+/// `Stalled` with the constraint satisfied to about 1e-10 voxels, and a `Stalled` read as
+/// unsatisfiable refuses the assertion. **Two** unrelated points are enough, which is to say every
+/// real drawing.
 #[test]
 fn free_geometry_the_constraint_never_names_cannot_refuse_it() {
     for bystanders in 0..6 {
@@ -185,8 +183,8 @@ fn a_distance_dimension_is_met() {
     assert!((b[0] - 8.0).abs() < 1e-6, "{b:?}");
 }
 
-/// Decision 4's first half: **unsatisfiable is refused, and refusing changes nothing.** The trial
-/// runs on a copy, so the drawing is where it was rather than where a failed solve pushed it.
+/// **Unsatisfiable is refused, and refusing changes nothing.** The trial runs on a copy, so the
+/// drawing is where it was rather than where a failed solve pushed it.
 #[test]
 fn a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone() {
     let (mut sketch, tail, head, _) = slanted();
@@ -226,8 +224,8 @@ fn a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone() {
     assert_eq!(before, after, "nor did the failed trial move anything");
 }
 
-/// Decision 4's second half: **redundant is accepted and flagged.** An assertion the geometry
-/// already implies is insurance against a later edit, so it is marked rather than refused.
+/// **Redundant is accepted and flagged.** An assertion the geometry already implies is insurance
+/// against a later edit, so it is marked rather than refused.
 ///
 /// Redundant is not the same as DUPLICATE, and the difference is exactly what this fixture shows:
 /// two pinned endpoints already put the segment level, so `Horizontal` adds no information — but
@@ -269,8 +267,8 @@ fn a_redundant_constraint_is_kept_and_flagged() {
     );
 }
 
-/// The delete cascade reaches constraints (Decision 3): a constraint never outlives the geometry
-/// it names, so a residual row can never refer to a shape that is gone.
+/// The delete cascade reaches constraints: a constraint never outlives the geometry it names, so a
+/// residual row can never refer to a shape that is gone.
 #[test]
 fn deleting_geometry_takes_its_constraints_with_it() {
     let (mut sketch, tail, _, segment) = slanted();
@@ -295,7 +293,7 @@ fn deleting_geometry_takes_its_constraints_with_it() {
 }
 
 /// Load repair erases a constraint naming geometry the store does not hold, and counts it — the
-/// same policy every other entity gets (ADR 0030: erase the invalid, never fail the load).
+/// same policy every other entity gets: erase the invalid, never fail the load.
 #[test]
 fn repair_erases_a_constraint_that_names_nothing() {
     let (mut sketch, _, _, _) = slanted();
@@ -359,7 +357,7 @@ fn a_refusal_does_not_consume_an_id() {
 }
 
 /// Solving again from a solution changes nothing — the solve is idempotent, which is what lets it
-/// run live during a drag (Decision 11) without the drawing creeping.
+/// run live during a drag without the drawing creeping.
 #[test]
 fn solving_a_solved_sketch_moves_nothing() {
     let (mut sketch, _, _, segment) = slanted();
@@ -374,7 +372,7 @@ fn solving_a_solved_sketch_moves_nothing() {
     assert_eq!(settled, again);
 }
 
-/// The PRODUCER door the rail's constraint verbs go through (ADR 0035): pure, so the caller
+/// The PRODUCER door the rail's constraint verbs go through: pure, so the caller
 /// holds both drawings and the shell's one-transaction commit has something to commit.
 #[test]
 fn the_producer_door_asserts_without_touching_the_original() {
@@ -388,7 +386,7 @@ fn the_producer_door_asserts_without_touching_the_original() {
     assert_eq!(
         position(&after.sketch, tail)[1],
         position(&after.sketch, head)[1],
-        "the copy is levelled"
+        "the copy is leveled"
     );
     assert_eq!(after.sketch.constraints().len(), 1);
     assert_eq!(after.sketch.degrees_of_freedom(), 3);
@@ -452,9 +450,9 @@ fn deleting_geometry_takes_its_constraints_and_the_id_stays_safe_to_delete() {
     );
 }
 
-/// One constraint of a kind per entity set (Decision 4). The second `Horizontal` on a segment
-/// already asserted horizontal says nothing the first did not, so it is refused rather than kept
-/// and flagged — and the store is left holding exactly one.
+/// One constraint of a kind per entity set. The second `Horizontal` on a segment already asserted
+/// horizontal says nothing the first did not, so it is refused rather than kept and flagged — and
+/// the store is left holding exactly one.
 #[test]
 fn the_same_assertion_twice_on_one_segment_is_refused() {
     let (mut sketch, _, _, segment) = slanted();
@@ -561,11 +559,10 @@ fn already_collapsed_geometry_does_not_veto_the_rest() {
 
 /// The witness rank reads the drawing it is HANDED, never a solution it went and computed.
 ///
-/// That is the whole of the fix for a defect the literature names (FreeCAD #5931): rows of the
-/// Jacobian can vanish at an exactly-solved configuration, so redundancy read there mistakes a
-/// solver's success for a constraint saying nothing. Read at the author's own slanted drawing —
-/// a generic configuration — a `Fix` pins two coordinates and a `Horizontal` adds a third
-/// independent row.
+/// Rows of the Jacobian can vanish at an exactly-solved configuration, so redundancy read there
+/// mistakes a solver's success for a constraint saying nothing. Read at the author's own slanted
+/// drawing — a generic configuration — a `Fix` pins two coordinates and a `Horizontal` adds a
+/// third independent row.
 #[test]
 fn the_witness_rank_is_read_at_the_drawing_it_is_given() {
     let (sketch, tail, _, segment) = slanted();
@@ -628,9 +625,9 @@ fn redundancy_reads_the_same_on_a_solved_and_an_unsolved_drawing() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The relations (ADR 0035 Decision 5): the constraints that name two pieces of geometry rather
-// than one piece and an axis. Every one of them is checked by measuring the drawing afterwards,
-// never by trusting the solver's own verdict — see `SATISFIED_RESIDUAL`.
+// The relations: the constraints that name two pieces of geometry rather than one piece and an
+// axis. Every one of them is checked by measuring the drawing afterwards, never by trusting the
+// solver's own verdict — see `SATISFIED_RESIDUAL`.
 // ---------------------------------------------------------------------------------------------
 
 /// Two segments, drawn apart and slanted differently, for the two-segment relations.
@@ -709,12 +706,12 @@ fn coincident_with_itself_is_refused() {
 /// Parallel drives the sine of the angle between two segments to zero, and both segments keep
 /// their extent getting there.
 ///
-/// It does NOT preserve length exactly, and the first draft of this test asserted that it did.
-/// The residual is an angle, so the solver is free to reach it any way it likes, and the way it
-/// likes is the smallest move in the PARAMETERS — which are coordinates, not lengths. A pure
-/// rotation would hold both lengths and is a larger coordinate move than the shear-ish answer the
-/// solve actually finds. What the normalization buys is conditioning, not rigidity: the residual
-/// reads the same on a 3-voxel segment and a 300-voxel one, so neither dominates the step.
+/// It does NOT preserve length exactly. The residual is an angle, so the solver is free to reach
+/// it any way it likes, and the way it likes is the smallest move in the PARAMETERS — which are
+/// coordinates, not lengths. A pure rotation would hold both lengths and is a larger coordinate
+/// move than the shear-ish answer the solve actually finds. What the normalization buys is
+/// conditioning, not rigidity: the residual reads the same on a 3-voxel segment and a 300-voxel
+/// one, so neither dominates the step.
 #[test]
 fn parallel_aligns_two_segments_without_collapsing_them() {
     let (mut sketch, first, second) = two_segments();
@@ -851,9 +848,9 @@ fn collinear_puts_two_segments_on_one_line() {
 }
 
 /// **The stride property.** A kind that writes two residuals must be given two rows, or every
-/// constraint after it in the list reads the wrong ones. This is the regression for the `_ => 1`
-/// arm that `residual_count` carried: it would have handed a two-row kind one row and corrupted
-/// the whole system rather than failing.
+/// constraint after it in the list reads the wrong ones. A catch-all `_ => 1` arm in
+/// `residual_count` hands a two-row kind one row and corrupts the whole system rather than
+/// failing.
 ///
 /// Asserted by stacking a two-row relation BEFORE a one-row one and checking that both still
 /// hold — under a wrong stride the second reads the first's spare row and cannot be met.
@@ -871,7 +868,7 @@ fn a_two_residual_relation_does_not_shift_the_rows_after_it() {
         .expect("two free points can meet");
     sketch
         .add_constraint(ConstraintKind::Horizontal { segment })
-        .expect("an untouched segment can be levelled");
+        .expect("an untouched segment can be leveled");
 
     let (here, there) = (position(&sketch, first), position(&sketch, second));
     assert!(
@@ -931,8 +928,8 @@ fn arc_with_center() -> (Sketch, EntityId, EntityId, EntityId, EntityId) {
 
 /// **A constraint on an arc's center is met by moving the ARC.** The center is not a coordinate the
 /// solver may choose — it is what the ends and the sweep make it — so the correction lands on the
-/// ends and the center follows. The owner reported a `Coincident` on it doing nothing (2026-07-31);
-/// it was being written to a slot that `sync_arc_centers` overwrote on the next edit.
+/// ends and the center follows. A correction written into the center's own slot instead would do
+/// nothing visible: `sync_arc_centers` overwrites that slot on the next edit.
 ///
 /// The loose point is `Fix`ed so that IT is the reference piece and the arc is what travels — see
 /// [`Sketch::anchor_for`]. Left free, the three-point arc outweighs it and the point comes to the
@@ -978,9 +975,9 @@ fn a_constraint_on_an_arcs_center_moves_the_arc() {
     );
 }
 
-/// The owner's own gesture: `Fix` one end of the arc, then bring the center onto a point. The fixed
-/// end must not move, and the loose point is what takes up the difference — the arc is the heavier
-/// piece AND the pinned one, so it is the reference and the point travels to it.
+/// `Fix` one end of the arc, then bring the center onto a point. The fixed end must not move, and
+/// the loose point is what takes up the difference — the arc is the heavier piece AND the pinned
+/// one, so it is the reference and the point travels to it.
 #[test]
 fn a_fixed_arc_end_holds_while_the_center_is_brought_to_a_point() {
     let (mut sketch, tail, head, center, loose) = arc_with_center();
@@ -1013,7 +1010,7 @@ fn a_fixed_arc_end_holds_while_the_center_is_brought_to_a_point() {
     assert_eq!(
         position(&sketch, head),
         before_head,
-        "and the arc held whole: the point is what travelled"
+        "and the arc held whole: the point is what traveled"
     );
 }
 
@@ -1060,12 +1057,11 @@ fn an_arcs_center_is_not_a_degree_of_freedom() {
 
 /// **A drag uses whatever freedom is left, instead of being refused for the freedom that is not.**
 ///
-/// The owner's configuration (2026-07-31, from the repro dump): an arc whose two ends are both
-/// `Fix`ed — so its center is fully determined — a point `Coincident` with that center, and a
-/// `Vertical` on the segment reaching down from it. One freedom remains, the segment's LENGTH, and
-/// the far end could not be moved at all: the hand was a hard pin, the cursor is essentially never
-/// exactly on the line the point may slide along, and the pinned system was refused as
-/// unsatisfiable.
+/// The configuration: an arc whose two ends are both `Fix`ed — so its center is fully determined —
+/// a point `Coincident` with that center, and a `Vertical` on the segment reaching down from it.
+/// One freedom remains, the segment's LENGTH. Treating the hand as a hard pin makes the far end
+/// immovable, because the cursor is essentially never exactly on the line the point may slide
+/// along and the pinned system is then refused as unsatisfiable.
 #[test]
 fn a_point_with_one_freedom_left_slides_along_it() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -1073,7 +1069,7 @@ fn a_point_with_one_freedom_left_slides_along_it() {
     let arc_head = sketch.add_free_point(SketchPoint::new(-1, 67));
     sketch
         .connect_arc(arc_tail, arc_head, AngleMeasurement::from_degrees(262))
-        .expect("the owner's arc");
+        .expect("a major arc");
     let center = sketch.arcs()[0].center;
     let at_center = position(&sketch, center);
     let top = sketch.add_free_point(SketchPoint::from_continuous(at_center[0], at_center[1]));
@@ -1081,7 +1077,9 @@ fn a_point_with_one_freedom_left_slides_along_it() {
         at_center[0],
         at_center[1] - 36.0,
     ));
-    let segment = sketch.connect(bottom, top).expect("the owner's line");
+    let segment = sketch
+        .connect(bottom, top)
+        .expect("the line under the center");
 
     for point in [arc_tail, arc_head] {
         let held = position(&sketch, point);
@@ -1165,12 +1163,11 @@ fn quad(corners: [[i64; 2]; 4]) -> (Sketch, [EntityId; 4], [EntityId; 4]) {
     (sketch, points, edges)
 }
 
-/// **A constraint moves untouched geometry as a piece, not as a pile of independent points**
-/// (owner, 2026-07-31). Bringing one corner of a square to a point a long way off used to drag that
-/// corner alone and leave the other three where they were — the cheapest travel, and the maximum
-/// deformation. Preferring to keep every edge's span makes the whole square TRANSLATE instead: a
-/// rigid motion satisfies both the constraint and the preference at once, so there is nothing to
-/// trade.
+/// **A constraint moves untouched geometry as a piece, not as a pile of independent points.**
+/// Bringing one corner of a square to a point a long way off is met most cheaply by dragging that
+/// corner alone and leaving the other three — the least travel, and the maximum deformation.
+/// Preferring to keep every edge's span makes the whole square TRANSLATE instead: a rigid motion
+/// satisfies both the constraint and the preference at once, so there is nothing to trade.
 #[test]
 fn a_constraint_translates_a_group_rather_than_deforming_it() {
     let (mut sketch, corners, _) = quad([[0, 0], [20, 0], [20, 20], [0, 20]]);
@@ -1200,12 +1197,11 @@ fn a_constraint_translates_a_group_rather_than_deforming_it() {
     }
 }
 
-/// **The heavier group holds; the lighter one comes to it** (owner, 2026-07-31, after Fusion).
+/// **The heavier group holds; the lighter one comes to it.**
 ///
 /// Weighing the two pieces is not enough: least squares splits the gap in inverse proportion to
-/// their sizes, so a quad meeting a stick still slid a third of the way to meet it. "I want one to
-/// translate to the other." So the heavier piece is anchored outright for the preference pass and
-/// does not move at all.
+/// their sizes, so a quad meeting a stick would still slide a third of the way to meet it. The
+/// heavier piece is anchored outright for the preference pass and does not move at all.
 #[test]
 fn the_smaller_group_travels_to_the_larger_one() {
     let (mut sketch, corners, _) = quad([[0, 0], [20, 0], [20, 20], [0, 20]]);
@@ -1267,9 +1263,9 @@ fn a_constraint_that_fights_rigidity_is_still_met_exactly() {
     );
 }
 
-/// **Deleting a line deletes the points it was drawn between**, unless something else draws them
-/// (owner, 2026-07-31). A line removed from a drawing used to leave two dots behind that the author
-/// had never placed, along with any constraint naming them.
+/// **Deleting a line deletes the points it was drawn between**, unless something else draws them.
+/// A line removed from a drawing must leave behind neither dots the author never placed nor a
+/// constraint naming them.
 #[test]
 fn deleting_a_line_takes_the_ends_nothing_else_draws() {
     let (mut sketch, tail, head, segment) = slanted();
@@ -1294,8 +1290,7 @@ fn deleting_a_line_takes_the_ends_nothing_else_draws() {
 }
 
 /// A constraint is not a reason for a point to outlive the geometry it was drawn for: the line
-/// takes the point, and the cascade takes the constraint. This is the owner's phrasing exactly —
-/// "deleting the coincident line should delete the points on either end along with the constraint".
+/// takes the point, and the cascade takes the constraint.
 #[test]
 fn a_constraint_does_not_keep_a_deleted_lines_end_alive() {
     let (mut sketch, tail, _head, segment) = slanted();

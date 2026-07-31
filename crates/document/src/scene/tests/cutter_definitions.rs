@@ -1,22 +1,19 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
 
-// ---- ADR 0017 / #76: reusable cutter definitions — the dense oracle ----
+// ---- Reusable cutter definitions — the dense oracle ----
 //
 // A CUTTER as a reusable part: a definition instanced with `operation:
-// Subtract`. The sealed definition body pre-composes (issue #74), and the
-// instance folds the finished body into the host scope as a carve — no new
-// node kind, just the sealed-scope rule meeting the instance's node-level
-// `CombineOp`. These tests pin the dense-oracle semantics: each placement
-// carves its own host at its own transform, and editing the ONE definition
-// re-carves EVERY placement (reuse by reference).
+// Subtract`. The sealed definition body pre-composes, and the instance folds
+// the finished body into the host scope as a carve — no new node kind, just the
+// sealed-scope rule meeting the instance's node-level `CombineOp`. These tests
+// pin the dense-oracle semantics: each placement carves its own host at its own
+// transform, and editing the ONE definition re-carves EVERY placement (reuse by
+// reference).
 
 const DENSITY: u32 = 8;
 
-// `box_tool` / `resolved_absolute_multiset` / `instance_node` are the shared CSG
-// fixtures in `super` (tests/mod.rs), reached via `use super::*`.
-
-/// The two-hosts fixture (the golden's shape): two separated Stone host boxes,
+/// The two-hosts fixture: two separated Stone host boxes,
 /// then ONE `cutter_blocks`-sized cutter definition instanced twice under
 /// Subtract, each placement overlapping its own host's top corner octant.
 fn two_hosts_with_instanced_cutters(cutter_blocks: u32) -> Scene {
@@ -82,12 +79,11 @@ fn two_hosts_with_flat_cutters(cutter_blocks: u32) -> Scene {
     ])
 }
 
-/// Acceptance #1 (the golden's oracle): ONE cutter definition instanced twice
-/// carves TWO separate hosts at their placements — each placement's carve equals
-/// a plain Subtract leaf at the instance transform (the instance's operation
-/// applies to the definition's pre-composed body under the instance's frame,
-/// ADR 0008 carried-frame discipline), and no cell anywhere carries the cutter's
-/// material.
+/// ONE cutter definition instanced twice carves TWO separate hosts at their
+/// placements — each placement's carve equals a plain Subtract leaf at the
+/// instance transform (the instance's operation applies to the definition's
+/// pre-composed body under the instance's carried frame), and no cell anywhere
+/// carries the cutter's material.
 #[test]
 fn one_cutter_definition_instanced_twice_carves_both_hosts() {
     let instanced = two_hosts_with_instanced_cutters(2);
@@ -115,7 +111,7 @@ fn one_cutter_definition_instanced_twice_carves_both_hosts() {
     );
 }
 
-/// Acceptance #2 (reuse by reference): editing the ONE definition's geometry
+/// Reuse by reference: editing the ONE definition's geometry
 /// re-carves EVERY placement — growing the def's box from 1³ to 2³ blocks makes
 /// both hosts' notches grow identically, matching a from-scratch scene authored
 /// at the new size.
@@ -190,8 +186,8 @@ fn subtract_instance_before_its_host_is_a_no_op() {
 
 /// A leaf's enclosing-scope fingerprint reflects the INSTANCE's operation, so
 /// flipping an instance Union↔Subtract dirties its expanded leaves' AABBs and
-/// the store re-classifies them (the same invalidation contract as #73's leaf
-/// flip and #74's group flip).
+/// the store re-classifies them (the same invalidation contract as a leaf flip
+/// and a group flip).
 #[test]
 fn instance_operation_flip_changes_the_expanded_leaf_fingerprints() {
     let union_scene = {

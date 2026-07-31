@@ -2,22 +2,16 @@
 //! visually distinct, billowy cloud blobs separated by empty space. It exists to
 //! exercise the renderer and the onion skin with richer content than the parametric
 //! shapes — a single connected SDF can't show how the pipeline handles many disjoint
-//! objects scattered through a large, mostly-empty volume. (The onion skin is now
-//! ghost-shaded clip-slab passes rather than the volumetric fog ADR 0012 deleted; the
-//! feature this exercises is live, only its implementation changed.)
+//! objects scattered through a large, mostly-empty volume.
 //!
 //! Recipe (the standard one for cloud-like volumes): each cloud is a soft RADIAL
 //! FALLOFF (so it stays a bounded, separate puff with gaps around it) whose
 //! surface is then displaced by FRACTAL PERLIN NOISE (fBm — summed octaves of
-//! gradient noise). Gradient/Perlin fBm reads soft and fluffy, which suits a
-//! cloud; the alternative, Worley/cellular (Voronoi) noise, gives lumpier,
-//! more "cauliflower" clouds and is worth trying if you want a different look,
-//! but fBm is the better default here. Each cloud takes its own noise offset and
-//! radius so no two read alike.
+//! gradient noise), which reads soft and fluffy. Each cloud takes its own noise
+//! offset and radius so no two read alike.
 //!
 //! Deterministic: a fixed `seed` drives both the cloud placement and the noise
-//! permutation, so the same parameters always resolve to the same field (good for
-//! a reproducible debug object and for golden-image tests later).
+//! permutation, so the same parameters always resolve to the same field.
 
 use crate::voxel::VoxelProducer;
 use glam::Vec3;
@@ -41,12 +35,12 @@ const CLOUD_NOISE_GAIN: f32 = 0.5;
 /// fluffy rather than either smooth (too large) or noisy (too small).
 const CLOUD_NOISE_WAVELENGTH_FRACTION: f32 = 0.6;
 
-/// The PROVEN bound on `|fractal_noise|`, from `substrate::noise::perlin` (ADR 0021
-/// Decision 1): noise is a convex combination of gradient dot-products each bounded by 2,
-/// and fBm normalizes by its amplitude sum so it inherits the same bound for ANY octave
-/// count, lacunarity or gain. Deliberately loose — the observed extreme is around 0.87 —
-/// but sound without depending on an unproven literature constant. It sets only how deep a
-/// puff's provably-solid core reaches; the air side does not use it.
+/// The PROVEN bound on `|fractal_noise|`, from `substrate::noise::perlin`: noise is a
+/// convex combination of gradient dot-products each bounded by 2, and fBm normalizes by its
+/// amplitude sum so it inherits the same bound for ANY octave count, lacunarity or gain.
+/// Deliberately loose — the observed extreme is around 0.87 — but sound without depending
+/// on an unproven constant. It sets only how deep a puff's provably-solid core reaches; the
+/// air side does not use it.
 const NOISE_RANGE_BOUND: f32 = 2.0;
 
 /// How far a puff can CLAIM, in units of `CLOUD_EDGE_BILLOW`, irrespective of the noise's
@@ -78,17 +72,10 @@ pub struct DebugCloudField {
     pub seed: u32,
 }
 
-// `CloudPuffParams`, `gpu_puffs` and `permutation_table` were DELETED 2026-07-18. They
-// existed only to flatten this producer's puffs + Perlin table for the ADR 0007 GPU
-// view-resolve to stream into WGSL; ADR 0012 deleted that evaluator (it was the fog's, and
-// the fog went with it), leaving all three with zero callers. The CPU `resolve_into` below
-// computes the same puffs via `scatter_cloud_puffs` and is the only path. Restore from git
-// history if a GPU producer mirror returns.
-
 impl VoxelProducer for DebugCloudField {
-    /// `voxels_per_block` is the document-level density (ADR 0003 §3f(0)) — only
-    /// used to fill each voxel's `block_local_coord` so the block lattice / per-face
-    /// texturing stay consistent with the shapes.
+    /// `voxels_per_block` is the document-level density — only used to fill each voxel's
+    /// `block_local_coord` so the block lattice / per-face texturing stay consistent with
+    /// the shapes.
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
         let [full_x, full_y, full_z] = self.dimensions;
         self.resolve_into(
@@ -127,15 +114,14 @@ impl VoxelProducer for DebugCloudField {
         let clouds = scatter_cloud_puffs(self.seed, extent);
         let voxels_per_block = voxels_per_block.max(1);
 
-        // Clamp the window to `[0, full_dim)`; a full-window call reproduces the
-        // historical `0..grid_*` loops exactly.
+        // Clamp the window to `[0, full_dim)`; a full-window call iterates the whole grid.
         let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
             crate::voxel::clamp_window_to_grid(window_local_voxels, self.dimensions);
 
-        // The outer `j` slices are disjoint and order-independent, so parallelise
+        // The outer `j` slices are disjoint and order-independent, so parallelize
         // them with rayon (same pattern as `SdfShape::resolve`): each slice builds
         // a local `Vec<Voxel>` and the results are concatenated. The SET is what
-        // matters downstream, not the order. Windowing parallelises over the
+        // matters downstream, not the order. Windowing parallelizes over the
         // WINDOWED j range.
         grid.occupied = (win_y_lo..win_y_hi)
             .into_par_iter()
@@ -174,14 +160,11 @@ impl VoxelProducer for DebugCloudField {
             .collect();
     }
 
-    /// Conservative bracket on the cloud field over a block cell (ADR 0021).
+    /// Conservative bracket on the cloud field over a block cell.
     ///
-    /// This producer was long documented as UNBOUNDABLE on the grounds that fBm "has no
-    /// cheap conservative bracket over a cell". That reasoning was wrong, and it cost real
-    /// interior elision. Bracketing the fBm *over a cell* is indeed hard; it is also never
-    /// needed. Only the noise's GLOBAL RANGE is required, after which the radial term does
-    /// all the work — so a cell is classified from puff geometry alone, with **no noise
-    /// evaluation at all**.
+    /// Bracketing the fBm *over a cell* is hard; it is also never needed. Only the noise's
+    /// GLOBAL RANGE is required, after which the radial term does all the work — so a cell
+    /// is classified from puff geometry alone, with **no noise evaluation at all**.
     ///
     /// Per puff, with `radial = 1 − d/R` and the solidity test `radial + BILLOW·fbm > 0`:
     ///

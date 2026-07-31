@@ -1,5 +1,4 @@
-//! Constraints as entities, and the residual system that hands them to the solver
-//! (ADR 0035 Decisions 2, 3 and 4).
+//! Constraints as entities, and the residual system that hands them to the solver.
 //!
 //! A constraint lives in the same stable-id space as a point or a segment: it is selectable,
 //! individually deletable, individually undoable, and the delete cascade reaches it when the
@@ -9,9 +8,9 @@
 //! The solver core is [`substrate::nonlinear_least_squares`] — pure, continuous, and with no
 //! density or lattice vocabulary in it. This module is the adapter: it flattens the sketch's points
 //! into a parameter vector, writes one residual per constraint, and puts the solved coordinates
-//! back. Solved positions stay **authored** state, never `Derived` (ADR 0022): the solver reads
-//! them as its initial guess and writes them back, and an under-constrained sketch has free degrees
-//! of freedom that only the stored position remembers.
+//! back. Solved positions stay **authored** state, never `Derived`: the solver reads them as its
+//! initial guess and writes them back, and an under-constrained sketch has free degrees of freedom
+//! that only the stored position remembers.
 
 use super::{EntityId, Point, SketchLength, SketchPoint};
 use substrate::nonlinear_least_squares::{
@@ -20,20 +19,19 @@ use substrate::nonlinear_least_squares::{
 
 /// What a constraint asserts. Each variant names geometry **by id**, never by index.
 ///
-/// This is the set ADR 0035 Decisions 1 and 5 name as the things an author asserts about position
-/// directly. Tangent, Concentric, Curvature and `Quantize` (Decision 14) join it as their
-/// residuals are written; the entity, the cascade and the solve path below are the same for all
-/// of them. The first three wait on arcs and circles entering the parameter vector, which they do
-/// not yet. An arc's CENTER is nameable — the residual system reads it through
-/// [`position_of`], as the function of the arc's ends that it is — but a radius is not, and
-/// Tangent and Concentric are claims about radii.
+/// These are the things an author asserts about position directly. Tangent, Concentric and
+/// Curvature join them as their residuals are written; the entity, the cascade and the solve path
+/// below are the same for all of them. They depend on arcs and circles entering the parameter
+/// vector.
+/// An arc's CENTER is nameable — the residual system reads it through [`position_of`], as the
+/// function of the arc's ends that it is — but a radius is not, and Tangent and Concentric are
+/// claims about radii.
 ///
 /// **Every match on this enum is exhaustive**, here and at each of its five seams, and that is
 /// load-bearing rather than stylistic: it is what makes adding a variant a compiler error at each
-/// place that has to answer for it instead of a silent default. `residual_count` carried a `_ => 1`
-/// arm until 2026-07-30 and was the one hole — a new two-residual kind would have been given one
-/// row, shifting every later constraint's row by one and corrupting the whole system rather than
-/// failing.
+/// place that has to answer for it instead of a silent default. A `_ => 1` catch-all in
+/// `residual_count` is the one hole to guard — a new two-residual kind given one row shifts every
+/// later constraint's row by one and corrupts the whole system rather than failing.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ConstraintKind {
     /// This point does not move, and `at` is where it does not move to.
@@ -55,8 +53,8 @@ pub enum ConstraintKind {
     },
     /// Two points occupy one place.
     ///
-    /// It is a CONSTRAINT and not a merge, although a merge is the other design and Decision 5
-    /// gestures at it. Merging two points into one is destructive in a way the author cannot see
+    /// It is a CONSTRAINT and not a merge, although a merge is the other design available.
+    /// Merging two points into one is destructive in a way the author cannot see
     /// afterwards — the second id is gone, every segment that named it now names the first, and
     /// deleting the coincidence cannot put the drawing back. As an assertion it deletes like any
     /// other and the two points spring apart, which is what "remove this constraint" should mean.
@@ -101,7 +99,7 @@ impl ConstraintKind {
     }
 
     /// Whether two constraints make the SAME claim about the SAME geometry — the test behind the
-    /// one-of-a-kind-per-entity-set rule (ADR 0035 Decision 4).
+    /// one-of-a-kind-per-entity-set rule.
     ///
     /// Same claim means same variant, compared through the discriminant so that a variant added
     /// later is covered without an edit here. Same geometry comes from [`Self::subject`], which
@@ -131,7 +129,7 @@ impl ConstraintKind {
             | ConstraintKind::Equal { first, second }
             | ConstraintKind::Collinear { first, second } => [first.min(second), first.max(second)],
             // Asymmetric: the point and the segment play different parts, so the pair is not
-            // canonicalised — and it cannot collide, because the two ids name different stores.
+            // canonicalized — and it cannot collide, because the two ids name different stores.
             ConstraintKind::Midpoint { point, segment } => [point, segment],
         }
     }
@@ -176,7 +174,7 @@ impl ConstraintKind {
     }
 }
 
-/// A constraint entity (ADR 0035 Decision 3).
+/// A constraint entity.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Constraint {
     /// Stable identity, from the same counter as every other entity.
@@ -184,13 +182,12 @@ pub struct Constraint {
     /// What it asserts.
     pub kind: ConstraintKind,
     /// Whether the solver found it redundant when it was added — it holds, but adds no
-    /// information (ADR 0035 Decision 4). Redundancy is sometimes the intent, so it is flagged
-    /// rather than refused.
+    /// information. Redundancy is sometimes the intent, so it is flagged rather than refused.
     #[serde(default)]
     pub redundant: bool,
 }
 
-/// Why a constraint could not be added — **and what to blame** (ADR 0035 Decision 4).
+/// Why a constraint could not be added — **and what to blame**.
 ///
 /// Every refusal that has a culprit names it. A diagnosis the author cannot act on is barely a
 /// diagnosis: "it fights something" leaves them to find the something, and on a drawing carrying
@@ -222,7 +219,7 @@ pub enum ConstraintRefusal {
         ///
         /// Structural rather than experimental, and deliberately so: leave-one-out cannot answer
         /// this one. A previous solve has already MOVED the drawing, and releasing an assertion
-        /// does not undo its effect — so dropping the `Horizontal` that levelled a segment leaves
+        /// does not undo its effect — so dropping the `Horizontal` that leveled a segment leaves
         /// it level, and adding `Vertical` still collapses it. What the author needs is not "which
         /// removal would have helped" but "what else is holding this shape", which is a question
         /// about the constraint graph and always has an answer.
@@ -302,8 +299,8 @@ pub(super) struct Frame {
 /// the edge's span come out of the solve as it went in.
 ///
 /// A constraint should have a small blast radius — geometry it does not name should move as little
-/// as it can, and when it must move, it should move as a piece (owner, 2026-07-31). Minimizing each
-/// point's displacement does the OPPOSITE: the cheapest way to bring one corner of a polygon to a
+/// as it can, and when it must move, it should move as a piece. Minimizing each point's
+/// displacement does the OPPOSITE: the cheapest way to bring one corner of a polygon to a
 /// far point is to drag that corner alone and leave the rest, which is the maximum deformation for
 /// the minimum travel. Asking instead that every edge keep its span makes a pure TRANSLATION of a
 /// connected group free — every span is unchanged — while any stretch, rotation or shear is paid
@@ -320,10 +317,10 @@ pub(super) struct Frame {
 /// **The heavier group is ANCHORED, not merely outweighed.** Making each group move as one piece is
 /// only half of what the author wants: least squares still splits the gap between two joined groups
 /// in inverse proportion to their sizes, so a quad meeting a stick drags the quad a third of the way
-/// and the drawing the author was building slides out from under them. "One translates to the other"
-/// (owner, 2026-07-31) is a statement about which group is the reference, and no weight expresses it
-/// — even anchoring the heavy group with one soft row per point only brings its travel from a third
-/// down to a fifth. So the heavy group's coordinates are dropped from the parameter vector outright
+/// and the drawing the author was building slides out from under them. One group translating to
+/// the other is a statement about which is the reference, and no weight expresses it — even
+/// anchoring the heavy group with one soft row per point only brings its travel from a third down
+/// to a fifth. So the heavy group's coordinates are dropped from the parameter vector outright
 /// for this pass: it cannot move, the light group comes all the way, and the exactness pass that
 /// follows works on the whole drawing again in case the anchor made the constraint unreachable.
 ///
@@ -728,8 +725,7 @@ impl ResidualSystem for SketchResiduals<'_> {
 }
 
 /// The rank of the constraint system's Jacobian **at the author's own drawing** rather than at the
-/// solution — the witness-configuration idea, and the fix for a defect the literature is explicit
-/// about (FreeCAD #5931).
+/// solution — the witness-configuration idea.
 ///
 /// Redundancy is "did this constraint raise the rank", and rank has to be read somewhere. Reading
 /// it at the SOLUTION is the obvious choice and the wrong one: rows of the Jacobian vanish at an

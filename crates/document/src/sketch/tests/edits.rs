@@ -1,12 +1,12 @@
-//! ADR 0030 (#98) — the id-based add-point / delete entity edits and their anchor compensation.
+//! The id-based add-point / delete entity edits and their anchor compensation.
 //!
 //! These pin the PURE producer operations the sketch shell drives on a click: splitting a
-//! segment by id (add-point), deleting a point by id (cascading to its incident segments — ADR
-//! 0030 §6, deleting a point removes its edges and nothing else), and the node-offset
-//! compensation that keeps the rest of the profile fixed when an edit moves the profile's
-//! bbox-minimum (the resolve re-anchors that minimum to the node origin). Everything is keyed by
-//! stable `EntityId`, never a loop position — an open graph has no valid loop index. The profile
-//! is DERIVED from the entity store via `flattened_loop`, which is empty unless a closed loop exists.
+//! segment by id (add-point), deleting a point by id (which removes its incident edges and nothing
+//! else), and the node-offset compensation that keeps the rest of the profile fixed when an edit
+//! moves the profile's bbox-minimum (the resolve re-anchors that minimum to the node origin).
+//! Everything is keyed by stable `EntityId`, never a loop position — an open graph has no valid
+//! loop index. The profile is DERIVED from the entity store via `flattened_loop`, which is empty
+//! unless a closed loop exists.
 
 use crate::sketch::{EntityId, PlaneAxis, Sketch, SketchPoint, SketchSolid};
 
@@ -46,7 +46,6 @@ fn segment_id_between(solid: &SketchSolid, a: [i64; 2], b: [i64; 2]) -> EntityId
 
 #[test]
 fn split_inserts_a_vertex_on_the_named_segment() {
-    // Splitting the edge between [6, 2] and [6, 5] lands the new point between them in the loop.
     let before = bracket();
     let seg = segment_id_between(&before, [6, 2], [6, 5]);
     let after = before.with_point_on_segment(seg, SketchPoint::new(6, 3));
@@ -83,9 +82,9 @@ fn split_of_an_unknown_segment_is_a_noop() {
 
 #[test]
 fn delete_removes_the_point_and_cascades_only_its_segments() {
-    // ADR 0030 §6: deleting the point at [6, 5] removes it and its TWO incident segments — and
-    // nothing else. The two neighbors survive as free points, so the loop opens and resolves to
-    // nothing (flattened_loop is empty for an open graph, never a phantom polygon).
+    // Deleting the point at [6, 5] removes it and its TWO incident segments — and nothing else.
+    // The two neighbors survive as free points, so the loop opens and resolves to nothing
+    // (flattened_loop is empty for an open graph, never a phantom polygon).
     let before = bracket();
     let victim = point_id_at(&before, [6, 5]);
     let after = before.with_point_deleted(victim);
@@ -141,7 +140,7 @@ fn deleting_every_point_leaves_an_empty_sketch() {
 
 #[test]
 fn deleting_a_segment_removes_only_the_line() {
-    // ADR 0030: deleting a line removes only that segment; its endpoints survive as free points.
+    // Deleting a line removes only that segment; its endpoints survive as free points.
     let before = bracket();
     let seg = segment_id_between(&before, [6, 2], [6, 5]);
     let after = before.with_segment_deleted(seg);
@@ -218,7 +217,7 @@ fn resolve_tolerates_a_dangling_segment_without_panic() {
         role: EntityRole::Real,
     });
     // Deriving the loop must not panic — the missing vertex is simply filtered out — and the
-    // resolve extent stays sound (a hard load failure never happens, ADR 0030).
+    // resolve extent stays sound: a malformed store never hard-fails the load.
     let _ = solid.sketch.flattened_loop();
     let _ = solid.grid_dimensions();
 }

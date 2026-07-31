@@ -5,14 +5,13 @@ use crate::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-// ---- S0: chunk-addressable resolve (issue #27) ---------------------------
+// ---- Chunk-addressable resolve -------------------------------------------
 //
 // These tests prove the ADDITIVE chunked resolve path reconstructs EXACTLY
 // what the monolithic `resolve_region` produces, after normalizing for the
 // recenter offset that `resolve_region` applies and the chunk path does not.
-// `resolve_region` has SINCE become the test/oracle-only dense measuring stick
-// (ADR 0010 retired it from the render path); these tests still hold the chunk
-// path against it as the ground truth.
+// `resolve_region` is the test/oracle-only dense measuring stick; these tests
+// hold the chunk path against it as the ground truth.
 
 /// Assert the chunk-reassembled occupied set EXACTLY equals the monolithic
 /// `resolve_region`'s set (position + material), after recenter normalization,
@@ -97,9 +96,9 @@ fn shape_scene(kind: ShapeKind, voxels_per_block: u32) -> Scene {
     )
 }
 
-/// Single-shape parity, all five SDF kinds — mirrors the all-shapes coverage
-/// style. (Single-node zero-offset scenes also exercise the recenter
-/// normalization, since `resolve_region` recenters even a lone node.)
+/// Single-shape parity, all five SDF kinds. (Single-node zero-offset scenes
+/// also exercise the recenter normalization, since `resolve_region` recenters
+/// even a lone node.)
 #[test]
 fn chunked_resolve_matches_monolithic_for_all_shapes() {
     for kind in [
@@ -134,9 +133,9 @@ fn chunked_resolve_matches_monolithic_for_demo_village() {
     assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-village");
 }
 
-/// ADR 0003 §3i Slice 2a: the new sketch→extrude producer composes through the
-/// chunked resolve identically to the monolithic one — mirrors the SDF parity
-/// harness for a SketchTool leaf. Two cases: a plain rectangle extrude (the box
+/// The sketch→extrude producer composes through the chunked resolve identically to the
+/// monolithic one — mirrors the SDF parity harness for a SketchTool leaf. Two cases: a
+/// plain rectangle extrude (the box
 /// sugar) and a concave L-shape extrude (the added-value path), both at the app
 /// density and at an off-origin placement so the recenter/cover math is real.
 #[test]
@@ -189,9 +188,9 @@ fn chunked_resolve_matches_monolithic_for_sketch_extrude() {
     assert_chunked_matches_monolithic(&l_scene, voxels_per_block, "sketch-L");
 }
 
-/// ADR 0003 §3i: the revolve operation composes through the chunked resolve
-/// identically to the monolithic one — mirrors the extrude parity harness for a
-/// solid of revolution. A rectangle revolved 360° about Z (a cylinder) placed
+/// The revolve operation composes through the chunked resolve identically to the
+/// monolithic one — mirrors the extrude parity harness for a solid of
+/// revolution. A rectangle revolved 360° about Z (a cylinder) placed
 /// off-origin on X+Y so the recenter/cover math is real and the disc crosses
 /// chunk boundaries on both radial axes.
 #[test]
@@ -295,7 +294,7 @@ fn chunked_resolve_matches_monolithic_at_density_8() {
     assert_chunked_matches_monolithic(&scene, 8, "torus@8");
 }
 
-// ---- Outset: the per-node dilation (ADR 0019 Decision 7) ------------------
+// ---- Outset: the per-node dilation ---------------------------------------
 
 /// A box with an outset of `N` resolves to the box grown by `N` on EVERY side.
 ///
@@ -344,8 +343,8 @@ fn outset_grows_a_box_by_the_outset_on_every_side() {
     assert_eq!(
         resolved_side(-4),
         side as i64 - 8,
-        "a NEGATIVE outset must INSET, shrinking the box by 4 on each side (ADR 0019 \
-             Decision 7 — this is how a deliberate gap between chiselled pieces is authored)"
+        "a NEGATIVE outset must INSET, shrinking the box by 4 on each side \
+             (this is how a deliberate gap between chiseled pieces is authored)"
     );
 }
 
@@ -387,7 +386,7 @@ fn chunked_resolve_matches_monolithic_under_outset() {
 
 /// An outset SUBTRACT cutter removes strictly more than the same cutter without one.
 ///
-/// This is the authoring case outset exists for — clearance around a chiselled cut — and
+/// This is the authoring case outset exists for — clearance around a chiseled cut — and
 /// it pins the DIRECTION of the dilation. A sign error would still round-trip between the
 /// two resolve paths and still bracket soundly; only comparing against the undilated cut
 /// catches it.
@@ -430,13 +429,12 @@ fn an_outset_cutter_carves_more_than_an_undilated_one() {
     );
 }
 
-/// **An outset on a Part dilates the Part's COMPOSED body** (ADR 0019 Decision 7).
+/// **An outset on a Part dilates the Part's COMPOSED body.**
 ///
-/// A Part (`NodeContent::Group` — ADR 0018 Decision 1 names the composition container
-/// "Part") is a sealed scope: it pre-composes its children into one body. Its outset must
-/// therefore dilate that composed body, not each member separately. ADR 0019 Decision 7
-/// rejects leaf-only outset precisely so a reusable composed cutter can be given
-/// clearance as a whole.
+/// A Part (`NodeContent::Group` — the composition container) is a sealed scope: it
+/// pre-composes its children into one body. Its outset must therefore dilate that
+/// composed body, not each member separately. Leaf-only outset is rejected precisely so
+/// a reusable composed cutter can be given clearance as a whole.
 ///
 /// The two are NOT interchangeable. Dilation distributes over union, so for a
 /// pure-union Part the per-member and per-Part answers agree — but a Part with an
@@ -520,7 +518,7 @@ fn an_outset_on_a_part_dilates_the_parts_composed_body() {
 
 /// The outset shell of a mixed-material Part inherits the NEAREST member's material.
 ///
-/// Inside the body the later Union member still wins on overlap (ADR 0017), so an outset
+/// Inside the body the later Union member still wins on overlap, so an outset
 /// Part's interior is colored exactly as the same Part at outset zero. Outside it there
 /// is no "later" to appeal to — no member contains the point — so the shell takes the
 /// material of the surface it grew from. Flattening the Part to one material would
@@ -622,7 +620,7 @@ fn chunked_resolve_matches_monolithic_for_an_outset_part() {
     assert_chunked_matches_monolithic(&scene, voxels_per_block, "outset-part");
 }
 
-// ---- Emboss (ADR 0020 Decision 4) ---------------------------------------
+// ---- Emboss --------------------------------------------------------------
 
 /// **Emboss raises or recesses the accumulated surface within the cutter's footprint.**
 ///
@@ -717,7 +715,7 @@ fn emboss_moves_the_surface_within_the_cutters_footprint() {
 /// A TOP-LEVEL emboss must work too — not only one nested inside a Part.
 ///
 /// The walk visits `scene.roots` directly, without pushing a scope frame, so the root
-/// spine needed the same pre-composition a Group gets. Without it a top-level emboss
+/// spine needs the same pre-composition a Group gets. Without it a top-level emboss
 /// reaches the voxel-set fold, which has no accumulated field to read, and no-ops.
 #[test]
 fn a_top_level_emboss_moves_the_surface() {

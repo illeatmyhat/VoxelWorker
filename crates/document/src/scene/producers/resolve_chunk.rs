@@ -1,7 +1,7 @@
 //! Runtime chunk resolve: the sole live per-chunk resolver
-//! ([`Scene::resolve_chunk`] / [`Scene::resolve_chunk_rebased`], ADR 0002 / ADR
-//! 0010) the two-layer store calls, plus its per-leaf chunk-clipped stamp / mask
-//! helpers ([`stamp_producer_into_chunk`] / [`mask_producer_in_chunk`]).
+//! ([`Scene::resolve_chunk`] / [`Scene::resolve_chunk_rebased`]) the two-layer store
+//! calls, plus its per-leaf chunk-clipped stamp / mask helpers
+//! ([`stamp_producer_into_chunk`] / [`mask_producer_in_chunk`]).
 
 use crate::voxel::VoxelProducer;
 use voxel_core::spatial_index::VoxelAabb;
@@ -16,16 +16,13 @@ impl Scene {
     /// Resolve exactly **one chunk** of the scene into a fresh [`VoxelGrid`], in
     /// **absolute (non-recentered) composite voxel coordinates**.
     ///
-    /// This is the chunk-addressable counterpart to `resolve_region` required by
-    /// issue #27 (deep chunked resolve). `resolve_region` is now the test/oracle-only
-    /// dense measuring stick (ADR 0010 boundary residency retired it from the live
-    /// render path; it is compile-gated behind `cfg(test)`/`oracle`) — the two-layer
+    /// This is the chunk-addressable counterpart to `resolve_region`, the test/oracle-only
+    /// dense measuring stick (compile-gated behind `cfg(test)`/`oracle`) — the two-layer
     /// store (`evaluation::two_layer_store`) is the sole runtime path, and it calls
     /// THIS resolver per chunk. `resolve_region` recenters the composite on the
     /// origin; this path does **not** recenter, so its voxel positions are the
     /// scene's true composite coordinates. The two frames differ by exactly the
-    /// recenter offset `resolve_region` subtracts (see
-    /// `recenter_voxels`).
+    /// recenter offset `resolve_region` subtracts (see `recenter_voxels`).
     ///
     /// A chunk is a `CHUNK_BLOCKS³`-block cell (`CHUNK_BLOCKS = 4`,
     /// [`voxel_core::core_geom::CHUNK_BLOCKS`]); one chunk therefore spans
@@ -40,29 +37,28 @@ impl Scene {
     ///
     /// The returned grid's `dimensions` are one chunk's voxel extent
     /// (`chunk_extent_voxels³`); the occupied voxels keep their **absolute**
-    /// composite `world_position` (they are NOT rebased to the chunk's local origin
-    /// — that, like the recenter removal, is a later step). An empty chunk (no leaf
-    /// overlaps it) returns an empty grid; it never panics.
+    /// composite `world_position` (they are NOT rebased to the chunk's local
+    /// origin). An empty chunk (no leaf overlaps it) returns an empty grid; it never
+    /// panics.
     ///
-    /// `voxels_per_block` is the application density (ADR 0001). `lod` is the parked
-    /// level-of-detail seam (ADR 0002 Decision 2): it is **always `0`** for now and
-    /// is asserted so; it exists from day one so a future down-sampling LOD level is
-    /// a behavioral change, not a signature break.
+    /// `voxels_per_block` is the application density. `lod` is the level-of-detail
+    /// seam: it is **always `0`** and asserted so, so that a down-sampling LOD level
+    /// is a behavioral change rather than a signature break.
     pub fn resolve_chunk(
         &self,
         chunk_coord: [i32; 3],
         voxels_per_block: u32,
         lod: u32,
     ) -> VoxelGrid {
-        // The bare `resolve_chunk` keeps the S0 contract: ABSOLUTE composite
-        // positions (floating origin `[0, 0, 0]`). The live render path uses
-        // `resolve_chunk_rebased` with the floating origin = the composite recenter.
+        // The bare `resolve_chunk` returns ABSOLUTE composite positions (floating
+        // origin `[0, 0, 0]`). The live render path uses `resolve_chunk_rebased` with
+        // the floating origin = the composite recenter.
         self.resolve_chunk_rebased(chunk_coord, voxels_per_block, lod, [0, 0, 0])
     }
 
     /// Resolve one chunk like [`resolve_chunk`](Self::resolve_chunk), but store each
-    /// voxel's position **rebased to `floating_origin_voxels`** (ADR 0002 Decision 2,
-    /// camera-relative / origin-rebased rendering — S4b).
+    /// voxel's position **rebased to `floating_origin_voxels`** (camera-relative /
+    /// origin-rebased rendering).
     ///
     /// The stored `world_position` is `absolute_composite_position −
     /// floating_origin_voxels`, with the subtraction performed in **i64 before the
@@ -74,8 +70,8 @@ impl Scene {
     /// `floating_origin_voxels = [0, 0, 0]` reproduces `resolve_chunk` exactly. The
     /// live render passes [`recenter_voxels_for_resolve`](Self::recenter_voxels_for_resolve)
     /// (the composite recenter, an integer-block-aligned point), so for a near scene
-    /// the result is bit-identical to today's recentered `resolve_region` while a
-    /// far-placed scene renders with no f32 jitter (the S1 speckle fix).
+    /// the result is bit-identical to the recentered `resolve_region` while a
+    /// far-placed scene renders with no f32 jitter.
     pub fn resolve_chunk_rebased(
         &self,
         chunk_coord: [i32; 3],
@@ -83,10 +79,10 @@ impl Scene {
         lod: u32,
         floating_origin_voxels: [i64; 3],
     ) -> VoxelGrid {
-        debug_assert_eq!(lod, 0, "S0 only resolves full resolution (lod 0)");
+        debug_assert_eq!(lod, 0, "only full resolution (lod 0) is resolved");
 
         // Chunk extent fits i64 trivially; the chunk's absolute-voxel corners can be
-        // large (a far-placed chunk), so they are computed in i64 (S4a).
+        // large (a far-placed chunk), so they are computed in i64.
         let chunk_extent_voxels =
             (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
@@ -105,7 +101,7 @@ impl Scene {
         // The chunk grid is one chunk's voxel extent. (The voxels keep ABSOLUTE
         // positions inside it; `dimensions` describes the chunk's size, not the
         // window of absolute space the positions live in — the consumers that need
-        // chunk-local coordinates rebase later, S4.)
+        // chunk-local coordinates rebase themselves.)
         let chunk_dimensions = [
             chunk_extent_voxels as u32,
             chunk_extent_voxels as u32,
@@ -119,25 +115,23 @@ impl Scene {
         // only the voxels whose absolute center falls in this chunk's box.
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
-        // ADR 0017 Decision 3 (issue #74): the same scoped depth-first fold as
-        // `resolve_region`, restricted to this chunk. Composition is cell-local (a
-        // union appends a cell, a subtract removes a cell), so restricting every
-        // stamp / carve / scope-close to the chunk's cells commutes with the fold —
-        // the reassembled chunks equal the monolithic scoped resolve exactly. A leaf
-        // whose AABB misses the chunk is skipped WITHOUT syncing the stack: it
-        // contributes no cells here, and a scope none of whose leaves touch the
-        // chunk simply never opens (an empty scope folds to nothing under Union /
-        // Subtract). EXCEPTION (ADR 0017 #75): an Intersect-influence leaf is never
-        // skipped — its mask applies precisely where its body has no cells, and an
-        // Intersect-closing scope must open even here so its ∅-in-chunk body
-        // annihilates the parent on close (see the skip guard below).
+        // The same scoped depth-first fold as `resolve_region`, restricted to this chunk.
+        // Composition is cell-local (a union appends a cell, a subtract removes a cell), so
+        // restricting every stamp / carve / scope-close to the chunk's cells commutes with
+        // the fold — the reassembled chunks equal the monolithic scoped resolve exactly. A
+        // leaf whose AABB misses the chunk is skipped WITHOUT syncing the stack: it
+        // contributes no cells here, and a scope none of whose leaves touch the chunk simply
+        // never opens (an empty scope folds to nothing under Union / Subtract). EXCEPTION:
+        // an Intersect-influence leaf is never skipped — its mask applies precisely where
+        // its body has no cells, and an Intersect-closing scope must open even here so its
+        // ∅-in-chunk body annihilates the parent on close (see the skip guard below).
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        // ADR 0026: the discrete lattice `orientation` is still not applied here (identity for
-        // every gate scene). ADR 0027 "Step 2": the CONTINUOUS `rotation` and the fractional
-        // `offset_local_voxels` ARE applied — a genuinely out-of-phase FIELD leaf is resampled by
-        // the shared inverse-gather ([`gather_placed_field_into_grid`]) AND its chunk-skip AABB is
-        // taken from the ROTATED world box (the placement affine), so a tilted body is neither
-        // truncated by the upright skip nor stamped upright.
+        // The discrete lattice `orientation` is not applied here (identity for every gate
+        // scene). The CONTINUOUS `rotation` and the fractional `offset_local_voxels` ARE
+        // applied — a genuinely out-of-phase FIELD leaf is resampled by the shared
+        // inverse-gather ([`gather_placed_field_into_grid`]) AND its chunk-skip AABB is
+        // taken from the ROTATED world box (the placement affine), so a tilted body is
+        // neither truncated by the upright skip nor stamped upright.
         self.for_each_leaf(&mut |VisitedLeaf {
                                      world_offset_voxels,
                                      offset_local_voxels,
@@ -155,9 +149,9 @@ impl Scene {
             // dilation reaches into this chunk would be skipped and its mask silently lost.
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-            // Issue #27 S3 optimization: skip a leaf whose world-AABB doesn't touch
-            // this chunk, so resolving one chunk costs ~the leaves that overlap it
-            // (not the whole tree). This is BIT-IDENTICAL to stamping-then-clipping:
+            // Skip a leaf whose world-AABB doesn't touch this chunk, so resolving one
+            // chunk costs ~the leaves that overlap it (not the whole tree). This is
+            // BIT-IDENTICAL to stamping-then-clipping:
             // the leaf's AABB `[off·d − grid/2, off·d + grid/2)` is the exact span of
             // its voxel centers, and `stamp_producer_into_chunk` keeps only centers
             // inside `[chunk_min, chunk_max)`; if those two half-open boxes don't
@@ -165,32 +159,31 @@ impl Scene {
             // region-spanning leaf (a VoxelBody, `leaf_size_blocks` → `None`) has no
             // localizable AABB, so it is never skipped (it may emit anywhere).
             //
-            // ADR 0017 (#75): an Intersect-INFLUENCE leaf (its own operation is
-            // Intersect, or any enclosing scope closes under Intersect) is NEVER
-            // skipped either: its mask kills accumulated cells anywhere OUTSIDE its
-            // body, so a chunk its AABB misses is exactly where the mask must still
-            // apply (its body has no cells here ⇒ everything accumulated in this
-            // chunk within its scope dies). Keeping it also guarantees every
-            // Intersect-closing scope OPENS in this chunk's fold (its leaves all
-            // carry the Intersect frame), so the ∅-body scope close annihilates the
-            // parent here exactly as the monolithic fold does.
+            // An Intersect-INFLUENCE leaf (its own operation is Intersect, or any
+            // enclosing scope closes under Intersect) is NEVER skipped either: its mask
+            // kills accumulated cells anywhere OUTSIDE its body, so a chunk its AABB
+            // misses is exactly where the mask must still apply (its body has no cells
+            // here ⇒ everything accumulated in this chunk within its scope dies). Keeping
+            // it also guarantees every Intersect-closing scope OPENS in this chunk's fold
+            // (its leaves all carry the Intersect frame), so the ∅-body scope close
+            // annihilates the parent here exactly as the monolithic fold does.
             if !operation_masks_beyond_bounds(operation, scope_path) {
                 if let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) {
                     // The leaf's true footprint in the absolute frame. For a whole-phase leaf
                     // (axis-aligned rotation, integer offset — every gate scene) the producer
                     // corner-anchors its grid, so this is `[off, off + grid)`, bit-identical to
-                    // stamping-then-clipping. ADR 0027: a genuinely rotated / sub-voxel-seated
-                    // leaf's footprint is the ROTATED box, so it is taken from the SAME placement
-                    // affine the gather stamps through — otherwise the upright box would skip the
-                    // chunks the tilted body occupies and TRUNCATE it (the tubes-render-upright bug).
+                    // stamping-then-clipping. A genuinely rotated / sub-voxel-seated leaf's
+                    // footprint is the ROTATED box, so it is taken from the SAME placement
+                    // affine the gather stamps through — otherwise the upright box would skip
+                    // the chunks the tilted body occupies and TRUNCATE it.
                     let leaf_box = if leaf_is_out_of_phase(rotation, offset_local_voxels) {
                         let full = glam::Vec3::new(
                             grid_voxels[0] as f32,
                             grid_voxels[1] as f32,
                             grid_voxels[2] as f32,
                         );
-                        // ADR 0027 §1 wandering origin: keep the integer offset and fractional
-                        // slide SPLIT so the skip-AABB stays exact for a far-out tilted leaf.
+                        // Wandering origin: keep the integer offset and fractional slide
+                        // SPLIT so the skip-AABB stays exact for a far-out tilted leaf.
                         let (min, max) = substrate::spatial::LeafPlacement::from_origin_and_local(
                             rotation,
                             full,
@@ -211,7 +204,7 @@ impl Scene {
                 }
             }
             let translation_voxels = world_offset_voxels;
-            // ADR 0019 Decision 7: dilate before folding, exactly as the dense path does.
+            // Dilate before folding, exactly as the dense path does.
             let Some((material_override, producer)) =
                 body.into_producer(region_dimensions, voxels_per_block, outset_voxels)
             else {
@@ -225,13 +218,14 @@ impl Scene {
                 Some((_, scratch)) => scratch,
                 None => &mut output,
             };
-            // ADR 0027 "Step 2": a genuinely out-of-phase FIELD leaf is resampled by the shared
-            // inverse-gather through substrate's placement affine — the SAME map (and per-cell
-            // field test) the two-layer classifier folds through, so the dense chunk oracle agrees
-            // with the live path on rotated / sub-voxel seats. Here the output grid holds ABSOLUTE
-            // positions (floating origin `[0,0,0]` for the bare `resolve_chunk`, the recenter for
-            // the rebased render path), so `oi` denotes absolute cell `oi + floating_origin_voxels`,
-            // and the chunk membership clip keeps only cells in `[chunk_min, chunk_max)`.
+            // A genuinely out-of-phase FIELD leaf is resampled by the shared inverse-gather
+            // through substrate's placement affine — the SAME map (and per-cell field test)
+            // the two-layer classifier folds through, so the dense chunk oracle agrees with
+            // the live path on rotated / sub-voxel seats. Here the output grid holds ABSOLUTE
+            // positions (floating origin `[0,0,0]` for the bare `resolve_chunk`, the recenter
+            // for the rebased render path), so `oi` denotes absolute cell
+            // `oi + floating_origin_voxels`, and the chunk membership clip keeps only cells
+            // in `[chunk_min, chunk_max)`.
             if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some()
             {
                 let placement = dense_leaf_placement(
@@ -254,11 +248,10 @@ impl Scene {
                 );
                 return;
             }
-            // ADR 0017: a Subtract leaf carves its body's cells OUT of the voxels
-            // stamped so far in this chunk WITHIN ITS SCOPE (occupancy-only — no
-            // material, no stamp). A leaf whose AABB missed the chunk was already
-            // skipped above (it carves nothing here), so this sees only
-            // genuinely-overlapping cutters.
+            // A Subtract leaf carves its body's cells OUT of the voxels stamped so far in
+            // this chunk WITHIN ITS SCOPE (occupancy-only — no material, no stamp). A leaf
+            // whose AABB missed the chunk was already skipped above (it carves nothing
+            // here), so this sees only genuinely-overlapping cutters.
             if operation == CombineOp::Subtract {
                 mask_producer_in_chunk(
                     target,
@@ -273,12 +266,12 @@ impl Scene {
                 );
                 return;
             }
-            // ADR 0017 (#75): an Intersect leaf keeps ONLY the cells its body covers
-            // in this chunk within its scope (occupancy-only). It is never skipped by
-            // the AABB guard, so a mask whose box misses the chunk resolves an EMPTY
-            // window here and correctly kills everything accumulated so far — the
-            // restriction to this chunk's cells still commutes with the fold, because
-            // a cell survives iff the mask occupies THAT cell.
+            // An Intersect leaf keeps ONLY the cells its body covers in this chunk within
+            // its scope (occupancy-only). It is never skipped by the AABB guard, so a mask
+            // whose box misses the chunk resolves an EMPTY window here and correctly kills
+            // everything accumulated so far — the restriction to this chunk's cells still
+            // commutes with the fold, because a cell survives iff the mask occupies THAT
+            // cell.
             if operation == CombineOp::Intersect {
                 mask_producer_in_chunk(
                     target,
@@ -299,9 +292,9 @@ impl Scene {
                 translation_voxels,
                 floating_origin_voxels,
                 material_override,
-                // Issue #29 S4: OR the on-face-grid flag bit onto each kept voxel
-                // iff this node opted in, so the bit travels through the chunked
-                // render path exactly as it does through `resolve_region`.
+                // OR the on-face-grid flag bit onto each kept voxel iff this node
+                // opted in, so the bit travels through the chunked render path
+                // exactly as it does through `resolve_region`.
                 grid_on_faces,
                 producer.as_ref(),
                 voxels_per_block,
@@ -328,16 +321,16 @@ impl Scene {
 /// chunk_extent_voxels)` per axis; since centers sit at `n + 0.5` and boundaries
 /// at integer multiples of the chunk extent, each voxel lands in exactly one
 /// chunk.
-/// `floating_origin_voxels` is the **render floating origin** (ADR 0002 Decision 2,
-/// camera-relative / origin-rebased rendering — S4b): the integer-voxel point the
-/// rendered f32 frame is rebased around. The stored `world_position` is the voxel's
-/// absolute composite position **minus the floating origin**, with the subtraction
-/// done in **i64 BEFORE the f32 downcast** so the rendered f32 magnitude stays small
-/// regardless of how far the chunk sits from the absolute origin (no far-lands
-/// jitter). Pass `[0, 0, 0]` to store true absolute positions (the chunk-cache
-/// parity tests / `.vox`-style consumers). The chunk-membership clip is computed in
-/// **f64 absolute** space (independent of the rebase) so a far chunk's boundary
-/// voxels are never misclassified by f32 rounding.
+///
+/// `floating_origin_voxels` is the **render floating origin** (camera-relative /
+/// origin-rebased rendering): the integer-voxel point the rendered f32 frame is rebased
+/// around. The stored `world_position` is the voxel's absolute composite position
+/// **minus the floating origin**, with the subtraction done in **i64 BEFORE the f32
+/// downcast** so the rendered f32 magnitude stays small regardless of how far the chunk
+/// sits from the absolute origin (no far-lands jitter). Pass `[0, 0, 0]` to store true
+/// absolute positions (the chunk-cache parity tests / `.vox`-style consumers). The
+/// chunk-membership clip is computed in **f64 absolute** space (independent of the
+/// rebase) so a far chunk's boundary voxels are never misclassified by f32 rounding.
 #[allow(clippy::too_many_arguments)]
 fn stamp_producer_into_chunk(
     output: &mut VoxelGrid,
@@ -353,15 +346,15 @@ fn stamp_producer_into_chunk(
 ) {
     // Resolve ONLY the cells this chunk owns, in the producer's LOCAL voxel-index
     // frame `[0, full_dim)`. A producer's local cell `idx` has absolute center
-    // `translation_voxels[axis] + idx + 0.5`; the historical chunk-membership clip
-    // kept `chunk_min ≤ translation + idx + 0.5 < chunk_max`. The `+ 0.5` cancels on
+    // `translation_voxels[axis] + idx + 0.5`, and chunk membership is
+    // `chunk_min ≤ translation + idx + 0.5 < chunk_max`. The `+ 0.5` cancels on
     // half-open INTEGER chunk edges:
     //   idx + 0.5 ≥ chunk_min  ⟺  idx ≥ chunk_min − translation
     //   idx + 0.5 <  chunk_max  ⟺  idx <  chunk_max − translation
     // so the chunk window in the local frame is the integer half-open box below.
     // `resolve_into` clamps it to `[0, full_dim)` internally, so an out-of-range
-    // window is safe, and it returns EXACTLY the cells the old per-voxel clip kept —
-    // a producer spanning N chunks now resolves each chunk's cells once instead of
+    // window is safe, and it returns EXACTLY the cells a per-voxel clip would keep —
+    // a producer spanning N chunks resolves each chunk's cells once instead of
     // re-resolving its full extent N×.
     let mut local = VoxelGrid::new(region_dimensions);
     let window_local = voxel_core::spatial_index::VoxelAabb::new(
@@ -382,8 +375,8 @@ fn stamp_producer_into_chunk(
     // FIRST so the f32 add never sees a large magnitude. For the live render the
     // floating origin equals the composite recenter, so for a near scene this is
     // EXACTLY the small `world_offset·d − recenter` translation `resolve_region`
-    // adds in f32 today — bit-identical framing — while a far chunk no longer loses
-    // the voxel-center `.5` to f32 rounding at ~1e6 magnitude (the S1 speckle).
+    // adds in f32 — bit-identical framing — while a far chunk keeps the voxel-center
+    // `.5` that f32 rounding would lose at ~1e6 magnitude.
     let rebased_translation = [
         translation_voxels[0] - floating_origin_voxels[0],
         translation_voxels[1] - floating_origin_voxels[1],
@@ -392,11 +385,10 @@ fn stamp_producer_into_chunk(
 
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
-        // Store the rebased (origin-relative) INTEGER index (ADR 0003 §3a). The rebase
-        // is a pure i64 subtraction done here BEFORE the downcast, so the far chunk's
-        // index keeps full precision — the f32 magnitude loss the old f32 payload took
-        // at ~1e6 (the S1 speckle) is gone, and `world_position()` (= index + 0.5)
-        // reproduces the small rebased center exactly for a near scene.
+        // Store the rebased (origin-relative) INTEGER index. The rebase is a pure i64
+        // subtraction done here BEFORE the downcast, so the far chunk's index keeps
+        // full precision, and `world_position()` (= index + 0.5) reproduces the small
+        // rebased center exactly for a near scene.
         voxel.local_index[0] = (voxel.local_index[0] as i64 + rebased_translation[0]) as i32;
         voxel.local_index[1] = (voxel.local_index[1] as i64 + rebased_translation[1]) as i32;
         voxel.local_index[2] = (voxel.local_index[2] as i64 + rebased_translation[2]) as i32;
@@ -404,20 +396,20 @@ fn stamp_producer_into_chunk(
         if let Some(id) = material_override {
             voxel.block_id = id;
         }
-        // ADR 0003 §3c: transient render marker, not the categorical id (see stamp_producer).
+        // A transient render marker, not the categorical id (see `stamp_producer`).
         voxel.grid_overlay = grid_overlay;
         output.occupied.push(voxel);
     }
 }
 
 /// Resolve `producer`'s cells inside the chunk window and **occupancy-mask** `output`
-/// with them (ADR 0017 Decision 1). Each already-stamped voxel whose (rebased) index
-/// coincides with one of the mask's cells is *covered*; `keep_if_covered` picks which
-/// side of the mask survives — the chunk-scoped sibling of the oracle's `mask_producer`:
+/// with them. Each already-stamped voxel whose (rebased) index coincides with one of the
+/// mask's cells is *covered*; `keep_if_covered` picks which side of the mask survives —
+/// the chunk-scoped sibling of the oracle's `mask_producer`:
 ///
 /// * `keep_if_covered = false` → **Subtract** (carve): covered voxels are removed.
-/// * `keep_if_covered = true`  → **Intersect** (issue #75): only covered voxels
-///   survive. Restricting the mask to the chunk window is EXACT (not merely
+/// * `keep_if_covered = true`  → **Intersect**: only covered voxels survive.
+///   Restricting the mask to the chunk window is EXACT (not merely
 ///   conservative): a cell survives iff the mask occupies that very cell, and every
 ///   output voxel here lies inside the chunk — a mask cell in another chunk can only
 ///   affect that other chunk. A mask whose box misses this chunk entirely resolves an

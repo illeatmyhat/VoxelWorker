@@ -6,8 +6,8 @@ use voxel_core::voxel::{ShapeKind, VoxelGrid};
 /// LOAD-BEARING: a rectangle-profile extrude produces EXACTLY the same occupied
 /// voxel set (positions, block-local coords, materials) as the axis-aligned
 /// `Box` `SdfShape` of the same size/placement/density. This is the "box =
-/// rectangle-extrude sugar" proof (§3i). Covered for several sizes including an
-/// odd size and density 16.
+/// rectangle-extrude sugar" proof. Covered for several sizes including an odd
+/// size and density 16.
 #[test]
 fn rectangle_extrude_equals_box() {
     // (size_blocks, density). An odd size (3) and density 16 are included.

@@ -1,4 +1,4 @@
-//! Multi-region derivation and face pick/unpick (ADR 0030 §2/§3/§4, issue #100).
+//! Multi-region derivation and face pick/unpick.
 
 use super::*;
 use crate::sketch::FaceKey;
@@ -94,7 +94,7 @@ fn unpicking_the_inner_face_carves_a_hole_through_the_extrude() {
     );
 }
 
-/// A hole survives into the revolve too — the hollow vase (ADR 0030 §4).
+/// A hole survives into the revolve too — the hollow vase.
 #[test]
 fn a_revolve_lifts_the_hole_as_well() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -112,10 +112,9 @@ fn a_revolve_lifts_the_hole_as_well() {
     );
 }
 
-/// The point of the interior-point key (ADR 0035 Decision 9): an unpick survives the edits that
-/// leave the same ground under the point. Dragging a vertex and splitting a boundary edge both do
-/// — neither moves the pocket out from under its own deepest point (an explicit owner
-/// requirement, restated for the arrangement).
+/// The point of the interior-point key: an unpick survives the edits that leave the same ground
+/// under the point. Dragging a vertex and splitting a boundary edge both do — neither moves the
+/// pocket out from under its own deepest point.
 #[test]
 fn an_unpick_survives_a_vertex_drag_and_an_edge_split() {
     let mut sketch = nested_squares();
@@ -157,9 +156,9 @@ fn inner_corner_ids(sketch: &Sketch) -> Vec<EntityId> {
         .collect()
 }
 
-/// The other half of the contract, and the failure mode ADR 0035 Decision 9 ACCEPTS: cutting the
-/// pocket in two does not reset both halves to picked, it migrates the unpick into whichever half
-/// still holds the stored point. Exactly one hole survives, and it is the half the point is in.
+/// The other half of the contract, and the failure mode the interior-point key ACCEPTS: cutting
+/// the pocket in two does not reset both halves to picked, it migrates the unpick into whichever
+/// half still holds the stored point. Exactly one hole survives: the half the point is in.
 #[test]
 fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
     let mut sketch = nested_squares();
@@ -190,9 +189,9 @@ fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
     );
 }
 
-/// A crossing needs NO shared point (ADR 0035 Decision 8, retiring ADR 0030 §2): the bowtie's
-/// two segments cross in mid-air, and the arrangement cuts both there, so the two triangles are
-/// two regions without the author snapping a vertex at the crossing first.
+/// A crossing needs NO shared point: the bowtie's two segments cross in mid-air, and the
+/// arrangement cuts both there, so the two triangles are two regions without the author snapping a
+/// vertex at the crossing first.
 #[test]
 fn a_crossing_bounds_faces_with_no_snapped_point() {
     let bowtie = Sketch::new(
@@ -220,8 +219,8 @@ fn a_crossing_bounds_faces_with_no_snapped_point() {
     );
 }
 
-/// The unpicked set is document state: it round-trips, and a pre-#100 document loads with every
-/// face picked (no migration — ADR 0030 §6).
+/// The unpicked set is document state: it round-trips, and a document written before face picking
+/// loads with every face picked, without a migration.
 #[test]
 fn the_pick_state_round_trips_and_an_older_document_loads_picked() {
     let mut sketch = nested_squares();
@@ -237,7 +236,7 @@ fn the_pick_state_round_trips_and_an_older_document_loads_picked() {
         .expect("object")
         .remove("unpicked_points")
         .expect("the key was written");
-    let older: Sketch = serde_json::from_value(value).expect("a pre-#100 document");
+    let older: Sketch = serde_json::from_value(value).expect("a document with no pick state");
     assert!(
         older
             .identified_faces()
@@ -287,7 +286,7 @@ fn the_coarse_claim_never_over_claims_across_a_hole() {
 /// The wash asks the SAME field the resolve does ([`Sketch::region_field_loops`]), so what an
 /// overlay covers is decided by `point_in_region` and nesting is never the overlay's problem. Two
 /// nested PICKED faces claim the outer square once — the inner adds nothing the outer does not
-/// already claim, where two triangulated fills composited their alpha twice.
+/// already claim, where two triangulated fills would composite their alpha twice.
 #[test]
 fn nested_picked_faces_claim_the_region_once() {
     let sketch = nested_squares();

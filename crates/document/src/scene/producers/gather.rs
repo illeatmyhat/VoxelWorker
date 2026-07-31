@@ -1,4 +1,4 @@
-//! ADR 0027 rotated / sub-voxel placement for the dense oracle: the continuous
+//! Rotated / sub-voxel placement for the dense oracle: the continuous
 //! [`substrate::spatial::LeafPlacement`] construction ([`dense_leaf_placement`]), the
 //! out-of-phase predicate ([`leaf_is_out_of_phase`]), and the inverse-resample gather
 //! that writes a genuinely rotated / sub-voxel-seated field into a [`VoxelGrid`]
@@ -10,17 +10,16 @@ use voxel_core::voxel::VoxelGrid;
 
 use crate::scene::*;
 
-/// Build the ADR 0027 continuous placement [`substrate::spatial::LeafPlacement`] for a leaf the
-/// dense oracle is stamping — the SAME corner-anchored world↔producer-local affine the
-/// two-layer classifier folds through (its evaluation-layer `leaf_affine` constructs an
-/// identical `LeafPlacement`). Sharing substrate's ONE map — rather than the dense path's old
-/// translation-only copy — is what stops the reference oracle silently disagreeing with the
-/// live path on where a rotated / sub-voxel-seated producer's cells land (the deferred "Step 2").
+/// Build the continuous placement [`substrate::spatial::LeafPlacement`] for a leaf the dense
+/// oracle is stamping — the SAME corner-anchored world↔producer-local affine the two-layer
+/// classifier folds through (its evaluation-layer `leaf_affine` constructs an identical
+/// `LeafPlacement`). Sharing substrate's ONE map is what stops the reference oracle silently
+/// disagreeing with the live path on where a rotated / sub-voxel-seated producer's cells land.
 ///
 /// `leaf_abs_low_voxels` is the OUTSET producer's low corner in the scene's ABSOLUTE voxel frame
 /// (the visitor's `world_offset_voxels` minus the outset), matching the two-layer leaf's
-/// `world_offset_voxels`; `offset_local_voxels` is the ADR 0027 continuous sub-voxel slide added
-/// on top. `producer` is the same boxed producer the stamp resolves, so `full_dimensions` matches.
+/// `world_offset_voxels`; `offset_local_voxels` is the continuous sub-voxel slide added on top.
+/// `producer` is the same boxed producer the stamp resolves, so `full_dimensions` matches.
 pub(super) fn dense_leaf_placement(
     rotation: glam::Quat,
     offset_local_voxels: [f32; 3],
@@ -34,8 +33,8 @@ pub(super) fn dense_leaf_placement(
         full_dimensions[1] as f32,
         full_dimensions[2] as f32,
     );
-    // ADR 0027 §1 wandering origin: hand the integer low corner and the fractional slide to
-    // substrate SPLIT, so the far-out translation stays exact in i64 (never collapsed to f32 here).
+    // Wandering origin: hand the integer low corner and the fractional slide to substrate SPLIT,
+    // so the far-out translation stays exact in i64 (never collapsed to f32 here).
     substrate::spatial::LeafPlacement::from_origin_and_local(
         rotation,
         full,
@@ -44,24 +43,23 @@ pub(super) fn dense_leaf_placement(
     )
 }
 
-/// Whether a leaf is OUT OF PHASE with the absolute voxel lattice (ADR 0027): a genuine
-/// (non-axis-aligned) rotation, OR a fractional `offset_local_voxels` sub-voxel seat. An
-/// out-of-phase FIELD leaf cannot be emitted one-cell-per-abs-cell by a translation, so the dense
-/// oracle resamples it by inverse gather ([`gather_placed_field_into_grid`]) — mirroring the
-/// two-layer classifier's `gather_rotated_leaf_into_region`. A whole-phase leaf (integer offset,
-/// axis-aligned rotation — every gate scene) keeps the exact translate-and-stamp path, so the
-/// existing goldens stay byte-identical.
+/// Whether a leaf is OUT OF PHASE with the absolute voxel lattice: a genuine (non-axis-aligned)
+/// rotation, OR a fractional `offset_local_voxels` sub-voxel seat. An out-of-phase FIELD leaf
+/// cannot be emitted one-cell-per-abs-cell by a translation, so the dense oracle resamples it by
+/// inverse gather ([`gather_placed_field_into_grid`]) — mirroring the two-layer classifier's
+/// `gather_rotated_leaf_into_region`. A whole-phase leaf (integer offset, axis-aligned rotation —
+/// every gate scene) keeps the exact translate-and-stamp path, so the goldens stay byte-identical.
 pub(super) fn leaf_is_out_of_phase(rotation: glam::Quat, offset_local_voxels: [f32; 3]) -> bool {
     !substrate::spatial::is_in_phase(rotation, offset_local_voxels)
 }
 
-/// The ADR 0027 **inverse-resample gather** for a genuinely out-of-phase (rotated or sub-voxel-
-/// seated) FIELD leaf, writing into the dense oracle's output [`VoxelGrid`]. The single-leaf
-/// occupancy definition BOTH dense paths (the oracle-gated `Scene::resolve_region` and
+/// The **inverse-resample gather** for a genuinely out-of-phase (rotated or sub-voxel-seated)
+/// FIELD leaf, writing into the dense oracle's output [`VoxelGrid`]. The single-leaf occupancy
+/// definition BOTH dense paths (the oracle-gated `Scene::resolve_region` and
 /// [`Scene::resolve_chunk_rebased`]) share, and the exact `VoxelGrid` mirror of the two-layer
 /// classifier's `gather_rotated_leaf_into_region` — both fold through substrate's ONE
-/// [`substrate::spatial::LeafPlacement`], so the dense reference can no longer drop the rotation
-/// the live path applies.
+/// [`substrate::spatial::LeafPlacement`], so the dense reference never drops the rotation the
+/// live path applies.
 ///
 /// For every output cell in the placed box, its center is inverse-mapped into the producer-local
 /// frame and the field is sampled: inside-or-on-surface cells are covered. The leaf's `operation`
@@ -91,7 +89,7 @@ pub(super) fn gather_placed_field_into_grid(
 
     let field = producer
         .as_field()
-        .expect("the dense gather is only reached for field producers (ADR 0027)");
+        .expect("the dense gather is only reached for field producers");
     let (world_min, world_max) = placement.world_aabb();
 
     // The output-index box the leaf can touch: its absolute world AABB rebased to the output
@@ -121,8 +119,8 @@ pub(super) fn gather_placed_field_into_grid(
         for y in lo[1]..hi[1] {
             for x in lo[0]..hi[0] {
                 let output_index = [x, y, z];
-                // ADR 0027 §1 wandering origin: rebase the absolute cell against the leaf origin in
-                // i64 (inside `local_of_abs_cell_center`) before the rotation, so a far-out cell
+                // Wandering origin: rebase the absolute cell against the leaf origin in i64
+                // (inside `local_of_abs_cell_center`) before the rotation, so a far-out cell
                 // keeps full precision — no huge f32 `abs_center − world_offset` cancellation.
                 let abs_cell = [
                     output_index[0] + output_origin_abs[0],
@@ -137,8 +135,8 @@ pub(super) fn gather_placed_field_into_grid(
                     let block_id = material_override
                         .or_else(|| producer.material_at(local, voxels_per_block))
                         .unwrap_or(voxel_core::core_geom::BlockId::DEFAULT);
-                    // The recentered dense grid stores i32 indices (ADR 0008): the rebased output
-                    // index fits i32 for every representable scene, as the stamp path assumes.
+                    // The recentered dense grid stores i32 indices: the rebased output index fits
+                    // i32 for every representable scene, as the stamp path assumes.
                     covered.push((
                         [
                             output_index[0] as i32,
@@ -171,8 +169,8 @@ pub(super) fn gather_placed_field_into_grid(
                 });
             }
         }
-        // Occupancy-only masks (ADR 0017 Decision 1): the covered cells are removed (Subtract) or
-        // are the ONLY survivors (Intersect); surviving voxels keep their own material/overlay.
+        // Occupancy-only masks: the covered cells are removed (Subtract) or are the ONLY
+        // survivors (Intersect); surviving voxels keep their own material/overlay.
         CombineOp::Subtract => {
             let carved: std::collections::HashSet<[i32; 3]> =
                 covered.iter().map(|(index, _)| *index).collect();

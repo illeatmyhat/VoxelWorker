@@ -1,4 +1,4 @@
-//! #102 — the arc entity: the 3-point solve, the canonical endpoints+bulge store, chord
+//! The arc entity: the 3-point solve, the canonical endpoints+bulge store, chord
 //! tessellation through the flattened loop, resolve through an arced profile, delete
 //! cascade / repair, and serialization (including a pre-arc document loading clean).
 
@@ -189,18 +189,17 @@ fn connect_rejects_what_the_store_cannot_hold() {
     sketch.delete_segment(chord);
 }
 
-/// The bug the owner hit (2026-07-29): the polyline tool silently refused to close an arc with
-/// its own chord, and the arc tool refused to bulge over a polyline segment. Both were the same
-/// guard — a pair joined by ANY edge was rejected, a restriction that existed only because the
-/// pre-#100 single-loop walk could not orient two edges over one pair. The face derivation traces
-/// that cycle like any other, so both directions are legal now and both resolve.
+/// Two edges over ONE pair of points are legal in either drawing order: an arc closed by its own
+/// chord, and an arc bulging over a pair a segment already joins. The face derivation traces that
+/// cycle like any other, so both resolve — a guard rejecting any already-joined pair would refuse
+/// the D-shape outright.
 #[test]
 fn a_chord_and_its_arc_bound_a_d_shape() {
     let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
     let a = sketch.add_free_point(SketchPoint::new(0, 0));
     let b = sketch.add_free_point(SketchPoint::new(4, 0));
 
-    // Arc first, then the polyline's chord across it — the owner's first report.
+    // Arc first, then the polyline's chord across it.
     sketch
         .connect_arc(a, b, AngleMeasurement::from_degrees(180))
         .expect("the half-circle lands");
@@ -217,8 +216,7 @@ fn a_chord_and_its_arc_bound_a_d_shape() {
     );
     assert!(!sketch.region().is_empty(), "and it resolves");
 
-    // The other direction — an arc over a pair a segment already joins (the owner's second
-    // report) — reaches the same store.
+    // The other direction — an arc over a pair a segment already joins — reaches the same store.
     let mut reversed = Sketch::new(PlaneAxis::Z, vec![]);
     let c = reversed.add_free_point(SketchPoint::new(0, 0));
     let d = reversed.add_free_point(SketchPoint::new(4, 0));
@@ -257,8 +255,8 @@ fn two_arcs_over_one_pair_bound_a_lens() {
 /// finite check while being nonsense, which is the failure mode the guard exists to make
 /// impossible.
 ///
-/// Decision 7 — that a closed curve is a `Circle` with no on-curve vertex — is enforced separately,
-/// by `connect_arc` refusing `from == to`. The two are independent, and this one is arithmetic.
+/// That a closed curve is a `Circle` with no on-curve vertex is enforced separately, by
+/// `connect_arc` refusing `from == to`. The two are independent, and this one is arithmetic.
 #[test]
 fn the_full_turn_is_where_the_radius_diverges() {
     let (from, to) = ([0.0, 0.0], [1.0, 0.0]);
@@ -356,8 +354,8 @@ fn arcs_round_trip_through_serde_and_a_pre_arc_document_loads_clean() {
     let restored: Sketch = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(restored, solid.sketch, "the arc store round-trips verbatim");
 
-    // A pre-#102 document has no `arcs` key: strip it and the sketch still loads, with
-    // no arcs (the serde default).
+    // A document written before arcs existed has no `arcs` key: strip it and the sketch
+    // still loads, with no arcs (the serde default).
     let mut value: serde_json::Value = serde_json::from_str(&json).expect("parse");
     value
         .as_object_mut()
@@ -515,8 +513,7 @@ fn a_center_lives_and_dies_with_its_arc() {
     );
 
     // Deleting the ARC takes the center AND both ends: nothing else draws them, and a curve
-    // deleted from a drawing must not leave dots behind that the author never placed
-    // (owner 2026-07-31).
+    // deleted from a drawing must not leave dots behind that the author never placed.
     sketch.delete_arc(arc);
     assert!(sketch.arcs().is_empty());
     assert!(sketch.points().is_empty());

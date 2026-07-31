@@ -1,24 +1,17 @@
-//! The [`Intent`] boundary — the single serializable description of a mutation
-//! (ADR 0003 Phase C, slice C1).
+//! The [`Intent`] boundary — the single serializable description of a mutation.
 //!
-//! ADR 0003 Phase B made identity / selection / edit-ops / storage all key on a
-//! stable [`NodeId`]. Phase C introduced `Intent` as the one
-//! **serializable** description of every document mutation: the live flow is
-//! `ui → AppCore::apply_intent(Intent) → CommandStack`. An `Intent` is a
-//! pure value: it names WHAT to change (by stable id / index), never HOW the panel
-//! reached the change, so it survives serialization, scripting (`shot --replay`,
-//! C3) and undo (`CommandStack`, C2).
+//! Identity, selection, edit ops and storage all key on a stable [`NodeId`], and an
+//! `Intent` is the one **serializable** description of every document mutation: the flow
+//! is `ui → AppCore::apply_intent(Intent) → CommandStack`. An `Intent` is a pure value: it
+//! names WHAT to change (by stable id / index), never HOW the panel reached the change, so
+//! it survives serialization, scripting (`shot --replay`) and undo (`CommandStack`).
 //!
-//! **C1 shipped, and C2/C4a landed on top of it.** This module + `AppCore::apply_intent`
-//! REPLACED the old panel-mutates-`Scene`-directly flow: the panel now describes each
-//! frame's mutations as a `Vec<Intent>`, and the shell drains it through `apply_intent`
-//! in the live frame loop (C4a), so every edit passes through this one door.
-//! `apply_intent` dispatches each variant to the SAME [`Scene`](crate::scene::Scene)
-//! edit op / field write the panel used before and returns an [`IntentEffect`] — the
-//! typed successor of `PanelResponse`'s effect
-//! booleans — which the caller folds into its own re-resolve / re-frame decisions.
-//! Every non-selection intent is also captured with its inverse and pushed onto the
-//! `CommandStack` (C2), so `undo`/`redo` reverse it exactly.
+//! Every edit passes through this one door: the panel describes each frame's mutations as
+//! a `Vec<Intent>` and the shell drains them through `apply_intent`, which dispatches each
+//! variant to the matching [`Scene`](crate::scene::Scene) edit op / field write and returns
+//! an [`IntentEffect`] the caller folds into its own re-resolve / re-frame decisions. Every
+//! non-selection intent is also captured with its inverse and pushed onto the
+//! `CommandStack`, so `undo`/`redo` reverse it exactly.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,14 +21,14 @@ use crate::voxel::SdfShape;
 use parametric::units::Measurement;
 use voxel_core::core_geom::MaterialChoice;
 
-/// A **by-value node payload** for the structural add intents (ADR 0003 Phase C).
+/// A **by-value node payload** for the structural add intents.
 ///
 /// The add edit ops ([`Scene::add_node`](crate::scene::Scene::add_node) /
 /// [`Scene::add_child_to_group`](crate::scene::Scene::add_child_to_group)) take a
 /// [`Node`], but a `Node` carries a non-serializable-by-intent id slot + grid flags
 /// the caller never sets when adding. `NodeSpec` is the small serializable spec of
 /// "what to add"; [`NodeSpec::into_node`] turns it into the exact [`Node`] the panel
-/// builds today (the Tool's name is its shape kind's label; the Clouds VoxelBody is named
+/// builds (the Tool's name is its shape kind's label; the Clouds VoxelBody is named
 /// `"Clouds"` with seed `0`), so an `AddNode` intent reproduces the panel's add.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeSpec {
@@ -48,9 +41,8 @@ pub enum NodeSpec {
         material: MaterialChoice,
     },
     /// A sketch→operation Tool node (a [`SketchSolid`] producer + its single
-    /// [`MaterialChoice`]), named `"Sketch"` — the sketch-authoring add (ADR 0003
-    /// §3i). Carries the whole producer by value, mirroring how [`Tool`](Self::Tool)
-    /// carries its [`SdfShape`].
+    /// [`MaterialChoice`]), named `"Sketch"` — the sketch-authoring add. Carries the whole
+    /// producer by value, mirroring how [`Tool`](Self::Tool) carries its [`SdfShape`].
     Sketch {
         /// The sketch + operation this node resolves.
         producer: SketchSolid,
@@ -74,11 +66,10 @@ impl NodeSpec {
         format!("{:?}", shape.kind)
     }
 
-    /// Turn the spec into the [`Node`] the add edit ops expect — mirroring how the
-    /// panel builds these nodes today (the Tool name = its shape kind label; the
-    /// Clouds VoxelBody = `"Clouds"` + [`VoxelBody::DebugClouds`] seed `0`). The returned node
-    /// carries the unassigned [`NodeId(0)`](NodeId) sentinel; the add op mints its
-    /// real id.
+    /// Turn the spec into the [`Node`] the add edit ops expect — mirroring how the panel
+    /// builds these nodes (the Tool name = its shape kind label; the Clouds VoxelBody =
+    /// `"Clouds"` + [`VoxelBody::DebugClouds`] seed `0`). The returned node carries the
+    /// unassigned [`NodeId(0)`](NodeId) sentinel; the add op mints its real id.
     pub fn into_node(self) -> Node {
         match self {
             NodeSpec::Tool { shape, material } => {
@@ -96,15 +87,13 @@ impl NodeSpec {
     }
 }
 
-/// The single serializable description of one document mutation (ADR 0003 Phase C).
+/// The single serializable description of one document mutation.
 ///
 /// Every variant names a mutation by **stable identity** ([`NodeId`] / [`DefId`] /
 /// a point index), never by the positional path or the panel state the panel
 /// happened to reach it through, so an `Intent` round-trips through serde and is
-/// replayable. `AppCore::apply_intent` dispatches
-/// each variant to the matching [`Scene`](crate::scene::Scene) edit op / field
-/// write — the SAME mutation the panel performs today — and reports an
-/// [`IntentEffect`].
+/// replayable. `AppCore::apply_intent` dispatches each variant to the matching
+/// [`Scene`](crate::scene::Scene) edit op / field write and reports an [`IntentEffect`].
 ///
 /// The variants mirror the panel's mutation surface: structural tree edits, node
 /// field writes, the two global toggles (density, grid masters), the view-state
@@ -123,19 +112,18 @@ pub enum Intent {
     /// `crates/raycast/src/placement.rs`). It is [`AddNode`](Self::AddNode) with a
     /// placement: `content.into_node()` is built identically, then its transform is
     /// set to [`NodeTransform::from_offset_voxels`](crate::scene::NodeTransform::from_offset_voxels)
-    /// (`offset_voxels` is the ABSOLUTE/producer voxel frame, ADR 0008 — the corner
-    /// the producer emits from). A separate variant, rather than a field on `AddNode`,
-    /// so the ~20 `AddNode` construction sites are untouched; it captures / replays /
-    /// inverts exactly as `AddNode` does (its inverse is the same `RemoveAdded`).
+    /// (`offset_voxels` is the ABSOLUTE/producer voxel frame — the corner the producer
+    /// emits from). It captures / replays / inverts exactly as `AddNode` does (its inverse
+    /// is the same `RemoveAdded`).
     PlaceNode {
         /// The node to add, by value (built exactly as [`AddNode`](Self::AddNode)).
         content: NodeSpec,
-        /// The node's placement, a raw canonical voxel offset in the absolute frame
-        /// (ADR 0008), applied via `NodeTransform::from_offset_voxels`. The INTEGER wandering
-        /// origin; the sub-voxel remainder rides [`offset_local`](Self::PlaceNode::offset_local).
+        /// The node's placement, a raw canonical voxel offset in the absolute frame, applied
+        /// via `NodeTransform::from_offset_voxels`. The INTEGER wandering origin; the sub-voxel
+        /// remainder rides [`offset_local`](Self::PlaceNode::offset_local).
         offset_voxels: [i64; 3],
-        /// The node's **sub-voxel** placement remainder, in voxels (ADR 0027 continuous
-        /// placement). A `PositionSnap::NoSnap` drop lands the authoring PIVOT exactly under the
+        /// The node's **sub-voxel** placement remainder, in voxels (continuous placement).
+        /// A `PositionSnap::NoSnap` drop lands the authoring PIVOT exactly under the
         /// cursor — generally off the integer lattice — so the fractional part is carried here and
         /// applied to [`NodeTransform::offset_local_voxels`](crate::scene::NodeTransform::offset_local_voxels); the field's world position is
         /// `offset_voxels + offset_local` per axis. `[0.0; 3]` for a Voxel/Block-snapped drop (the
@@ -144,7 +132,7 @@ pub enum Intent {
         /// distinct: this carries the pivot's sub-voxel part, never the corner's.
         #[serde(default)]
         offset_local: [f32; 3],
-        /// The node's **continuous** rotation (ADR 0027) — an arbitrary quaternion (`xyzw`)
+        /// The node's **continuous** rotation — an arbitrary quaternion (`xyzw`)
         /// that seats it flush against the surface it was dropped on, tilting the node's local
         /// `+Z` to the true gradient normal (a tube on a cylinder's curved side tilts to the
         /// radial normal; a flat face or world-plane drop tilts to that face's normal). `None`
@@ -227,24 +215,22 @@ pub enum Intent {
         /// The new material.
         material: MaterialChoice,
     },
-    /// Set the [`CombineOp`] of the node `target` (ADR 0017: the node's role in the
-    /// ordered document-order fold — `Subtract` carves / `Intersect` masks
-    /// everything accumulated before it in its scope). Applies to EVERY node kind:
-    /// a leaf folds its own body, a Group folds its sealed composed body (Decision
-    /// 3, issue #74), and an Instance folds the referenced definition's finished
-    /// body — a definition instanced with `Subtract` is the reusable cutter
-    /// (issue #76). EXCEPTION: on an Instance of a FIXTURE definition the operation
-    /// is INERT (Decision 4, issue #77 — the spliced children fold under their own
-    /// operations), so the inspector hides the selector there.
+    /// Set the [`CombineOp`] of the node `target` — the node's role in the ordered
+    /// document-order fold, where `Subtract` carves / `Intersect` masks everything
+    /// accumulated before it in its scope. Applies to EVERY node kind: a leaf folds its
+    /// own body, a Group folds its sealed composed body, and an Instance folds the
+    /// referenced definition's finished body — a definition instanced with `Subtract` is
+    /// the reusable cutter. EXCEPTION: on an Instance of a FIXTURE definition the
+    /// operation is INERT (the spliced children fold under their own operations), so the
+    /// inspector hides the selector there.
     SetOperation {
         /// The node to edit.
         target: NodeId,
         /// The new combine operation.
         operation: CombineOp,
     },
-    /// Set the [`fixture`](crate::scene::AssemblyDef::fixture) flag of the
-    /// definition `def` (ADR 0017 Decision 4, issue #77;
-    /// [`Scene::set_definition_fixture`](crate::scene::Scene::set_definition_fixture)).
+    /// Set the [`fixture`](crate::scene::AssemblyDef::fixture) flag of the definition `def`
+    /// ([`Scene::set_definition_fixture`](crate::scene::Scene::set_definition_fixture)).
     /// A fixture definition does not pre-compose: its children splice into the
     /// hosting scope's fold at each instance's position, under the instance's
     /// transform — being a fixture is what the part IS, so the flag is a
@@ -256,8 +242,7 @@ pub enum Intent {
         /// Whether the definition splices (`true`) or pre-composes sealed (`false`).
         fixture: bool,
     },
-    /// Set the offset of `target`'s transform from a per-axis authored unit
-    /// expression (ADR 0003 §3f(0)).
+    /// Set the offset of `target`'s transform from a per-axis authored unit expression.
     SetOffset {
         /// The node to move.
         target: NodeId,
@@ -293,8 +278,8 @@ pub enum Intent {
     },
     // --- Global ---
     /// Set the document-level density (voxels per block). Density is a single attribute
-    /// on the [`Scene`](crate::scene::Scene) — which block-game grid the plan targets
-    /// (ADR 0003 §3f(0)) — so this writes `scene.voxels_per_block`, not a per-Tool field.
+    /// on the [`Scene`](crate::scene::Scene) — which block grid the plan targets — so this
+    /// writes `scene.voxels_per_block`, not a per-Tool field.
     SetDensity {
         /// The new document voxels-per-block.
         voxels_per_block: u32,
@@ -309,10 +294,9 @@ pub enum Intent {
         floor: bool,
     },
 
-    // ADR 0032: `SelectNode` / `SelectPoint` were DELETED here. Selecting is not an edit —
-    // it is a VIEW action carried by `PanelResponse::select` and applied by the shell to the
-    // workspace `Selection`. Edits still steer selection, but as a dispatch EFFECT, never as
-    // an intent of their own.
+    // Selecting is NOT an edit, so it has no intent: it is a VIEW action carried by
+    // `PanelResponse::select` and applied by the shell to the workspace `Selection`. Edits
+    // steer selection, but as a dispatch EFFECT.
 
     // --- Points (reference elements) ---
     /// Add a reference [`Point`](crate::scene::Point) at `position_blocks` named
@@ -367,32 +351,26 @@ pub enum Intent {
     },
 }
 
-/// The typed effect of applying an [`Intent`] — the successor of
-/// `PanelResponse`'s effect booleans (ADR 0003 Phase
-/// C). `apply_intent` returns this so a caller can react exactly as the panel does
-/// today: re-resolve the scene on a geometry/scene change, persist on a points
-/// change, refresh the inspector mirror on a selection change.
+/// The typed effect of applying an [`Intent`]. `apply_intent` returns this so a caller
+/// knows how to react: re-resolve the scene on a geometry/scene change, persist on a
+/// points change, refresh the inspector mirror on a selection change.
 ///
-/// The flag semantics MATCH the panel's: a structural / field / global-geometry
-/// mutation sets [`scene_changed`](Self::scene_changed) (the caller re-resolves +
-/// re-frames, exactly as `PanelResponse::scene_changed` drives); a point mutation
-/// sets [`points_changed`](Self::points_changed) (overlay-only, no re-resolve); a
+/// A structural / field / global-geometry mutation sets
+/// [`scene_changed`](Self::scene_changed) (the caller re-resolves + re-frames); a point
+/// mutation sets [`points_changed`](Self::points_changed) (overlay-only, no re-resolve); a
 /// selection mutation sets [`selection_changed`](Self::selection_changed). A
-/// master-toggle / selection mutation needs no re-resolve (the per-frame batch /
-/// highlight read the fields live), matching the panel.
+/// master-toggle / selection mutation needs no re-resolve — the per-frame batch /
+/// highlight read the fields live.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IntentEffect {
-    /// The scene's geometry changed → the caller re-resolves the grid + re-frames
-    /// (the typed successor of `PanelResponse::scene_changed` /
-    /// `geometry_changed`, which the caller already treats identically as "rebuild").
+    /// The scene's geometry changed → the caller re-resolves the grid + re-frames.
     pub scene_changed: bool,
     /// A reference Point changed → the caller may persist (Points are pure overlay,
-    /// rebuilt every frame, so this does NOT trigger a voxel re-resolve — matching
-    /// `PanelResponse::points_changed`).
+    /// rebuilt every frame, so this does NOT trigger a voxel re-resolve).
     pub points_changed: bool,
-    /// The active node / point selection changed → the caller refreshes the
-    /// inspector mirror (the panel folds this into `scene_changed` today, but the
-    /// typed effect separates it so a pure selection switch re-resolves nothing).
+    /// The active node / point selection changed → the caller refreshes the inspector
+    /// mirror. Separate from `scene_changed` so a pure selection switch re-resolves
+    /// nothing.
     pub selection_changed: bool,
     /// The edit was REJECTED because it would push a node past the ±1,000,000-block
     /// display coordinate envelope ([`COORDINATE_LIMIT_BLOCKS`](crate::scene::COORDINATE_LIMIT_BLOCKS)):
@@ -441,8 +419,8 @@ impl IntentEffect {
         }
     }
 
-    /// The OR-merge of two effects — the union of their set flags. Useful when a
-    /// later slice batches several intents into one frame's effect.
+    /// The OR-merge of two effects — the union of their set flags, for when several
+    /// intents batch into one frame's effect.
     pub fn merged_with(self, other: Self) -> Self {
         Self {
             scene_changed: self.scene_changed || other.scene_changed,
@@ -454,10 +432,9 @@ impl IntentEffect {
     }
 }
 
-/// Build a per-axis whole-**block** offset measurement (test helper for the
-/// `SetOffset` intent, which now carries `[Measurement; 3]`). Each axis is a pure
-/// integer block term, so it derives to `blocks · d` voxels at any density — the
-/// same result the old block-granular path produced.
+/// Build a per-axis whole-**block** offset measurement (test helper for the `SetOffset`
+/// intent). Each axis is a pure integer block term, so it derives to `blocks · d` voxels
+/// at any density.
 #[cfg(any(test, feature = "test-support"))]
 pub fn whole_block_offset(blocks: [i64; 3]) -> [Measurement; 3] {
     use parametric::units::ExactRational;

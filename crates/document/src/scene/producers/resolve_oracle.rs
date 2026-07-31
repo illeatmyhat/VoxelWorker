@@ -18,18 +18,16 @@ impl Scene {
     /// enabled leaf producer is resolved into its own local grid and **stamped**
     /// into the output under the node's transform.
     ///
-    /// `voxels_per_block` is the application density (ADR 0001 "Density": a global
-    /// setting, default 16, that the scene reads at resolve time).
+    /// `voxels_per_block` is the application density: a global setting the scene
+    /// reads at resolve time.
     ///
-    /// `lod` is the level-of-detail seam required by ADR 0001 ("Deferred: LOD").
-    /// It is **always `0`** (full resolution) for now; the parameter exists from
-    /// day one so a future LOD level (which would downsample a chunk before
-    /// meshing) is a possible change rather than a signature break. Step 1
-    /// asserts it is `0`.
+    /// `lod` is the level-of-detail seam. It is **always `0`** (full resolution) and
+    /// asserted so, so that an LOD level (which would downsample a chunk before
+    /// meshing) is a behavioral change rather than a signature break.
     ///
     /// **Identical-behavior guarantee:** for a one-node scene whose `region`
     /// equals the node's full extent with a zero offset, the stamp is the
-    /// identity, so the result equals what the bare producer emits today.
+    /// identity, so the result equals what the bare producer emits.
     ///
     /// **Oracle — compile-gated.** This is a dense, O(volume) whole-region resolver:
     /// the measuring stick the sparse runtime path is held against, never a runtime
@@ -44,7 +42,7 @@ impl Scene {
         voxels_per_block: u32,
         lod: u32,
     ) -> VoxelGrid {
-        debug_assert_eq!(lod, 0, "step 1 only resolves full resolution (lod 0)");
+        debug_assert_eq!(lod, 0, "only full resolution (lod 0) is resolved");
 
         // The region grid is sized in the PRODUCER VOXEL FRAME (corner-anchoring):
         // the recentered composite occupies exactly `[region_low, region_low + D)` with
@@ -70,33 +68,32 @@ impl Scene {
         // is `(min + max).div_euclid(2)` (producer-true voxel frame). Subtracting that
         // center from every node's translation lands the composite centered in `output`.
         // A VoxelBody-only scene (e.g. `DebugClouds`) has no composite extent, so this is
-        // `[0,0,0]` and the field stays CORNER-anchored at `[0, region)` — the shipped
-        // convention (see `part_only_cloud_at_odd_density_drops_no_voxels` /
-        // `mixed_tool_and_cloud_resolve_in_one_frame`). ADR 0008: the recenter is CARRIED on
-        // the grid (below), so every consumer decodes correctly without re-deriving the
-        // frame as `floor(dim/2)` (the assumption that dropped the corner-anchored cloud fog).
+        // `[0,0,0]` and the field stays CORNER-anchored at `[0, region)` — the convention
+        // (see `part_only_cloud_at_odd_density_drops_no_voxels` /
+        // `mixed_tool_and_cloud_resolve_in_one_frame`). The recenter is CARRIED on the grid
+        // (below), so every consumer decodes correctly without re-deriving the frame as
+        // `floor(dim/2)`.
         let recenter_voxels = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
         output.recenter_voxels = recenter_voxels;
 
-        // Walk the whole tree (groups + instances recurse, composing world
-        // translation down — ADR 0001 step 4). Each visited leaf is stamped under
-        // its WORLD voxel offset minus the composite recenter. The offset is
-        // already voxels at the document density (ADR 0003 §3f(0)), so it enters
-        // the sum as-is. All of this is in i64 (S4a) so a far-placed node composes
-        // without overflow; the result is downcast to f32 inside the stamp (the
-        // render frame stays f32 — S4b makes the far case byte-identical via origin
-        // rebasing).
-        // ADR 0017 Decision 3 (issue #74): the walk is evaluated as a SCOPED depth-first
-        // fold — each open Group / definition-body scope composes its leaves into its own
-        // scratch grid, and a closing scope folds that composed body into its parent under
-        // the SCOPE's operation (`sync_grid_scope_stack`), so a boolean inside a scope can
-        // never affect geometry outside it.
+        // Walk the whole tree (groups + instances recurse, composing world translation
+        // down). Each visited leaf is stamped under its WORLD voxel offset minus the
+        // composite recenter. The offset is already voxels at the document density, so it
+        // enters the sum as-is. All of this is in i64 so a far-placed node composes without
+        // overflow; the result is downcast to f32 inside the stamp (the render frame stays
+        // f32, made far-safe by origin rebasing).
+        //
+        // The walk is evaluated as a SCOPED depth-first fold — each open Group /
+        // definition-body scope composes its leaves into its own scratch grid, and a closing
+        // scope folds that composed body into its parent under the SCOPE's operation
+        // (`sync_grid_scope_stack`), so a boolean inside a scope can never affect geometry
+        // outside it.
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        // ADR 0026: the discrete lattice `orientation` is still not applied here (an oriented
-        // leaf is checked through the two-layer classifier against a hand-derived expectation, not
-        // against this oracle) — every parity-gate scene is lattice-identity. ADR 0027 "Step 2":
-        // the CONTINUOUS `rotation` quaternion and the fractional `offset_local_voxels` ARE now
-        // applied, by routing a genuinely out-of-phase FIELD leaf through the shared inverse-gather
+        // The discrete lattice `orientation` is not applied here (an oriented leaf is checked
+        // through the two-layer classifier against a hand-derived expectation, not against
+        // this oracle) — every parity-gate scene is lattice-identity. The CONTINUOUS
+        // `rotation` quaternion and the fractional `offset_local_voxels` ARE applied, by
+        // routing a genuinely out-of-phase FIELD leaf through the shared inverse-gather
         // ([`gather_placed_field_into_grid`], substrate's ONE placement affine) so the dense
         // reference agrees with the live path on rotated / sub-voxel seats. A whole-phase leaf
         // (integer offset, axis-aligned rotation) keeps the exact translate-and-stamp path below.
@@ -118,41 +115,36 @@ impl Scene {
             };
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // Every producer corner-anchors its grid at its world voxel offset (the low
-            // corner); the recenter (from the producer-true voxel frame) symmetrises the
+            // corner); the recenter (from the producer-true voxel frame) symmetrizes the
             // composite about the origin for ALL size·d parities, so no per-leaf lattice
             // shift is needed — a leaf simply sits at its world voxel offset.
             //
-            // An outset body grows on every side, so its low corner moves DOWN by the outset
-            // (ADR 0008 — the frame is carried, never re-derived).
+            // An outset body grows on every side, so its low corner moves DOWN by the
+            // outset — the frame is carried, never re-derived.
             let translation_voxels = [
                 world_offset_voxels[0] - recenter_voxels[0] - outset_voxels,
                 world_offset_voxels[1] - recenter_voxels[1] - outset_voxels,
                 world_offset_voxels[2] - recenter_voxels[2] - outset_voxels,
             ];
-            // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
-            // never stamp material, so they take a mask path instead of a stamp. A
-            // Subtract CARVES its body out of everything stamped before it (document
-            // order, within its scope); an Intersect (issue #75) keeps ONLY the cells
-            // its body covers, killing accumulated cells anywhere OUTSIDE its body —
-            // including an empty result when nothing accumulated yet (fold start).
             // ONE producer serves both the mask and the stamp paths, so the outset wrapper
-            // applies at a single point (ADR 0019 Decision 7 — the outset dilates the body
-            // before it folds, whatever the fold role).
+            // applies at a single point: the outset dilates the body before it folds,
+            // whatever the fold role.
             let Some((material, producer)) =
                 body.into_producer(region_dimensions, voxels_per_block, outset_voxels)
             else {
                 return;
             };
 
-            // ADR 0027 "Step 2": a genuinely out-of-phase FIELD leaf (a continuous rotation or a
-            // fractional sub-voxel seat) cannot be emitted one-cell-per-abs-cell by the integer
+            // A genuinely out-of-phase FIELD leaf (a continuous rotation or a fractional
+            // sub-voxel seat) cannot be emitted one-cell-per-abs-cell by the integer
             // translation below, so resample it by inverse gather through substrate's shared
             // placement affine — the SAME map (and the same per-cell field test) the two-layer
             // classifier folds through, so the dense oracle agrees with the live path. The output
             // grid index `oi` denotes absolute cell `oi + recenter_voxels`, and the leaf's low
             // corner in the absolute frame is `world_offset_voxels − outset` (matching the
             // two-layer leaf's `world_offset_voxels`).
-            if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some() {
+            if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some()
+            {
                 let leaf_abs_low: [i64; 3] =
                     std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
                 let placement = dense_leaf_placement(
@@ -176,8 +168,12 @@ impl Scene {
                 return;
             }
 
-            // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
-            // never stamp material, so they take a mask path instead of a stamp.
+            // Subtract and Intersect leaves are occupancy-only masks — they never stamp
+            // material, so they take a mask path instead of a stamp. A Subtract CARVES its
+            // body out of everything stamped before it (document order, within its scope);
+            // an Intersect keeps ONLY the cells its body covers, killing accumulated cells
+            // anywhere OUTSIDE its body — including an empty result when nothing has
+            // accumulated yet (fold start).
             match operation {
                 CombineOp::Subtract => mask_producer(
                     target,
@@ -204,7 +200,8 @@ impl Scene {
                 // silently resolving as the wrong operation.
                 CombineOp::Emboss { .. } => {
                     eprintln!(
-                        "scene: skipping an Emboss node whose scope could not be composed                          (an un-composable scope has no accumulated field to emboss)"
+                        "scene: skipping an Emboss node whose scope could not be composed \
+                         (an un-composable scope has no accumulated field to emboss)"
                     );
                 }
                 CombineOp::Union => stamp_producer(
@@ -212,9 +209,9 @@ impl Scene {
                     region_dimensions,
                     translation_voxels,
                     material,
-                    // Issue #29 S4: OR the on-face-grid flag bit onto every
-                    // stamped voxel iff this node opted in, so the bit travels
-                    // with each voxel (and survives chunk bucketing).
+                    // OR the on-face-grid flag bit onto every stamped voxel iff
+                    // this node opted in, so the bit travels with each voxel
+                    // (and survives chunk bucketing).
                     grid_on_faces,
                     producer.as_ref(),
                     voxels_per_block,
@@ -234,9 +231,8 @@ impl Scene {
     /// This loops over every chunk coordinate covering the composite AABB, calls
     /// [`resolve_chunk`](Self::resolve_chunk) for each, and unions the results. It
     /// proves the chunk decomposition reconstructs the whole scene; it is **not**
-    /// wired into rendering (the render path stays on `resolve_region`, which
-    /// recenters — see issue #27 S0). The returned grid is sized to the full
-    /// composite extent and its voxels keep their absolute composite positions;
+    /// wired into rendering. The returned grid is sized to the full composite
+    /// extent and its voxels keep their absolute composite positions;
     /// compared against `resolve_region`'s output it differs only by the
     /// recenter offset.
     ///
@@ -247,7 +243,7 @@ impl Scene {
     /// (`docs/architecture/05-proof.md`).
     #[cfg(any(test, feature = "oracle"))]
     pub fn resolve_region_via_chunks(&self, voxels_per_block: u32, lod: u32) -> VoxelGrid {
-        debug_assert_eq!(lod, 0, "S0 only resolves full resolution (lod 0)");
+        debug_assert_eq!(lod, 0, "only full resolution (lod 0) is resolved");
 
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut output = VoxelGrid::new(region_dimensions);
@@ -318,14 +314,14 @@ fn stamp_producer(
 
     // General stamp: translate each voxel into the composite (the producer's
     // origin-centered position plus the node's recentered placement), overwrite its
-    // material id for a Tool, then OR the on-face-grid flag bit (issue #29 S4) when
-    // this node opted in so it travels with each voxel.
+    // material id for a Tool, then OR the on-face-grid flag bit when this node opted
+    // in so it travels with each voxel.
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
         if !zero_offset {
-            // ADR 0003 §3a / ADR 0008: translate the INTEGER index in the grid's frame
-            // (the absolute origin lives on the grid), never an f32 position. The add is
-            // i64 then downcast, so the placement is exact for any magnitude.
+            // Translate the INTEGER index in the grid's frame (the absolute origin lives
+            // on the grid), never an f32 position. The add is i64 then downcast, so the
+            // placement is exact for any magnitude.
             voxel.local_index[0] = (voxel.local_index[0] as i64 + translation_voxels[0]) as i32;
             voxel.local_index[1] = (voxel.local_index[1] as i64 + translation_voxels[1]) as i32;
             voxel.local_index[2] = (voxel.local_index[2] as i64 + translation_voxels[2]) as i32;
@@ -333,24 +329,23 @@ fn stamp_producer(
         if let Some(id) = material_override {
             voxel.block_id = id;
         }
-        // ADR 0003 §3c: the on-face-grid flag is a transient render marker on the cell,
-        // NOT the categorical `block_id` — the cuboid mesher reads it (splitting boxes on
-        // it) and the draw enables the overlay; it never enters the categorical id.
+        // The on-face-grid flag is a transient render marker on the cell, NOT the
+        // categorical `block_id` — the cuboid mesher reads it (splitting boxes on it)
+        // and the draw enables the overlay; it never enters the categorical id.
         voxel.grid_overlay = grid_overlay;
         output.occupied.push(voxel);
     }
 }
 
 /// Resolve `producer` into its own local grid and **occupancy-mask** `output` with it
-/// (ADR 0017 Decision 1 — `Subtract`/`Intersect` are occupancy-only, never stamping
-/// material). Each output voxel whose index coincides with one of the producer's
-/// occupied cells (translated by `translation_voxels`) is *covered*; whether covered
-/// voxels are the ones KEPT or the ones REMOVED is the single varying bit:
+/// (`Subtract`/`Intersect` are occupancy-only, never stamping material). Each output
+/// voxel whose index coincides with one of the producer's occupied cells (translated by
+/// `translation_voxels`) is *covered*; whether covered voxels are the ones KEPT or the
+/// ones REMOVED is the single varying bit:
 ///
 /// * `keep_if_covered = false` → **Subtract** (carve): covered voxels are removed.
-/// * `keep_if_covered = true`  → **Intersect** (issue #75): only covered voxels
-///   survive, so every accumulated voxel outside the mask's body dies — however far
-///   from its AABB.
+/// * `keep_if_covered = true`  → **Intersect**: only covered voxels survive, so every
+///   accumulated voxel outside the mask's body dies — however far from its AABB.
 ///
 /// Surviving voxels keep their material and overlay; the cutter/mask's own material
 /// never enters the output. The mask sibling of [`stamp_producer`], and like it a

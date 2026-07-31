@@ -2,21 +2,21 @@ use super::*;
 use std::collections::BTreeMap;
 use voxel_core::core_geom::MaterialChoice;
 
-// ---- ADR 0032 slice 4: the adversarial net ----
+// ---- The adversarial net ----
 //
 // `pick.rs` pins the picked-node rule by EXAMPLE, and every example there was chosen by the
 // same mental model that wrote the resolver — so they confirm it rather than attack it. This
 // module differentials instead: it derives, from the dense oracle alone, which node owns each
 // cell, then asserts `picked_node_at_voxel` agrees at EVERY cell in the scene's box —
-// including the empty ones, where it must name nothing. Both directions matter: the first bug
-// it caught was stamped-but-unpickable, the second was pickable-but-carved.
+// including the empty ones, where it must name nothing. Both directions matter: a cell that
+// is stamped but unpickable and one that is pickable but carved are both failures.
 //
 // **How node identity comes out of a material oracle.** The oracle records materials, not
 // nodes. Rather than cap a scene at one body per palette entry, each scene is resolved once
 // per tool with that tool's material set to a MARKER and every other tool's set to the
 // BACKGROUND: the cells stamped MARKER are exactly the cells that tool owns. Materials never
-// affect occupancy — a boolean does not stamp one at all (ADR 0017 Decision 1) — so every
-// variant resolves identical geometry and only the read-out changes. Two materials is the
+// affect occupancy — a boolean does not stamp one at all — so every variant resolves
+// identical geometry and only the read-out changes. Two materials is the
 // whole requirement, so the net is bounded by neither the palette nor the scene size.
 //
 // **What this can and cannot catch.** For an out-of-phase leaf, pick and oracle sample the
@@ -24,7 +24,7 @@ use voxel_core::core_geom::MaterialChoice;
 // net is blind to a bug in the placement affine itself, which `substrate`'s translation-
 // invariance tests and `evaluation`'s affine oracle already own. What it attacks is the
 // ownership FOLD — later-wins order, scope open/close, and the descent into a pre-composed
-// scope — which is slice 2's new code and shares nothing with the oracle's grid fold.
+// scope — which shares nothing with the oracle's grid fold.
 
 /// The material marking the tool under test in an ownership variant, and the material every
 /// other tool wears. Any two distinct entries work; nothing here depends on the palette size.
@@ -122,7 +122,7 @@ fn with_material(scene: &mut Scene, tool: NodeId, choice: MaterialChoice) {
 
 /// The material the dense resolve STAMPED at each absolute cell: a last-wins fold over the
 /// oracle's occupied list, which is emitted in document order and never deduplicated, so the
-/// final writer at a cell is the one whose color the user sees there (ADR 0017).
+/// final writer at a cell is the one whose color the user sees there.
 fn stamped_materials(scene: &Scene, density: u32) -> BTreeMap<[i64; 3], u16> {
     let grid = scene.resolve_region(scene.full_extent_blocks(density), density, 0);
     let recenter = grid.recenter_voxels;
@@ -407,9 +407,9 @@ fn every_scope_ordering_folds_ownership_the_way_it_folds_occupancy() {
     );
 }
 
-/// A PRE-COMPOSED scope (forced by an outset on the Group — ADR 0019 Decision 7) is ONE leaf
-/// to the fold, so ownership inside it is not answered by the fold at all: it goes to
-/// `CompositeProducer::origin_at_point`. That function and the composite's own `material_at`
+/// A PRE-COMPOSED scope (forced by an outset on the Group) is ONE leaf to the fold, so
+/// ownership inside it is not answered by the fold at all: it goes to
+/// `CompositeProducer::origin_at_point`. That function and the composite's `material_at`
 /// are two hand-written mirrors of the same rule — last-inside-Union, else nearest — and the
 /// oracle stamps a composite per-voxel through `material_at` while the pick reads `origin_at`.
 /// The differential is therefore the exact probe for the two drifting apart, and the OUTSET
@@ -451,9 +451,9 @@ fn a_pre_composed_scope_agrees_with_the_material_its_shell_wears() {
     }
 }
 
-/// ADR 0008 wandering origin: the whole sweep, re-run a hundred thousand blocks out. The
-/// placement affine rebases in i64 before any f32 rotation, so ownership must be identical to
-/// the same scenes at the origin — a differential is what proves that, since a hand-derived
+/// Wandering origin: the whole sweep, re-run a hundred thousand blocks out. The placement
+/// affine rebases in i64 before any f32 rotation, so ownership must be identical to the same
+/// scenes at the origin — a differential is what proves that, since a hand-derived
 /// expectation far out is just the origin expectation plus an offset.
 #[test]
 fn the_sweep_holds_a_hundred_thousand_blocks_out() {

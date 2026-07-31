@@ -1,13 +1,12 @@
-//! Path/id navigation and selection over the id-keyed arena: resolving a
-//! [`NodePath`] or [`NodeId`] to a node, the inverse [`Scene::path_of`], the tree-row
-//! projection, active-selection accessors, and the id-minting / spine-repointing
-//! helpers the load path and edit ops share.
+//! Path/id navigation over the id-keyed arena: resolving a [`NodePath`] or [`NodeId`]
+//! to a node, the inverse [`Scene::path_of`], the tree-row projection, and the
+//! id-minting / spine-repointing helpers the load path and edit ops share.
 
 use super::*;
 
 impl Scene {
-    /// Mint a stable [`NodeId`] for every still-unassigned node (ADR 0003 Phase B).
-    /// Walks the top-level nodes, every [`NodeContent::Group`]'s children, and every
+    /// Mint a stable [`NodeId`] for every still-unassigned node. Walks the top-level
+    /// nodes, every [`NodeContent::Group`]'s children, and every
     /// definition's nodes; any node carrying the `NodeId(0)` sentinel gets a fresh id
     /// from [`next_node_id`](Self::next_node_id). The counter is first advanced past
     /// any ids ALREADY present (a loaded scene may carry minted ids) so new ids never
@@ -26,7 +25,7 @@ impl Scene {
         for id in self.arena.keys() {
             max_existing = max_existing.max(id.0);
         }
-        // PointIds mint from the same counter (ADR 0033), so the advance covers them too.
+        // PointIds mint from the same counter, so the advance covers them too.
         for point in &self.points {
             max_existing = max_existing.max(point.id.0);
         }
@@ -34,9 +33,9 @@ impl Scene {
         // first real id a load-path mint hands out is `2`.
         self.next_node_id = self.next_node_id.max(max_existing + 1).max(2);
 
-        // Mint for any Point still under the `PointId(0)` sentinel (a pre-0033 dump).
-        // Points are id-keyed only in the SELECTION, not in a spine, so unlike the node
-        // case below there is nothing to repoint.
+        // Mint for any Point still under the `PointId(0)` sentinel. Points are id-keyed
+        // only in the SELECTION, not in a spine, so unlike the node case below there is
+        // nothing to repoint.
         for point in &mut self.points {
             if point.id.0 == 0 {
                 point.id = PointId(self.next_node_id);
@@ -71,7 +70,7 @@ impl Scene {
         }
     }
 
-    /// Mint a fresh [`PointId`] (ADR 0033) — same counter as node ids, so the undo
+    /// Mint a fresh [`PointId`] — same counter as node ids, so the undo
     /// machinery's `counter_before` rewind makes a redone `AddPoint` re-mint the identical
     /// id, exactly as it does for nodes.
     pub fn mint_point_id(&mut self) -> PointId {
@@ -122,7 +121,7 @@ impl Scene {
     /// addressable children).
     pub fn node_at_path(&self, path: &NodePath) -> Option<&Node> {
         // Walk the id-spine (`roots`, then each Group's `Vec<NodeId>`) for ORDER,
-        // fetching each node's content from the arena. ADR 0003 Phase B5.
+        // fetching each node's content from the arena.
         let mut siblings: &[NodeId] = &self.roots;
         let mut found: Option<&Node> = None;
         for (depth, &index) in path.indices.iter().enumerate() {
@@ -140,61 +139,55 @@ impl Scene {
         found
     }
 
-    /// The node at `path`, mutably (the inspector edits through this). ADR 0003
-    /// Phase B5: resolve the path to a single [`NodeId`] over the id-spine (a shared
-    /// walk), then take ONE mutable arena borrow at the end — so the descent never
-    /// holds an aliasing `&mut` into the arena.
+    /// The node at `path`, mutably (the inspector edits through this). Resolve the path
+    /// to a single [`NodeId`] over the id-spine (a shared walk), then take ONE mutable
+    /// arena borrow at the end — so the descent never holds an aliasing `&mut` into the
+    /// arena.
     pub fn node_at_path_mut(&mut self, path: &NodePath) -> Option<&mut Node> {
         let id = self.id_at_path(path)?;
         self.arena.get_mut(&id)
     }
 
     /// The [`NodeId`] of the node at `path` — the top-level-tree inverse of
-    /// [`path_of`](Self::path_of) — or `None` if the path doesn't resolve (ADR 0003
-    /// Phase B2). A convenience bridge while selection/commands migrate off
-    /// [`NodePath`] onto [`NodeId`].
+    /// [`path_of`](Self::path_of) — or `None` if the path doesn't resolve.
     pub fn id_at_path(&self, path: &NodePath) -> Option<NodeId> {
         self.node_at_path(path).map(|node| node.id)
     }
 
     /// The node with the given [`NodeId`] in the **top-level assembly tree**
     /// (top-level nodes + [`NodeContent::Group`] children — the same scope
-    /// [`NodePath`] addresses), or `None` (ADR 0003 Phase B2). `NodeId(0)` (the
-    /// unassigned sentinel) never matches. O(n) DFS; Phase B5 swaps the storage for
-    /// an arena so this becomes a direct lookup.
+    /// [`NodePath`] addresses), or `None`. `NodeId(0)` (the unassigned sentinel) never
+    /// matches. The arena is keyed by [`NodeId`], so this is a direct lookup.
     pub fn node_by_id(&self, id: NodeId) -> Option<&Node> {
-        // ADR 0003 Phase B5: the arena IS keyed by NodeId, so this is a direct
-        // lookup (was an O(n) DFS). The `NodeId(0)` unassigned sentinel never matches.
         if id == NodeId(0) {
             return None;
         }
-        // ADR 0018 Decision 2: the root part lives on `self.root` (a field, not the
-        // arena), so resolve its reserved id there — this is what makes it selectable
-        // and inspectable like any other node.
+        // The root part lives on `self.root` (a field, not the arena), so resolve its
+        // reserved id there — this is what makes it selectable and inspectable like any
+        // other node.
         if id == ROOT_NODE_ID {
             return Some(&self.root);
         }
         self.arena.get(&id)
     }
 
-    /// The node with the given [`NodeId`], mutably (ADR 0003 Phase B2). Same scope +
-    /// caveats as [`node_by_id`](Self::node_by_id).
+    /// The node with the given [`NodeId`], mutably. Same scope + caveats as
+    /// [`node_by_id`](Self::node_by_id).
     pub fn node_by_id_mut(&mut self, id: NodeId) -> Option<&mut Node> {
-        // ADR 0003 Phase B5: direct id-keyed arena lookup.
         if id == NodeId(0) {
             return None;
         }
-        // ADR 0018 Decision 2: the root part is a field, not an arena entry — its
-        // reserved id edits `self.root` (e.g. a rename via `SetName`). Its children
-        // are `self.roots`, never mutated through this handle.
+        // The root part is a field, not an arena entry — its reserved id edits
+        // `self.root` (e.g. a rename via `SetName`). Its children are `self.roots`,
+        // never mutated through this handle.
         if id == ROOT_NODE_ID {
             return Some(&mut self.root);
         }
         self.arena.get_mut(&id)
     }
 
-    /// Set the `enabled` flag of the node identified by `id` (ADR 0003 Phase B4),
-    /// returning whether the id resolved to a node. A NodeId-typed edit op so the
+    /// Set the `enabled` flag of the node identified by `id`, returning whether the id
+    /// resolved to a node. A NodeId-typed edit op so the
     /// panel's checkbox can mutate by identity rather than by path. Because the flag
     /// gates participation rather than display, flipping it changes the composed body
     /// and the caller must re-resolve.
@@ -208,16 +201,15 @@ impl Scene {
         }
     }
 
-    /// The [`NodePath`] addressing the node with the given [`NodeId`] in the
-    /// top-level assembly tree, or `None` (ADR 0003 Phase B2). The inverse of
+    /// The [`NodePath`] addressing the node with the given [`NodeId`] in the top-level
+    /// assembly tree, or `None`. The inverse of
     /// [`id_at_path`](Self::id_at_path): `path_of(id_at_path(path)) == Some(path)`
-    /// for every path that resolves. While `NodePath` is still the identity of
-    /// record, this lets callers hold a stable [`NodeId`] and recover its current
-    /// position on demand.
+    /// for every path that resolves. Lets a caller hold a stable [`NodeId`] and recover
+    /// its current position on demand.
     pub fn path_of(&self, id: NodeId) -> Option<NodePath> {
-        // ADR 0003 Phase B5: walk the id-spine (`roots`, then each Group's spine) for
-        // ORDER, fetching content from the arena — the canonical render-time NodePath
-        // projection. The arena is get-only here.
+        // Walk the id-spine (`roots`, then each Group's spine) for ORDER, fetching
+        // content from the arena — the canonical render-time NodePath projection. The
+        // arena is get-only here.
         fn search(scene: &Scene, spine: &[NodeId], id: NodeId, prefix: &mut Vec<usize>) -> bool {
             for (index, &child_id) in spine.iter().enumerate() {
                 prefix.push(index);
@@ -243,37 +235,34 @@ impl Scene {
     }
 
     /// Flatten the top-level assembly into a depth-first list of `(path, id, depth)`
-    /// rows for the tree UI (ADR 0001 step 4): every top-level node, and — for a
+    /// rows for the tree UI: every top-level node, and — for a
     /// [`NodeContent::Group`] — its children recursively at increasing depth. The
     /// rows are in display order (a parent immediately precedes its children).
     /// `Instance` nodes are leaves here (their definition's body is stored
     /// separately and rendered in the Definitions list, not inlined into the tree).
     ///
-    /// ADR 0003 Phase B4: each row also carries the node's stable [`NodeId`] so the
-    /// panel can feed the now-NodeId-typed select/delete/visibility ops directly,
-    /// without a `path → id` round-trip; the `NodePath` stays for depth/path display.
+    /// Each row also carries the node's stable [`NodeId`] so the panel can feed the
+    /// NodeId-typed select/delete/visibility ops directly, without a `path → id`
+    /// round-trip; the `NodePath` is there for depth/path display.
     pub fn tree_rows(&self) -> Vec<(NodePath, NodeId, usize)> {
         let mut rows = Vec::new();
-        // ADR 0018 Decision 2: the root part is the TOP ROW (depth 0), addressed by
-        // the empty `NodePath` (it is not in the `roots` spine — `node_at_path` on the
-        // empty path returns `None`, so geometry consumers like the grid batch skip it
-        // harmlessly). Its children — the top-level nodes — indent one level beneath it.
+        // The root part is the TOP ROW (depth 0), addressed by the empty `NodePath`
+        // (it is not in the `roots` spine — `node_at_path` on the empty path returns
+        // `None`, so geometry consumers like the grid batch skip it harmlessly). Its
+        // children — the top-level nodes — indent one level beneath it.
         rows.push((NodePath::from_indices(Vec::new()), ROOT_NODE_ID, 0));
         collect_tree_rows(self, &self.roots, &mut Vec::new(), 1, &mut rows);
         rows
     }
 
-    // `active_node_mut` was DELETED 2026-07-18 with zero callers; `active` / `active_node` /
-    // `active_path` followed it in ADR 0032. An inspector edit is an Intent carrying its
-    // TARGET id, applied via `node_by_id_mut(target)` (see `app_core::intent`), so no edit
-    // path ever consults a selection. Selection now lives in the workspace
-    // (`ui::panel::Selection`) and the document has none — do not reintroduce one here.
+    // The document holds NO selection. An inspector edit is an Intent carrying its
+    // TARGET id, applied via `node_by_id_mut(target)` (see `app_core::intent`), so no
+    // edit path ever consults a selection. Selection lives in the workspace
+    // (`ui::panel::Selection`) — do not reintroduce one here.
 
-    /// Mint the next fresh [`NodeId`] from the document counter (ADR 0003 Phase B3),
-    /// advancing it past the value handed out. Matches the
-    /// [`ensure_node_ids`](Self::ensure_node_ids) convention: ids start at `1`
-    /// (`0` is the unassigned sentinel). Used by the `add_*` edit ops so a new node
-    /// carries a stable id the moment it joins the tree.
+    /// Mint the next fresh [`NodeId`] from the document counter, advancing it past the
+    /// value handed out (`0` is the unassigned sentinel, never handed out). Used by the
+    /// `add_*` edit ops so a new node carries a stable id the moment it joins the tree.
     pub(super) fn mint_node_id(&mut self) -> NodeId {
         // `.max(2)`: `1` is the reserved root-part id ([`ROOT_NODE_ID`]); user nodes
         // mint from `2` upward so one can never collide with the root.
@@ -284,8 +273,8 @@ impl Scene {
     }
 
     /// The parent of the node `id` in the top-level assembly tree, and its index in
-    /// that parent's spine (ADR 0003 Phase C C2 undo support): `(Some(parent_id),
-    /// index)` for a Group child, `(None, index)` for a top-level node. `None` when the
+    /// that parent's spine: `(Some(parent_id), index)` for a Group child,
+    /// `(None, index)` for a top-level node. `None` when the
     /// id does not resolve. Used to CAPTURE a node's slot before a structural edit so
     /// the inverse can splice it back at the same place.
     pub fn parent_and_index_of(&self, id: NodeId) -> Option<(Option<NodeId>, usize)> {
@@ -304,7 +293,7 @@ impl Scene {
     /// The mutable id-spine addressed by `parent_path` (the empty path → the
     /// top-level [`roots`](Self::roots); otherwise the [`Vec<NodeId>`] of the Group
     /// the path resolves to). `None` when the path does not resolve to a Group.
-    /// ADR 0003 Phase B5: returns the SPINE of child ids, not the child `Node`s.
+    /// Returns the SPINE of child ids, not the child `Node`s.
     pub(super) fn siblings_mut(&mut self, parent_path: &NodePath) -> Option<&mut Vec<NodeId>> {
         if parent_path.indices.is_empty() {
             return Some(&mut self.roots);
@@ -350,17 +339,15 @@ impl Scene {
         }
     }
 
-    /// Test helper (ADR 0003 Phase B5): the top-level node at positional `index`, via
-    /// the [`roots`](Self::roots) spine + arena. Replaces the old `scene.nodes[index]`
-    /// positional read now that storage is id-keyed.
+    /// Test helper: the top-level node at positional `index`, via the
+    /// [`roots`](Self::roots) spine + arena.
     #[cfg(any(test, feature = "test-support"))]
     pub fn root_node(&self, index: usize) -> &Node {
         let id = self.roots[index];
         &self.arena[&id]
     }
 
-    /// Test helper (ADR 0003 Phase B5): the top-level node at positional `index`,
-    /// mutably. Replaces the old `scene.nodes[index]` positional `&mut`.
+    /// Test helper: the top-level node at positional `index`, mutably.
     #[cfg(any(test, feature = "test-support"))]
     pub fn root_node_mut(&mut self, index: usize) -> &mut Node {
         let id = self.roots[index];
@@ -378,7 +365,7 @@ fn collect_tree_rows(
     depth: usize,
     rows: &mut Vec<(NodePath, NodeId, usize)>,
 ) {
-    // Iterate the id-spine for ORDER, fetching content from the arena (ADR 0003 B5).
+    // Iterate the id-spine for ORDER, fetching content from the arena.
     for (index, &child_id) in spine.iter().enumerate() {
         prefix.push(index);
         rows.push((NodePath::from_indices(prefix.clone()), child_id, depth));

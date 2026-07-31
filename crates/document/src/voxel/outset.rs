@@ -1,38 +1,35 @@
-//! Outset: a producer decorator that dilates a body before it folds (ADR 0019 Decision 7).
+//! Outset: a producer decorator that dilates a body before it folds.
 
 use super::{Field, FieldInterval, VoxelProducer};
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{BlockAttrs, BlockId, Voxel, VoxelGrid, SURFACE_ISOLEVEL};
 
-/// A producer whose body is the inner producer DILATED by `outset_voxels` (ADR 0019
-/// Decision 7). A negative outset insets, eroding instead.
+/// A producer whose body is the inner producer DILATED by `outset_voxels`. A negative
+/// outset insets, eroding instead.
 ///
-/// **Outset is a decorator, not a fold arm, and that is the point.** ADR 0020 Decision 7
-/// warns that the fold exists twice — over voxel sets in `scene::producers` and over
-/// intervals in `substrate::solids::cell_classification` — and that the two diverge silently
-/// if only one learns a new operation. Wrapping the *producer* sidesteps that hazard by
-/// construction: both folds consume this type through the ordinary [`VoxelProducer`]
-/// interface, so there is exactly one implementation of what outset MEANS and no second arm
-/// to keep in sync. `stamp_producer`, `mask_producer` (carve/intersect) and the
-/// classifier's `cell_field_interval` call are all unchanged.
+/// **Outset is a decorator, not a fold arm, and that is the point.** The CSG fold exists
+/// twice — over voxel sets in `scene::producers` and over intervals in
+/// `substrate::solids::cell_classification` — and the two diverge silently if only one
+/// learns a new operation. Wrapping the *producer* sidesteps that hazard by construction:
+/// both folds consume this type through the ordinary [`VoxelProducer`] interface, so there
+/// is exactly one implementation of what outset MEANS and no second arm to keep in sync.
 ///
 /// # The frame
 ///
 /// Dilation grows the body by `N` on every side, so the wrapper's `[0, full_dim)` frame is
 /// the inner one shifted: wrapper coordinate `x` is inner coordinate `x − N`, and the
 /// wrapper's dimensions are the inner's plus `2N`. Callers anchor the wrapper by subtracting
-/// `N` from the leaf's world offset, which keeps the dilated body centered on the original
-/// (ADR 0008 — the frame is carried, never re-derived).
+/// `N` from the leaf's world offset, which keeps the dilated body centered on the original;
+/// the frame is carried, never re-derived.
 ///
 /// # Why this needs a field
 ///
-/// Dilation is `d(p) <= N`, so it is meaningless without a distance. ADR 0020 Decision 1
-/// makes that structural: a producer with no [`Field`] cannot be outset, and
-/// [`wrap`](Self::wrap) returns the inner producer untouched rather than inventing a
-/// geometry for it. `DebugCloudField` is the case that matters — it brackets cells exactly
-/// but has no usable pointwise distance, and its cell intervals are still sign-only
-/// sentinels, so shifting them would resurrect exactly the ADR 0019 Decision 1 trap that
-/// metricising `SketchSolid` closed.
+/// Dilation is `d(p) <= N`, so it is meaningless without a distance. That is structural: a
+/// producer with no [`Field`] cannot be outset, and [`wrap`](Self::wrap) returns the inner
+/// producer untouched rather than inventing a geometry for it. `DebugCloudField` is the case
+/// that matters — it brackets cells exactly but has no usable pointwise distance, and its
+/// cell intervals are sign-only sentinels, so shifting them would report a dilation the
+/// geometry cannot back.
 pub struct OutsetProducer {
     inner: Box<dyn VoxelProducer>,
     outset_voxels: i64,
@@ -42,9 +39,9 @@ impl OutsetProducer {
     /// Wrap `inner` so its body dilates by `outset_voxels`, or hand back `inner` unchanged
     /// when the outset is zero or the producer has no field to dilate.
     ///
-    /// Returning the inner producer for a fieldless one is ADR 0020 Decision 1's "outset is
-    /// unavailable there", not a silent failure to dilate: nothing in the document can set a
-    /// nonzero outset on such a node today, and the type is what bars it.
+    /// Returning the inner producer for a fieldless one means "outset is unavailable there",
+    /// not a silent failure to dilate: the missing [`Field`] is what bars a nonzero outset
+    /// from ever reaching such a node.
     pub fn wrap(inner: Box<dyn VoxelProducer>, outset_voxels: i64) -> Box<dyn VoxelProducer> {
         if outset_voxels == 0 || inner.as_field().is_none() {
             return inner;
@@ -126,12 +123,11 @@ impl VoxelProducer for OutsetProducer {
                                 (j % voxels_per_block as i64) as u8,
                                 (k % voxels_per_block as i64) as u8,
                             ],
-                            // A composed Part carries per-voxel materials, and the dilated
-                            // shell must inherit the material of the surface it grew from
-                            // rather than flattening the Part to one color — so the
-                            // material is sampled at the SAME inner point as the distance.
-                            // A single-material producer answers `None` here and its leaf
-                            // override stamps instead, exactly as before.
+                            // The dilated shell inherits the material of the surface it grew
+                            // from rather than flattening a composed Part to one color, so
+                            // the material is sampled at the SAME inner point as the
+                            // distance. A single-material producer answers `None` here and
+                            // its leaf override stamps instead.
                             block_id: self
                                 .inner
                                 .material_at(center, voxels_per_block)
@@ -226,9 +222,8 @@ impl Field for OutsetProducer {
     }
 
     /// Unchanged by the offset: dilating by a constant moves the surface, never the norm the
-    /// distance is measured in. This is what makes ADR 0019 Decision 6's rule — "outset's
-    /// shape follows the body's category" — fall out rather than need enforcing: a box
-    /// outsets square because a box MEASURES square.
+    /// distance is measured in. So "outset's shape follows the body's category" falls out
+    /// rather than needing enforcement: a box outsets square because a box MEASURES square.
     fn metric(&self) -> substrate::geom2d::Metric {
         match self.inner.as_field() {
             Some(field) => field.metric(),

@@ -1,4 +1,4 @@
-// ----- Revolve operation (ADR 0003 §3i, the solid-of-revolution producer) -----
+// ----- Revolve operation: the solid-of-revolution producer -----
 
 use super::*;
 use crate::sketch::RevolveAxis;

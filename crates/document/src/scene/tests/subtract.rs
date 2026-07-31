@@ -1,7 +1,7 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
 
-// ---- ADR 0017 (#73): CombineOp::Subtract — the ordered document-order fold ----
+// ---- CombineOp::Subtract — the ordered document-order fold ----
 //
 // These tests pin the DENSE ORACLE semantics of the sibling-level subtract slice:
 // a leaf under `Subtract` removes occupancy from everything accumulated before it
@@ -10,9 +10,6 @@ use voxel_core::core_geom::MaterialChoice;
 // crate's parity tests.
 
 const DENSITY: u32 = 8;
-
-// `box_tool` / `resolved_absolute_multiset` are the shared CSG fixtures in
-// `super` (tests/mod.rs), reached via `use super::*`.
 
 /// A cutter placed AFTER a solid carves it: the resolved occupancy is exactly
 /// the body's voxels MINUS the cutter's box, and no voxel carries the cutter's
@@ -61,7 +58,7 @@ fn subtract_after_body_carves_its_box() {
     }
 }
 
-/// The ordering law (ADR 0017 Decision 2): a cutter placed BEFORE its target
+/// The ordering law: a cutter placed BEFORE its target
 /// subtracts from NOTHING — the resolved scene is identical to the body alone.
 #[test]
 fn subtract_before_body_is_a_no_op() {

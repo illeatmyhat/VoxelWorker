@@ -1,7 +1,7 @@
-//! The dense resolvers' **scope stack**: reconstructing ADR 0017 Decision 3's
-//! stack-evaluated depth-first fold ([`sync_grid_scope_stack`]) and folding one
-//! CLOSED scope's composed body into its parent ([`fold_closed_scope_into`]). Shared
-//! by the runtime chunk resolve and the cfg-gated dense oracle.
+//! The dense resolvers' **scope stack**: reconstructing the stack-evaluated depth-first
+//! fold ([`sync_grid_scope_stack`]) and folding one CLOSED scope's composed body into its
+//! parent ([`fold_closed_scope_into`]). Shared by the runtime chunk resolve and the
+//! cfg-gated dense oracle.
 
 use voxel_core::voxel::VoxelGrid;
 
@@ -9,10 +9,9 @@ use super::*;
 use crate::scene::*;
 
 /// Sync the dense resolvers' **scope stack** to `target_path` — the stack-evaluated
-/// depth-first fold of ADR 0017 Decision 3 (issue #74), reconstructed from each leaf's
-/// carried [`ScopeFrame`] path (scopes are contiguous in the depth-first walk, so
-/// comparing the open stack against the next leaf's path recovers the exact
-/// scope-close / scope-open marker sequence).
+/// depth-first fold, reconstructed from each leaf's carried [`ScopeFrame`] path (scopes
+/// are contiguous in the depth-first walk, so comparing the open stack against the next
+/// leaf's path recovers the exact scope-close / scope-open marker sequence).
 ///
 /// Frames deeper than the common prefix CLOSE (innermost first): the popped scratch
 /// grid — the scope's fully composed body so far — folds into its parent (the next
@@ -24,7 +23,7 @@ use crate::scene::*;
 /// For a pure-`Union` scene this is provably the identity transformation on the output
 /// occupied list: a union close APPENDS the scratch voxels at exactly the walk position
 /// the scope closed (before any later sibling stamped), preserving both the element
-/// order and the later-wins material resolution of the flat pre-#74 walk — which is why
+/// order and the later-wins material resolution of an unscoped flat walk — which is why
 /// the pure-Union goldens hold byte-identical.
 pub(super) fn sync_grid_scope_stack(
     stack: &mut Vec<(ScopeFrame, VoxelGrid)>,
@@ -56,18 +55,17 @@ pub(super) fn sync_grid_scope_stack(
 }
 
 /// Fold one CLOSED scope's composed body into its parent accumulator under the scope's
-/// own [`CombineOp`] (ADR 0017 Decision 3):
+/// own [`CombineOp`]:
 ///
 /// * `Union` — append the body's voxels. The parent's occupied list is later-wins on
 ///   overlap (last write persists downstream), and the body's voxels are appended at
 ///   the walk position the scope closed, so the union close reproduces the flat
 ///   depth-first later-wins order exactly.
-/// * `Subtract` — an occupancy-only mask (ADR 0017 Decision 1): every parent voxel
-///   whose integer index coincides with one of the body's occupied cells is REMOVED;
-///   surviving voxels keep their material and overlay, and the body's materials never
-///   enter the parent.
-/// * `Intersect` — the complementary occupancy-only mask (issue #75): the parent KEEPS
-///   ONLY the voxels whose index coincides with one of the body's occupied cells;
+/// * `Subtract` — an occupancy-only mask: every parent voxel whose integer index
+///   coincides with one of the body's occupied cells is REMOVED; surviving voxels keep
+///   their material and overlay, and the body's materials never enter the parent.
+/// * `Intersect` — the complementary occupancy-only mask: the parent KEEPS ONLY the
+///   voxels whose index coincides with one of the body's occupied cells;
 ///   everything else dies, including cells far outside the body's AABB. A scope that
 ///   closed at the EMPTY body therefore annihilates its parent (`A ∩ ∅ = ∅`), matching
 ///   the substrate kernel's ∅ identity. Surviving voxels keep their material/overlay.

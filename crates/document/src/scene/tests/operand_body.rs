@@ -3,13 +3,13 @@ use crate::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-// ---- ADR 0018 Decision 6: the "Show booleans" mode's document-side derivation ----
+// ---- The "Show booleans" mode's document-side derivation ----
 //
 // `boolean_operand_body_slices` walks the ACTIVE selection's subtree and collects the
 // standalone body slice of EVERY enabled Subtract/Intersect operand inside it (the
 // selected node included when it is a boolean): absolute placement is kept (ancestor
-// Group offsets bake into the slice root — ADR 0008 carried frames), each emitted
-// body's own operation is neutralised to Union (a Subtract root at fold start would
+// Group offsets bake into the slice root — the carried frame), each emitted
+// body's own operation is neutralized to Union (a Subtract root at fold start would
 // yield nothing), and the Union bodies (already visible) never join the set. Selecting
 // the root part covers the whole scene; a fixture instance splices its children.
 
@@ -141,7 +141,7 @@ fn slice_covers_only_the_selected_operand_extent() {
 }
 
 /// A Group child's slice keeps its WORLD placement: the ancestor Group offsets are
-/// baked into the slice root's transform (ADR 0008 — carry the frame).
+/// baked into the slice root's transform (carry the frame).
 #[test]
 fn group_child_slice_keeps_its_world_placement() {
     let child = box_tool([2, 2, 2], [2, 0, 0], CombineOp::Subtract, "Nested cutter");
@@ -173,7 +173,7 @@ fn group_child_slice_keeps_its_world_placement() {
     assert_eq!(
         root.operation,
         CombineOp::Union,
-        "the root's own role is neutralised"
+        "the root's own role is neutralized"
     );
 }
 
@@ -214,7 +214,7 @@ fn selected_group_collects_every_subtree_boolean_and_never_a_union() {
     assert_eq!(
         root.operation,
         CombineOp::Union,
-        "the slice root's own role is neutralised"
+        "the slice root's own role is neutralized"
     );
 }
 
@@ -274,7 +274,7 @@ fn disabled_operands_contribute_nothing() {
     assert!(scene.boolean_operand_body_slices(scene.roots[0]).is_empty());
 }
 
-/// A FIXTURE instance (inert own operation, issue #77) selected: its definition
+/// A FIXTURE instance (inert own operation) selected: its definition
 /// children splice into the host fold, so its BOOLEAN children join the set under the
 /// instance's transform, and its Union children do not.
 #[test]
@@ -310,7 +310,7 @@ fn selected_fixture_instance_splices_its_boolean_children() {
 }
 
 /// A SEALED-definition Instance is a leaf operand: instanced under `Subtract` it is
-/// the reusable cutter (issue #76), and its FINISHED definition body is the ghost.
+/// the reusable cutter, and its FINISHED definition body is the ghost.
 /// Selecting the enclosing Group reaches it.
 #[test]
 fn sealed_cutter_instance_emits_its_finished_body() {

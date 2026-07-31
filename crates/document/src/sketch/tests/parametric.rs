@@ -1,4 +1,4 @@
-//! #101 — sub-voxel + parametric coordinates on `SketchPoint`: the floor/fraction split,
+//! Sub-voxel + parametric coordinates on `SketchPoint`: the floor/fraction split,
 //! snapped-path identity (a whole-voxel profile resolves byte-identical to the integer-only
 //! producer), a genuinely fractional profile, and the density re-target (a retained
 //! `Measurement` re-evaluates losslessly; a plain point rescales its physical position).
@@ -25,7 +25,7 @@ fn from_continuous_splits_floor_and_fraction() {
     assert_eq!(
         SketchPoint::from_continuous(f64::NAN, 3.0).offset_local_voxels,
         [0.0, 0.0],
-        "a non-finite coordinate sanitises instead of poisoning equality"
+        "a non-finite coordinate sanitizes instead of poisoning equality"
     );
 }
 
@@ -42,7 +42,7 @@ fn whole_voxel_continuous_point_is_the_snapped_point() {
 #[test]
 fn snapped_profile_resolves_identically_through_the_continuous_path() {
     // The same rectangle authored with integer constructors and with `from_continuous`
-    // whole coords must produce the same occupancy — the #101 fields are inert at zero.
+    // whole coords must produce the same occupancy — the sub-voxel fields are inert at zero.
     let integer = SketchSolid::extrude(
         Sketch::new(
             PlaneAxis::Z,
@@ -143,13 +143,13 @@ fn retarget_reevaluates_a_retained_measurement() {
         "both axes landed on whole voxels, so the authored expressions are kept verbatim"
     );
     // Non-dividing re-target: 1/2 block at d15 = 7.5 voxels → floors to 7 and the
-    // retained expression resynthesises so it can never disagree with the voxels.
+    // retained expression resynthesizes so it can never disagree with the voxels.
     let at_15 = point.retargeted(16, 15);
     assert_eq!(at_15.offset_voxels, [7, 3]);
     assert_eq!(
         at_15.offset_measurements,
         Some([Measurement::from_voxels(7), Measurement::from_voxels(3)]),
-        "the offending axis floors and resynthesises; the landing axis keeps its form"
+        "the offending axis floors and resynthesizes; the landing axis keeps its form"
     );
 }
 

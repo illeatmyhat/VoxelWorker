@@ -1,5 +1,5 @@
-//! The boolean-operand body slices of the selected subtree (ADR 0018 Decision 6 — the
-//! "Show booleans" viewer mode's document-side derivation).
+//! The boolean-operand body slices of the selected subtree — the "Show booleans" viewer
+//! mode's document-side derivation.
 //!
 //! In Show-booleans mode the SELECTED subtree x-rays its boolean operands: every
 //! Subtract/Intersect operand body within the selected node's subtree (the node itself
@@ -9,13 +9,13 @@
 //!
 //! Each operand body is derived as a **scene slice**: a clone of the document re-rooted
 //! on that operand, keeping its ABSOLUTE placement (the ancestor Group offsets are baked
-//! into the slice root's transform — ADR 0008: the frame is carried, never re-derived),
-//! so the slice's covering chunks land on the composed scene's chunk lattice and the
-//! ghost mesh sits voxel-exact on the operand's place. The subtree's INTERNAL booleans
-//! still spend themselves (a covered boolean Group emits its own sealed, internally-carved
-//! body), while the emitted operand's own combine operation is neutralised to `Union` so
-//! its body composes constructively when resolved standalone (a Subtract root at fold
-//! start would yield nothing).
+//! into the slice root's transform — the frame is carried, never re-derived), so the
+//! slice's covering chunks land on the composed scene's chunk lattice and the ghost mesh
+//! sits voxel-exact on the operand's place. The subtree's INTERNAL booleans still spend
+//! themselves (a covered boolean Group emits its own sealed, internally-carved body),
+//! while the emitted operand's own combine operation is neutralized to `Union` so its body
+//! composes constructively when resolved standalone (a Subtract root at fold start would
+//! yield nothing).
 //!
 //! Resolving each slice is bounded by that operand's own covering chunk range, never the
 //! whole scene's — the derivation cost scales with the ghosted bodies.
@@ -30,10 +30,10 @@ fn operation_is_boolean_mask(operation: CombineOp) -> bool {
 }
 
 impl Scene {
-    /// The boolean-operand body slices for the ACTIVE selection's subtree (ADR 0018
-    /// Decision 6 — "Show booleans" mode): `(operation, slice)` pairs where `operation`
-    /// is the boolean role the body folds under (Subtract/Intersect — picking the ghost
-    /// style) and `slice` is a scene whose sole root is that body, placed absolutely.
+    /// The boolean-operand body slices for the ACTIVE selection's subtree ("Show
+    /// booleans" mode): `(operation, slice)` pairs where `operation` is the boolean role
+    /// the body folds under (Subtract/Intersect — picking the ghost style) and `slice` is
+    /// a scene whose sole root is that body, placed absolutely.
     ///
     /// The walk is rooted at `target` and unconditional within its subtree:
     ///
@@ -44,11 +44,10 @@ impl Scene {
     ///   but consistent (it scopes the walk to that ingredient — nothing to reveal).
     /// * **Covered boolean Group** — emits its sealed composed (internally-carved) body
     ///   AND the walk descends (its internal cutters are subtree operands too).
-    /// * **Sealed-definition Instance** — a leaf operand (the reusable cutter, issue #76:
-    ///   it folds the definition's FINISHED body under its own operation).
-    /// * **Fixture Instance** (inert own operation, issue #77) — its definition children
-    ///   splice into the host fold, so the walk descends into them under the instance's
-    ///   transform.
+    /// * **Sealed-definition Instance** — a leaf operand (the reusable cutter: it folds
+    ///   the definition's FINISHED body under its own operation).
+    /// * **Fixture Instance** (inert own operation) — its definition children splice into
+    ///   the host fold, so the walk descends into them under the instance's transform.
     /// * **Hidden / stale target** — empty (no ghost). A hidden node stamps nothing into
     ///   the composition, so there is no invisible-by-success body to reveal.
     ///
@@ -104,11 +103,11 @@ impl Scene {
         target_id.map(|id| (id, ancestor_offset_voxels))
     }
 
-    /// The standalone body slice of ONE node — the selection-feedback derivation (ADR
-    /// 0032: the cel treatment shades the selected node's derived body in every view
-    /// mode). Same slice mechanics as a boolean operand's ([`Self::operand_body_slice`]):
-    /// re-rooted, absolutely placed, root operation neutralised to Union so the body
-    /// resolves constructively regardless of how it folds in the host scene.
+    /// The standalone body slice of ONE node — the selection-feedback derivation (the cel
+    /// treatment shades the selected node's derived body in every view mode). Same slice
+    /// mechanics as a boolean operand's ([`Self::operand_body_slice`]): re-rooted,
+    /// absolutely placed, root operation neutralized to Union so the body resolves
+    /// constructively regardless of how it folds in the host scene.
     ///
     /// `None` for the root part (the whole scene needs no feedback body — it IS the
     /// render), a stale id, or a disabled node (it stamps nothing into the composition,
@@ -128,8 +127,8 @@ impl Scene {
     /// The recursive walk behind [`boolean_operand_body_slices`](Self::boolean_operand_body_slices):
     /// collect the `(operation, slice)` of every enabled Subtract/Intersect operand in
     /// `siblings` and their descendants. `ancestor_offset_voxels` is the accumulated world
-    /// offset of the siblings' parent (baked into each emitted slice root — ADR 0008
-    /// carried frames).
+    /// offset of the siblings' parent (baked into each emitted slice root — the frame is
+    /// carried).
     fn collect_boolean_operands(
         &self,
         siblings: &[NodeId],
@@ -150,14 +149,14 @@ impl Scene {
                 ancestor_offset_voxels[1] + node.transform.offset_voxels[1],
                 ancestor_offset_voxels[2] + node.transform.offset_voxels[2],
             ];
-            // A fixture instance's own operation is INERT (issue #77): its definition
-            // children splice into the host fold, so it never emits its own body even
-            // under a boolean operation — it only contributes via descent below.
+            // A fixture instance's own operation is INERT: its definition children splice
+            // into the host fold, so it never emits its own body even under a boolean
+            // operation — it only contributes via descent below.
             let is_fixture_instance = matches!(&node.content, NodeContent::Instance(def_id)
                 if self.def_by_id(*def_id).is_some_and(|def| def.fixture));
             // The one operand-body emit: a boolean Group's sealed composed body, or a
-            // sealed-definition Instance's finished body (issue #76, the reusable
-            // cutter), or a leaf producer's body — all the SAME push, gated identically.
+            // sealed-definition Instance's finished body (the reusable cutter), or a leaf
+            // producer's body — all the SAME push, gated identically.
             if emit_own_body && !is_fixture_instance {
                 slices.push((
                     node.operation,
@@ -184,7 +183,7 @@ impl Scene {
 
     /// Build the standalone slice for the body rooted at `root_id`: the document cloned,
     /// re-rooted on that node, with `ancestor_offset_voxels` baked into the root's
-    /// transform (absolute placement preserved) and the root's operation neutralised to
+    /// transform (absolute placement preserved) and the root's operation neutralized to
     /// `Union` (its body must compose constructively when resolved alone — a Subtract
     /// root at fold start would yield nothing).
     fn operand_body_slice(&self, root_id: NodeId, ancestor_offset_voxels: [i64; 3]) -> Scene {

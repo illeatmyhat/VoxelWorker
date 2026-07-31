@@ -11,20 +11,17 @@
 //! Consequences pinned by tests: a tall cylinder/tube/torus has its axis along Z
 //! (`size_voxels[2]` is the vertical extent), layer slices are Z-slices, the onion
 //! band is a Z-range, and the `.vox` export writes our Z straight to vox-Z with
-//! NO axis swap (MagicaVoxel is itself Z-up).
+//! NO axis swap (the `.vox` format is itself Z-up).
 //!
-//! ## The producer seam (`docs/adr/0006-authoring-truth-and-gpu-boundary.md`)
+//! ## The producer seam
 //!
 //! This module implements the architectural seam **the renderer never calls the SDF
 //! directly**: instead a [`VoxelProducer`] resolves a parametric shape (or a sub-assembly,
 //! or a sketch, or a sculpt overlay) into a [`VoxelGrid`] — the one consumed truth. The
-//! renderer, the layer-range diameter readout (issue #12) and the `.vox` export all read
-//! the grid, so adding a second producer touched nothing downstream — proven out since:
-//! [`SdfShape`] (which runs the sampling triple-loop transcribed from the original
-//! prototype) was the first implementor, and `SketchSolid`, `DebugCloudField`,
-//! `CompositeProducer` and `OutsetProducer` have since joined it.
+//! renderer, the layer-range diameter readout and the `.vox` export all read the grid, so
+//! a new producer costs nothing downstream.
 //!
-//! ## The value ⊥ producer split (ADR 0016)
+//! ## The value ⊥ producer split
 //!
 //! This is the **document-bound** producer half. It depends DOWNWARD on the
 //! foundational value vocabulary in the `voxel_core` crate (the resolved
@@ -37,38 +34,34 @@
 use voxel_core::voxel::VoxelGrid;
 
 // The conservative cell-interval bound and its coarse classification are pure interval
-// arithmetic under CSG lattice ops — substrate's [`substrate::interval::FieldInterval`]. The
-// domain reads it with the occupancy convention "inside where `field <= SURFACE_ISOLEVEL`":
-// `FieldInterval::classify(SURFACE_ISOLEVEL)` yields AIR / COARSE-SOLID / BOUNDARY for a
-// whole block-sized cell, and `substrate::interval::union_field_intervals` composes a Union of producers
+// arithmetic under CSG lattice ops. The domain reads it with the occupancy convention
+// "inside where `field <= SURFACE_ISOLEVEL`": `FieldInterval::classify(SURFACE_ISOLEVEL)`
+// yields AIR / COARSE-SOLID / BOUNDARY for a whole block-sized cell, and
+// `substrate::interval::union_field_intervals` composes a Union of producers
 // (min-of-fields). The conservative-never-narrow property is why a coarse verdict can
 // never disagree with a brute-force per-voxel evaluation — the boundary-residency
-// classifier's soundness (see the Boundary-residency material in
-// `docs/architecture/02-evaluation.md`, proven by the E1 parity gate in
-// `cell_interval_parity_tests`). The interval algebra, the Lipschitz-center bound, and
-// the classify threshold-parameter live in the substrate module doc.
+// classifier's soundness (see `docs/architecture/02-evaluation.md`).
 pub use substrate::interval::{FieldClassification, FieldInterval};
 
 /// Anything that can resolve itself into the shared [`VoxelGrid`].
 ///
-/// v1 has a single implementor ([`SdfShape`]); the trait exists so a sculpt
-/// overlay (the sparse-override option, `docs/adr/0003` §3g) can be added later
-/// without changing the renderer.
-// `Send + Sync`: every implementor ([`SdfShape`], the sketch producer, [`DebugCloudField`])
-// is plain immutable data, so a boxed producer can be SHARED read-only across rayon threads.
-// The #63 hoisted two-layer build computes the leaf list ONCE and shares the boxed producers
-// across the parallel per-chunk build — this bound is what lets `&[LeafProducer]` be `Sync`.
+/// The trait is the renderer's only door onto geometry, so a new kind of body (a sketch
+/// solid, a composed scope, a sculpt overlay) reaches the display without the renderer
+/// learning about it.
+// `Send + Sync`: every implementor is plain immutable data, so a boxed producer can be
+// SHARED read-only across rayon threads. The chunk build computes the leaf list ONCE and
+// shares the boxed producers across the parallel per-chunk build — this bound is what lets
+// `&[LeafProducer]` be `Sync`.
 pub trait VoxelProducer: Send + Sync {
     /// Write occupied voxels into `grid`. The grid's `dimensions` are assumed to
     /// already be set by the caller (so multiple producers can target one grid).
-    /// `voxels_per_block` is the document-level density (ADR 0003 §3f(0): one grid
-    /// fineness for the whole plan, no longer a per-producer field) — used to fill
-    /// each voxel's `block_local_coord` (and, for a sized producer, its grid extent).
+    /// `voxels_per_block` is the document-level density (one grid fineness for the whole
+    /// plan) — used to fill each voxel's `block_local_coord` (and, for a sized producer,
+    /// its grid extent).
     ///
     /// This is the full-window convenience wrapper over [`resolve_into`]: each impl
     /// computes its own FULL grid dimensions and calls `resolve_into` with the window
-    /// `[0, full_dim)` on every axis. It therefore writes EVERY in-range cell — i.e.
-    /// it is exactly the historical (pre-windowing) resolve.
+    /// `[0, full_dim)` on every axis, so it writes EVERY in-range cell.
     ///
     /// [`resolve_into`]: VoxelProducer::resolve_into
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32);
@@ -86,7 +79,7 @@ pub trait VoxelProducer: Send + Sync {
     ///   describe the whole producer even when only a sub-region's cells are written.
     /// * Each impl **CLAMPs** the window to `[0, full_dim)` per axis before iterating,
     ///   so an oversized / partly-out-of-range window is harmless and a full-window
-    ///   call (`[0,0,0]..full_dim`) reproduces the historical resolve EXACTLY.
+    ///   call (`[0,0,0]..full_dim`) reproduces the full resolve EXACTLY.
     ///
     /// Every producer's per-cell output depends ONLY on the cell index and the FULL
     /// dimensions (centered sample `idx + 0.5 − full_dim/2`; corner-anchored store
@@ -101,10 +94,10 @@ pub trait VoxelProducer: Send + Sync {
     );
 
     /// CONSERVATIVE bound on the producer's SIGNED field over a block-sized cell — the
-    /// classification primitive of ADR 0010 Decision 2 (the E1 slice). `cell_local_voxels`
-    /// is a half-open `[min, max)` box in the producer's OWN local voxel-index frame
-    /// `[0, full_dim)` (the SAME frame [`resolve_into`]'s window uses, ADR 0008 — the
-    /// frame is carried, never re-derived).
+    /// primitive the chunk classifier elides whole cells with. `cell_local_voxels` is a
+    /// half-open `[min, max)` box in the producer's OWN local voxel-index frame
+    /// `[0, full_dim)` — the SAME frame [`resolve_into`]'s window uses; the frame is
+    /// carried, never re-derived.
     ///
     /// Returns `Some([minimum, maximum])` whenever the producer can bracket its field
     /// over the whole cell (see [`FieldInterval`] for the conservative-never-narrow
@@ -113,8 +106,7 @@ pub trait VoxelProducer: Send + Sync {
     /// unelided.
     ///
     /// The default is `None` (the always-safe fallback): a producer opts INTO coarse
-    /// classification by overriding this. Wired to nothing yet (E1 stands alone with its
-    /// own exactness gate); it is op-stack math independent of any payload change.
+    /// classification by overriding this.
     ///
     /// [`resolve_into`]: VoxelProducer::resolve_into
     fn cell_field_interval(
@@ -146,7 +138,7 @@ pub trait VoxelProducer: Send + Sync {
     }
 
     /// Which node authored the geometry at a point in this producer's own `[0, full_dim)`
-    /// voxel frame — what a viewport pick landing there selects (ADR 0032).
+    /// voxel frame — what a viewport pick landing there selects.
     ///
     /// The default `None` means "I am one node's body, ask the leaf" — the case for every
     /// Tool and sketch solid, whose leaf already names its node. Only a
@@ -169,7 +161,7 @@ pub trait VoxelProducer: Send + Sync {
         None
     }
 
-    /// This producer's signed distance field, when it has one (ADR 0020 Decision 1).
+    /// This producer's signed distance field, when it has one.
     ///
     /// `None` is not a failure — it is the honest answer for a producer whose occupancy is
     /// real but whose *geometry* is not a distance. Operations that need to measure (outset,
@@ -180,10 +172,9 @@ pub trait VoxelProducer: Send + Sync {
     }
 
     /// The producer's ANALYTIC feature-edge polylines in its own `[0, full_dim)` local
-    /// voxel frame (ADR 0032 selection feedback) — only edges the AUTHORED geometry
-    /// actually has, never anything derived from the voxel surface. `circle_segments`
-    /// tessellates one full rim turn (fixed, not screen-adaptive, so the polyline is
-    /// world-stable under orbit).
+    /// voxel frame — only edges the AUTHORED geometry actually has, never anything derived
+    /// from the voxel surface. `circle_segments` tessellates one full rim turn (fixed, not
+    /// screen-adaptive, so the polyline is world-stable under orbit).
     ///
     /// The default empty answer is honest for a producer with no authored creases: a
     /// voxel body, a composed scope, an outset wrapper (whose dilated surface has left
@@ -201,8 +192,8 @@ pub trait VoxelProducer: Send + Sync {
     /// This is the span [`resolve`] writes into and the AABB the classifier / chunk
     /// window clip against. A sized producer (an SDF Tool, a sketch solid) returns its
     /// intrinsic extent; a region-sized producer (the cloud field) returns the region it
-    /// was constructed for. ADR 0010 E2 reads this to bound each leaf's contribution to a
-    /// chunk block.
+    /// was constructed for. The chunk build reads this to bound each leaf's contribution
+    /// to a chunk block.
     ///
     /// [`resolve`]: VoxelProducer::resolve
     fn full_dimensions(&self, voxels_per_block: u32) -> [u32; 3];
@@ -230,8 +221,8 @@ pub(crate) fn clamp_window_to_grid(
     bounds
 }
 
-/// The metric Lipschitz bracket of a field over a cell (ADR 0010/0019) — the ONE fold the
-/// composite, outset, and sketch producers share for their `cell_field_interval`.
+/// The metric Lipschitz bracket of a field over a cell — the ONE bracket the composite,
+/// outset, and sketch producers share for their `cell_field_interval`.
 ///
 /// Occupancy is decided at voxel CENTERS (`index + 0.5`), so the region to bracket is the
 /// center span `[min + 0.5, max − 0.5]` — the exact samples `resolve_into` visits, tighter than

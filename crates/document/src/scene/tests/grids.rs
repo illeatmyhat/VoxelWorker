@@ -3,7 +3,7 @@ use crate::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-// ---- issue #29 (grid rework S3): per-object block lattice box (renderer-follow) ----
+// ---- Per-object block lattice box (renderer-follow) ----
 
 /// Build a single-Box-node scene at `offset`, return its
 /// `node_block_lattice_box_recentered` for node 0 at `density`.
@@ -29,10 +29,10 @@ fn single_node_lattice_box(
 
 /// The per-object lattice box spans the node's enclosing-block AABB and SCALES
 /// with density: a `B`-block extent → a `B·d`-voxel box, at each density
-/// {1, 15, 16} (the explicit user ask).
+/// {1, 15, 16}.
 ///
 /// The producer-true corner geometry is asserted in
-/// `node_block_aabb_scales_and_centers_across_densities` — in the RECENTERED frame
+/// `node_block_aabb_scales_and_corner_anchors_across_densities` — in the RECENTERED frame
 /// the box is shifted by the composite recenter, so the recentered corners need not
 /// be block multiples; the block-aligned STRUCTURE (extent = B·d, planes step d)
 /// is what survives the recenter, and that is what this asserts.
@@ -156,10 +156,10 @@ fn sizeless_node_has_no_lattice_box() {
     }
 }
 
-// ---- issue #29 (grid rework S1): per-node grids, Points, masters ----
+// ---- Per-node grids, Points, masters ----
 
-/// A freshly-built node carries NO grids (issue #29: grids default OFF for new
-/// objects). `NodeGrids::default()` is all-false, and `Node::new` adopts it.
+/// A freshly-built node carries NO grids: grids default OFF for new objects.
+/// `NodeGrids::default()` is all-false, and `Node::new` adopts it.
 #[test]
 fn new_node_has_all_grids_off() {
     let node = Node::new(
@@ -175,8 +175,8 @@ fn new_node_has_all_grids_off() {
     assert_eq!(node.grids, NodeGrids::default());
 }
 
-/// An empty `Scene::default()` has the issue-#29 grid-rework master defaults:
-/// ALL THREE masters ON (per-object flags stay OFF), and no Points yet.
+/// An empty `Scene::default()` has the master defaults: ALL THREE masters ON
+/// (per-object flags stay OFF), and no Points yet.
 #[test]
 fn scene_default_master_grids() {
     let scene = Scene::default();
@@ -219,7 +219,7 @@ fn ensure_origin_point_is_idempotent_and_creates_one_origin() {
     assert_eq!(scene.points.iter().filter(|p| p.is_origin).count(), 1);
 }
 
-/// ADR 0003 Phase B: `ensure_node_ids` mints a unique non-zero id for every
+/// `ensure_node_ids` mints a unique non-zero id for every
 /// node — top-level, Group children, and definition nodes — and is idempotent.
 #[test]
 fn ensure_node_ids_mints_unique_stable_ids() {
@@ -322,9 +322,8 @@ fn ensure_node_ids_preserves_existing_and_advances_counter() {
     );
 }
 
-/// ADR 0003 Phase B2: `id_at_path` / `path_of` / `node_by_id` agree with the
-/// positional `node_at_path` for EVERY node in the tree (the ⇄ equivalence the
-/// later selection/command migration relies on).
+/// `id_at_path` / `path_of` / `node_by_id` agree with the positional
+/// `node_at_path` for EVERY node in the tree (the ⇄ equivalence).
 #[test]
 fn node_id_and_path_resolution_round_trip() {
     fn clouds(name: &str) -> Node {
@@ -346,7 +345,7 @@ fn node_id_and_path_resolution_round_trip() {
     ]);
     scene.ensure_node_ids();
 
-    // ADR 0018 Decision 2: the root part is the top tree row but is NOT in the
+    // The root part is the top tree row but is NOT in the
     // `roots` spine — it has no positional `NodePath` (its empty path resolves to
     // nothing), yet it IS reachable by its reserved id. Assert that asymmetry, then
     // skip it in the positional round-trip below.
@@ -419,7 +418,7 @@ fn ensure_origin_point_does_not_duplicate_existing_origin() {
     assert_eq!(scene.points.iter().filter(|p| p.is_origin).count(), 1);
 }
 
-/// `add_point` gives a newly-added user Point the clean default (issue #29 fix):
+/// `add_point` gives a newly-added user Point the clean default:
 /// **all planes OFF** with **all three axes ON** — even if the caller passes a
 /// Point with planes enabled. Only the Origin (built by `ensure_origin_point`,
 /// not `add_point`) keeps the ground (XY, Z-up) plane on.
@@ -536,13 +535,13 @@ fn scene_with_grids_and_points_round_trips() {
     assert!(restored.master_voxel_grid);
     assert_eq!(restored.points.len(), 2);
     assert_eq!(restored.points[1].position_blocks, [3, 4, 5]);
-    // Per-axis flags survive the round-trip (issue #29 fix: split axes).
+    // Per-axis flags survive the round-trip (split axes).
     assert!(restored.points[1].axis_x && !restored.points[1].axis_y && restored.points[1].axis_z);
 }
 
 /// Back-compat: an OLD serialized scene (no `grids`, no `points`, no masters)
 /// deserializes with the correct defaults — node grids all-off, all three
-/// masters at their struct default (ON, issue #29 grid-rework fix), empty points.
+/// masters at their struct default (ON), empty points.
 #[test]
 fn old_scene_json_loads_with_grid_defaults() {
     // Build a one-Box scene, serialize it, then STRIP the optional fields that an
@@ -566,7 +565,7 @@ fn old_scene_json_loads_with_grid_defaults() {
     object.remove("master_voxel_grid");
     object.remove("master_floor_grid");
     object.remove("points");
-    // Strip every node's `grids` so the per-node default (#29 all-off) is exercised.
+    // Strip every node's `grids` so the per-node default (all-off) is exercised.
     if let Some(arena) = object.get_mut("arena").and_then(|a| a.as_object_mut()) {
         for stored in arena.values_mut() {
             if let Some(node_obj) = stored.as_object_mut() {
@@ -591,7 +590,7 @@ fn old_scene_json_loads_with_grid_defaults() {
     assert!(scene.points.is_empty(), "no points in the old document");
 }
 
-/// Issue #29 S2: the transform gizmo's pivot is the target node's block-AABB
+/// The transform gizmo's pivot is the target node's block-AABB
 /// center in the recentered render frame — `block_aabb_center·d − recenter` —
 /// `None` for a stale id, across densities.
 #[test]
@@ -619,7 +618,7 @@ fn gizmo_placement_follows_its_node() {
             make_tool(ShapeKind::Box, [4, 4, 4], [8, 0, 0]),
             make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 6]),
         ]);
-        // ADR 0003 Phase B3: mint ids so addressing a node by id resolves.
+        // Mint ids so addressing a node by id resolves.
         scene.ensure_node_ids();
 
         // A stale id → no gizmo.
@@ -669,7 +668,7 @@ fn gizmo_placement_follows_its_node() {
     }
 }
 
-/// Issue #29 S2: a SINGLE selected node recenters onto the origin, so its gizmo
+/// A SINGLE selected node recenters onto the origin, so its gizmo
 /// pivot is exactly `[0, 0, 0]` (for an EVEN-sized node, whose block-AABB center
 /// lands on an integer voxel). The gizmo only visibly moves with a multi-node
 /// selection. Guards against reading the pivot from absolute (un-recentered) space.
@@ -697,18 +696,16 @@ fn single_even_selected_node_gizmo_sits_at_origin() {
     }
 }
 
-/// CHANGED (center-anchoring retirement): for an ODD-sized lone node the gizmo
-/// pivot now sits at WITHIN HALF A VOXEL of the origin for ALL densities —
-/// including the odd-size/odd-density case the old block-lattice shift got wrong
-/// (it left the pivot half a BLOCK off). The gizmo pivot and the composite
-/// recenter are now BOTH derived from the producer-true voxel frame, so a lone
-/// node's center coincides with the recenter: pivot is exactly 0 for an even voxel
-/// span and ±0.5 voxel for an odd one (the truncation of a half-voxel center).
+/// For an ODD-sized lone node the gizmo pivot sits WITHIN HALF A VOXEL of the
+/// origin at ALL densities, including the odd-size/odd-density case. The gizmo
+/// pivot and the composite recenter are BOTH derived from the producer-true voxel
+/// frame, so a lone node's center coincides with the recenter: pivot is exactly 0
+/// for an even voxel span and ±0.5 voxel for an odd one (the truncation of a
+/// half-voxel center).
 #[test]
 fn single_odd_selected_node_gizmo_is_at_most_half_voxel_off_origin() {
     // Sizes (3, 1, 5) are all odd. The lone node's pivot stays WITHIN half a voxel
-    // of origin (NOT half a block, as the retired #30 shift produced) — exactly 0
-    // when the voxel span size·d is even, ±0.5 voxel when odd.
+    // of origin — exactly 0 when the voxel span size·d is even, ±0.5 voxel when odd.
     for vpb in [1u32, 15, 16] {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 1, 5], 1, vpb);
         let mut node = Node::new(

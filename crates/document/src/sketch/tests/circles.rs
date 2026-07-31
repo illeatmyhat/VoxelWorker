@@ -1,4 +1,4 @@
-//! Whole-circle entities: a closed curve is its own loop (ADR 0035 Decision 7).
+//! Whole-circle entities: a closed curve is its own loop.
 
 use super::*;
 use substrate::geom2d::point_in_region;
@@ -119,8 +119,8 @@ fn concentric_circles_are_two_faces() {
 }
 
 /// Two circles that cross bound THREE faces — two crescents and the lens between them. Nothing was
-/// drawn at the crossings; the arrangement cut both curves there. Without slice D this is two
-/// overlapping discs and one region, which is the picture that motivated the whole slice.
+/// drawn at the crossings; the arrangement cut both curves there. Without that cut they would be
+/// two overlapping discs bounding one region.
 #[test]
 fn two_overlapping_circles_bound_three_faces() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -212,13 +212,11 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
     assert_eq!(secant.faces().len(), 2, "cut clean through: two halves");
 }
 
-/// **The relaxation itself.** Slice B asked for the full turn to be admitted for the closed case,
-/// and this is the pair of assertions that says it was: the SAME geometry — a full turn about
-/// `(2, -3)` at radius 4 — is legal in the form the profile uses and refused in the form the store
-/// uses, on purpose.
+/// **The relaxation itself.** The SAME geometry — a full turn about `(2, -3)` at radius 4 — is
+/// legal in the form the profile uses and refused in the form the store uses, on purpose.
 ///
 /// `ProfileEdge::circle` is a `sweep_radians: TAU` arc whose chord is zero length. Everything that
-/// consumes it was moved off the endpoint-plus-bulge derivation and onto the solved circle:
+/// consumes it reads the solved circle rather than the endpoint-plus-bulge derivation:
 /// `interior_points` walks the circle, `signed_area_term` integrates the real sweep, `measured`
 /// hands substrate a center and a sweep. None of those has a full-turn guard, and this test fails if
 /// one is ever put back.
@@ -348,7 +346,7 @@ fn an_authored_radius_survives_a_density_retarget() {
 }
 
 /// Load repair erases a circle with no center or no radius, and reports it — the same policy every
-/// other entity gets (ADR 0030 load policy: erase the invalid, never fail the load).
+/// other entity gets: erase the invalid, never fail the load.
 #[test]
 fn repair_erases_a_circle_that_cannot_be_drawn() {
     let mut sketch = lone_circle(0, 0, 4);
@@ -391,8 +389,8 @@ fn an_impossible_radius_is_refused() {
     assert_eq!(sketch.circles()[0].radius.value(), 7.0);
 }
 
-/// The full turn stays out of the ARC form on purpose (ADR 0035 Decision 7): its chord is
-/// zero-length, so there is no circle to recover from it. That is what `Circle` is for.
+/// The full turn stays out of the ARC form on purpose: its chord is zero-length, so there is no
+/// circle to recover from it. That is what `Circle` is for.
 #[test]
 fn a_full_turn_is_not_an_arc_bulge() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);

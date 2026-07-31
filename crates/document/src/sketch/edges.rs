@@ -1,4 +1,4 @@
-//! Analytic feature-edge catalog of a sketch solid (ADR 0032 selection feedback):
+//! Analytic feature-edge catalog of a sketch solid, for selection feedback:
 //! the authored profile's own creases, lifted by the operation. An extrude creases
 //! along its two cap outlines and at every non-tangent profile vertex; a revolve
 //! creases on a latitude circle per non-tangent off-axis vertex, plus the profile
@@ -11,8 +11,8 @@ use super::solid::revolve_axes;
 use super::*;
 
 /// The catalog's fixed-point resolution: profile coords quantize to 1/256 voxel so the
-/// tangency test stays EXACT integer arithmetic for sub-voxel vertices (#101). Display
-/// only — the resolve never quantizes.
+/// tangency test stays EXACT integer arithmetic for sub-voxel vertices. Display only —
+/// the resolve never quantizes.
 const EDGE_FIXED_SCALE: f64 = 256.0;
 
 /// A profile coordinate on the 1/256-voxel lattice the tangency test works over.
@@ -35,17 +35,17 @@ fn vertex_is_tangent(previous: [i64; 2], vertex: [i64; 2], next: [i64; 2]) -> bo
 
 impl SketchSolid {
     /// The catalog as polylines in the producer-local `[0, grid_dimensions()]` voxel
-    /// frame — the SAME frame the resolve samples (ADR 0008: extrude fully
-    /// corner-anchored on the profile bbox min; revolve corner-anchored axially,
-    /// centered on the two radial axes). Empty for a degenerate producer.
+    /// frame — the SAME frame the resolve samples: extrude fully corner-anchored on the
+    /// profile bbox min; revolve corner-anchored axially, centered on the two radial axes.
+    /// Empty for a degenerate producer.
     /// `circle_segments` tessellates one full latitude turn; a partial arc keeps the
     /// same angular density.
     pub(crate) fn profile_edge_polylines_local(&self, circle_segments: u32) -> Vec<Vec<[f32; 3]>> {
         let Some((profile_min, _)) = self.profile_bounds() else {
             return Vec::new();
         };
-        // EVERY loop of the region creases, holes included (#100): the wall of a pocket is as
-        // much a feature edge as the outside of the shape.
+        // EVERY loop of the region creases, holes included: the wall of a pocket is as much
+        // a feature edge as the outside of the shape.
         let mut polylines = Vec::new();
         // A crease line IS a polyline, so this is a terminal adapter: it flattens at the default
         // tolerance rather than passing one back up to the region.
@@ -62,7 +62,7 @@ impl SketchSolid {
 
     /// The catalog contribution of ONE closed boundary, appended to `polylines`. Split out so
     /// a multi-loop region reuses one definition per loop rather than duplicating the crease
-    /// rules (#100).
+    /// rules.
     fn ring_edge_polylines(
         &self,
         boundary: &[SketchPoint],
@@ -70,8 +70,8 @@ impl SketchSolid {
         circle_segments: u32,
         polylines: &mut Vec<Vec<[f32; 3]>>,
     ) {
-        // The ring in 1/256-voxel FIXED POINT: sub-voxel coords (#101) quantize onto an
-        // integer lattice so dedup/tangency stay exact; every emitted coordinate divides
+        // The ring in 1/256-voxel FIXED POINT: sub-voxel coords quantize onto an integer
+        // lattice so dedup/tangency stay exact; every emitted coordinate divides
         // back out through `fixed_to_voxels`.
         let mut ring: Vec<[i64; 2]> = boundary
             .iter()

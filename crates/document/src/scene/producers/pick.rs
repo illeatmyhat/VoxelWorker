@@ -1,4 +1,4 @@
-//! Which node owns a voxel (ADR 0032): the picked-node resolver
+//! Which node owns a voxel: the picked-node resolver
 //! ([`Scene::picked_node_at_voxel`]), the single-cell scoped fold it runs
 //! ([`fold_owner_into`]), and the per-leaf coverage test that fold asks
 //! ([`leaf_covers_cell`]).
@@ -10,11 +10,11 @@ use voxel_core::voxel::{VoxelGrid, SURFACE_ISOLEVEL};
 use crate::scene::*;
 
 impl Scene {
-    /// The node a viewport pick on `absolute_voxel` selects (ADR 0032), or `None` when the
-    /// cell resolves to nothing.
+    /// The node a viewport pick on `absolute_voxel` selects, or `None` when the cell
+    /// resolves to nothing.
     ///
-    /// **The pick follows the material.** This runs ADR 0017's ordered scoped fold over the
-    /// ONE cell, carrying "who owns this cell" where the resolvers carry occupancy — so the
+    /// **The pick follows the material.** This runs the ordered scoped fold over the ONE
+    /// cell, carrying "who owns this cell" where the resolvers carry occupancy — so the
     /// node it names is exactly the node whose material the resolve stamped there. Any other
     /// rule would select a node whose color the user cannot see at the point they clicked.
     ///
@@ -24,16 +24,15 @@ impl Scene {
     ///   wall cell lies on the cutter's boundary — a nearest-hit rule hands back the cutter;
     /// - a cutter INSIDE a scope carves only its own scope's body, so the cell falls through
     ///   to whatever the scope was folded over — which is a different node, not none;
-    /// - a boolean never owns a cell in the first place, because it never stamps material
-    ///   (ADR 0017 Decision 1). It only takes ownership away.
+    /// - a boolean never owns a cell in the first place, because it never stamps material.
+    ///   It only takes ownership away.
     ///
-    /// A pre-composed scope is ONE leaf to the fold (ADR 0019 Decision 7, ADR 0020 Decision
-    /// 4 — and a single top-level `Emboss` pre-composes the whole scene), so ownership of a
-    /// cell inside one descends into its members via [`VoxelProducer::origin_at`] and names
-    /// the innermost authored leaf.
+    /// A pre-composed scope is ONE leaf to the fold (and a single top-level `Emboss`
+    /// pre-composes the whole scene), so ownership of a cell inside one descends into its
+    /// members via [`VoxelProducer::origin_at`] and names the innermost authored leaf.
     ///
-    /// `absolute_voxel` is an integer cell index in the scene's ABSOLUTE voxel frame (ADR
-    /// 0008 — the same frame `resolve_chunk` clips against), NOT a recentered display index.
+    /// `absolute_voxel` is an integer cell index in the scene's ABSOLUTE voxel frame — the
+    /// same frame `resolve_chunk` clips against — NOT a recentered display index.
     ///
     /// [`VoxelProducer::origin_at`]: crate::voxel::VoxelProducer::origin_at
     pub fn picked_node_at_voxel(
@@ -68,7 +67,7 @@ impl Scene {
                         *owner = Some(leaf_origin_at_local_point(leaf, local, voxels_per_block));
                     }
                 }
-                // Occupancy-only masks (ADR 0017 Decision 1) never own — they only unown.
+                // Occupancy-only masks never own — they only unown.
                 CombineOp::Subtract => {
                     if covered {
                         *owner = None;
@@ -125,8 +124,8 @@ fn sync_owner_scope_stack(
 }
 
 /// Fold one CLOSED scope's owner into its parent under the scope's own [`CombineOp`] — the
-/// ownership mirror of `fold_closed_scope_into`'s occupancy rules (ADR 0017 Decision 3).
-/// "The scope's body covers this cell" is exactly "the scope has an owner for it".
+/// ownership mirror of `fold_closed_scope_into`'s occupancy rules. "The scope's body covers
+/// this cell" is exactly "the scope has an owner for it".
 fn fold_owner_into(
     parent: &mut Option<LeafOrigin>,
     operation: CombineOp,
@@ -223,7 +222,7 @@ fn leaf_covers_cell(
 
 /// The leaf's continuous world↔local affine, built from the already-outset-adjusted low
 /// corner so no dilation is re-applied here. The rebase happens in i64 before any f32
-/// rotation, so a leaf placed millions of voxels out keeps full sub-voxel precision (ADR 0008).
+/// rotation, so a leaf placed millions of voxels out keeps full sub-voxel precision.
 fn leaf_placement(leaf: &LeafProducer, voxels_per_block: u32) -> substrate::spatial::LeafPlacement {
     dense_leaf_placement(
         leaf.rotation,

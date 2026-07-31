@@ -1,5 +1,4 @@
-//! A sealed scope evaluated as a single producer, so a whole Part can be outset
-//! (ADR 0019 Decision 7, ADR 0017 Decision 3).
+//! A sealed scope evaluated as a single producer, so a whole Part can be outset.
 
 use super::{Field, FieldInterval, VoxelProducer};
 use crate::scene::{CombineOp, LeafOrigin};
@@ -11,11 +10,11 @@ use voxel_core::voxel::{BlockAttrs, Voxel, VoxelGrid, SURFACE_ISOLEVEL};
 pub struct CompositeMember {
     /// The member's low corner relative to the composite's frame origin.
     pub offset_voxels: [i64; 3],
-    /// The member's role in the ordered fold (ADR 0017).
+    /// The member's role in the ordered fold.
     pub operation: CombineOp,
-    /// Which node this member came from (ADR 0032). A pre-composed scope is ONE leaf to the
-    /// walk, so without this a viewport pick anywhere inside it could only name the scope —
-    /// and a single top-level Emboss pre-composes the whole scene.
+    /// Which node this member came from. A pre-composed scope is ONE leaf to the walk, so
+    /// without this a viewport pick anywhere inside it could only name the scope — and a
+    /// single top-level Emboss pre-composes the whole scene.
     pub source: LeafOrigin,
     /// The single material a `Union` member stamps, or `None` for a member that brings its
     /// own per-voxel materials (a nested composite, a VoxelBody).
@@ -23,28 +22,26 @@ pub struct CompositeMember {
     pub producer: Box<dyn VoxelProducer>,
 }
 
-/// A sealed composition scope — a **Part** (ADR 0018 Decision 1) or a sealed definition
-/// body — evaluated as ONE producer, so it can be dilated as a whole.
+/// A sealed composition scope — a **Part** or a sealed definition body — evaluated as ONE
+/// producer, so it can be dilated as a whole.
 ///
 /// # Why this exists
 ///
-/// ADR 0019 Decision 7 requires that a Group or Instance may carry an outset "so a composed
-/// cutter dilates as a whole", and explicitly REJECTS leaf-only outset. The two are not
-/// interchangeable: dilation distributes over union, so a pure-union Part would agree either
-/// way, but a Part with an internal `Subtract` diverges sharply — dilating members
-/// individually makes the inner cutter carve MORE, while dilating the composed Part grows the
-/// finished body and partly closes that cut.
+/// A Group or Instance carries the outset so a composed cutter dilates as a whole; outsetting
+/// its leaves instead is NOT the same operation. Dilation distributes over union, so a
+/// pure-union Part would agree either way, but a Part with an internal `Subtract` diverges
+/// sharply — dilating members individually makes the inner cutter carve MORE, while dilating
+/// the composed Part grows the finished body and partly closes that cut.
 ///
-/// A scope is already defined as "pre-compose the children into one body" (ADR 0017 Decision
-/// 3). This type makes that composition an explicit producer, which
-/// [`OutsetProducer`](super::OutsetProducer) then wraps like any other. Nothing downstream
-/// changes: the scope arrives at both folds as a single leaf.
+/// A scope already means "pre-compose the children into one body". This type makes that
+/// composition an explicit producer, which [`OutsetProducer`](super::OutsetProducer) then
+/// wraps like any other, and the scope arrives at both folds as a single leaf.
 ///
 /// # The fold is sign-exact
 ///
 /// The field composes through the ordered fold as `min` / `max`, starting from `+INFINITY`
 /// (the empty accumulator — which is exactly why intersecting or subtracting from the fold
-/// start yields empty, per ADR 0017's ordering law, with no special case):
+/// start yields empty, with no special case):
 ///
 /// ```text
 /// Union      d = min(d, member)
@@ -55,9 +52,9 @@ pub struct CompositeMember {
 /// All three are **exact in SIGN**: `min` is negative iff either is, `max(a, −b)` iff inside
 /// `a` and outside `b`, `max` iff inside both. So at outset zero this composite's occupancy
 /// equals the voxel fold's exactly. Only MAGNITUDES go approximate, and only near concave
-/// seams, where `max` under-estimates distance while staying 1-Lipschitz — the posture ADR
-/// 0017 Decision 6 and ADR 0019 Decision 5 already take. The practical consequence is that a
-/// dilated Part is very slightly under-grown in an interior corner, never over-grown.
+/// seams, where `max` under-estimates distance while staying 1-Lipschitz. The practical
+/// consequence is that a dilated Part is very slightly under-grown in an interior corner,
+/// never over-grown.
 pub struct CompositeProducer {
     members: Vec<CompositeMember>,
 }
@@ -90,15 +87,15 @@ impl CompositeProducer {
     ///
     /// Material follows two different rules by design, and they meet exactly at the surface:
     ///
-    /// * **Inside** the body, the LAST `Union` member containing the point wins — ADR 0017's
-    ///   "on overlap the later node wins the material". Keeping this means an outset Part's
-    ///   interior is colored identically to the same Part at outset zero.
+    /// * **Inside** the body, the LAST `Union` member containing the point wins — on overlap
+    ///   the later node wins the material. That keeps an outset Part's interior colored
+    ///   identically to the same Part at outset zero.
     /// * **Outside** it (the shell the dilation ADDS), the NEAREST `Union` member wins. There
     ///   is no "later" to appeal to out there — no member contains the point — and the shell
     ///   is continuous with the surface it grew from, so it takes that surface's material.
     ///
     /// `Subtract` and `Intersect` members never contribute material: they are occupancy-only
-    /// masks and surviving cells keep what they had (ADR 0017 Decision 1).
+    /// masks and surviving cells keep what they had.
     fn sample(
         &self,
         point_local_voxels: [f32; 3],
@@ -129,7 +126,7 @@ impl CompositeProducer {
                     });
                     // `is_sign_negative`, not `< 0.0`: a sample can land exactly on the
                     // surface, where the distance is zero and only its sign bit carries the
-                    // inside/outside verdict (ADR 0019 amendment).
+                    // inside/outside verdict.
                     if member_distance.is_sign_negative() {
                         last_inside_material = material;
                     }
@@ -140,15 +137,14 @@ impl CompositeProducer {
                 }
                 CombineOp::Subtract => distance = distance.max(-member_distance),
                 CombineOp::Intersect => distance = distance.max(member_distance),
-                // ADR 0020 Decision 4. `A` is the accumulator, `C` this member, `N` the
-                // signed amount; the accumulator appears TWICE, which is precisely why
-                // emboss cannot decompose into existing fold steps.
+                // `A` is the accumulator, `C` this member, `N` the signed amount; the
+                // accumulator appears TWICE, which is precisely why emboss cannot decompose
+                // into existing fold steps.
                 //
                 //   outward (N > 0)   A' = min(A, max(A − N, C))
                 //   inward  (N < 0)   A' = max(A, min(A − N, −C))
                 //
-                // Verified in the ADR against a set-theoretic ground truth over 64,000
-                // samples, and exactly 1-Lipschitz, so the cell classifier's bound survives.
+                // Exactly 1-Lipschitz, so the cell classifier's bound survives.
                 CombineOp::Emboss { amount } => {
                     let raise = amount.to_voxels(voxels_per_block).unwrap_or(0) as f32;
                     distance = if raise >= 0.0 {
@@ -162,15 +158,15 @@ impl CompositeProducer {
         (distance, last_inside_material.or(nearest_material))
     }
 
-    /// Which node authored the geometry at a composite-frame point (ADR 0032) — the same
-    /// walk [`sample`](Self::sample) does for material, answering with origins instead.
+    /// Which node authored the geometry at a composite-frame point — the same walk
+    /// [`sample`](Self::sample) does for material, answering with origins instead.
     ///
     /// The two rules are deliberately identical (last containing `Union` member inside the
     /// body, nearest one out in an outset shell), because the pick follows the material: the
     /// node you select is the node that colored the voxel you clicked. A nested composite
-    /// answers for itself, so a pick names the innermost authored leaf rather than the Group
-    /// enclosing it — ADR 0032 picks the leaf at any depth; only the instance boundary
-    /// redirects, and that redirect is already baked into each member's origin by the walk.
+    /// answers for itself, so a pick names the innermost authored leaf at any depth rather
+    /// than the Group enclosing it; only the instance boundary redirects, and that redirect
+    /// is already baked into each member's origin by the walk.
     ///
     /// Masks are skipped rather than folded: the caller runs the scoped fold and only asks
     /// about a point the composite already resolved as solid, so a `Subtract` that would
@@ -224,12 +220,11 @@ impl CompositeProducer {
 
     /// Members that can GROW the composite's extent: `Union` and `Emboss` ones.
     ///
-    /// A `Subtract` or `Intersect` member's effect is contained in the accumulator (ADR 0020
-    /// Decision 3), so it can never push the bounds outward. An OUTWARD `Emboss` can — it
-    /// raises the surface — but only within its own footprint, since
-    /// `A' = A ∪ (dilate(A, N) ∩ C) ⊆ A ∪ C`. So the member's own extent bounds it exactly
-    /// and no `N`-sized margin is needed. (An inward emboss only removes, so including it is
-    /// merely conservative.)
+    /// A `Subtract` or `Intersect` member's effect is contained in the accumulator, so it can
+    /// never push the bounds outward. An OUTWARD `Emboss` can — it raises the surface — but
+    /// only within its own footprint, since `A' = A ∪ (dilate(A, N) ∩ C) ⊆ A ∪ C`. So the
+    /// member's own extent bounds it exactly and no `N`-sized margin is needed. (An inward
+    /// emboss only removes, so including it is merely conservative.)
     pub(super) fn extent_members(
         members: &[CompositeMember],
     ) -> impl Iterator<Item = &CompositeMember> {
@@ -320,14 +315,14 @@ impl VoxelProducer for CompositeProducer {
     }
 
     /// The composite has a field only if EVERY member does — one fieldless member leaves the
-    /// fold with nothing to compose, and ADR 0020 Decision 1 says answer honestly rather than
-    /// fabricate a distance. Such a Part simply cannot be outset.
+    /// fold with nothing to compose, and the honest answer is `None` rather than a fabricated
+    /// distance. Such a Part simply cannot be outset.
     ///
-    /// **Not because of the cloud.** ADR 0021 withdrew that justification: the cloud is
-    /// boundable (`cell_field_interval` classifies a cell from puff geometry alone). It still
-    /// answers `None` here, but on the narrower ground that its geometry is not a *distance* —
-    /// `radial + BILLOW·fbm` has the right zero set and the wrong magnitude away from it. The
-    /// `Option` itself rests on freehand sculpt, which is occupancy-native (ADR 0021 §5).
+    /// Being fieldless is not the same as being unboundable: the debug cloud brackets cells
+    /// fine (`cell_field_interval` classifies one from puff geometry alone) yet answers `None`
+    /// here, because `radial + BILLOW·fbm` has the right zero set and the wrong magnitude away
+    /// from it. Occupancy-native geometry — freehand sculpt — is the general case the
+    /// `Option` exists for.
     fn as_field(&self) -> Option<&dyn Field> {
         if self
             .members
@@ -358,11 +353,11 @@ impl Field for CompositeProducer {
         self.sample(point_local_voxels, voxels_per_block).0
     }
 
-    /// **The weakest of the members' metrics** (ADR 0019 Decision 7: "a group mixing a box
-    /// and a sphere outsets round"), which is sound rather than merely conventional: since
-    /// `‖·‖∞ <= ‖·‖₂`, a field 1-Lipschitz under Chebyshev is automatically 1-Lipschitz
-    /// under Euclidean, so widening to Euclidean can never overstate the bound. Chebyshev is
-    /// claimed only when EVERY member measures square.
+    /// **The weakest of the members' metrics**, so a group mixing a box and a sphere outsets
+    /// round. That is sound rather than merely conventional: since `‖·‖∞ <= ‖·‖₂`, a field
+    /// 1-Lipschitz under Chebyshev is automatically 1-Lipschitz under Euclidean, so widening
+    /// to Euclidean can never overstate the bound. Chebyshev is claimed only when EVERY
+    /// member measures square.
     fn metric(&self) -> substrate::geom2d::Metric {
         let all_square = self.members.iter().all(|member| {
             member

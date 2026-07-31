@@ -1,7 +1,7 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
 
-// ---- ADR 0017 Decision 4 / #77: fixture definitions — the dense oracle ----
+// ---- Fixture definitions — the dense oracle ----
 //
 // A FIXTURE definition does not pre-compose: its children splice into the
 // HOSTING scope's ordered fold at the instance's spine position, in order,
@@ -17,13 +17,10 @@ const DENSITY: u32 = 8;
 /// The window definition's id in every fixture scene below.
 const WINDOW_DEF: DefId = DefId(1);
 
-// `box_tool` / `instance_node` / `resolved_absolute_multiset` are the shared CSG
-// fixtures in `super` (tests/mod.rs), reached via `use super::*`.
-
 /// Register the WINDOW fixture on `scene`: [opening cutter `Subtract`
 /// (`opening_blocks`³ footprint through the 1-block wall thickness), Wood frame
-/// `Union` (the opening's bottom row)] — the ADR's window shape — and flag it
-/// `fixture` so it splices instead of pre-composing.
+/// `Union` (the opening's bottom row)] — and flag it `fixture` so it splices
+/// instead of pre-composing.
 fn add_window_fixture(scene: &mut Scene, opening_blocks: u32) {
     scene.add_definition(
         WINDOW_DEF,
@@ -78,11 +75,10 @@ fn wall(offset_blocks: [i64; 3]) -> Node {
     )
 }
 
-/// Acceptance #1 (the golden's oracle): ONE window-fixture placement into the
-/// wall's scope both CUTS the opening and FILLS the frame — exactly as if the
-/// def's children were authored flat at the instance's transform (ADR 0008: the
-/// splice enters the host fold under the carried instance frame), with the
-/// instance's own operation never consulted.
+/// ONE window-fixture placement into the wall's scope both CUTS the opening and
+/// FILLS the frame — exactly as if the def's children were authored flat at the
+/// instance's transform (the splice enters the host fold under the carried
+/// instance frame), with the instance's own operation never consulted.
 #[test]
 fn window_fixture_cuts_the_wall_and_fills_the_frame_in_one_placement() {
     let mut spliced = Scene::from_nodes(vec![
@@ -127,7 +123,7 @@ fn window_fixture_cuts_the_wall_and_fills_the_frame_in_one_placement() {
     );
 }
 
-/// Acceptance #2 (the positional host): the host is whatever accumulated before
+/// The positional host: the host is whatever accumulated before
 /// the instance IN ITS SCOPE — moving the same fixture from one wall's Group into
 /// another's cuts THAT wall and restores the first (no stored host reference, no
 /// rehosting).
@@ -181,7 +177,7 @@ fn moving_the_fixture_into_a_different_walls_scope_cuts_that_wall() {
     }
 }
 
-/// Acceptance #3 (the ordering law): a fixture placed BEFORE the wall cuts
+/// The ordering law: a fixture placed BEFORE the wall cuts
 /// nothing — its cutter precedes everything in the scope (subtract-from-nothing)
 /// and splices exactly like flat leaves authored first; the wall's occupancy
 /// survives whole (the frame — inside the later wall's body — loses later-wins,
@@ -221,7 +217,7 @@ fn fixture_placed_before_the_wall_cuts_nothing() {
     );
 }
 
-/// Acceptance #4 (one-level piercing): a fixture pierces exactly ONE level of
+/// One-level piercing: a fixture pierces exactly ONE level of
 /// pre-composition — its host scope's seal above it stays absolute. A fixture
 /// inside a sealed Group splices into the GROUP's fold (carving the group's
 /// wall), but cannot carve the bystander outside the Group even though the
@@ -273,7 +269,7 @@ fn fixture_inside_a_sealed_group_cannot_carve_outside_it() {
     );
 }
 
-/// Acceptance #5 (reuse by reference): editing the ONE fixture definition
+/// Reuse by reference: editing the ONE fixture definition
 /// updates EVERY placement — hole and frame both — matching a from-scratch flat
 /// scene authored at the new size.
 #[test]
@@ -331,9 +327,9 @@ fn editing_the_fixture_definition_updates_every_placement() {
     );
 }
 
-/// A fixture instance's own `CombineOp` is INERT (ADR 0017 Decision 4): the
-/// resolver never consults it, so flipping it changes nothing — the spliced
-/// children fold under their OWN operations.
+/// A fixture instance's own `CombineOp` is INERT: the resolver never consults it,
+/// so flipping it changes nothing — the spliced children fold under their OWN
+/// operations.
 #[test]
 fn fixture_instance_operation_is_inert() {
     let scene_with_instance_op = |operation: CombineOp| {

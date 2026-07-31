@@ -1,17 +1,16 @@
-//! Planar-face derivation for a sketch (ADR 0030 §2/§3, ADR 0035 Decisions 8 and 9, issue #100).
+//! Planar-face derivation for a sketch.
 //!
 //! A region is a bounded face of the **geometric arrangement** of the sketch's curves: every curve
 //! is cut at every intersection with every other curve, and the pieces form the graph whose bounded
 //! faces are the regions. A crossing needs no shared point, so two overlapping circles are three
 //! regions and a rectangle struck through by a line is two — neither of which the author has to
-//! prepare by snapping a vertex at the crossing first (ADR 0035 Decision 8, retiring ADR 0030 §2's
-//! shared-point requirement).
+//! prepare by snapping a vertex at the crossing first.
 //!
 //! The cutting is [`substrate::curve_intersection::cut_at_crossings`]; a piece of an arc is still an
 //! arc of the same circle, so nothing is approximated by being split. What arrives here is a bag of
 //! curve pieces, and the work is to weld their endpoints into arrangement vertices and walk.
 //!
-//! The walk is the textbook DCEL one: each piece becomes two half-edges, and the successor of a
+//! The walk is the DCEL one: each piece becomes two half-edges, and the successor of a
 //! half-edge arriving at a vertex is the edge **immediately clockwise** from the one it came in on.
 //! That traces every bounded face counter-clockwise and each connected component's unbounded face
 //! clockwise, so the signed area's sign is what tells them apart. A whole circle nobody crosses is a
@@ -27,15 +26,15 @@ use substrate::geom2d::deepest_interior_point;
 
 use super::{EntityId, EntityRole, ProfileArc, ProfileEdge, Sketch, SketchPoint};
 
-/// A derived face's identity: **one point strictly inside it** (ADR 0035 Decision 9). A re-derived
-/// face *is* that face when it still contains the stored point.
+/// A derived face's identity: **one point strictly inside it**. A re-derived face *is* that face
+/// when it still contains the stored point.
 ///
 /// # Why not the boundary's lineage
 ///
-/// The key used to be the set of `origin` ids of the boundary edges, which worked while a face was
-/// a cycle of drawn entities. In an arrangement it is not: a face can be bounded by pieces of
-/// curves the author never drew as separate things, and drawing one new line across a shape
-/// renumbers the lineage of every face it touches. A point does not care. It survives a vertex
+/// A key made of the `origin` ids of the boundary edges holds only while a face is a cycle of
+/// drawn entities. In an arrangement it is not: a face can be bounded by pieces of curves the
+/// author never drew as separate things, and drawing one new line across a shape renumbers the
+/// lineage of every face it touches. A point does not care. It survives a vertex
 /// drag, an edge split, a curve added elsewhere, and the arrangement re-cutting the same face into
 /// the same ground under a different set of pieces.
 ///
@@ -107,7 +106,7 @@ struct HalfEdge {
 /// read the curve itself; flattening is something a consumer does at its own edge
 /// ([`super::ProfileLoop::flatten`]).
 ///
-/// Construction geometry is skipped: a construction edge never bounds a region (ADR 0030 §1).
+/// Construction geometry is skipped: a construction edge never bounds a region.
 pub fn derive(sketch: &Sketch) -> Vec<Face> {
     let drawn = drawn_curves(sketch);
     if drawn.is_empty() {
@@ -279,7 +278,7 @@ fn pole(
 ///
 /// A segment is its span, an arc is the circle its endpoints-plus-bulge form already solves for,
 /// and a [`Circle`](super::Circle) is the whole turn — closed, and therefore a curve like any
-/// other here rather than a face that skips the walk (ADR 0035 Decision 7).
+/// other here rather than a face that skips the walk.
 fn drawn_curves(sketch: &Sketch) -> Vec<(EntityId, PlanarCurve)> {
     let position = |id: EntityId| {
         sketch
@@ -391,9 +390,8 @@ fn profile_edge(piece: PlanarCurve, from: [f64; 2], to: [f64; 2]) -> ProfileEdge
 
 /// Append the two half-edges of one piece — ALWAYS as a pair, so twins are neighbors and
 /// `index ^ 1` is the twin. The departure angle at each end is the edge's own outgoing tangent
-/// there ([`ProfileEdge::departure_radians`]), taken analytically: it used to be read off the
-/// arc's first tessellated chord, which made the vertex ordering depend on how finely the arc had
-/// been cut.
+/// there ([`ProfileEdge::departure_radians`]), taken analytically, so the vertex ordering does not
+/// depend on how finely an arc has been cut.
 fn push_half_edges(into: &mut Vec<HalfEdge>, ends: (usize, usize), geometry: ProfileEdge) {
     let backward = geometry.reversed();
     into.push(HalfEdge {

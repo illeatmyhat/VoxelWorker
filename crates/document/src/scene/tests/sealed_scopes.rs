@@ -1,7 +1,7 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
 
-// ---- ADR 0017 Decision 3 (#74): sealed composition scopes — the dense oracle ----
+// ---- Sealed composition scopes — the dense oracle ----
 //
 // Groups and definition bodies PRE-COMPOSE: a scope resolves its children into one
 // body via the ordered fold, then that body folds into the parent under the SCOPE
@@ -12,14 +12,11 @@ use voxel_core::core_geom::MaterialChoice;
 
 const DENSITY: u32 = 8;
 
-// `box_tool` / `resolved_absolute_multiset` are the shared CSG fixtures in
-// `super` (tests/mod.rs), reached via `use super::*`.
-
-/// The golden scene's shape (acceptance #1): a cutter INSIDE a Group carves only
-/// within the Group; a sibling OUTSIDE the group — placed BEFORE it in document
-/// order, so only the scope seal (never the ordering law) protects it — is
-/// untouched even though the cutter's box overlaps it. The result is exactly the
-/// disjoint union of "the group's notched body" and "the bystander".
+/// A cutter INSIDE a Group carves only within the Group; a sibling OUTSIDE the
+/// group — placed BEFORE it in document order, so only the scope seal (never the
+/// ordering law) protects it — is untouched even though the cutter's box overlaps
+/// it. The result is exactly the disjoint union of "the group's notched body" and
+/// "the bystander".
 #[test]
 fn group_cutter_carves_only_inside_its_group() {
     // Bystander [3,5)³ blocks; group body [0,4)³; cutter [2,4)³ (overlapping the
@@ -51,7 +48,7 @@ fn group_cutter_carves_only_inside_its_group() {
             ],
         ),
     ]);
-    // Expected: the notched body (the #73 sibling-level carve, resolved WITHOUT
+    // Expected: the notched body (the sibling-level carve, resolved WITHOUT
     // the bystander) plus the whole bystander — the two parts are cell-disjoint
     // (the cutter removed every body cell the bystander touches).
     let notched_body_alone = Scene::from_nodes(vec![
@@ -89,7 +86,7 @@ fn group_cutter_carves_only_inside_its_group() {
     );
 }
 
-/// Acceptance #2: a cutter placed AFTER a Group (as its sibling) carves the
+/// A cutter placed AFTER a Group (as its sibling) carves the
 /// group's COMPOSED body — a root-level boolean sees the finished body exactly as
 /// it would see a flat sibling.
 #[test]
@@ -133,7 +130,7 @@ fn cutter_after_group_carves_the_groups_composed_body() {
     );
 }
 
-/// Acceptance #3: a definition's internal Subtract is fully SPENT inside the
+/// A definition's internal Subtract is fully SPENT inside the
 /// definition (the sealed part) — every instance places the finished (notched)
 /// body, and a bystander before the instances stays whole even where an
 /// instance's internal cutter volume overlaps it.
@@ -224,7 +221,7 @@ fn definition_internal_subtract_is_spent_inside_the_definition() {
     );
 }
 
-/// Acceptance #4: nested scopes — an INNER group's cutter cannot escape to the
+/// Nested scopes: an INNER group's cutter cannot escape to the
 /// OUTER group's body, while still acting on its own (inner) siblings. The inner
 /// cutter's box overlaps both the inner Wood body and the outer Stone body; only
 /// the inner body loses cells.
@@ -298,10 +295,9 @@ fn nested_group_cutter_cannot_escape_to_the_outer_group() {
     );
 }
 
-/// The provable-equivalence regression (the pure-Union goldens' law): for a scene
-/// with NO booleans, pre-composing groups is occupancy- and material-identical to
-/// the flat walk (later-wins material under depth-first order is preserved whether
-/// or not groups pre-compose).
+/// The provable equivalence: for a scene with NO booleans, pre-composing groups is
+/// occupancy- and material-identical to the flat walk (later-wins material under
+/// depth-first order is preserved whether or not groups pre-compose).
 #[test]
 fn pure_union_groups_pre_compose_identically_to_the_flat_walk() {
     // Three OVERLAPPING boxes so later-wins material is actually exercised, with
@@ -388,7 +384,7 @@ fn chunked_resolve_matches_monolithic_for_scoped_scene() {
     );
 }
 
-/// Invalidation (#74): a GROUP's operation flip must dirty the group's subtree
+/// Invalidation: a GROUP's operation flip must dirty the group's subtree
 /// AABB — it changes the fingerprint of every leaf INSIDE the scope (the scope
 /// path, ops included, is part of each leaf's fingerprint) and of no leaf outside,
 /// so the edit diff dirties exactly the enclosed leaves' AABBs (whose union is the

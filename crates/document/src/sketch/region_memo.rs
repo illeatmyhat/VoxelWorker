@@ -1,9 +1,9 @@
 //! The derived region, remembered between queries.
 //!
 //! [`SketchSolid::signed_distance`](super::solid::SketchSolid::signed_distance) is asked once per
-//! voxel sample, and every ask used to run the whole arrangement — twice, since the profile bounds
-//! derive it too. That is a 650× tax on the composite fold, which measures a field rather than
-//! rasterising a producer.
+//! voxel sample. Running the whole arrangement per ask — twice, since the profile bounds derive it
+//! too — is a 650× tax on the composite fold, which measures a field rather than rasterizing a
+//! producer.
 //!
 //! The cache validates by **comparing the entity store it was derived from**, not by a flag a
 //! mutator has to remember to clear. A missed invalidation is a stale-geometry bug that does not

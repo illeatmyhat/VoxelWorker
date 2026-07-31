@@ -7,8 +7,8 @@
 //! signed-distance primitives, the [`sketch::SketchSolid`] extrude/revolve, the
 //! [`debug_clouds::DebugCloudField`] part), the 2D [`sketch::Sketch`] those solids are
 //! authored from, the serializable [`intent::Intent`] that is the single mutation
-//! boundary, and the inverse-[`command::Command`] stack behind undo/redo. It is the
-//! second per-layer crate, above `voxel_core` and below everything else.
+//! boundary, and the inverse-[`command::Command`] stack behind undo/redo. It sits above
+//! `voxel_core` and below everything else.
 //!
 //! ## The boundary law
 //!
@@ -36,9 +36,7 @@
 //!
 //! These are the nouns and verbs of the architecture's document layer — see
 //! `docs/architecture/01-document.md` (the scene graph, producers, sketches, intents,
-//! commands) for the timeless statement, and
-//! `docs/design/per-layer-crates-extraction-map.md` (the document row) for the dated
-//! provenance of each module.
+//! commands) for the timeless statement.
 //!
 //! ## Modules
 //!
@@ -46,9 +44,9 @@
 //!   (tools, groups, instances, parts), [`scene::NodeTransform`] placement, the
 //!   [`scene::CombineOp`] assembly, extent + placed-region queries, the flat-leaf
 //!   spatial reading, and the producer resolve (with the dense oracle).
-//! * [`voxel`] — the producer half of the old `voxel` module: the [`voxel::VoxelProducer`]
-//!   trait, [`voxel::SdfShape`] and its [`voxel::GeometryParams`], and the
-//!   conservative cell-field interval bound (re-exporting `voxel_core`'s value types).
+//! * [`voxel`] — the producer vocabulary: the [`voxel::VoxelProducer`] trait,
+//!   [`voxel::SdfShape`] and its [`voxel::GeometryParams`], and the conservative
+//!   cell-field interval bound (re-exporting `voxel_core`'s value types).
 //! * [`sketch`] — the 2D [`sketch::Sketch`] and the [`sketch::SketchSolid`] producer
 //!   that extrudes or revolves it into a volume.
 //! * [`debug_clouds`] — the [`debug_clouds::DebugCloudField`] procedural part producer.

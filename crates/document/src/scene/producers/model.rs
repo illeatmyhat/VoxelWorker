@@ -14,50 +14,43 @@ use voxel_core::core_geom::MaterialChoice;
 
 use crate::scene::*;
 
-/// A *static* voxel body with no meaningful generation parameters — dropped in
-/// as-is (ADR 0001). v1 has one variant; future variants are saved chiseled
-/// blocks and imported `.vox` bodies, each carrying baked per-voxel materials.
+/// A *static* voxel body with no meaningful generation parameters — dropped in as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VoxelBody {
-    /// The debug cloud field (several distinct billowy fBm blobs) — "a part with
-    /// one trivial knob" (the seed).
+    /// The debug cloud field: several distinct billowy fBm blobs, with the seed as
+    /// its one knob.
     DebugClouds {
         /// Seed for the deterministic placement + noise permutation.
         #[serde(default)]
         seed: u32,
     },
-    // future: SavedBody(VoxelBlob), ImportedVox(...).
 }
 
 /// What a node *is*: a leaf producer (Tool, SketchTool or VoxelBody) or an interior
 /// assembly (Group or Instance).
 ///
 /// Every arm resolves: a leaf stamps its own producer, a `Group` folds its children
-/// under its own `CombineOp` (ADR 0017), and an `Instance` resolves the referenced
-/// definition under its transform (recursion + instancing, ADR 0001's original
-/// "step 4" goal) — see `Scene::walk_nodes` / `Scene::for_each_leaf`.
+/// under its own `CombineOp`, and an `Instance` resolves the referenced definition
+/// under its transform — see `Scene::walk_nodes` / `Scene::for_each_leaf`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeContent {
     /// A parametric producer (an [`SdfShape`]) plus the single material the Tool
-    /// assigns to every voxel it emits. Step 1 keeps the existing
-    /// [`MaterialChoice`]; a richer material table is a later step.
+    /// assigns to every voxel it emits.
     Tool {
         /// The parametric primitive to resolve.
         shape: SdfShape,
         /// The single material this Tool stamps onto its voxels.
         material: MaterialChoice,
     },
-    /// A **sketch → extrude → volume** producer (ADR 0003 §3i, Slice 2a): a
-    /// grid-aligned plane + closed polygon profile extruded a whole number of
-    /// voxels, plus the single material it stamps. Added **alongside** [`Tool`]
-    /// (not replacing it) — the §3i sketch-to-volume authoring atom over which
-    /// primitives become sugar later. It resolves through the SAME stamp /
-    /// `CombineOp` / chunk path as [`Tool`]. Both producers center-emit their grids
-    /// at the origin and are placed purely by their world voxel offset (no per-leaf
-    /// lattice shift) — see [`Scene::recenter_voxels_for_resolve`].
+    /// A **sketch → extrude → volume** producer: a grid-aligned plane + closed
+    /// polygon profile extruded a whole number of voxels, plus the single material
+    /// it stamps. The sketch-to-volume authoring atom over which primitives are
+    /// sugar. It resolves through the SAME stamp / `CombineOp` / chunk path as
+    /// [`Tool`]. Both producers center-emit their grids at the origin and are placed
+    /// purely by their world voxel offset — see
+    /// [`Scene::recenter_voxels_for_resolve`].
     ///
     /// [`Tool`]: NodeContent::Tool
-    /// [`VoxelBody`]: NodeContent::VoxelBody
     SketchTool {
         /// The sketch + operation to resolve.
         producer: SketchSolid,
@@ -66,12 +59,12 @@ pub enum NodeContent {
     },
     /// A static voxel body, dropped in as-is.
     VoxelBody(VoxelBody),
-    /// An owned, one-off sub-assembly. **ADR 0003 Phase B5:** a Group owns its
-    /// children by **identity** — the ordered spine of child [`NodeId`]s — while the
-    /// child `Node`s themselves live in the scene-wide [`Scene::arena`]. The `Vec`
-    /// order IS document order (resolved later-wins on overlap); the arena is fetched
-    /// from but never iterated to produce a walk. Resolved by `Scene::walk_nodes`,
-    /// which folds the children under the Group's own `CombineOp` (ADR 0017).
+    /// An owned, one-off sub-assembly. A Group owns its children by **identity** —
+    /// the ordered spine of child [`NodeId`]s — while the child `Node`s themselves
+    /// live in the scene-wide [`Scene::arena`]. The `Vec` order IS document order
+    /// (resolved later-wins on overlap); the arena is fetched from but never iterated
+    /// to produce a walk. Resolved by `Scene::walk_nodes`, which folds the children
+    /// under the Group's own `CombineOp`.
     Group(Vec<NodeId>),
     /// A reuse-by-reference of a definition. Resolved by `Scene::walk_nodes`, which
     /// expands the referenced `AssemblyDef`'s children under the instance's transform
@@ -79,17 +72,16 @@ pub enum NodeContent {
     Instance(DefId),
 }
 
-/// One enclosing **sealed composition scope** of a leaf (ADR 0017 Decision 3): a `Group`
-/// node, or a definition body expanded under an `Instance` node. The leaf's chain of
-/// frames — outermost first — is its **scope path**: the walk emits leaves in depth-first
-/// document order, and two consecutive leaves are in the same scope iff their paths are
-/// equal, so a consumer reconstructs the scope-open/scope-close markers of the depth-first
-/// fold (the push/pop evaluation of the SDF-editor prior art, `docs/design/
-/// csg-prior-art-study.md` round 2) by comparing adjacent paths. Carrying the path on each
-/// leaf — instead of interleaving marker entries — keeps the flat `LeafProducer` list a
-/// plain document-order sequence, so the edit broadphase's positional indexing and the
-/// candidate-subsequence filtering stay valid unchanged (dropping a leaf drops nothing but
-/// that leaf; an emptied scope simply never opens).
+/// One enclosing **sealed composition scope** of a leaf: a `Group` node, or a definition
+/// body expanded under an `Instance` node. The leaf's chain of frames — outermost first —
+/// is its **scope path**: the walk emits leaves in depth-first document order, and two
+/// consecutive leaves are in the same scope iff their paths are equal, so a consumer
+/// reconstructs the depth-first fold's scope-open / scope-close markers by comparing
+/// adjacent paths. Carrying the path on each leaf — instead of interleaving marker
+/// entries — keeps the flat `LeafProducer` list a plain document-order sequence, so the
+/// edit broadphase's positional indexing and the candidate-subsequence filtering stay
+/// valid unchanged (dropping a leaf drops nothing but that leaf; an emptied scope simply
+/// never opens).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScopeFrame {
     /// The scope node's stable [`NodeId`] — the `Group` node itself, or the `Instance`
@@ -99,14 +91,14 @@ pub struct ScopeFrame {
     /// flip must dirty the leaves inside — see [`leaf_content_fingerprint`]).
     pub scope_node: NodeId,
     /// The scope node's own [`CombineOp`] — the operation the scope's COMPOSED body folds
-    /// under into its parent scope (ADR 0017 Decision 3: a Group/definition pre-composes
-    /// its children into one body; that body then folds as a unit).
+    /// under into its parent scope (a Group/definition pre-composes its children into one
+    /// body; that body then folds as a unit).
     pub operation: CombineOp,
 }
 
-/// A placement offset accumulated down the walk (ADR 0008: the frame is carried, never
-/// re-derived): the integer world VOXEL offset plus the **continuous** local float slide
-/// measured relative to it (ADR 0027).
+/// A placement offset accumulated down the walk — the frame is carried, never re-derived:
+/// the integer world VOXEL offset plus the **continuous** local float slide measured
+/// relative to it.
 ///
 /// One value rather than two parameters because they are one fact — the float slide means
 /// nothing without the integer origin it is relative to, and two adjacent `[_; 3]`
@@ -147,38 +139,38 @@ impl AccumulatedOffset {
 /// One enabled leaf, as [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] hand it to a visitor.
 ///
 /// A struct rather than a positional argument list: the walk carries two coordinate triples
-/// and (with ADR 0032's picked-node resolver) two node ids, and adjacent same-shaped
-/// parameters are exactly what ADR 0008's carried-frame discipline exists to stop being
-/// confused. Consumers destructure the fields they want and `..` the rest, so adding a field
-/// touches only the sites that need it.
+/// and (with the picked-node resolver) two node ids, and adjacent same-shaped parameters are
+/// exactly what the carried-frame discipline exists to stop being confused. Consumers
+/// destructure the fields they want and `..` the rest, so adding a field touches only the
+/// sites that need it.
 pub(crate) struct VisitedLeaf<'walk> {
     /// The accumulated world VOXEL offset (integer) — the leaf's corner-anchored low corner
     /// in the scene's absolute voxel frame.
     pub world_offset_voxels: [i64; 3],
     /// The accumulated **continuous** local float offset relative to
-    /// [`world_offset_voxels`](Self::world_offset_voxels) (ADR 0027), summed from each
-    /// ancestor's `offset_local_voxels`.
+    /// [`world_offset_voxels`](Self::world_offset_voxels), summed from each ancestor's
+    /// `offset_local_voxels`.
     pub offset_local_voxels: [f32; 3],
-    /// The leaf's continuous rotation (ADR 0027) — `node.transform.rotation()`, the whole
-    /// tilt seated against the surface it was dropped on. The classifier reads this
-    /// quaternion directly; a lattice turn is just a rotation that lands on the exact path.
+    /// The leaf's continuous rotation — `node.transform.rotation()`, the whole tilt seated
+    /// against the surface it was dropped on. The classifier reads this quaternion directly;
+    /// a lattice turn is just a rotation that lands on the exact path.
     pub rotation: glam::Quat,
     /// Ordinary document content, or a sealed scope already pre-composed into one producer.
     pub body: LeafBody<'walk>,
-    /// The node's on-face-grid flag (issue #29 S4).
+    /// The node's on-face-grid flag.
     pub grid_on_faces: bool,
-    /// The node's own [`CombineOp`] role in the ordered fold (ADR 0017).
+    /// The node's own [`CombineOp`] role in the ordered fold.
     pub operation: CombineOp,
-    /// The node's outset (ADR 0019 Decision 7), an UNEVALUATED [`Measurement`] because the
-    /// walk carries no density. Each consumer resolves it against its own `voxels_per_block`,
-    /// which is what keeps the authored intent (`"1/4 block"`) rather than a number derived
-    /// at the wrong moment.
+    /// The node's outset, an UNEVALUATED [`Measurement`] because the walk carries no
+    /// density. Each consumer resolves it against its own `voxels_per_block`, which is what
+    /// keeps the authored intent (`"1/4 block"`) rather than a number derived at the wrong
+    /// moment.
     ///
     /// [`Measurement`]: parametric::units::Measurement
     pub outset: parametric::units::Measurement,
     /// The chain of enclosing sealed scopes, outermost first (see [`ScopeFrame`]).
     pub scope_path: &'walk [ScopeFrame],
-    /// Which node this leaf came from, and the instance it was expanded under (ADR 0032).
+    /// Which node this leaf came from, and the instance it was expanded under.
     pub origin: LeafOrigin,
 }
 
@@ -189,12 +181,11 @@ pub(crate) type LeafVisitor<'walk> = dyn FnMut(VisitedLeaf<'_>) + 'walk;
 /// What a visited leaf actually IS: ordinary document content, or a sealed scope that has
 /// been pre-composed into one producer because it carries an outset.
 ///
-/// The second arm exists because ADR 0019 Decision 7 puts an outset on a **scope** — a Part
-/// (ADR 0018 Decision 1) or a sealed definition body — and requires it to dilate the scope's
-/// COMPOSED body. A scope is already defined as "pre-compose the children into one body"
-/// (ADR 0017 Decision 3), so the walk hands it over as a single leaf and every consumer
-/// treats it like any other producer. There is no `NodeContent` for it: it is a derived
-/// runtime body, never document data.
+/// The second arm exists because an outset sits on a **scope** — a Part or a sealed
+/// definition body — and dilates that scope's COMPOSED body. A scope is already defined as
+/// "pre-compose the children into one body", so the walk hands it over as a single leaf and
+/// every consumer treats it like any other producer. There is no `NodeContent` for it: it is
+/// a derived runtime body, never document data.
 pub(crate) enum LeafBody<'walk> {
     Content(&'walk NodeContent),
     Composed {
@@ -216,9 +207,9 @@ impl LeafBody<'_> {
     /// The producer this leaf resolves through, plus its single-material override (`None`
     /// for a body carrying its own per-voxel materials).
     ///
-    /// This is the ONE place content maps to a producer. It used to be an identical `match`
-    /// repeated in `leaf_producers`, `resolve_region` and `resolve_chunk`, which is exactly
-    /// the shape of duplication a new body kind would have had to be added to three times.
+    /// This is the ONE place content maps to a producer: without it the same `match` is
+    /// repeated in `leaf_producers`, `resolve_region` and `resolve_chunk`, and a new body
+    /// kind has to be added in three places.
     pub(crate) fn into_producer(
         self,
         region_dimensions: [u32; 3],
@@ -240,8 +231,8 @@ impl LeafBody<'_> {
                 (material_id_for(*material), Box::new(producer.clone()))
             }
             LeafBody::Content(NodeContent::VoxelBody(VoxelBody::DebugClouds { seed })) => (
-                // A VoxelBody brings its own per-voxel materials; today the cloud field
-                // emits material 0, so the stamp keeps that.
+                // A VoxelBody brings its own per-voxel materials; the cloud field emits
+                // material 0, so the stamp keeps that.
                 None,
                 Box::new(DebugCloudField {
                     dimensions: region_dimensions,
@@ -253,7 +244,7 @@ impl LeafBody<'_> {
             // rather than through a single override.
             LeafBody::Composed { producer, .. } => (None, Box::new(producer)),
         };
-        // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds.
+        // The outset dilates the body BEFORE it folds.
         Some((
             material,
             crate::voxel::OutsetProducer::wrap(producer, outset_voxels),
@@ -292,38 +283,36 @@ pub(crate) fn leaf_content_fingerprint(
     operation: CombineOp,
     scope_path: &[ScopeFrame],
 ) -> String {
-    // The on-face-grid flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`
-    // (issue #29 S4), so two otherwise-identical leaves that differ only in this flag
-    // resolve to DIFFERENT voxels. It must therefore be part of the fingerprint, or a
-    // lone toggle of `voxel_grid_on_faces` produces an identical fingerprint and the
+    // The on-face-grid flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`,
+    // so two otherwise-identical leaves that differ only in this flag resolve to
+    // DIFFERENT voxels. It must therefore be part of the fingerprint, or a lone
+    // toggle of `voxel_grid_on_faces` produces an identical fingerprint and the
     // chunk-cache diff (`edit_aabb_since`) sees nothing dirty — leaving the stale
     // grid-less chunks in place until an unrelated edit evicts them. The embedded
-    // offset is voxels (the canonical placement unit, ADR 0003 §3f(0)); it is an
-    // opaque cache key, all leaves on the same unit for consistency.
+    // offset is voxels (the canonical placement unit); it is an opaque cache key,
+    // all leaves on the same unit for consistency.
     //
-    // The leaf's `CombineOp` (ADR 0017) is fingerprinted for the same reason: a
-    // Union↔Subtract flip changes the composite's voxels WITHIN the leaf's own
-    // AABB (a cutter only ever removes cells its body covers), so the flip must
-    // dirty exactly that AABB — and the store's dirtied chunks are RE-CLASSIFIED
-    // (a Subtract can turn coarse-solid blocks into boundary or air), not merely
-    // re-meshed.
+    // The leaf's `CombineOp` is fingerprinted for the same reason: a Union↔Subtract
+    // flip changes the composite's voxels WITHIN the leaf's own AABB (a cutter only
+    // ever removes cells its body covers), so the flip must dirty exactly that
+    // AABB — and the store's dirtied chunks are RE-CLASSIFIED (a Subtract can turn
+    // coarse-solid blocks into boundary or air), not merely re-meshed.
     //
-    // The leaf's SCOPE PATH (ADR 0017 Decision 3, issue #74) is fingerprinted too:
-    // a Group's operation flip, or a restructure that moves the leaf into a
-    // different scope, changes how the leaf composes — and the change is confined
-    // to the leaves inside the scope (a scope-op flip re-folds exactly the scope's
-    // composed body, whose cells all lie within its leaves' AABBs), so dirtying
-    // every enclosed leaf's AABB dirties precisely the scope's subtree AABB. The
-    // frame's stable `NodeId` (not a walk-order counter) keeps the fingerprint
-    // stable across unrelated edits. The same mechanism absorbs a definition's
-    // FIXTURE flip (ADR 0017 Decision 4, issue #77): sealed↔spliced changes every
-    // expanded leaf's carried path (the instance frame appears/disappears), so
+    // The leaf's SCOPE PATH is fingerprinted too: a Group's operation flip, or a
+    // restructure that moves the leaf into a different scope, changes how the leaf
+    // composes — and the change is confined to the leaves inside the scope (a
+    // scope-op flip re-folds exactly the scope's composed body, whose cells all lie
+    // within its leaves' AABBs), so dirtying every enclosed leaf's AABB dirties
+    // precisely the scope's subtree AABB. The frame's stable `NodeId` (not a
+    // walk-order counter) keeps the fingerprint stable across unrelated edits. The
+    // same mechanism absorbs a definition's FIXTURE flip: sealed↔spliced changes
+    // every expanded leaf's carried path (the instance frame appears/disappears), so
     // every placement's leaves re-fingerprint and their AABBs — which bound every
     // cell the splice can differ in — are dirtied.
     //
-    // NOTE the `Intersect` asymmetry (ADR 0017 / issue #75): the two locality claims
-    // above hold for Union/Subtract only. An Intersect mask kills accumulated cells
-    // ANYWHERE OUTSIDE its own body, so an edit involving an Intersect-influence leaf
+    // NOTE the `Intersect` asymmetry: the two locality claims above hold for
+    // Union/Subtract only. An Intersect mask kills accumulated cells ANYWHERE
+    // OUTSIDE its own body, so an edit involving an Intersect-influence leaf
     // (see [`operation_masks_beyond_bounds`]) is NOT confined to the changed leaves'
     // AABBs — the spatial index records such leaves under a distinct fingerprint kind
     // (`LeafFingerprint::MasksBeyondItsBox`, chosen in `build_leaf_spatial_index`) so
@@ -385,34 +374,23 @@ pub(crate) fn leaf_content_fingerprint(
     }
 }
 
-/// The producer's exact **emitted grid** in voxels per axis (the producer-true
-/// frame the chunk ownership lives in), or `None` for a sizeless / interior leaf.
-///
-/// This is `size_blocks · d` for an [`SdfShape`] `Tool` (a whole-block grid), but
-/// the EXACT prism AABB for a [`SketchTool`] — which may NOT be a whole multiple
-/// of `d` (a sub-block profile). The chunk-coverage / spatial-index / AABB-skip
-/// math must use this true span, not the block-rounded `leaf_size_blocks`, so a
-/// sub-block sketch's voxels are never dropped by a too-small cover.
-///
-/// [`SketchTool`]: NodeContent::SketchTool
-/// One enabled leaf of the op-stack as a resolvable producer (ADR 0010 E2). The
-/// two-layer classifier + boundary-resolve evaluate this list (in document order, Union
-/// on overlap) exactly as [`Scene::resolve_chunk_rebased`] stamps it. Yielded by
-/// [`Scene::leaf_producers`].
+/// One enabled leaf of the op-stack as a resolvable producer. The two-layer classifier +
+/// boundary-resolve evaluate this list (in document order, Union on overlap) exactly as
+/// [`Scene::resolve_chunk_rebased`] stamps it. Yielded by [`Scene::leaf_producers`].
 pub struct LeafProducer {
     /// The leaf's accumulated WORLD voxel offset (its corner-anchored low corner in the
     /// scene's absolute voxel frame). A local cell `idx` has absolute index
-    /// `world_offset_voxels + rotation·idx` (ADR 0008 — the frame is carried; the turn too,
-    /// see [`rotation`](Self::rotation)).
+    /// `world_offset_voxels + rotation·idx` — the frame is carried, and the turn with it
+    /// (see [`rotation`](Self::rotation)).
     pub world_offset_voxels: [i64; 3],
-    /// The leaf's **continuous rotation** (ADR 0027), the `Quat` the classifier reads to map a
-    /// world voxel back into the producer's unturned local frame — a lattice turn is just a
-    /// rotation that lands on the exact classifier path (§4). Populated as
+    /// The leaf's **continuous rotation**, the `Quat` the classifier reads to map a world
+    /// voxel back into the producer's unturned local frame — a lattice turn is just a
+    /// rotation that lands on the exact classifier path. Populated as
     /// `node.transform.rotation()`: the whole tilt seated against the surface the node was
     /// dropped on (identity for an upright / world-plane drop).
     pub rotation: glam::Quat,
-    /// The leaf's **continuous local offset** in voxels (ADR 0027), the accumulated float
-    /// slide relative to the integer [`world_offset_voxels`](Self::world_offset_voxels)
+    /// The leaf's **continuous local offset** in voxels, the accumulated float slide
+    /// relative to the integer [`world_offset_voxels`](Self::world_offset_voxels)
     /// wandering origin — the field's continuous world position is
     /// `world_offset_voxels + offset_local_voxels` per axis. Zero for every voxel-snapped
     /// placement (the default), so a snapped scene's value is `[0.0, 0.0, 0.0]` and resolves
@@ -424,31 +402,31 @@ pub struct LeafProducer {
     /// The single-material override id a Tool stamps onto every voxel (`Some`), or `None`
     /// for a VoxelBody that brings its own per-voxel materials (the cloud field emits id 0).
     pub material: Option<voxel_core::core_geom::BlockId>,
-    /// The owning node's `grids.voxel_grid_on_faces` flag (issue #29 S4 / ADR 0003 §3c) —
-    /// the transient on-face-grid render marker. Carried so the two-layer mesher (ADR 0010
-    /// E3) can attach the per-box overlay flag exactly as the dense resolve bakes
-    /// [`voxel_core::voxel::Voxel::grid_overlay`]. It is a RENDER hint only: it never enters the
-    /// categorical `block_id`, the chunk codec, or `.vox` export (§3c).
+    /// The owning node's `grids.voxel_grid_on_faces` flag — the transient on-face-grid
+    /// render marker. Carried so the two-layer mesher can attach the per-box overlay flag
+    /// exactly as the dense resolve bakes [`voxel_core::voxel::Voxel::grid_overlay`]. It is a
+    /// RENDER hint only: it never enters the categorical `block_id`, the chunk codec, or
+    /// `.vox` export.
     pub grid_overlay: bool,
-    /// The leaf's [`CombineOp`] role in the ordered fold (ADR 0017): `Union` stamps
+    /// The leaf's [`CombineOp`] role in the ordered fold: `Union` stamps
     /// (later-wins material on overlap); `Subtract` is an occupancy-only mask that
     /// removes cells accumulated before it **within its scope** and never stamps
     /// material. This is the owning NODE's operation; the scope structure it folds
     /// inside is `scope_path`.
     pub operation: CombineOp,
-    /// The chain of enclosing sealed composition scopes (ADR 0017 Decision 3, issue
-    /// #74), outermost first — every `Group` and every `Instance`-expanded SEALED
-    /// definition body above this leaf, each frame carrying the SCOPE node's own
-    /// [`CombineOp`]. A FIXTURE definition's expansion adds no frame (Decision 4,
-    /// issue #77): its leaves carry the HOSTING scope's path unchanged, which is
-    /// exactly what makes them splice into the host's fold.
+    /// The chain of enclosing sealed composition scopes, outermost first — every `Group`
+    /// and every `Instance`-expanded SEALED definition body above this leaf, each frame
+    /// carrying the SCOPE node's own [`CombineOp`]. A FIXTURE definition's expansion adds
+    /// no frame: its leaves carry the HOSTING scope's path unchanged, which is exactly
+    /// what makes them splice into the host's fold.
+    ///
     /// The flat list stays plain document order; a consumer reconstructs the
     /// depth-first fold's scope-open / scope-close markers by comparing adjacent
     /// leaves' paths (see [`ScopeFrame`]). Empty for a root-level leaf, which folds
-    /// directly into the scene's root accumulator — the pre-#74 behavior.
+    /// directly into the scene's root accumulator.
     pub scope_path: Vec<ScopeFrame>,
-    /// Which node this leaf came from, and the instance it was expanded under (ADR 0032) —
-    /// what a viewport pick that lands on this body resolves to. For a pre-composed scope
+    /// Which node this leaf came from, and the instance it was expanded under — what a
+    /// viewport pick that lands on this body resolves to. For a pre-composed scope
     /// this names the SCOPE, and the composite's members carry their own origins.
     pub origin: LeafOrigin,
 }
@@ -464,16 +442,15 @@ impl LeafProducer {
     }
 
     /// Whether this leaf can ADD occupancy to the scene's root accumulator: its own operation
-    /// is `Union` and every enclosing scope folds under `Union` (ADR 0017 Decision 3). A
-    /// boolean anywhere on the path makes the leaf's root-level influence purely
-    /// removing — e.g. a Union leaf inside a Group placed under Subtract only ever CARVES
-    /// the parent (its body enters the group's composed occupancy, which is then removed
-    /// from the parent), and a Union leaf inside a Group placed under Intersect (#75) only
-    /// ever PRESERVES parent cells its scope's body covers (it never creates root
-    /// occupancy of its own). Purely additive leaves are also the only leaves that ever
-    /// STAMP material at the root (booleans never stamp — Decision 1), which is why a
-    /// viewport pick considers only these (ADR 0032): the leaf that colored a voxel is the
-    /// leaf that owns it.
+    /// is `Union` and every enclosing scope folds under `Union`. A boolean anywhere on the
+    /// path makes the leaf's root-level influence purely removing — e.g. a Union leaf inside
+    /// a Group placed under Subtract only ever CARVES the parent (its body enters the group's
+    /// composed occupancy, which is then removed from the parent), and a Union leaf inside a
+    /// Group placed under Intersect only ever PRESERVES parent cells its scope's body covers
+    /// (it never creates root occupancy of its own). Purely additive leaves are also the only
+    /// leaves that ever STAMP material at the root (booleans never stamp), which is why a
+    /// viewport pick considers only these: the leaf that colored a voxel is the leaf that
+    /// owns it.
     pub fn is_purely_additive(&self) -> bool {
         self.operation == CombineOp::Union
             && self
@@ -483,11 +460,10 @@ impl LeafProducer {
     }
 }
 
-/// The continuous `glam::Quat` equivalent of a discrete [`LatticeOrientation`] (ADR 0027
-/// §4). A lattice turn is one of the 24 axis-aligned rotations — a proper rotation (det `+1`,
-/// group *O*) — so it maps exactly onto a clean unit quaternion. The bridge a caller holding a
-/// face-normal turn uses to obtain the equivalent `Quat` the ghost / classifier speak (e.g.
-/// `shot --ghost-face`).
+/// The continuous `glam::Quat` equivalent of a discrete [`LatticeOrientation`]. A lattice turn
+/// is one of the 24 axis-aligned rotations — a proper rotation (det `+1`) — so it maps exactly
+/// onto a clean unit quaternion. The bridge a caller holding a face-normal turn uses to obtain
+/// the equivalent `Quat` the ghost / classifier speak (e.g. `shot --ghost-face`).
 ///
 /// The rotation matrix is built from the turn's action on the three basis axes: column `axis`
 /// is where the turn sends the unit vector `e_axis`, so `matrix * v == orientation.apply(v)`
@@ -495,10 +471,6 @@ impl LeafProducer {
 /// matrix.
 ///
 /// [`LatticeOrientation`]: substrate::spatial::LatticeOrientation
-///
-/// `pub` — the discrete→continuous bridge (ADR 0027) any caller holding a
-/// [`LatticeOrientation`] uses to obtain the equivalent [`glam::Quat`] the ghost / classifier
-/// speak (e.g. `shot --ghost-face`).
 pub fn quat_from_lattice(orientation: substrate::spatial::LatticeOrientation) -> glam::Quat {
     let matrix = glam::Mat3::from_cols(
         orientation.apply_f32([1.0, 0.0, 0.0]).into(),
@@ -509,8 +481,8 @@ pub fn quat_from_lattice(orientation: substrate::spatial::LatticeOrientation) ->
 }
 
 /// Whether a leaf carrying `operation` under `scope_path` can remove occupancy at cells
-/// its own body does NOT cover (ADR 0017 / issue #75). True exactly when `Intersect` is
-/// involved anywhere on the leaf's fold path:
+/// its own body does NOT cover. True exactly when `Intersect` is involved anywhere on the
+/// leaf's fold path:
 ///
 /// * the leaf's OWN operation is `Intersect` — its mask kills every accumulated cell
 ///   outside its body, at any distance from its AABB; or
@@ -528,14 +500,22 @@ pub fn operation_masks_beyond_bounds(operation: CombineOp, scope_path: &[ScopeFr
             .any(|frame| frame.operation == CombineOp::Intersect)
 }
 
-/// The leaf's emitted grid extent in voxels, GROWN by its outset (ADR 0019 Decision 7).
+/// The producer's exact **emitted grid** in voxels per axis (the producer-true frame the
+/// chunk ownership lives in), GROWN by its outset — `None` for a sizeless / interior leaf.
+///
+/// This is `size_blocks · d` for an [`SdfShape`] `Tool` (a whole-block grid), but the EXACT
+/// prism AABB for a [`SketchTool`] — which may NOT be a whole multiple of `d` (a sub-block
+/// profile). The chunk-coverage / spatial-index / AABB-skip math must use this true span,
+/// not the block-rounded `leaf_size_blocks`, so a sub-block sketch's voxels are never
+/// dropped by a too-small cover.
 ///
 /// The outset belongs here rather than at the call sites because this one function feeds
 /// both the region sizing and — through [`Scene::build_leaf_spatial_index`] — the
-/// edit-broadphase AABB. ADR 0020's Consequences require the dirty region to be the OUTSET
-/// bounds, not the producer bounds: an outset cutter dirties more than its own extent, and
-/// invalidating only the undilated box would leave a stale rim behind after an edit.
+/// edit-broadphase AABB. The dirty region must be the OUTSET bounds, not the producer
+/// bounds: an outset cutter dirties more than its own extent, and invalidating only the
+/// undilated box would leave a stale rim behind after an edit.
 ///
+/// [`SketchTool`]: NodeContent::SketchTool
 /// [`Scene::build_leaf_spatial_index`]: crate::scene::Scene::build_leaf_spatial_index
 pub(crate) fn leaf_producer_grid_voxels(
     content: &NodeContent,
@@ -550,8 +530,8 @@ pub(crate) fn leaf_producer_grid_voxels(
         }))
     };
     match content {
-        // The Tool's exact emitted grid is its canonical voxel size directly (ADR
-        // 0003 §3f(0); `size_voxels` already IS `blocks · d` for a whole-block size).
+        // The Tool's exact emitted grid is its canonical voxel size directly
+        // (`size_voxels` already IS `blocks · d` for a whole-block size).
         NodeContent::Tool { shape, .. } => grown([
             shape.size_voxels[0] as i64,
             shape.size_voxels[1] as i64,
@@ -578,9 +558,9 @@ pub(crate) fn outset_voxels_at(
 }
 
 /// Map a Tool's [`MaterialChoice`] to the categorical [`BlockId`](voxel_core::core_geom::BlockId)
-/// it stamps (ADR 0001 step 3 "Materials"; ADR 0003 §3a). A Tool is single-material by
-/// nature: every voxel it emits takes this one block id, so distinct nodes render in
-/// distinct materials. Stone = 0, Wood = 1, Plain = 2 (see [`MaterialChoice::block_id`]).
+/// it stamps. A Tool is single-material by nature: every voxel it emits takes this one block
+/// id, so distinct nodes render in distinct materials. Stone = 0, Wood = 1, Plain = 2 (see
+/// [`MaterialChoice::block_id`]).
 fn material_id_for(material: MaterialChoice) -> Option<voxel_core::core_geom::BlockId> {
     Some(material.block_id())
 }

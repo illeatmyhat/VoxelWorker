@@ -1,31 +1,30 @@
-//! The linear command stack — inverse-based undo/redo (ADR 0003 Phase C, slice C2).
+//! The linear command stack — inverse-based undo/redo.
 //!
-//! ADR 0003 settles undo/redo as a **linear command stack of inverse commands**,
-//! NOT snapshots: the trajectory targets 10k+ node scenes, so a per-edit full-`Scene`
-//! clone is too heavy. Instead every undoable [`Intent`] is paired, at apply time,
-//! with a fine-grained [`Inverse`] that reverses exactly what the forward op changed.
-//! Real-time collaboration is ruled out, so the stack is strictly linear (an `undo`
-//! Vec + a `redo` Vec, no branching).
+//! Undo/redo is a **linear command stack of inverse commands**, NOT snapshots: the
+//! trajectory targets 10k+ node scenes, so a per-edit full-`Scene` clone is too heavy.
+//! Instead every undoable [`Intent`] is paired, at apply time, with a fine-grained
+//! [`Inverse`] that reverses exactly what the forward op changed. Real-time collaboration
+//! is ruled out, so the stack is strictly linear (an `undo` Vec + a `redo` Vec, no
+//! branching).
 //!
 //! **The counter rule (byte-equal invariant).** A minting intent advances
 //! [`Scene::next_node_id`](crate::scene::Scene::next_node_id). For `apply; undo` to
 //! restore the scene EXACTLY (so the round-trip tests can assert full `Scene`
-//! `PartialEq`), `AppCore::undo` restores `next_node_id` to
-//! the value captured BEFORE the apply ([`Command::counter_before`]). Because the
-//! stack is linear (a `redo` only ever follows an `undo` with nothing applied
-//! between), rewinding the counter is safe and makes `redo` re-mint byte-identical
-//! ids by replaying the forward intent.
+//! `PartialEq`), `AppCore::undo` restores `next_node_id` to the value captured BEFORE the
+//! apply ([`Command::counter_before`]). Because the stack is linear (a `redo` only ever
+//! follows an `undo` with nothing applied between), rewinding the counter is safe and
+//! makes `redo` re-mint byte-identical ids by replaying the forward intent.
 //!
 //! **The stacks live in the shell.** This module owns only the pair that needs `Scene`
 //! internals — [`Command`] and [`Inverse`]. Which stack a command sits on, how
 //! transactions batch, and the selection to restore on undo are runtime workspace state
-//! owned by `AppCore` (ADR 0032).
+//! owned by `AppCore`.
 
 use crate::intent::Intent;
 use crate::scene::{DefId, Node, NodeContent, NodeId, Point};
 
 /// The reverse of one applied [`Intent`] — enough captured state to restore the
-/// scene EXACTLY to what it was before the forward op ran (ADR 0003 Phase C C2).
+/// scene EXACTLY to what it was before the forward op ran.
 ///
 /// Each arm is the minimal capture for a class of forward op: a field-set is
 /// reversed by the SAME intent carrying the PRIOR value; a mint is reversed by
@@ -35,12 +34,10 @@ use crate::scene::{DefId, Node, NodeContent, NodeId, Point};
 /// and `undo` rewinds the counter so a later `redo` re-mints the same ids).
 pub enum Inverse {
     /// Reverse a field-set intent (SetEnabled / SetShape / SetMaterial / SetOffset /
-    /// SetName / SetCloudSeed / SetNodeGrids / SetDensity /
-    /// SetGridMasters and the point
+    /// SetName / SetCloudSeed / SetNodeGrids / SetDensity / SetGridMasters and the point
     /// field-sets SetPointHidden / SetPointPlanes / SetPointAxes / SetPointPosition) by
     /// replaying the SAME intent carrying the field's PRIOR value, captured before the
-    /// mutate. `SetDensity` joins this group now that density is a single document-level
-    /// field (ADR 0003 §3f(0)) rather than a fan-out over every Tool's shape.
+    /// mutate.
     Field(Intent),
     /// Reverse a single-node mint (AddNode / AddChild / AddInstance): the forward op
     /// minted exactly one node + spliced its id onto the end of a spine; the inverse
@@ -110,16 +107,14 @@ pub enum Inverse {
 
 impl Inverse {
     /// Apply this inverse to `scene`, reversing the forward op — the STRUCTURAL arms
-    /// only. The counter + selection restore is the caller's
-    /// (`AppCore::undo`) job; this touches only the document
-    /// structure the forward op mutated.
+    /// only. The counter + selection restore is the caller's (`AppCore::undo`) job; this
+    /// touches only the document structure the forward op mutated.
     ///
-    /// **[`Inverse::Field`] is NOT handled here** (code-review FIX 2): a field-set is
-    /// reversed by routing its prior-value [`Intent`] back through
-    /// `AppCore::dispatch` — the single owner of the field-write mutations — so there
-    /// is no re-implemented copy to silently diverge from `dispatch` (which would break
-    /// the byte-equal invariant). `undo`/`redo` intercept `Field` before calling this,
-    /// so reaching the `Field` arm here is a construction bug.
+    /// **[`Inverse::Field`] is NOT handled here**: a field-set is reversed by routing its
+    /// prior-value [`Intent`] back through `AppCore::dispatch` — the single owner of the
+    /// field-write mutations — so there is no re-implemented copy to silently diverge from
+    /// `dispatch` (which would break the byte-equal invariant). `undo`/`redo` intercept
+    /// `Field` before calling this, so reaching the `Field` arm here is a construction bug.
     pub fn apply(&self, scene: &mut crate::scene::Scene) {
         match self {
             Inverse::Field(_) => {
@@ -172,11 +167,11 @@ impl Inverse {
 }
 
 /// One applied document mutation paired with its [`Inverse`] and the counter state to
-/// restore on undo (ADR 0003 Phase C C2). A `redo` re-`dispatch`es the forward `intent`;
-/// an `undo` applies `inverse` then restores the captured counter.
+/// restore on undo. A `redo` re-`dispatch`es the forward `intent`; an `undo` applies
+/// `inverse` then restores the captured counter.
 ///
-/// The SELECTION to restore alongside it is workspace state (ADR 0032), captured by the
-/// shell's `RecordedCommand` wrapper — the document neither owns nor reverses it.
+/// The SELECTION to restore alongside it is workspace state, captured by the shell's
+/// `RecordedCommand` wrapper — the document neither owns nor reverses it.
 pub struct Command {
     /// The forward intent (re-dispatched on redo).
     pub intent: Intent,

@@ -1,14 +1,14 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
 
-// ---- ADR 0032: which node a viewport pick selects ----
+// ---- Which node a viewport pick selects ----
 //
 // The raycast names a solid ABSOLUTE voxel; the resolver names the node. The law under
 // test is "the pick follows the material": the answer is the last purely-additive leaf in
 // document order covering the cell, which is exactly the leaf whose material the resolve
-// stamped there (ADR 0017, later-wins). The interesting cases are the ones where a
-// nearest-hit or first-hit rule would give a DIFFERENT answer — an overlap, the wall of a
-// carved cavity, and a body reached through a definition or a pre-composed scope.
+// stamped there (later-wins). The interesting cases are the ones where a nearest-hit or
+// first-hit rule would give a DIFFERENT answer — an overlap, the wall of a carved cavity,
+// and a body reached through a definition or a pre-composed scope.
 
 const CUTTER_DEF: DefId = DefId(51);
 
@@ -39,8 +39,8 @@ fn a_solid_cell_picks_its_body_and_empty_space_picks_nothing() {
 }
 
 /// Where two Union bodies overlap, the LATER one owns the cell — the same later-wins rule
-/// that decided the material the user can see there (ADR 0017). A first-hit scan would
-/// return the earlier body and select something the click does not look like.
+/// that decided the material the user can see there. A first-hit scan would return the
+/// earlier body and select something the click does not look like.
 #[test]
 fn overlapping_bodies_pick_the_later_one() {
     let scene = with_minted_ids(Scene::from_nodes(vec![
@@ -93,8 +93,8 @@ fn the_wall_of_a_carved_cavity_picks_the_host_not_the_cutter() {
     );
 }
 
-/// A body reached through an `Instance` picks as the INSTANCE (ADR 0017 / ADR 0032):
-/// selecting the definition's child would address geometry shared by every placement.
+/// A body reached through an `Instance` picks as the INSTANCE: selecting the definition's
+/// child would address geometry shared by every placement.
 #[test]
 fn an_instanced_body_picks_as_its_placement() {
     let mut scene = Scene::from_nodes(vec![instance_node(
@@ -117,10 +117,10 @@ fn an_instanced_body_picks_as_its_placement() {
     );
 }
 
-/// A PRE-COMPOSED scope is one leaf to the walk (here forced by an outset on the Group, ADR
-/// 0019 Decision 7). The pick must still descend into its members and name the authored
-/// leaf — ADR 0032 picks the leaf at any depth, and a single top-level `Emboss` would
-/// otherwise collapse a whole document into one unpickable body.
+/// A PRE-COMPOSED scope is one leaf to the walk (here forced by an outset on the Group).
+/// The pick must still descend into its members and name the authored leaf — the pick
+/// names the leaf at any depth, and a single top-level `Emboss` would otherwise collapse
+/// a whole document into one unpickable body.
 #[test]
 fn a_pre_composed_scope_picks_its_inner_member() {
     let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
@@ -159,9 +159,9 @@ fn a_pre_composed_scope_picks_its_inner_member() {
     );
 }
 
-/// ADR 0027: a sub-voxel seat puts the leaf OUT OF PHASE with the absolute lattice, which
-/// routes coverage through the placement affine instead of a plain translation. The pick
-/// must take the same branch the resolve does, or a nudged body stops being clickable.
+/// A sub-voxel seat puts the leaf OUT OF PHASE with the absolute lattice, which routes
+/// coverage through the placement affine instead of a plain translation. The pick must take
+/// the same branch the resolve does, or a nudged body stops being clickable.
 #[test]
 fn a_sub_voxel_seated_body_is_still_pickable() {
     let mut node = body(2, [0, 0, 0], MaterialChoice::Stone);
@@ -175,9 +175,9 @@ fn a_sub_voxel_seated_body_is_still_pickable() {
     );
 }
 
-/// ADR 0008 wandering origin: a body placed far from the world origin keeps full precision,
-/// because the placement affine rebases in i64 before any f32 rotation math. A pick a
-/// million blocks out must name the same node a pick at the origin does.
+/// Wandering origin: a body placed far from the world origin keeps full precision, because
+/// the placement affine rebases in i64 before any f32 rotation math. A pick a million
+/// blocks out must name the same node a pick at the origin does.
 #[test]
 fn a_far_placed_body_picks_the_same_way() {
     let far_blocks = 100_000;
@@ -225,9 +225,9 @@ fn a_scope_sibling_carve_hands_the_cell_to_the_body_beneath() {
     );
 }
 
-/// ADR 0026/0027: an axis-aligned turn is a real rotation — the display emits the TURNED
-/// cells. A pick that ignored it would answer for the unturned footprint: dead clicks on the
-/// visible body, live clicks in the empty air beside it.
+/// An axis-aligned turn is a real rotation — the display emits the TURNED cells. A pick
+/// that ignored it would answer for the unturned footprint: dead clicks on the visible
+/// body, live clicks in the empty air beside it.
 #[test]
 fn a_quarter_turned_body_picks_on_its_turned_footprint() {
     let mut node = box_tool(
@@ -256,8 +256,8 @@ fn a_quarter_turned_body_picks_on_its_turned_footprint() {
 
 /// A click on a Part's OUTSET SHELL — cells the dilation added, which no member's body
 /// reaches — selects the member the shell grew from, because that is whose material the
-/// shell wears (ADR 0019 Decision 7). The scope node carrying the outset is one navigation
-/// step away, not a different pick.
+/// shell wears. The scope node carrying the outset is one navigation step away, not a
+/// different pick.
 #[test]
 fn the_outset_shell_of_a_part_picks_the_member_beneath_it() {
     let mut scene = Scene::from_nodes(vec![NodeBuilder::group(

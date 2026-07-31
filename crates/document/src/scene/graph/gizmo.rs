@@ -1,11 +1,11 @@
-//! The per-node transform gizmo's recentered placement (issue #29 S2): the pivot
-//! (center of the node subtree's block-aligned AABB) and its extent.
+//! The per-node transform gizmo's recentered placement: the pivot (center of the node
+//! subtree's block-aligned AABB) and its extent.
 
 use super::*;
 
 impl Scene {
     /// The transform gizmo's placement for `node_id`, in the SAME recentered render
-    /// frame the resolved voxels live in (issue #29 S2). Backs both the selection
+    /// frame the resolved voxels live in. Backs both the selection
     /// manipulator and the camera "Focus" view action (right-click a tree row → frame
     /// that node). `None` when the id no longer resolves or the node has no intrinsic
     /// extent (e.g. a lone VoxelBody with no size).
@@ -42,9 +42,9 @@ impl Scene {
         // The gizmo PIVOT is the center of the node's PRODUCER-TRUE voxel AABB — the
         // exact frame the resolved voxels (and the composite recenter) live in. This
         // makes a lone node of ANY size (even or odd) recenter onto the origin: its
-        // producer center coincides with the composite recenter. (Center-anchoring
-        // retirement: we no longer mix the block-floored AABB center with the voxel
-        // recenter, which left odd sizes half a block off.)
+        // producer center coincides with the composite recenter. Mixing the
+        // block-floored AABB center with the voxel recenter instead would leave odd
+        // sizes half a block off.
         let (min_voxels, max_voxels) = self.node_subtree_extent_voxels(path, voxels_per_block)?;
         // The gizmo SIZE is the node's enclosing-whole-block extent (the visible box
         // snaps to whole blocks), taken from the block-AABB.

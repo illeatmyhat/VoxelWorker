@@ -17,15 +17,14 @@ mod resolve;
 mod sealed_scopes;
 mod subtract;
 
-/// Mint stable [`NodeId`]s for a freshly-built test scene (ADR 0003 Phase B3), so a
-/// fixture can name its nodes by id. ADR 0032 dropped the selection this used to set:
-/// the document has none, and no document op reads one.
+/// Mint stable [`NodeId`]s for a freshly-built test scene, so a fixture can name its
+/// nodes by id.
 pub(super) fn with_minted_ids(mut scene: Scene) -> Scene {
     scene.ensure_node_ids();
     scene
 }
 
-/// Canonicalise an occupied set into a multiset of
+/// Canonicalize an occupied set into a multiset of
 /// `(absolute_voxel_index, material_id)` so two resolves can be compared as
 /// the same shape regardless of voxel emission ORDER.
 ///
@@ -58,8 +57,7 @@ pub(super) const DENSITY: u32 = 8;
 
 /// A whole-block Box Tool of `size_blocks` at `offset_blocks` carrying `material` and
 /// `operation` — the shared CSG fixture (axis-aligned boxes, so the expected occupied
-/// set is exact). Was copy-pasted verbatim across the subtract / intersect / sealed /
-/// cutter / fixture test modules; one definition now.
+/// set is exact).
 pub(super) fn box_tool(
     size_blocks: [u32; 3],
     offset_blocks: [i64; 3],
@@ -74,8 +72,7 @@ pub(super) fn box_tool(
 }
 
 /// An [`NodeContent::Instance`] of `def_id` named `name`, at `offset_blocks` carrying
-/// `operation` — the shared instance fixture (was duplicated in the cutter / fixture
-/// definition test modules).
+/// `operation` — the shared instance fixture.
 pub(super) fn instance_node(
     def_id: DefId,
     offset_blocks: [i64; 3],
@@ -89,8 +86,7 @@ pub(super) fn instance_node(
 }
 
 /// Resolve `scene` through the dense oracle and return its occupancy multiset in
-/// ABSOLUTE voxel space (recenter-normalized), keyed `(index, material)`. The shared
-/// resolve-and-canonicalise fixture (was duplicated across the CSG test modules).
+/// ABSOLUTE voxel space (recenter-normalized), keyed `(index, material)`.
 pub(super) fn resolved_absolute_multiset(
     scene: &Scene,
 ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
@@ -99,8 +95,7 @@ pub(super) fn resolved_absolute_multiset(
 }
 
 /// The `--demo-scene` shape: a Sphere + an offset Box + an offset Torus, three
-/// materials, top-level node 0 selected. Was rebuilt inline in resolve.rs and named in
-/// placement.rs — one definition now.
+/// materials.
 pub(super) fn demo_three_tool_scene(voxels_per_block: u32) -> Scene {
     let make_tool = |kind, offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
@@ -118,8 +113,8 @@ pub(super) fn demo_three_tool_scene(voxels_per_block: u32) -> Scene {
 }
 
 /// The `--demo-village` scene: four `Instance`s of one `House` definition (a Box body +
-/// a Cylinder chimney), top-level node 0 selected — proves instance/group transform
-/// composition (reuse-by-reference). One definition, shared by resolve.rs + placement.rs.
+/// a Cylinder chimney) — proves instance/group transform composition
+/// (reuse-by-reference).
 pub(super) fn demo_village_scene(voxels_per_block: u32) -> Scene {
     let house_def_id = DefId(1);
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {

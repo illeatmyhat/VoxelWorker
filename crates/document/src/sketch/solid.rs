@@ -11,26 +11,24 @@ use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 /// and the resolve decides occupancy by *calling* it — `signed_distance_at(p) <=
 /// SURFACE_ISOLEVEL` — rather than re-deciding the same question with independent
 /// arithmetic. That is what makes the bound's conservative-never-narrow contract hold by
-/// construction instead of by the two implementations happening to round alike.
+/// construction instead of by two implementations happening to round alike.
 ///
-/// They did not round alike. The resolve used to gate the swept wedge on
-/// `atan2(b, a).to_degrees() <= turn` while the bound used the half-plane form
-/// `cos(turn)·b − sin(turn)·a`. Those are the same SET and different NUMBERS: IEEE-754
-/// mandates correct rounding for `+ − × ÷ √` but explicitly **not** for transcendentals,
-/// so glibc and the MSVC CRT are both conformant while disagreeing by an ULP. On a sample
-/// lying exactly on the closing edge of a 45° sweep the true value is 0, and the bound
-/// computed `+2⁻⁵⁴ = 5.551115e-17` — a hair outside — so a 1×1×1 cell (whose bracket is
-/// that single value ±1 ULP) classified AIR while the resolve counted the voxel occupied.
-/// It reproduced on Linux and not on Windows purely because the two libms round
-/// differently. A bound that wrongly says AIR silently drops voxels from export and
-/// display, so this is a correctness fix, not a test fix.
+/// They do not round alike. Gating the swept wedge on `atan2(b, a).to_degrees() <= turn` and
+/// gating it on the half-plane form `cos(turn)·b − sin(turn)·a` describe the same SET and
+/// produce different NUMBERS: IEEE-754 mandates correct rounding for `+ − × ÷ √` but
+/// explicitly **not** for transcendentals, so glibc and the MSVC CRT are both conformant while
+/// disagreeing by an ULP. On a sample lying exactly on the closing edge of a 45° sweep the true
+/// value is 0 and the half-plane form gives `+2⁻⁵⁴ = 5.551115e-17` — a hair outside — so a
+/// 1×1×1 cell (whose bracket is that single value ±1 ULP) classifies AIR while the resolve
+/// counts the voxel occupied, on one platform's libm and not another's. A bound that wrongly
+/// says AIR silently drops voxels from export and display, which is a correctness matter and
+/// not a test one.
 ///
-/// `SdfShape` never had the bug: its resolve is already `signed_distance(..) <=
-/// SURFACE_ISOLEVEL` over one field function. This brings the sketch producer to the same
-/// discipline.
+/// `SdfShape` has no such split: its resolve is already `signed_distance(..) <=
+/// SURFACE_ISOLEVEL` over one field function.
 pub(super) struct RevolveField<'region> {
-    /// The tagged region in the measurement width (#100): a hole in the profile is a hollow in
-    /// the lathed body, so the field folds every loop rather than measuring one polygon.
+    /// The tagged region in the measurement width: a hole in the profile is a hollow in the
+    /// lathed body, so the field folds every loop rather than measuring one polygon.
     ///
     /// BORROWED from the sketch's derived region, because `signed_distance` builds a field per
     /// sample and copying the curves there is the whole cost of the call.
@@ -62,8 +60,7 @@ pub(super) struct RevolveField<'region> {
 /// world axes in ASCENDING index (the sort that fixes which world axis is which).
 /// `axial_min_by_coord` is the per-in-plane-coord axial minimum — `revolve_field`
 /// passes the profile bounds min, `revolve_cell_is_solid` the sample bbox min; both
-/// select the same coord from it. One definition so the two stay in lockstep (the cell
-/// test's own comment already says "matching resolve_revolve").
+/// select the same coord from it. One definition so the two stay in lockstep.
 pub(super) fn revolve_axes(
     axis: RevolveAxis,
     in_plane_0: usize,
@@ -144,7 +141,7 @@ impl RevolveField<'_> {
             // ON the closing edge. True value 0 ⇒ on-boundary ⇒ occupied. In f64 the
             // libm `cos`/`sin` pair does not cancel and this returns ≈ +4.4e−16, a hair
             // outside, and the voxel is dropped; in f32 the two round to exact negatives of
-            // each other and it returns +0.0, keeping the voxel. See the flip measurement.
+            // each other and it returns +0.0, keeping the voxel.
             let past_closing_edge = turn.cos() * centered_b - turn.sin() * centered_a;
             let to_wedge = if self.turn_degrees <= 180 {
                 past_first_edge.max(past_closing_edge)
@@ -167,12 +164,11 @@ impl RevolveField<'_> {
     }
 }
 
-/// A [`Sketch`] paired with an [`Operation`] that turns its 2D profile into a 3D
-/// volume — the 2a sketch→volume producer (ADR 0003 §3i, the "Sketch + Operation"
-/// model). Added **alongside** `SdfShape`; both implement [`VoxelProducer`](crate::voxel::VoxelProducer) and
-/// resolve through the same stamp / `CombineOp` / chunk path. [`Operation::Extrude`] (a
-/// prism) and [`Operation::Revolve`] (a solid of revolution) both ship; sweep is the
-/// reserved third lift.
+/// A [`Sketch`] paired with an [`Operation`] that turns its 2D profile into a 3D volume — the
+/// sketch→volume producer. It sits **alongside** `SdfShape`; both implement
+/// [`VoxelProducer`](crate::voxel::VoxelProducer) and resolve through the same stamp /
+/// `CombineOp` / chunk path. [`Operation::Extrude`] produces a prism and
+/// [`Operation::Revolve`] a solid of revolution.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SketchSolid {
     /// The closed 2D profile + its plane.
@@ -252,13 +248,13 @@ impl SketchSolid {
     /// build by up to the sagitta.
     ///
     /// A hole sits inside a fill and adds no footprint, and an unpicked face on its own is not
-    /// occupancy at all (#100).
+    /// occupancy at all.
     fn filled_extent(&self) -> Option<([f64; 2], [f64; 2])> {
         self.sketch.filled_extent()
     }
 
     /// The node offset that keeps every **un-edited** profile vertex fixed in world after this
-    /// producer replaced `previous` at node offset `previous_offset` (ADR 0028, #94/#95).
+    /// producer replaced `previous` at node offset `previous_offset`.
     ///
     /// The resolve re-anchors the profile's bbox-minimum to the node origin
     /// ([`profile_bbox_min`](Self::profile_bbox_min)), so a vertex added, removed, or dragged at
@@ -280,9 +276,9 @@ impl SketchSolid {
         offset
     }
 
-    /// This producer with `point` inserted on the segment `seg_id`, splitting it (ADR 0030
-    /// add-point). The two halves inherit the split segment's `origin`. No-op if `seg_id` is
-    /// unknown. Pure — returns a new producer, leaving `self` untouched.
+    /// This producer with `point` inserted on the segment `seg_id`, splitting it. The two
+    /// halves inherit the split segment's `origin`. No-op if `seg_id` is unknown. Pure —
+    /// returns a new producer, leaving `self` untouched.
     pub fn with_point_on_segment(&self, seg_id: EntityId, point: SketchPoint) -> SketchSolid {
         let mut next = self.clone();
         next.sketch.split_segment(seg_id, point);
@@ -290,8 +286,8 @@ impl SketchSolid {
     }
 
     /// This producer with a free point added at `at` — or, when a point already sits exactly
-    /// there, the untouched producer and that point's id (coincidence, ADR 0030). Returns the
-    /// producer and the id the polyline chain continues from (#99). Pure.
+    /// there, the untouched producer and that point's id (coincidence). Returns the producer
+    /// and the id the polyline chain continues from. Pure.
     pub fn with_point_placed(&self, at: SketchPoint) -> (SketchSolid, EntityId) {
         if let Some(existing) = self.sketch.point_at(at) {
             return (self.clone(), existing);
@@ -301,7 +297,7 @@ impl SketchSolid {
         (next, id)
     }
 
-    /// This producer with a segment joining the existing points `from → to` (#99 polyline).
+    /// This producer with a segment joining the existing points `from → to` (the polyline tool).
     /// Unchanged for a self-loop, an unknown endpoint, or an already-joined pair
     /// ([`Sketch::connect`]). Pure.
     pub fn with_segment_between(&self, from: EntityId, to: EntityId) -> SketchSolid {
@@ -311,7 +307,7 @@ impl SketchSolid {
     }
 
     /// This producer with a closed axis-aligned rectangle appended between opposite corners
-    /// `a` and `b` (#99 — the rectangle tool draws a whole loop in one gesture). Corner points
+    /// `a` and `b` — the rectangle tool draws a whole loop in one gesture. Corner points
     /// that coincide with existing points reuse their ids; the four edges go through
     /// [`Sketch::connect`], so an edge that already exists is not doubled. Unchanged when the
     /// corners are degenerate (zero span on either in-plane axis — no area to enclose). Pure.
@@ -320,7 +316,7 @@ impl SketchSolid {
         if a_pos[0] == b_pos[0] || a_pos[1] == b_pos[1] {
             return self.clone();
         }
-        // The two synthesised corners mix one coordinate from each source point,
+        // The two synthesized corners mix one coordinate from each source point,
         // fraction included; they carry no retained expression of their own.
         let mixed = |axis0_of: &SketchPoint, axis1_of: &SketchPoint| SketchPoint {
             offset_voxels: [axis0_of.offset_voxels[0], axis1_of.offset_voxels[1]],
@@ -346,9 +342,9 @@ impl SketchSolid {
         next
     }
 
-    /// This producer with the point `point_id` deleted, CASCADING to its incident segments
-    /// (ADR 0030 §6 — deleting a point removes its edges and nothing else; it does NOT reclose
-    /// the loop). No-op if `point_id` is unknown. Pure — returns a new producer. A loop that
+    /// This producer with the point `point_id` deleted, CASCADING to its incident segments:
+    /// deleting a point removes its edges and nothing else, and does NOT reclose the loop.
+    /// No-op if `point_id` is unknown. Pure — returns a new producer. A loop that
     /// opens (or falls below three vertices) simply resolves to nothing.
     pub fn with_point_deleted(&self, point_id: EntityId) -> SketchSolid {
         let mut next = self.clone();
@@ -365,8 +361,8 @@ impl SketchSolid {
     }
 
     /// This producer with an arc of the given signed included angle joining the existing
-    /// points `from → to` (#102 — the 3-point tool commits through here after consuming
-    /// its through-point). Unchanged for a self-loop, an unknown endpoint, a degenerate
+    /// points `from → to` — the 3-point tool commits through here after consuming its
+    /// through-point. Unchanged for a self-loop, an unknown endpoint, a degenerate
     /// bulge, or an already-joined pair ([`Sketch::connect_arc`]). Pure.
     pub fn with_arc_between(
         &self,
@@ -388,8 +384,8 @@ impl SketchSolid {
     }
 
     /// This producer with `kind` asserted, the drawing moved to where the solve put it, and the
-    /// new constraint's id (ADR 0035). `Err` leaves nothing changed — a refusal is not a partial
-    /// edit, so a caller that discards the `Err` still holds the drawing the author had.
+    /// new constraint's id. `Err` leaves nothing changed — a refusal is not a partial edit, so
+    /// a caller that discards the `Err` still holds the drawing the author had.
     ///
     /// The solve happens inside [`Sketch::add_constraint`], which trials on a copy and keeps it
     /// only once it converges; solving again here would move nothing and cost a second Jacobian.
@@ -403,16 +399,16 @@ impl SketchSolid {
     }
 
     /// This producer with the constraint `constraint_id` released. The geometry stays where the
-    /// last solve left it (ADR 0035) — dropping an assertion stops re-asserting it, it does not
-    /// undo it. No-op if unknown. Pure.
+    /// last solve left it — dropping an assertion stops re-asserting it, it does not undo it.
+    /// No-op if unknown. Pure.
     pub fn with_constraint_deleted(&self, constraint_id: EntityId) -> SketchSolid {
         let mut next = self.clone();
         next.sketch.delete_constraint(constraint_id);
         next
     }
 
-    /// This producer with the derived face `key` picked or unpicked (ADR 0030 §3, #100) — the
-    /// only edit that carves a hole. Geometry is untouched, so the profile bbox and the node
+    /// This producer with the derived face `key` picked or unpicked — the only edit that
+    /// carves a hole. Geometry is untouched, so the profile bbox and the node
     /// anchor cannot move. Pure.
     pub fn with_face_picked(&self, key: super::FaceKey, picked: bool) -> SketchSolid {
         let mut next = self.clone();
@@ -420,19 +416,13 @@ impl SketchSolid {
         next
     }
 
-    /// The resolved grid's voxel dimensions `[x, y, z]` (the prism's AABB), or
-    /// `[0, 0, 0]` for a degenerate profile. The two in-plane axes get the
-    /// profile's bounding-box span; the normal axis gets `height_voxels`.
-    /// The metric this body's field is exact in (ADR 0019 Decision 6).
+    /// The metric this body's field is exact in.
     ///
     /// **The lift decides it, not the profile.** An extrusion is the product of the profile
     /// region and a slab, and the L∞ norm of a product space is the max of its factors — so a
     /// polygonal profile extrudes to an exactly-Chebyshev field, and outsets square. A
     /// revolve introduces circular cross-sections, whose L∞ distance has no closed form, just
     /// as for the curved primitives — so it is Euclidean, and outsets round.
-    ///
-    /// This REFINES ADR 0019 Decision 6, whose "boxes and every profile-lifted body outset
-    /// square" is too coarse: revolve is profile-lifted and does not.
     pub fn field_metric(&self) -> substrate::geom2d::Metric {
         match self.operation {
             Operation::Extrude { .. } => substrate::geom2d::Metric::Chebyshev,
@@ -440,42 +430,6 @@ impl SketchSolid {
         }
     }
 
-    /// Signed distance to the solid at `point_local_voxels`, a point in this producer's own
-    /// `[0, full_dim)` voxel frame (ADR 0008 — the frame is carried, never re-derived).
-    /// Negative inside, measured in whatever [`field_metric`](Self::field_metric) reports.
-    ///
-    /// **Extrude is exact.** The prism is the product of the profile region with the slab
-    /// `[0, height]` along the plane normal, and under Chebyshev the distance to a product is
-    /// the maximum of the per-factor distances — so `max(profile, slab)` IS the distance,
-    /// with no correction term. (Under Euclidean the same expression would be exact only
-    /// inside and on the faces, needing a `sqrt` term near the rim edge.)
-    ///
-    /// Consistency with [`resolve_into`] is what the classifier actually requires, and both
-    /// read the same profile through the same even-odd rule.
-    ///
-    /// **On the boundary the predicate is authoritative, not the sign comparison.** A sample
-    /// CAN land exactly on an edge — a diagonal between integer vertices passes through
-    /// half-integer points, e.g. the edge `(4,3)→(7,6)` contains the voxel center
-    /// `(4.5, 3.5)` — and there the distance is zero with only its SIGN BIT carrying the
-    /// even-odd verdict (`-0.0` inside, `+0.0` outside). Occupancy derived from this field
-    /// must therefore test [`f32::is_sign_negative`], not `< 0.0`, which is false for `-0.0`.
-    ///
-    /// This costs the classifier nothing: a cell bracket that straddles zero is Boundary and
-    /// falls back to a per-voxel resolve, so the ambiguity is decided by the predicate that
-    /// owns it (ADR 0019 — predicates classify, fields measure).
-    ///
-    /// **Revolve is exact for a full turn, conservative for a partial one.** The map from a
-    /// 3D point to its `(axial, radius)` pair is 1-Lipschitz, and for a surface of revolution
-    /// the nearest surface point lies in the same meridian half-plane — so the 2D profile
-    /// distance evaluated there *is* the 3D distance. A partial turn additionally intersects
-    /// a wedge, and `max` of two fields under-estimates distance near the seam while keeping
-    /// the sign exact and the field 1-Lipschitz, which is all the classifier consumes (ADR
-    /// 0019 Decision 5; ADR 0017 Decision 6 already takes this posture for intersection).
-    ///
-    /// A degenerate producer — no profile, zero height, zero turn — is empty, so every point
-    /// is outside and the distance is `f32::INFINITY`.
-    ///
-    /// [`resolve_into`]: crate::voxel::VoxelProducer::resolve_into
     /// Build the hoisted revolve field — the ONE evaluation both the bound and the
     /// resolve go through (see [`RevolveField`]). `None` for a degenerate profile, which
     /// is empty everywhere.
@@ -491,7 +445,7 @@ impl SketchSolid {
         let (profile_min, _profile_max) = self.profile_bounds()?;
         // The straddle / reach measurements below are about how far the SOLID reaches from the
         // lathe axis, so they read the filled loops' EXTENT; a hole never extends the body, and a
-        // bulge reaches past the chord that used to stand in for it.
+        // bulge reaches past the chord approximating it.
         let (radial_low, radial_high) = self.filled_extent()?;
         let dimensions = self.grid_dimensions();
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
@@ -529,6 +483,42 @@ impl SketchSolid {
         })
     }
 
+    /// Signed distance to the solid at `point_local_voxels`, a point in this producer's own
+    /// `[0, full_dim)` voxel frame — the frame is carried, never re-derived. Negative inside,
+    /// measured in whatever [`field_metric`](Self::field_metric) reports.
+    ///
+    /// **Extrude is exact.** The prism is the product of the profile region with the slab
+    /// `[0, height]` along the plane normal, and under Chebyshev the distance to a product is
+    /// the maximum of the per-factor distances — so `max(profile, slab)` IS the distance,
+    /// with no correction term. (Under Euclidean the same expression would be exact only
+    /// inside and on the faces, needing a `sqrt` term near the rim edge.)
+    ///
+    /// Consistency with [`resolve_into`] is what the classifier actually requires, and both
+    /// read the same profile through the same even-odd rule.
+    ///
+    /// **On the boundary the predicate is authoritative, not the sign comparison.** A sample
+    /// CAN land exactly on an edge — a diagonal between integer vertices passes through
+    /// half-integer points, e.g. the edge `(4,3)→(7,6)` contains the voxel center
+    /// `(4.5, 3.5)` — and there the distance is zero with only its SIGN BIT carrying the
+    /// even-odd verdict (`-0.0` inside, `+0.0` outside). Occupancy derived from this field
+    /// must therefore test [`f32::is_sign_negative`], not `< 0.0`, which is false for `-0.0`.
+    ///
+    /// This costs the classifier nothing: a cell bracket that straddles zero is Boundary and
+    /// falls back to a per-voxel resolve, so the ambiguity is decided by the predicate that
+    /// owns it — predicates classify, fields measure.
+    ///
+    /// **Revolve is exact for a full turn, conservative for a partial one.** The map from a
+    /// 3D point to its `(axial, radius)` pair is 1-Lipschitz, and for a surface of revolution
+    /// the nearest surface point lies in the same meridian half-plane — so the 2D profile
+    /// distance evaluated there *is* the 3D distance. A partial turn additionally intersects
+    /// a wedge, and `max` of two fields under-estimates distance near the seam while keeping
+    /// the sign exact and the field 1-Lipschitz, which is all the classifier consumes — the
+    /// same posture intersection takes.
+    ///
+    /// A degenerate producer — no profile, zero height, zero turn — is empty, so every point
+    /// is outside and the distance is `f32::INFINITY`.
+    ///
+    /// [`resolve_into`]: crate::voxel::VoxelProducer::resolve_into
     pub fn signed_distance(&self, point_local_voxels: [f32; 3]) -> f32 {
         let Some((profile_min, _profile_max)) = self.profile_bounds() else {
             return f32::INFINITY;
@@ -568,6 +558,9 @@ impl SketchSolid {
         }
     }
 
+    /// The resolved grid's voxel dimensions `[x, y, z]` (the prism's AABB), or `[0, 0, 0]`
+    /// for a degenerate profile. The two in-plane axes get the profile's bounding-box span;
+    /// the normal axis gets `height_voxels`.
     pub fn grid_dimensions(&self) -> [u32; 3] {
         let Some((min, max)) = self.profile_bounds() else {
             return [0, 0, 0];
@@ -628,7 +621,7 @@ impl SketchSolid {
     /// [`in_plane_axes`]: PlaneAxis::in_plane_axes
     pub fn rectangle_in_plane_spans(&self) -> Option<[u32; 2]> {
         // Exactly four vertices, spanning a non-degenerate box. A fractional vertex
-        // (#101) disqualifies: the spans are whole voxels, and the inspector's editable
+        // disqualifies: the spans are whole voxels, and the inspector's editable
         // Width/Depth would clobber the sub-voxel remainder by rewriting the corners.
         let profile = self.sketch.flattened_loop();
         if profile.len() != 4
@@ -679,9 +672,9 @@ impl SketchSolid {
 
 impl SketchSolid {
     /// Whether an extrude cell (in the producer's local voxel-index frame, PROVEN fully
-    /// inside `[0, full_dim)` by the caller) is entirely solid — the coarse-solid test
-    /// (ADR 0010). The normal span is already `⊆ [0, height_voxels]` (the caller's
-    /// full-inside check + `grid_dimensions()[normal] = height_voxels`), so solidity
+    /// inside `[0, full_dim)` by the caller) is entirely solid — the coarse-solid test. The
+    /// normal span is already `⊆ [0, height_voxels]` (the caller's full-inside check +
+    /// `grid_dimensions()[normal] = height_voxels`), so solidity
     /// reduces to: the cell's in-plane footprint RECTANGLE is entirely inside the profile
     /// polygon. The rectangle is the SAMPLE-CENTER span, exactly as
     /// [`resolve_extrude`](Self::resolve_extrude) samples occupancy
@@ -709,8 +702,8 @@ impl SketchSolid {
     }
 
     /// Whether a revolve cell (PROVEN fully inside `[0, full_dim)` by the caller) is
-    /// entirely solid — the coarse-solid test (ADR 0010 Decision 2). Handles BOTH a full
-    /// turn AND a PARTIAL wedge: a partial sweep is coarse-solid only when the cell is
+    /// entirely solid — the coarse-solid test. Handles BOTH a full turn AND a PARTIAL
+    /// wedge: a partial sweep is coarse-solid only when the cell is
     /// solid in the radial/axial profile AND its ENTIRE angular span lies inside the swept
     /// arc. Any doubt returns `false` (⇒ BOUNDARY, still exact per-voxel).
     ///
@@ -812,8 +805,7 @@ impl SketchSolid {
     }
 
     /// The extrude resolve: rasterize the profile once and sweep it across
-    /// `height_voxels` layers along the plane normal. Byte-identical to the prior
-    /// `SketchExtrude::resolve` (the height now arrives from the matched operation).
+    /// `height_voxels` layers along the plane normal.
     pub(super) fn resolve_extrude(
         &self,
         grid: &mut VoxelGrid,
@@ -827,7 +819,7 @@ impl SketchSolid {
         grid.occupied.clear();
 
         let Some((min, _max)) = self.profile_bounds() else {
-            // Degenerate profile: empty occupancy, no panic (§3i edge case).
+            // Degenerate profile: empty occupancy, no panic.
             return;
         };
 
@@ -841,7 +833,7 @@ impl SketchSolid {
         // range to the producer's (in_plane_0, in_plane_1, normal) frame. The 2D
         // raster's `cell_0` runs along `in_plane_0` and `cell_1` along `in_plane_1`;
         // the layer sweep runs along `normal`. Clamping to full dims makes a
-        // full-window call reproduce the historical `0..span` / `0..height` loops.
+        // full-window call cover the whole grid.
         let world_bounds = crate::voxel::clamp_window_to_grid(window_local_voxels, dimensions);
         let (cell_0_lo, cell_0_hi) = world_bounds[in_plane_0];
         let (cell_1_lo, cell_1_hi) = world_bounds[in_plane_1];
@@ -850,14 +842,12 @@ impl SketchSolid {
         // clamped normal range is already `⊆ [0, height_voxels)`.
         let _ = height_voxels;
 
-        // Rasterize the 2D profile ONCE (axis-aligned extrusion ⇒ the same fill on
-        // every layer along the normal — §3i, cheap + predictable) over the WINDOWED
-        // in-plane range, then sweep it across the WINDOWED `normal` layers. A cell
-        // `(cell_0, cell_1)` at local origin `min` is occupied iff its center
-        // `(min + cell + 0.5)` is inside the REGION — inside some `Fill` loop and no
-        // `Hole` loop (#100; the even-odd rule this replaced could not express a hole).
-        // The region test is on `min + cell`, which is FULL-derived;
-        // only the iterated cell range narrows.
+        // Rasterize the 2D profile ONCE (axis-aligned extrusion ⇒ the same fill on every
+        // layer along the normal) over the WINDOWED in-plane range, then sweep it across the
+        // WINDOWED `normal` layers. A cell `(cell_0, cell_1)` at local origin `min` is
+        // occupied iff its center `(min + cell + 0.5)` is inside the REGION — inside some
+        // `Fill` loop and no `Hole` loop. The region test is on `min + cell`, which is
+        // FULL-derived; only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
         let derived = self.sketch.derived();
         let region_edges = &derived.region_field_loops;
@@ -900,8 +890,8 @@ impl SketchSolid {
     }
 
     /// The revolve resolve: sweep the profile around an in-plane axis into a solid
-    /// of revolution (ADR 0003 §3i). The profile's `(axial, radial)` reinterpretation
-    /// (per [`RevolveAxis`]) is sampled at every grid cell:
+    /// of revolution. The profile's `(axial, radial)` reinterpretation (per [`RevolveAxis`])
+    /// is sampled at every grid cell:
     ///
     /// - The axial world axis maps the cell to profile-axial space the SAME way the
     ///   extrude rasterizer maps an in-plane span: `axial_min + idx + 0.5` (un-centered
@@ -940,12 +930,9 @@ impl SketchSolid {
         // constant (the (axial, radial) reinterpretation, the ascending radial-axis sort,
         // the centered half-extents, the straddle flag and the radial reach) is hoisted
         // into it ONCE here, out of the per-voxel loop; occupancy below is then literally
-        // `signed_distance_at(..) <= SURFACE_ISOLEVEL` over that same function.
-        //
-        // Previously this loop re-decided occupancy with its own arithmetic — an
-        // `atan2` wedge gate and an even-odd `point_in_polygon` test — while the bound
-        // used a cos/sin half-plane and a polygon DISTANCE. Same sets, different rounding,
-        // which broke the bound's conservative-never-narrow contract on samples landing
+        // `signed_distance_at(..) <= SURFACE_ISOLEVEL` over that same function. Nothing here
+        // re-decides occupancy with its own arithmetic: one set computed two ways rounds two
+        // ways, which breaks the bound's conservative-never-narrow contract on samples landing
         // exactly on the surface.
         let derived = self.sketch.derived();
         let Some(field) = self.revolve_field(&derived.region_field_loops, axis, sweep) else {
@@ -956,21 +943,17 @@ impl SketchSolid {
 
         // Clamp the WORLD-axis window to `[0, full_dim)`; all per-cell math (half,
         // radial_max, the centered sample, profile_axial) stays FULL-derived — only
-        // the iterated cell range narrows. A full-window call reproduces the
-        // historical `0..dimensions[*]` loops exactly.
+        // the iterated cell range narrows. A full-window call covers the whole grid.
         let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
             crate::voxel::clamp_window_to_grid(window_local_voxels, dimensions);
 
-        // Single-resolve allocation cap ([`MAX_GRID_VOXELS`]) — scoped to the WINDOW,
-        // not the full grid. `resolve_into` only materialises the clamped window, so a
-        // huge full-grid revolve is fine to resolve one small window at a time (the
-        // two-layer/brick path, ADR 0010/0011): a per-chunk window never trips this.
-        // The cap still protects a genuine FULL-window dense resolve (`resolve` /
-        // the `oracle`-gated whole-region resolvers), where the window IS the full grid,
-        // from a blown allocation.
-        // The old full-grid `exceeds_voxel_cap()` guard here wrongly returned empty for
-        // EVERY window of a large revolve, so large sketches resolved to nothing on the
-        // windowed display path — the bug this replaces.
+        // Single-resolve allocation cap ([`MAX_GRID_VOXELS`]) — scoped to the WINDOW, not the
+        // full grid. `resolve_into` only materializes the clamped window, so a huge full-grid
+        // revolve is fine to resolve one small window at a time on the two-layer/brick path:
+        // a per-chunk window never trips this. A full-grid cap here would instead return empty
+        // for EVERY window of a large revolve. The cap still protects a genuine FULL-window
+        // dense resolve (`resolve` / the `oracle`-gated whole-region resolvers), where the
+        // window IS the full grid, from a blown allocation.
         // `clamp_window_to_grid` guarantees `hi >= lo` per axis, so each span is >= 0.
         let window_voxel_count = (win_x_hi - win_x_lo) as u64
             * (win_y_hi - win_y_lo) as u64
@@ -985,7 +968,7 @@ impl SketchSolid {
         // The outer `k` slices are order-independent (each samples a disjoint set of
         // voxels), so — mirroring `SdfShape::resolve` — each slice produces a local
         // `Vec<Voxel>` and rayon concatenates them. Emission ORDER may differ from the
-        // serial version but the SET is identical. Windowing parallelises over the
+        // serial version but the SET is identical. Windowing parallelizes over the
         // WINDOWED z range.
         grid.occupied = (win_z_lo..win_z_hi)
             .into_par_iter()
@@ -994,7 +977,7 @@ impl SketchSolid {
                 for j in win_y_lo..win_y_hi {
                     for i in win_x_lo..win_x_hi {
                         let index = [i, j, k];
-                        // The sample point in the producer'''s own [0, full_dim) frame.
+                        // The sample point in the producer's own [0, full_dim) frame.
                         // `index + 0.5` is exact in f32 for any real grid, so the field
                         // sees precisely the coordinates this loop formed.
                         let point = [

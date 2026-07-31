@@ -1,14 +1,14 @@
 //! Sketch-mode vertex handles: each profile vertex's position in the display's
 //! recentered **render frame**, plus the inverse map (a cursor hit on the sketch plane
-//! back to a profile `(c0, c1)` voxel coordinate). This is the geometry #94's
-//! interactive vertex drag draws and hit-tests.
+//! back to a profile `(c0, c1)` voxel coordinate). This is the geometry the interactive
+//! vertex drag draws and hit-tests.
 //!
-//! **The frame is carried, never re-derived (ADR 0008).** Every position is routed
-//! through the SAME [`substrate::spatial::LeafPlacement`] the resolver folds occupancy
-//! through — the profile vertex is a producer-LOCAL voxel point, `world_of` places it,
-//! and the composite recenter rebases it into the render frame — so a handle coincides
-//! with the resolved geometry's profile corner BY CONSTRUCTION rather than by a
-//! kept-in-sync mirror (mirroring the placement ghost's `center_world`).
+//! **The frame is carried, never re-derived.** Every position is routed through the SAME
+//! [`substrate::spatial::LeafPlacement`] the resolver folds occupancy through — the profile
+//! vertex is a producer-LOCAL voxel point, `world_of` places it, and the composite recenter
+//! rebases it into the render frame — so a handle coincides with the resolved geometry's
+//! profile corner BY CONSTRUCTION rather than by a kept-in-sync mirror (mirroring the
+//! placement ghost's `center_world`).
 //!
 //! **The convention is corner-anchored, like extrude.** A profile point `(c0, c1)` maps
 //! to producer-local `(c0 − min0, c1 − min1)` on the plane's two in-plane axes, at `0`
@@ -33,23 +33,22 @@ pub struct SketchHandles {
     /// EVERY point entity's position in the render frame, in `points()` order (index `i`
     /// corresponds to point id [`point_ids`](Self::point_ids)`[i]`). All points are shown —
     /// including free points and the vertices of an open graph — so any entity is selectable,
-    /// not just the ones on a closed loop (ADR 0030).
+    /// not just the ones on a closed loop.
     pub vertices: Vec<[f32; 3]>,
     /// The point id of each vertex, in the SAME order as [`vertices`](Self::vertices), so a
     /// drag / delete can map a hit index back to the stable entity it must mutate (the entity
-    /// store has no positional index — ADR 0030).
+    /// store has no positional index).
     pub point_ids: Vec<EntityId>,
     /// Each segment entity as `(segment id, from-vertex index, to-vertex index)` — the indices
     /// point into [`vertices`](Self::vertices)/[`point_ids`](Self::point_ids). The UI draws a
     /// line per entry and hit-tests add-point against them (splitting the named segment by id).
     /// A segment with a dangling endpoint is omitted.
     pub segments: Vec<(EntityId, usize, usize)>,
-    /// Each arc entity as `(arc id, tail, head, signed sweep in degrees)` — ADR 0030 §5's
-    /// canonical form with the endpoint ids resolved to PROFILE coordinates (#102). The curve
-    /// is deliberately NOT tessellated here: chord count belongs to whoever knows how many
-    /// pixels a voxel is currently worth, and [`profile_to_render`](Self::profile_to_render)
-    /// maps each sample it produces into this frame. An arc with a dangling endpoint is
-    /// omitted.
+    /// Each arc entity as `(arc id, tail, head, signed sweep in degrees)` — the canonical form
+    /// with the endpoint ids resolved to PROFILE coordinates. The curve is deliberately NOT
+    /// tessellated here: chord count belongs to whoever knows how many pixels a voxel is
+    /// currently worth, and [`profile_to_render`](Self::profile_to_render) maps each sample it
+    /// produces into this frame. An arc with a dangling endpoint is omitted.
     pub arcs: Vec<(EntityId, [f64; 2], [f64; 2], f64)>,
     /// A point ON the sketch plane in the render frame (the first vertex) — the ray
     /// intersection anchor.
@@ -69,21 +68,10 @@ pub struct SketchHandles {
 }
 
 impl SketchHandles {
-    /// Map a hit point on the sketch plane (in the RENDER frame — e.g. a cursor ray's
-    /// intersection with [`plane_point`](Self::plane_point) / [`plane_normal`](Self::plane_normal))
-    /// back to a CONTINUOUS profile coordinate `(c0, c1)` in voxels. The caller snaps it
-    /// (round for grid-snap, floor+fraction for sub-voxel) and writes it into the dragged
-    /// `SketchPoint.offset_voxels`.
-    ///
-    /// The inverse of the forward placement: rebase the render hit into true world
-    /// (`+ recenter`), invert the placement to producer-local, read the two in-plane
-    /// components and add the profile minimum back. `render_hit` need not lie exactly on
-    /// the plane — the normal component is simply discarded by reading only the in-plane
-    /// axes — but a ray/plane intersection keeps it on-plane so the drag tracks the cursor.
     /// Map a CONTINUOUS profile coordinate `(c0, c1)` back into the render frame — the
     /// forward twin of [`render_hit_to_profile`](Self::render_hit_to_profile), through the
-    /// same placement, so a drawing tool's preview (#99: the snapped polyline endpoint, the
-    /// rectangle ghost corners) lands exactly where the committed vertex will.
+    /// same placement, so a drawing tool's preview (the snapped polyline endpoint, the
+    /// rectangle ghost corners) lands exactly where the committed vertex does.
     pub fn profile_to_render(&self, coord: [f64; 2]) -> [f32; 3] {
         let [in0, in1] = self.in_plane_axes;
         let mut local = [0.0f32; 3];
@@ -102,6 +90,17 @@ impl SketchHandles {
         ]
     }
 
+    /// Map a hit point on the sketch plane (in the RENDER frame — e.g. a cursor ray's
+    /// intersection with [`plane_point`](Self::plane_point) / [`plane_normal`](Self::plane_normal))
+    /// back to a CONTINUOUS profile coordinate `(c0, c1)` in voxels. The caller snaps it
+    /// (round for grid-snap, floor+fraction for sub-voxel) and writes it into the dragged
+    /// `SketchPoint.offset_voxels`.
+    ///
+    /// The inverse of the forward placement: rebase the render hit into true world
+    /// (`+ recenter`), invert the placement to producer-local, read the two in-plane
+    /// components and add the profile minimum back. `render_hit` need not lie exactly on
+    /// the plane — the normal component is simply discarded by reading only the in-plane
+    /// axes — but a ray/plane intersection keeps it on-plane so the drag tracks the cursor.
     pub fn render_hit_to_profile(&self, render_hit: [f32; 3]) -> [f64; 2] {
         let world = Vec3::new(
             render_hit[0] + self.recenter[0] as f32,
@@ -126,10 +125,10 @@ impl Scene {
     /// cursor-to-profile map. `None` only when the id is not an enabled `SketchTool` node.
     ///
     /// Independent of the operation's degeneracy AND of whether a closed loop exists: an open
-    /// or not-yet-extruded sketch STILL returns handles, so every vertex stays draggable and
-    /// deletable while the sketch is authored (ADR 0030 — entities, not a loop, are the truth).
+    /// or un-extruded sketch STILL returns handles, so every vertex stays draggable and
+    /// deletable while the sketch is authored — entities, not a loop, are the truth.
     /// A totally EMPTY sketch returns handles with no vertices: the plane frame and inverse
-    /// map still stand, which is what lets a drawing tool place the FIRST point (#99).
+    /// map still stand, which is what lets a drawing tool place the FIRST point.
     pub fn sketch_handles(&self, node_id: NodeId, voxels_per_block: u32) -> Option<SketchHandles> {
         let node = self.node_by_id(node_id)?;
         if !node.enabled {
@@ -145,12 +144,12 @@ impl Scene {
         // same `profile_bbox_min` the producer re-seats to the node origin. One anchor, so a
         // handle is on the solid by construction rather than by the two definitions agreeing.
         //
-        // It used to anchor on the bbox over the real POINTS, which is equal only while every
-        // point is on the filled boundary. Draw a line reaching past the fill — a free polyline,
-        // a vertex outside it — and the points-min moved while the resolve's did not, so the
-        // whole drawing slid off the solid it belongs to. Worse, the anchor compensation on every
-        // edit (`SketchSolid::anchor_preserving_offset`) corrects for a change in the RESOLVE's
-        // anchor, so a points-min move was a shift nothing was canceling.
+        // Anchoring instead on the bbox over the real POINTS is equal only while every point
+        // is on the filled boundary. Draw a line reaching past the fill — a free polyline, a
+        // vertex outside it — and the points-min moves while the resolve's does not, sliding
+        // the whole drawing off the solid it belongs to. Worse, the anchor compensation on
+        // every edit (`SketchSolid::anchor_preserving_offset`) corrects for a change in the
+        // RESOLVE's anchor, so a points-min move is a shift nothing cancels.
         //
         // A sketch with nothing filled anchors on `[0, 0]`: it resolves to nothing, so there is
         // no solid to sit on and every point draws at its own offset from the node origin — where
@@ -178,10 +177,10 @@ impl Scene {
 
         // The producer-local box extent `full`. The two in-plane axes span the profile
         // bbox; the normal axis carries the operation's extrude thickness (0 for revolve /
-        // a not-yet-extruded profile). `full` only re-anchors the box under a genuine
-        // rotation (`min_rotated_corner`); with an axis-aligned plane (every plane today)
-        // the rotation is identity and it drops out — but it is routed through
-        // `LeafPlacement` so a future free-angle plane stays exact (ADR 0027).
+        // an un-extruded profile). `full` only re-anchors the box under a genuine rotation
+        // (`min_rotated_corner`); with an axis-aligned plane the rotation is identity and it
+        // drops out — but it is routed through `LeafPlacement` so a free-angle plane stays
+        // exact.
         let mut full = [0.0f32; 3];
         full[in0] = (max[0] - min[0]) as f32;
         full[in1] = (max[1] - min[1]) as f32;
@@ -191,7 +190,7 @@ impl Scene {
         };
 
         // The node's world placement: accumulated parent offset + its own integer offset,
-        // its sub-voxel slide, and its continuous rotation (ADR 0027).
+        // its sub-voxel slide, and its continuous rotation.
         let path = self.path_of(node_id)?;
         let (_target, parent_offset) = self.subtree_walk_target(&path)?;
         let world_offset: [i64; 3] =
@@ -235,8 +234,8 @@ impl Scene {
             .filter_map(|seg| Some((seg.id, index_of(seg.from)?, index_of(seg.to)?)))
             .collect();
 
-        // Each arc's canonical form with its endpoints resolved (#102) — the viewer picks the
-        // chord count, so nothing is tessellated here.
+        // Each arc's canonical form with its endpoints resolved — the viewer picks the chord
+        // count, so nothing is tessellated here.
         let position_of = |id: EntityId| {
             points
                 .iter()
@@ -320,8 +319,7 @@ mod tests {
     #[test]
     fn handles_land_on_profile_corners_of_a_lone_axis_aligned_rectangle() {
         // A 4×6 rectangle on the ground plane (XY), extruded up along Z. A lone node
-        // recenters onto the origin, so its handles are symmetric about it: the profile
-        // spans 4 voxels in X and 6 in Z... no — plane Z ⇒ in-plane axes are X, Y.
+        // recenters onto the origin, so its handles are symmetric about it.
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
 
@@ -407,7 +405,7 @@ mod tests {
     #[test]
     fn empty_sketch_has_no_handles_but_a_two_point_sketch_does() {
         // No points ⇒ no vertices, but the plane frame stands so a drawing tool can place
-        // the first point (#99): the inverse map answers at the node origin.
+        // the first point: the inverse map answers at the node origin.
         let empty = Sketch::empty(PlaneAxis::Z);
         let (scene, id) = scene_with_sketch(empty, 3, [0, 0, 0]);
         let handles = scene
@@ -420,8 +418,8 @@ mod tests {
             "the plane anchor inverts to the profile origin, got {profile:?}"
         );
 
-        // Two points do not form a closed loop, but every point is still a draggable / deletable
-        // handle (ADR 0030 — entities, not a loop, drive the overlay).
+        // Two points do not form a closed loop, but every point is still a draggable /
+        // deletable handle — entities, not a loop, drive the overlay.
         let open = Sketch::new(
             PlaneAxis::Z,
             vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)],
@@ -495,10 +493,10 @@ mod tests {
     /// drawn. The overlay anchors on the RESOLVE's anchor, so extending the drawing extends it —
     /// it does not drag the drawing.
     ///
-    /// This is the bug the owner hit: the frame used to anchor on the bbox over the real points,
-    /// so a point outside the fill moved the anchor, and every handle, segment, arc and the
-    /// region wash with it. Nothing canceled it, because the anchor compensation applied on
-    /// every edit corrects for a change in the resolve's anchor, which had not moved.
+    /// Anchoring on the bbox over the real points instead lets a point outside the fill move
+    /// the anchor, and every handle, segment, arc and the region wash with it. Nothing cancels
+    /// that, because the anchor compensation applied on every edit corrects for a change in
+    /// the resolve's anchor, which has not moved.
     #[test]
     fn a_point_reaching_past_the_fill_does_not_move_the_drawing() {
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
@@ -519,7 +517,7 @@ mod tests {
         }
     }
 
-    /// The same, for the gesture that found it: a line drawn from a corner out past the profile.
+    /// The same, for a line drawn from a corner out past the profile.
     /// The chain dangles, so it encloses nothing and the resolved solid is unchanged — which is
     /// exactly why the drawing must not move either.
     #[test]
@@ -543,8 +541,8 @@ mod tests {
         }
     }
 
-    /// The overlay and the resolve share ONE anchor. Stated directly, because the two agreeing is
-    /// the property every test above depends on and the property that regressed.
+    /// The overlay and the resolve share ONE anchor. Stated directly, because the two agreeing
+    /// is the property every test above depends on.
     #[test]
     fn the_overlay_anchors_where_the_resolve_does() {
         let mut sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);

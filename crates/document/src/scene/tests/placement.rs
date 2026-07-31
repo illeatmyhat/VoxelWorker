@@ -6,17 +6,17 @@ use voxel_core::core_geom::MaterialChoice;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::ShapeKind;
 
-// ---- S1: far-offset placement (ADR 0002 streaming, part of #18) -----------
+// ---- Far-offset placement -------------------------------------------------
 //
-// The durable artifact for streaming S1: a node placed at a LARGE block offset
-// (matching `shot --demo-far-offset`'s 100_000 blocks) really lands far away in
-// ABSOLUTE composite space, independent of the live render recenter. This is
-// proved via the S0 absolute-coordinate chunk path (`resolve_chunk` /
-// `resolve_region_via_chunks`), which — unlike `resolve_region` — does NOT
-// recenter, so its voxel positions ARE the scene's true composite coordinates.
+// A node placed at a LARGE block offset (matching `shot --demo-far-offset`'s
+// 100_000 blocks) really lands far away in ABSOLUTE composite space,
+// independent of the live render recenter. This is proved via the
+// absolute-coordinate chunk path (`resolve_chunk` / `resolve_region_via_chunks`),
+// which — unlike `resolve_region` — does NOT recenter, so its voxel positions
+// ARE the scene's true composite coordinates.
 //
-// A node's whole-block offset is `[i64; 3]` (widened in S4a); 100_000 blocks is comfortably
-// in i32 range too, and at density 16 lands the box ~1.6M voxels out. The
+// A node's whole-block offset is `[i64; 3]`; 100_000 blocks is comfortably in
+// i32 range too, and at density 16 lands the box ~1.6M voxels out. The
 // BEYOND-i32 composition (offsets past ±2.1×10⁹) is proven separately in
 // `i64_composition_beyond_i32_range_is_exact` (pure integer, no f32 precision
 // loss).
@@ -110,19 +110,16 @@ fn far_offset_node_resolves_to_absolute_coords_near_100k() {
 
     // Cross-check: the ABSOLUTE chunk path and the RECENTERED render path agree
     // on the box's SHAPE — they differ ONLY by the recenter offset, which is
-    // exactly the far placement. This pins that the render recenter is what maps
-    // the far box home; S4b generalised it into the `floating_origin_voxels`
-    // parameter (`resolve_chunk_rebased`) rather than removing it — the live
-    // render path still passes the composite recenter as that origin — while the
-    // absolute path keeps it far.
+    // exactly the far placement. The render recenter is what maps the far box
+    // home: it is carried as the `floating_origin_voxels` parameter of
+    // `resolve_chunk_rebased`, while the absolute path keeps the box far.
     let recenter = scene.recenter_voxels(voxels_per_block);
     assert_eq!(
         recenter[0],
         offset_blocks * voxels_per_block as i64 + 2 * voxels_per_block as i64,
         "CORNER-ANCHORING: the recenter is the box's geometric CENTER `off·d + 2·d` \
              (corner `off·d` + half the 4-block extent) — it is what hides the far \
-             offset from the live render today (S4b carries it as the floating origin, \
-             not removes it)"
+             offset from the live render"
     );
     let monolithic = scene.resolve_region(
         scene.full_extent_blocks(voxels_per_block),
@@ -137,17 +134,17 @@ fn far_offset_node_resolves_to_absolute_coords_near_100k() {
     );
 }
 
-/// S4a (64-bit world addressing): nested transforms compose down the tree in
-/// **i64**, so a leaf whose accumulated block offset exceeds the `i32` range
-/// lands at the EXACT absolute coordinate — no overflow, no truncation. This is
-/// the load-bearing data-model guarantee of S4a, proven in PURE INTEGER space
-/// (the producer-true voxel AABB from `build_leaf_spatial_index`) so there is no
-/// f32 precision loss to muddy the result.
+/// 64-bit world addressing: nested transforms compose down the tree in **i64**,
+/// so a leaf whose accumulated block offset exceeds the `i32` range lands at the
+/// EXACT absolute coordinate — no overflow, no truncation. This is the
+/// load-bearing data-model guarantee, proven in PURE INTEGER space (the
+/// producer-true voxel AABB from `build_leaf_spatial_index`) so there is no f32
+/// precision loss to muddy the result.
 ///
 /// A Group offset `+2_000_000_000` blocks contains a leaf offset `+1_000_000_000`
 /// blocks; their sum `3_000_000_000` is past `i32::MAX` (2_147_483_647). The
-/// composed absolute-voxel center must be `3_000_000_000 × density` — a value
-/// that would have wrapped to a negative number under the old i32 composition.
+/// composed absolute-voxel center must be `3_000_000_000 × density` — a value an
+/// i32 composition would wrap negative.
 #[test]
 fn i64_composition_beyond_i32_range_is_exact() {
     let voxels_per_block = 16u32;
@@ -180,8 +177,7 @@ fn i64_composition_beyond_i32_range_is_exact() {
 
     // CORNER-ANCHORING: the producer-true voxel AABB (pure i64) is `[off·d,
     // off·d + grid)` — the composed offset IS the low corner (block-aligned for a
-    // whole-block offset). The point of THIS test is the exact i64 composition
-    // (no i32 overflow).
+    // whole-block offset).
     let index = scene.build_leaf_spatial_index(voxels_per_block);
     assert_eq!(index.entries.len(), 1, "exactly one leaf is indexed");
     let aabb = index.entries[0].world_aabb;
@@ -197,8 +193,8 @@ fn i64_composition_beyond_i32_range_is_exact() {
         composed_voxels + density,
         "the composed leaf max-X must be exact in i64"
     );
-    // Sanity: this absolute voxel coordinate genuinely exceeds the i32 range, so
-    // the test would have FAILED (wrapped negative) under i32 composition.
+    // Sanity: this absolute voxel coordinate genuinely exceeds the i32 range — an
+    // i32 composition would wrap it negative.
     assert!(
         composed_voxels > i32::MAX as i64,
         "the absolute voxel coordinate ({composed_voxels}) is past i32::MAX — the \
@@ -222,13 +218,13 @@ fn i64_composition_beyond_i32_range_is_exact() {
     );
 }
 
-// ===== Issue #27 S3: leaf spatial index =====================================
+// ===== Leaf spatial index ===================================================
 
 /// The ground-truth leaf set a query AABB selects: a FULL `for_each_leaf` walk,
-/// recomputing each leaf's producer-true voxel AABB inline (the same maths
+/// recomputing each leaf's producer-true voxel AABB inline (the same math
 /// `build_leaf_spatial_index` uses), filtered by overlap with `query`. The
-/// spatial index must return exactly this set; that equality is the S3
-/// correctness contract.
+/// spatial index must return exactly this set; that equality is the correctness
+/// contract.
 fn walk_leaf_aabbs_intersecting(
     scene: &Scene,
     voxels_per_block: u32,
@@ -251,7 +247,7 @@ fn walk_leaf_aabbs_intersecting(
         let mut max = [0i64; 3];
         for axis in 0..3 {
             // Corner-anchored span `[off, off + grid)` (offset is the low corner),
-            // the same maths `build_leaf_spatial_index` now uses.
+            // the same math `build_leaf_spatial_index` uses.
             let grid = grid_voxels[axis];
             min[axis] = world_offset_voxels[axis];
             max[axis] = min[axis] + grid;
@@ -269,12 +265,9 @@ fn sorted_aabbs(mut boxes: Vec<voxel_core::spatial_index::VoxelAabb>) -> Vec<([i
     boxes.into_iter().map(|b| (b.min, b.max)).collect()
 }
 
-// `demo_three_tool_scene` / `demo_village_scene` are shared in `super`
-// (tests/mod.rs), reached via `use super::*`.
-
 /// The index query returns EXACTLY the leaves a full walk + AABB filter returns,
 /// across several query boxes and several scenes (incl. instanced/recursive
-/// `--demo-village`). This is the S3 spatial-index correctness proof.
+/// `--demo-village`). This is the spatial-index correctness proof.
 #[test]
 fn spatial_index_query_matches_full_walk() {
     use voxel_core::spatial_index::VoxelAabb;
@@ -422,7 +415,7 @@ fn edit_aabb_diff_part_edit_is_none() {
     );
 }
 
-// ===== Issue #30: shape generation aligns to the global block lattice ========
+// ===== Shape generation aligns to the global block lattice ==================
 
 /// Resolve a single Box leaf of `size_blocks` at the origin and return its
 /// occupied voxels' **absolute** (producer-true, non-recentered) integer-index
@@ -449,7 +442,7 @@ fn absolute_box_extent(
         MaterialChoice::Stone,
     );
     // `resolve_region_via_chunks` keeps ABSOLUTE (non-recentered) positions, so
-    // its voxels are in the producer-true frame the per-object grids (#29) read.
+    // its voxels are in the producer-true frame the per-object grids read.
     let grid = scene.resolve_region_via_chunks(voxels_per_block, 0);
     let mut min = [i64::MAX; 3];
     let mut max = [i64::MIN; 3];
@@ -470,10 +463,10 @@ fn absolute_box_extent(
 /// `prod(size·d)` voxels occupying the span `[0, size·d)` per axis, with every
 /// voxel center on a half-integer (the global voxel lattice).
 ///
-/// CHANGED (corner-anchoring): the producer corner-emits, so its world offset is
-/// the LOW CORNER. In the ABSOLUTE (non-recentered) frame a zero-offset box spans
-/// `[0, size·d)`, NOT the old centered `[−size·d/2, size·d/2)`. The recenter then
-/// symmetrises it for the render frame (see the recentered-frame tests).
+/// The producer corner-emits, so its world offset is the LOW CORNER: in the
+/// ABSOLUTE (non-recentered) frame a zero-offset box spans `[0, size·d)`. The
+/// recenter then symmetrizes it for the render frame (see the recentered-frame
+/// tests).
 fn assert_box_corner_at_origin(size: [u32; 3], density: u32) {
     let (min, max, count) = absolute_box_extent(size, density);
     let expected_count =
@@ -499,9 +492,6 @@ fn assert_box_corner_at_origin(size: [u32; 3], density: u32) {
 /// `d³` voxels CORNER-ANCHORED at the origin: the absolute span is `[0, d)` per
 /// axis. Across the representative density set — d=1 (→ 1 voxel), d=2, d=15
 /// (→ 15³ = 3375), d=16 (default → 4096), d=32.
-///
-/// CHANGED (corner-anchoring): the absolute span is `[0, d)` (offset = low corner),
-/// not the old centered `[−d/2, d/2)`.
 #[test]
 fn one_block_box_corner_anchored_across_densities() {
     for density in [1u32, 2, 15, 16, 32] {
@@ -512,9 +502,9 @@ fn one_block_box_corner_anchored_across_densities() {
 /// An odd-sized shape (5×5×2) is CORNER-ANCHORED at the origin across densities:
 /// it generates `(5d)×(5d)×(2d)` voxels spanning `[0, size·d)`.
 ///
-/// CHANGED (corner-anchoring): the absolute span is `[0, size·d)` (offset = low
-/// corner), at d ∈ {1, 15, 16}. ODD `size·d` (d=15) no longer straddles voxel
-/// cells — every center is a half-integer.
+/// The absolute span is `[0, size·d)` (offset = low corner), at d ∈ {1, 15, 16}.
+/// ODD `size·d` (d=15) does not straddle voxel cells — every center is a
+/// half-integer.
 #[test]
 fn odd_size_shape_corner_anchored_at_origin() {
     for density in [1u32, 15, 16] {
@@ -623,12 +613,9 @@ fn shape_centered_within_half_voxel_in_resolve_region_frame() {
     }
 }
 
-/// HEADLINE WIN (corner-anchoring): an ODD extent at ODD DENSITY (d=1) lands on the
-/// voxel lattice — every center is a HALF-INTEGER, sitting strictly INSIDE its
-/// voxel cell `[k, k+1)`. This is the exact case the old centered-emit got wrong:
-/// at odd grid the centered convention put centers on INTEGERS (`idx + 0.5 − grid/2`
-/// = whole numbers), straddling cell boundaries — visibly off the global voxel
-/// grid. Corner-emit (`idx + 0.5`) makes every center a half-integer for ANY parity.
+/// An ODD extent at ODD DENSITY (d=1) lands on the voxel lattice — every center is
+/// a HALF-INTEGER, sitting strictly INSIDE its voxel cell `[k, k+1)`. Corner-emit
+/// (`idx + 0.5`) makes every center a half-integer for ANY parity.
 ///
 /// A 3×1×3 box @ d=1, recentered (recenter = floor(grid/2) = 1 on X/Z): X/Z centers
 /// are `idx + 0.5 − 1` = {−0.5, 0.5, 1.5}; Y center = 0.5. Nine voxels, every center
@@ -653,8 +640,8 @@ fn odd_extent_at_odd_density_lands_on_voxel_lattice() {
         "3×1×3 box @ d=1 is a full 9-cell prism (3·1·3)"
     );
 
-    // THE WIN: every voxel center is a half-integer (frac == 0.5) — on the lattice,
-    // inside a cell — NOT an integer straddling a boundary (the old odd-grid bug).
+    // Every voxel center is a half-integer (frac == 0.5) — on the lattice, inside a
+    // cell — NOT an integer straddling a boundary.
     for voxel in &grid.occupied {
         for (axis, pos) in voxel.world_position().into_iter().enumerate() {
             assert_eq!(
@@ -691,20 +678,16 @@ fn odd_extent_at_odd_density_lands_on_voxel_lattice() {
     );
 }
 
-// ===== Issue #29 foundation: per-object block-aligned voxel AABB + pivot =====
+// ===== Per-object block-aligned voxel AABB + pivot ==========================
 //
-// The grid rework (#29) positions each object's block lattice / floor / voxel
-// grid and the transform gizmo from the node's BLOCK-ALIGNED VOXEL AABB and its
-// pivot/origin, in the recentered frame, across densities. The renderers don't
-// exist yet, but the geometry SOURCE does — `build_leaf_spatial_index` (the
-// per-leaf world AABB) and `recenter_voxels_for_resolve` (the recenter). These
-// tests pin that source. The RENDERER-level grid/lattice/gizmo-follow tests
-// (drawing the actual lines and the gizmo) will be added with #29 sub-steps
-// S3/S5, parametrized over the SAME density set {1, 15, 16}, once those
-// renderers exist.
+// Each object's block lattice / floor / voxel grid and the transform gizmo are
+// positioned from the node's BLOCK-ALIGNED VOXEL AABB and its pivot/origin, in
+// the recentered frame, across densities. The geometry SOURCE is
+// `build_leaf_spatial_index` (the per-leaf world AABB) and
+// `recenter_voxels_for_resolve` (the recenter); these tests pin that source.
 
 /// The single leaf's block-aligned voxel AABB, as `build_leaf_spatial_index`
-/// records it (the #29 grids' geometry source).
+/// records it (the grids' geometry source).
 fn single_leaf_aabb(size_blocks: [u32; 3], offset_blocks: [i64; 3], density: u32) -> VoxelAabb {
     let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, density);
     let mut node = Node::new(
@@ -724,7 +707,7 @@ fn single_leaf_aabb(size_blocks: [u32; 3], offset_blocks: [i64; 3], density: u32
 /// The `NodeTransform` block/voxel accessors round-trip (incl. negatives), the
 /// mating predicate distinguishes block-aligned from sub-block offsets, and a
 /// 0-density document cannot panic (density clamped to ≥1 like the resolve
-/// sites). ADR 0003 §3f(0).
+/// sites).
 #[test]
 fn node_transform_accessors_round_trip_and_guard() {
     // Round-trip through canonical voxels, including negative components.
@@ -766,12 +749,11 @@ fn node_transform_accessors_round_trip_and_guard() {
 
 /// A `B`-block extent → a `B·d`-voxel AABB CORNER-ANCHORED at the node's world
 /// offset, at each density. This is the geometry the per-object block lattice /
-/// floor / voxel grid (#29) will span.
+/// floor / voxel grid spans.
 ///
-/// CHANGED (corner-anchoring): the AABB is the producer-true span
-/// `[off·d, off·d + size·d)` — the offset IS the low corner. For a whole-block
-/// offset the corner is a block multiple of `d` at ANY size parity (no more
-/// half-block straddle for odd sizes).
+/// The AABB is the producer-true span `[off·d, off·d + size·d)` — the offset IS
+/// the low corner. For a whole-block offset the corner is a block multiple of `d`
+/// at ANY size parity.
 #[test]
 fn node_block_aabb_scales_and_corner_anchors_across_densities() {
     let size = [5u32, 5, 2]; // a representative mixed (odd X/Y, even Z) extent
@@ -840,10 +822,8 @@ fn node_aabb_follows_translation_at_each_density() {
                     "axis {axis} @ d{density}: +1 block must shift the AABB max by d"
                 );
                 // The corner's lattice RESIDUE is preserved by a whole-block move
-                // (a +d shift can't change `min mod d`). We no longer require it to
-                // be 0 — an odd extent is centered on the offset, half a block off
-                // the lattice (center-anchoring retirement) — only that the move
-                // doesn't perturb it.
+                // (a +d shift can't change `min mod d`). The residue itself need not
+                // be 0; only that the move doesn't perturb it.
                 assert_eq!(
                         after.min[axis].rem_euclid(density as i64),
                         before.min[axis].rem_euclid(density as i64),
@@ -854,8 +834,8 @@ fn node_aabb_follows_translation_at_each_density() {
     }
 }
 
-/// The node pivot/origin the selection transform gizmo (#29) will track: the
-/// node's world origin = `offset_in_blocks·d − recenter`, in the recentered frame.
+/// The node pivot/origin the selection transform gizmo tracks: the node's world origin
+/// = `offset_in_blocks·d − recenter`, in the recentered frame.
 /// Pinned across densities for two facets:
 ///
 /// 1. **Recentered-frame value.** For a SINGLE-node scene the recenter always
@@ -863,7 +843,7 @@ fn node_aabb_follows_translation_at_each_density() {
 ///    node's own center offset from the recenter — INVARIANT under translation
 ///    (translating the lone node drags the auto-recenter with it). We pin the
 ///    concrete value `offset·d − recenter` and assert it does NOT move when the
-///    node is translated alone. (This is why #29 positions grids in the GLOBAL
+///    node is translated alone. (This is why grids are positioned in the GLOBAL
 ///    lattice frame, not this auto-recentered composite — only a fixed frame
 ///    makes "the gizmo follows the object" observable.)
 /// 2. **Absolute-frame follow.** In the producer-true ABSOLUTE frame the node

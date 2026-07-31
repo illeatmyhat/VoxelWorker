@@ -1,7 +1,7 @@
-//! #99 — the drawing-tool store mutators: free points, `connect`, coincidence via `point_at`,
-//! and the pure `with_point_placed` / `with_segment_between` / `with_rectangle` wrappers the
-//! polyline and rectangle gestures commit through. Coincidence IS shared point identity (ADR
-//! 0030): placing on an occupied coord reuses the id, never mints a twin.
+//! The drawing-tool store mutators: free points, `connect`, coincidence via `point_at`, and the
+//! pure `with_point_placed` / `with_segment_between` / `with_rectangle` wrappers the polyline and
+//! rectangle gestures commit through. Coincidence IS shared point identity: placing on an occupied
+//! coord reuses the id, never mints a twin.
 
 use crate::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
 

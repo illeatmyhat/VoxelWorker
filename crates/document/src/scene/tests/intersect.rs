@@ -2,7 +2,7 @@ use super::*;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::spatial_index::LeafFingerprint;
 
-// ---- ADR 0017 (#75): CombineOp::Intersect — the ordered document-order fold ----
+// ---- CombineOp::Intersect — the ordered document-order fold ----
 //
 // These tests pin the DENSE ORACLE semantics of the intersect slice: a leaf under
 // `Intersect` keeps ONLY the cells present in both the accumulated result and its
@@ -13,9 +13,6 @@ use voxel_core::spatial_index::LeafFingerprint;
 // classifier is held against this oracle in the evaluation crate's parity tests.
 
 const DENSITY: u32 = 8;
-
-// `box_tool` / `resolved_absolute_multiset` are the shared CSG fixtures in
-// `super` (tests/mod.rs), reached via `use super::*`.
 
 /// A mask placed AFTER a solid keeps exactly the overlap: the resolved occupancy
 /// is the body's voxels INSIDE the mask's box — every body voxel outside the mask
@@ -64,7 +61,7 @@ fn intersect_after_body_keeps_only_the_overlap() {
     }
 }
 
-/// The fold-start edge case (ADR 0017 Decision 2): a mask placed BEFORE anything
+/// The fold-start edge case: a mask placed BEFORE anything
 /// accumulated intersects the EMPTY accumulator — yielding empty — and a body
 /// placed AFTER it unions into the (still empty) accumulator untouched, so the
 /// scene resolves identical to the body alone.
@@ -168,7 +165,7 @@ fn intersect_preserves_surviving_materials() {
     );
 }
 
-/// Sealed scopes (ADR 0017 Decision 3) compose with Intersect on both sides:
+/// Sealed scopes compose with Intersect on both sides:
 /// a GROUP placed under Intersect masks the parent accumulator with the group's
 /// composed occupancy, and an Intersect leaf INSIDE a group masks only within its
 /// scope (an outside bystander survives untouched).
@@ -323,7 +320,7 @@ fn chunked_resolve_matches_monolithic_for_intersect_scenes() {
     );
 }
 
-/// Invalidation conservatism (ADR 0017 #75): an Intersect-influence leaf's edits
+/// Invalidation conservatism: an Intersect-influence leaf's edits
 /// cannot be localized to its box (the mask kills cells anywhere outside its
 /// body), so (a) a Union↔Intersect flip changes the fingerprint, (b) such a leaf
 /// carries the `MasksBeyondItsBox` fingerprint kind, and (c) an edit diff
