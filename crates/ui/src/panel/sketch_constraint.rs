@@ -14,6 +14,11 @@
 //! Completion disarms. Once the last slot fills there is nothing left to ask, so holding the mode
 //! open would make every constraint need an explicit end the author has no reason to expect.
 //!
+//! A verb is not one-to-one with a constraint. `Horizontal / Vertical` is ONE cell that asserts
+//! either of two kinds, picked from the drawing — Fusion's arrangement, and the right one: the
+//! author is saying "line this up with an axis", and which axis is already visible in what they
+//! drew. The badge then reports the answer rather than the question.
+//!
 //! Only the three kinds whose residuals ship are here. The other eleven glyphs on the constraint
 //! shelf are drawn and named but have no residual behind them
 //! (`crates/document/src/sketch/constraint.rs`), and an armable verb that asserts nothing is worse
@@ -59,12 +64,17 @@ impl SlotKind {
 }
 
 /// A constraint the rail can arm.
+///
+/// A verb is not one-to-one with a [`ConstraintKind`]: [`HorizontalOrVertical`] asserts either of
+/// two, chosen from the drawing. What the author asks for and what gets asserted are different
+/// questions, and the rail asks the first.
+///
+/// [`HorizontalOrVertical`]: ConstraintVerb::HorizontalOrVertical
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstraintVerb {
-    /// The picked segment lies along the plane's first in-plane axis.
-    Horizontal,
-    /// The picked segment lies along the plane's second in-plane axis.
-    Vertical,
+    /// The picked segment lies along ONE of the plane's two in-plane axes — whichever it is
+    /// already nearer (Fusion's arrangement: one tool, two constraints).
+    HorizontalOrVertical,
     /// The picked point stays where it is.
     Fix,
 }
@@ -76,7 +86,7 @@ impl ConstraintVerb {
     /// two-entity relation later is an entry here rather than a new branch in the gesture.
     pub fn slots(self) -> &'static [SlotKind] {
         match self {
-            ConstraintVerb::Horizontal | ConstraintVerb::Vertical => &[SlotKind::Segment],
+            ConstraintVerb::HorizontalOrVertical => &[SlotKind::Segment],
             ConstraintVerb::Fix => &[SlotKind::Point],
         }
     }
@@ -84,18 +94,20 @@ impl ConstraintVerb {
     /// The rail tooltip.
     pub fn tooltip(self) -> &'static str {
         match self {
-            ConstraintVerb::Horizontal => "Horizontal — then pick a line",
-            ConstraintVerb::Vertical => "Vertical — then pick a line",
+            ConstraintVerb::HorizontalOrVertical => "Horizontal / Vertical — then pick a line",
             ConstraintVerb::Fix => "Fix — then pick a point",
         }
     }
 
-    /// The glyph the rail cell and the badge on the drawing both carry, so the mark the author
-    /// pressed is the mark they then see standing beside the geometry.
+    /// The glyph the rail cell carries.
+    ///
+    /// For a verb that asserts exactly one kind this is also the badge the drawing ends up with,
+    /// so the mark pressed is the mark then seen. [`ConstraintVerb::HorizontalOrVertical`] is the
+    /// deliberate exception: it asks one question and asserts one of two answers, and the badge
+    /// reports the ANSWER — a level line is marked level, not marked "level or plumb".
     pub fn icon(self) -> Icon {
         match self {
-            ConstraintVerb::Horizontal => Icon::ConstraintHorizontal,
-            ConstraintVerb::Vertical => Icon::ConstraintVertical,
+            ConstraintVerb::HorizontalOrVertical => Icon::ConstraintHorizontalVertical,
             ConstraintVerb::Fix => Icon::ConstraintFix,
         }
     }
@@ -209,17 +221,15 @@ impl ArmedConstraint {
     ///
     /// `Fix` reads the point's position out of the drawing here rather than leaving it implicit:
     /// it asserts immovability AT A PLACE, so the place is captured at the moment the author
-    /// finishes asking for it.
+    /// finishes asking for it. [`ConstraintVerb::HorizontalOrVertical`] reads the drawing for a
+    /// different reason: to decide WHICH of its two constraints was meant.
     pub fn kind(&self, sketch: &Sketch) -> Option<ConstraintKind> {
         if self.next_slot().is_some() {
             return None;
         }
         match (self.verb, self.picked.first()?) {
-            (ConstraintVerb::Horizontal, SketchEntity::Segment(segment)) => {
-                Some(ConstraintKind::Horizontal { segment: *segment })
-            }
-            (ConstraintVerb::Vertical, SketchEntity::Segment(segment)) => {
-                Some(ConstraintKind::Vertical { segment: *segment })
+            (ConstraintVerb::HorizontalOrVertical, SketchEntity::Segment(segment)) => {
+                Some(nearer_axis(sketch, *segment)?)
             }
             (ConstraintVerb::Fix, SketchEntity::Point(point)) => {
                 let at = sketch.points().iter().find(|p| p.id == *point)?.at;
@@ -231,6 +241,29 @@ impl ArmedConstraint {
             _ => None,
         }
     }
+}
+
+/// Which axis constraint a segment is asking for: the one it is ALREADY nearer.
+///
+/// The whole point of folding the pair into one tool is that the author does not have to say
+/// something the drawing already shows. A line 5° off level wants to be level; asserting plumb on
+/// it would swing it 85° and read as the tool misfiring rather than as an instruction obeyed.
+///
+/// **The tie goes to Horizontal.** At exactly 45° neither answer is more obviously meant, so this
+/// is a coin toss resolved once and stated, rather than left to whichever comparison happened to
+/// be written. An author who wanted the other one deletes the badge and says so; that is one
+/// click, and it is the case the rule is allowed to get wrong.
+fn nearer_axis(sketch: &Sketch, segment: EntityId) -> Option<ConstraintKind> {
+    let held = sketch.segments().iter().find(|held| held.id == segment)?;
+    let at = |id: EntityId| Some(sketch.points().iter().find(|p| p.id == id)?.at.in_plane());
+    let (from, to) = (at(held.from)?, at(held.to)?);
+    let run = (to[0] - from[0]).abs();
+    let rise = (to[1] - from[1]).abs();
+    Some(if run >= rise {
+        ConstraintKind::Horizontal { segment }
+    } else {
+        ConstraintKind::Vertical { segment }
+    })
 }
 
 /// Whether the sketch still holds `entity` in a form a constraint can name — for a segment that
@@ -263,7 +296,7 @@ mod tests {
     #[test]
     fn a_one_slot_verb_completes_on_its_first_pick() {
         let (sketch, _, _, segment) = one_segment();
-        let mut armed = ArmedConstraint::new(ConstraintVerb::Horizontal);
+        let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(armed.prompt(), "pick a line");
         assert_eq!(
             armed.offer(SketchEntity::Segment(segment), &sketch),
@@ -280,7 +313,7 @@ mod tests {
     #[test]
     fn a_pick_of_the_wrong_kind_is_refused_and_the_gesture_survives() {
         let (sketch, from, _, segment) = one_segment();
-        let mut armed = ArmedConstraint::new(ConstraintVerb::Horizontal);
+        let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(
             armed.offer(SketchEntity::Point(from), &sketch),
             Offer::Refused("that is not a line")
@@ -318,7 +351,7 @@ mod tests {
     fn a_stale_pick_is_refused() {
         let (mut sketch, from, _, segment) = one_segment();
         sketch.delete_point_cascade(from);
-        let mut armed = ArmedConstraint::new(ConstraintVerb::Horizontal);
+        let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
         assert_eq!(
             armed.offer(SketchEntity::Segment(segment), &sketch),
             Offer::Refused("that geometry is gone")
@@ -339,20 +372,89 @@ mod tests {
         assert_eq!(armed.kind(&sketch), None);
     }
 
-    /// Every verb's glyph is the one its shelf entry draws, so pressing a mark and then seeing it
-    /// on the drawing is the same mark.
+    /// A verb that asserts exactly one kind leaves its own glyph on the drawing, so pressing a
+    /// mark and then seeing it is the same mark.
     #[test]
-    fn the_badge_glyph_is_the_cell_glyph() {
-        let (sketch, _, to, segment) = one_segment();
-        for (verb, entity) in [
-            (ConstraintVerb::Horizontal, SketchEntity::Segment(segment)),
-            (ConstraintVerb::Vertical, SketchEntity::Segment(segment)),
-            (ConstraintVerb::Fix, SketchEntity::Point(to)),
+    fn a_single_kind_verb_leaves_its_own_glyph() {
+        let (sketch, _, to, _) = one_segment();
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Fix);
+        assert_eq!(
+            armed.offer(SketchEntity::Point(to), &sketch),
+            Offer::Complete
+        );
+        let kind = armed.kind(&sketch).expect("complete");
+        assert_eq!(constraint_icon(kind), ConstraintVerb::Fix.icon());
+    }
+
+    /// A segment nearer level is asserted level, and one nearer plumb is asserted plumb: the
+    /// author says "line this up with an axis" and the drawing supplies which.
+    #[test]
+    fn the_axis_tool_asserts_whichever_axis_the_line_is_nearer() {
+        for (corner, expected) in [
+            ([8.0, 3.0], "horizontal"),
+            ([3.0, 8.0], "vertical"),
+            ([-8.0, 3.0], "horizontal"),
+            ([3.0, -8.0], "vertical"),
         ] {
-            let mut armed = ArmedConstraint::new(verb);
-            assert_eq!(armed.offer(entity, &sketch), Offer::Complete);
-            let kind = armed.kind(&sketch).expect("complete");
-            assert_eq!(constraint_icon(kind), verb.icon());
+            let mut sketch = Sketch::empty(PlaneAxis::Z);
+            let from = sketch.add_free_point(SketchPoint::from_continuous(0.0, 0.0));
+            let to = sketch.add_free_point(SketchPoint::from_continuous(corner[0], corner[1]));
+            let segment = sketch.connect(from, to).expect("two distinct points join");
+
+            let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
+            assert_eq!(
+                armed.offer(SketchEntity::Segment(segment), &sketch),
+                Offer::Complete
+            );
+            let got = match armed.kind(&sketch) {
+                Some(ConstraintKind::Horizontal { .. }) => "horizontal",
+                Some(ConstraintKind::Vertical { .. }) => "vertical",
+                other => panic!("the axis tool asserts an axis, got {other:?}"),
+            };
+            assert_eq!(got, expected, "for a segment reaching {corner:?}");
         }
+    }
+
+    /// The tie is resolved once and stated: at exactly 45° neither answer is more obviously meant,
+    /// and Horizontal wins. This is the case the rule is allowed to get wrong — it is one badge
+    /// deletion away from the other answer.
+    #[test]
+    fn a_line_at_exactly_forty_five_degrees_goes_horizontal() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let from = sketch.add_free_point(SketchPoint::from_continuous(0.0, 0.0));
+        let to = sketch.add_free_point(SketchPoint::from_continuous(6.0, 6.0));
+        let segment = sketch.connect(from, to).expect("two distinct points join");
+
+        let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(segment), &sketch),
+            Offer::Complete
+        );
+        assert_eq!(
+            armed.kind(&sketch),
+            Some(ConstraintKind::Horizontal { segment })
+        );
+    }
+
+    /// The badge reports the ANSWER, not the question: a line asserted plumb carries the plain
+    /// Vertical mark, never the two-axis glyph of the cell that was pressed.
+    #[test]
+    fn the_axis_tool_leaves_the_mark_of_what_it_decided() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let from = sketch.add_free_point(SketchPoint::from_continuous(0.0, 0.0));
+        let to = sketch.add_free_point(SketchPoint::from_continuous(1.0, 9.0));
+        let segment = sketch.connect(from, to).expect("two distinct points join");
+
+        let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(segment), &sketch),
+            Offer::Complete
+        );
+        let kind = armed.kind(&sketch).expect("complete");
+        assert_eq!(constraint_icon(kind), Icon::ConstraintVertical);
+        assert_ne!(
+            constraint_icon(kind),
+            ConstraintVerb::HorizontalOrVertical.icon()
+        );
     }
 }

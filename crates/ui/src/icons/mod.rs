@@ -77,6 +77,7 @@ mod constraint_curvature;
 mod constraint_equal;
 mod constraint_fix;
 mod constraint_horizontal;
+mod constraint_horizontal_vertical;
 mod constraint_midpoint;
 mod constraint_parallel;
 mod constraint_perpendicular;
@@ -783,6 +784,7 @@ pub enum Icon {
     ConstraintPerpendicular,
     ConstraintHorizontal,
     ConstraintVertical,
+    ConstraintHorizontalVertical,
     ConstraintTangent,
     ConstraintEqual,
     ConstraintSymmetry,
@@ -909,6 +911,7 @@ impl Icon {
         Icon::ConstraintPerpendicular,
         Icon::ConstraintHorizontal,
         Icon::ConstraintVertical,
+        Icon::ConstraintHorizontalVertical,
         Icon::ConstraintTangent,
         Icon::ConstraintEqual,
         Icon::ConstraintSymmetry,
@@ -1051,6 +1054,7 @@ impl Icon {
             Icon::ConstraintPerpendicular => constraint_perpendicular::DRAW,
             Icon::ConstraintHorizontal => constraint_horizontal::DRAW,
             Icon::ConstraintVertical => constraint_vertical::DRAW,
+            Icon::ConstraintHorizontalVertical => constraint_horizontal_vertical::DRAW,
             Icon::ConstraintTangent => constraint_tangent::DRAW,
             Icon::ConstraintEqual => constraint_equal::DRAW,
             Icon::ConstraintSymmetry => constraint_symmetry::DRAW,
@@ -1176,6 +1180,7 @@ impl Icon {
             Icon::ConstraintPerpendicular => "constraint-perpendicular",
             Icon::ConstraintHorizontal => "constraint-horizontal",
             Icon::ConstraintVertical => "constraint-vertical",
+            Icon::ConstraintHorizontalVertical => "constraint-horizontal-vertical",
             Icon::ConstraintTangent => "constraint-tangent",
             Icon::ConstraintEqual => "constraint-equal",
             Icon::ConstraintSymmetry => "constraint-symmetry",
@@ -1300,6 +1305,7 @@ impl Icon {
             | Icon::ConstraintPerpendicular
             | Icon::ConstraintHorizontal
             | Icon::ConstraintVertical
+            | Icon::ConstraintHorizontalVertical
             | Icon::ConstraintTangent
             | Icon::ConstraintEqual
             | Icon::ConstraintSymmetry
@@ -1545,6 +1551,9 @@ impl Icon {
                  points, not only to a segment."
             }
             Icon::ConstraintVertical => "Constraint: the exact quarter turn of Horizontal.",
+            Icon::ConstraintHorizontalVertical => {
+                "ONE tool, TWO constraints: the drawing decides which axis was meant, and the                  badge left behind is a plain Horizontal or Vertical. Drawn as those two marks                  superimposed, so nothing here is a third shape to learn."
+            }
             Icon::ConstraintTangent => "Constraint: touch with a common direction.",
             Icon::ConstraintEqual => {
                 "Constraint: equal length, or equal radius. The accent takes the other's size, by \

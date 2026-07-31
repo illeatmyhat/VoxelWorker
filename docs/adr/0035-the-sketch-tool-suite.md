@@ -293,6 +293,19 @@ gesture.
 Completion disarms. Once the last slot fills there is nothing left to ask, and holding the mode
 open would give every constraint an explicit end the author has no reason to expect.
 
+**A verb is not one-to-one with a constraint.** `Horizontal / Vertical` is one cell that asserts
+either of two kinds, decided from the drawing — Fusion's arrangement, and the right one. The
+author is saying *line this up with an axis*, and which axis is already visible in what they drew:
+a line 5° off level wants to be level, and asserting plumb on it would swing it 85° and read as
+the tool misfiring rather than as an instruction obeyed. So the rule is the nearer axis, with the
+tie at exactly 45° going to horizontal — a coin toss resolved once and stated rather than left to
+whichever comparison happened to be written, and one badge deletion away from the other answer.
+
+This splits the cell's glyph from the badge's. The cell carries a mark of its own — the two
+axis marks superimposed, so it is nothing new to learn — and the badge carries a plain `Horizontal`
+or `Vertical`: **the cell asks the question, the badge reports the answer.** A level line is marked
+level, not marked "level or plumb".
+
 An armed constraint **overrides** the drawing tool for the duration of its gesture rather than
 joining `SketchTool`'s enum. It hit-tests the same entities Select does but answers a different
 question, and the two cannot run together without drawing geometry mid-assertion. It is also the

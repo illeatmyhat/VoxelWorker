@@ -152,8 +152,7 @@ pub struct ArmedConstraintConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 enum ConstraintVerbConfig {
-    Horizontal,
-    Vertical,
+    HorizontalOrVertical,
     Fix,
 }
 
@@ -167,8 +166,9 @@ impl ArmedConstraintConfig {
     fn capture(armed: &ui::panel::ArmedConstraint) -> Self {
         ArmedConstraintConfig {
             verb: match armed.verb() {
-                ui::panel::ConstraintVerb::Horizontal => ConstraintVerbConfig::Horizontal,
-                ui::panel::ConstraintVerb::Vertical => ConstraintVerbConfig::Vertical,
+                ui::panel::ConstraintVerb::HorizontalOrVertical => {
+                    ConstraintVerbConfig::HorizontalOrVertical
+                }
                 ui::panel::ConstraintVerb::Fix => ConstraintVerbConfig::Fix,
             },
             picked: armed
@@ -184,8 +184,9 @@ impl ArmedConstraintConfig {
 
     fn restore(&self) -> ui::panel::ArmedConstraint {
         let verb = match self.verb {
-            ConstraintVerbConfig::Horizontal => ui::panel::ConstraintVerb::Horizontal,
-            ConstraintVerbConfig::Vertical => ui::panel::ConstraintVerb::Vertical,
+            ConstraintVerbConfig::HorizontalOrVertical => {
+                ui::panel::ConstraintVerb::HorizontalOrVertical
+            }
             ConstraintVerbConfig::Fix => ui::panel::ConstraintVerb::Fix,
         };
         let picked = self

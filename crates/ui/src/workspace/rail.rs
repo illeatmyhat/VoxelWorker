@@ -127,11 +127,8 @@ const SKETCH_SNAPS: &[(Icon, &str, PositionSnap)] = &[
 ///
 /// Three of the constraint shelf's fourteen glyphs. The rest are drawn and named but have no
 /// residual behind them yet, and an armable verb that asserts nothing is worse than no cell.
-const SKETCH_CONSTRAINTS: &[(Icon, ConstraintVerb)] = &[
-    (Icon::ConstraintHorizontal, ConstraintVerb::Horizontal),
-    (Icon::ConstraintVertical, ConstraintVerb::Vertical),
-    (Icon::ConstraintFix, ConstraintVerb::Fix),
-];
+const SKETCH_CONSTRAINTS: &[ConstraintVerb] =
+    &[ConstraintVerb::HorizontalOrVertical, ConstraintVerb::Fix];
 
 /// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
 /// the SAME fused node, moved here from the deleted right panel). Extrude + Revolve ship and
@@ -223,7 +220,8 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
         }
     }
     rail_heading(ui, "Constrain");
-    for &(icon, verb) in SKETCH_CONSTRAINTS {
+    for &verb in SKETCH_CONSTRAINTS {
+        let icon = verb.icon();
         let armed = state
             .armed_constraint
             .as_ref()
