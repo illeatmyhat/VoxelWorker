@@ -578,8 +578,9 @@ fn the_witness_rank_is_read_at_the_drawing_it_is_given() {
     });
     let level = held(ConstraintKind::Horizontal { segment });
 
-    let rank_of =
-        |constraints: &[Constraint]| constraint::witness_rank(sketch.points(), &ends, constraints);
+    let rank_of = |constraints: &[Constraint]| {
+        constraint::witness_rank(sketch.points(), &ends, &[], constraints)
+    };
     assert_eq!(rank_of(&[]), 0, "no assertions pin nothing");
     assert_eq!(
         rank_of(&[pin]),
@@ -710,7 +711,7 @@ fn coincident_with_itself_is_refused() {
 /// The residual is an angle, so the solver is free to reach it any way it likes, and the way it
 /// likes is the smallest move in the PARAMETERS — which are coordinates, not lengths. A pure
 /// rotation would hold both lengths and is a larger coordinate move than the shear-ish answer the
-/// solve actually finds. What the normalisation buys is conditioning, not rigidity: the residual
+/// solve actually finds. What the normalization buys is conditioning, not rigidity: the residual
 /// reads the same on a 3-voxel segment and a 300-voxel one, so neither dominates the step.
 #[test]
 fn parallel_aligns_two_segments_without_collapsing_them() {
@@ -912,96 +913,133 @@ fn the_relations_hold_through_a_drag() {
     );
 }
 
-/// An arc, and the id of the centre point the sketch derives for it.
-fn arc_with_centre() -> (Sketch, EntityId, EntityId) {
+/// An arc from `(0,0)` to `(20,0)` sweeping a quarter turn, the id of the center point the sketch
+/// derives for it, and a loose point off to the side.
+fn arc_with_center() -> (Sketch, EntityId, EntityId, EntityId, EntityId) {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let tail = sketch.add_free_point(SketchPoint::new(0, 0));
     let head = sketch.add_free_point(SketchPoint::new(20, 0));
     sketch
         .connect_arc(tail, head, AngleMeasurement::from_degrees(90))
         .expect("a quarter turn");
-    let centre = sketch.arcs()[0].center;
+    let center = sketch.arcs()[0].center;
     let loose = sketch.add_free_point(SketchPoint::new(40, 17));
-    (sketch, centre, loose)
+    (sketch, tail, head, center, loose)
 }
 
-/// **A constraint cannot name a point the drawing derives.** An arc's centre is owned by
-/// `sync_arc_centers`, so an assertion about it would be honoured by the solve and then erased by
-/// the next edit — a badge on the drawing claiming something the drawing does not do.
-///
-/// This is the owner's report of 2026-07-31: a `Coincident` placed on what looked like a circle's
-/// centre "didn't work". It was an arc's centre, and it took silently.
+/// **A constraint on an arc's center is met by moving the ARC.** The center is not a coordinate the
+/// solver may choose — it is what the ends and the sweep make it — so the correction lands on the
+/// ends and the center follows. The owner reported a `Coincident` on it doing nothing (2026-07-31);
+/// it was being written to a slot that `sync_arc_centers` overwrote on the next edit.
 #[test]
-fn an_arcs_centre_cannot_carry_a_constraint() {
-    let (mut sketch, centre, loose) = arc_with_centre();
-    assert!(sketch.is_derived_point(centre));
-    assert!(
-        !sketch.is_derived_point(loose),
-        "a free point is the author's"
-    );
+fn a_constraint_on_an_arcs_center_moves_the_arc() {
+    let (mut sketch, tail, head, center, loose) = arc_with_center();
+    assert!(sketch.is_derived_point(center));
+    let (before_tail, before_head) = (position(&sketch, tail), position(&sketch, head));
 
-    assert_eq!(
-        sketch.add_constraint(ConstraintKind::Coincident {
-            first: centre,
-            second: loose,
-        }),
-        Err(ConstraintRefusal::Derived { point: centre }),
-    );
-    // The order of the naming is not what makes it derived.
-    assert_eq!(
-        sketch.add_constraint(ConstraintKind::Coincident {
-            first: loose,
-            second: centre,
-        }),
-        Err(ConstraintRefusal::Derived { point: centre }),
-    );
-    assert!(sketch.constraints().is_empty(), "nothing was recorded");
-}
-
-/// The refusal is a property of the POINT, not of one verb — every kind with a point slot inherits
-/// it, because the check runs over `ConstraintKind::points()` rather than per variant.
-#[test]
-fn every_kind_with_a_point_slot_refuses_a_derived_point() {
-    let (mut sketch, centre, loose) = arc_with_centre();
-    let far = sketch.add_free_point(SketchPoint::new(-30, 6));
-    let segment = sketch.connect(loose, far).expect("a fresh segment");
-    let at = sketch
-        .points()
-        .iter()
-        .find(|point| point.id == centre)
-        .expect("the centre")
-        .at;
-
-    for kind in [
-        ConstraintKind::Fix { point: centre, at },
-        ConstraintKind::Distance {
-            from: centre,
-            to: loose,
-            length: SketchLength::new(12),
-        },
-        ConstraintKind::Midpoint {
-            point: centre,
-            segment,
-        },
-    ] {
-        assert_eq!(
-            sketch.add_constraint(kind),
-            Err(ConstraintRefusal::Derived { point: centre }),
-            "{kind:?} named a derived point",
-        );
-    }
-}
-
-/// The refusal is narrow: it is about the centre, not about arcs. A relation between two ordinary
-/// points still lands on a sketch that happens to hold an arc.
-#[test]
-fn an_arc_in_the_drawing_does_not_refuse_ordinary_points() {
-    let (mut sketch, _centre, loose) = arc_with_centre();
-    let other = sketch.add_free_point(SketchPoint::new(41, 18));
-    assert!(sketch
+    sketch
         .add_constraint(ConstraintKind::Coincident {
-            first: loose,
-            second: other,
+            first: center,
+            second: loose,
         })
-        .is_ok());
+        .expect("an arc's center can be pinned to a point");
+
+    let (here, there) = (position(&sketch, center), position(&sketch, loose));
+    assert!(
+        (here[0] - there[0]).abs() < 1e-6 && (here[1] - there[1]).abs() < 1e-6,
+        "the center sits on the point: {here:?} vs {there:?}"
+    );
+    let moved = position(&sketch, tail) != before_tail || position(&sketch, head) != before_head;
+    assert!(moved, "the ends took the correction, not the center's slot");
+
+    // And the stored center still agrees with the arc it belongs to — the write-back re-derives it,
+    // so a later `sync_arc_centers` is a no-op rather than an eraser.
+    // Not exact: a `SketchPoint` stores an integer voxel plus an f32 fraction, so re-deriving from
+    // the ROUND-TRIPPED endpoints lands a storage epsilon away. The claim is that the sync leaves
+    // it where the solve put it, not that the two arithmetics agree bit for bit.
+    let settled = position(&sketch, center);
+    sketch.sync_arc_centers();
+    let after_sync = position(&sketch, center);
+    assert!(
+        (settled[0] - after_sync[0]).abs() < 1e-5 && (settled[1] - after_sync[1]).abs() < 1e-5,
+        "re-deriving does not move it: {settled:?} vs {after_sync:?}"
+    );
+}
+
+/// The owner's own gesture: `Fix` one end of the arc, then bring the center onto a point. The fixed
+/// end must not move — the other end and the loose point are what take up the difference.
+#[test]
+fn a_fixed_arc_end_holds_while_the_center_is_brought_to_a_point() {
+    let (mut sketch, tail, head, center, loose) = arc_with_center();
+    let anchored = position(&sketch, tail);
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::from_continuous(anchored[0], anchored[1]),
+        })
+        .expect("an end can be pinned");
+    let before_head = position(&sketch, head);
+
+    sketch
+        .add_constraint(ConstraintKind::Coincident {
+            first: center,
+            second: loose,
+        })
+        .expect("the center can still be pinned with one end held");
+
+    let held = position(&sketch, tail);
+    assert!(
+        (held[0] - anchored[0]).abs() < 1e-6 && (held[1] - anchored[1]).abs() < 1e-6,
+        "the fixed end did not move: {held:?} vs {anchored:?}"
+    );
+    let (here, there) = (position(&sketch, center), position(&sketch, loose));
+    assert!(
+        (here[0] - there[0]).abs() < 1e-6 && (here[1] - there[1]).abs() < 1e-6,
+        "the center still reached the point: {here:?} vs {there:?}"
+    );
+    assert!(
+        position(&sketch, head) != before_head,
+        "the free end is what moved"
+    );
+}
+
+/// Every kind with a point slot reads a derived point the same way, because they all go through one
+/// `position_of`. Stated for `Fix`, which is the sharpest case: it pins the arc through its center.
+#[test]
+fn fixing_an_arcs_center_pins_the_arc_through_it() {
+    let (mut sketch, tail, _head, center, _loose) = arc_with_center();
+    let held = position(&sketch, center);
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: center,
+            at: SketchPoint::from_continuous(held[0], held[1]),
+        })
+        .expect("an arc's center can be fixed");
+
+    // Dragging an END now has to respect the fixed center, so the drag settles somewhere that keeps
+    // the derived center where it was pinned rather than wherever the raw drag would have put it.
+    assert!(sketch.move_point(tail, SketchPoint::new(-9, 6)));
+    let after = position(&sketch, center);
+    assert!(
+        (after[0] - held[0]).abs() < 1e-6 && (after[1] - held[1]).abs() < 1e-6,
+        "the fixed center held through a drag of the arc's end: {after:?} vs {held:?}"
+    );
+}
+
+/// A derived point is not a FREEDOM. Counting an arc's center as two free coordinates would say a
+/// sketch is under-constrained in ways nothing can take up, because the only way to move a center is
+/// to move the arc — which is already counted, at the ends.
+#[test]
+fn an_arcs_center_is_not_a_degree_of_freedom() {
+    let (sketch, _tail, _head, _center, _loose) = arc_with_center();
+    assert_eq!(
+        sketch.points().len(),
+        4,
+        "two arc ends, the derived center, and the loose point"
+    );
+    assert_eq!(
+        sketch.degrees_of_freedom(),
+        6,
+        "three authored points, two coordinates each — the center is not one of them"
+    );
 }

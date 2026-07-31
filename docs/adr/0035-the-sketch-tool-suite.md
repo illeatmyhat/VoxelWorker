@@ -185,30 +185,40 @@ and deleting the coincidence cannot put the drawing back, because there is no re
 was which. As an assertion it costs two residuals and deletes like anything else, and the two
 points spring apart again — which is what removing a constraint should mean everywhere.
 
-**Two residual-scaling calls worth stating.** The angle relations normalise: Parallel's residual is
+**Two residual-scaling calls worth stating.** The angle relations normalize: Parallel's residual is
 the SINE of the angle between the two directions and Perpendicular's is the cosine, so both are
-dimensionless and read the same on a 3-voxel segment and a 300-voxel one. Unnormalised, a long
+dimensionless and read the same on a 3-voxel segment and a 300-voxel one. Unnormalized, a long
 segment's row would dominate the trust region and a short one would barely be heard. Collinear is
 asked as **two distances** — how far each of the second segment's ends stands off the first's
 infinite line — rather than as an angle plus an offset, so the solver never has to weigh a radian
 against a voxel.
 
-**No constraint may name a derived point, and saying so is a refusal.** An arc's centre is a real,
-selectable, draggable point, but its coordinates are OWNED by `Sketch::sync_arc_centers`, which
-re-derives them from the arc's ends and its sweep after every edit that can move the arc. A
-constraint naming it would be honoured by the solve and then erased by the next edit, leaving a
-badge on the drawing asserting something the drawing does not do — the same silent-violation class
-of bug as the drag that never re-solved. So `add_constraint` refuses it outright, and the arming
-gesture refuses the PICK, before the author has filled the other slots. The way to hold an arc's
-centre is to hold the arc's ends, which is what puts the centre where it goes; holding it directly
-waits on the parameter-vector work below. Only DIRECT naming is refused: a segment drawn to a
-centre can still be asserted level, and the re-derivation will still win — the honest answer to
-that is the same parameter-vector work, not a wider refusal that would take away drawing to a
-centre at all (owner report, 2026-07-31).
+**A derived point is read as the function it is, not as the slot it occupies.** An arc's center is
+a real, selectable, draggable point whose coordinates are OWNED by `Sketch::sync_arc_centers`,
+which re-derives them from the arc's ends and its sweep. Writing a constraint on it as if it were
+an ordinary parameter was the bug the owner hit twice (2026-07-31): the solve moved the stored
+number, the arc did not follow, and the next edit put the number back — a badge asserting something
+the drawing does not do.
+
+Refusing such a constraint was the first answer, and it was the wrong one. The right one is that
+the residual system reads the center through `arc_center_radius` at every evaluation, so a
+constraint naming it is a constraint on the arc's ENDS by construction: the correction lands where
+the freedom actually is and the center follows. Pinning one end and bringing the center onto a
+point is then a well-posed problem the solver simply answers, which is exactly the gesture that
+prompted the report. No new parameters, no arc-specific residual, and one shared read path so
+every kind with a point slot inherits it.
+
+Two consequences fall out. A derived point's own slots go inert — nothing reads them, so their
+Jacobian columns are zero — which means `degrees_of_freedom` must subtract them: a center is not a
+freedom, because the only way to move it is to move the arc, and that is already counted at the
+ends. And the read is ONE level deep: an arc end that is itself another arc's center reads as its
+stored value. Arcs nested through each other's centers are not authorable by any shipped tool, and
+a shortcut whose cost is confined to a case that cannot arise is worth taking over a fixed point
+iteration in the residual loop.
 
 **Still unbacked:** Concentric, Tangent and Curvature, which need arcs and circles inside the
-parameter vector (an arc's centre is derived from its ends and its sweep, so nothing can name it
-until the sweep is a parameter too); Symmetry; and `Quantize`, which is Decision 14's integer tier.
+parameter vector — a *radius* is still not something a constraint can name, only a position derived
+from one; Symmetry; and `Quantize`, which is Decision 14's integer tier.
 Their glyphs are drawn on the design sheet and deliberately absent from the rail — an armable verb
 that asserts nothing is worse than a cell that is not there.
 

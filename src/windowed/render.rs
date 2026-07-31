@@ -3172,7 +3172,6 @@ fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
     match why {
         ConstraintRefusal::UnknownEntity => "names geometry that is gone",
         ConstraintRefusal::Impossible => "no drawing can meet it",
-        ConstraintRefusal::Derived { .. } => "an arc's centre follows its ends — constrain those",
         // Whether a culprit was isolated changes what the sentence can honestly promise: with one
         // selected, "this" points at a lit badge; without, the author is on their own and the
         // message must not imply otherwise.

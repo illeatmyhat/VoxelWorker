@@ -24,8 +24,9 @@ use substrate::nonlinear_least_squares::{
 /// directly. Tangent, Concentric, Curvature and `Quantize` (Decision 14) join it as their
 /// residuals are written; the entity, the cascade and the solve path below are the same for all
 /// of them. The first three wait on arcs and circles entering the parameter vector, which they do
-/// not yet — an arc's centre is DERIVED from its ends and its sweep, so a constraint cannot name
-/// it until the system carries the sweep as a parameter too.
+/// not yet. An arc's CENTER is nameable — the residual system reads it through
+/// [`position_of`], as the function of the arc's ends that it is — but a radius is not, and
+/// Tangent and Concentric are claims about radii.
 ///
 /// **Every match on this enum is exhaustive**, here and at each of its five seams, and that is
 /// load-bearing rather than stylistic: it is what makes adding a variant a compiler error at each
@@ -63,7 +64,7 @@ pub enum ConstraintKind {
     /// Two segments run the same way. The residual is the SINE of the angle between them, so it
     /// is dimensionless and reads the same on a 3-voxel segment and a 300-voxel one.
     Parallel { first: EntityId, second: EntityId },
-    /// Two segments meet at a right angle — the cosine of the angle between them, normalised for
+    /// Two segments meet at a right angle — the cosine of the angle between them, normalized for
     /// the same reason [`Parallel`](Self::Parallel) is.
     Perpendicular { first: EntityId, second: EntityId },
     /// Two segments have the same length. Which length is not asserted: the pair is free to settle
@@ -202,22 +203,6 @@ pub enum ConstraintRefusal {
     /// Its own terms cannot be met by any drawing — a negative distance, a `Horizontal` on a
     /// segment whose ends are the same point. Nothing to blame but the request.
     Impossible,
-    /// It names a point the drawing OWNS rather than one the author places: an arc's centre,
-    /// which `Sketch::sync_arc_centers` re-derives from the arc's ends and its sweep after every
-    /// edit that can move it.
-    ///
-    /// Refused rather than accepted-and-overwritten. The solve would honour it — the centre is an
-    /// ordinary parameter — and then the next edit would re-derive the centre and put it back,
-    /// leaving a badge on the drawing asserting something the drawing does not do. A constraint
-    /// that silently stops holding is worse than one that was never allowed.
-    ///
-    /// The way to constrain an arc's centre is to constrain the arc's ENDS, which is what puts the
-    /// centre where it goes. Constraining the centre directly waits on arcs entering the parameter
-    /// vector in their own right (ADR 0035 Decision 5, still-unbacked: Concentric, Tangent).
-    Derived {
-        /// The derived point that was named.
-        point: EntityId,
-    },
     /// The system it would join has no solution: it fights what is already asserted.
     Unsatisfiable {
         /// The standing constraints it cannot coexist with, found by leave-one-out (see
@@ -259,9 +244,7 @@ impl ConstraintRefusal {
     /// the refusal has no culprit or none could be isolated.
     pub fn culprits(&self) -> Vec<EntityId> {
         match self {
-            ConstraintRefusal::UnknownEntity
-            | ConstraintRefusal::Impossible
-            | ConstraintRefusal::Derived { .. } => Vec::new(),
+            ConstraintRefusal::UnknownEntity | ConstraintRefusal::Impossible => Vec::new(),
             ConstraintRefusal::Unsatisfiable { fights } => fights.clone(),
             ConstraintRefusal::WouldCollapse { implicated, .. } => implicated.clone(),
             ConstraintRefusal::AlreadyAsserted { existing } => vec![*existing],
@@ -282,6 +265,26 @@ pub(super) struct SketchResiduals<'a> {
     /// Each constraint's endpoints resolved to parameter indices, in the same order as
     /// `constraints`. Resolved once so the residual loop is arithmetic and nothing else.
     resolved: Vec<Resolved>,
+    /// The arc each slot's point is the DERIVED center of, indexed by slot. `None` for an
+    /// ordinary point, which is nearly all of them.
+    derived: Vec<Option<ArcSlots>>,
+}
+
+/// One arc's derived center as the residual system needs it: the point the arc owns, the two ends
+/// it follows from, and the signed sweep that fixes it between them.
+pub(super) struct ArcCenter {
+    pub center: EntityId,
+    pub from: EntityId,
+    pub to: EntityId,
+    pub sweep_degrees: f64,
+}
+
+/// [`ArcCenter`] with its endpoints resolved to parameter slots.
+#[derive(Debug, Clone, Copy)]
+struct ArcSlots {
+    from: usize,
+    to: usize,
+    sweep_degrees: f64,
 }
 
 /// A segment's two endpoints, resolved to parameter slots. Named rather than a `[usize; 2]`,
@@ -290,6 +293,35 @@ pub(super) struct SketchResiduals<'a> {
 struct SegmentSlots {
     from: usize,
     to: usize,
+}
+
+/// Where the point in `slot` actually is, at the given parameters.
+///
+/// **A derived point is read as the function it is, not as the slot it occupies.** An arc's center
+/// is not a coordinate the solver may choose; it is whatever the arc's two ends and its sweep make
+/// it. Reading it through [`super::arc_center_radius`] is what lets a constraint on the center move the
+/// ARC — the ends take the correction and the center follows — instead of sliding a number the
+/// next [`Sketch::sync_arc_centers`] overwrites.
+///
+/// A derived point's own two slots therefore go inert: nothing reads them, so their Jacobian
+/// columns are zero, and [`Sketch::degrees_of_freedom`] subtracts them rather than counting a
+/// derived value as a freedom. The write-back re-derives them through this same function, so the
+/// stored coordinates come out of a solve already in agreement with the arc.
+///
+/// **One level.** An end that is itself some other arc's center reads as its stored value here.
+/// Arcs nested through each other's centers are not something the drawing tools can author, and
+/// the cost of the shortcut is one stale coordinate in a case that cannot arise. A degenerate arc
+/// — ends together, or a sweep the canonical form cannot invert — falls back the same way.
+///
+/// [`Sketch::sync_arc_centers`]: super::Sketch::sync_arc_centers
+/// [`Sketch::degrees_of_freedom`]: super::Sketch::degrees_of_freedom
+fn position_of(derived: &[Option<ArcSlots>], parameters: &[f64], slot: usize) -> [f64; 2] {
+    let stored = |slot: usize| [parameters[slot * 2], parameters[slot * 2 + 1]];
+    match derived[slot] {
+        Some(arc) => super::arc_center_radius(stored(arc.from), stored(arc.to), arc.sweep_degrees)
+            .map_or_else(|| stored(slot), |(center, _radius)| center),
+        None => stored(slot),
+    }
 }
 
 /// The length of a resolved segment at the given parameters.
@@ -372,6 +404,7 @@ impl<'a> SketchResiduals<'a> {
     pub(super) fn new(
         points: &[Point],
         segments: &[(EntityId, EntityId, EntityId)],
+        arc_centers: &[ArcCenter],
         constraints: &'a [Constraint],
     ) -> Option<Self> {
         if points.is_empty() {
@@ -379,6 +412,19 @@ impl<'a> SketchResiduals<'a> {
         }
         let order: Vec<EntityId> = points.iter().map(|point| point.id).collect();
         let slot = |id: EntityId| order.iter().position(|other| *other == id);
+        let mut derived: Vec<Option<ArcSlots>> = vec![None; order.len()];
+        for arc in arc_centers {
+            let (Some(center), Some(from), Some(to)) =
+                (slot(arc.center), slot(arc.from), slot(arc.to))
+            else {
+                continue;
+            };
+            derived[center] = Some(ArcSlots {
+                from,
+                to,
+                sweep_degrees: arc.sweep_degrees,
+            });
+        }
         let ends = |segment: EntityId| {
             segments
                 .iter()
@@ -439,6 +485,7 @@ impl<'a> SketchResiduals<'a> {
             order,
             constraints,
             resolved,
+            derived,
         })
     }
 
@@ -474,7 +521,7 @@ impl ResidualSystem for SketchResiduals<'_> {
     }
 
     fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
-        let at = |slot: usize| [parameters[slot * 2], parameters[slot * 2 + 1]];
+        let at = |slot: usize| position_of(&self.derived, parameters, slot);
         let mut row = 0;
         for resolved in &self.resolved {
             match *resolved {
@@ -564,9 +611,10 @@ impl ResidualSystem for SketchResiduals<'_> {
 pub(super) fn witness_rank(
     points: &[Point],
     segments: &[(EntityId, EntityId, EntityId)],
+    arc_centers: &[ArcCenter],
     constraints: &[Constraint],
 ) -> usize {
-    let Some(system) = SketchResiduals::new(points, segments, constraints) else {
+    let Some(system) = SketchResiduals::new(points, segments, arc_centers, constraints) else {
         return 0;
     };
     let at = system.guess(points);
@@ -582,19 +630,22 @@ pub(super) fn witness_rank(
 pub(super) fn solve_in_place(
     points: &mut [Point],
     segments: &[(EntityId, EntityId, EntityId)],
+    arc_centers: &[ArcCenter],
     constraints: &[Constraint],
 ) -> Option<SolveReport> {
     if constraints.is_empty() {
         return None;
     }
-    let system = SketchResiduals::new(points, segments, constraints)?;
+    let system = SketchResiduals::new(points, segments, arc_centers, constraints)?;
     let mut parameters = system.guess(points);
     let report = solve(&system, &mut parameters, SolveSettings::default());
     let order: Vec<EntityId> = system.order().to_vec();
     for (index, id) in order.iter().enumerate() {
         if let Some(point) = points.iter_mut().find(|point| point.id == *id) {
-            point.at =
-                SketchPoint::from_continuous(parameters[index * 2], parameters[index * 2 + 1]);
+            // Through `position_of`, so a derived center comes out of the solve already agreeing
+            // with the arc that owns it rather than waiting on the caller to re-sync.
+            let at = position_of(&system.derived, &parameters, index);
+            point.at = SketchPoint::from_continuous(at[0], at[1]);
         }
     }
     Some(report)

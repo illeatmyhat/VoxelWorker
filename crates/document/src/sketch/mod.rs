@@ -1193,7 +1193,12 @@ impl Sketch {
             redundant: false,
         });
         let mut points = self.points.clone();
-        let report = constraint::solve_in_place(&mut points, &self.segment_ends(), &pinned);
+        let report = constraint::solve_in_place(
+            &mut points,
+            &self.segment_ends(),
+            &self.arc_centers(),
+            &pinned,
+        );
         // Judged on the RESIDUALS, never on why the search stopped — see [`SATISFIED_RESIDUAL`].
         if report.is_some_and(|report| report.residual_norm > SATISFIED_RESIDUAL) {
             return false;
@@ -1325,8 +1330,10 @@ impl Sketch {
         // author's PRE-solve drawing (`constraint::witness_rank`) rather than at each system's own
         // solution, which is what keeps a vanishing Jacobian row from reading as redundancy.
         let ends = self.segment_ends();
-        let witness =
-            |constraints: &[Constraint]| constraint::witness_rank(&self.points, &ends, constraints);
+        let centers = self.arc_centers();
+        let witness = |constraints: &[Constraint]| {
+            constraint::witness_rank(&self.points, &ends, &centers, constraints)
+        };
         let redundant = witness(&with_candidate) <= witness(&self.constraints);
         let id = self.alloc_id();
         self.constraints.push(Constraint {
@@ -1407,7 +1414,12 @@ impl Sketch {
     /// came of confusing the two is recorded.
     fn trial(&self, constraints: &[Constraint]) -> Trial {
         let mut points = self.points.clone();
-        let report = constraint::solve_in_place(&mut points, &self.segment_ends(), constraints);
+        let report = constraint::solve_in_place(
+            &mut points,
+            &self.segment_ends(),
+            &self.arc_centers(),
+            constraints,
+        );
         let verdict = match report {
             // Nothing to solve is not a failure: an empty system is met by the drawing as it is.
             None => TrialVerdict::Solved,
@@ -1496,16 +1508,6 @@ impl Sketch {
     fn check_names_live_geometry(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
         let known_point = |id: EntityId| self.points.iter().any(|point| point.id == id);
         let live_segment = |id: EntityId| self.segments.iter().find(|seg| seg.id == id);
-        // Asked once for every point slot rather than per variant: a derived point is refused
-        // whatever is being said about it, so a kind added later inherits the rule. See
-        // [`ConstraintRefusal::Derived`] for why it is a refusal and not an assertion.
-        if let Some(&point) = kind
-            .points()
-            .iter()
-            .find(|&&named| self.is_derived_point(named))
-        {
-            return Err(ConstraintRefusal::Derived { point });
-        }
         match kind {
             ConstraintKind::Fix { point, .. } => {
                 if !known_point(point) {
@@ -1591,24 +1593,41 @@ impl Sketch {
     /// under-constrained sketch has freedoms only the stored position remembers.
     pub fn solve(&mut self) -> Option<SolveReport> {
         let ends = self.segment_ends();
-        constraint::solve_in_place(&mut self.points, &ends, &self.constraints)
+        let centers = self.arc_centers();
+        constraint::solve_in_place(&mut self.points, &ends, &centers, &self.constraints)
     }
 
     /// What a solve WOULD report, without moving anything.
     pub fn solve_report(&self) -> Option<SolveReport> {
         let mut trial = self.points.clone();
-        constraint::solve_in_place(&mut trial, &self.segment_ends(), &self.constraints)
+        constraint::solve_in_place(
+            &mut trial,
+            &self.segment_ends(),
+            &self.arc_centers(),
+            &self.constraints,
+        )
     }
 
-    /// How many ways the drawing can still move: `2 × points − rank(J)`.
+    /// How many ways the drawing can still move: `2 × authored points − rank(J)`.
     ///
-    /// Zero is a fully-constrained sketch. With no constraints every coordinate is free, which is
-    /// two per point — the count is read off the store rather than from a solve that has no
-    /// residuals to take a rank of.
+    /// Zero is a fully-constrained sketch. With no constraints every authored coordinate is free,
+    /// which is two per point — the count is read off the store rather than from a solve that has
+    /// no residuals to take a rank of.
+    ///
+    /// **Derived points are not freedoms.** An arc's center cannot be moved except by moving the
+    /// arc, so counting its two coordinates would say a sketch is under-constrained in ways
+    /// nothing can take up. They occupy parameter slots (which keeps write-back simple) but no
+    /// residual reads them, so they contribute zero Jacobian columns and are subtracted here.
     pub fn degrees_of_freedom(&self) -> usize {
+        let derived = self
+            .points
+            .iter()
+            .filter(|point| self.is_derived_point(point.id))
+            .count();
+        let authored = (self.points.len() - derived) * 2;
         match self.solve_report() {
-            Some(report) => report.degrees_of_freedom,
-            None => self.points.len() * 2,
+            Some(report) => report.degrees_of_freedom.saturating_sub(derived * 2),
+            None => authored,
         }
     }
 
@@ -1789,17 +1808,29 @@ impl Sketch {
         self.prune_orphan_centers();
     }
 
-    /// Whether the drawing OWNS this point's coordinates — today, whether it is an arc's centre,
-    /// which [`sync_arc_centers`](Self::sync_arc_centers) rewrites after every edit that can move
-    /// the arc. A derived point is selectable, draggable and snappable like any other; what it
-    /// cannot do is carry a constraint, because the next re-derivation would overwrite the answer
-    /// (see [`ConstraintRefusal::Derived`]).
+    /// Whether the drawing OWNS this point's coordinates — today, whether it is an arc's center,
+    /// which [`sync_arc_centers`](Self::sync_arc_centers) re-derives from the arc's ends and its
+    /// sweep. A derived point is selectable, draggable, snappable and **constrainable** like any
+    /// other; what it is not is a freedom, which is why
+    /// [`degrees_of_freedom`](Self::degrees_of_freedom) does not count it.
     ///
-    /// Only DIRECT naming is covered. A segment drawn to an arc's centre can still be asserted
-    /// level, and the re-derivation will still win — the honest answer to that is arcs entering
-    /// the parameter vector, not a wider refusal that would take away drawing to a centre at all.
+    /// A constraint naming one is met by moving the ARC — see `constraint::position_of`, where the
+    /// residual system reads it as the function it is.
     pub fn is_derived_point(&self, id: EntityId) -> bool {
         self.arcs.iter().any(|arc| arc.center == id)
+    }
+
+    /// The derived centers the residual system needs, as `(center, from, to, sweep)`.
+    fn arc_centers(&self) -> Vec<constraint::ArcCenter> {
+        self.arcs
+            .iter()
+            .map(|arc| constraint::ArcCenter {
+                center: arc.center,
+                from: arc.from,
+                to: arc.to,
+                sweep_degrees: arc.bulge.to_degrees_f64(),
+            })
+            .collect()
     }
 
     /// Re-derive every arc's centre point from its endpoints and bulge (ADR 0030 §5), minting
