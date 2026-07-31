@@ -43,7 +43,7 @@ pub(crate) const BRICK_RECORD_KIND_MASK: u32 = (1 << BRICK_RECORD_MATERIAL_ID_SH
 /// which [`gpu_record_of`] packs verbatim.
 pub(crate) const BRICK_KIND_COARSE: u32 = 0;
 
-/// ADR 0012 (H1) — the dynamic-offset uniform slots the field bind group indexes. The
+/// The dynamic-offset uniform slots the field bind group indexes. The
 /// SINGLE uniform buffer holds three `BrickUniformsPod` slots (each aligned up to the
 /// device's `min_uniform_buffer_offset_alignment`): the SOLID band draw, plus the LOWER
 /// and UPPER onion GHOST slabs. One bind group, records/atlas/clip-map shared; only the
@@ -99,8 +99,8 @@ pub struct BrickGpuRecord {
     pub cell_key_slot: u32,
 }
 
-/// Pack the build's records for the GPU. The record set is already **surface-only** (ADR
-/// 0011 interior elision, fused into
+/// Pack the build's records for the GPU. The record set is already **surface-only**
+/// (interior elision, fused into
 /// [`build_brick_field`]: a fully-occluded interior
 /// block never emits a record — no second mask pass exists), so this is a plain 1:1 mapping
 /// and the uploaded buffer is ∝ surface, not volume, for a large solid. Hit-identity of the
@@ -110,7 +110,7 @@ pub struct BrickGpuRecord {
 /// block-occupancy map box-fills coarse occupancy from the chunks).
 ///
 /// `non_resident` marks sculpted slots to upload as [`NON_RESIDENT_ATLAS_SLOT`] — the
-/// residency-miss test's forced-miss hook (and G4's future eviction seam); pass
+/// residency-miss test's forced-miss hook (and the eviction seam); pass
 /// `|_| false` for the all-resident set.
 pub fn pack_gpu_records(
     records: &[BrickRecord],
@@ -159,7 +159,7 @@ pub(crate) fn gpu_record_of(
 }
 
 /// Write ONE sculpted brick's `edge³` occupancy tile into the persistent atlas texture
-/// at its slot's tile origin (ADR 0011 G3 per-slot patch). `write_texture` needs no
+/// at its slot's tile origin (the per-slot patch). `write_texture` needs no
 /// 256-byte row alignment (unlike `copy_texture_to_buffer`), so a `bytes_per_row = edge`
 /// sub-region upload lands exactly the slot's cube — untouched slots are never rewritten.
 pub(crate) fn write_atlas_slot(

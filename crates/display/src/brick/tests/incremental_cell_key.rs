@@ -2,9 +2,8 @@
 //! sculpted block uniform vs MIXED, and only a mixed block owns a cell-key tile.
 //!
 //! These fixtures drive the emission builder DIRECTLY with hand-built two-layer chunks —
-//! the tightest test of the CPU classifier. (The representability gate is now deleted, so a
-//! mixed scene DOES reach the brick path through the renderer; the rendering side is proven by
-//! the mixed-material golden + parity test. This module remains the CPU mirror's own contract.)
+//! the tightest test of the CPU classifier. The rendering side is proven by the
+//! mixed-material golden + parity test; this module is the CPU mirror's own contract.
 use crate::brick::*;
 use document::scene::Scene;
 use document::voxel::GeometryParams;
@@ -93,7 +92,7 @@ fn expected_occupancy_bytes(cuboids: &[VoxelBox]) -> Vec<u8> {
     bytes
 }
 
-/// **Emission classifies uniform vs MIXED (the slice's core claim).** A block whose
+/// **Emission classifies uniform vs MIXED.** A block whose
 /// microblock cuboids all share one cell key is UNIFORM: its material + overlay ride on
 /// the record and it owns NO cell-key tile. A block whose cuboids disagree — on the
 /// material OR on the overlay bit alone — is MIXED: it additionally carries a per-voxel
@@ -392,10 +391,9 @@ fn incremental_uniform_mixed_flip_churns_only_the_cell_key_pool() {
     assert_cell_key_parity(&mirror, &step_3, "step 3 (both uniform again)");
 }
 
-/// A scene whose sculpted blocks are all UNIFORM (every scene the brick path renders
-/// today) emits NO cell-key tile at all — the sparse-side-atlas contract, and the reason
-/// the GPU bytes cannot move in this slice: `pack_gpu_records` reads the occupancy slot +
-/// the record material, both untouched.
+/// A scene whose sculpted blocks are all UNIFORM emits NO cell-key tile at all — the
+/// sparse-side-atlas contract. `pack_gpu_records` then reads only the occupancy slot +
+/// the record material.
 #[test]
 fn a_uniform_scene_emits_no_cell_key_tiles() {
     let voxels_per_block = 4;
@@ -622,7 +620,7 @@ fn incremental_cell_key_pool_reports_its_work_list_and_packs_like_wholesale() {
     assert_eq!(
         packed,
         mirror.to_build().cell_key_atlas_payload(),
-        "the two materialisations of one mirror must be byte-identical"
+        "the two materializations of one mirror must be byte-identical"
     );
     let wholesale = build_brick_field(&step_2, HAND_DENSITY);
     let wholesale_atlas = wholesale.cell_key_atlas_payload();

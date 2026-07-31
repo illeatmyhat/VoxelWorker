@@ -1,9 +1,8 @@
 use super::*;
 
-/// std140-safe uniform block for the cuboid pass (ADR 0002 E3b-2). Carries the
-/// camera matrix, the grid half-extent and density (driving the per-voxel texture
-/// slice and the position-based grid overlay), the grid-overlay parameters, and
-/// the per-material base colors (reused from the instanced step-3b modulation).
+/// std140-safe uniform block for the cuboid pass. Carries the camera matrix, the grid
+/// half-extent and density (driving the per-voxel texture slice and the position-based
+/// grid overlay), the grid-overlay parameters, and the per-material base colors.
 /// Every `vec3` is followed by a scalar so it never straddles a 16-byte boundary;
 /// the four grid-line scalars then fill the slot before the `vec4` array (which
 /// must be 16-aligned). Field order matches the WGSL `CuboidUniforms` exactly.
@@ -25,25 +24,24 @@ pub(crate) struct CuboidUniforms {
     pub(super) block_line_half_width: f32,
     pub(super) voxel_line_alpha: f32,
     pub(super) block_line_alpha: f32,
-    // Layer-range band clip (issue #12 parity) + debug-faces flag. The two band
+    // Layer-range band clip + debug-faces flag. The two band
     // bounds plus the debug flag plus a pad fill one 16-byte slot, so the color
     // array below stays 16-aligned (matching the WGSL `CuboidUniforms`).
     pub(super) band_min: f32,
     pub(super) band_max: f32,
     pub(super) debug_face_mode: f32,
-    /// ADR 0012 (H1): the onion GHOST flag (0 = normal solid render, 1 = flat
-    /// translucent ghost tint). Occupies the former `_band_pad` slot; `0.0` for the
-    /// solid draw keeps the solid uniform bytes identical (non-onion goldens byte-green).
+    /// The onion GHOST flag (0 = normal solid render, 1 = flat translucent ghost tint).
+    /// Packed into the band slot's padding; `0.0` for the solid draw keeps the non-onion
+    /// goldens byte-green.
     pub(super) ghost_mode: f32,
     pub(super) material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
-    /// Per-material atlas sub-rect (ADR 0002 E3c-1 / O8), indexed by `material_id`:
+    /// Per-material atlas sub-rect, indexed by `material_id`:
     /// `[inset_min_u, inset_min_v, inset_size_u, inset_size_v]`. The shader maps the
     /// per-voxel slice's `fract`-tiled UV into this window of the single atlas, so a
     /// chunk of mixed materials is ONE mesh = ONE draw (no per-material texture
     /// bind). Each `vec4` is naturally 16-aligned.
     pub(super) material_atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
-    /// ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
-    /// `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
+    /// The onion ghost tint (linear RGB + src alpha), read only when `ghost_mode > 0.5`.
     pub(super) ghost_tint: [f32; 4],
     /// Added to `voxel_absolute_position` INSIDE the on-face grid overlay to recover
     /// the TRUE world voxel frame (`= recenter − grid_half_extent`), so the overlay's
@@ -72,8 +70,8 @@ pub(crate) fn atlas_rects_from(
     rects
 }
 
-/// Build a ghost-only [`CuboidUniforms`] block (issue #78 — the selected-operand ghost
-/// passes; ADR 0012 H1 is the ghost-branch precedent): `ghost_mode = 1` + `ghost_tint`,
+/// Build a ghost-only [`CuboidUniforms`] block (the selected-operand ghost
+/// passes): `ghost_mode = 1` + `ghost_tint`,
 /// with the camera + frame scalars the vertex stage reads. The `cuboid.wgsl` ghost branch
 /// returns the flat tint before any texture / material / overlay / band read, so every
 /// other field is filled with inert values (overlay + modulation off, band FULL).

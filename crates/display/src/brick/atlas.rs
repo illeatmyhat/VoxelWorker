@@ -69,8 +69,8 @@ pub fn upload_brick_atlas(
 ///
 /// Known limit (inherited from the occupancy atlas, not introduced here): the app requests
 /// `Limits::default()`, so `max_texture_dimension_3d` is 2048 and there is no pre-allocation
-/// VRAM budget guard — see docs/design/vram-ceiling-probe.md. The side atlas is sparse (only
-/// mixed bricks), so it reaches that ceiling far later than the occupancy pool does.
+/// VRAM budget guard. The side atlas is sparse (only mixed bricks), so it reaches that
+/// ceiling far later than the occupancy pool does.
 pub fn upload_brick_cell_key_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -122,8 +122,8 @@ pub fn upload_brick_cell_key_atlas(
 pub const CELL_KEY_TEXEL_BYTES: u32 = 2;
 
 /// Read an `atlas_dim³` R8 atlas texture back to row-unpadded bytes — the parity net's
-/// A/B readback ONLY (mirrors `dispatch_atlas`; per ADR 0006 §4 nothing ever reads a
-/// texture back as truth on a live path).
+/// A/B readback ONLY (mirrors `dispatch_atlas`; nothing ever reads a texture back as
+/// truth on a live path).
 pub fn read_back_brick_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

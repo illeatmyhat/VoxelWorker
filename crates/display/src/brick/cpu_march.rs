@@ -3,7 +3,7 @@ use super::*;
 /// A CPU march hit: the hit voxel in ABSOLUTE voxel coordinates (the exact
 /// evaluator's frame), plus the entered face's outward normal as an exact ±1 axis
 /// vector (`[i32; 3]`, so `Eq` still derives). The normal drives the loaded-material
-/// shading rule (`face_layer`) the color-parity test cross-checks (ADR 0011 G2).
+/// shading rule (`face_layer`) the color-parity test cross-checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuMarchHit {
     pub absolute_voxel: [i32; 3],
@@ -76,12 +76,12 @@ pub(crate) fn cpu_pack_key_split(absolute_block: [i32; 3]) -> (u32, u32) {
 }
 
 /// Is the clip-map cell containing `absolute_block` occupied — or the level OFF
-/// (empty ⇒ no hierarchical skip, the flat G1 DDA)? Mirrors the shader's
+/// (empty ⇒ no hierarchical skip, the flat DDA)? Mirrors the shader's
 /// `clipmap_cell_occupied`: floor-div the absolute block into the cell lattice,
 /// pack the cell key, binary-search the sorted level.
 pub(crate) fn cpu_clipmap_cell_occupied(level: &ClipmapLevel, absolute_block: glam::IVec3) -> bool {
     // Domain policy: a level with NO keys is "off" — never skip, so report every cell occupied
-    // (the flat G1 DDA). This "empty ⇒ occupied" reading is the domain's, not the kernel's; the
+    // (the flat DDA). This "empty ⇒ occupied" reading is the domain's, not the kernel's; the
     // pure fold+binary-search below is substrate's `sorted_cell_keys_contain`.
     if level.cell_keys.is_empty() {
         return true;
@@ -99,7 +99,7 @@ pub(crate) fn cpu_clipmap_cell_occupied(level: &ClipmapLevel, absolute_block: gl
 
 /// March one pixel-center ray through the brick field on the CPU — a step-for-step
 /// f32 mirror of the WGSL `march_brick_field` (same op order, same tie-breaks, same
-/// clamped boxes, residency-miss branch, and G2 hierarchical clip-map skip),
+/// clamped boxes, residency-miss branch, and hierarchical clip-map skip),
 /// returning the hit voxel in absolute coordinates. The parity net asserts the GPU
 /// hit-identity image equals this. `pyramid` with empty levels is the "pyramid off"
 /// form (the flat block-DDA) — the A/B baseline the pyramid-on == off parity uses.
@@ -146,8 +146,8 @@ pub fn cpu_march_levels_counted(
     pixel: glam::Vec2,
 ) -> (Option<CpuMarchHit>, u32) {
     // The pure hierarchical march lives in `raycast::march_brick_hierarchy` (the WGSL's
-    // GPU-mirror specification). This function is the domain ADAPTER (ADR 0008 carried
-    // frame, docs/architecture/03-display.md): it derives the ray from the shifted frame,
+    // GPU-mirror specification). This function is the domain ADAPTER (the frame is carried,
+    // never re-derived; see docs/architecture/03-display.md): it derives the ray from the frame,
     // packs the frame's plain numerics into the kernel's params, and builds the three
     // injected occupancy closures from the records/atlas/clip-map. The kernel's `MarchHit`
     // maps 1:1 onto `CpuMarchHit`.
@@ -204,8 +204,7 @@ pub fn cpu_march_levels_counted(
 /// March one pixel-center ray over the EXACT evaluator's occupancy — a plain
 /// voxel-level DDA (no bricks, no records) inside the same frame/band, querying
 /// `occupied(absolute_voxel)`. This is the parity net's INDEPENDENT content
-/// oracle: the brick march's hit-voxel set must equal this march's hit-voxel set
-/// (ADR 0011 parity gate clause (b)).
+/// oracle: the brick march's hit-voxel set must equal this march's hit-voxel set.
 pub fn cpu_march_exact_occupancy(
     frame: &BrickMarchFrame,
     occupied: &dyn Fn([i64; 3]) -> bool,
@@ -232,7 +231,7 @@ pub fn cpu_march_exact_occupancy(
     })
 }
 
-/// The MATERIAL a brick hit shades from — the CPU-march reference for ADR 0013's per-voxel
+/// The MATERIAL a brick hit shades from — the CPU-march reference for per-voxel
 /// mixed shading (`docs/architecture/03-display.md`, the brick-field atlas). For a MIXED brick
 /// (kind 2 with a resident cell-key slot) it samples the SAME cell-key tile at the SAME hit
 /// voxel the shader's `mixed_voxel_material` reads and returns its clean block id; for a coarse

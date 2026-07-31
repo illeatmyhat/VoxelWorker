@@ -1,4 +1,4 @@
-//! ADR 0011 slice G3 — the incremental dirty-brick atlas update net. The load-bearing
+//! The incremental dirty-brick atlas update net. The load-bearing
 //! assertion: an [`IncrementalBrickField`] patched edit-by-edit (only dirty chunks
 //! re-evaluated, slots free-listed) is byte-exact vs a from-scratch [`build_brick_field`]
 //! of the SAME scene, after EVERY step, across explicit block-kind transitions
@@ -44,7 +44,7 @@ fn live_slots(build: &BrickFieldBuild) -> std::collections::BTreeSet<u32> {
     slots
 }
 
-/// Assert the incremental field materialisation is byte-exact vs the wholesale build
+/// Assert the incremental field materialization is byte-exact vs the wholesale build
 /// of the same scene: SAME record keys, kinds, materials, seam flags; each sculpted
 /// record's atlas bytes equal (slot NUMBERS differ — the free-list vs dense `0..count`
 /// — so compare the occupancy, not the slot). Free slots may hold garbage: they are
@@ -111,7 +111,7 @@ fn assert_incremental_matches_wholesale(
     }
 }
 
-/// THE parity gate for G3 (issue #69 acceptance): drive a scripted sequence of edits
+/// THE parity gate: drive a scripted sequence of edits
 /// — recolor, move, shape-swap, delete, re-add — applying each INCREMENTALLY, and
 /// after every step assert the incremental field equals a from-scratch wholesale build
 /// of the same scene. Two fixed anchor tools at the extremes pin the covering set so an
@@ -234,7 +234,7 @@ fn incremental_dirty_update_equals_wholesale_after_every_step() {
     );
 }
 
-/// Untouched-slot discipline (issue #69 acceptance): an edit confined to ONE chunk
+/// Untouched-slot discipline: an edit confined to ONE chunk
 /// writes only that chunk's blocks' slots (+ frees), never the whole scene's — the
 /// "per-edit cost ∝ dirty region" claim made testable. A recolor keeps occupancy
 /// identical, so exactly the dirty chunk's sculpted blocks are freed + rewritten.
@@ -311,16 +311,15 @@ fn one_chunk_edit_writes_only_that_chunks_slots() {
     assert_incremental_matches_wholesale(&field.to_build(), &wholesale, "one-chunk-recolor");
 }
 
-/// **The patch-parity witness (item 9).** The renderer's patch path no longer materialises
+/// **The patch-parity witness.** The renderer's patch path does not materialize
 /// `to_build()` per edit — it reads each dirty slot's bytes and the atlas geometry straight
 /// from the mirror. This pins those owner-side accessors to what a `to_build()`
-/// materialisation would have produced: after an incremental edit, every written slot's
+/// materialization produces: after an incremental edit, every written slot's
 /// `sculpted_slot_bytes` equals `to_build().sculpted_brick_occupancy` for that slot, and
-/// `atlas_geometry()` matches the build's tile geometry. If these ever drift, the GPU patch
-/// would upload the wrong texels while the parity gate (which still uses `to_build`) stayed
-/// green — so this is the guard the deleted per-edit `to_build` used to provide implicitly.
+/// `atlas_geometry()` matches the build's tile geometry. Without it the GPU patch could
+/// upload the wrong texels while the parity gate (which uses `to_build`) stayed green.
 #[test]
-fn patched_slot_bytes_and_geometry_match_to_build_materialisation() {
+fn patched_slot_bytes_and_geometry_match_to_build_materialization() {
     let density = 4u32;
     let anchor_lo = tool(ShapeKind::Box, [-14, 0, 0], MaterialChoice::Stone, density);
     let anchor_hi = tool(ShapeKind::Box, [14, 0, 0], MaterialChoice::Stone, density);
@@ -356,37 +355,37 @@ fn patched_slot_bytes_and_geometry_match_to_build_materialisation() {
         "the recolor must write some slots"
     );
 
-    // The materialisation the patch path used to build per edit — the witness.
-    let materialised = field.to_build();
+    // The materialization the patch path is pinned against — the witness.
+    let materialized = field.to_build();
     let geometry = field.atlas_geometry();
     assert_eq!(
-        geometry.brick_edge_voxels, materialised.brick_edge_voxels,
-        "mirror edge matches the materialisation"
+        geometry.brick_edge_voxels, materialized.brick_edge_voxels,
+        "mirror edge matches the materialization"
     );
     assert_eq!(
-        geometry.bricks_per_axis, materialised.bricks_per_axis,
-        "mirror tile-grid edge matches the materialisation"
+        geometry.bricks_per_axis, materialized.bricks_per_axis,
+        "mirror tile-grid edge matches the materialization"
     );
     assert_eq!(
-        geometry.atlas_dim_voxels, materialised.atlas_dim_voxels,
-        "mirror atlas dimension matches the materialisation"
+        geometry.atlas_dim_voxels, materialized.atlas_dim_voxels,
+        "mirror atlas dimension matches the materialization"
     );
     for &slot in &update.written_slots {
         assert_eq!(
             field.sculpted_slot_bytes(slot),
-            materialised.sculpted_brick_occupancy(slot),
-            "written slot {slot} bytes must equal the to_build() materialisation"
+            materialized.sculpted_brick_occupancy(slot),
+            "written slot {slot} bytes must equal the to_build() materialization"
         );
     }
-    // The full re-pack payload equals the materialisation's atlas byte-for-byte.
+    // The full re-pack payload equals the materialization's atlas byte-for-byte.
     assert_eq!(
         field.pack_atlas_payload().bytes,
-        materialised.sculpted_atlas_bytes,
-        "the grow-path re-pack equals the materialised atlas"
+        materialized.sculpted_atlas_bytes,
+        "the grow-path re-pack equals the materialized atlas"
     );
 }
 
-/// **The occlusion-dilation seam (ADR 0011 interior elision).** Under the surface-only
+/// **The occlusion-dilation seam (interior elision).** Under the surface-only
 /// record contract, an edit can flip records in NON-dirty neighbor chunks: carving away
 /// a block un-occludes the face-adjacent blocks across the chunk boundary (their records
 /// must APPEAR), and filling it back occludes them again (their records must VANISH).
@@ -527,7 +526,7 @@ fn incremental_carve_across_chunk_boundary_flips_neighbor_occlusion() {
     );
 }
 
-/// Perf probe (issue #69, `#[ignore]`d — run in release): a ~1–2k-block scene, a
+/// Perf probe (`#[ignore]`d — run in release): a ~1–2k-block scene, a
 /// one-region recolor, incremental patch vs a full `build_brick_field`. The headless
 /// stand-in for the Tracy live latency measurement; numbers go in the commit message.
 /// Run: `cargo test --release incremental_vs_wholesale_perf_probe -- --ignored --nocapture`.

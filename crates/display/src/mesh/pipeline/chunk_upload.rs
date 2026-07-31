@@ -1,7 +1,7 @@
 use super::*;
 
 /// Upload built per-chunk meshes into GPU buffers, one [`CuboidChunkBuffers`] per
-/// non-empty chunk (issue #20 S6c-2d).
+/// non-empty chunk.
 pub(crate) fn upload_chunk_meshes(
     device: &wgpu::Device,
     chunk_meshes: &[CuboidChunkMesh],
@@ -16,7 +16,7 @@ pub(crate) fn upload_chunk_meshes(
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        // One index buffer = overlay-OFF run then overlay-ON run (ADR 0003 §3c); the two
+        // One index buffer = overlay-OFF run then overlay-ON run; the two
         // draws slice it by count + offset.
         let mut all_indices = mesh.indices.clone();
         all_indices.extend_from_slice(&mesh.indices_overlay);
@@ -41,10 +41,9 @@ pub(crate) fn upload_chunk_meshes(
 }
 
 /// Bucket a whole [`VoxelGrid`] into per-chunk sub-grids keyed by integer chunk
-/// coord `floor(world_position / chunk_extent)` (issue #20 S6c-2d) — the same key
-/// the resolve cache's per-chunk accessor uses (the legacy instanced renderer this
-/// key once also matched was removed, part of #20), so the cuboid `new` wrapper's
-/// chunk partition matches the resolve cache's. A sub-grid carries only the occupied
+/// coord `floor(world_position / chunk_extent)` — the same key the resolve cache's
+/// per-chunk accessor uses, so the cuboid `new` wrapper's chunk partition matches the
+/// resolve cache's. A sub-grid carries only the occupied
 /// voxels (its `dimensions` is unused by the apron mesher, which keys off
 /// `world_position`).
 pub(crate) fn bucket_grid_into_chunk_grids(

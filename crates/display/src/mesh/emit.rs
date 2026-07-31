@@ -1,7 +1,7 @@
 use super::*;
 
-/// Push one merged face quad for `face` — 4 vertices then the two CCW triangles of
-/// the instanced winding scheme (`base,+1,+2, base,+2,+3`) — spanning the box
+/// Push one merged face quad for `face` — 4 vertices then the two CCW triangles
+/// (`base,+1,+2, base,+2,+3`) — spanning the box
 /// `[lo, hi]` in WORLD space (corner axis `0` → `lo`, `1` → `hi`) with `material_id`.
 /// The shared inner loop of [`emit_coarse_block_box`] and [`emit_box_faces`]; each
 /// caller keeps its own per-face exposure test and its own index sink, and folds any
@@ -31,7 +31,7 @@ fn emit_face_quad(
     sink.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
-/// Emit a COARSE-SOLID block as ONE box (ADR 0010 Decision 4): the whole `density³` block
+/// Emit a COARSE-SOLID block as ONE box: the whole `density³` block
 /// at `block_id`, culling each of its 6 block faces when the neighbor block's matching
 /// face is fully solid (seam-flag culling — no densified apron, no per-voxel decompose of
 /// the solid interior). `block_low_recentered` is the block's low voxel corner in the
@@ -86,7 +86,7 @@ pub(crate) fn emit_coarse_block_box(
     }
 }
 
-/// Emit a BOUNDARY block's stored microblock cuboids (ADR 0010 Decision 4), exposure tested
+/// Emit a BOUNDARY block's stored microblock cuboids, exposure tested
 /// against a `(density+2)³` apron region whose interior is the block's own voxels (re-expanded
 /// from the cuboids) and whose 1-voxel border is filled PER CELL from each NEIGHBOR block's
 /// face occupancy (coarse → whole-face solid via the seam flag, NO densification of the coarse
@@ -192,9 +192,9 @@ pub(crate) fn emit_boundary_block_cuboids(
 }
 
 /// Whether a recentered-frame voxel `v` is meshed under the layer band + optional region
-/// clip (ADR 0018 Decision 5). `z_in_band` is the band's Z-slice test (or the ghost slab's,
-/// for a ghost build). With no region this is the plain scene-wide band (pre-ADR-0018). With
-/// a region the band is either CONFINED to it (solid: outside renders finished) or the region
+/// clip. `z_in_band` is the band's Z-slice test (or the ghost slab's, for a ghost build).
+/// With no region this is the plain scene-wide band. With a region the band is either
+/// CONFINED to it (solid: outside renders finished) or the region
 /// HARD-CLIPS (ghost: only inside is meshed) — see [`RegionRole`].
 #[inline]
 pub(crate) fn voxel_meshed(
@@ -224,8 +224,7 @@ pub(crate) fn voxel_meshed(
 
 /// Stamp the block at chunk-local-or-neighbor block index `abs_block`'s per-voxel occupancy
 /// into `region` at the apron-local offset `dst_lo` (so a neighbor block lands at the apron
-/// border), CLIPPED to the band + optional region via [`voxel_meshed`] (ADR 0010 #53 / ADR
-/// 0018 Decision 5). A coarse-solid block fills
+/// border), CLIPPED to the band + optional region via [`voxel_meshed`]. A coarse-solid block fills
 /// every `density³` cell at its render key; a boundary block stamps each cuboid; an air /
 /// missing block stamps nothing. `block_low_recentered_z` is the block's low voxel-Z in the
 /// recentered frame, so a block-local voxel-Z `vz` maps to recentered Z
@@ -263,7 +262,7 @@ pub(crate) fn stamp_block_into_region_banded(
     let [ex, ey, ez] = out_region.extent;
 
     // Stamp one block-local voxel `(vx, vy, vz)` of render key `key` into the region,
-    // masked to the band + optional region clip (ADR 0018 Decision 5) and bounds-checked
+    // masked to the band + optional region clip, and bounds-checked
     // against the apron extent.
     let stamp = |vx: u32, vy: u32, vz: u32, key: u16, out_region: &mut VoxelRegion| {
         let recentered = [
@@ -306,11 +305,11 @@ pub(crate) fn stamp_block_into_region_banded(
     // else: air block, nothing to stamp.
 }
 
-/// Mesh ONE block (coarse OR boundary) under an ACTIVE layer band (ADR 0010 #53). Builds a
+/// Mesh ONE block (coarse OR boundary) under an ACTIVE layer band. Builds a
 /// `(density+2)³` apron region whose INTERIOR is the block's own band-clipped voxels and whose
 /// 1-voxel border is each neighbor block's abutting band-clipped face — then decomposes the
 /// interior and emits via [`emit_box_faces`]/[`face_is_exposed`], so a band-edge cut (the
-/// out-of-band neighbor cell reads as AIR) synthesises a real cap face, and a non-cut seam
+/// out-of-band neighbor cell reads as AIR) synthesizes a real cap face, and a non-cut seam
 /// against a solid neighbor is still culled. This is the dense banded apron restricted to one
 /// block: it densifies ONLY the band-cut block (never the whole solid interior). Returns the
 /// number of boxes the interior decomposed into (the diagnostic box count).
@@ -452,7 +451,7 @@ pub(crate) fn emit_box_faces(
     aabb.expand(glam::Vec3::new(lo[0], lo[1], lo[2]));
     aabb.expand(glam::Vec3::new(hi[0], hi[1], hi[2]));
 
-    // The clean color index (ADR 0003 §3c): the box's on-face-grid flag is NOT a vertex
+    // The clean color index: the box's on-face-grid flag is NOT a vertex
     // attribute — the caller routed this box to the overlay-on or overlay-off index run by
     // its key bit, and the draw sets the per-draw overlay-active uniform per run. So strip
     // the overlay bit here and write only the categorical id into the vertex.
@@ -467,14 +466,14 @@ pub(crate) fn emit_box_faces(
 }
 
 /// Whether a decomposed box carries the on-face-grid overlay marker in its region-cell
-/// key (ADR 0003 §3c). Routes the box to the overlay-on index run.
+/// key. Routes the box to the overlay-on index run.
 #[inline]
 pub(crate) fn box_has_overlay(voxel_box: &VoxelBox) -> bool {
     CellKey::from_raw(voxel_box.material_id()).has_overlay()
 }
 
 /// Is the given face of the box exposed against the dense apron `region`? Thin domain
-/// adapter over the substrate [`CulledBoxMeshing`] culling kernel (slice S10): it supplies
+/// adapter over the substrate [`CulledBoxMeshing`] culling kernel: it supplies
 /// the neighbor-solidity oracle by reading this mesher's [`VoxelRegion`] occupancy — a cell
 /// is solid iff it is in bounds and carries a render key. Negative or out-of-extent cells
 /// answer air (exposed), reproducing the dense apron's border-is-air convention exactly.

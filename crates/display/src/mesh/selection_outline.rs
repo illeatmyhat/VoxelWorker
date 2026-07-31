@@ -1,13 +1,12 @@
-//! Selection outline + wash (ADR 0032, owner-reworked 2026-07-29) — screen-space
-//! selection feedback from a depth map of the selected bodies.
+//! Selection outline + wash — screen-space selection feedback from a depth map of the
+//! selected bodies.
 //!
-//! The shipped first take re-drew each selected body as a depth-biased cel mesh
-//! (`ghost_mode = 2`); the owner rejected it — the bias popped where the standalone
-//! body disagreed with the composed surface, and the "rim" flipped whole voxel faces.
-//! This replacement never re-shades geometry. Two passes:
+//! Geometry is never re-shaded: re-drawing a selected body as a depth-biased cel mesh
+//! pops where the standalone body disagrees with the composed surface, and flips whole
+//! voxel faces where a rim was wanted. Two passes instead:
 //!
 //! 1. **G-buffer** — the selected bodies' meshes (same two-layer cuboid mesher, same
-//!    `SceneMatrices::view_projection` as the solid pass) rasterised depth-only into
+//!    `SceneMatrices::view_projection` as the solid pass) rasterized depth-only into
 //!    TWO private non-MSAA `Depth32Float` maps: the FRONT hull (Less, back faces
 //!    culled) and the BACK hull (Greater, front faces culled). Together they bound
 //!    the selection's depth interval per pixel. One map pair for the whole selection:
@@ -23,7 +22,7 @@
 //!    x-ray). All four samples are tested because sample positions are intra-pixel
 //!    offsets: on a steeply sloped face the sample-0 depth alone drifts past ε and
 //!    speckles. ε is a half-voxel converted to NDC at the sampled depth
-//!    (`NdcDepthMapping` — the compare stays in hardware-z space; linearising would
+//!    (`NdcDepthMapping` — the compare stays in hardware-z space; linearizing would
 //!    amplify quantization noise by `view_depth²/near`). A 1px OUTLINE lands just
 //!    outside the washed region's boundary — one rule that hugs both the body's
 //!    silhouette and the edge where it slips behind other geometry.
@@ -35,7 +34,7 @@ use super::*;
 use crate::renderer::selection_cel_tint;
 
 /// One selected node's body: its covering chunks in the composed scene's absolute chunk
-/// coords (ADR 0008 — frame carried in, never re-derived).
+/// coords (frame carried in, never re-derived).
 pub type SelectedBodyChunks = Vec<([i32; 3], Arc<TwoLayerChunk>)>;
 
 /// Outline (silhouette ring) src alpha; the wash alpha is `selection_cel_tint()`'s.
@@ -158,7 +157,7 @@ impl SelectionOutlineRenderer {
             ],
         };
 
-        // The two hull rasterisations differ only in which faces survive and which
+        // The two hull rasterizations differ only in which faces survive and which
         // depth wins: the front hull keeps the NEAREST front face, the back hull the
         // FARTHEST back face — together the selection's depth interval per pixel.
         let hull_pipeline = |label: &str, cull: wgpu::Face, compare: wgpu::CompareFunction| {
@@ -448,7 +447,7 @@ impl SelectionOutlineRenderer {
     /// selection/geometry change, never per frame. Each body is meshed by the SAME
     /// two-layer cuboid mesher the solid path uses, at the FULL band, against the
     /// COMPOSED scene's `recenter` — so the depth map lands voxel-exact on the
-    /// selected node's place in the render frame (ADR 0008).
+    /// selected node's place in the render frame.
     pub fn rebuild(
         &mut self,
         device: &wgpu::Device,

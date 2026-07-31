@@ -21,11 +21,11 @@ pub(crate) const BLOCK_OCCUPANCY_BITS_PER_CELL: usize = (BLOCK_OCCUPANCY_CELL_BL
 /// `u32` words in one cell's occupancy bitmask (`512 / 32 = 16`).
 pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32;
 
-/// **ADR 0011 — the band-clip interior-occupancy signal (this fix).** A block-granular,
+/// **The band-clip interior-occupancy signal.** A block-granular,
 /// bitpacked occupancy map over the two-layer chunks, consulted by the raymarch ONLY when a
 /// LAYER-BAND clip is active AND the surface-only record search misses.
 ///
-/// The surface-only record set (interior elision, `b1cadb7`/`6f0718e`) omits fully-occluded
+/// The surface-only record set (interior elision) omits fully-occluded
 /// interior blocks. Under a FULL band that is hit-identical (a ray reaches an interior block
 /// only through a solid surface neighbor that keeps its record, stopping the ray first —
 /// [`BrickOcclusionOracle`]). But a band cut-plane SLICES a solid, so a ray can start/enter
@@ -38,7 +38,7 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 /// **Why bitpacked, not more records (the owner's no-dense-grid / no-O(volume)-records law):**
 /// storage is one bit per occupied-region block (a `u32[16]` per PRESENT 8-block cell, empty
 /// cells stored nothing), i.e. `volume/8` bytes at worst — ~192× leaner than the 24-byte
-/// records the surface-only contract deleted, and never a dense whole-region volume. Built
+/// records an interior-inclusive set would carry, and never a dense whole-region volume. Built
 /// from the chunks (a fully-solid chunk sets its `CHUNK_BLOCKS³` bits in bulk, no O(volume)
 /// hashing), rebuilt per EDIT like the pyramid — never per band scrub (the band is a uniform).
 ///
@@ -53,8 +53,8 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 /// The bit of a fallback word carrying the interior block's on-face-grid overlay flag, above
 /// the material color index (which is tiny — 0..MATERIAL_COUNT). The interior-elision fallback
 /// stores one `u32` per cell, so material and overlay are packed together and split apart at the
-/// GPU seam ([`OccupancyCellPod`](crate::brick) reads them as two fields). With the
-/// scene-wide overlay bool deleted, an interior-elision coarse hit sources its overlay from here.
+/// GPU seam ([`OccupancyCellPod`](crate::brick) reads them as two fields). An
+/// interior-elision coarse hit sources its overlay from here.
 pub const OCCUPANCY_FALLBACK_OVERLAY_BIT: u32 = 1 << 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -64,9 +64,9 @@ pub struct BlockOccupancyMasks {
     /// ∥ per-cell fallback WORD: the first occupied block's material color index packed with its
     /// on-face-grid overlay bit (`OCCUPANCY_FALLBACK_OVERLAY_BIT`) — the coarse-cube's shade AND
     /// overlay when the record-miss fallback fires. Exact for a uniform interior cell (every
-    /// current band golden); best-effort where a cell mixes material/overlay (the documented
+    /// band golden); best-effort where a cell mixes material/overlay (the documented
     /// tolerance edge — the R8 atlas is occupancy-only, so per-interior-block detail would
-    /// re-introduce the O(volume) record set this contract deleted).
+    /// re-introduce an O(volume) record set).
     map: SortedKeyBitmaskMap<BLOCK_OCCUPANCY_MASK_WORDS>,
 }
 

@@ -1,24 +1,16 @@
-//! Cuboid mesh render path (ADR 0002 E3b-1, part of #18). This module started as a
-//! flagged alternative to the instanced per-voxel-cube renderer
-//! (`crate::renderer::VoxelRenderer`, one cube per occupied voxel); that instanced
-//! path and its flag were later removed with the legacy mesher (#20), and this
-//! Vintage-Story-style **cuboid mesher** is now the sole mesh render path (the brick
-//! raymarch, ADR 0011, is the primary display sink — this path is its A/B parity
-//! oracle and understudy, both live). It decomposes the resolved grid into a
-//! small set of single-material axis-aligned boxes ([`evaluation::cuboid`]) and builds
-//! a triangle mesh of each box's **exposed faces only** (faces internal to the
-//! solid set are culled). Each face vertex carries the box's `material_id` and a
-//! face normal; the shader (`shaders/cuboid.wgsl`) flat-shades it with
-//! normal-based lighting + per-material base-color modulation.
+//! The **cuboid mesher** — the sole mesh render path. It decomposes the resolved grid
+//! into a small set of single-material axis-aligned boxes ([`evaluation::cuboid`]) and
+//! builds a triangle mesh of each box's **exposed faces only** (faces internal to the
+//! solid set are culled). Each face vertex carries the box's `material_id` and a face
+//! normal; the shader (`shaders/cuboid.wgsl`) flat-shades it with normal-based lighting +
+//! per-material base-color modulation, tiles the block texture once per voxel across a
+//! merged box face (a voxel-unit UV + a Repeat sampler), selects the per-face D2Array
+//! layer from the face normal, and draws the position-based per-voxel/per-block GRID
+//! OVERLAY. A layer-range band clip (`build_cuboid_mesh_banded`) and a debug-faces mode
+//! ride on the same path.
 //!
-//! SCOPE (E3b-1): SHAPE parity + per-box material color + basic lighting.
-//! SCOPE (E3b-2): added the per-voxel TEXTURE SLICE (block texture tiled once per
-//! voxel across a merged box face, via a voxel-unit UV + a Repeat sampler,
-//! replicating the old instanced path's per-face UV direction so even non-symmetric
-//! textures land texel-exact), the per-face D2Array layer selection from the face
-//! normal, and the position-based per-voxel/per-block GRID OVERLAY. The layer-range
-//! band clip (`build_cuboid_mesh_banded` below, issue #12) and debug-faces (this
-//! crate's `pipeline` submodule) landed in later work.
+//! The brick raymarch is the primary display sink; this path is its A/B parity oracle and
+//! the no-GPU-capable understudy, both live.
 //!
 //! ## Geometry / coordinate mapping
 //! A voxel at region-local index `l = (x, y, z)` occupies the world-space cell
@@ -28,8 +20,8 @@
 //! `dimensions/2` centering: it is the cloud-anchored offset `region_from_voxel_cloud`
 //! (in `builder.rs`) computes per grid, so the mesh lands exactly where the grid's own
 //! `world_position` places that same voxel even when the composite is recentered off
-//! its geometric center — see that function's doc for why the old fixed-center,
-//! origin-at-0 assumption this module used to make was wrong.
+//! its geometric center — see that function's doc for why a fixed-center, origin-at-0
+//! assumption is wrong.
 
 use std::sync::Arc;
 
@@ -58,7 +50,7 @@ mod selection_outline;
 mod tests;
 mod two_layer;
 
-// Public API of the cuboid mesh path (ADR 0016 Phase 4b carve).
+// Public API of the cuboid mesh path.
 pub use builder::{
     build_cuboid_mesh, build_cuboid_mesh_banded, cuboid_incremental_plan, CuboidChunkMesh,
     CuboidMesh, CuboidRebuildPlan,

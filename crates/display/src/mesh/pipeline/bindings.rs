@@ -2,7 +2,7 @@ use super::*;
 
 /// The group(0) camera/frame uniform bind-group layout every cuboid-shader pipeline binds
 /// (the solid/ghost draws in [`super::CuboidMeshRenderer::assemble`] and the selected-operand
-/// ghost passes, issue #78). ONE builder so the layouts stay bind-compatible.
+/// ghost passes). ONE builder so the layouts stay bind-compatible.
 pub(crate) fn cuboid_uniform_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("cuboid uniform bind group layout"),
@@ -19,8 +19,8 @@ pub(crate) fn cuboid_uniform_bind_group_layout(device: &wgpu::Device) -> wgpu::B
     })
 }
 
-/// The per-draw on-face-grid overlay-active bind-group layout (group 2, ADR 0003 §3c / ADR
-/// 0010 E3): one `u32` uniform read with a DYNAMIC OFFSET, so the overlay-off and overlay-on
+/// The per-draw on-face-grid overlay-active bind-group layout (group 2): one `u32`
+/// uniform read with a DYNAMIC OFFSET, so the overlay-off and overlay-on
 /// draws of a chunk select `0` / `1` from a two-entry buffer without a per-vertex flag.
 pub(crate) fn overlay_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -39,7 +39,7 @@ pub(crate) fn overlay_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGrou
 }
 
 /// Build the two-entry per-draw overlay-active uniform buffer + its dynamic-offset bind
-/// group (ADR 0003 §3c). Entry 0 = `0` (overlay off), entry 1 (at the device's
+/// group. Entry 0 = `0` (overlay off), entry 1 (at the device's
 /// `min_uniform_buffer_offset_alignment`) = `1` (overlay on). Returns the bind group and
 /// the stride to pass as the dynamic offset for the overlay-on draw.
 pub(crate) fn build_overlay_bind_group(
@@ -75,8 +75,8 @@ pub(crate) fn build_overlay_bind_group(
 }
 
 /// The cuboid atlas bind-group layout: a single 2D texture (binding 0) + sampler
-/// (binding 1). One atlas for ALL materials replaces the former per-material
-/// D2Array binds (ADR 0002 O8).
+/// (binding 1). One atlas for ALL materials, so a chunk of mixed materials binds
+/// one texture.
 pub(crate) fn build_atlas_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("cuboid atlas bind group layout"),
@@ -102,8 +102,8 @@ pub(crate) fn build_atlas_bind_group_layout(device: &wgpu::Device) -> wgpu::Bind
 }
 
 /// Upload a packed [`MaterialAtlas`] image as a single RGBA8 sRGB 2D texture
-/// (Nearest, no mipmaps), matching the instanced path's sRGB decode so lighting +
-/// overlay run in linear space and the sRGB target re-encodes on write.
+/// (Nearest, no mipmaps), so lighting + overlay run in linear space and the sRGB
+/// target re-encodes on write.
 pub(crate) fn upload_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

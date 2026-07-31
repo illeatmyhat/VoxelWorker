@@ -1,5 +1,4 @@
-// ADR 0016 Phase 3: this brick-pipeline perf probe was relocated here from the evaluation
-// crate's `two_layer_store::tests`. It exercises the FULL brick pipeline (a DISPLAY-layer
+// This brick-pipeline perf probe exercises the FULL brick pipeline (a DISPLAY-layer
 // concern: `build_brick_field` / `pack_gpu_records` / `ClipmapPyramid` /
 // `IncrementalBrickField`) fed from two-layer chunks, so it straddles the evaluation↔display
 // boundary and cannot live in the evaluation crate (whose law forbids naming any display
@@ -11,11 +10,11 @@ use voxel_core::core_geom::MaterialChoice;
 /// Perf probe (`#[ignore]`d — run in release): per-stage timing of the FULL brick
 /// pipeline a wholesale rebuild runs after the two-layer classify, on solid
 /// sketch-extrude cubes of growing block span. This is the interior-elision regression
-/// guard for the 8000³-cube freeze fix (ADR 0011 surface-only record contract): at
-/// density 16 the 500-blk/axis cube is 125M blocks, and before the surface-only build
-/// every stage was O(all blocks) — ~12.5s of serial main-thread work and ~6 GB of
-/// transient record traffic per rebuild. With the record set ∝ surface, every stage
-/// must stay sub-second and the record count ~1.5M (the shell), not 125M.
+/// guard for the 8000³-cube freeze (the surface-only record contract): at density 16 the
+/// 500-blk/axis cube is 125M blocks, and an O(all blocks) stage costs ~12.5s of serial
+/// main-thread work and ~6 GB of transient record traffic per rebuild. With the record set
+/// ∝ surface, every stage must stay sub-second and the record count ~1.5M (the shell),
+/// not 125M.
 ///
 /// `cargo test --release brick_pipeline_scaling_probe -- --ignored --nocapture`
 /// The 500-blk/axis case (the actual 8000³ user scene) is opt-in via
@@ -58,8 +57,8 @@ fn brick_pipeline_scaling_probe() {
         let pyramid = ClipmapPyramid::from_chunks(&chunks);
         let pyramid_elapsed = stage_start.elapsed();
         let stage_start = std::time::Instant::now();
-        // Single-owner rework (item 9): from_wholesale now MOVES the records + atlas bytes
-        // (no records clone), seeding only the bit tiles.
+        // `from_wholesale` MOVES the records + atlas bytes (no records clone), seeding
+        // only the bit tiles.
         let (incremental_mirror, _atlas) = IncrementalBrickField::from_wholesale(build);
         let wholesale_elapsed = stage_start.elapsed();
         println!(

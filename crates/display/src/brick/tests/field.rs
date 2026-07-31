@@ -14,13 +14,12 @@ use voxel_core::voxel::{ShapeKind, Voxel};
 /// two-layer partition one-to-one: coarse-solid → one kind-0 record (id carried, no
 /// slot), boundary → one kind-1 record (dense unique slots, seam flags carried
 /// unchanged), air → nothing; records sorted strictly ascending. This is the CPU half
-/// of the ADR 0011 gate clause (a) for the record/atlas PACKING mechanics (which the
-/// surface-only live build shares); the surface-only record CONTRACT itself is gated by
+/// of the record/atlas PACKING mechanics (which the surface-only live build shares); the surface-only record CONTRACT itself is gated by
 /// `build_emits_only_surface_records_of_a_solid_box`. The GPU parity test
 /// re-asserts the bytes through the texture round-trip.
 #[test]
 fn brick_records_map_two_layer_partition_one_to_one() {
-    // d4 deliberately (ADR 0011 Decision 1): the brick edge must follow the
+    // d4 deliberately: the brick edge must follow the
     // density, not the number 16; odd voxel extents give partial boundary blocks.
     let voxels_per_block = 4;
     let scene = Scene::from_geometry(
@@ -113,8 +112,7 @@ fn brick_records_map_two_layer_partition_one_to_one() {
     );
 }
 
-/// **The surface-only record contract (ADR 0011 interior elision, fused into the
-/// build).** [`build_brick_field`] over a SOLID box emits exactly the surface blocks (a
+/// **The surface-only record contract (interior elision, fused into the build).** [`build_brick_field`] over a SOLID box emits exactly the surface blocks (a
 /// block with ≥1 absent/air neighbor) of the interior-inclusive oracle build
 /// ([`build_brick_field_all_blocks`]) and omits the strictly-interior ones (all six
 /// neighbors present + solid) — checked against an independent neighbor-presence
@@ -214,8 +212,7 @@ fn build_emits_only_surface_records_of_a_solid_box() {
     assert_eq!(surface_build.bricks_per_axis, full_build.bricks_per_axis);
 }
 
-/// The clip-map pyramid is CONSERVATIVE (ADR 0011 parity gate, coarse tier):
-/// each level's occupied-cell set is a SUPERSET of the true occupied cells
+/// The clip-map pyramid is CONSERVATIVE: each level's occupied-cell set is a SUPERSET of the true occupied cells
 /// (every record's cell present), sorted strictly ascending + unique, at ANY
 /// density (block-denominated cells — nothing hard-codes 16). A scattered
 /// multi-object scene so the levels actually span more than one cell.
@@ -296,9 +293,9 @@ fn clipmap_pyramid_is_conservative_and_sorted() {
 }
 
 /// The **chunk-sourced** pyramid ([`ClipmapPyramid::from_chunks`]) is BYTE-IDENTICAL to the
-/// legacy record-sourced one ([`ClipmapPyramid::from_records`]) over the FULL, interior-
-/// inclusive record set — the direct oracle for the interior-elision pyramid rework (ADR
-/// 0011). `build_brick_field_all_blocks` is the interior-inclusive reference build (the live
+/// record-sourced one ([`ClipmapPyramid::from_records`]) over the FULL, interior-inclusive
+/// record set — the direct oracle for the interior-elision pyramid.
+/// `build_brick_field_all_blocks` is the interior-inclusive reference build (the live
 /// `build_brick_field` is surface-only, so its records would give a subset pyramid). Covers a
 /// solid box (heavy interior → the bulk fast path) and a scattered scene (partial chunks),
 /// at two densities.
@@ -363,8 +360,8 @@ fn clipmap_from_chunks_equals_from_full_records() {
     }
 }
 
-/// **The band-clip interior-occupancy map marks EXACTLY the full-record block set (this
-/// fix).** [`BlockOccupancyMasks::from_chunks`] must report a set bit for every block the
+/// **The band-clip interior-occupancy map marks EXACTLY the full-record block set.**
+/// [`BlockOccupancyMasks::from_chunks`] must report a set bit for every block the
 /// interior-INCLUSIVE oracle build (`build_brick_field_all_blocks`) carries a record for —
 /// no more, no fewer — since that record set is what a band-clipped ray needs to resolve as
 /// coarse cubes where the surface-only build elided them. Covers a solid box (the bulk
@@ -461,7 +458,7 @@ fn block_occupancy_masks_mark_exactly_the_full_record_blocks() {
 }
 
 /// CPU byte-exactness at a non-16 density: every sculpted brick's atlas bytes equal
-/// the block occupancy the SHIPPED expansion (`expand_occupancy_into`, itself
+/// the block occupancy the expansion (`expand_occupancy_into`, itself
 /// proven bit-exact vs the dense oracle) reports — rasterization from cuboids and
 /// expansion are independent paths over the same boundary set.
 #[test]
@@ -484,7 +481,7 @@ fn sculpted_brick_bytes_match_expanded_occupancy_at_non_16_density() {
     let edge = voxels_per_block as usize;
     let mut compared_bricks = 0usize;
     for (chunk_coord, chunk) in &two_layer_chunks {
-        // Chunk-local occupancy bitmap via the shipped expansion (offset zero).
+        // Chunk-local occupancy bitmap via the expansion (offset zero).
         let mut expanded: Vec<Voxel> = Vec::new();
         chunk.expand_occupancy_into(&mut expanded, [0, 0, 0]);
         let chunk_extent = (CHUNK_BLOCKS * voxels_per_block) as usize;

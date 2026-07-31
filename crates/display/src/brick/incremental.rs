@@ -13,8 +13,7 @@ pub struct BrickFieldUpdate {
     pub freed_slots: Vec<u32>,
     /// Whether the atlas tile geometry GREW (`bricks_per_axis` increased) — then every
     /// slot's 3D position moved, so the sink MUST re-pack + re-upload the whole atlas
-    /// (the one legitimate wholesale re-pack, ADR 0011 pitfalls / ADR 0007 resize
-    /// precedent). False ⇒ untouched slots keep their texels.
+    /// (the one legitimate wholesale re-pack). False ⇒ untouched slots keep their texels.
     pub atlas_grew: bool,
     /// MATERIAL SIDE ATLAS slots (re)written this edit — the cell-key tiles of the MIXED
     /// bricks the edit (re)emitted, in the second pool's OWN numbering. Empty for an edit that
@@ -30,10 +29,10 @@ pub struct BrickFieldUpdate {
     pub cell_key_atlas_grew: bool,
 }
 
-/// The PERSISTENT incremental brick field (ADR 0011 slice G3). Maintains the sorted
+/// The PERSISTENT incremental brick field. Maintains the sorted
 /// [`BrickRecord`] array + a slot-allocated atlas ACROSS edits so a per-edit update
-/// re-evaluates only the DIRTY chunks' blocks and patches only their slots — the
-/// "per-edit cost proportional to the dirty region, not the scene" win ADR 0009 promised.
+/// re-evaluates only the DIRTY chunks' blocks and patches only their slots, so the
+/// per-edit cost is proportional to the dirty region, not the scene.
 ///
 /// Slots are managed by a **free-list** (allocate on a new sculpted brick, free when a
 /// brick becomes air/coarse or its chunk is dirtied away), so slot numbers are STABLE
@@ -41,9 +40,7 @@ pub struct BrickFieldUpdate {
 /// parity gate proves: after any edit, every LIVE record's slot bytes equal a from-scratch
 /// [`build_brick_field`] of the same scene (free slots may hold garbage — they are
 /// unreachable). The pyramid is REBUILT (not patched) from the merged record keys per
-/// edit (a cheap pure function; ADR 0011's G0-G5 slices shipped a 3rd clip-map level and
-/// off-screen residency eviction under the "G4" name instead — incremental pyramid
-/// patching itself was never scheduled and stays an open, unscheduled optimization).
+/// edit (a cheap pure function).
 #[derive(Debug, Clone)]
 pub struct IncrementalBrickField {
     /// The brick edge in voxels (`voxels_per_block`, the ONE-BLOCK granule) — fixed for
@@ -75,9 +72,9 @@ impl IncrementalBrickField {
     /// Seed the incremental field from a wholesale [`build_brick_field`] BY MOVE (the reset
     /// a scene load / density change / gate re-engagement performs), returning the mirror
     /// AND the [`SculptedAtlasPayload`] the install seam uploads. Consuming the build is the
-    /// single-owner win (`docs/architecture/`, the brick-field display chapter): the record
+    /// single-owner win (see `docs/architecture/03-display.md`): the record
     /// Vec moves straight into the mirror (no clone) and the flat atlas byte blob moves into
-    /// the payload — the wholesale channel/inline reset now ships ONE copy of the field, not
+    /// the payload — the wholesale channel/inline reset ships ONE copy of the field, not
     /// a build plus a mirror seeded from it. Slots are the build's dense `0..sculpted_count`;
     /// the free-list starts empty.
     pub fn from_wholesale(build: BrickFieldBuild) -> (Self, SculptedAtlasPayload) {
@@ -85,7 +82,7 @@ impl IncrementalBrickField {
         // seeding cost) — the entry for callers that hold ONLY a `BrickFieldBuild` (the
         // golden `shot` tool, the parity/perf tests). The live worker/orchestrator wholesale
         // path instead calls [`from_wholesale_with_tiles`], MOVING the tiles the build just
-        // rasterised straight in (no re-gather, no re-bit-pack).
+        // rasterized straight in (no re-gather, no re-bit-pack).
         let sculpted_count = build.sculpted_brick_count();
         let slot_tiles: Vec<BrickOccupancyTile> = (0..sculpted_count as u32)
             .map(|slot| {
@@ -98,10 +95,10 @@ impl IncrementalBrickField {
         Self::from_wholesale_with_tiles(build, slot_tiles)
     }
 
-    /// Seed the incremental field from a wholesale build AND its already-rasterised per-slot
+    /// Seed the incremental field from a wholesale build AND its already-rasterized per-slot
     /// occupancy tiles (dense slot order), MOVING both in — the zero-re-derive path for the
     /// live worker/orchestrator wholesale build. [`build_brick_field_with_tiles`] returns the
-    /// build alongside the very tiles it rasterised; handing them here skips the
+    /// build alongside the very tiles it rasterized; handing them here skips the
     /// `from_wholesale` re-gather (`sculpted_brick_occupancy` per slot) + re-bit-pack of
     /// bytes the packer just produced. The tiles MUST be the build's own sculpted tiles (one
     /// per sculpted record, slot order); a debug assert pins the count.
@@ -110,7 +107,7 @@ impl IncrementalBrickField {
         slot_tiles: Vec<BrickOccupancyTile>,
     ) -> (Self, SculptedAtlasPayload) {
         let sculpted_count = build.sculpted_brick_count();
-        // Finding #5: a misordered / wrong-length tile vec would silently desync the mirror
+        // A misordered / wrong-length tile vec would silently desync the mirror
         // from the build. The slot count + a representative brick-edge match are O(1) and
         // catch the structural mistakes, so they earn a RELEASE-mode assert. The exhaustive
         // per-slot byte-equality (O(sculpted·brick)) stays a debug-only check.
@@ -142,7 +139,7 @@ impl IncrementalBrickField {
             atlas_dim_voxels,
         } = build;
         // The cell-key tiles ride in the build (the material side atlas has no byte-packed
-        // GPU form yet), so they MOVE straight into the mirror's pool — one owner, no clone.
+        // GPU form), so they MOVE straight into the mirror's pool — one owner, no clone.
         debug_assert_eq!(
             cell_key_tiles.len(),
             brick_records
@@ -188,7 +185,7 @@ impl IncrementalBrickField {
     /// The MATERIAL SIDE ATLAS's tile geometry, derived from ITS OWN slot high-water mark
     /// exactly as [`pack_cell_key_atlas`] would — the twin of
     /// [`atlas_geometry`](Self::atlas_geometry) for the second pool (the patch seam's
-    /// slot-origin inputs, without materialising a build).
+    /// slot-origin inputs, without materializing a build).
     pub fn cell_key_atlas_geometry(&self) -> SculptedCellKeyAtlasGeometry {
         let bricks_per_axis = CubeTilePacking::tiles_per_axis(self.cell_key_tiles.len());
         SculptedCellKeyAtlasGeometry {
@@ -206,7 +203,7 @@ impl IncrementalBrickField {
         self.cell_key_tiles[cell_key_slot].to_le_bytes()
     }
 
-    /// Materialise the full MATERIAL SIDE ATLAS as a [`SculptedCellKeyAtlasPayload`] — the
+    /// Materialize the full MATERIAL SIDE ATLAS as a [`SculptedCellKeyAtlasPayload`] — the
     /// second pool's wholesale re-pack, done only on a side-atlas GROW
     /// ([`BrickFieldUpdate::cell_key_atlas_grew`]) where every cell-key slot's 3D position
     /// moved. Reuses [`pack_cell_key_atlas`], so it stays byte-identical to
@@ -234,7 +231,7 @@ impl IncrementalBrickField {
     }
 
     /// The live records — the sorted [`BrickRecord`] array the GPU record pack + the
-    /// pyramid derive from. The mirror is the single CPU owner (item 9): the renderer's
+    /// pyramid derive from. The mirror is the single CPU owner: the renderer's
     /// install/patch seams read records straight from here, never via [`to_build`](Self::to_build).
     pub fn records(&self) -> &[BrickRecord] {
         &self.records
@@ -251,7 +248,7 @@ impl IncrementalBrickField {
 
     /// The sculpted atlas's tile geometry, derived from the slot high-water mark exactly as
     /// [`pack_sculpted_atlas`] would — the frame scalars + slot-origin inputs the patch seam
-    /// needs without materialising a build.
+    /// needs without materializing a build.
     pub fn atlas_geometry(&self) -> SculptedAtlasGeometry {
         let bricks_per_axis = sculpted_atlas_bricks_per_axis(self.slot_tiles.len());
         SculptedAtlasGeometry {
@@ -268,7 +265,7 @@ impl IncrementalBrickField {
         self.slot_tiles[slot].expand_to_bytes(SCULPTED_BRICK_OCCUPIED)
     }
 
-    /// Materialise the full atlas as a [`SculptedAtlasPayload`] — the ONE legitimate
+    /// Materialize the full atlas as a [`SculptedAtlasPayload`] — the ONE legitimate
     /// wholesale re-pack, done only on an atlas GROW (`BrickFieldUpdate::atlas_grew`) where
     /// every slot's 3D position moved. Reuses [`pack_sculpted_atlas`] so it stays
     /// byte-identical to [`to_build`](Self::to_build)'s atlas.
@@ -312,7 +309,7 @@ impl IncrementalBrickField {
     ///   evicted). Every OCCUPANCY change lives in one of these; a block's record content
     ///   (key, material, seam flags, occupancy) is intrinsic to its own chunk.
     ///
-    /// **The occlusion dilation (ADR 0011 interior elision — the tricky seam).** Under the
+    /// **The occlusion dilation (interior elision — the tricky seam).** Under the
     /// surface-only record contract, whether a coarse block emits a record at all depends on
     /// its six FACE-NEIGHBORS — which may live in an adjacent, NON-dirty chunk. An edit can
     /// therefore flip records in the 1-chunk dilation of the dirty set: carving a hole
@@ -323,7 +320,7 @@ impl IncrementalBrickField {
     /// test, the 26-ring is the conservative shared convention):
     ///
     /// * **dirty chunks** — all records dropped (sculpted slots freed) and rebuilt from the
-    ///   fresh data, exactly as before, with occlusion fused in.
+    ///   fresh data, with occlusion fused in.
     /// * **ring chunks** (dilated \ dirty) — their DATA is unchanged, only occlusion verdicts
     ///   of their COARSE blocks can flip: coarse records are dropped and re-derived against
     ///   the fresh oracle. Sculpted records (and their atlas slots) are KEPT untouched —
@@ -508,16 +505,16 @@ impl IncrementalBrickField {
         }
     }
 
-    /// Materialise the current field as a [`BrickFieldBuild`] (records + packed atlas).
+    /// Materialize the current field as a [`BrickFieldBuild`] (records + packed atlas).
     ///
-    /// **Parity-oracle materialisation ONLY (item 9).** No production / per-frame path may
-    /// call this: it clones ALL records and re-packs the ENTIRE flat atlas blob, the exact
-    /// cost the single-owner rework removed from the per-edit patch path. The renderer's
-    /// install/patch seams now read records / atlas geometry / dirty-slot bytes straight
+    /// **Parity-oracle materialization ONLY.** No production / per-frame path may
+    /// call this: it clones ALL records and re-packs the ENTIRE flat atlas blob, a cost no
+    /// per-edit patch path may pay. The renderer's
+    /// install/patch seams read records / atlas geometry / dirty-slot bytes straight
     /// from the mirror ([`records`](Self::records), [`atlas_geometry`](Self::atlas_geometry),
     /// [`sculpted_slot_bytes`](Self::sculpted_slot_bytes), [`pack_atlas_payload`](Self::pack_atlas_payload)).
-    /// This survives as the parity gate's witness — `to_build() == build_brick_field(...)`
-    /// after every edit is the G3 acceptance bar. The atlas is sized to the slot high-water
+    /// This is the parity gate's witness — `to_build() == build_brick_field(...)`
+    /// after every edit is the acceptance bar. The atlas is sized to the slot high-water
     /// mark (live + freed holes), so a live record's slot bytes are always in range.
     pub fn to_build(&self) -> BrickFieldBuild {
         let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =

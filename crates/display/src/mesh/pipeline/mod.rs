@@ -12,7 +12,7 @@ pub(crate) use chunk_upload::*;
 pub(crate) use uniforms::*;
 
 /// The region clip as the SOLID pass reads it: the band is CONFINED to the region, so
-/// every voxel outside the selected object's AABB renders finished (ADR 0018 Decision 5).
+/// every voxel outside the selected object's AABB renders finished.
 /// The renderer stores the selection region role-agnostically; the two build passes stamp
 /// the role.
 #[inline]
@@ -25,7 +25,7 @@ fn solid_region(region: Option<RegionClip>) -> Option<RegionClip> {
 
 /// The region clip as the GHOST pass reads it: only voxels INSIDE the region are meshed
 /// (the finished scene outside is drawn by the solid pass), so the onion haze never spills
-/// past the selected object's AABB (ADR 0018 Decision 5).
+/// past the selected object's AABB.
 #[inline]
 fn ghost_region(region: Option<RegionClip>) -> Option<RegionClip> {
     region.map(|r| RegionClip {
@@ -34,15 +34,13 @@ fn ghost_region(region: Option<RegionClip>) -> Option<RegionClip> {
     })
 }
 
-/// One render chunk's GPU buffers for the cuboid path (issue #20 S6c-2d): its own
-/// vertex + index buffer, the index count, and the world AABB for frustum culling
-/// (mirrored the equivalent struct on the legacy instanced renderer, since removed,
-/// part of #20). A chunk that meshes to zero faces is never stored (no buffer
-/// allocated).
+/// One render chunk's GPU buffers for the cuboid path: its own vertex + index buffer,
+/// the index count, and the world AABB for frustum culling. A chunk that meshes to zero
+/// faces is never stored (no buffer allocated).
 pub(crate) struct CuboidChunkBuffers {
     vertex_buffer: wgpu::Buffer,
-    /// One index buffer holding the overlay-OFF run followed by the overlay-ON run (ADR
-    /// 0003 §3c). `index_count` is the overlay-off run length (drawn with the per-draw
+    /// One index buffer holding the overlay-OFF run followed by the overlay-ON run.
+    /// `index_count` is the overlay-off run length (drawn with the per-draw
     /// overlay-active uniform = 0); `index_count_overlay` is the overlay-on run, drawn at
     /// byte offset `index_count * 4` with the uniform = 1. Splitting by overlay state into
     /// two draws keeps the render flag out of the vertex format while preserving the
@@ -62,9 +60,9 @@ impl CuboidChunkBuffers {
     /// Record one indexed draw over the chunk's WHOLE index buffer (the overlay-off run
     /// followed by the overlay-on run together) into an already-begun pass. The draw
     /// style of a ghost pass: the flat-tinting ghost branch ignores the on-face grid
-    /// overlay, so the ADR 0003 §3c two-draw split is unnecessary — one draw suffices
+    /// overlay, so the two-draw overlay split is unnecessary — one draw suffices
     /// (the onion ghost in [`CuboidMeshRenderer::draw_ghost`] and the selected-operand
-    /// ghost passes, issue #78, both draw this way). A no-op for an empty chunk.
+    /// ghost passes both draw this way). A no-op for an empty chunk.
     pub(crate) fn draw_all_runs(&self, render_pass: &mut wgpu::RenderPass<'_>) {
         let total = self.index_count + self.index_count_overlay;
         if total == 0 {
@@ -77,31 +75,27 @@ impl CuboidChunkBuffers {
 }
 
 /// All GPU resources for drawing the cuboid mesh — the understudy render path and
-/// pixel oracle (the brick raymarch is the primary display, ADR 0011); per-chunk
-/// buffers since issue #20 S6c-2d.
+/// pixel oracle (the brick raymarch is the primary display). One buffer set per chunk.
 pub struct CuboidMeshRenderer {
     pipeline: wgpu::RenderPipeline,
     /// Face-orientation debug pipeline: identical to `pipeline` except
     /// `cull_mode: None`, so a back face that is the nearest surface (a winding
     /// bug) still draws and is flagged by the shader's `front_facing` marker.
-    /// Selected in `draw` when `debug_face_mode` is on — mirroring the instanced
-    /// path's cull-off debug pipeline.
+    /// Selected in `draw` when `debug_face_mode` is on.
     debug_pipeline: wgpu::RenderPipeline,
-    /// Loaded-VS-block pipelines (part of #20): same vertex layout + uniform group,
-    /// but group(1) is a 6-layer D2Array (the block's per-face textures) instead of
-    /// the procedural atlas, and the shader (`cuboid_loaded.wgsl`) selects the face
-    /// layer FROM THE FACE NORMAL — exactly like the instanced loaded path. Selected
-    /// in `draw` when a loaded material's bind group is supplied (else the procedural
+    /// Loaded-block pipelines: same vertex layout + uniform group, but group(1) is a
+    /// 6-layer D2Array (the block's per-face textures) instead of the procedural atlas,
+    /// and the shader (`cuboid_loaded.wgsl`) selects the face layer FROM THE FACE
+    /// NORMAL. Selected in `draw` when a loaded material's bind group is supplied (else the procedural
     /// atlas pipelines above run, unchanged). The debug variant is cull-off.
     loaded_pipeline: wgpu::RenderPipeline,
     loaded_debug_pipeline: wgpu::RenderPipeline,
     /// Whether the last `update_uniforms` requested debug-faces mode (selects the
     /// cull-off pipeline in `draw`, matching the uploaded `debug_face_mode` flag).
     debug_face_mode: bool,
-    /// Per-chunk GPU buffers (issue #20 S6c-2d), keyed by absolute chunk coord (the
-    /// coord `resident_render_chunks` reports). Replaces the single monolithic
-    /// vertex/index buffer + `CuboidMesh.chunks` index ranges: each chunk owns its
-    /// own buffers, meshed from its own per-chunk grid + a 1-voxel neighbor apron.
+    /// Per-chunk GPU buffers, keyed by absolute chunk coord (the coord
+    /// `resident_render_chunks` reports). Each chunk owns its own buffers, meshed from
+    /// its own per-chunk grid + a 1-voxel neighbor apron.
     chunk_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
     /// Chunk coords (keys into `chunk_buffers`) that survived the last frustum cull;
     /// computed in `update_uniforms`, consumed in `draw`. Sorted for a deterministic
@@ -109,18 +103,17 @@ pub struct CuboidMeshRenderer {
     visible_chunks: Vec<[i32; 3]>,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
-    /// Per-draw on-face-grid overlay-active bind group (group 2, ADR 0003 §3c / ADR 0010
-    /// E3): a single tiny `u32` uniform read with a DYNAMIC OFFSET. The backing buffer
-    /// holds the value `0` at offset 0 and `1` at offset `overlay_dynamic_stride`, so the
-    /// overlay-off draw binds offset 0 and the overlay-on draw binds the stride — the
-    /// per-draw uniform that replaced the per-vertex overlay flag (one bool per draw, §3c).
+    /// Per-draw on-face-grid overlay-active bind group (group 2): a single tiny `u32`
+    /// uniform read with a DYNAMIC OFFSET. The backing buffer holds the value `0` at
+    /// offset 0 and `1` at offset `overlay_dynamic_stride`, so the overlay-off draw binds
+    /// offset 0 and the overlay-on draw binds the stride. One bool per draw keeps the
+    /// overlay out of the vertex format.
     overlay_bind_group: wgpu::BindGroup,
     /// The dynamic-offset stride between the two overlay-active uniform entries (the
     /// device's `min_uniform_buffer_offset_alignment`, rounded up from the `u32` value).
     overlay_dynamic_stride: u32,
-    /// ONE atlas bind group (ADR 0002 E3c-1 / O8): all material textures packed
-    /// into a single 2D atlas texture + sampler. Replaces the former per-material
-    /// D2Array binds — a chunk of mixed materials is now one mesh = one draw, with
+    /// ONE atlas bind group: all material textures packed into a single 2D atlas
+    /// texture + sampler, so a chunk of mixed materials is one mesh = one draw, with
     /// the shader mapping each face's `material_id` to its atlas sub-rect (carried
     /// in the uniforms). Clamp-to-edge sampler: the shader tiles the per-voxel slice
     /// itself via `fract` mapped into the sub-rect (a Repeat sampler would wrap into
@@ -134,12 +127,12 @@ pub struct CuboidMeshRenderer {
     /// the atlas is bound once regardless of material).
     bound_material: MaterialChoice,
     /// The per-chunk grids the mesh was last built from (OWNED copies), retained so
-    /// the mesh can be re-built CLIPPED to a new layer-range band (issue #12 parity)
-    /// without the caller re-supplying them. The cuboid band clip masks each chunk's
+    /// the mesh can be re-built CLIPPED to a new layer-range band without the caller
+    /// re-supplying them. The cuboid band clip masks each chunk's
     /// region before decomposition (real cap faces), so a band change re-meshes; we
     /// cache the last band and rebuild only when it differs.
     source_chunk_grids: Vec<([i32; 3], VoxelGrid)>,
-    /// The two-layer chunks the mesh was last built from (ADR 0010 #53), retained so a band
+    /// The two-layer chunks the mesh was last built from, retained so a band
     /// reclip (the layer scrubber) can re-mesh DIRECTLY from the two-layer store — no dense
     /// source grids. Empty on the dense path; populated only by
     /// [`new_from_two_layer_chunks`](Self::new_from_two_layer_chunks).
@@ -154,20 +147,20 @@ pub struct CuboidMeshRenderer {
     /// Total boxes across all chunks the last build produced (diagnostic).
     total_box_count: u32,
     current_band: LayerBand,
-    /// The region the onion band is confined to (ADR 0018 Decision 5), or `None` for a
+    /// The region the onion band is confined to, or `None` for a
     /// scene-wide band / no clip. Part of the reclip key alongside `current_band` (a
     /// selection change re-meshes exactly like a band scrub).
     current_region: Option<RegionClip>,
-    /// The loaded-VS-block material bind-group layout (a 6-layer D2Array + sampler,
+    /// The loaded-block material bind-group layout (a 6-layer D2Array + sampler,
     /// from [`crate::renderer::build_face_material_layout`]). Retained so a
-    /// runtime-loaded block (M6/M7) can build a bind group of the SAME shape via
+    /// runtime-loaded block can build a bind group of the SAME shape via
     /// [`Self::material_bind_group_layout`] and be drawn by the loaded pipeline.
     loaded_material_layout: wgpu::BindGroupLayout,
     /// The shared material sampler (nearest, clamp-to-edge) reused by loaded
     /// materials so they slice/filter exactly like the procedural atlas. Exposed via
     /// [`Self::material_sampler`].
     loaded_material_sampler: wgpu::Sampler,
-    // --- ADR 0012 (H1): the onion GHOST pass ---
+    // --- The onion GHOST pass ---
     /// The ghost pipeline: the SAME procedural `cuboid.wgsl` vertex/fragment (its
     /// `ghost_mode` branch flat-tints), but alpha-blended over the solid with the depth
     /// test ON (`Less`) and depth WRITE OFF, so solid geometry occludes the ghost and
@@ -179,8 +172,8 @@ pub struct CuboidMeshRenderer {
     ghost_uniform_buffer: wgpu::Buffer,
     ghost_uniform_bind_group: wgpu::BindGroup,
     /// The GHOST geometry: two thin per-slab meshes clipped to the onion slabs below /
-    /// above the band (`[band_min − depth, band_min)` and `(band_max, band_max + depth]`,
-    /// ADR 0012). Built via the SAME banded mesher the solid uses (so the two paths — and
+    /// above the band (`[band_min − depth, band_min)` and `(band_max, band_max + depth]`).
+    /// Built via the SAME banded mesher the solid uses (so the two paths — and
     /// the dense vs two-layer builds — ghost identically), just at the slab bands. Empty
     /// when onion is off. Kept as two maps because a tall chunk can straddle both slabs.
     ghost_lower_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
@@ -195,9 +188,8 @@ impl CuboidMeshRenderer {
     /// Build the cuboid renderer from a WHOLE grid (the wrapper kept for `shot.rs`
     /// and tests that have a monolithic grid). Buckets the grid into per-chunk
     /// sub-grids by `floor(world_position / chunk_extent)` — the same chunking key
-    /// the resolve cache's per-chunk accessor uses (the legacy instanced renderer
-    /// this key once also matched was removed, part of #20) — then meshes per chunk
-    /// with an apron via [`Self::new_from_chunks`]. So a build from the whole grid
+    /// the resolve cache's per-chunk accessor uses — then meshes per chunk with an
+    /// apron via [`Self::new_from_chunks`]. So a build from the whole grid
     /// is byte-identical to a build from the resolve cache's per-chunk accessor.
     pub fn new(
         device: &wgpu::Device,
@@ -212,8 +204,8 @@ impl CuboidMeshRenderer {
         Self::new_from_chunks(device, queue, color_format, &chunk_refs, grid.dimensions)
     }
 
-    /// Build the cuboid renderer DIRECTLY from the resolve cache's per-chunk grids
-    /// (issue #20 S6c-2d). `chunk_grids` is `resident_render_chunks`'s output
+    /// Build the cuboid renderer DIRECTLY from the resolve cache's per-chunk grids.
+    /// `chunk_grids` is `resident_render_chunks`'s output
     /// (`(absolute_chunk_coord, &rebased_grid)` per covering chunk); `grid_dimensions`
     /// is the whole composite grid's voxel dims (the band-clip layer mapping). Meshes
     /// every chunk with a 1-voxel neighbor apron (see [`build_chunk_meshes_with_apron`])
@@ -242,19 +234,19 @@ impl CuboidMeshRenderer {
         )
     }
 
-    /// Build the cuboid renderer from a [`TwoLayerChunk`] per covering chunk (ADR 0010 E3):
+    /// Build the cuboid renderer from a [`TwoLayerChunk`] per covering chunk:
     /// a coarse-solid block becomes a ONE-BOX fast path, a boundary block its stored
     /// microblock cuboids, and inter-block / inter-chunk seam faces are culled via the
     /// per-face seam-solidity flags (plus the neighbor coarse layer) — NOT a densified
-    /// apron. The emitted exposed-face set is proven identical to the dense
-    /// `new_from_chunks` path (the E3 parity gate), so it renders pixel-identical.
+    /// apron. A parity gate holds the emitted exposed-face set identical to the dense
+    /// `new_from_chunks` path, so it renders pixel-identical.
     ///
     /// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
     /// `grid_dimensions` is the whole composite voxel dims; `recenter_voxels` is the
-    /// resolve's carried recenter (ADR 0008) so the two-layer mesh lands in the SAME world
-    /// frame the dense path assembles. The INITIAL build is FULL-band (the E3 fast paths);
-    /// the two-layer chunks are RETAINED so a later band reclip (the layer scrubber, ADR
-    /// 0010 #53) re-meshes DIRECTLY from the store — no dense source grids needed.
+    /// resolve's carried recenter so the two-layer mesh lands in the SAME world frame the
+    /// dense path assembles. The INITIAL build is FULL-band (the fast paths); the
+    /// two-layer chunks are RETAINED so a later band reclip (the layer scrubber)
+    /// re-meshes DIRECTLY from the store — no dense source grids needed.
     pub fn new_from_two_layer_chunks(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -265,7 +257,7 @@ impl CuboidMeshRenderer {
         voxels_per_block: u32,
     ) -> Self {
         // The synchronous path builds the FULL model (no band clip). Delegates to the banded
-        // builder with `LayerBand::FULL` so its output is byte-identical to before (goldens
+        // builder with `LayerBand::FULL`, byte-identical to the unbanded build (goldens
         // + gpu_parity stay pixel-exact).
         Self::new_from_two_layer_chunks_banded(
             device,
@@ -281,10 +273,10 @@ impl CuboidMeshRenderer {
     }
 
     /// As `new_from_two_layer_chunks`, but builds the mesh already CLIPPED to `band`
-    /// (issue #60 M2). The async worker uses this so the swapped-in renderer already matches
-    /// the active `effective_band` — the swap frame then does NOT trigger a full synchronous
-    /// `rebuild_for_band` re-mesh on the main thread (the multi-second hitch #60 removed,
-    /// which would fire on EVERY async swap during onion-skin scrubbing). Sets `current_band`
+    /// The async worker uses this so the swapped-in renderer already matches the active
+    /// `effective_band` — the swap frame then does NOT trigger a full synchronous
+    /// `rebuild_for_band` re-mesh on the main thread (a multi-second hitch that would
+    /// otherwise fire on EVERY async swap during onion-skin scrubbing). Sets `current_band`
     /// so the per-frame `update_uniforms` treats the band as already applied. `LayerBand::FULL`
     /// is identical to the plain builder.
     #[allow(clippy::too_many_arguments)]
@@ -317,12 +309,12 @@ impl CuboidMeshRenderer {
             grid_dimensions,
         );
         // Retain the two-layer chunks + frame so `rebuild_for_band` re-meshes the band
-        // slab from the store (ADR 0010 #53) — the layer scrubber on the two-layer path.
+        // slab from the store — the layer scrubber on the two-layer path.
         renderer.source_two_layer_chunks = chunks.to_vec();
         renderer.source_two_layer_recenter = recenter_voxels;
         renderer.source_two_layer_density = voxels_per_block.max(1);
         // The mesh was built AT `band` + `region`, so record them — a same-key
-        // `update_uniforms` is then a no-op instead of a full re-mesh (M2). A later band
+        // `update_uniforms` is then a no-op instead of a full re-mesh. A later band
         // or selection change still re-clips.
         renderer.current_band = band;
         renderer.current_region = region;
@@ -335,7 +327,7 @@ impl CuboidMeshRenderer {
     /// uniform / per-draw-overlay / atlas / loaded bind groups + pipelines, and assemble
     /// the renderer. `source_chunk_grids` is retained for the band reclip on the dense
     /// path (empty on the two-layer path, which reclips instead from its own retained
-    /// `source_two_layer_chunks` — wired since ADR 0010 E5).
+    /// `source_two_layer_chunks`).
     fn assemble(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -363,7 +355,7 @@ impl CuboidMeshRenderer {
             }],
         });
 
-        // ADR 0012 (H1): the onion ghost draw's own uniform buffer + bind group (same
+        // The onion ghost draw's own uniform buffer + bind group (same
         // layout as the solid, a separate buffer so one frame carries both states).
         let ghost_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cuboid ghost uniforms"),
@@ -380,23 +372,21 @@ impl CuboidMeshRenderer {
             }],
         });
 
-        // --- Per-draw on-face-grid overlay-active uniform (group 2, ADR 0003 §3c) ---
-        // The overlay flag is no longer a vertex attribute (ADR 0010 E3): a chunk mesh is
-        // split into an overlay-off and an overlay-on draw, each selecting this per-draw
+        // --- Per-draw on-face-grid overlay-active uniform (group 2) ---
+        // The overlay flag is NOT a vertex attribute: a chunk mesh is split into an overlay-off and an overlay-on draw, each selecting this per-draw
         // `u32` via a DYNAMIC OFFSET. Two entries — `0` then `1` — packed one
         // `min_uniform_buffer_offset_alignment` apart, so the off-draw binds offset 0 and
         // the on-draw binds the stride.
         let (overlay_bind_group, overlay_dynamic_stride) =
             build_overlay_bind_group(device, &overlay_bind_group_layout(device));
 
-        // --- Material texture ATLAS (E3c-1 / ADR 0002 O8) ---
+        // --- Material texture ATLAS ---
         // Pack ALL material textures (Stone/Wood/Plain) into ONE atlas image and
         // bind it as a SINGLE 2D texture, so a chunk of mixed materials is one mesh
-        // = one draw (the Vintage Story approach) — no per-material texture bind.
-        // Each face's `material_id` maps to its atlas sub-rect (uploaded in the
+        // = one draw — no per-material texture bind. Each face's `material_id` maps to its atlas sub-rect (uploaded in the
         // uniforms); the shader tiles the per-voxel slice INTO that sub-rect.
         //
-        // Sampler is CLAMP-to-edge + Nearest (matching the instanced texel grid).
+        // Sampler is CLAMP-to-edge + Nearest.
         // The per-voxel tiling can NOT use a Repeat sampler here — Repeat would wrap
         // to the WHOLE atlas, i.e. into a neighbor material — so the shader does the
         // `fract`-tiling into the sub-rect itself, and the atlas's replicated-edge
@@ -444,7 +434,7 @@ impl CuboidMeshRenderer {
             bind_group_layouts: &[
                 Some(&uniform_bind_group_layout),
                 Some(&atlas_bind_group_layout),
-                // group(2): the per-draw overlay-active uniform (ADR 0003 §3c).
+                // group(2): the per-draw overlay-active uniform.
                 Some(&overlay_bind_group_layout(device)),
             ],
             immediate_size: 0,
@@ -469,17 +459,16 @@ impl CuboidMeshRenderer {
                     shader_location: 2,
                     format: wgpu::VertexFormat::Uint32,
                 },
-                // ADR 0003 §3c / ADR 0010 E3: the on-face-grid flag is NO LONGER a vertex
-                // attribute — the chunk mesh is split into overlay-off / overlay-on draws,
-                // each selecting a per-draw `grid_overlay_active` uniform (group 2).
+                // The on-face-grid flag is NOT a vertex attribute — the chunk mesh is
+                // split into overlay-off / overlay-on draws, each selecting a per-draw
+                // `grid_overlay_active` uniform (group 2).
             ],
         };
 
         // Build the render pipeline, parameterized by cull mode: the normal pass
         // back-culls; the debug-faces pass disables culling so a back face that is
         // the nearest surface (a winding bug) still draws and is flagged by the
-        // shader's `front_facing` marker — exactly like the instanced path's
-        // cull-on / cull-off pipeline pair.
+        // shader's `front_facing` marker.
         let build_pipeline = |label: &str, cull_mode: Option<wgpu::Face>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -528,7 +517,7 @@ impl CuboidMeshRenderer {
         let pipeline = build_pipeline("cuboid pipeline", Some(wgpu::Face::Back));
         let debug_pipeline = build_pipeline("cuboid debug pipeline", None);
 
-        // ADR 0012 (H1): the onion GHOST pipeline. Same shader + layout as the solid, but
+        // The onion GHOST pipeline. Same shader + layout as the solid, but
         // alpha-blends the flat-tinted ghost OVER the solid, depth-tested `Less`. Depth WRITE
         // is ON (not off): each pixel then shows only the NEAREST ghost surface, blended once
         // — NOT an order-dependent accumulation of every overlapping translucent face. This
@@ -583,7 +572,7 @@ impl CuboidMeshRenderer {
             cache: None,
         });
 
-        // --- Loaded-VS-block pipelines (part of #20) ---
+        // --- Loaded-block pipelines ---
         // A second shader + pipeline pair that binds the applied block's 6-layer
         // D2Array at group(1) (built externally by `LoadedMaterial`, against the
         // SAME `build_face_material_layout` descriptor used here, so the bind group
@@ -592,7 +581,7 @@ impl CuboidMeshRenderer {
         // block renders pixel-aligned with the procedural geometry — only the
         // texture source differs. The procedural atlas pipelines stay the default.
         let loaded_material_layout = crate::renderer::build_face_material_layout(device);
-        // The shared material sampler (nearest, clamp-to-edge) — reused by loaded VS
+        // The shared material sampler (nearest, clamp-to-edge) — reused by loaded
         // blocks so they slice/filter exactly like the procedural atlas. Retained on
         // the renderer and exposed so the app can build a `LoadedMaterial` against it.
         let loaded_material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -620,7 +609,7 @@ impl CuboidMeshRenderer {
                 bind_group_layouts: &[
                     Some(&uniform_bind_group_layout),
                     Some(&loaded_material_layout),
-                    // group(2): the per-draw overlay-active uniform (ADR 0003 §3c).
+                    // group(2): the per-draw overlay-active uniform.
                     Some(&overlay_bind_group_layout(device)),
                 ],
                 immediate_size: 0,
@@ -714,7 +703,7 @@ impl CuboidMeshRenderer {
         }
     }
 
-    /// Incrementally update the per-chunk buffers for a geometry edit (issue #40):
+    /// Incrementally update the per-chunk buffers for a geometry edit:
     /// re-mesh + re-upload ONLY the chunks the edit (and its apron neighbors) touched,
     /// drop vacated chunks, and KEEP every other chunk's existing buffers — instead of
     /// the wholesale `new_from_chunks` recreate (the measured ~600ms/edit GPU cost).
@@ -801,17 +790,16 @@ impl CuboidMeshRenderer {
     }
 
     /// Incrementally update the per-chunk buffers for a geometry edit on the **two-layer**
-    /// path (issue #55 — the two-layer analog of `incremental_rebuild_from_chunks`):
+    /// path (the two-layer analog of `incremental_rebuild_from_chunks`):
     /// re-mesh + re-upload ONLY the chunks the edit (and its 26-neighborhood seam footprint)
     /// touched, drop vacated chunks, and KEEP every other chunk's existing buffers — instead
     /// of the wholesale `new_from_two_layer_chunks` recreate that re-meshes + re-uploads the
-    /// WHOLE resident set every edit (the exact per-edit latency #40 fixed for the dense path,
-    /// regressed onto the two-layer live renderer after E5).
+    /// WHOLE resident set every edit (seconds of per-edit latency).
     ///
     /// `chunks` is the FULL post-edit covering set (the `TwoLayerResidentCache`'s resident
     /// chunks), needed IN FULL so the re-meshed chunks' seam-flag culling consults every
-    /// neighbor; `recenter_voxels` / `voxels_per_block` are the resolve's carried frame
-    /// (ADR 0008); `grid_dimensions` the whole composite's voxel dims (band-clip mapping);
+    /// neighbor; `recenter_voxels` / `voxels_per_block` are the resolve's carried frame;
+    /// `grid_dimensions` the whole composite's voxel dims (band-clip mapping);
     /// `evicted_dirty` the resident cache's evicted coords for this edit (from
     /// [`TwoLayerResidentCache::invalidate_aabb`](evaluation::two_layer_store::TwoLayerResidentCache::invalidate_aabb)).
     ///
@@ -823,7 +811,7 @@ impl CuboidMeshRenderer {
     /// by `incremental_two_layer_gpu_buffer_rebuild_equals_wholesale`).
     ///
     /// PRECONDITION: this must be the two-layer path (built via
-    /// `new_from_two_layer_chunks`). A two-layer chunk is chunk-local-integer (ADR 0008), so
+    /// `new_from_two_layer_chunks`). A two-layer chunk is chunk-local-integer, so
     /// — unlike the dense path — a floating-origin recenter SHIFT does NOT staleen the resident
     /// buffers (the recenter is a pure index offset re-applied here as `recenter_voxels`); the
     /// caller need not fall back on a recenter shift, only on a DENSITY change (which resizes
@@ -936,8 +924,7 @@ impl CuboidMeshRenderer {
         &self.loaded_material_sampler
     }
 
-    /// Re-mesh the stored per-chunk grids CLIPPED to `band` (issue #12 parity) and
-    /// re-upload every chunk's buffers, when `band` differs from the last build. The
+    /// Re-mesh the stored per-chunk grids CLIPPED to `band` and re-upload every chunk's buffers, when `band` differs from the last build. The
     /// cuboid band clip masks each chunk's region before decomposition so the band
     /// edges get real cap faces, so it must rebuild geometry (a fragment discard
     /// would leave a merged column's slab open-topped). No-op when the band is
@@ -949,8 +936,8 @@ impl CuboidMeshRenderer {
         region: Option<RegionClip>,
     ) {
         // --- SOLID geometry (clipped to the exact [band_min, band_max] inside the region;
-        // finished outside it — ADR 0018 Decision 5). `onion_depth` is NOT a solid input.
-        // Skipped when neither the band NOR the region changed (M2 no-swap-rehitch). ---
+        // finished outside it). `onion_depth` is NOT a solid input. Skipped when neither
+        // the band NOR the region changed, so an async swap does not re-hitch. ---
         if band != self.current_band || region != self.current_region {
             self.current_band = band;
             self.current_region = region;
@@ -961,13 +948,13 @@ impl CuboidMeshRenderer {
                 self.visible_chunks = self.chunk_buffers.keys().copied().collect();
                 self.visible_chunks.sort_unstable();
             }
-            // A source-less (empty) build leaves the geometry in place (matches pre-0012).
+            // A source-less (empty) build leaves the geometry in place.
         }
 
-        // --- GHOST geometry (ADR 0012 H1 / ADR 0018 Decision 5): the thin per-slab onion
-        // meshes, region-clipped. Rebuilt on a band OR region change OR when never built for
-        // this key (the first frame after an async swap that pre-built only the solid — the
-        // slabs are cheap, so this is not the multi-second re-mesh #60 removed). ---
+        // --- GHOST geometry: the thin per-slab onion meshes, region-clipped. Rebuilt on a
+        // band OR region change OR when never built for this key (the first frame after an
+        // async swap that pre-built only the solid — the slabs are cheap, so this is not a
+        // multi-second re-mesh). ---
         if self.ghost_built_band != Some((band, region)) {
             self.rebuild_ghost_slabs(device, band, region);
             self.ghost_built_band = Some((band, region));
@@ -978,8 +965,8 @@ impl CuboidMeshRenderer {
     /// renderer retains (the two-layer store, else the dense per-chunk grids). `None`
     /// when the renderer has neither source (an empty build). The two-layer analog of
     /// the dense apron mesher, kept as ONE helper so [`rebuild_for_band`](Self::rebuild_for_band) and the ghost
-    /// slab build share the exact same clip semantics (ADR 0012: the two ghost slabs are
-    /// just this build at the slab bands). `region` carries its own [`RegionRole`], so the
+    /// slab build share the exact same clip semantics (the two ghost slabs are just this
+    /// build at the slab bands). `region` carries its own [`RegionRole`], so the
     /// caller passes `solid_region` (finished outside) or `ghost_region` (clipped to inside).
     fn build_band_meshes(
         &self,
@@ -1012,7 +999,7 @@ impl CuboidMeshRenderer {
         ))
     }
 
-    /// (ADR 0012 H1) Rebuild the two onion GHOST slab meshes for `band`: the layers
+    /// Rebuild the two onion GHOST slab meshes for `band`: the layers
     /// `[band_min − depth, band_min)` (lower slab) and `(band_max, band_max + depth]`
     /// (upper slab), the recentered-Z remainder of the onion span `AppCore::onion_fog_params`
     /// derives (floored half, Z-up, depth clamped 1..8). Each slab is meshed by the SAME
@@ -1031,7 +1018,7 @@ impl CuboidMeshRenderer {
         if band.onion_depth == 0 {
             return;
         }
-        // ADR 0018 Decision 5: the ghost only fills INSIDE the selected object's region
+        // The ghost only fills INSIDE the selected object's region
         // (the finished scene outside is drawn by the solid pass), so the slabs are
         // hard-clipped to it (`ClipToRegion`). With no region the slabs span the scene.
         let slab_region = ghost_region(region);
@@ -1090,7 +1077,7 @@ impl CuboidMeshRenderer {
         self.chunk_buffers.len() as u32
     }
 
-    /// Number of chunks that survived the last frustum cull (will be drawn).
+    /// Number of chunks that survived the last frustum cull.
     pub fn visible_chunk_count(&self) -> u32 {
         self.visible_chunks.len() as u32
     }
@@ -1103,11 +1090,10 @@ impl CuboidMeshRenderer {
     /// voxel position the UV slice + overlay key off. `voxels_per_block` is the
     /// density (slice size + block-line period). `grid_overlay_enabled` reflects
     /// the Display toggle. `bound` is the active procedural material: it selects
-    /// the bound texture (E3b-2) AND drives the relative base-color modulation
-    /// (exactly like the instanced step-3b). `None` means a loaded VS block is
-    /// active: modulation is disabled here, and the loaded-block pipeline selected in
-    /// `draw` (when its 6-layer D2Array bind group is supplied) ignores the
-    /// procedural atlas/modulation uniforms entirely (part of #20).
+    /// the bound texture AND drives the relative base-color modulation. `None` means a
+    /// loaded block is active: modulation is disabled here, and the loaded-block pipeline
+    /// selected in `draw` (when its 6-layer D2Array bind group is supplied) ignores the
+    /// procedural atlas/modulation uniforms entirely.
     #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
         &mut self,
@@ -1122,8 +1108,7 @@ impl CuboidMeshRenderer {
         region: Option<RegionClip>,
         debug_face_mode: bool,
     ) {
-        // Layer-range band clip (issue #12 parity) + region scoping (ADR 0018 Decision 5):
-        // re-mesh clipped to the band inside the region (real cap faces at the band /
+        // Layer-range band clip + region scoping: re-mesh clipped to the band inside the region (real cap faces at the band /
         // region edges) when either changed. Debug-faces mode bypasses BOTH (the check
         // sees the whole model), so force the full band + no region while it is on.
         let (effective_band, effective_region) = if debug_face_mode {
@@ -1133,11 +1118,10 @@ impl CuboidMeshRenderer {
         };
         self.rebuild_for_band(device, effective_band, effective_region);
         // The bound procedural material drives BOTH the texture binding (selected
-        // in `draw`) and the per-box modulation. A `None` (loaded VS block) falls
-        // back to Plain's texture + neutral modulation for now (the cuboid path
-        // renders a loaded block as a single global material this sub-step).
-        // Debug-faces mode forces modulation off (the shader bypasses it anyway),
-        // matching the instanced path.
+        // in `draw`) and the per-box modulation. A `None` (loaded block) falls
+        // back to Plain's texture + neutral modulation: the cuboid path renders a
+        // loaded block as a single global material. Debug-faces mode forces
+        // modulation off (the shader bypasses it anyway).
         let (modulation_enabled, base_colors, material) = match bound {
             Some(material) if !debug_face_mode => (
                 true,
@@ -1182,15 +1166,14 @@ impl CuboidMeshRenderer {
             block_line_half_width: overlay.block_line_half_width,
             voxel_line_alpha: overlay.voxel_line_alpha,
             block_line_alpha: overlay.block_line_alpha,
-            // Layer-range band clip (issue #12 parity): the shader keeps fragments
-            // whose voxel layer is in [band_min, band_max] (both INCLUSIVE),
-            // matching the instanced voxel pass. `LayerBand::FULL` uses band_max =
+            // Layer-range band clip: the shader keeps fragments whose voxel layer is
+            // in [band_min, band_max] (both INCLUSIVE). `LayerBand::FULL` uses band_max =
             // u32::MAX, so `as f32` (≈ 4.29e9) leaves every layer unclipped.
             band_min: band.band_min as f32,
             band_max: band.band_max as f32,
             debug_face_mode: if debug_face_mode { 1.0 } else { 0.0 },
-            // ADR 0012 (H1): the SOLID draw is never the ghost — 0 here keeps the solid
-            // uniform bytes identical to pre-onion-ghost (non-onion goldens byte-green).
+            // The SOLID draw is never the ghost — 0 here keeps the non-onion goldens
+            // byte-green.
             ghost_mode: 0.0,
             material_base_colors: base_colors,
             material_atlas_rects: self.atlas_rects,
@@ -1200,7 +1183,7 @@ impl CuboidMeshRenderer {
             // half-extent frame. The subtraction happens ONLY inside this named conversion (the SAME
             // floor(dim/2) `grid_half_extent` above), so no code can treat the render-local
             // `world_position + grid_half_extent` as if it were true-world; `recenter` is the
-            // resolve's carried frame (ADR 0008).
+            // resolve's carried frame.
             overlay_world_offset: self
                 .source_two_layer_recenter
                 .render_absolute_to_true_world_offset(grid_half_extent),
@@ -1208,7 +1191,7 @@ impl CuboidMeshRenderer {
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        // ADR 0012 (H1) — the onion GHOST uniform. Identical camera/frame to the solid,
+        // The onion GHOST uniform. Identical camera/frame to the solid,
         // but `ghost_mode = 1` (flat translucent tint) + the tint color. Both onion
         // slabs share this ONE uniform (the slab distinction lives in the per-slab GHOST
         // geometry, not the uniform), so a band scrub only re-meshes the thin slabs and
@@ -1242,12 +1225,11 @@ impl CuboidMeshRenderer {
     /// frustum-visible per-chunk buffers, one indexed draw per chunk over its own
     /// vertex/index buffer.
     ///
-    /// `loaded_material` (part of #20): when an applied/loaded VS block is active,
-    /// the caller passes the block's 6-layer D2Array bind group (`LoadedMaterial::
-    /// bind_group`); the cuboid path then selects the loaded-block pipeline + shader,
-    /// binding that D2Array at group(1) and selecting the per-face layer by the face
-    /// normal — so the cuboid path shows the SAME texture the instanced path shows.
-    /// `None` (no block applied) keeps the procedural-atlas path, unchanged.
+    /// `loaded_material`: when an applied/loaded block is active, the caller passes the
+    /// block's 6-layer D2Array bind group (`LoadedMaterial::bind_group`); the cuboid path
+    /// then selects the loaded-block pipeline + shader, binding that D2Array at group(1)
+    /// and selecting the per-face layer by the face normal. `None` (no block applied)
+    /// keeps the procedural-atlas path.
     pub fn draw(
         &self,
         render_pass: &mut wgpu::RenderPass<'_>,
@@ -1258,7 +1240,7 @@ impl CuboidMeshRenderer {
         }
         // Debug-faces mode selects the cull-off pipeline (matching the uploaded
         // `debug_face_mode` flag) so back faces surviving a winding bug still draw
-        // and get the shader's stripe marker — same as the instanced path. The
+        // and get the shader's stripe marker. The
         // pipeline pair is the loaded-block pair when a block is applied (binds its
         // D2Array at group 1), else the procedural atlas pair.
         let (pipeline, material_bind_group) = match loaded_material {
@@ -1294,7 +1276,7 @@ impl CuboidMeshRenderer {
             }
             render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
             render_pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // ADR 0003 §3c: two draws per chunk — the overlay-OFF run (group(2) dynamic
+            // Two draws per chunk — the overlay-OFF run (group(2) dynamic
             // offset 0 → overlay-active uniform = 0) then the overlay-ON run (dynamic
             // offset `overlay_dynamic_stride` → uniform = 1). The on-run is the second
             // half of the single index buffer (byte offset `index_count * 4`).
@@ -1314,7 +1296,7 @@ impl CuboidMeshRenderer {
         }
     }
 
-    /// (ADR 0012 H1) Draw the onion GHOST pass: the two thin per-slab meshes flat-tinted
+    /// Draw the onion GHOST pass: the two thin per-slab meshes flat-tinted
     /// translucent, alpha-blended over the solid with the depth test `Less` + depth WRITE ON
     /// (nearest ghost surface wins, builder-independent). MUST be called AFTER `draw`, inside
     /// the same MSAA pass (the solid's depth is what occludes the ghost). A no-op when onion is off (both slab

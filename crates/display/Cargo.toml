@@ -20,7 +20,7 @@ edition = "2021"
 # settings, vox_export, gpu) fails to build. The display-state machine that OWNS the async
 # workers (the engagement orchestrator/routing) is therefore NOT here: it is work-layer and
 # lands at the work-crate cut. See docs/architecture/03-display.md for the layer this crate
-# realises and docs/design/per-layer-crates-extraction-map.md (the display row) for provenance.
+# realizes.
 
 [dependencies]
 # The classified boundary set this crate meshes + raymarches: the two-layer chunk

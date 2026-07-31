@@ -3,8 +3,7 @@ use super::*;
 /// One mesh vertex of a cuboid face: world position, the face's outward normal, and the
 /// box's `block_id` (the clean color index, constant across the face).
 ///
-/// ADR 0010 E3 / ADR 0003 §3c: the on-face-grid overlay flag is **no longer a vertex
-/// attribute**. A chunk mesh is SPLIT into an overlay-off and an overlay-on index run over
+/// The on-face-grid overlay flag is **not a vertex attribute**. A chunk mesh is SPLIT into an overlay-off and an overlay-on index run over
 /// this one shared vertex list (a box never spans both — the overlay bit is part of the
 /// decomposition key), and the draw selects the per-draw overlay-active uniform per run. So
 /// the render flag is entirely out of the per-vertex format while the per-object behavior
@@ -20,9 +19,7 @@ pub(crate) struct CuboidVertex {
 /// The six cube-face directions, each with its outward normal and the four
 /// corner offsets (in voxel units, relative to the box's min corner, scaled by
 /// the box's extent) wound COUNTER-CLOCKWISE when viewed from OUTSIDE — so
-/// `front_face: Ccw` + `cull_mode: Back` keeps the outward faces (this matched the
-/// winding convention of the instanced per-voxel-cube renderer, since removed with
-/// the legacy mesher — #20).
+/// `front_face: Ccw` + `cull_mode: Back` keeps the outward faces.
 ///
 /// Each corner is `[x, y, z]` in {0,1}: 0 = the box's min-corner plane on that
 /// axis, 1 = its max-corner plane. The mesh builder maps 0→`min` and

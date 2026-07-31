@@ -23,16 +23,14 @@ pub(crate) const AIR_CELL_KEY_DONT_CARE: u16 = 0;
 use substrate::spatial::min_mip_pyramid::{fold_coordinate_to_cell, MinMipLevel};
 
 // ============================================================================
-// Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2+G4) — THREE
-// WORLD-FIXED coarse "any-brick-inside" levels above the brick set, a min-mip of
-// the record keys on an 8× cell progression (8 → 64 → 512 blocks/cell). The
-// hierarchical DDA (brick_raymarch.wgsl) jumps a ray to the exit of the coarsest
-// EMPTY level covering its position — one stride through empty space — descending
-// to per-block brick work only where a level reports occupancy. This is the port
-// of ADR 0009's measured 160→10240 (~64×) scattered-ceiling lift; G4 adds the
-// third level (512-block cells) so a wide scatter skips whole 512-block voids in
-// one stride instead of eight L2 strides, closing most of the raw scattered
-// ceiling gap vs the rasterized mesh (frustum/Z cull it gets for free).
+// Clip-map occupancy pyramid — THREE WORLD-FIXED coarse "any-brick-inside" levels
+// above the brick set, a min-mip of the record keys on an 8× cell progression
+// (8 → 64 → 512 blocks/cell). The hierarchical DDA (brick_raymarch.wgsl) jumps a ray
+// to the exit of the coarsest EMPTY level covering its position — one stride through
+// empty space — descending to per-block brick work only where a level reports
+// occupancy. The third level (512-block cells) lets a wide scatter skip whole
+// 512-block voids in one stride instead of eight L2 strides, closing most of the raw
+// scattered ceiling gap vs the rasterized mesh (frustum/Z cull it gets for free).
 //
 // Why stop at three: the packed key is 21 bits/axis (±2^20 blocks), so a fourth
 // level (4096 blocks/cell) has at most ~512 cells of span to skip; on realistic
@@ -41,13 +39,12 @@ use substrate::spatial::min_mip_pyramid::{fold_coordinate_to_cell, MinMipLevel};
 // not to pay (see `clipmap_scattered_scene_skips_empty_space`'s +L4 column).
 // ============================================================================
 
-/// Level 1 (fine) clip-map cell edge, in BLOCKS — the benchmark's proven config
-/// (ADR 0011 Decision 4a). Block-denominated (density-agnostic by construction),
-/// never a hard-coded voxel count.
+/// Level 1 (fine) clip-map cell edge, in BLOCKS — the benchmark's proven config.
+/// Block-denominated (density-agnostic by construction), never a hard-coded voxel count.
 pub const CLIPMAP_LEVEL_1_BLOCKS_PER_CELL: u32 = 8;
 /// Level 2 (middle) clip-map cell edge, in BLOCKS (the benchmark's L2) — 8× L1.
 pub const CLIPMAP_LEVEL_2_BLOCKS_PER_CELL: u32 = 64;
-/// Level 3 (coarse) clip-map cell edge, in BLOCKS (G4) — 8× L2, checked first by
+/// Level 3 (coarse) clip-map cell edge, in BLOCKS — 8× L2, checked first by
 /// the hierarchical DDA so a wide empty void skips in one 512-block stride.
 pub const CLIPMAP_LEVEL_3_BLOCKS_PER_CELL: u32 = 512;
 
@@ -78,7 +75,7 @@ pub(crate) fn clipmap_level_from_kernel(level: MinMipLevel) -> ClipmapLevel {
 impl ClipmapLevel {
     /// An empty level (no occupied cells) — the "pyramid off" form the renderer
     /// installs to A/B the hierarchical skip (`record_count == 0` ⇒ the shader
-    /// never skips, so the march is the flat G1 block-DDA).
+    /// never skips, so the march is the flat block-DDA).
     pub fn empty(blocks_per_cell: u32) -> Self {
         clipmap_level_from_kernel(MinMipLevel::empty(blocks_per_cell))
     }
@@ -86,7 +83,7 @@ impl ClipmapLevel {
     /// Fold a record set's block keys into this level's occupied-cell set: every
     /// record's block maps to exactly one cell; the deduplicated, sorted set is
     /// the min-mip. A thin adapter over the substrate fold ([`MinMipLevel::from_keys`]) —
-    /// extract the packed block keys, hand them to the kernel (ADR 0011 4a).
+    /// extract the packed block keys, hand them to the kernel.
     pub fn from_records(records: &[BrickRecord], blocks_per_cell: u32) -> Self {
         // Fold the record block keys straight through the kernel's single-pass entry — no
         // intermediate `Vec<u64>` (only the folded cell-key output is allocated).
@@ -97,14 +94,14 @@ impl ClipmapLevel {
     }
 
     /// Fold every non-air block of the two-layer chunk set into this level's occupied-cell
-    /// set — the **chunk-sourced** min-mip that replaces [`from_records`](Self::from_records)
-    /// now that the record set is SURFACE-ONLY (ADR 0011 interior elision, this epic). The
-    /// pyramid must stay a conservative superset over EVERY occupied block (interior included,
-    /// so the DDA never strides past an occupied cell), which the surface record set no longer
-    /// enumerates — but the chunks do (their coarse layer holds the interior).
+    /// set — the **chunk-sourced** min-mip the live sinks use, because the record set is
+    /// SURFACE-ONLY (interior elision). The pyramid must stay a conservative superset over
+    /// EVERY occupied block (interior included, so the DDA never strides past an occupied
+    /// cell), which the surface record set does not enumerate — but the chunks do (their
+    /// coarse layer holds the interior).
     ///
-    /// This is the DOMAIN traversal half of the extraction: it walks the chunks and emits the
-    /// per-cell keys, then hands the raw key list to the substrate sort+dedup sink
+    /// This is the DOMAIN traversal half: it walks the chunks and emits the per-cell keys,
+    /// then hands the raw key list to the substrate sort+dedup sink
     /// ([`MinMipLevel::from_folded_cell_keys`]) — the pure fold lives in the kernel, the chunk
     /// walk and its fast path stay here.
     ///
@@ -176,9 +173,9 @@ impl ClipmapLevel {
 }
 
 /// The three-level clip-map pyramid (L1 = 8-block cells, L2 = 64-block cells, L3
-/// = 512-block cells; ADR 0011 Decision 4a + G4). A derived, rebuildable min-mip
-/// of the brick records — never truth (ADR 0006/0009 4c). The DDA descends the
-/// levels coarsest-first (L3 → L2 → L1) via [`Self::levels_coarse_to_fine`].
+/// = 512-block cells). A derived, rebuildable min-mip of the brick records — never
+/// truth. The DDA descends the levels coarsest-first (L3 → L2 → L1) via
+/// [`Self::levels_coarse_to_fine`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipmapPyramid {
     /// Fine level (8-block cells).
@@ -188,7 +185,7 @@ pub struct ClipmapPyramid {
     /// Coarse level (512-block cells) — checked first by the hierarchical DDA.
     pub level_3: ClipmapLevel,
     /// The block-granular interior-occupancy signal ([`BlockOccupancyMasks`]) — the
-    /// band-clip cross-section fix (ADR 0011). Populated by [`from_chunks`](Self::from_chunks);
+    /// band-clip cross-section fix. Populated by [`from_chunks`](Self::from_chunks);
     /// EMPTY for the record-sourced / off constructors (they run FULL-band only, where the
     /// fallback never fires). Not part of the clip-map SKIP contract — the DDA never reads it;
     /// it rides here so the live install sites carry it without a new argument.
@@ -197,10 +194,10 @@ pub struct ClipmapPyramid {
 
 impl ClipmapPyramid {
     /// Build all levels from a brick-field's sorted records (a pure function of the record
-    /// keys). **Oracle/legacy:** now that the live record set is surface-only, a pyramid the
-    /// DDA can skip against must cover interior cells too, so the live sinks build from the
-    /// CHUNKS via [`from_chunks`](Self::from_chunks); this constructor stays as the parity
-    /// oracle (fed a full, interior-inclusive record set) and for the pyramid-shape unit tests.
+    /// keys). **Oracle only:** the live record set is surface-only and a pyramid the DDA can
+    /// skip against must cover interior cells too, so the live sinks build from the CHUNKS via
+    /// [`from_chunks`](Self::from_chunks). This constructor is the parity oracle (fed a full,
+    /// interior-inclusive record set) and the pyramid-shape unit tests' entry.
     pub fn from_records(records: &[BrickRecord]) -> Self {
         // The record path folds the SAME block-key set at all three edges — exactly the substrate
         // multi-level assembly ([`SparseMinMipPyramid::from_key_iter`]). Stream the record keys to
@@ -228,8 +225,8 @@ impl ClipmapPyramid {
         }
     }
 
-    /// Build all levels from the two-layer chunk set — the LIVE pyramid constructor (ADR 0011
-    /// interior elision). The surface-only record set omits interior blocks the DDA's skip
+    /// Build all levels from the two-layer chunk set — the LIVE pyramid constructor.
+    /// The surface-only record set omits interior blocks the DDA's skip
     /// pyramid must still cover, so the min-mip is derived from the chunks (which retain the
     /// interior in their coarse layer), with a solid-chunk bulk fast path. Conservative-superset
     /// identical to [`from_records`](Self::from_records) over a full record set — see
@@ -239,14 +236,14 @@ impl ClipmapPyramid {
             level_1: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
             level_2: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
             level_3: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
-            // The band-clip interior-occupancy signal (this epic): block-granular, bitpacked,
-            // consulted only on a record miss under an active band clip (ADR 0011).
+            // The band-clip interior-occupancy signal: block-granular, bitpacked, consulted
+            // only on a record miss under an active band clip.
             interior_masks: BlockOccupancyMasks::from_chunks(chunks),
         }
     }
 
     /// The "pyramid off" form — every level empty, so the shader's hierarchical
-    /// skip never fires (the flat G1 block-DDA). Used by the pyramid-on == off
+    /// skip never fires (the flat block-DDA). Used by the pyramid-on == off
     /// parity assertion and the perf probe's baseline.
     pub fn empty() -> Self {
         ClipmapPyramid {

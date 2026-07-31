@@ -1,14 +1,14 @@
 use super::*;
 
 // ===========================================================================
-// ADR 0010 E3 — the TWO-LAYER mesher (one-box coarse + cuboid microblock +
-// seam-flag culling). Builds a chunk's mesh from its [`TwoLayerChunk`] instead of
-// a dense `VoxelGrid`, and PROVES (the E3 parity gate) the exposed-face set is
-// identical to the dense [`build_chunk_meshes_with_apron`].
+// The TWO-LAYER mesher (one-box coarse + cuboid microblock + seam-flag culling).
+// Builds a chunk's mesh from its [`TwoLayerChunk`] instead of a dense `VoxelGrid`;
+// a parity gate holds its exposed-face set identical to the dense
+// [`build_chunk_meshes_with_apron`].
 // ===========================================================================
 
-/// Whether the WHOLE shared face of one block is solid, for seam-flag culling (ADR 0010
-/// Decision 4). A face that is fully solid backs every cell on the neighbor's matching
+/// Whether the WHOLE shared face of one block is solid, for seam-flag culling.
+/// A face that is fully solid backs every cell on the neighbor's matching
 /// face, so the neighbor's face there is occluded and culled. A coarse-solid block is
 /// solid on all 6 faces; an air block on none; a boundary block per its [`SeamSolidity`].
 /// `None` = the block is air / does not exist (no covering chunk) ⇒ never solid.
@@ -33,7 +33,7 @@ impl BlockFaceSolidity {
     }
 }
 
-/// The PER-CELL occupancy of a neighbor block's face abutting a boundary block (ADR 0010 E3).
+/// The PER-CELL occupancy of a neighbor block's face abutting a boundary block.
 /// A coarse-solid neighbor is `Solid` (the seam-flag fast path — no densification); an air /
 /// missing neighbor is `Air`; a boundary neighbor carries its face layer's `density²`
 /// occupancy bitmap. This is the exact neighbor info the dense apron carried, restricted to
@@ -67,13 +67,12 @@ enum BlockRoute {
     Skip,
     /// Densify + apron-mesh with the per-voxel band + region mask (`emit_block_banded`).
     Banded,
-    /// Emit the E3 FAST path (coarse one-box / boundary cuboids), unclipped/finished.
+    /// Emit the FAST path (coarse one-box / boundary cuboids), unclipped/finished.
     Fast,
 }
 
 /// Decide how block `[block_lo, block_hi]` (INCLUSIVE recentered corners) is meshed under
-/// `band_active`/`region` (ADR 0018 Decision 5). See the routing analysis in the mesh
-/// module: a SOLID pass renders a block wholly outside the region FAST (finished), routes
+/// `band_active`/`region`: a SOLID pass renders a block wholly outside the region FAST (finished), routes
 /// the region's 1-block shell + interior band-cut blocks through the banded mesher (so a
 /// fast block never abuts a band-clipped one), and skips a fully-inside block that the band
 /// wholly excludes; a GHOST pass skips everything outside the region or the slab.
@@ -121,7 +120,7 @@ fn decide_block_route(
     }
 }
 
-/// Build the per-chunk exposed-face meshes from the two-layer chunks (ADR 0010 E3). A
+/// Build the per-chunk exposed-face meshes from the two-layer chunks. A
 /// coarse-solid block emits ONE box (no per-voxel decompose of the solid interior); a
 /// boundary block emits its stored microblock cuboids; inter-block / inter-chunk seam
 /// faces are culled via the per-face seam-solidity flags (the coarse-vs-microblock apron
@@ -130,18 +129,18 @@ fn decide_block_route(
 /// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
 /// `grid_dimensions` is the whole composite voxel dims — only the Z half is read, to map a
 /// recentered-frame voxel index to its ABSOLUTE layer for the band clip (Z-up: layers are
-/// Z-slices); `recenter_voxels` is the resolve's carried recenter (ADR 0008) so the emitted
+/// Z-slices); `recenter_voxels` is the resolve's carried recenter so the emitted
 /// vertices land in the SAME world frame the dense path assembles (its global cloud-min
-/// anchor cancels to exactly this recentered index — proven in the E3 parity test).
+/// anchor cancels to exactly this recentered index — proven in the parity test).
 /// `voxels_per_block` is the chunk density.
 ///
-/// `band` (ADR 0010 #53): a layer-range (Z-slice) clip. `LayerBand::FULL` (the default) keeps
-/// the E3-proven FAST paths byte-for-byte — a coarse-solid block is ONE box, a boundary block
+/// `band`: a layer-range (Z-slice) clip. `LayerBand::FULL` (the default) keeps
+/// the FAST paths byte-for-byte — a coarse-solid block is ONE box, a boundary block
 /// its stored cuboids. An ACTIVE band (the layer scrubber) clips each block to the band's
 /// recentered voxel-Z range: a coarse block the band CUTS through emits the clipped one-box (the
 /// block ∩ band), a boundary block clips each cuboid; blocks fully outside the band are skipped.
 /// Cut-plane faces are VISIBLE — a band edge reads the out-of-band neighbor cell as AIR, so the
-/// clip synthesises a real cap face there, mirroring the dense [`build_chunk_meshes_with_apron`]
+/// clip synthesizes a real cap face there, mirroring the dense [`build_chunk_meshes_with_apron`]
 /// banded behavior exactly (it masks the apron + interior so a merged column caps at the edge).
 pub(crate) fn build_two_layer_chunk_meshes(
     chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
@@ -163,8 +162,8 @@ pub(crate) fn build_two_layer_chunk_meshes(
 }
 
 /// Like [`build_two_layer_chunk_meshes`] but meshes ONLY the chunks in `only` (when
-/// `Some`), the two-layer analog of [`build_chunk_meshes_with_apron_filtered`] (issue
-/// #55). Seam-flag culling reads every chunk's neighbors from the FULL `chunks` set (the
+/// `Some`), the two-layer analog of [`build_chunk_meshes_with_apron_filtered`].
+/// Seam-flag culling reads every chunk's neighbors from the FULL `chunks` set (the
 /// `chunk_by_coord` lookup below is over ALL chunks), so a subset build is byte-identical to
 /// the same chunks within a wholesale build — a skipped neighbor's coarse / microblock face
 /// solidity still culls the meshed chunk's seam faces. `None` meshes every chunk (the
@@ -185,7 +184,7 @@ pub(crate) fn build_two_layer_chunk_meshes_filtered(
     let density = voxels_per_block.max(1);
     let block_extent = density as i64;
 
-    // Z-up band clip (ADR 0010 #53): the band is in ABSOLUTE layer indices. A voxel at
+    // Z-up band clip: the band is in ABSOLUTE layer indices. A voxel at
     // recentered-frame min-corner `v` (the frame this mesher emits in) sits at world.z = v +
     // 0.5, so its absolute layer = floor(world.z + half_z) = v + half_z (integer-valued for
     // an integer `v`, `half_z`). Inverting the band into the recentered frame: a recentered
@@ -288,13 +287,12 @@ pub(crate) fn build_two_layer_chunk_meshes_filtered(
     // `vertices` / `indices` / `indices_overlay` / `aabb` / `box_count`, reading only shared-
     // IMMUTABLE state (the `chunk_by_coord` map, the `face_solidity_at` / `face_cells_at` /
     // `z_in_band` closures, the `only` filter, the band bounds). So the chunk list is meshed in
-    // parallel with rayon. A parallel `.collect()` PRESERVES the source order (issue #57
-    // convention), so the output Vec — hence GPU buffer order and the goldens — is byte-identical
-    // to the former serial loop.
+    // parallel with rayon. A parallel `.collect()` PRESERVES the source order, so the output
+    // Vec — hence GPU buffer order and the goldens — is byte-identical to a serial loop.
     let meshes: Vec<CuboidChunkMesh> = chunks
         .par_iter()
         .filter_map(|(chunk_coord, chunk)| {
-            // Incremental subset (issue #55): skip chunks not in the rebuild set. Seam culling
+            // Incremental subset: skip chunks not in the rebuild set. Seam culling
             // still consults every chunk (the `chunk_by_coord` lookup above is over the FULL set),
             // so a skipped neighbor's face solidity correctly culls the meshed chunk's seam faces.
             if let Some(only) = only {
@@ -302,7 +300,7 @@ pub(crate) fn build_two_layer_chunk_meshes_filtered(
                     return None;
                 }
             }
-            // The chunk's low voxel corner in the RECENTERED frame (ADR 0008): a chunk-local
+            // The chunk's low voxel corner in the RECENTERED frame: a chunk-local
             // voxel index `lv` lands at world min-corner `chunk_min - recenter + lv`. Emitting
             // box corners there matches the dense path's `global_index + (min_world - 0.5)`
             // exactly (its cloud-min anchor cancels — see the parity test).
@@ -340,13 +338,13 @@ pub(crate) fn build_two_layer_chunk_meshes_filtered(
                             chunk_min_recentered[2] + block_z as i64 * block_extent,
                         ];
 
-                        // ADR 0010 #53 / ADR 0018 Decision 5: decide this block's route. A
+                        // Decide this block's route. A
                         // band-cut block (or a block the region clip straddles) goes through the
                         // band-aware apron mesher `emit_block_banded` — it densifies only the
                         // block (never the whole solid interior), masks out-of-band /
                         // out-of-region voxels to air on BOTH interior and apron (so a cut
-                        // synthesises a real cap face), and skips blocks fully carved away. A
-                        // block wholly outside the region (SOLID pass) keeps the E3-proven FAST
+                        // synthesizes a real cap face), and skips blocks fully carved away. A
+                        // block wholly outside the region (SOLID pass) keeps the FAST
                         // paths below (rendered finished). FULL-band + no region ⇒ every block
                         // takes the fast path byte-for-byte.
                         let block_lo_z = block_low_recentered[2];

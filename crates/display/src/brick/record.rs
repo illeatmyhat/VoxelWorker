@@ -14,7 +14,7 @@ use super::*;
 pub enum BrickPayload {
     /// **Kind 0** — an analytic coarse brick: the whole block is solid at `block_id`,
     /// stored as this one record with no per-voxel data (interior elision on the GPU;
-    /// also the residency-miss fallback form the G1 contract renders).
+    /// also the residency-miss fallback form the raymarch renders).
     CoarseSolid { block_id: BlockId },
     /// **Kind 1** — a sculpted brick whose voxels all share ONE cell key: the block's voxel
     /// occupancy lives in atlas slot `atlas_slot` (an `edge³` R8 tile, edge =
@@ -67,7 +67,7 @@ impl BrickPayload {
 }
 
 /// One resident brick: a non-air block of the two-layer boundary set, keyed for the
-/// sorted-array binary search the G1 raymarch resolves residency with (ADR 0011 4b).
+/// sorted-array binary search the raymarch resolves residency with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrickRecord {
     /// [`pack_world_block_key`] of the block's absolute world-block coordinate.
@@ -96,7 +96,7 @@ pub struct BrickRecord {
 }
 
 /// The built brick field: the sorted record array + the sculpted-brick occupancy atlas
-/// bytes in the ADR 0007 tile-cube layout (`bricks_per_axis³` slots of `edge³` texels,
+/// bytes in the tile-cube layout (`bricks_per_axis³` slots of `edge³` texels,
 /// linear slot index → 3D tile coord, x-fastest). [`upload_brick_atlas`] lands the bytes
 /// in an R8 3D texture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,8 +118,8 @@ pub struct BrickFieldBuild {
     /// zero packing cost and the tiles travel as tiles (the single-owner tile law — moved into
     /// [`IncrementalBrickField`], never cloned per edit).
     pub cell_key_tiles: Vec<BrickCellKeyTile>,
-    /// The brick edge in voxels — `voxels_per_block`, the ONE-BLOCK granule
-    /// (ADR 0011 Decision 1). Block-denominated: never a hard-coded voxel count.
+    /// The brick edge in voxels — `voxels_per_block`, the ONE-BLOCK granule.
+    /// Block-denominated: never a hard-coded voxel count.
     pub brick_edge_voxels: u32,
     /// Sculpted-brick tile slots per atlas axis (`ceil(cbrt(sculpted_count))`).
     pub bricks_per_axis: u32,
@@ -129,11 +129,11 @@ pub struct BrickFieldBuild {
 }
 
 /// The GPU upload payload for the sculpted-brick atlas — the ONE place the flat R8 byte
-/// blob still lives after item 9's single-owner rework (see `docs/architecture/`, the
-/// brick-field display chapter). A wholesale build hands this to
+/// blob lives, under the single-owner tile law (see `docs/architecture/03-display.md`).
+/// A wholesale build hands this to
 /// [`BrickRaymarchRenderer::install_brick_field`](crate::brick::BrickRaymarchRenderer::install_brick_field)
 /// by MOVE ([`IncrementalBrickField::from_wholesale`]); the incremental patch path never
-/// materialises one except on the legitimate atlas-grow re-pack
+/// materializes one except on the legitimate atlas-grow re-pack
 /// ([`IncrementalBrickField::pack_atlas_payload`]). Carries the atlas GEOMETRY alongside
 /// the bytes so the install seam sets its frame scalars without a `BrickFieldBuild`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,7 +200,7 @@ pub struct SculptedCellKeyAtlasGeometry {
 
 impl SculptedCellKeyAtlasPayload {
     /// The side atlas of a field with NO mixed brick: zero bytes, zero slots, zero dimension —
-    /// what every scene the representability gate admits today packs to.
+    /// what every scene the representability gate admits packs to.
     pub fn empty(brick_edge_voxels: u32) -> Self {
         Self {
             bytes: Vec::new(),
@@ -233,7 +233,7 @@ pub(crate) fn pack_cell_key_atlas(
 pub(crate) const SCULPTED_BRICK_OCCUPIED: u8 = 255;
 
 impl BrickFieldBuild {
-    /// Materialise this build's sculpted atlas as an upload [`SculptedAtlasPayload`] — the
+    /// Materialize this build's sculpted atlas as an upload [`SculptedAtlasPayload`] — the
     /// wholesale-build → install adapter for the callers that keep the `BrickFieldBuild`
     /// around (the `shot` golden tool and the parity tests). CLONES the atlas bytes; the
     /// live worker/orchestrator paths move them instead via
@@ -250,7 +250,7 @@ impl BrickFieldBuild {
         }
     }
 
-    /// Materialise this build's MATERIAL SIDE ATLAS as an upload
+    /// Materialize this build's MATERIAL SIDE ATLAS as an upload
     /// [`SculptedCellKeyAtlasPayload`] — the second pool's install adapter, packed from the
     /// mixed bricks' cell-key tiles at their own dense slot numbering. A build with no mixed
     /// brick yields the empty payload (zero bytes: the sparse-side-atlas contract).
@@ -269,8 +269,8 @@ impl BrickFieldBuild {
     }
 
     /// Resolve the record for an absolute world-block coordinate by binary search over
-    /// the sorted array — the CPU mirror of the in-shader residency lookup (ADR 0011
-    /// 4b), and the parity harness's per-block accessor. `None` = air.
+    /// the sorted array — the CPU mirror of the in-shader residency lookup, and the
+    /// parity harness's per-block accessor. `None` = air.
     pub fn find_record(&self, world_block: [i64; 3]) -> Option<&BrickRecord> {
         let key = pack_world_block_key(world_block);
         self.brick_records
@@ -298,7 +298,7 @@ impl BrickFieldBuild {
     }
 
     /// The low-corner texel of `atlas_slot`'s tile in the atlas cube (linear slot →
-    /// 3D tile coord, x-fastest — the ADR 0007 tile-cube layout).
+    /// 3D tile coord, x-fastest — the tile-cube layout).
     fn atlas_slot_origin_texels(&self, atlas_slot: u32) -> [usize; 3] {
         let tiles = self.bricks_per_axis.max(1);
         let tile = [

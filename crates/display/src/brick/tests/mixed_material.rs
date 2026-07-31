@@ -1,4 +1,4 @@
-//! ADR 0013 — the CPU-march material reference ([`cpu_brick_hit_material`]) resolves a MIXED
+//! The CPU-march material reference ([`cpu_brick_hit_material`]) resolves a MIXED
 //! brick's per-voxel materials from its cell-key tile (the same tile + voxel the shader's
 //! `mixed_voxel_material` samples), masking the overlay bit off to the clean id; a UNIFORM hit
 //! resolves the per-record material. This is the CPU half of the shader == reference bar; the

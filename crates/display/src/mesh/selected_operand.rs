@@ -1,21 +1,20 @@
-//! Boolean-operand ghost renderer (ADR 0018 Decision 6) — the x-ray of the selected
-//! subtree's boolean operands.
+//! Boolean-operand ghost renderer — the x-ray of the selected subtree's boolean
+//! operands.
 //!
 //! In Show-booleans mode the shell derives each boolean operand body in the selected
 //! subtree (resolved standalone, `AppCore::boolean_operand_ghost`) and hands it here as
 //! two-layer chunks + an operation style. This renderer meshes each body through the SAME
 //! two-layer
 //! cuboid mesher the solid path uses, then draws the mesh TWICE per frame with the
-//! `cuboid.wgsl` ghost branch (the ADR 0012 H1 onion-ghost precedent) — the owner-decided
-//! **two-pass depth split**:
+//! `cuboid.wgsl` ghost branch, as a **two-pass depth split**:
 //!
 //! * **QUIET pass** — depth test `LessEqual`, the fragments ON or IN FRONT of the scene's
 //!   rendered surface (the directly visible operand surface, including a cutter's exposed
 //!   carve faces, which coincide exactly with the scene's cut surface).
 //! * **LOUD pass** — depth test `Greater`, the fragments BEHIND the scene's surface (the
 //!   operand body buried inside solid geometry), at noticeably higher opacity. An
-//!   entirely-internal cutter therefore renders wholly loud — deliberately more obvious
-//!   than Fusion's invisible internal voids.
+//!   entirely-internal cutter therefore renders wholly loud — an internal void is meant
+//!   to be obvious, not invisible.
 //!
 //! Neither pass writes depth (the ghost occludes nothing; unlike the onion ghost, whose
 //! nearest-surface-wins rendering needs the write, the two passes here partition fragments
@@ -24,10 +23,6 @@
 //! COINCIDENT with the scene surface (the carve-face case, where another mesher's
 //! triangulation of the same plane may interpolate depth a ULP apart) classifies robustly
 //! as quiet, never as loud and never dropped.
-//!
-//! ADR 0018 Decision 6: in "Show booleans" mode the shell feeds this renderer the
-//! boolean-operand bodies of the selected subtree (`AppCore::boolean_operand_ghost`) —
-//! one renderer instance, drawn over both display paths.
 //!
 //! The mesh is rebuilt only on selection/geometry change (`rebuild`), never per frame;
 //! `update_uniforms` per frame writes only the camera + tints. Drawn as a raster overlay
@@ -41,8 +36,8 @@ use crate::renderer::{operand_ghost_loud_tint, operand_ghost_quiet_tint, Operand
 /// One ghost body: an operation style plus the body's two-layer covering chunks, ALREADY
 /// in the composed scene's absolute chunk coords (the app_core derivation resolves the
 /// selected subtree standalone but keeps its absolute placement, so meshing with the
-/// COMPOSED scene's recenter lands the ghost exactly on the node's voxels — ADR 0008,
-/// carry the frame, never re-derive it). A plain selection is one body; a fixture-
+/// COMPOSED scene's recenter lands the ghost exactly on the node's voxels — the frame
+/// is carried, never re-derived). A plain selection is one body; a fixture-
 /// instance selection is one body per spliced child (each under its own operation).
 pub struct SelectedOperandGhostBody {
     /// How the body folds — picks the ghost hue (red / amber / subtle).
@@ -70,7 +65,7 @@ struct OperandGhostBodyBuffers {
 const OPERAND_GHOST_DEPTH_BIAS_CONSTANT: i32 = -2;
 const OPERAND_GHOST_DEPTH_BIAS_SLOPE_SCALE: f32 = -2.0;
 
-/// GPU resources for the selected-operand ghost overlay (issue #78). Owned by the shell
+/// GPU resources for the selected-operand ghost overlay. Owned by the shell
 /// beside the other overlay renderers; self-gating (`draw` is a no-op with no selection).
 pub struct SelectedOperandGhostRenderer {
     /// The QUIET pass pipeline: `cuboid.wgsl` ghost branch, alpha-blended, depth test
@@ -147,7 +142,7 @@ impl SelectedOperandGhostRenderer {
             ],
         };
 
-        // The two depth-split pipelines differ ONLY in the depth compare (issue #78).
+        // The two depth-split pipelines differ ONLY in the depth compare.
         let build_ghost_pipeline = |label: &str, depth_compare: wgpu::CompareFunction| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -234,8 +229,8 @@ impl SelectedOperandGhostRenderer {
     /// selection/geometry change, never per frame. Each body is meshed by the SAME
     /// two-layer cuboid mesher the solid path uses, at the FULL band, against the
     /// COMPOSED scene's `recenter` — so the ghost lands voxel-exact on the selected
-    /// node's place in the render frame (ADR 0008: the frame is carried in, never
-    /// re-derived from the slice). `grid_dimensions` is the composed scene's voxel
+    /// node's place in the render frame (the frame is carried in, never re-derived
+    /// from the slice). `grid_dimensions` is the composed scene's voxel
     /// extent (the corner-anchoring scalar the shader echoes).
     pub fn rebuild(
         &mut self,
@@ -356,7 +351,7 @@ impl SelectedOperandGhostRenderer {
 /// A 1×1 white RGBA texture + nearest sampler filling the atlas bind-group slot the
 /// pipeline layout requires. The ghost branch never samples it (`cuboid.wgsl` returns the
 /// flat tint first), so no real material atlas needs to be packed or resident here.
-/// `pub(super)`: the selection-cel renderer (ADR 0032) shares it.
+/// `pub(super)`: the selection-cel renderer shares it.
 pub(super) fn build_unsampled_atlas_bind_group(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

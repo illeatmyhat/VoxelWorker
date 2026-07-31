@@ -3,7 +3,7 @@ use super::*;
 /// Build the **surface-only** brick field from a scene's two-layer boundary set (the
 /// `build_covering_chunks` / resident-cache output): walk every chunk's block partition,
 /// emit one record per SURFACE non-air block — a fully-occluded coarse interior block
-/// emits nothing (ADR 0011 interior elision, fused into the build via
+/// emits nothing (interior elision, fused into the build via
 /// [`BrickOcclusionOracle`]; interiors stay queryable through the chunks) — rasterize each
 /// boundary block's cuboids into its atlas slot, and sort the records by packed
 /// world-block key.
@@ -22,9 +22,9 @@ use super::*;
 /// assignment is coarse-dominated and memory-bound, so a rayon per-chunk split measured NO
 /// net win: the parallel classify gain was canceled by the extra ordered-merge pass needed
 /// to keep the sculpted atlas-slot numbering byte-identical (slots are assigned in
-/// traversal order — ADR 0011 G3's incremental-atlas contract — so a parallel build must
+/// traversal order — the incremental-atlas contract — so a parallel build must
 /// re-derive that exact order, adding an O(records) merge). Only the final key sort and the
-/// oracle's chunk classification are worth parallelising. The record ORDER + sculpted slot
+/// oracle's chunk classification are worth parallelizing. The record ORDER + sculpted slot
 /// numbering are produced by the same serial traversal as the oracle build — sculpted slots
 /// bit-for-bit identical (the sculpted set is never elided).
 pub fn build_brick_field(
@@ -32,14 +32,14 @@ pub fn build_brick_field(
     voxels_per_block: u32,
 ) -> BrickFieldBuild {
     // The build-only entry (lib re-export; the golden `shot` tool, parity/perf tests, the
-    // non-tile-carrying orchestrator/startup paths). Drops the rasterised tiles; the live
+    // non-tile-carrying orchestrator/startup paths). Drops the rasterized tiles; the live
     // worker/orchestrator wholesale path calls `build_brick_field_with_tiles` to keep and
     // MOVE them into the mirror (skipping the from-atlas-bytes re-derive).
     build_brick_field_with_tiles(two_layer_chunks, voxels_per_block).0
 }
 
 /// Like [`build_brick_field`] but ALSO returns the per-sculpted-slot occupancy tiles it
-/// rasterised (dense slot order — the `atlas_slot` numbering baked into the records), so a
+/// rasterized (dense slot order — the `atlas_slot` numbering baked into the records), so a
 /// wholesale reset can MOVE them straight into the incremental mirror
 /// ([`IncrementalBrickField::from_wholesale_with_tiles`]) instead of re-gathering + re-bit-
 /// packing them out of the flat atlas bytes the packer just produced. The `BrickFieldBuild`
@@ -81,7 +81,7 @@ pub fn build_brick_field_with_tiles(
                         chunk_coord[1] as i64 * CHUNK_BLOCKS as i64 + block_y as i64,
                         chunk_coord[2] as i64 * CHUNK_BLOCKS as i64 + block_z as i64,
                     ];
-                    // Classify the block once (shared with the G3 incremental update so
+                    // Classify the block once (shared with the incremental update so
                     // both paths emit identical records); the wholesale build assigns
                     // sculpted slots densely in record order.
                     match classify_block_brick(chunk, block, world_block, brick_edge_voxels) {
@@ -129,7 +129,7 @@ pub fn build_brick_field_with_tiles(
     // so a parallel unstable sort yields the byte-identical order a serial sort would, at any
     // thread count. (A filtered emission of the serial traversal stays traversal-ordered, so
     // this is the same sort the interior-inclusive build performs — the shader binary search
-    // and the G3 patch protocol see a sorted, unique array either way.)
+    // and the patch protocol see a sorted, unique array either way.)
     brick_records.par_sort_unstable_by_key(|record| record.packed_world_block_key);
     debug_assert!(
         brick_records
@@ -206,7 +206,7 @@ pub fn build_brick_field_all_blocks(
                         chunk_coord[1] as i64 * CHUNK_BLOCKS as i64 + block_y as i64,
                         chunk_coord[2] as i64 * CHUNK_BLOCKS as i64 + block_z as i64,
                     ];
-                    // Classify the block once (shared with the G3 incremental update so
+                    // Classify the block once (shared with the incremental update so
                     // both paths emit identical records); the wholesale build assigns
                     // sculpted slots densely in record order.
                     match classify_block_brick(chunk, block, world_block, brick_edge_voxels) {
@@ -250,7 +250,7 @@ pub fn build_brick_field_all_blocks(
         "brick keys must be unique (each world block appears in exactly one chunk)"
     );
 
-    // Tile geometry follows the ADR 0007 tile-cube layout: a cubic-ish slot grid bounded by
+    // Tile geometry follows the tile-cube layout: a cubic-ish slot grid bounded by
     // the SCULPTED count (coarse records consume none of it), then scatter each tile.
     let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
         pack_sculpted_atlas(&sculpted_brick_tiles, brick_edge_voxels);
@@ -276,7 +276,7 @@ pub(crate) const FACE_NEIGHBOR_CHUNK_OFFSETS: [[i32; 3]; 6] = [
     [0, 0, -1],
 ];
 
-/// **The occlusion oracle over a two-layer covering set (ADR 0011 interior elision — the
+/// **The occlusion oracle over a two-layer covering set (interior elision — the
 /// brick sink's analog of the mesh's interior-face culling).** Decides which coarse-solid
 /// blocks are FULLY OCCLUDED — all six face-neighbors present AND solid on the shared face
 /// — so [`build_brick_field`] / [`IncrementalBrickField::apply_dirty_update`] can fuse the
@@ -476,14 +476,14 @@ pub(crate) fn rasterize_brick_tiles(
 }
 
 /// One block's brick contribution, INDEPENDENT of atlas-slot assignment — the shared
-/// classifier both the wholesale [`build_brick_field`] and the G3 incremental update
+/// classifier both the wholesale [`build_brick_field`] and the incremental update
 /// ([`IncrementalBrickField::apply_dirty_update`]) run, so a block classifies to the
 /// exact same record kind + material + occupancy either way (only the slot NUMBER
 /// differs: wholesale packs `0..count` in record order, incremental allocates from a
 /// free-list). Keeping ONE classifier is what makes "incremental == wholesale byte-exact"
 /// structural rather than a convention two code paths must independently uphold.
 pub(crate) enum BlockBrick {
-    /// Air — no record (ADR 0011 Decision 2).
+    /// Air — no record.
     Air,
     /// A coarse-solid block: the whole record (no atlas slot).
     Coarse(BrickRecord),
@@ -501,7 +501,7 @@ pub(crate) enum BlockBrick {
 }
 
 /// Classify one block of a [`TwoLayerChunk`] into its [`BlockBrick`] — the coarse XOR
-/// boundary XOR air partition (ADR 0011 Decision 2). `world_block` is the block's
+/// boundary XOR air partition. `world_block` is the block's
 /// absolute world-block coordinate (its packed key).
 pub(crate) fn classify_block_brick(
     chunk: &TwoLayerChunk,
@@ -531,8 +531,7 @@ pub(crate) fn classify_block_brick(
         // Uniform vs MIXED, decided here and nowhere else: all cuboids sharing ONE cell key
         // ⇒ that key rides on the record (no cell-key tile); disagreeing cuboids ⇒ a
         // per-voxel cell-key tile, and the record's material/overlay become don't-care (kept
-        // as the first cuboid's, exactly as before, so a uniform scene's records are
-        // byte-identical to the pre-material-atlas ones).
+        // as the first cuboid's).
         let uniform = uniform_cell_key(geometry);
         let record_cell_key = uniform.unwrap_or_else(|| {
             geometry
@@ -555,7 +554,7 @@ pub(crate) fn classify_block_brick(
     }
 }
 
-/// Scatter a slot-indexed set of `edge³` occupancy tiles into the ADR 0007 tile-cube
+/// Scatter a slot-indexed set of `edge³` occupancy tiles into the tile-cube
 /// atlas layout: a cubic-ish `bricks_per_axis³` slot grid (bounded by the slot count,
 /// linear slot → 3D tile x-fastest), returning `(bricks_per_axis, atlas_dim_voxels,
 /// bytes)`. Shared by the wholesale build and [`IncrementalBrickField::to_build`] so the
@@ -565,8 +564,7 @@ pub(crate) fn classify_block_brick(
 ///
 /// The tile-cube geometry + the per-row expand ARE substrate's [`CubeTilePacking`]; this seam
 /// only injects [`SCULPTED_BRICK_OCCUPIED`] as the "set-bit byte" so everything GPU-facing keeps
-/// consuming `sculpted_atlas_bytes` unchanged. Returns `(bricks_per_axis, atlas_dim_voxels,
-/// bytes)`.
+/// consuming `sculpted_atlas_bytes` unchanged.
 pub(crate) fn pack_sculpted_atlas(
     slot_tiles: &[BrickOccupancyTile],
     brick_edge_voxels: u32,

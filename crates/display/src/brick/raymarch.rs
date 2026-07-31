@@ -2,7 +2,7 @@ use super::*;
 
 /// The exact frame the march runs in — every value the shader's uniforms carry,
 /// mirrored so the CPU reference march ([`cpu_march_brick_field`]) computes with
-/// IDENTICAL parameters (ADR 0008: the frame is carried, never re-derived).
+/// IDENTICAL parameters (the frame is carried, never re-derived).
 #[derive(Debug, Clone, Copy)]
 pub struct BrickMarchFrame {
     /// CAMERA-RELATIVE matrices (eye at the frame origin): the forward matrix projects
@@ -41,7 +41,7 @@ pub struct BrickMarchFrame {
     pub traversal_hi: glam::Vec3,
     pub brick_edge_voxels: i32,
     pub bricks_per_axis: u32,
-    /// ADR 0018 Decision 5 (S5): the onion-fog REGION clip in the sv voxel frame, half-open
+    /// The onion-fog REGION clip in the sv voxel frame, half-open
     /// `[lo, hi)`, or `None` for a scene-wide band. For the SOLID march (ConfineBand) the band
     /// is applied per voxel INSIDE this box only; outside renders finished. For a GHOST slab
     /// (ClipToRegion) the box additionally confines the traversal AABB.
@@ -54,7 +54,7 @@ pub struct BrickMarchFrame {
     pub region_role_ghost: bool,
 }
 
-/// One block-occupancy cell as the shader consumes it (ADR 0011 band-clip interior fallback):
+/// One block-occupancy cell as the shader consumes it (the band-clip interior fallback):
 /// the split `(hi, lo)` cell key, the fallback material, and the `512`-bit block bitmask. Field
 /// order + packing MUST match `OccupancyCell` in `shaders/brick_raymarch.wgsl` (std430: all
 /// `u32`, so a flat 80-byte record, `mask` stride 4). Sorted ascending by key — the shader's
@@ -66,8 +66,8 @@ pub(crate) struct OccupancyCellPod {
     key_lo: u32,
     material: u32,
     // The fallback block's on-face-grid overlay bit (0/1), split out of the fallback word's
-    // `OCCUPANCY_FALLBACK_OVERLAY_BIT`. Occupies the former pad slot (stride unchanged). With
-    // the scene-wide overlay bool gone, an interior-elision coarse hit sources its overlay here.
+    // `OCCUPANCY_FALLBACK_OVERLAY_BIT` — where an interior-elision coarse hit sources its
+    // overlay.
     overlay: u32,
     mask: [u32; BLOCK_OCCUPANCY_MASK_WORDS],
 }
@@ -118,61 +118,58 @@ pub(crate) struct BrickUniformsPod {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
-    // Material is per-record (packed into `BrickGpuRecord.kind`, ADR 0011 G2), so no
+    // Material is per-record (packed into `BrickGpuRecord.kind`), so no
     // scene-wide material id rides here — `record_count` plus the band-clip fields fill the slot.
     record_count: u32,
-    // ADR 0011 band-clip interior fallback: 1 when the band clips the solid's Z-extent, so a
+    // Band-clip interior fallback: 1 when the band clips the solid's Z-extent, so a
     // record MISS consults the block-occupancy map (elided coarse interiors the band exposes).
     band_clip_active: u32,
     // The block-occupancy cell count (`occupancy_cells` binary-search span); 0 ⇒ off.
     occupancy_cell_count: u32,
-    // ADR 0012 (H1): the onion GHOST flag (0 = solid shade, 1 = flat translucent tint).
-    // Occupies the former `_render_cell_pad2` slot.
+    // The onion GHOST flag (0 = solid shade, 1 = flat translucent tint).
     ghost_mode: u32,
     lattice_shift_and_edge: [i32; 4],
     block_bias_and_tiles: [i32; 4],
     voxel_bias: [i32; 4],
     band_voxel_sv: [i32; 4],
-    // ADR 0011 G2 clip-map pyramid: [L1 blocks/cell, L1 cell count, L2 blocks/cell,
+    // Clip-map pyramid: [L1 blocks/cell, L1 cell count, L2 blocks/cell,
     // L2 cell count]. A zero count disables that level's hierarchical skip (the
-    // flat G1 block-DDA), which is how the pyramid-on == off parity is A/B'd.
+    // flat block-DDA), which is how the pyramid-on == off parity is A/B'd.
     clipmap_blocks_and_counts: [u32; 4],
-    // ADR 0011 G4 third clip-map level: [L3 blocks/cell, L3 cell count, reserved,
-    // reserved]. A fourth level was measured not to pay (G4 report), so zw stay 0.
+    // The third clip-map level: [L3 blocks/cell, L3 cell count, reserved,
+    // reserved]. A fourth level was measured not to pay, so zw stay 0.
     clipmap_blocks_and_counts_hi: [u32; 4],
     traversal_lo: [f32; 4],
     traversal_hi: [f32; 4],
     material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
     material_atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
-    // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
-    // `ghost_mode != 0`. Appended so the solid draw's uniform layout is unchanged.
+    // The onion ghost tint (linear RGB + src alpha), read only when `ghost_mode != 0`.
     ghost_tint: [f32; 4],
-    // ADR 0018 Decision 5 (S5): the onion-fog REGION clip (sv voxel frame). xyz = low corner;
-    // w = role (0 ConfineBand / 1 ClipToRegion). Appended after `ghost_tint` so every pre-S5
-    // field offset — and thus a region-inactive draw's bytes — is unchanged.
+    // The onion-fog REGION clip (sv voxel frame). xyz = low corner;
+    // w = role (0 ConfineBand / 1 ClipToRegion).
     region_lo_role: [i32; 4],
     // xyz = high corner (half-open `[lo, hi)`); w = region_active (0/1).
     region_hi_active: [i32; 4],
 }
 
-/// The G1 brick raymarch renderer: owns the record buffer, the sculpted atlas
+/// The brick raymarch renderer: owns the record buffer, the sculpted atlas
 /// texture, its own copy of the procedural material atlas (identical texels +
 /// sub-rects to the cuboid path's), and the two pipelines (the MSAA render pass
 /// entry + the single-sample hit-identity entry the parity net reads back).
 pub struct BrickRaymarchRenderer {
     render_pipeline: wgpu::RenderPipeline,
-    /// ADR 0012 (H1): the onion GHOST pipeline — same shader + layout as
+    /// The onion GHOST pipeline — same shader + layout as
     /// `render_pipeline`, but alpha-blends the flat-tinted ghost over the solid with the
     /// depth test `Less` with depth WRITE ON (so the nearest ghost surface wins — the
     /// render is builder-independent), while the solid (drawn first) occludes the ghost.
     ghost_render_pipeline: wgpu::RenderPipeline,
     hit_identity_pipeline: wgpu::RenderPipeline,
-    /// ADR 0011 G2 — the single-sample COLOR entry (`fragment_color_identity`) the
+    /// The single-sample COLOR entry (`fragment_color_identity`) the
     /// color-parity test reads back: shades each hit exactly as the MSAA render pass'
     /// center-ray evaluation would, into a plain `Rgba8Unorm` target. Same pipeline
     /// layout (group 2 = loaded material) as the render pipeline.
     color_identity_pipeline: wgpu::RenderPipeline,
-    /// ADR 0013 — the single-sample MATERIAL-identity entry (`fragment_material_identity`)
+    /// The single-sample MATERIAL-identity entry (`fragment_material_identity`)
     /// the mixed-brick parity test reads back: reports each hit's RESOLVED per-voxel material
     /// id (the clean cell-key id for a mixed brick, else the per-record material) into an
     /// `Rgba32Uint` target. The direct "shader material == CPU-march reference" gate, with no
@@ -180,12 +177,12 @@ pub struct BrickRaymarchRenderer {
     material_identity_pipeline: wgpu::RenderPipeline,
     /// The uniform buffer: [`BRICK_UNIFORM_SLOT_COUNT`] `BrickUniformsPod` slots
     /// (solid + two ghost slabs), each `uniform_slot_stride` bytes, indexed by dynamic
-    /// offset (ADR 0012 H1).
+    /// offset.
     uniform_buffer: wgpu::Buffer,
     /// The per-slot byte stride (`size_of::<BrickUniformsPod>` rounded up to the device's
     /// `min_uniform_buffer_offset_alignment`) — the dynamic offset multiplier.
     uniform_slot_stride: u32,
-    /// (ADR 0012 H1) Whether each onion GHOST slab has a valid non-empty Z-range this
+    /// Whether each onion GHOST slab has a valid non-empty Z-range this
     /// frame (its uniform slot was written), so [`draw_ghost`](Self::draw_ghost) skips a
     /// degenerate slab (e.g. no layers below a band anchored at layer 0).
     ghost_lower_active: bool,
@@ -193,7 +190,7 @@ pub struct BrickRaymarchRenderer {
     field_bind_group_layout: wgpu::BindGroupLayout,
     field_bind_group: wgpu::BindGroup,
     material_bind_group: wgpu::BindGroup,
-    /// ADR 0011 G2 — the group(2) LOADED-material bind group bound when NO VS block is
+    /// The group(2) LOADED-material bind group bound when NO loaded block is
     /// applied: a dummy 1×1×6 D2Array (the shader ignores it while `voxel_bias.w == 0`).
     /// When a block is applied the app binds `LoadedMaterial::bind_group` at group(2)
     /// instead (built against the SAME `renderer::build_face_material_layout`), so the
@@ -201,11 +198,11 @@ pub struct BrickRaymarchRenderer {
     /// hit-identity / color / ghost passes (which never sample it) can still satisfy
     /// the 3-group pipeline layout.
     dummy_loaded_material_bind_group: wgpu::BindGroup,
-    /// Whether a VS block is applied this frame — mirrored into `voxel_bias.w` so the
+    /// Whether a loaded block is applied this frame — mirrored into `voxel_bias.w` so the
     /// shader shades solid hits from the loaded D2Array (`true`) or the procedural
     /// atlas (`false`). Set by [`set_loaded_material_active`](Self::set_loaded_material_active).
     loaded_material_active: bool,
-    /// The PERSISTENT sculpted-brick atlas texture (ADR 0011 G3). Kept across edits so an
+    /// The PERSISTENT sculpted-brick atlas texture. Kept across edits so an
     /// incremental patch ([`patch_brick_field`](Self::patch_brick_field)) writes only the
     /// dirty slots' texels via `write_texture` — untouched slots keep their bytes. A
     /// wholesale install or an atlas GROW recreates it.
@@ -223,13 +220,13 @@ pub struct BrickRaymarchRenderer {
     /// The side atlas's per-axis dimension in voxels (`>= 1`; 1 for the placeholder) — the
     /// grow/shrink test of the second pool, independent of `atlas_texture_dim`.
     cell_key_texture_dim: u32,
-    /// The number of atlas slots the LAST update wrote (ADR 0011 G3 "per-edit cost ∝ dirty
+    /// The number of atlas slots the LAST update wrote (the "per-edit cost ∝ dirty
     /// region" instrument): a wholesale install writes every sculpted slot; an incremental
     /// patch writes only the dirty chunks' slots (unless the atlas grew — then every slot).
     last_atlas_slots_written: u32,
     record_count: u32,
-    /// The composite recenter the boundary set was resolved under (ADR 0008 —
-    /// carried from the install as [`RecenterVoxels`], the same value the two-layer mesher
+    /// The composite recenter the boundary set was resolved under (carried from the
+    /// install as [`RecenterVoxels`], the same value the two-layer mesher
     /// bakes; unwrapped with `.voxels()` only where `march_frame` packs the uniform).
     recenter_voxels: RecenterVoxels,
     brick_edge_voxels: u32,
@@ -237,7 +234,7 @@ pub struct BrickRaymarchRenderer {
     /// Inclusive absolute world-block bounds of the resident record set (the
     /// traversal AABB's source); `None` when no field is installed.
     absolute_block_bounds: Option<([i64; 3], [i64; 3])>,
-    /// ADR 0011 G2 clip-map pyramid: cells/blocks per level + the installed cell
+    /// Clip-map pyramid: cells/blocks per level + the installed cell
     /// counts (0 ⇒ that level's hierarchical skip is off). Uploaded to the shader
     /// as `clipmap_blocks_and_counts`.
     clipmap_level_1_blocks: u32,
@@ -246,7 +243,7 @@ pub struct BrickRaymarchRenderer {
     clipmap_level_2_count: u32,
     clipmap_level_3_blocks: u32,
     clipmap_level_3_count: u32,
-    /// ADR 0011 band-clip interior fallback: the present block-occupancy cell count uploaded
+    /// Band-clip interior fallback: the present block-occupancy cell count uploaded
     /// last install (0 ⇒ the shader's record-miss fallback never fires). The occupancy buffer is
     /// rebuilt with the records/pyramid in [`rebuild_field_state`](Self::rebuild_field_state).
     occupancy_cell_count: u32,
@@ -267,7 +264,7 @@ impl BrickRaymarchRenderer {
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
     ) -> Self {
-        // ADR 0012 (H1): ONE uniform buffer of three dynamic-offset slots (solid + two
+        // ONE uniform buffer of three dynamic-offset slots (solid + two
         // onion ghost slabs). Each slot is padded up to the device's uniform-offset
         // alignment so a dynamic offset lands slot `n` exactly.
         let uniform_size = std::mem::size_of::<BrickUniformsPod>() as u64;
@@ -343,7 +340,7 @@ impl BrickRaymarchRenderer {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            // ADR 0012 (H1): dynamic offset selects the solid / ghost-lower /
+                            // Dynamic offset selects the solid / ghost-lower /
                             // ghost-upper slot from the one 3-slot uniform buffer.
                             has_dynamic_offset: true,
                             min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
@@ -374,7 +371,7 @@ impl BrickRaymarchRenderer {
                         },
                         count: None,
                     },
-                    // ADR 0011 G2: the two clip-map occupancy levels (sorted cell keys).
+                    // The two clip-map occupancy levels (sorted cell keys).
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -395,7 +392,7 @@ impl BrickRaymarchRenderer {
                         },
                         count: None,
                     },
-                    // ADR 0011 G4: the third clip-map level (512-block cell keys).
+                    // The third clip-map level (512-block cell keys).
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -406,7 +403,7 @@ impl BrickRaymarchRenderer {
                         },
                         count: None,
                     },
-                    // ADR 0011 band-clip interior fallback: the block-occupancy cells.
+                    // Band-clip interior fallback: the block-occupancy cells.
                     wgpu::BindGroupLayoutEntry {
                         binding: 6,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -509,7 +506,7 @@ impl BrickRaymarchRenderer {
             ],
         });
 
-        // ADR 0011 G2 — the group(2) LOADED-material slot. Its layout is the SAME
+        // The group(2) LOADED-material slot. Its layout is the SAME
         // `renderer::build_face_material_layout` the mesh path (and `LoadedMaterial`)
         // uses, so an applied block's bind group binds here directly. A dummy 1×1×6
         // sRGB D2Array binds when no block is applied (the shader ignores it while
@@ -606,10 +603,10 @@ impl BrickRaymarchRenderer {
             cache: None,
         });
 
-        // ADR 0012 H1.5 (spike) — the onion GHOST pipeline is the Beer–Lambert HAZE
-        // variant: `fragment_ghost_haze` accumulates the ray's in-solid path length across
-        // the slab and outputs the tint at `1 − exp(−k·thickness)` — the retired volumetric
-        // fog's aerogel look, sourced from the brick field alone. Alpha-blended, depth test
+        // The onion GHOST pipeline is the Beer–Lambert HAZE variant:
+        // `fragment_ghost_haze` accumulates the ray's in-solid path length across
+        // the slab and outputs the tint at `1 − exp(−k·thickness)` — an aerogel look
+        // sourced from the brick field alone. Alpha-blended, depth test
         // `Less` with depth WRITE OFF: the haze march produces exactly ONE fragment per slab
         // per pixel (all in-slab thickness is folded in-shader), so there is no intra-slab
         // overlap for a depth write to disambiguate (the crisp ghost's reason for write-ON),
@@ -703,7 +700,7 @@ impl BrickRaymarchRenderer {
                 cache: None,
             });
 
-        // ADR 0011 G2 — the color-parity pass: single sample, no depth, the SHADED
+        // The color-parity pass: single sample, no depth, the SHADED
         // color into a plain `Rgba8Unorm` target (read back by tests/gpu_parity.rs).
         let color_identity_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -744,7 +741,7 @@ impl BrickRaymarchRenderer {
                 cache: None,
             });
 
-        // ADR 0013 — the material-identity pass: single sample, no depth, the resolved
+        // The material-identity pass: single sample, no depth, the resolved
         // per-voxel material id per hit into an `Rgba32Uint` target (read back by
         // tests/gpu_parity.rs). Same layout as the hit-identity pass.
         let material_identity_pipeline =
@@ -836,7 +833,7 @@ impl BrickRaymarchRenderer {
     /// pipeline work. `gpu_records` is [`pack_gpu_records`]' output (possibly with
     /// forced non-resident slots); `recenter_voxels` the resolve's carried
     /// recenter. Material AND the on-face-grid overlay are per-record (packed in
-    /// `gpu_records`, ADR 0011 G2 / material atlas) — no scene-wide overlay rides here.
+    /// `gpu_records` / the material atlas) — no scene-wide overlay rides here.
     #[allow(clippy::too_many_arguments)]
     pub fn install_brick_field(
         &mut self,
@@ -912,20 +909,20 @@ impl BrickRaymarchRenderer {
         );
     }
 
-    /// **ADR 0011 G3 — incremental dirty-brick patch.** Patch ONLY the dirty slots of the
+    /// **Incremental dirty-brick patch.** Patch ONLY the dirty slots of the
     /// PERSISTENT atlas from an [`IncrementalBrickField`]
     /// update, then swap in the merged records + rebuilt pyramid — no wholesale atlas
     /// re-upload, no occupancy readback. `update.written_slots` are the only texels
     /// touched (untouched slots keep their bytes) UNLESS `update.atlas_grew`, where the
     /// tile grid moved and the whole atlas is re-packed (the one legitimate wholesale
-    /// re-pack, ADR 0007 resize precedent). Records, atlas geometry, and each dirty slot's
-    /// bytes are read straight from `mirror` (the single CPU owner — item 9), so the
-    /// per-edit path never materialises a `BrickFieldBuild`.
+    /// re-pack). Records, atlas geometry, and each dirty slot's bytes are read straight
+    /// from `mirror` (the single CPU owner), so the per-edit path never materializes a
+    /// `BrickFieldBuild`.
     ///
     /// Preconditions the live shell (`WindowedState::rebuild_geometry`) upholds: a field is
     /// already installed AND its density/frame match the mirror (an incremental edit never
     /// changes density — that routes wholesale). Records + pyramid re-upload whole (they
-    /// are small — the traffic G3 kills is the atlas texels + the re-evaluation).
+    /// are small — the traffic the patch kills is the atlas texels + the re-evaluation).
     #[allow(clippy::too_many_arguments)]
     pub fn patch_brick_field(
         &mut self,
@@ -938,13 +935,13 @@ impl BrickRaymarchRenderer {
         recenter_voxels: RecenterVoxels,
     ) {
         // Read the atlas geometry + dirty-slot bytes straight from the single-owner mirror —
-        // no `to_build()` (item 9: the per-edit full records clone + whole-atlas re-pack is gone).
+        // no `to_build()`: no per-edit full-records clone, no whole-atlas re-pack.
         let geometry = mirror.atlas_geometry();
         let target_dim = geometry.atlas_dim_voxels.max(1);
         if update.atlas_grew || target_dim != self.atlas_texture_dim {
             // The tile grid grew/shrank: every slot's 3D position moved, so recreate the
-            // texture and re-upload wholesale (ADR 0011 pitfalls — the resize is the one
-            // place a full re-pack is legitimate, logged by the caller).
+            // texture and re-upload wholesale (the resize is the one place a full re-pack
+            // is legitimate, logged by the caller).
             let atlas = mirror.pack_atlas_payload();
             self.atlas_texture = upload_brick_atlas(device, queue, &atlas);
             self.atlas_texture_dim = target_dim;
@@ -1002,7 +999,7 @@ impl BrickRaymarchRenderer {
         );
     }
 
-    /// The number of atlas slots the last install / patch wrote (ADR 0011 G3 instrument):
+    /// The number of atlas slots the last install / patch wrote:
     /// a wholesale install writes every sculpted slot; an incremental patch writes only
     /// the dirty region's slots (or, on a grow, every slot). The "per-edit cost ∝ dirty
     /// region" claim, made observable.
@@ -1099,7 +1096,7 @@ impl BrickRaymarchRenderer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // ADR 0011 band-clip interior fallback: the block-occupancy cells (empty ⇒ a single
+        // Band-clip interior fallback: the block-occupancy cells (empty ⇒ a single
         // zeroed placeholder; its count is 0, so the shader never binary-searches it).
         let placeholder_occupancy = [OccupancyCellPod::zeroed()];
         let occupancy_cells = pack_occupancy_cells(&pyramid.interior_masks);
@@ -1126,7 +1123,7 @@ impl BrickRaymarchRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    // ADR 0012 (H1): sized to ONE slot (dynamic offset selects solid /
+                    // Sized to ONE slot (dynamic offset selects solid /
                     // ghost-lower / ghost-upper), so `offset + size` is valid at every slot.
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &self.uniform_buffer,
@@ -1265,7 +1262,7 @@ impl BrickRaymarchRenderer {
         let band_lo_sv = clamp_i32(band.band_min as i64 + lattice_shift[2] as i64);
         let band_hi_sv = clamp_i32(band.band_max as i64 + 1 + lattice_shift[2] as i64);
 
-        // ADR 0018 Decision 5 (S5): the onion-fog region → the sv voxel frame. A recentered voxel
+        // The onion-fog region → the sv voxel frame. A recentered voxel
         // `v` maps to `sv = v + half + lattice_shift` (the exact frame the band conversion above
         // uses on Z: `band_min` is already `recentered_z + half_z`). Half-open `[lo, hi)`.
         let region_sv = region.map(|clip| {
@@ -1284,7 +1281,7 @@ impl BrickRaymarchRenderer {
         let pre_band_hi_z = traversal_hi.z;
         let band_clip_active;
         match region_sv {
-            // No region — the pre-S5 scene-wide band: clamp the traversal Z to the band slab,
+            // No region — a scene-wide band: clamp the traversal Z to the band slab,
             // and fire the interior fallback exactly when that narrows the resident Z-extent.
             None => {
                 traversal_lo.z = traversal_lo.z.max(band_lo_sv as f32);
@@ -1370,7 +1367,7 @@ impl BrickRaymarchRenderer {
         grid_overlay_master: bool,
         bound: Option<MaterialChoice>,
     ) -> BrickMarchFrame {
-        // ADR 0018 Decision 5 (S5): the SOLID march confines the band to the region
+        // The SOLID march confines the band to the region
         // (ConfineBand); outside the region it renders finished. `ghost_confine = false`.
         let frame = self.march_frame(
             scene_matrices,
@@ -1381,7 +1378,7 @@ impl BrickRaymarchRenderer {
             false,
         );
         // The bound procedural material drives modulation exactly as the cuboid
-        // path: `Some` enables the relative base-color array, `None` (a loaded VS
+        // path: `Some` enables the relative base-color array, `None` (a loaded
         // block — the brick path disengages for those, but mirror anyway) is neutral.
         let (modulation_enabled, base_colors) = match bound {
             Some(material) => (
@@ -1390,14 +1387,13 @@ impl BrickRaymarchRenderer {
             ),
             None => (0.0, [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT]),
         };
-        // The uniform is now the MASTER toggle only (the user's grid-overlay switch). Whether a
+        // The uniform is the MASTER toggle only (the user's grid-overlay switch). Whether a
         // given hit draws the grid is `master AND the hit's own per-record/per-voxel overlay bit`,
-        // resolved in the shader — the scene-wide overlay bool the representability gate carried
-        // is deleted (blocks may disagree on the overlay and still be one brick field).
+        // resolved in the shader — there is no scene-wide overlay bool, so blocks may disagree
+        // on the overlay and still be one brick field.
         let grid_overlay_enabled = if grid_overlay_master { 1.0 } else { 0.0 };
-        // The SOLID draw's uniform: slot 0, `ghost_mode = 0` (its zeroed tint is unread).
-        // Dynamic offset 0 selects it, so this is byte-identical to the pre-0012 single-slot
-        // buffer (parity + non-onion goldens unaffected).
+        // The SOLID draw's uniform: slot 0, `ghost_mode = 0` (its zeroed tint is unread),
+        // selected by dynamic offset 0.
         let uniforms = self.build_uniforms_pod(
             &frame,
             grid_overlay_enabled,
@@ -1410,7 +1406,7 @@ impl BrickRaymarchRenderer {
         frame
     }
 
-    /// Assemble a [`BrickUniformsPod`] for one draw (ADR 0012 H1: shared by the solid draw
+    /// Assemble a [`BrickUniformsPod`] for one draw (shared by the solid draw
     /// and the two ghost-slab draws). `ghost_mode`/`ghost_tint` select the flat translucent
     /// ghost shade; every other field is the frame + shading the shader consumes.
     #[allow(clippy::too_many_arguments)]
@@ -1460,7 +1456,7 @@ impl BrickRaymarchRenderer {
                 frame.voxel_bias[0],
                 frame.voxel_bias[1],
                 frame.voxel_bias[2],
-                // w = loaded_material_active (ADR 0011 G2): shade solid hits from the
+                // w = loaded_material_active: shade solid hits from the
                 // loaded 6-layer D2Array by the lattice rule instead of the procedural
                 // atlas. The ghost draws pass this too but never shade (ghost_mode short-
                 // circuits before `shade_cuboid_surface`), so it is inert for them.
@@ -1469,7 +1465,7 @@ impl BrickRaymarchRenderer {
             band_voxel_sv: [
                 frame.band_voxel_sv[0],
                 frame.band_voxel_sv[1],
-                // ADR 0013: the MATERIAL SIDE ATLAS's tiles-per-axis (its own pool sizes from
+                // The MATERIAL SIDE ATLAS's tiles-per-axis (its own pool sizes from
                 // its mixed-brick slot count = dim / edge), so `mixed_voxel_material` addresses
                 // the cell-key cube — never the occupancy atlas's `block_bias_and_tiles.w`. 1 for
                 // the placeholder / a no-mixed-brick field (its cell-key sample never fires).
@@ -1511,7 +1507,7 @@ impl BrickRaymarchRenderer {
         }
     }
 
-    /// (ADR 0012 H1) Upload the two onion GHOST slab uniforms (slots 1 + 2) for `band`.
+    /// Upload the two onion GHOST slab uniforms (slots 1 + 2) for `band`.
     /// Each slab is the SAME march as the solid but with its band clamped to ONE onion
     /// slab — `[band_min − depth, band_min)` (lower) and `(band_max, band_max + depth]`
     /// (upper), the recentered-Z remainder of `AppCore::onion_fog_params`' onion span — plus
@@ -1591,15 +1587,15 @@ impl BrickRaymarchRenderer {
         }
     }
 
-    /// The byte offset of dynamic-offset uniform `slot` (ADR 0012 H1).
+    /// The byte offset of dynamic-offset uniform `slot`.
     fn slot_offset(&self, slot: u32) -> u64 {
         slot as u64 * self.uniform_slot_stride as u64
     }
 
-    /// Set whether a VS block is applied this frame — mirrored into `voxel_bias.w` by the
+    /// Set whether a loaded block is applied this frame — mirrored into `voxel_bias.w` by the
     /// next [`update_uniforms`](Self::update_uniforms) so the shader shades solid hits from
     /// the loaded 6-layer D2Array (the owner's lattice rule) instead of the procedural
-    /// atlas (ADR 0011 G2). Call BEFORE `update_uniforms`; pass the SAME block's bind group
+    /// atlas. Call BEFORE `update_uniforms`; pass the SAME block's bind group
     /// to [`draw`](Self::draw). A no-op state change when it matches the current value.
     pub fn set_loaded_material_active(&mut self, active: bool) {
         self.loaded_material_active = active;
@@ -1607,8 +1603,8 @@ impl BrickRaymarchRenderer {
 
     /// Draw the brick raymarch INSIDE the shared MSAA voxel pass (viewport +
     /// scissor already set by `render_frame`). Uniforms must be uploaded first.
-    /// `loaded_material` is the applied VS block's group(2) bind group (built against
-    /// `renderer::build_face_material_layout`, ADR 0011 G2); `None` binds the dummy —
+    /// `loaded_material` is the applied block's group(2) bind group (built against
+    /// `renderer::build_face_material_layout`); `None` binds the dummy —
     /// pass `Some(..)` exactly when [`set_loaded_material_active(true)`](Self::set_loaded_material_active)
     /// was set this frame so the sampled texture matches the shading branch.
     pub fn draw<'a>(
@@ -1620,7 +1616,7 @@ impl BrickRaymarchRenderer {
             return;
         }
         pass.set_pipeline(&self.render_pipeline);
-        // ADR 0012 (H1): dynamic offset selects the SOLID uniform slot.
+        // Dynamic offset selects the SOLID uniform slot.
         pass.set_bind_group(
             0,
             &self.field_bind_group,
@@ -1635,7 +1631,7 @@ impl BrickRaymarchRenderer {
         pass.draw(0..3, 0..1);
     }
 
-    /// (ADR 0012 H1) Draw the onion GHOST pass: one fullscreen raymarch per ACTIVE onion
+    /// Draw the onion GHOST pass: one fullscreen raymarch per ACTIVE onion
     /// slab (lower then upper — the same order the cuboid mesh ghost draws), each selecting
     /// its ghost uniform slot by dynamic offset. Flat-tinted + alpha-blended, depth test
     /// `Less` with depth WRITE ON (nearest ghost surface wins). MUST run AFTER [`draw`](Self::draw)
@@ -1726,7 +1722,7 @@ impl BrickRaymarchRenderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.hit_identity_pipeline);
-            // ADR 0012 (H1): the parity harness reads the SOLID slot.
+            // The parity harness reads the SOLID slot.
             pass.set_bind_group(
                 0,
                 &self.field_bind_group,
@@ -1788,12 +1784,12 @@ impl BrickRaymarchRenderer {
         pixels
     }
 
-    /// ADR 0013 — render the MATERIAL-identity image (the mixed-brick parity harness): one
+    /// Render the MATERIAL-identity image (the mixed-brick parity harness): one
     /// `[hit, material_id, 0, 0]` u32 quad per pixel, where `material_id` is the RESOLVED
     /// per-voxel material (a mixed brick's clean cell-key id, else the per-record material).
     /// Uses the CURRENT uniforms — call [`update_uniforms`](Self::update_uniforms) with
     /// `viewport_px = [0, 0, width, height]` first. The direct "shader == CPU-march reference"
-    /// material gate (ADR 0013): no shading is reproduced, only the resolved id compared.
+    /// material gate: no shading is reproduced, only the resolved id compared.
     pub fn render_material_identity_image(
         &self,
         device: &wgpu::Device,
@@ -1909,7 +1905,7 @@ impl BrickRaymarchRenderer {
         pixels
     }
 
-    /// ADR 0011 G2 — render the SHADED color image (the color-parity harness): one
+    /// Render the SHADED color image (the color-parity harness): one
     /// `Rgba8Unorm` pixel per hit, shaded exactly as the MSAA render pass' center-ray
     /// evaluation. `loaded_material` binds the applied block's group(2) D2Array (call
     /// [`set_loaded_material_active(true)`](Self::set_loaded_material_active) +

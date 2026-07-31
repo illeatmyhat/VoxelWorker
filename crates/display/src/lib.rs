@@ -38,9 +38,7 @@
 //!
 //! These are the nouns and verbs of the architecture's display layer — see
 //! `docs/architecture/03-display.md` (the CPU/GPU truth boundary, the two display pipelines,
-//! the brick field + raymarch, the onion ghost) for the timeless statement, and
-//! `docs/design/per-layer-crates-extraction-map.md` (the display row) for the dated
-//! provenance of each module.
+//! the brick field + raymarch, the onion ghost) for the statement over the whole layer.
 //!
 //! ## Modules
 //!
@@ -55,7 +53,7 @@
 //!   record binary search + sculpted voxel DDA, and the CPU march mirror.
 //! * [`texture_atlas`] — the packed material atlas ([`texture_atlas::MaterialAtlas`]) the sinks sample.
 //! * [`block_texture`] — the runtime-loaded scene block material + its bind-group layout (pure wgpu).
-//! * [`assets`] — the asset-pack decode + registry (custom packs, VS packs, face textures).
+//! * [`assets`] — the asset-pack decode + registry (custom packs, game packs, face textures).
 //!   A sibling dependency crate, not a module of this one; it earns its place in this list
 //!   because `block_texture` above builds its materials out of it.
 
@@ -71,7 +69,7 @@ pub mod renderer;
 mod shaders;
 pub mod texture_atlas;
 
-/// Anything that records itself into a frame phase with one draw call (ADR 0031). The shell
+/// Anything that records itself into a frame phase with one draw call. The shell
 /// groups scene draws into ordered phases — background, over-model ghosts, scaffold, on-top —
 /// and records each phase's slice in turn into the single viewport pass. The solid model and
 /// the view cube are NOT scene draws (they need the material bind group / their own sub-pass);
