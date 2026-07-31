@@ -551,12 +551,26 @@ never a vote against an assertion.
 The rank reading is taken with rigidity off for the same reason. Rows that say "stay where you are"
 would saturate the Jacobian and read every real constraint as redundant.
 
-**The heavier group holds and the lighter one comes to it, for free.** Rigidity makes each connected
-group move as one piece; "as little as it can" is summed over points; so translating a group of `n`
-costs `n` times what translating a lone point costs, and joining two groups splits the gap in inverse
-proportion to their sizes. That is the Fusion behavior the owner asked for — a massive object does
-not move for a less massive one — arrived at without a mass term, a grouping pass, or a heuristic to
-maintain. A four-corner quad meeting a two-point stick travels exactly half as far as the stick.
+**The heavier piece is ANCHORED, not merely outweighed.** Rigidity alone gets half of what the
+author wants. It makes each connected piece move as one, and since "as little as it can" is summed
+over points, joining two pieces splits the gap in inverse proportion to their sizes — a four-corner
+quad meeting a two-point stick came a third of the way. That is mass by another name, and it is not
+what was asked: *"It ended up translating both of them towards a midpoint. I want one to translate to
+the other"* (owner, 2026-07-31), after Fusion, where a massive object does not move for a less
+massive one.
+
+Which piece is the REFERENCE is not a quantity, so no weight expresses it. Anchoring the heavy piece
+with one soft row per point only brings its travel from a third down to a fifth, and every stronger
+weight is a number someone has to defend. So the heavy piece's coordinates are dropped from the
+parameter vector outright for the preference pass: it cannot move, the light piece comes all the way,
+and the exactness pass that follows works on the whole drawing again in case the anchor made the
+constraint unreachable.
+
+Weight is the piece's point count, with one thing ahead of it: a piece something has already `Fix`ed
+is not going to travel whatever its size, so it outranks any count. **Only a strict winner anchors** —
+two pieces of equal weight give no reason to prefer either, and inventing one (pick order, id order)
+would be a rule the author has to learn rather than one they can see. Two loose points still meet in
+the middle, as they always have.
 
 **Not during a drag.** Rigidity answers "where should the drawing go now that this is true?", and a
 drag already has an answer to that: the hand. Its reference would be wrong there in any case, since

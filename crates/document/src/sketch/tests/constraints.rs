@@ -933,11 +933,21 @@ fn arc_with_center() -> (Sketch, EntityId, EntityId, EntityId, EntityId) {
 /// solver may choose — it is what the ends and the sweep make it — so the correction lands on the
 /// ends and the center follows. The owner reported a `Coincident` on it doing nothing (2026-07-31);
 /// it was being written to a slot that `sync_arc_centers` overwrote on the next edit.
+///
+/// The loose point is `Fix`ed so that IT is the reference piece and the arc is what travels — see
+/// [`Sketch::anchor_for`]. Left free, the three-point arc outweighs it and the point comes to the
+/// arc instead, which is correct but leaves this mechanism unobserved.
 #[test]
 fn a_constraint_on_an_arcs_center_moves_the_arc() {
     let (mut sketch, tail, head, center, loose) = arc_with_center();
     assert!(sketch.is_derived_point(center));
     let (before_tail, before_head) = (position(&sketch, tail), position(&sketch, head));
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: loose,
+            at: SketchPoint::new(40, 17),
+        })
+        .expect("the point the arc must reach");
 
     sketch
         .add_constraint(ConstraintKind::Coincident {
@@ -969,7 +979,8 @@ fn a_constraint_on_an_arcs_center_moves_the_arc() {
 }
 
 /// The owner's own gesture: `Fix` one end of the arc, then bring the center onto a point. The fixed
-/// end must not move — the other end and the loose point are what take up the difference.
+/// end must not move, and the loose point is what takes up the difference — the arc is the heavier
+/// piece AND the pinned one, so it is the reference and the point travels to it.
 #[test]
 fn a_fixed_arc_end_holds_while_the_center_is_brought_to_a_point() {
     let (mut sketch, tail, head, center, loose) = arc_with_center();
@@ -999,9 +1010,10 @@ fn a_fixed_arc_end_holds_while_the_center_is_brought_to_a_point() {
         (here[0] - there[0]).abs() < 1e-6 && (here[1] - there[1]).abs() < 1e-6,
         "the center still reached the point: {here:?} vs {there:?}"
     );
-    assert!(
-        position(&sketch, head) != before_head,
-        "the free end is what moved"
+    assert_eq!(
+        position(&sketch, head),
+        before_head,
+        "and the arc held whole: the point is what travelled"
     );
 }
 
@@ -1188,14 +1200,12 @@ fn a_constraint_translates_a_group_rather_than_deforming_it() {
     }
 }
 
-/// **The heavier group holds; the lighter one comes to it** (owner, 2026-07-31, after Fusion) —
-/// and nothing had to be written to make it so.
+/// **The heavier group holds; the lighter one comes to it** (owner, 2026-07-31, after Fusion).
 ///
-/// Rigidity makes each connected group move as ONE piece, and the solve moves the drawing as little
-/// as it can. "As little as it can" is summed over POINTS, so translating a group of `n` costs `n`
-/// times what translating a lone point costs: joining two groups splits the gap in inverse
-/// proportion to their sizes, which is mass by another name. Here a four-corner quad meets a
-/// two-point stick and travels exactly half as far as the stick does.
+/// Weighing the two pieces is not enough: least squares splits the gap in inverse proportion to
+/// their sizes, so a quad meeting a stick still slid a third of the way to meet it. "I want one to
+/// translate to the other." So the heavier piece is anchored outright for the preference pass and
+/// does not move at all.
 #[test]
 fn the_smaller_group_travels_to_the_larger_one() {
     let (mut sketch, corners, _) = quad([[0, 0], [20, 0], [20, 20], [0, 20]]);
@@ -1221,19 +1231,22 @@ fn the_smaller_group_travels_to_the_larger_one() {
         let (was, now) = (before[index], after[index]);
         ((now[0] - was[0]).powi(2) + (now[1] - was[1]).powi(2)).sqrt()
     };
-    // They met, so the two travels sum to the gap: (20,0) to (60,30) is 50.
     assert!(
-        (travel(0) + travel(1) - 50.0).abs() < 1e-6,
-        "the gap closed: {:.4} + {:.4}",
-        travel(0),
+        travel(0) < 1e-6,
+        "the four-corner quad held still: it moved {:.4}",
+        travel(0)
+    );
+    // (20,0) to (60,30) is 50, and the stick covered all of it.
+    assert!(
+        (travel(1) - 50.0).abs() < 1e-6,
+        "the two-point stick came the whole way: {:.4}",
         travel(1)
     );
+    // The stick translated by (-40,-30), so its far end went from (80,30) to (40,0).
+    let tip = position(&sketch, far);
     assert!(
-        (travel(1) - 2.0 * travel(0)).abs() < 1e-6,
-        "the two-point stick came twice as far as the four-corner quad: \
-         quad {:.4}, stick {:.4}",
-        travel(0),
-        travel(1)
+        (tip[0] - 40.0).abs() < 1e-6 && (tip[1] - 0.0).abs() < 1e-6,
+        "and it came as a piece, its far end riding along: {tip:?}"
     );
 }
 

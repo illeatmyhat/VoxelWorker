@@ -254,15 +254,17 @@ impl ConstraintRefusal {
 
 /// The sketch's points flattened into a parameter vector, with one entry per constraint residual.
 ///
-/// Parameters are **every** point's two coordinates, not just the constrained ones. That is what
-/// makes [`SolveReport::degrees_of_freedom`] mean "how many ways can this drawing still move"
-/// rather than "how many ways can the constrained part of it move" — an unconstrained point is a
-/// real freedom, and a sketch is fully constrained only when there are none left.
+/// Coordinates are **every** point's two, not just the constrained ones. That is what makes
+/// [`SolveReport::degrees_of_freedom`] mean "how many ways can this drawing still move" rather than
+/// "how many ways can the constrained part of it move" — an unconstrained point is a real freedom,
+/// and a sketch is fully constrained only when there are none left. Under
+/// [`Rigidity::Preferred`] some of those coordinates are ANCHORED and are not parameters at all;
+/// see [`free`](Self::free).
 pub(super) struct SketchResiduals<'a> {
-    /// The point ids, in parameter order: point `i` owns parameters `2i` and `2i + 1`.
+    /// The point ids, in coordinate order: point `i` owns coordinates `2i` and `2i + 1`.
     order: Vec<EntityId>,
     constraints: &'a [Constraint],
-    /// Each constraint's endpoints resolved to parameter indices, in the same order as
+    /// Each constraint's endpoints resolved to coordinate indices, in the same order as
     /// `constraints`. Resolved once so the residual loop is arithmetic and nothing else.
     resolved: Vec<Resolved>,
     /// The arc each slot's point is the DERIVED center of, indexed by slot. `None` for an
@@ -270,6 +272,12 @@ pub(super) struct SketchResiduals<'a> {
     derived: Vec<Option<ArcSlots>>,
     /// Every edge's span as the author drew it, or empty under [`Rigidity::Ignored`].
     rigidity: Vec<EdgeSpan>,
+    /// Every coordinate at the author's drawing. Anchored entries keep these values throughout;
+    /// free ones are overwritten from the parameter vector on the way in.
+    base: Vec<f64>,
+    /// Which entries of `base` the solve may move, in parameter order. All of them under
+    /// [`Rigidity::Ignored`].
+    free: Vec<usize>,
 }
 
 /// One arc's derived center as the residual system needs it: the point the arc owns, the two ends
@@ -309,22 +317,28 @@ pub(super) struct Frame {
 /// the constraints equally well. It is a preference over a null space, never a vote against a
 /// constraint.
 ///
-/// **The heavier group holds and the lighter one comes to it, at no extra cost.** These rows make
-/// each connected group move as one piece, and "as little as it can" is summed over POINTS, so
-/// translating a group of `n` costs `n` times what translating a lone point costs. Joining two
-/// groups splits the gap in inverse proportion to their sizes — mass by another name, and the
-/// Fusion behavior the owner asked for, with no mass term and no grouping pass to maintain.
+/// **The heavier group is ANCHORED, not merely outweighed.** Making each group move as one piece is
+/// only half of what the author wants: least squares still splits the gap between two joined groups
+/// in inverse proportion to their sizes, so a quad meeting a stick drags the quad a third of the way
+/// and the drawing the author was building slides out from under them. "One translates to the other"
+/// (owner, 2026-07-31) is a statement about which group is the reference, and no weight expresses it
+/// — even anchoring the heavy group with one soft row per point only brings its travel from a third
+/// down to a fifth. So the heavy group's coordinates are dropped from the parameter vector outright
+/// for this pass: it cannot move, the light group comes all the way, and the exactness pass that
+/// follows works on the whole drawing again in case the anchor made the constraint unreachable.
 ///
 /// **Not during a drag**; see [`Sketch::settle_under_the_hand`] for why.
 ///
 /// [`Sketch::settle_under_the_hand`]: super::Sketch::settle_under_the_hand
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Rigidity {
-    /// Constraint rows only — what a rank reading needs, and what the pass that restores exactness
-    /// after a preference pass needs.
+pub(super) enum Rigidity<'a> {
+    /// Constraint rows only, every coordinate free — what a rank reading needs, and what the pass
+    /// that restores exactness after a preference pass needs.
     Ignored,
-    /// Constraint rows, then one span-preserving row per edge and axis.
-    Preferred,
+    /// Constraint rows, then one span-preserving row per edge and axis, with `anchored`'s
+    /// coordinates held out of the parameter vector. `anchored` is empty when the constraint gives
+    /// no reason to prefer one group over another.
+    Preferred { anchored: &'a [EntityId] },
 }
 
 /// One edge's span in the author's pre-solve drawing, resolved to slots.
@@ -538,18 +552,18 @@ impl<'a> SketchResiduals<'a> {
                     .unwrap_or(Resolved::Dangling { residuals: 2 }),
             })
             .collect();
-        let rigidity = match rigidity {
-            Rigidity::Ignored => Vec::new(),
-            Rigidity::Preferred => {
-                let mut start = vec![0.0; order.len() * 2];
-                for (index, point) in points.iter().enumerate() {
-                    let at = point.at.in_plane();
-                    start[index * 2] = at[0];
-                    start[index * 2 + 1] = at[1];
-                }
-                let at = |slot: usize| position_of(&derived, &start, slot);
+        let mut base = vec![0.0; order.len() * 2];
+        for (index, point) in points.iter().enumerate() {
+            let at = point.at.in_plane();
+            base[index * 2] = at[0];
+            base[index * 2 + 1] = at[1];
+        }
+        let (rigidity, free) = match rigidity {
+            Rigidity::Ignored => (Vec::new(), (0..base.len()).collect()),
+            Rigidity::Preferred { anchored } => {
+                let at = |slot: usize| position_of(&derived, &base, slot);
                 let chords = frame.arc_centers.iter().map(|arc| (arc.from, arc.to));
-                frame
+                let spans = frame
                     .segments
                     .iter()
                     .map(|(_, from, to)| (*from, *to))
@@ -563,7 +577,12 @@ impl<'a> SketchResiduals<'a> {
                             span: [head[0] - tail[0], head[1] - tail[1]],
                         })
                     })
-                    .collect()
+                    .collect();
+                let held: Vec<usize> = anchored.iter().filter_map(|id| slot(*id)).collect();
+                let free = (0..base.len())
+                    .filter(|index| !held.contains(&(index / 2)))
+                    .collect();
+                (spans, free)
             }
         };
         Some(SketchResiduals {
@@ -572,23 +591,36 @@ impl<'a> SketchResiduals<'a> {
             resolved,
             derived,
             rigidity,
+            base,
+            free,
         })
     }
 
-    /// The starting guess: every point's current position, which is the author's drawing.
+    /// The starting guess: every FREE coordinate's current value, which is the author's drawing.
+    /// Anchored coordinates are not parameters and do not appear.
     pub(super) fn guess(&self, points: &[Point]) -> Vec<f64> {
-        let mut guess = vec![0.0; self.order.len() * 2];
+        let mut whole = self.base.clone();
         for point in points {
             if let Some(index) = self.order.iter().position(|id| *id == point.id) {
                 let at = point.at.in_plane();
-                guess[index * 2] = at[0];
-                guess[index * 2 + 1] = at[1];
+                whole[index * 2] = at[0];
+                whole[index * 2 + 1] = at[1];
             }
         }
-        guess
+        self.free.iter().map(|index| whole[*index]).collect()
     }
 
-    /// The point ids in parameter order, so a caller can write the solution back.
+    /// The parameter vector widened back to one entry per coordinate, anchored entries included.
+    /// Everything downstream of this reads coordinates by slot and never sees the narrowing.
+    fn widen(&self, parameters: &[f64]) -> Vec<f64> {
+        let mut whole = self.base.clone();
+        for (parameter, index) in parameters.iter().zip(&self.free) {
+            whole[*index] = *parameter;
+        }
+        whole
+    }
+
+    /// The point ids in slot order, so a caller can write the solution back.
     pub(super) fn order(&self) -> &[EntityId] {
         &self.order
     }
@@ -596,7 +628,7 @@ impl<'a> SketchResiduals<'a> {
 
 impl ResidualSystem for SketchResiduals<'_> {
     fn parameter_count(&self) -> usize {
-        self.order.len() * 2
+        self.free.len()
     }
 
     fn residual_count(&self) -> usize {
@@ -609,7 +641,8 @@ impl ResidualSystem for SketchResiduals<'_> {
     }
 
     fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
-        let at = |slot: usize| position_of(&self.derived, parameters, slot);
+        let whole = self.widen(parameters);
+        let at = |slot: usize| position_of(&self.derived, &whole, slot);
         let mut row = 0;
         for resolved in &self.resolved {
             match *resolved {
@@ -734,36 +767,38 @@ pub(super) fn solve_in_place(
     let system = SketchResiduals::new(points, frame, constraints, rigidity)?;
     let mut parameters = system.guess(points);
     let report = solve(&system, &mut parameters, SolveSettings::default());
+    let whole = system.widen(&parameters);
     let order: Vec<EntityId> = system.order().to_vec();
     for (index, id) in order.iter().enumerate() {
         if let Some(point) = points.iter_mut().find(|point| point.id == *id) {
             // Through `position_of`, so a derived center comes out of the solve already agreeing
             // with the arc that owns it rather than waiting on the caller to re-sync.
-            let at = position_of(&system.derived, &parameters, index);
+            let at = position_of(&system.derived, &whole, index);
             point.at = SketchPoint::from_continuous(at[0], at[1]);
         }
     }
     Some(report)
 }
 
-/// Move the drawing to meet `toward` in the way that disturbs it least, then re-solve `standing`
+/// Move the drawing to meet `constraints` in the way that disturbs it least, then re-solve them
 /// alone from that answer and report on THAT.
 ///
-/// **Two passes, not one weighted system.** The first pass carries preferences — [`Rigidity`], and
-/// for a drag the hand's own pull — which say which of many answers to prefer. The second says the
-/// standing constraints must be met *exactly*, not merely more strongly, and a second solve says
-/// that without anyone having to choose how much more strongly. It starts from the preferred answer,
-/// so it keeps that answer wherever the preferences and the constraints did not disagree, and the
-/// report it returns is a reading of the constraints alone — which is what a degree-of-freedom count
-/// and a satisfied/diverged verdict both have to be.
+/// **Two passes, not one weighted system.** The first pass carries preferences — [`Rigidity`] and
+/// its anchor — which say which of many answers to prefer. The second says the constraints must be
+/// met *exactly*, not merely more strongly, and a second solve says that without anyone having to
+/// choose how much more strongly. It starts from the preferred answer, so it keeps that answer
+/// wherever the preferences and the constraints did not disagree, and the report it returns is a
+/// reading of the constraints alone over the WHOLE drawing — which is what a degree-of-freedom
+/// count and a satisfied/diverged verdict both have to be.
 ///
-/// Pass the same list twice when there is nothing extra to pull toward.
+/// `anchored` names the points the first pass may not move — the heavy group, when this constraint
+/// joins two of them.
 pub(super) fn settle_in_place(
     points: &mut [Point],
     frame: &Frame,
-    toward: &[Constraint],
-    standing: &[Constraint],
+    constraints: &[Constraint],
+    anchored: &[EntityId],
 ) -> Option<SolveReport> {
-    solve_in_place(points, frame, toward, Rigidity::Preferred);
-    solve_in_place(points, frame, standing, Rigidity::Ignored)
+    solve_in_place(points, frame, constraints, Rigidity::Preferred { anchored });
+    solve_in_place(points, frame, constraints, Rigidity::Ignored)
 }

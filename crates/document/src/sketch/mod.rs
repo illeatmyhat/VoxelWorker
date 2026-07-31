@@ -1350,6 +1350,91 @@ impl Sketch {
         }
     }
 
+    /// The drawing's connected pieces, each as the point ids it holds. Two points share a piece
+    /// when an edge joins them, directly or through others; a lone point is a piece of one.
+    ///
+    /// This is the unit the author thinks in — the shape they drew, not the coordinates it is made
+    /// of — and it is what [`anchor_for`](Self::anchor_for) weighs.
+    fn connected_pieces(&self) -> Vec<Vec<EntityId>> {
+        let mut pieces: Vec<Vec<EntityId>> =
+            self.points.iter().map(|point| vec![point.id]).collect();
+        let joins = self.segments.iter().map(|seg| (seg.from, seg.to)).chain(
+            self.arcs
+                .iter()
+                .flat_map(|arc| [(arc.from, arc.to), (arc.from, arc.center)]),
+        );
+        for (from, to) in joins {
+            let find = |id: EntityId| pieces.iter().position(|piece| piece.contains(&id));
+            let (Some(left), Some(right)) = (find(from), find(to)) else {
+                continue;
+            };
+            if left != right {
+                let merged = pieces.remove(left.max(right));
+                pieces[left.min(right)].extend(merged);
+            }
+        }
+        pieces
+    }
+
+    /// The points a candidate constraint must not move: **the heaviest piece it names**, when it
+    /// names more than one.
+    ///
+    /// Empty when every entity the constraint names is already in one piece — there is no second
+    /// group for the first to be a reference for, and the ordinary least-squares nudge is right.
+    ///
+    /// Weight is the point count, with one thing ahead of it: a piece something has already `Fix`ed
+    /// is not going to travel whatever its size, so it outranks any count.
+    ///
+    /// **Only a STRICT winner anchors.** Two pieces of equal weight give no reason to prefer either
+    /// as the reference, and inventing one — pick order, id order — would be a rule the author has
+    /// to learn rather than one they can see. Equals meet in the middle, as two loose points always
+    /// have.
+    fn anchor_for(&self, kind: ConstraintKind) -> Vec<EntityId> {
+        let named: Vec<EntityId> = kind
+            .points()
+            .iter()
+            .copied()
+            .chain(kind.segments().iter().flat_map(|segment| {
+                self.segments
+                    .iter()
+                    .filter(|seg| seg.id == *segment)
+                    .flat_map(|seg| [seg.from, seg.to])
+            }))
+            .collect();
+        let pieces = self.connected_pieces();
+        let mut reached: Vec<usize> = Vec::new();
+        for point in &named {
+            if let Some(index) = pieces.iter().position(|piece| piece.contains(point)) {
+                if !reached.contains(&index) {
+                    reached.push(index);
+                }
+            }
+        }
+        if reached.len() < 2 {
+            return Vec::new();
+        }
+        let pinned = |piece: &[EntityId]| {
+            self.constraints.iter().any(|held| match held.kind {
+                ConstraintKind::Fix { point, .. } => piece.contains(&point),
+                _ => false,
+            })
+        };
+        let weight = |index: usize| (pinned(&pieces[index]), pieces[index].len());
+        let heaviest = reached
+            .iter()
+            .copied()
+            .max_by_key(|index| weight(*index))
+            .expect("at least two pieces were reached");
+        let shared = reached
+            .iter()
+            .filter(|index| weight(**index) == weight(heaviest))
+            .count();
+        match shared {
+            1 => pieces[heaviest].clone(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Add a constraint, trial-solving before it is kept (ADR 0035 Decision 4).
     ///
     /// **Unsatisfiable is refused** and nothing changes, so the system is always solvable and every
@@ -1373,7 +1458,8 @@ impl Sketch {
 
         let mut with_candidate = self.constraints.clone();
         with_candidate.push(candidate);
-        let trial = self.trial(&with_candidate);
+        let anchor = self.anchor_for(kind);
+        let trial = self.trial(&with_candidate, &anchor);
         match trial.verdict {
             TrialVerdict::Diverged => {
                 return Err(ConstraintRefusal::Unsatisfiable {
@@ -1463,7 +1549,9 @@ impl Sketch {
                     .copied()
                     .collect();
                 without.push(candidate);
-                self.trial(&without).verdict == TrialVerdict::Solved
+                self.trial(&without, &self.anchor_for(candidate.kind))
+                    .verdict
+                    == TrialVerdict::Solved
             })
             .map(|standing| standing.id)
             .collect()
@@ -1475,10 +1563,9 @@ impl Sketch {
     /// The judgement is on the RESIDUALS, not on why the search stopped — see
     /// [`SATISFIED_RESIDUAL`], which is where that distinction is argued and where the bug that
     /// came of confusing the two is recorded.
-    fn trial(&self, constraints: &[Constraint]) -> Trial {
+    fn trial(&self, constraints: &[Constraint], anchor: &[EntityId]) -> Trial {
         let mut points = self.points.clone();
-        let report =
-            constraint::settle_in_place(&mut points, &self.frame(), constraints, constraints);
+        let report = constraint::settle_in_place(&mut points, &self.frame(), constraints, anchor);
         let verdict = match report {
             // Nothing to solve is not a failure: an empty system is met by the drawing as it is.
             None => TrialVerdict::Solved,
@@ -1653,7 +1740,9 @@ impl Sketch {
     pub fn solve(&mut self) -> Option<SolveReport> {
         let frame = self.frame();
         let constraints = self.constraints.clone();
-        constraint::settle_in_place(&mut self.points, &frame, &constraints, &constraints)
+        // No anchor: a re-solve of the whole drawing has no candidate to read a reference piece
+        // from, so rigidity is the only preference in play.
+        constraint::settle_in_place(&mut self.points, &frame, &constraints, &[])
     }
 
     /// What a solve WOULD report, without moving anything.
