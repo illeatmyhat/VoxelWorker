@@ -3,7 +3,7 @@ use super::*;
 /// std140-safe uniform block for the cuboid pass (ADR 0002 E3b-2). Carries the
 /// camera matrix, the grid half-extent and density (driving the per-voxel texture
 /// slice and the position-based grid overlay), the grid-overlay parameters, and
-/// the per-material base colours (reused from the instanced step-3b modulation).
+/// the per-material base colors (reused from the instanced step-3b modulation).
 /// Every `vec3` is followed by a scalar so it never straddles a 16-byte boundary;
 /// the four grid-line scalars then fill the slot before the `vec4` array (which
 /// must be 16-aligned). Field order matches the WGSL `CuboidUniforms` exactly.
@@ -26,7 +26,7 @@ pub(crate) struct CuboidUniforms {
     pub(super) voxel_line_alpha: f32,
     pub(super) block_line_alpha: f32,
     // Layer-range band clip (issue #12 parity) + debug-faces flag. The two band
-    // bounds plus the debug flag plus a pad fill one 16-byte slot, so the colour
+    // bounds plus the debug flag plus a pad fill one 16-byte slot, so the color
     // array below stays 16-aligned (matching the WGSL `CuboidUniforms`).
     pub(super) band_min: f32,
     pub(super) band_max: f32,
@@ -46,10 +46,10 @@ pub(crate) struct CuboidUniforms {
     /// `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
     pub(super) ghost_tint: [f32; 4],
     /// Added to `voxel_absolute_position` INSIDE the on-face grid overlay to recover
-    /// the TRUE world voxel frame (`= recentre − grid_half_extent`), so the overlay's
+    /// the TRUE world voxel frame (`= recenter − grid_half_extent`), so the overlay's
     /// voxel and block lines anchor to the world block lattice — the SAME lattice the
     /// per-object block-lattice cage draws on — instead of the render grid's local
-    /// half-extent frame (which is out of block phase whenever `recentre` is not a
+    /// half-extent frame (which is out of block phase whenever `recenter` is not a
     /// whole block). Only the overlay reads it; the texture/UV slice keeps `absolute`,
     /// so material tiling is unchanged (goldens byte-green while the overlay is off).
     pub(super) overlay_world_offset: [f32; 3],

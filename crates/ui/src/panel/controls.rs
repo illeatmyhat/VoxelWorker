@@ -65,7 +65,7 @@ pub(super) fn build_display_body(
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
     // active node), so it no longer has a Display toggle.
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
-    // Grazing-rim brick diagnostic (face-axis colour + UV checkerboard). Keeps the brick
+    // Grazing-rim brick diagnostic (face-axis color + UV checkerboard). Keeps the brick
     // path engaged (unlike the mesh-only face-orientation debug above) so the raymarch under
     // investigation is what's shown.
     ui.checkbox(&mut state.debug_brick_faces, "Debug: brick faces");
@@ -75,7 +75,7 @@ pub(super) fn build_display_body(
 /// (slow-paths item 2). The click is reported via [`PanelResponse::clicked_export_vox`];
 /// the caller opens the OS save dialog and dispatches the write to the background export
 /// worker (so the panel stays free of file-system concerns). While an export is in flight
-/// the button is disabled — the shell serialises exports — and `export.status_line`
+/// the button is disabled — the shell serializes exports — and `export.status_line`
 /// carries the "Exporting… done/total" progress; otherwise it is the last completion /
 /// failure / large-export message.
 pub(super) fn build_export_section(

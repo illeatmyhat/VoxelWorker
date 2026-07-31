@@ -1,4 +1,4 @@
-//! The **scoped** black / white / grey cell classification: the
+//! The **scoped** black / white / gray cell classification: the
 //! [`cell_classification`](super::cell_classification) fold generalized from one linear operand
 //! list to a depth-first list with **scope push / pop markers**, evaluated with a stack of
 //! accumulators. A scope's operands fold into their own accumulator; when the scope closes, the
@@ -46,7 +46,7 @@
 //! The per-cell interval fold is **Duff 1992** (*Interval arithmetic and recursive subdivision
 //! for implicit functions and constructive solid geometry*, SIGGRAPH) exactly as in
 //! [`cell_classification`](super::cell_classification); the three-way verdict is the black /
-//! white / grey node classification of the region-octree literature (**Samet 2006**, ch. 2).
+//! white / gray node classification of the region-octree literature (**Samet 2006**, ch. 2).
 //! The *flattened-list-with-stack* evaluation shape — a CSG expression linearized depth-first
 //! and evaluated left-to-right with a scope stack instead of tree recursion — is the Boolean
 //! list formulation of **Rossignac 1999** (*Blist: a Boolean list formulation of CSG trees*,
@@ -74,7 +74,7 @@ pub enum ScopedCellEvent {
     CloseScope(CellCombineOp),
 }
 
-/// The scoped black/white/grey cell classifier — a namespace for the
+/// The scoped black/white/gray cell classifier — a namespace for the
 /// [`ScopedCellClassification::classify`] stack fold. Zero-sized: it carries no state, only
 /// the algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +114,7 @@ impl ScopedCellClassification {
                         "unbalanced ScopedCellEvent list: CloseScope with no open scope"
                     );
                     if stack.len() <= 1 {
-                        // Conservative release behaviour for a caller bug: ignore the
+                        // Conservative release behavior for a caller bug: ignore the
                         // excess close rather than corrupt the root accumulator.
                         continue;
                     }
@@ -149,7 +149,7 @@ impl ScopedCellClassification {
     }
 }
 
-/// Fold one operand interval into an accumulator level under `role`, honouring the ∅
+/// Fold one operand interval into an accumulator level under `role`, honoring the ∅
 /// identities of the module doc: union seeds an empty level; difference/intersection against
 /// an empty level stay empty (`∅ − B = ∅`, `∅ ∩ B = ∅`).
 fn fold_into(

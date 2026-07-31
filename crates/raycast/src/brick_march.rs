@@ -184,7 +184,7 @@ fn clipmap_cell_exit_t(
 /// occupied, or the level off (empty ⇒ report occupied, disabling that level's skip);
 /// `classify_block(absolute_block)` — [`BlockContents`], carrying a sculpted block's
 /// per-voxel occupancy closure; and, through the sculpted variant, `brick_local`
-/// occupancy. `ray` is the pixel-centre ray in the shifted march frame.
+/// occupancy. `ray` is the pixel-center ray in the shifted march frame.
 pub fn march_brick_hierarchy<LevelFn, ClassifyFn, VoxelFn>(
     ray: Ray,
     params: &HierarchicalMarchParams,
@@ -367,7 +367,7 @@ where
 /// no records) inside the same frame/band, querying `occupied(absolute_voxel)`. The pure
 /// kernel behind `voxel_worker::brick::cpu_march_exact_occupancy`, the parity
 /// net's INDEPENDENT content oracle: the brick march's hit-voxel set must equal this
-/// march's hit-voxel set. `ray` is the pixel-centre ray in the shifted march frame.
+/// march's hit-voxel set. `ray` is the pixel-center ray in the shifted march frame.
 pub fn march_exact_occupancy<OccupiedFn>(
     ray: Ray,
     params: &ExactMarchParams,

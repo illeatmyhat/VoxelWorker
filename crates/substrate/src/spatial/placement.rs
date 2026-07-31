@@ -10,7 +10,7 @@
 //! placement rotates that box and RE-ANCHORS its lowest rotated corner back onto `world_offset`,
 //! so `world_of(min_corner) == world_offset` exactly: a leaf occupies
 //! `[world_offset, world_offset + span_of_rotated_box)`. This is the same anchor
-//! [`seat_centre_at`] inverts when it seats a producer's centre onto a surface contact.
+//! [`seat_center_at`] inverts when it seats a producer's center onto a surface contact.
 
 use crate::spatial::voxel_frames::{ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 use glam::{Quat, Vec3};
@@ -182,7 +182,7 @@ impl LeafPlacement {
     /// The integer origin as an `f32` vector — the single downcast, used only at the near-frame
     /// point crossings ([`world_of`](Self::world_of) / [`local_of`](Self::local_of)) whose result
     /// or input a caller has already accepted as small. The precision-critical integer paths
-    /// (`world_aabb`, `world_cell_of_local_centre`, …) add the origin in `i64` instead.
+    /// (`world_aabb`, `world_cell_of_local_center`, …) add the origin in `i64` instead.
     fn origin_vec3(&self) -> Vec3 {
         Vec3::new(
             self.origin_voxels[0] as f32,
@@ -209,7 +209,7 @@ impl LeafPlacement {
     /// A [`ProducerLocalVoxelPoint`] mapped to its [`TrueWorldVoxelPoint`] — the frame types make a
     /// producer-local/true-world mix-up a compile error. Near-frame convenience (the origin is
     /// re-added through `f32`); the precision-critical integer twin is
-    /// [`world_cell_of_local_centre`](Self::world_cell_of_local_centre).
+    /// [`world_cell_of_local_center`](Self::world_cell_of_local_center).
     pub fn world_of(&self, local: ProducerLocalVoxelPoint) -> TrueWorldVoxelPoint {
         TrueWorldVoxelPoint::from_voxels(
             self.forward_local_relative(local.voxels()) + self.origin_vec3(),
@@ -218,27 +218,27 @@ impl LeafPlacement {
 
     /// The inverse: a [`TrueWorldVoxelPoint`] mapped back to the producer-LOCAL frame.
     /// `local_of(world_of(p)) ≈ p` for every `p` (a rotation's inverse is exact up to float
-    /// round-off, which the classifier's `+0.5` centre-sample margins absorb). Near-frame
+    /// round-off, which the classifier's `+0.5` center-sample margins absorb). Near-frame
     /// convenience; the precision-critical twin is
-    /// [`local_of_abs_cell_centre`](Self::local_of_abs_cell_centre).
+    /// [`local_of_abs_cell_center`](Self::local_of_abs_cell_center).
     pub fn local_of(&self, world: TrueWorldVoxelPoint) -> ProducerLocalVoxelPoint {
         ProducerLocalVoxelPoint::from_voxels(
             self.local_of_relative(world.voxels() - self.origin_vec3()),
         )
     }
 
-    /// The absolute voxel cell a producer-LOCAL cell's CENTRE lands in — `world_of(index + 0.5)`
+    /// The absolute voxel cell a producer-LOCAL cell's CENTER lands in — `world_of(index + 0.5)`
     /// floored, computed with the integer origin re-added in `i64` so it stays exact arbitrarily
     /// far from the world origin (the wandering-origin fold). Bit-identical to the near-frame
     /// `world_of(index + 0.5).floor()` for a small origin, and the precision-preserving replacement
     /// for it everywhere a far-out leaf's cells are emitted.
-    pub fn world_cell_of_local_centre(&self, local_index: [i32; 3]) -> [i64; 3] {
-        let centre = Vec3::new(
+    pub fn world_cell_of_local_center(&self, local_index: [i32; 3]) -> [i64; 3] {
+        let center = Vec3::new(
             local_index[0] as f32 + 0.5,
             local_index[1] as f32 + 0.5,
             local_index[2] as f32 + 0.5,
         );
-        let relative = self.forward_local_relative(centre);
+        let relative = self.forward_local_relative(center);
         [
             self.origin_voxels[0] + relative.x.floor() as i64,
             self.origin_voxels[1] + relative.y.floor() as i64,
@@ -246,12 +246,12 @@ impl LeafPlacement {
         ]
     }
 
-    /// The producer-LOCAL coordinate of an ABSOLUTE voxel cell's CENTRE (`abs_cell + 0.5`),
+    /// The producer-LOCAL coordinate of an ABSOLUTE voxel cell's CENTER (`abs_cell + 0.5`),
     /// rebasing the cell against the integer origin in `i64` first (exact), so the inverse affine
     /// only rotates a small residual and keeps full precision however far out the leaf sits. The
     /// precision-preserving replacement for `local_of((abs_cell + 0.5).into())` at the resample
     /// gather sites.
-    pub fn local_of_abs_cell_centre(&self, abs_cell: [i64; 3]) -> ProducerLocalVoxelPoint {
+    pub fn local_of_abs_cell_center(&self, abs_cell: [i64; 3]) -> ProducerLocalVoxelPoint {
         let relative = Vec3::new(
             (abs_cell[0] - self.origin_voxels[0]) as f32 + 0.5,
             (abs_cell[1] - self.origin_voxels[1]) as f32 + 0.5,
@@ -325,7 +325,7 @@ impl LeafPlacement {
 
 /// The low corner of the box `[0, full]` after `rotation` — the anchoring term the
 /// whole corner-anchor convention depends on (module docs call it load-bearing), so
-/// [`LeafPlacement::new`] and [`seat_centre_at`] read it from ONE definition rather
+/// [`LeafPlacement::new`] and [`seat_center_at`] read it from ONE definition rather
 /// than each re-running the fold.
 fn min_rotated_corner(rotation: Quat, full: Vec3) -> Vec3 {
     let mut low = Vec3::splat(f32::INFINITY);
@@ -373,11 +373,11 @@ fn enclosing_box(
 }
 
 /// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`, rotated
-/// by `rotation`, so its local CENTRE `full/2` lands at world `target_centre` under the SAME
+/// by `rotation`, so its local CENTER `full/2` lands at world `target_center` under the SAME
 /// corner-anchored [`LeafPlacement`] the classifier folds through (ADR 0027 §5 placement). It is
-/// the inverse of [`LeafPlacement::new`]`(rotation, full, result).world_of(full/2) == target_centre`.
-pub fn seat_centre_at(rotation: Quat, full: Vec3, target_centre: Vec3) -> Vec3 {
-    target_centre - rotation * (full * 0.5) + min_rotated_corner(rotation, full)
+/// the inverse of [`LeafPlacement::new`]`(rotation, full, result).world_of(full/2) == target_center`.
+pub fn seat_center_at(rotation: Quat, full: Vec3, target_center: Vec3) -> Vec3 {
+    target_center - rotation * (full * 0.5) + min_rotated_corner(rotation, full)
 }
 
 #[cfg(test)]
@@ -391,7 +391,7 @@ mod tests {
     /// The wandering-origin fold (ADR 0027 §1): mapping an absolute cell back to producer-local is
     /// TRANSLATION-INVARIANT — a leaf placed `FAR` from the world origin resolves the identical
     /// local coordinate as the same leaf at the origin. The pre-fold path (integer origin + fraction
-    /// collapsed to one `f32`) failed this: `abs_centre − world_offset` cancelled catastrophically
+    /// collapsed to one `f32`) failed this: `abs_center − world_offset` canceled catastrophically
     /// far out, so a placed body drifted / fragmented past ~16M voxels.
     #[test]
     fn local_of_abs_cell_is_translation_invariant_arbitrarily_far_out() {
@@ -406,9 +406,9 @@ mod tests {
         // The same cell, expressed relative to each leaf's own origin, must map to the SAME local
         // point (the affine only ever sees the small residual).
         for cell in [[1, 2, 0], [7, -3, 4], [0, 0, 0]] {
-            let near_local = near.local_of_abs_cell_centre(cell).voxels();
+            let near_local = near.local_of_abs_cell_center(cell).voxels();
             let far_cell = [cell[0] + FAR, cell[1] - FAR, cell[2] + FAR];
-            let far_local = far.local_of_abs_cell_centre(far_cell).voxels();
+            let far_local = far.local_of_abs_cell_center(far_cell).voxels();
             assert!(
                 (near_local - far_local).length() < 1e-4,
                 "far-out local {far_local:?} drifted from near local {near_local:?}"
@@ -416,8 +416,8 @@ mod tests {
         }
     }
 
-    /// The forward twin: the absolute cell a producer-local centre lands in tracks the integer
-    /// origin EXACTLY, however far out — `world_cell_of_local_centre(idx)` at `FAR` equals the near
+    /// The forward twin: the absolute cell a producer-local center lands in tracks the integer
+    /// origin EXACTLY, however far out — `world_cell_of_local_center(idx)` at `FAR` equals the near
     /// answer shifted by the origin, to the voxel.
     #[test]
     fn world_cell_tracks_the_integer_origin_exactly_far_out() {
@@ -430,8 +430,8 @@ mod tests {
             LeafPlacement::from_origin_and_local(rotation, full, [FAR, FAR, -FAR], offset_local);
 
         for idx in [[0, 0, 0], [2, 1, 3], [3, 3, 3]] {
-            let near_cell = near.world_cell_of_local_centre(idx);
-            let far_cell = far.world_cell_of_local_centre(idx);
+            let near_cell = near.world_cell_of_local_center(idx);
+            let far_cell = far.world_cell_of_local_center(idx);
             assert_eq!(
                 far_cell,
                 [near_cell[0] + FAR, near_cell[1] + FAR, near_cell[2] - FAR],
@@ -472,8 +472,8 @@ mod tests {
         assert_eq!(split.world_aabb(), via_new.world_aabb());
         for idx in [[0, 0, 0], [3, 1, 2]] {
             assert_eq!(
-                split.world_cell_of_local_centre(idx),
-                via_new.world_cell_of_local_centre(idx)
+                split.world_cell_of_local_center(idx),
+                via_new.world_cell_of_local_center(idx)
             );
         }
     }

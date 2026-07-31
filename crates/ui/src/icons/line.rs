@@ -2,7 +2,7 @@
 //!
 //! The arc is not decoration. Line makes lines AND tangent arcs, so a glyph that drew only a
 //! segment would name half the tool; the seam between them is the whole point, and it is a real
-//! tangency — the arc's centre sits perpendicular to the segment at the junction, so the two
+//! tangency — the arc's center sits perpendicular to the segment at the junction, so the two
 //! meet with no kink at any size.
 //!
 //! The run enters at 45° and ends in a 240° curl — two thirds of a circle, but a sixth of the
@@ -29,8 +29,8 @@ pub(super) const DRAW: &[Mark] = &[
         points: &[(2.3, 13.79), SEAM],
         ink: Ink::SOLID,
     },
-    // The tangent arc. Centre is RADIUS perpendicular to the run at the seam, so the sweep
-    // starts travelling in exactly the run's direction; -135° through to 105° is the 240°.
+    // The tangent arc. Center is RADIUS perpendicular to the run at the seam, so the sweep
+    // starts traveling in exactly the run's direction; -135° through to 105° is the 240°.
     Mark::Arc {
         center: (13.9998, 6.3328),
         rx: RADIUS,

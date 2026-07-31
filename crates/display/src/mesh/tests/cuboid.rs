@@ -26,10 +26,10 @@ fn mesh_pipeline_scaling_probe() {
         let chunks = evaluation::two_layer_store::TwoLayerStore::enabled()
             .build_covering_chunks(&scene, density, 0);
         let dims = scene.placed_region_dimensions(density);
-        let recentre = scene.recentre_voxels_for_resolve(density);
+        let recenter = scene.recenter_voxels_for_resolve(density);
         let start = std::time::Instant::now();
         let meshes =
-            build_two_layer_chunk_meshes(&chunks, dims, recentre, density, LayerBand::FULL, None);
+            build_two_layer_chunk_meshes(&chunks, dims, recenter, density, LayerBand::FULL, None);
         let elapsed = start.elapsed();
         let boxes: u64 = meshes.iter().map(|mesh| mesh.box_count as u64).sum();
         let vertices: u64 = meshes.iter().map(|mesh| mesh.vertices.len() as u64).sum();
@@ -99,7 +99,7 @@ fn adjacent_solid_faces_are_culled() {
     // faces are culled (backed by solid), so the combined silhouette is a
     // 2×1×1 box surface = 6 faces, not 12.
     let mut grid = grid_from_indices([4, 3, 3], &[[1, 1, 1]], 0);
-    // Second voxel, different material, adjacent in +X — built in the SAME recentred
+    // Second voxel, different material, adjacent in +X — built in the SAME recentered
     // frame `grid_from_indices` uses (`floor(index + 0.5 − dim/2)`) so it lands next
     // to the first voxel.
     let half = [2.0f32, 1.5, 1.5];
@@ -132,8 +132,8 @@ fn adjacent_solid_faces_are_culled() {
 /// and 1 along Y, i.e. world X-extent 3.
 #[test]
 fn merged_face_spans_one_uv_unit_per_voxel() {
-    // Use an EVEN grid dim (6) so the recentred fixture lands on half-integer
-    // centres the integer payload represents exactly (an odd dim's old centre fell on
+    // Use an EVEN grid dim (6) so the recentered fixture lands on half-integer
+    // centers the integer payload represents exactly (an odd dim's old center fell on
     // an integer — see `grid_from_indices`). The X-run [1,2,3] then occupies absolute
     // voxels 1..=3 with planes at 1 and 4, exactly as before.
     let grid = grid_from_indices([6, 6, 6], &[[1, 3, 3], [2, 3, 3], [3, 3, 3]], 0);
@@ -197,11 +197,11 @@ fn face_normal_to_layer_matches_instanced() {
 
 /// The cuboid decomposition must cover EVERY occupied voxel of the grid — the
 /// box set's total voxel count equals `grid.occupied.len()` — for ANY shape AND
-/// for a recentred cloud. This is the regression guard for the "partial
+/// for a recentered cloud. This is the regression guard for the "partial
 /// silhouette" bug (#18): the cuboid cylinder rendered ~1/4 of the disc because
 /// the densifier anchored region index 0 at `dimensions/2` and silently dropped
-/// the voxels of a recentred cloud (the scene resolve path shifts an odd-block
-/// shape off-centre). A wedge means lost coverage; this asserts none is lost.
+/// the voxels of a recentered cloud (the scene resolve path shifts an odd-block
+/// shape off-center). A wedge means lost coverage; this asserts none is lost.
 #[test]
 fn cuboid_covers_every_voxel_for_all_shapes() {
     use document::voxel::{SdfShape, VoxelProducer};
@@ -214,14 +214,14 @@ fn cuboid_covers_every_voxel_for_all_shapes() {
         ShapeKind::Box,
         ShapeKind::Tube,
     ] {
-        // 5×1×5 is the default disc (odd X/Z blocks → the recentre that exposed
+        // 5×1×5 is the default disc (odd X/Z blocks → the recenter that exposed
         // the bug); also exercise an odd-all-axes size to be thorough.
         for &size in &[[5u32, 1, 5], [3, 3, 3], [5, 3, 7]] {
             let voxels_per_block = 8;
             let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
-            // Shift-invariance: also run a deliberately recentred copy of the
+            // Shift-invariance: also run a deliberately recentered copy of the
             // grid (every voxel +8 in each axis, like `resolve_region`'s
-            // off-centre composite) — coverage must be identical.
+            // off-center composite) — coverage must be identical.
             for shift in [0.0f32, 8.0] {
                 let mut shifted = VoxelGrid::new(shape.grid_dimensions(voxels_per_block));
                 shape.resolve(&mut shifted, voxels_per_block);
@@ -275,7 +275,7 @@ fn band_clip_masks_region_and_caps_the_slab() {
             }
         }
     }
-    // A centred 4³ block: half_z = 2, so absolute layer == region-local Z here.
+    // A centered 4³ block: half_z = 2, so absolute layer == region-local Z here.
     let grid = grid_from_indices([4, 4, 4], &cells, 0);
 
     // Full band → the whole block: 1 box, 6 faces, Z-span 4.
@@ -342,7 +342,7 @@ fn vertex_positions_match_box_voxel_extents() {
     let run = grid_from_indices([5, 5, 5], &[[1, 2, 2], [2, 2, 2], [3, 2, 2]], 0);
     // Two adjacent boxes of different materials (a 2-box decomposition).
     let mut two_box = grid_from_indices([4, 3, 3], &[[1, 1, 1]], 0);
-    // Adjacent in +X, built in the SAME recentred frame as `grid_from_indices`.
+    // Adjacent in +X, built in the SAME recentered frame as `grid_from_indices`.
     let half = [2.0f32, 1.5, 1.5];
     two_box.occupied.push(Voxel {
         local_index: [

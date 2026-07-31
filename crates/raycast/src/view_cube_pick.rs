@@ -4,16 +4,16 @@
 //! hit — a face, an edge, or a corner — is pure ray geometry: a slab intersection
 //! against the cube `[-half, half]³` gives the entered face (its dominant axis and
 //! sign), and the 3×3 grid of hot zones on that face, split at the ±(0.68·half)
-//! thresholds, decides whether the pick is the face's centre (→ the face), an edge
-//! column/row (→ the face plus one in-plane neighbour), or a corner (→ the face plus
+//! thresholds, decides whether the pick is the face's center (→ the face), an edge
+//! column/row (→ the face plus one in-plane neighbor), or a corner (→ the face plus
 //! two). This module holds that geometry; the app maps the axes and signs to its
 //! ViewCube face vocabulary.
 //!
 //! ## Zone proportion (Signal spec)
 //!
-//! The centre patch spans **68 %** of each face (16 % edge strips on either side) — the
+//! The center patch spans **68 %** of each face (16 % edge strips on either side) — the
 //! `docs/design/viewport-chrome-signal.md` proportion. The pick threshold and the
-//! renderer's drawn slice lines are BOTH derived from [`VIEW_CUBE_CENTRE_PATCH_FRACTION`]
+//! renderer's drawn slice lines are BOTH derived from [`VIEW_CUBE_CENTER_PATCH_FRACTION`]
 //! so the picture is the hit-map: a fragment on a face is in the central zone exactly
 //! when its in-plane coordinate is within `±(0.68·half)` (the drawn 16 %/84 % slice
 //! lines sit on those same planes).
@@ -32,18 +32,18 @@ use substrate::spatial::Ray;
 /// The ViewCube's half-extent: the cube spans `[-0.7, 0.7]` on each axis.
 pub const VIEW_CUBE_HALF_EXTENT: f32 = 0.7;
 
-/// The fraction of a face spanned by its central (face-centre) zone — the Signal
-/// spec's **68 % centre patch**, leaving two 16 % edge strips. The renderer draws the
+/// The fraction of a face spanned by its central (face-center) zone — the Signal
+/// spec's **68 % center patch**, leaving two 16 % edge strips. The renderer draws the
 /// 3×3 slice lines at this same proportion so the drawn partition IS the pick partition.
-pub const VIEW_CUBE_CENTRE_PATCH_FRACTION: f32 = 0.68;
+pub const VIEW_CUBE_CENTER_PATCH_FRACTION: f32 = 0.68;
 
-/// The hot-zone threshold: the half-width of the 68 %-centre patch, in cube units. An
+/// The hot-zone threshold: the half-width of the 68 %-center patch, in cube units. An
 /// in-plane hit coordinate beyond `±VIEW_CUBE_ZONE_THRESHOLD` falls in that axis's
 /// edge/corner (16 %) strip rather than the central face zone. Derived from
-/// [`VIEW_CUBE_CENTRE_PATCH_FRACTION`] so a retune moves both the pick and the drawn
-/// slices together: a centre patch covering fraction `f` of the full `2·half` face
-/// extends `±(f·half)` from the face centre.
-pub const VIEW_CUBE_ZONE_THRESHOLD: f32 = VIEW_CUBE_HALF_EXTENT * VIEW_CUBE_CENTRE_PATCH_FRACTION;
+/// [`VIEW_CUBE_CENTER_PATCH_FRACTION`] so a retune moves both the pick and the drawn
+/// slices together: a center patch covering fraction `f` of the full `2·half` face
+/// extends `±(f·half)` from the face center.
+pub const VIEW_CUBE_ZONE_THRESHOLD: f32 = VIEW_CUBE_HALF_EXTENT * VIEW_CUBE_CENTER_PATCH_FRACTION;
 
 /// The parallel-axis guard: a direction component below this magnitude is treated as
 /// parallel to that pair of slab planes (mirrors the picker's original `1e-6`).
@@ -107,26 +107,26 @@ pub fn pick_view_cube_slab(ray: Ray, half_extent: f32) -> Option<ViewCubeSlabHit
     })
 }
 
-/// The in-plane neighbour axes+signs the hit's 3×3 hot zones trigger. For each of the two
+/// The in-plane neighbor axes+signs the hit's 3×3 hot zones trigger. For each of the two
 /// axes NOT equal to the entered face's axis, if the hit's coordinate on that axis exceeds
 /// `+threshold` the zone points toward that axis's positive face (`(axis, true)`); below
 /// `-threshold`, its negative face (`(axis, false)`); within the band, nothing. Zero
-/// neighbours ⇒ the face centre, one ⇒ an edge, two ⇒ a corner. The app maps each
+/// neighbors ⇒ the face center, one ⇒ an edge, two ⇒ a corner. The app maps each
 /// `(axis, positive)` to its ViewCube face vocabulary.
-pub fn view_cube_hot_zone_neighbours(hit: &ViewCubeSlabHit, threshold: f32) -> Vec<(usize, bool)> {
-    let mut neighbours = Vec::with_capacity(2);
+pub fn view_cube_hot_zone_neighbors(hit: &ViewCubeSlabHit, threshold: f32) -> Vec<(usize, bool)> {
+    let mut neighbors = Vec::with_capacity(2);
     for axis in 0..3 {
         if axis == hit.entry_axis {
             continue;
         }
         let coordinate = hit.hit_point[axis];
         if coordinate > threshold {
-            neighbours.push((axis, true));
+            neighbors.push((axis, true));
         } else if coordinate < -threshold {
-            neighbours.push((axis, false));
+            neighbors.push((axis, false));
         }
     }
-    neighbours
+    neighbors
 }
 
 #[cfg(test)]
@@ -134,25 +134,25 @@ mod tests {
     use super::*;
 
     /// A ray fired straight down −z at the cube's top enters the +z face (axis 2, sign +),
-    /// near the face centre, so it triggers no in-plane neighbours.
+    /// near the face center, so it triggers no in-plane neighbors.
     #[test]
-    fn straight_on_hit_picks_the_face_centre() {
+    fn straight_on_hit_picks_the_face_center() {
         let ray = Ray::new(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0));
         let hit = pick_view_cube_slab(ray, VIEW_CUBE_HALF_EXTENT).expect("hit");
         assert_eq!(hit.entry_axis, 2);
         assert_eq!(hit.entry_sign, 1.0);
-        assert!(view_cube_hot_zone_neighbours(&hit, VIEW_CUBE_ZONE_THRESHOLD).is_empty());
+        assert!(view_cube_hot_zone_neighbors(&hit, VIEW_CUBE_ZONE_THRESHOLD).is_empty());
     }
 
     /// A ray aimed at the +z face but offset far in +x lands in that face's +x edge zone,
-    /// yielding exactly one neighbour: (x, positive).
+    /// yielding exactly one neighbor: (x, positive).
     #[test]
-    fn offset_hit_picks_an_edge_neighbour() {
+    fn offset_hit_picks_an_edge_neighbor() {
         let ray = Ray::new(Vec3::new(0.6, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0));
         let hit = pick_view_cube_slab(ray, VIEW_CUBE_HALF_EXTENT).expect("hit");
         assert_eq!(hit.entry_axis, 2);
-        let neighbours = view_cube_hot_zone_neighbours(&hit, VIEW_CUBE_ZONE_THRESHOLD);
-        assert_eq!(neighbours, vec![(0usize, true)]);
+        let neighbors = view_cube_hot_zone_neighbors(&hit, VIEW_CUBE_ZONE_THRESHOLD);
+        assert_eq!(neighbors, vec![(0usize, true)]);
     }
 
     /// A ray that passes the cube by misses.

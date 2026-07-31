@@ -1,7 +1,7 @@
 //! Units, extent and measurement: block-extent regions, the per-node
 //! [`NodeTransform`] placement (with retained parametric measurements, ADR 0003
 //! §3f(0)), and the block/voxel bounding-box derivations that drive extent,
-//! recentring and region sizing.
+//! recentering and region sizing.
 
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use parametric::units::{ExactRational, Measurement};
 use super::producers::{outset_voxels_at, AccumulatedOffset, LeafBody, VisitedLeaf};
 use super::*;
 use crate::intent::{Intent, NodeSpec};
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 
 /// The display path's hard coordinate envelope, in whole blocks (±this on any axis).
 /// Authoring rejects a placement whose block AABB reaches past it, because two
@@ -20,7 +20,7 @@ use voxel_core::voxel::RecentreVoxels;
 ///   three 21-bit lanes (`cpu_pack_key_split`); past ±2^20 blocks the key overflows and
 ///   the object silently stops rendering;
 /// - f32 render-frame coordinates stop naming individual voxels past 2^24 voxels
-///   (= 2^20 blocks at density 16) from the recentre.
+///   (= 2^20 blocks at density 16) from the recenter.
 ///
 /// The document side is i64 and exact; this is the DISPLAY limit, enforced at the one
 /// authoring door (ADR 0006) so a node never silently disappears.
@@ -65,7 +65,7 @@ impl RegionBlocks {
 // ADR 0027: the continuous rotation (a `Quat`) and the float local offset make this
 // type float-bearing, so it can no longer derive `Eq` (only `PartialEq`). Every type
 // that contains a `NodeTransform` and derived `Eq` loses it too — none are used as hash
-// keys, so this is a marker-trait removal with no behavioural effect.
+// keys, so this is a marker-trait removal with no behavioral effect.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct NodeTransform {
     /// Translation in **voxels** at the document's density `d`
@@ -172,7 +172,7 @@ impl NodeTransform {
             blocks[2] * density,
         ];
         // Retain a whole-BLOCK measurement per axis (no voxel remainder), so a later
-        // density re-target scales the block count losslessly — but normalise the
+        // density re-target scales the block count losslessly — but normalize the
         // all-zero case to `None` so a zero placement matches a fresh identity.
         let measurements = [
             Measurement::new(ExactRational::from_integer(blocks[0] as i128), 0),
@@ -194,7 +194,7 @@ impl NodeTransform {
     /// The retained measurement is left `None`: a pure-voxel offset synthesises its
     /// own measurement back from `offset_voxels` (see
     /// [`offset_measurements`](Self::offset_measurements)), so storing one would be a
-    /// redundant husk. This normalises the all-zero case to a fresh identity exactly
+    /// redundant husk. This normalizes the all-zero case to a fresh identity exactly
     /// as [`from_blocks`](Self::from_blocks) does — a placement at `[0, 0, 0]` is
     /// byte-identical to [`identity`](Self::identity).
     pub fn from_offset_voxels(offset_voxels: [i64; 3]) -> Self {
@@ -215,7 +215,7 @@ impl NodeTransform {
     }
 
     /// This transform with its continuous [`rotation`](Self::rotation) replaced
-    /// (ADR 0027). The quaternion is normalised before storage; a rotation within `f32`
+    /// (ADR 0027). The quaternion is normalized before storage; a rotation within `f32`
     /// epsilon of identity is stored as `None`, keeping an unturned placement in the
     /// canonical (old-document-identical) form so apply→undo→apply is byte-stable.
     pub fn with_rotation(mut self, rotation: Quat) -> Self {
@@ -283,7 +283,7 @@ impl NodeTransform {
         }
     }
 
-    /// Normalise the retained measurements to `None` when they carry NO parametric
+    /// Normalize the retained measurements to `None` when they carry NO parametric
     /// content beyond the derived voxel count — i.e. every axis is exactly the
     /// pure-voxel measurement [`Measurement::from_voxels`] of its derived voxels.
     /// This keeps a placement with no real authored block expression (a zero
@@ -564,14 +564,14 @@ pub(super) fn fold_leaf_boxes(
 
 impl Scene {
     /// The per-object **block lattice box** for the node at `path`, in the SAME
-    /// recentred render frame the resolved voxels live in (issue #29 S3). Returns
+    /// recentered render frame the resolved voxels live in (issue #29 S3). Returns
     /// `(min_corner, max_corner)` in voxels.
     ///
     /// The box is the node's voxel AABB **expanded out to enclosing whole blocks** —
     /// i.e. the union of every enabled leaf under the node, each leaf's corner-anchored
     /// voxel span `[off, off + size·density)` grown to whole blocks by FLOORING the low
     /// corner and CEILING the high corner (the split `node_subtree_extent_blocks`
-    /// forms), then scaled by `density` and shifted by `− recentre_voxels_for_resolve`.
+    /// forms), then scaled by `density` and shifted by `− recenter_voxels_for_resolve`.
     /// Because the low corner floors and the high corner ceils INDEPENDENTLY, a
     /// sub-block (1-voxel) translate that crosses a block boundary grows the
     /// enclosing-block box by exactly one whole block — the spec's "a 1-voxel translate
@@ -581,7 +581,7 @@ impl Scene {
     /// For a Group / Instance node the box is the union of all leaves under it.
     /// A size-less node (a VoxelBody-only / empty subtree, or a path that descends
     /// through a non-Group) returns `None` — there is no block lattice to draw.
-    pub fn node_block_lattice_box_recentred(
+    pub fn node_block_lattice_box_recentered(
         &self,
         path: &NodePath,
         voxels_per_block: u32,
@@ -590,12 +590,12 @@ impl Scene {
         let density = voxels_per_block.max(1) as i64;
         let mut min_box = [0.0f32; 3];
         let mut max_box = [0.0f32; 3];
-        // Unwrap the carried frame at the recentred block-corner arithmetic.
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
+        // Unwrap the carried frame at the recentered block-corner arithmetic.
+        let recenter = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
         for axis in 0..3 {
-            // Whole-block corners → voxels (exact), then into the recentred frame.
-            min_box[axis] = (min_corner[axis] * density - recentre[axis]) as f32;
-            max_box[axis] = (max_corner[axis] * density - recentre[axis]) as f32;
+            // Whole-block corners → voxels (exact), then into the recentered frame.
+            min_box[axis] = (min_corner[axis] * density - recenter[axis]) as f32;
+            max_box[axis] = (max_corner[axis] * density - recenter[axis]) as f32;
         }
         Some((min_box, max_box))
     }
@@ -711,10 +711,10 @@ impl Scene {
     /// subtree rooted at `path` — the union of every enabled leaf under that node,
     /// each leaf spanning the center-emitted `[off·d − grid/2, off·d + grid/2)` (the
     /// exact frame [`placed_extent_voxels`](Self::placed_extent_voxels) forms scene-wide). This is the frame the
-    /// composite recentre and the resolved voxels live in, so the gizmo pivot derived
+    /// composite recenter and the resolved voxels live in, so the gizmo pivot derived
     /// from it lands exactly on the object. `None` when the subtree has no
     /// intrinsic-size leaf. Mirrors [`node_subtree_extent_blocks`](Self::node_subtree_extent_blocks) but in voxels with
-    /// no block-floor split (so odd sizes are centred, not snapped).
+    /// no block-floor split (so odd sizes are centered, not snapped).
     pub(super) fn node_subtree_extent_voxels(
         &self,
         path: &NodePath,
@@ -726,19 +726,19 @@ impl Scene {
         })
     }
 
-    /// The placed AABB of the ACTIVE selection's subtree in the **recentred voxel
+    /// The placed AABB of the ACTIVE selection's subtree in the **recentered voxel
     /// frame** — the frame the display mesher emits vertices in and the layer band
     /// clips within (a voxel at absolute producer coord `a` lands at `a −
-    /// recentre_voxels`, ADR 0008). Half-open `[min, max)` per axis.
+    /// recenter_voxels`, ADR 0008). Half-open `[min, max)` per axis.
     ///
     /// This is the region ADR 0018 Decision 5 confines the onion-fog band clip to:
     /// inside it the selected object clips to the band (ghost outside the band),
     /// everything outside renders finished. Selecting the **root part**
     /// ([`ROOT_NODE_ID`]) returns the WHOLE scene's extent (the scene-wide clip,
-    /// i.e. the pre-ADR-0018 behaviour). `None` when `target` is stale or hidden, or
+    /// i.e. the pre-ADR-0018 behavior). `None` when `target` is stale or hidden, or
     /// its subtree has no intrinsic extent (a lone VoxelBody) — the caller then
     /// applies no region clip.
-    pub fn selected_region_extent_recentred_voxels(
+    pub fn selected_region_extent_recentered_voxels(
         &self,
         target: NodeId,
         voxels_per_block: u32,
@@ -752,19 +752,19 @@ impl Scene {
             let path = self.path_of(target)?;
             self.node_subtree_extent_voxels(&path, voxels_per_block)?
         };
-        // Rebase the absolute producer-true corners into the recentred frame (ADR
-        // 0008: subtract the composite recentre the resolve applies).
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
+        // Rebase the absolute producer-true corners into the recentered frame (ADR
+        // 0008: subtract the composite recenter the resolve applies).
+        let recenter = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
         Some((
             [
-                min_abs[0] - recentre[0],
-                min_abs[1] - recentre[1],
-                min_abs[2] - recentre[2],
+                min_abs[0] - recenter[0],
+                min_abs[1] - recenter[1],
+                min_abs[2] - recenter[2],
             ],
             [
-                max_abs[0] - recentre[0],
-                max_abs[1] - recentre[1],
-                max_abs[2] - recentre[2],
+                max_abs[0] - recenter[0],
+                max_abs[1] - recenter[1],
+                max_abs[2] - recenter[2],
             ],
         ))
     }
@@ -775,7 +775,7 @@ impl Scene {
     /// ADR 0003 §3f(0)); the composite extent is the union of
     /// those boxes (`max_corner - min_corner` per axis). With every node at a zero
     /// offset this reduces to the per-axis MAX of the node sizes (the step-2
-    /// behaviour). A VoxelBody-only node (the cloud field, which has no intrinsic size)
+    /// behavior). A VoxelBody-only node (the cloud field, which has no intrinsic size)
     /// contributes no box and adopts whatever extent the Tools establish.
     ///
     /// Returns a zero-sized region when no leaf has an intrinsic size.
@@ -811,47 +811,47 @@ impl Scene {
         })
     }
 
-    /// The recentre offset (in voxels) that [`resolve_region`] subtracts from every
-    /// voxel to centre the composite on the origin. The chunk path does NOT apply
+    /// The recenter offset (in voxels) that [`resolve_region`] subtracts from every
+    /// voxel to center the composite on the origin. The chunk path does NOT apply
     /// this, so it is the exact translation between the two frames:
-    /// `resolve_region.world_position == chunk_path.world_position − recentre_voxels`.
-    /// Exposed (crate-internal) so the S0 equivalence tests can normalise one frame
+    /// `resolve_region.world_position == chunk_path.world_position − recenter_voxels`.
+    /// Exposed (crate-internal) so the S0 equivalence tests can normalize one frame
     /// to the other. `[0, 0, 0]` for a scene with no intrinsic-size leaf.
     ///
     /// Returns the RAW triple by rule: its only callers feed it straight into
     /// `occupied_multiset`'s per-voxel rebase arithmetic (a comparison oracle), so the
     /// unwrap belongs here at the arithmetic's edge rather than being pushed into the test.
     #[cfg(test)]
-    pub(crate) fn recentre_voxels(&self, voxels_per_block: u32) -> [i64; 3] {
-        self.recentre_voxels_for_resolve(voxels_per_block).voxels()
+    pub(crate) fn recenter_voxels(&self, voxels_per_block: u32) -> [i64; 3] {
+        self.recenter_voxels_for_resolve(voxels_per_block).voxels()
     }
 
-    /// The recentre offset (in voxels) that `resolve_region` subtracts from every
-    /// voxel to centre the composite on the origin (issue #27 S2). This is the
+    /// The recenter offset (in voxels) that `resolve_region` subtracts from every
+    /// voxel to center the composite on the origin (issue #27 S2). This is the
     /// SAME computation `resolve_region` inlines; the chunk cache
     /// (`ChunkResolveCache::resolve_region`) calls it to apply
-    /// the identical offset when reassembling the recentred monolithic grid from
+    /// the identical offset when reassembling the recentered monolithic grid from
     /// absolute per-chunk pieces, so the assembled output is bit-identical. `[0, 0,
     /// 0]` for a scene with no intrinsic-size leaf.
     ///
     /// Derived from the **producer-true voxel frame** ([`placed_extent_voxels`]) —
     /// the exact span the producers center-emit — NOT the block-floored frame. This
-    /// makes the composite centre coincide with the producers' own centres for ALL
+    /// makes the composite center coincide with the producers' own centers for ALL
     /// `size·d` parities (including odd size at density 1), so no per-leaf lattice
     /// shift is needed.
     ///
     /// [`placed_extent_voxels`]: Self::placed_extent_voxels
     ///
-    /// **The one mint point (ADR 0008 / the frame law).** Returns the recentre already
-    /// wrapped as [`RecentreVoxels`] — a build's frame value is born here carrying its
+    /// **The one mint point (ADR 0008 / the frame law).** Returns the recenter already
+    /// wrapped as [`RecenterVoxels`] — a build's frame value is born here carrying its
     /// frame, so downstream never re-wraps a raw triple. Consumers that still speak
-    /// `[i64; 3]` unwrap with [`RecentreVoxels::voxels`] at their boundary.
-    pub fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> RecentreVoxels {
+    /// `[i64; 3]` unwrap with [`RecenterVoxels::voxels`] at their boundary.
+    pub fn recenter_voxels_for_resolve(&self, voxels_per_block: u32) -> RecenterVoxels {
         let voxels = match self.placed_extent_voxels(voxels_per_block) {
             // FLOOR division (`div_euclid`), NOT truncation: for an odd composite span
             // `(min + max)` is odd, and `/` rounds toward zero — which biases a
             // negative-X composite the OPPOSITE way from a positive-X one, breaking
-            // +X/−X symmetry. `div_euclid(2)` always rounds toward −∞, so the recentre
+            // +X/−X symmetry. `div_euclid(2)` always rounds toward −∞, so the recenter
             // direction is consistent regardless of where the composite sits.
             Some((min_corner, max_corner)) => [
                 (min_corner[0] + max_corner[0]).div_euclid(2),
@@ -860,7 +860,7 @@ impl Scene {
             ],
             None => [0i64; 3],
         };
-        RecentreVoxels::new(voxels)
+        RecenterVoxels::new(voxels)
     }
 
     /// The full composite extent in voxels — the size the whole-region grids
@@ -870,8 +870,8 @@ impl Scene {
     /// **Producer voxel frame (center-anchoring retirement).** This is the EXACT
     /// occupied span `max_v − min_v` from [`placed_extent_voxels`] — NOT
     /// `size_blocks·d`. The region MUST share the placement frame: producers
-    /// center-emit and are recentred by `(min_v + max_v)/2` (see
-    /// [`recentre_voxels_for_resolve`]); the recentred composite occupies exactly
+    /// center-emit and are recentered by `(min_v + max_v)/2` (see
+    /// [`recenter_voxels_for_resolve`]); the recentered composite occupies exactly
     /// `[−D/2, D/2)` with `D = max_v − min_v`, so a block-framed region (`size·d`)
     /// would be too SMALL for a parity-mismatched multi-leaf composite and silently
     /// clip voxels off each end. (The whole-block SIZE readout / block-lattice
@@ -890,12 +890,12 @@ impl Scene {
     /// VoxelBody-only scene must use that explicit region — not this — as its dimensions.
     ///
     /// [`placed_extent_voxels`]: Self::placed_extent_voxels
-    /// [`recentre_voxels_for_resolve`]: Self::recentre_voxels_for_resolve
+    /// [`recenter_voxels_for_resolve`]: Self::recenter_voxels_for_resolve
     /// [`full_extent_blocks`]: Self::full_extent_blocks
     pub fn placed_region_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         match self.placed_extent_voxels(voxels_per_block) {
             // The EXACT voxel span (`max − min`). Corner-anchored producers emit
-            // half-integer centres, so the region-relative decode
+            // half-integer centers, so the region-relative decode
             // (`floor(world − region_low)`, see `resolve_region`) is exact for any
             // span parity — no even-padding is needed.
             Some((min_corner, max_corner)) => [
@@ -995,7 +995,7 @@ impl Scene {
     /// The would-be voxel box of the leaf at `target` after `edit` rewrites a CLONE of its
     /// content (the body-set intents' shared shape), at the leaf's current world offset.
     /// `None` when the node is missing, the edit does not apply (wrong content kind), or
-    /// the body has no localisable extent.
+    /// the body has no localizable extent.
     fn set_body_voxel_box(
         &self,
         target: NodeId,
@@ -1086,7 +1086,7 @@ fn leaf_size_blocks(
         }
         // A sketch→extrude prism reports its AABB rounded UP to whole blocks so the
         // composite region SIZING (`full_extent_blocks`) sees its extent — exactly
-        // like a Tool. The recentre / chunk-coverage / spatial-index use the exact
+        // like a Tool. The recenter / chunk-coverage / spatial-index use the exact
         // producer voxel frame (`leaf_producer_grid_voxels`) instead.
         NodeContent::SketchTool { producer, .. } => {
             let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
@@ -1121,8 +1121,8 @@ mod continuity_schema_tests {
 
     #[test]
     fn old_document_without_continuity_fields_loads_upright_and_unslid() {
-        // A NodeTransform serialised before ADR 0027 carries neither the local offset
-        // nor the quaternion. It must deserialise to identity rotation + zero slide.
+        // A NodeTransform serialized before ADR 0027 carries neither the local offset
+        // nor the quaternion. It must deserialize to identity rotation + zero slide.
         let old_json = r#"{ "offset_voxels": [4, -2, 7] }"#;
         let transform: NodeTransform = serde_json::from_str(old_json).unwrap();
         assert_eq!(transform.offset_voxels, [4, -2, 7]);

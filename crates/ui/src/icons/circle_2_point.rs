@@ -1,8 +1,8 @@
 //! `circle-2-point` — two points that become the ENDS OF A DIAMETER.
 //!
-//! The chord through both is drawn, and it passes through the centre: that is what says "these two
+//! The chord through both is drawn, and it passes through the center: that is what says "these two
 //! are a diameter" rather than "these two are on the ring", which would be a three-point circle
-//! missing its third click. No centre node, because the centre is derived and never clicked.
+//! missing its third click. No center node, because the center is derived and never clicked.
 
 use super::{Ink, Mark};
 

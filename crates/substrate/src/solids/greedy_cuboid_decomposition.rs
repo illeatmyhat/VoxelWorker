@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn ring_hole() {
-        // A 5×5 ring (border labeled, centre hollow) over depth 1 — a hole that no
+        // A 5×5 ring (border labeled, center hollow) over depth 1 — a hole that no
         // cuboid may cover.
         let extent = [5, 5, 1];
         let grid = grid_from_fn(extent, |x, y, _z| {
@@ -394,7 +394,7 @@ mod tests {
         });
         let cuboids = GreedyCuboidDecomposition::decompose(&grid);
         assert_invariants(&grid, &cuboids);
-        // The centre 3×3 must be empty, hence uncovered.
+        // The center 3×3 must be empty, hence uncovered.
         for c in &cuboids {
             for x in 1..=3 {
                 for y in 1..=3 {
@@ -614,7 +614,7 @@ mod tests {
         );
         assert_round_trip_exact(&l_shape);
 
-        // (2) 5×5 ring (hollow centre) over depth 1.
+        // (2) 5×5 ring (hollow center) over depth 1.
         let ring = grid_from_fn([5, 5, 1], |x, y, _z| {
             if x == 0 || y == 0 || x == 4 || y == 4 {
                 Some(3)

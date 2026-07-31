@@ -6,8 +6,8 @@
 /// **This is deliberately narrower than ADR 0020's sketch, which also carried the cell
 /// bracket.** Implementing the field layer showed those are separable capabilities that do
 /// not always co-occur: [`DebugCloudField`] brackets every cell exactly (ADR 0021) while
-/// having no usable pointwise distance â€” its field is a normalised radial falloff plus an fBm
-/// displacement, whose Lipschitz constant is far above 1 and could only be normalised with a
+/// having no usable pointwise distance â€” its field is a normalized radial falloff plus an fBm
+/// displacement, whose Lipschitz constant is far above 1 and could only be normalized with a
 /// *gradient* bound on the noise, where only a *range* bound is proven.
 ///
 /// The split is ADR 0019's own rule showing up in the type system. Cell bracketing is a

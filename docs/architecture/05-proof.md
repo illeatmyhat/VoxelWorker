@@ -148,7 +148,7 @@ reproducible, and can be extended rather than re-derived when a new question arr
 ## The live binary is part of the suite
 
 Headless tests share the fate of all tests: they exercise what they were written to
-exercise. The final gate for user-facing behaviour is the release binary, launched and
+exercise. The final gate for user-facing behavior is the release binary, launched and
 observed — startup output, resident memory, the first rendered frame, an edit made by
-hand. A change to interactive behaviour is not done when its tests pass; it is done
+hand. A change to interactive behavior is not done when its tests pass; it is done
 when the running application has been watched doing the right thing.

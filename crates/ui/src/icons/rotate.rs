@@ -7,7 +7,7 @@
 use super::{Ink, Mark};
 
 pub(super) const DRAW: &[Mark] = &[
-    // The SVG's large arc, resolved onto a centred r-6 ring (its endpoints sit a little off
+    // The SVG's large arc, resolved onto a centered r-6 ring (its endpoints sit a little off
     // that radius in the source; the ring is regularised so it does not wobble when scaled).
     Mark::Arc {
         center: (9.0, 9.0),

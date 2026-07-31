@@ -8,14 +8,14 @@ use voxel_core::voxel::ShapeKind;
 // ---- S0: chunk-addressable resolve (issue #27) ---------------------------
 //
 // These tests prove the ADDITIVE chunked resolve path reconstructs EXACTLY
-// what the monolithic `resolve_region` produces, after normalising for the
-// recentre offset that `resolve_region` applies and the chunk path does not.
+// what the monolithic `resolve_region` produces, after normalizing for the
+// recenter offset that `resolve_region` applies and the chunk path does not.
 // `resolve_region` has SINCE become the test/oracle-only dense measuring stick
 // (ADR 0010 retired it from the render path); these tests still hold the chunk
 // path against it as the ground truth.
 
 /// Assert the chunk-reassembled occupied set EXACTLY equals the monolithic
-/// `resolve_region`'s set (position + material), after recentre normalisation,
+/// `resolve_region`'s set (position + material), after recenter normalization,
 /// AND that no chunk emits a voxel outside its own chunk AABB.
 fn assert_chunked_matches_monolithic(scene: &Scene, voxels_per_block: u32, label: &str) {
     let monolithic = scene.resolve_region(
@@ -25,13 +25,13 @@ fn assert_chunked_matches_monolithic(scene: &Scene, voxels_per_block: u32, label
     );
     let chunked = scene.resolve_region_via_chunks(voxels_per_block, 0);
 
-    let recentre = scene.recentre_voxels(voxels_per_block);
-    let monolithic_set = occupied_multiset(&monolithic, recentre);
+    let recenter = scene.recenter_voxels(voxels_per_block);
+    let monolithic_set = occupied_multiset(&monolithic, recenter);
     let chunked_set = occupied_multiset(&chunked, [0, 0, 0]);
 
     assert_eq!(
         chunked_set, monolithic_set,
-        "[{label}] chunked occupied set must equal monolithic resolve (recentre-normalised)"
+        "[{label}] chunked occupied set must equal monolithic resolve (recenter-normalized)"
     );
     // Cross-check the count too (a multiset equality already implies it, but
     // this pins the failure message to the simplest symptom first).
@@ -98,8 +98,8 @@ fn shape_scene(kind: ShapeKind, voxels_per_block: u32) -> Scene {
 }
 
 /// Single-shape parity, all five SDF kinds — mirrors the all-shapes coverage
-/// style. (Single-node zero-offset scenes also exercise the recentre
-/// normalisation, since `resolve_region` recentres even a lone node.)
+/// style. (Single-node zero-offset scenes also exercise the recenter
+/// normalization, since `resolve_region` recenters even a lone node.)
 #[test]
 fn chunked_resolve_matches_monolithic_for_all_shapes() {
     for kind in [
@@ -138,7 +138,7 @@ fn chunked_resolve_matches_monolithic_for_demo_village() {
 /// chunked resolve identically to the monolithic one — mirrors the SDF parity
 /// harness for a SketchTool leaf. Two cases: a plain rectangle extrude (the box
 /// sugar) and a concave L-shape extrude (the added-value path), both at the app
-/// density and at an off-origin placement so the recentre/cover math is real.
+/// density and at an off-origin placement so the recenter/cover math is real.
 #[test]
 fn chunked_resolve_matches_monolithic_for_sketch_extrude() {
     use crate::sketch::{PlaneAxis, Sketch, SketchPoint};
@@ -192,7 +192,7 @@ fn chunked_resolve_matches_monolithic_for_sketch_extrude() {
 /// ADR 0003 §3i: the revolve operation composes through the chunked resolve
 /// identically to the monolithic one — mirrors the extrude parity harness for a
 /// solid of revolution. A rectangle revolved 360° about Z (a cylinder) placed
-/// off-origin on X+Y so the recentre/cover math is real and the disc crosses
+/// off-origin on X+Y so the recenter/cover math is real and the disc crosses
 /// chunk boundaries on both radial axes.
 #[test]
 fn chunked_resolve_matches_monolithic_for_sketch_revolve() {
@@ -215,7 +215,7 @@ fn chunked_resolve_matches_monolithic_for_sketch_revolve() {
             material: MaterialChoice::Stone,
         },
     );
-    // Off-origin so the covering chunk range and recentre offset are non-trivial.
+    // Off-origin so the covering chunk range and recenter offset are non-trivial.
     node.transform = NodeTransform::from_blocks([5, 5, 0], voxels_per_block);
     let scene = Scene::single_node(node);
     assert_chunked_matches_monolithic(&scene, voxels_per_block, "sketch-revolve");
@@ -241,9 +241,9 @@ fn chunked_resolve_matches_monolithic_for_sketch_revolve() {
 }
 
 /// A scene with a single node shifted well OFF the origin (+8 blocks on X) —
-/// proves the chunked path handles off-centre placement (the AABB does not
+/// proves the chunked path handles off-center placement (the AABB does not
 /// start at the origin, so the covering chunk range is non-trivial and the
-/// recentre offset is non-zero).
+/// recenter offset is non-zero).
 #[test]
 fn chunked_resolve_matches_monolithic_for_offset_node() {
     let voxels_per_block = 16;
@@ -258,15 +258,15 @@ fn chunked_resolve_matches_monolithic_for_offset_node() {
     node.transform = NodeTransform::from_blocks([8, 0, 0], voxels_per_block);
     let scene = Scene::single_node(node);
 
-    // Sanity: the recentre is genuinely non-zero for this off-centre scene, so
-    // the normalisation is actually exercised (a zero recentre would make the
+    // Sanity: the recenter is genuinely non-zero for this off-center scene, so
+    // the normalization is actually exercised (a zero recenter would make the
     // test vacuous on that axis).
-    let recentre = scene.recentre_voxels(voxels_per_block);
+    let recenter = scene.recenter_voxels(voxels_per_block);
     assert_ne!(
-        recentre,
+        recenter,
         [0, 0, 0],
-        "an off-centre node must produce a non-zero recentre (else the \
-             normalisation is untested)"
+        "an off-center node must produce a non-zero recenter (else the \
+             normalization is untested)"
     );
     assert_chunked_matches_monolithic(&scene, voxels_per_block, "offset-node");
 }
@@ -355,7 +355,7 @@ fn outset_grows_a_box_by_the_outset_on_every_side() {
 /// bit-identical to stamping-then-clipping if the AABB it tests is the DILATED one. A
 /// cutter whose outset reaches into a chunk its own bounds miss would otherwise be
 /// skipped there and its mask silently lost — visible as geometry that survives in one
-/// chunk and not its neighbour.
+/// chunk and not its neighbor.
 #[test]
 fn chunked_resolve_matches_monolithic_under_outset() {
     let voxels_per_block = 8;
@@ -521,10 +521,10 @@ fn an_outset_on_a_part_dilates_the_parts_composed_body() {
 /// The outset shell of a mixed-material Part inherits the NEAREST member's material.
 ///
 /// Inside the body the later Union member still wins on overlap (ADR 0017), so an outset
-/// Part's interior is coloured exactly as the same Part at outset zero. Outside it there
+/// Part's interior is colored exactly as the same Part at outset zero. Outside it there
 /// is no "later" to appeal to — no member contains the point — so the shell takes the
 /// material of the surface it grew from. Flattening the Part to one material would
-/// visibly recolour it the moment a user typed a clearance.
+/// visibly recolor it the moment a user typed a clearance.
 #[test]
 fn an_outset_shell_takes_the_nearest_members_material() {
     let voxels_per_block = 8;

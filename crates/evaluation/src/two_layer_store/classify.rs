@@ -105,7 +105,7 @@ fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
 ///
 /// `block_abs_voxels` is the block's half-open `[min, max)` box in the SCENE's ABSOLUTE
 /// voxel frame (the frame [`Scene::resolve_chunk`](document::scene::Scene::resolve_chunk)
-/// clips against — recentre is applied later as a pure index offset, so classification is
+/// clips against — recenter is applied later as a pure index offset, so classification is
 /// frame-independent). Each leaf's interval is taken in its OWN local voxel-index frame by
 /// subtracting the leaf's `world_offset_voxels` (the same map
 /// `stamp_producer_into_chunk` (document crate) uses for its resolve window).
@@ -165,7 +165,7 @@ pub(crate) fn classify_chunk_block(
     }
 
     // Fold the per-leaf conservative field intervals through the substrate SCOPED
-    // black/white/grey classifier (`ScopedCellClassification`, issue #74): each leaf's
+    // black/white/gray classifier (`ScopedCellClassification`, issue #74): each leaf's
     // interval folds into its innermost open scope under the leaf's CSG role (Union =
     // min-of-fields, Subtract = the conservative difference `max(running, −operand)`
     // — Duff 1992 interval arithmetic), and a closing scope folds its composed
@@ -278,17 +278,17 @@ pub(crate) fn leaf_affine(leaf: &LeafProducer, voxels_per_block: u32) -> LeafAff
 }
 
 /// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`,
-/// rotated by `rotation`, so its local CENTRE `full/2` lands at world `target_centre` under the
+/// rotated by `rotation`, so its local CENTER `full/2` lands at world `target_center` under the
 /// SAME corner-anchored [`LeafAffine`] the classifier folds through (ADR 0027 §5 placement).
 ///
-/// It is the inverse of `leaf_affine(..).world_of(full/2) == target_centre`: placement picks a
+/// It is the inverse of `leaf_affine(..).world_of(full/2) == target_center`: placement picks a
 /// rotation and a surface contact, and this returns the `world_offset` (⇒ a node's `offset_voxels`
-/// `+` `offset_local_voxels`) that makes the classifier resolve the producer with its centre
-/// exactly there. Delegates to [`substrate::spatial::seat_centre_at`], which shares the
+/// `+` `offset_local_voxels`) that makes the classifier resolve the producer with its center
+/// exactly there. Delegates to [`substrate::spatial::seat_center_at`], which shares the
 /// `min_rotated_corner` corner anchor with [`LeafAffine`] — ONE definition, so a dropped node
 /// resolves where it previewed (no "two impls of one predicate" drift).
-pub fn seat_centre_at(rotation: Quat, full: Vec3, target_centre: Vec3) -> Vec3 {
-    substrate::spatial::seat_centre_at(rotation, full, target_centre)
+pub fn seat_center_at(rotation: Quat, full: Vec3, target_center: Vec3) -> Vec3 {
+    substrate::spatial::seat_center_at(rotation, full, target_center)
 }
 
 /// The leaf's grid AABB in the SCENE's absolute voxel frame — the integer enclosing box of the
@@ -329,13 +329,13 @@ pub(crate) fn abs_box_to_producer_local(
 }
 
 /// Map a **producer-local** voxel index to its absolute voxel index (ADR 0027): the absolute
-/// cell the local cell's CENTRE lands in, `world_of(index + 0.5).floor()`. The inverse of
+/// cell the local cell's CENTER lands in, `world_of(index + 0.5).floor()`. The inverse of
 /// [`abs_box_to_producer_local`] for a single cell — the forward-emit direction.
 ///
 /// **Why `+0.5`/`floor` reproduces the lattice byte-for-byte.** For a positive-sign lattice axis
 /// the affine's `world_of` already equals `local + offset`, and `floor(local + 0.5 + offset) =
 /// local + offset`. For a NEGATED axis the corner-anchored affine gives `full − local + offset`
-/// while the lattice `turn_point_in_box` gives `full − 1 − local + offset`; the centre sample makes
+/// while the lattice `turn_point_in_box` gives `full − 1 − local + offset`; the center sample makes
 /// the affine value `full − local − 0.5 + offset`, whose `floor` is `full − 1 − local + offset` —
 /// exactly the lattice. So every axis-aligned turn emits into the identical absolute cells the ADR
 /// 0026 permutation did, and the half-unit margin absorbs the `Quat` round-off.
@@ -344,9 +344,9 @@ pub(crate) fn producer_local_voxel_to_abs(
     local_index: [i32; 3],
     voxels_per_block: u32,
 ) -> [i64; 3] {
-    // ADR 0027 §1 wandering origin: `world_cell_of_local_centre` re-adds the integer origin in i64
+    // ADR 0027 §1 wandering origin: `world_cell_of_local_center` re-adds the integer origin in i64
     // after flooring the small origin-relative image, so a far-out leaf's cells stay exact.
-    leaf_affine(leaf, voxels_per_block).world_cell_of_local_centre(local_index)
+    leaf_affine(leaf, voxels_per_block).world_cell_of_local_center(local_index)
 }
 
 /// The FIRST **purely additive** leaf (see [`LeafProducer::is_purely_additive`]) whose grid AABB
@@ -400,8 +400,8 @@ pub(crate) enum WholeChunkVerdict {
 ///
 /// **Why the chunk verdict is byte-identical to the per-block sweep.** The composed field
 /// interval is *inclusion-monotone*: for a sub-block box `B ⊆ chunk` every operand's bound
-/// over `B` nests inside its bound over the chunk (the Lipschitz-centre bound because
-/// `dist(centre_chunk, centre_B) + circumradius(B) ≤ circumradius(chunk)` for nested
+/// over `B` nests inside its bound over the chunk (the Lipschitz-center bound because
+/// `dist(center_chunk, center_B) + circumradius(B) ≤ circumradius(chunk)` for nested
 /// axis-aligned boxes; the sketch discrete bound because `B`'s footprint rectangle is a
 /// SUBSET of the chunk's), and a sub-block's overlapping-leaf set is a SUBSET of the chunk's
 /// (`B ⊆ chunk`). Therefore:
@@ -778,7 +778,7 @@ pub(crate) fn compose_leaf_into_region(
 }
 
 /// The ADR 0027 **inverse-resample gather** for a genuinely-rotated field producer: for each
-/// absolute voxel in the block window, inverse-map its CENTRE into the producer-local frame and
+/// absolute voxel in the block window, inverse-map its CENTER into the producer-local frame and
 /// test the field, applying the SAME per-operation logic the forward emit does (Union stamps,
 /// Subtract clears, Intersect keeps-only-covered). Only a FIELD producer (an SDF Tool, a sketch
 /// solid, a composed Part) reaches here — a fieldless producer is never continuously rotated
@@ -801,8 +801,8 @@ pub(crate) fn gather_rotated_leaf_into_region(
         .as_field()
         .expect("the caller gathers only field producers (ADR 0027)");
 
-    // The producer-local coordinate of a block-local voxel's CENTRE, returned only when the
-    // field classifies that centre inside-or-on the surface. The `[f32; 3]` is handed to
+    // The producer-local coordinate of a block-local voxel's CENTER, returned only when the
+    // field classifies that center inside-or-on the surface. The `[f32; 3]` is handed to
     // `material_at` for a per-voxel-material producer.
     let local_if_covered = |x: u32, y: u32, z: u32| -> Option<[f32; 3]> {
         // ADR 0027 §1 wandering origin: rebase the absolute cell against the leaf origin in i64
@@ -813,7 +813,7 @@ pub(crate) fn gather_rotated_leaf_into_region(
             block_min_abs[2] + z as i64,
         ];
         let local = affine
-            .local_of_abs_cell_centre(abs_cell)
+            .local_of_abs_cell_center(abs_cell)
             .voxels()
             .to_array();
         (field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL).then_some(local)

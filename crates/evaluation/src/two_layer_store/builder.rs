@@ -17,7 +17,7 @@ use super::*;
 /// two-layer path as the SOLE runtime display path; the dense [`crate::store::Store`] path
 /// is retired to a test-and-golden oracle (see the module docs' "Status" section). The
 /// `Default`-constructed, disabled instance survives for the tests that pin the
-/// off-behaviour ([`build_chunk`](Self::build_chunk) returning `None`).
+/// off-behavior ([`build_chunk`](Self::build_chunk) returning `None`).
 ///
 /// It is a thin, stateless builder (no resident cache of its own — every call
 /// re-classifies a chunk from the scene; `TwoLayerResidentCache` is the incremental

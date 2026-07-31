@@ -24,7 +24,7 @@ impl Sheet {
             "A linear dimension: extension lines gapped off the feature, the dimension line \
              stopping at the arrow bases, the value riding it. Driving on the left, reference on \
              the right — parenthesised WHOLE per ASME Y14.5 §5.9, and one rank quieter, so the \
-             two are told apart on a channel that survives greyscale and one that works in \
+             two are told apart on a channel that survives grayscale and one that works in \
              peripheral vision.",
             |p, s| {
                 let left = (
@@ -71,8 +71,8 @@ impl Sheet {
             "radius · anchor outside / inside the curve",
             "The arc point is DERIVED from the anchor, never stored beside it: the leader meets \
              the curve on the anchor's own ray, so no drag can make a radius stop pointing at its \
-             centre. Outside, the leader jogs at the anchor and the arrow reverses to point back \
-             at the curve; inside, it runs centre → arc with the text riding it. The centre is a \
+             center. Outside, the leader jogs at the anchor and the arrow reverses to point back \
+             at the curve; inside, it runs center → arc with the text riding it. The center is a \
              cross in dimension ink, never a filled dot — a dot is what a sketch point looks like.",
             |p, s| {
                 let stroke = Stroke::new(1.5_f32, color_palette::ACCENT);

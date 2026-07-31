@@ -71,7 +71,7 @@ children into one body, then folds that body into its parent under the scope nod
 operation. A boolean inside a scope can never affect geometry outside it — the seal is
 what makes a subtree a *thing* rather than a region of influence, and it is why a
 definition's internal cuts are fully spent before an instance places the finished body.
-Every part is sealed; there is no unsealed flavour of container, and no setting that
+Every part is sealed; there is no unsealed flavor of container, and no setting that
 makes one transparent. The consequence worth stating plainly is that a parent sees one
 body where a part stands: cross-scope operand targeting is not forbidden by a rule, it
 is unsayable, because the members have no name outside their scope.
@@ -364,7 +364,7 @@ skipping open documents — an unbounded keyed store is the one part of this des
 tools skipped and regretted.
 
 **A document may also carry a session of its own, and the author decides.** Save As offers the
-choice, and the choice is written into the file and honoured by every later save without asking
+choice, and the choice is written into the file and honored by every later save without asking
 again — the writer knows whether they are keeping a working file or handing something over, and
 the reader, who has not opened the file yet, cannot know. Only the two fields that describe the
 *model* travel this way: the viewer mode and the rollback cursor, which together say "look at it

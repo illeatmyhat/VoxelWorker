@@ -50,7 +50,7 @@ const ANGULAR_EPSILON: f64 = 1.0e-9;
 /// One planar curve: a straight span, or a circular arc — including a whole circle, which is the
 /// arc that sweeps a full turn.
 ///
-/// The arc form is centre-anchored rather than endpoint-anchored, so a closed curve is an ordinary
+/// The arc form is center-anchored rather than endpoint-anchored, so a closed curve is an ordinary
 /// value here rather than a degenerate one. Its endpoints are derived
 /// ([`start`](Self::start) / [`end`](Self::end)) and coincide exactly when the sweep is a full
 /// turn, which is what "closed" means.
@@ -63,11 +63,11 @@ pub enum PlanarCurve {
         /// The head.
         end: [f64; 2],
     },
-    /// A circular arc travelling `sweep_radians` about `centre` from the bearing `start_radians` —
+    /// A circular arc traveling `sweep_radians` about `center` from the bearing `start_radians` —
     /// counter-clockwise when the sweep is positive, clockwise when it is negative.
     Arc {
-        /// The circle's centre.
-        centre: [f64; 2],
+        /// The circle's center.
+        center: [f64; 2],
         /// The circle's radius.
         radius: f64,
         /// The bearing the arc starts at.
@@ -79,9 +79,9 @@ pub enum PlanarCurve {
 
 impl PlanarCurve {
     /// A whole circle: the arc that sweeps a full turn counter-clockwise from bearing zero.
-    pub fn circle(centre: [f64; 2], radius: f64) -> Self {
+    pub fn circle(center: [f64; 2], radius: f64) -> Self {
         PlanarCurve::Arc {
-            centre,
+            center,
             radius,
             start_radians: 0.0,
             sweep_radians: TAU,
@@ -98,15 +98,15 @@ impl PlanarCurve {
                 start[1] + (end[1] - start[1]) * parameter,
             ],
             PlanarCurve::Arc {
-                centre,
+                center,
                 radius,
                 start_radians,
                 sweep_radians,
             } => {
                 let bearing = start_radians + sweep_radians * parameter;
                 [
-                    centre[0] + radius * bearing.cos(),
-                    centre[1] + radius * bearing.sin(),
+                    center[0] + radius * bearing.cos(),
+                    center[1] + radius * bearing.sin(),
                 ]
             }
         }
@@ -154,12 +154,12 @@ impl PlanarCurve {
                 end: self.point_at(to),
             },
             PlanarCurve::Arc {
-                centre,
+                center,
                 radius,
                 start_radians,
                 sweep_radians,
             } => PlanarCurve::Arc {
-                centre,
+                center,
                 radius,
                 start_radians: start_radians + sweep_radians * from,
                 sweep_radians: sweep_radians * (to - from),
@@ -438,7 +438,7 @@ fn segment_meets_segment(
 /// Segment against arc: substitute the line into the circle, then clip both to their own ranges.
 fn segment_meets_arc(a0: [f64; 2], a1: [f64; 2], arc: &PlanarCurve) -> Vec<CurveCrossing> {
     let PlanarCurve::Arc {
-        centre,
+        center,
         radius,
         start_radians,
         sweep_radians,
@@ -447,7 +447,7 @@ fn segment_meets_arc(a0: [f64; 2], a1: [f64; 2], arc: &PlanarCurve) -> Vec<Curve
         return Vec::new();
     };
     let direction = [a1[0] - a0[0], a1[1] - a0[1]];
-    let to_start = [a0[0] - centre[0], a0[1] - centre[1]];
+    let to_start = [a0[0] - center[0], a0[1] - center[1]];
     let quadratic = dot(direction, direction);
     if quadratic <= CROSSING_EPSILON {
         return Vec::new(); // a degenerate segment is a point, and a point is not a crossing
@@ -479,7 +479,7 @@ fn segment_meets_arc(a0: [f64; 2], a1: [f64; 2], arc: &PlanarCurve) -> Vec<Curve
             a0[0] + direction[0] * on_segment,
             a0[1] + direction[1] * on_segment,
         ];
-        let Some(on_arc) = parameter_on_arc(centre, start_radians, sweep_radians, point) else {
+        let Some(on_arc) = parameter_on_arc(center, start_radians, sweep_radians, point) else {
             continue;
         };
         found.push(CurveCrossing::transverse(point, on_segment, on_arc));
@@ -492,13 +492,13 @@ fn segment_meets_arc(a0: [f64; 2], a1: [f64; 2], arc: &PlanarCurve) -> Vec<Curve
 fn arc_meets_arc(first: &PlanarCurve, second: &PlanarCurve) -> Vec<CurveCrossing> {
     let (
         PlanarCurve::Arc {
-            centre: centre_a,
+            center: center_a,
             radius: radius_a,
             start_radians: start_a,
             sweep_radians: sweep_a,
         },
         PlanarCurve::Arc {
-            centre: centre_b,
+            center: center_b,
             radius: radius_b,
             start_radians: start_b,
             sweep_radians: sweep_b,
@@ -507,10 +507,10 @@ fn arc_meets_arc(first: &PlanarCurve, second: &PlanarCurve) -> Vec<CurveCrossing
     else {
         return Vec::new();
     };
-    let between = [centre_b[0] - centre_a[0], centre_b[1] - centre_a[1]];
+    let between = [center_b[0] - center_a[0], center_b[1] - center_a[1]];
     let distance = length(between);
     if distance <= CROSSING_EPSILON && (radius_a - radius_b).abs() <= CROSSING_EPSILON {
-        return coincident_arcs(centre_a, radius_a, (start_a, sweep_a), (start_b, sweep_b));
+        return coincident_arcs(center_a, radius_a, (start_a, sweep_a), (start_b, sweep_b));
     }
     // Separate, or one strictly inside the other: no circle meets the other at all.
     if distance > radius_a + radius_b + CROSSING_EPSILON
@@ -519,12 +519,12 @@ fn arc_meets_arc(first: &PlanarCurve, second: &PlanarCurve) -> Vec<CurveCrossing
     {
         return Vec::new();
     }
-    // The radical line: the crossings sit at `along` down the centre line, `off` to either side.
+    // The radical line: the crossings sit at `along` down the center line, `off` to either side.
     let along =
         (distance * distance + radius_a * radius_a - radius_b * radius_b) / (2.0 * distance);
     let off = (radius_a * radius_a - along * along).max(0.0).sqrt();
     let unit = [between[0] / distance, between[1] / distance];
-    let base = [centre_a[0] + unit[0] * along, centre_a[1] + unit[1] * along];
+    let base = [center_a[0] + unit[0] * along, center_a[1] + unit[1] * along];
     let normal = [-unit[1], unit[0]];
     // Tangent circles have one crossing, not two at the same place.
     let candidates: Vec<[f64; 2]> = if off <= CROSSING_EPSILON {
@@ -538,8 +538,8 @@ fn arc_meets_arc(first: &PlanarCurve, second: &PlanarCurve) -> Vec<CurveCrossing
     let mut found = Vec::new();
     for point in candidates {
         let (Some(on_first), Some(on_second)) = (
-            parameter_on_arc(centre_a, start_a, sweep_a, point),
-            parameter_on_arc(centre_b, start_b, sweep_b, point),
+            parameter_on_arc(center_a, start_a, sweep_a, point),
+            parameter_on_arc(center_b, start_b, sweep_b, point),
         ) else {
             continue;
         };
@@ -550,7 +550,7 @@ fn arc_meets_arc(first: &PlanarCurve, second: &PlanarCurve) -> Vec<CurveCrossing
 
 /// Two arcs of the SAME circle: the stretches they share, each reported as its two ends.
 fn coincident_arcs(
-    centre: [f64; 2],
+    center: [f64; 2],
     radius: f64,
     first: (f64, f64),
     second: (f64, f64),
@@ -562,12 +562,12 @@ fn coincident_arcs(
     ) {
         for bearing in [begin, begin + span] {
             let point = [
-                centre[0] + radius * bearing.cos(),
-                centre[1] + radius * bearing.sin(),
+                center[0] + radius * bearing.cos(),
+                center[1] + radius * bearing.sin(),
             ];
             let (Some(on_first), Some(on_second)) = (
-                parameter_on_arc(centre, first.0, first.1, point),
-                parameter_on_arc(centre, second.0, second.1, point),
+                parameter_on_arc(center, first.0, first.1, point),
+                parameter_on_arc(center, second.0, second.1, point),
             ) else {
                 continue;
             };
@@ -580,7 +580,7 @@ fn coincident_arcs(
     found
 }
 
-/// An arc as a counter-clockwise span `(begin, length)` with `begin` normalised into `[0, TAU)` —
+/// An arc as a counter-clockwise span `(begin, length)` with `begin` normalized into `[0, TAU)` —
 /// the form two arcs can be compared in regardless of which way each was drawn.
 fn counter_clockwise_span(start_radians: f64, sweep_radians: f64) -> (f64, f64) {
     let begin = if sweep_radians < 0.0 {
@@ -617,12 +617,12 @@ fn shared_angular_spans(first: (f64, f64), second: (f64, f64)) -> Vec<(f64, f64)
 /// How far along the arc `point` sits, as a parameter in `[0, 1]`, or `None` when its bearing is
 /// off the sweep entirely.
 fn parameter_on_arc(
-    centre: [f64; 2],
+    center: [f64; 2],
     start_radians: f64,
     sweep_radians: f64,
     point: [f64; 2],
 ) -> Option<f64> {
-    let bearing = (point[1] - centre[1]).atan2(point[0] - centre[0]);
+    let bearing = (point[1] - center[1]).atan2(point[0] - center[0]);
     let magnitude = sweep_radians.abs();
     if magnitude <= ANGULAR_EPSILON {
         return None;
@@ -651,9 +651,9 @@ mod tests {
         PlanarCurve::Segment { start: a, end: b }
     }
 
-    fn arc(centre: [f64; 2], radius: f64, start_degrees: f64, sweep_degrees: f64) -> PlanarCurve {
+    fn arc(center: [f64; 2], radius: f64, start_degrees: f64, sweep_degrees: f64) -> PlanarCurve {
         PlanarCurve::Arc {
-            centre,
+            center,
             radius,
             start_radians: start_degrees.to_radians(),
             sweep_radians: sweep_degrees.to_radians(),
@@ -863,10 +863,10 @@ mod tests {
         let pieces = half.split_at(&[0.5]);
         assert_eq!(pieces.len(), 2);
         for piece in &pieces {
-            let PlanarCurve::Arc { centre, radius, .. } = piece else {
+            let PlanarCurve::Arc { center, radius, .. } = piece else {
                 panic!("a cut arc became {piece:?}");
             };
-            assert_eq!(*centre, [1.0, 2.0]);
+            assert_eq!(*center, [1.0, 2.0]);
             assert_eq!(*radius, 5.0);
         }
         assert_near(pieces[0].start(), half.start());
@@ -934,7 +934,7 @@ mod tests {
     }
 
     /// A line through a circle cuts BOTH: the circle into two arcs, the line into three spans.
-    /// Every piece then meets its neighbours only at endpoints, which is what the face walk needs.
+    /// Every piece then meets its neighbors only at endpoints, which is what the face walk needs.
     #[test]
     fn a_line_through_a_circle_cuts_both_of_them() {
         let pieces = cut_at_crossings(&[

@@ -1,6 +1,6 @@
 //! Lossless compressed storage for a single resolved chunk grid (issue #20 S6a).
 //!
-//! The out-of-core store (#20) needs a compact, serialisable on-disk form for a
+//! The out-of-core store (#20) needs a compact, serializable on-disk form for a
 //! resolved per-chunk [`VoxelGrid`] (the grids [`crate::chunk_cache`] resolves and
 //! caches). A resolved chunk is almost always **mostly air** with only a handful of
 //! distinct materials, so the dense `dimensions³ × (position + material)` form a
@@ -15,14 +15,14 @@
 //! ## Why this is lossless (ADR 0003 §3a — the payload is already integer)
 //!
 //! Since ADR 0003 §3a the per-voxel payload stores the voxel's INTEGER index
-//! (`Voxel::local_index`) directly — the f32 centre is only ever reconstructed at
+//! (`Voxel::local_index`) directly — the f32 center is only ever reconstructed at
 //! consumption as `index + 0.5` ([`voxel_core::voxel::Voxel::world_position`]). This codec
 //! therefore consumes the stored integer DIRECTLY (it no longer reverse-engineers an
 //! index out of an f32 via `floor()` + a uniform fractional-part debug-assert). We store
 //! the integer index relative to the chunk's min corner (in i64 so a far-placed chunk
 //! keeps full precision) and rebuild `local_index` as `min_corner + local`, the exact
-//! inverse. The `centre_fraction` field is retained for on-disk-format stability and is
-//! the constant `0.5` (a resolved voxel centre is always a half-integer).
+//! inverse. The `center_fraction` field is retained for on-disk-format stability and is
+//! the constant `0.5` (a resolved voxel center is always a half-integer).
 //!
 //! `block_local_coord` and the categorical `block_id` are stored directly (the former is
 //! the producer's intra-block coordinate, which a rebase by a non-block-multiple origin
@@ -68,7 +68,7 @@ pub struct SparseCell {
 
 /// The occupancy payload: either a sparse per-occupied-cell list (great for the
 /// usual mostly-empty chunk) or a dense bit-packed palette-index array (smaller for
-/// a near-solid chunk). [`compress`] picks whichever serialises smaller.
+/// a near-solid chunk). [`compress`] picks whichever serializes smaller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Occupancy {
     /// One record per occupied cell. Empty for an empty chunk.
@@ -94,7 +94,7 @@ pub enum Occupancy {
 /// it.
 pub const AIR_PALETTE_INDEX: u32 = 0;
 
-/// A compact, lossless, serialisable representation of one resolved chunk grid.
+/// A compact, lossless, serializable representation of one resolved chunk grid.
 ///
 /// Holds (a) the chunk's full voxel dimensions and its occupied bounding box
 /// (min-corner + spans, in absolute voxel-index space so a far chunk keeps
@@ -102,7 +102,7 @@ pub const AIR_PALETTE_INDEX: u32 = 0;
 /// first-seen order, de-duplicated), and (c) the occupancy ([`Occupancy`], sparse or
 /// dense). [`compress`] / [`decompress`] are exact inverses.
 ///
-/// `Eq` is intentionally NOT derived: `centre_fraction` is `f32`. The stored
+/// `Eq` is intentionally NOT derived: `center_fraction` is `f32`. The stored
 /// fractions are exact small constants (`0.0` / `0.5`), so `PartialEq` compares them
 /// bit-for-bit in practice, which is all the serde round-trip assertion needs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,14 +112,14 @@ pub struct CompressedChunk {
     pub dimensions: [u32; 3],
     /// The voxel-index min corner of the occupied bounding box (in the chunk grid's
     /// carried frame). The `local_index` of a voxel at local box offset `o` is
-    /// `min_corner_voxels + o`; its f32 centre is `that + 0.5`. `[0; 3]` for an empty
+    /// `min_corner_voxels + o`; its f32 center is `that + 0.5`. `[0; 3]` for an empty
     /// chunk.
     pub min_corner_voxels: [i64; 3],
-    /// The shared fractional part of every occupied voxel centre, per axis. Since the
-    /// payload is integer (ADR 0003 §3a) every reconstructed centre is `index + 0.5`, so
+    /// The shared fractional part of every occupied voxel center, per axis. Since the
+    /// payload is integer (ADR 0003 §3a) every reconstructed center is `index + 0.5`, so
     /// this is the constant `0.5` for a non-empty chunk (retained for on-disk-format
     /// stability). `[0.0; 3]` for an empty chunk.
-    pub centre_fraction: [f32; 3],
+    pub center_fraction: [f32; 3],
     /// The occupied bounding box spans (per axis, in voxels). `[0; 3]` for an empty
     /// chunk. `local_linear_index` in the sparse encoding (and the dense cell count)
     /// is row-major over these spans.
@@ -148,7 +148,7 @@ impl CompressedChunk {
 ///
 /// Builds the material palette (distinct ids in first-seen order), the occupied
 /// bounding box, then both a sparse and (when it could win) a dense bit-packed
-/// occupancy, keeping whichever serialises smaller. The result decompresses to a
+/// occupancy, keeping whichever serializes smaller. The result decompresses to a
 /// grid equal to `grid` in dimensions, occupied set, per-voxel `material_id` and
 /// per-voxel `block_local_coord` (order of the occupied vec may differ — the grid's
 /// occupied set is order-independent, exactly as the resolve path treats it).
@@ -158,19 +158,19 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
         return CompressedChunk {
             dimensions: grid.dimensions,
             min_corner_voxels: [0; 3],
-            centre_fraction: [0.0; 3],
+            center_fraction: [0.0; 3],
             box_spans: [0; 3],
             material_palette: Vec::new(),
             occupancy: Occupancy::Sparse(Vec::new()),
         };
     }
 
-    // ADR 0003 §3a: every resolved voxel centre is `index + 0.5` (the payload now stores
+    // ADR 0003 §3a: every resolved voxel center is `index + 0.5` (the payload now stores
     // the integer `local_index` directly), so the shared per-axis fractional offset is a
     // constant `0.5` — there is nothing to reverse-engineer out of an f32 any more. Kept
     // as a stored field so the on-disk format is stable and `decompress` rebuilds the
-    // `world_position()`-equivalent centre.
-    let centre_fraction = [0.5f32; 3];
+    // `world_position()`-equivalent center.
+    let center_fraction = [0.5f32; 3];
 
     // 1) Occupied bounding box in the grid's integer index space (read DIRECTLY from the
     //    stored `local_index`, no f32 round-trip — ADR 0003 §3a: the codec consumes the
@@ -245,14 +245,14 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
     CompressedChunk {
         dimensions: grid.dimensions,
         min_corner_voxels: min_corner,
-        centre_fraction,
+        center_fraction,
         box_spans,
         material_palette,
         occupancy,
     }
 }
 
-/// Build the dense bit-packed occupancy and return it **only if** it serialises
+/// Build the dense bit-packed occupancy and return it **only if** it serializes
 /// smaller than the already-built `sparse` occupancy; otherwise `None` (keep sparse).
 ///
 /// The dense form is a `bits_per_index`-bit palette index per cell over the whole
@@ -330,15 +330,15 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
 
     // Rebuild the INTEGER index of a cell at row-major local index `linear` (ADR 0003
     // §3a: the payload stores the integer directly, so the codec restores it directly —
-    // `world_position()` reconstructs the `index + 0.5` centre at consumption). The
-    // stored `centre_fraction` is the constant 0.5 and is asserted, not used to rebuild.
+    // `world_position()` reconstructs the `index + 0.5` center at consumption). The
+    // stored `center_fraction` is the constant 0.5 and is asserted, not used to rebuild.
     debug_assert!(
         compressed
-            .centre_fraction
+            .center_fraction
             .iter()
             .all(|&fraction| fraction == 0.5)
             || compressed.occupied_count() == 0,
-        "a non-empty resolved chunk's voxel centres share the 0.5 fraction"
+        "a non-empty resolved chunk's voxel centers share the 0.5 fraction"
     );
     let index_of = |linear: u64| -> [i32; 3] {
         let local_x = if span_x == 0 {

@@ -97,22 +97,22 @@ The sink maps that partition onto brick kinds one-to-one:
   R8 occupancy is packed into an atlas slot. The microblock's cuboids rasterize into the brick exactly as ADR 0007's
   `main_atlas` packs a tile — the sculpted voxels ARE the brick payload.
 - **per-face seam-solidity flags** (`SeamSolidity`) carry across unchanged: they let the block-DDA cull a face against a
-  fully-solid neighbour without expanding it — the coarse-vs-microblock analogue of the fog apron (CONTEXT.md "Seam
+  fully-solid neighbor without expanding it — the coarse-vs-microblock analog of the fog apron (CONTEXT.md "Seam
   solidity"), and the brick-field's equivalent of ADR 0007's C′ apron-zeroing.
 
 > **Amendment (2026-07, the 8000³-freeze fix): the record set is SURFACE-ONLY.** "One coarse record per solid block"
 > still made the CPU pipeline O(all blocks): a 500³-block solid emitted 125M records, and every downstream stage
 > (sort, elision mask, pyramid fold, GPU pack, incremental-mirror clone) hauled the ~123.5M fully-occluded interior
 > records it would then discard — a measured 12.5s main-thread freeze + ~6 GB transient. The contract is now:
-> a coarse-solid block whose six face-neighbours are all present and solid on the shared face **emits no record at
+> a coarse-solid block whose six face-neighbors are all present and solid on the shared face **emits no record at
 > all** (`build_brick_field` fuses the occlusion decision into emission, with an interior-CHUNK fast path that skips
-> fully-solid chunks ringed by fully-solid face-neighbours without visiting their blocks). Boundary (sculpted) blocks
+> fully-solid chunks ringed by fully-solid face-neighbors without visiting their blocks). Boundary (sculpted) blocks
 > are surface by definition and are never elided, so the atlas is unchanged. Interiors remain queryable through the
 > two-layer chunks: the clip-map pyramid derives from the CHUNKS (`ClipmapPyramid::from_chunks`), and the fog fill
 > box-fills coarse occupancy from the CHUNKS (`build_per_chunk_fog_occupancy_from_bricks`). Incremental edits
-> re-derive occlusion verdicts over the dirty set dilated by the 26-neighbourhood
+> re-derive occlusion verdicts over the dirty set dilated by the 26-neighborhood
 > (`IncrementalBrickField::apply_dirty_update` — a carve can expose previously-interior blocks in a NON-dirty
-> neighbour chunk). The interior-inclusive build survives as the parity oracle (`build_brick_field_all_blocks`),
+> neighbor chunk). The interior-inclusive build survives as the parity oracle (`build_brick_field_all_blocks`),
 > gated hit-identical to the surface-only build in `brick_surface_elision_hit_set_unchanged`.
 
 This is why ADR 0010 called it "a short step": the fog atlas is *already this shape* (boundary-residency R8 occupancy in
@@ -136,8 +136,8 @@ sink — it reads the CPU exact seam. The brick-field is a shell-only accelerato
   port the benchmark's 2 coarse levels first, then add a 3rd/4th level** (ADR 0009 notes "C had only two LOD levels — a
   3rd/4th closes most of the gap" vs mesh's free frustum/Z cull). The distinction from *geometry* clip-maps
   (Losasso–Hoppe nested camera-centered vertex grids) is deliberate and worth the owner's eye: **[OPEN-grill]** the
-  benchmark's pyramid is **world-fixed occupancy levels** (a min-mip of the brick set), NOT camera-recentred toroidal
-  grids. **[DECIDED-grill 2026-07-05] World-fixed pyramid first; camera-centred residency rings deferred to a measured
+  benchmark's pyramid is **world-fixed occupancy levels** (a min-mip of the brick set), NOT camera-recentered toroidal
+  grids. **[DECIDED-grill 2026-07-05] World-fixed pyramid first; camera-centered residency rings deferred to a measured
   need — but the grill split the concern to answer "when does off-screen residency stop being engineering?":**
   - **The residency POLICY** (all boundary bricks resident vs finest-near-camera rings) is *engineering* — tunable,
     swappable, deferred until a real off-screen scene proves the resident budget bites (the benchmark's 512³ R8 atlas
@@ -227,7 +227,7 @@ path retired last.
   ray-hit DEPTH and composites correctly with the existing rasterized overlays (origin gizmo, fog, view cube, egui) —
   the one integration point the benchmark never exercised; verified by the existing goldens plus one overlay-inclusive
   shot.** Parity **(b)/(c)**: hit set == CPU surface; the sphere/revolve
-  goldens render brick-path pixel-identical. This is the ADR 0007 live-swap analogue, now brick-granular. Kills the CPU
+  goldens render brick-path pixel-identical. This is the ADR 0007 live-swap analog, now brick-granular. Kills the CPU
   fog `VoxelGrid` stream (ADR 0010's flagged debt) for single-producer scenes.
 - **G2 — clip-map LOD (the scattered-ceiling fix).** Emit the L1/L2 occupancy pyramid + hierarchical DDA (4a);
   multi-producer + scattered scenes engage. Parity: each level conservative; finest-LOD goldens still pixel-identical.
@@ -241,7 +241,7 @@ path retired last.
   promised ("~3× lower edit latency") lands here; Tracy-measured live, as ADR 0007 §6 established the incremental
   path can't be golden-tested headless.
 - **G4 — more LOD levels + off-screen residency (scale polish).** Add a 3rd/4th clip-map level (ADR 0009: closes most of
-  the mesh gap); if a real off-screen scene proves the resident brick budget bites, add camera-centred residency rings
+  the mesh gap); if a real off-screen scene proves the resident brick budget bites, add camera-centered residency rings
   (4a) as an eviction policy tied to ADR 0003 streaming. Pure eviction policy by construction — G1's residency-miss
   contract already gave it its hole. Engineering, not architecture.
 - **G5 — retire the CPU display densify.** Once the brick-field covers every producer/scene the two-layer mesh does, drop
@@ -312,7 +312,7 @@ path retired last.
 - **Geometry clipmaps** — Losasso & Hoppe, *"Geometry clipmaps: terrain rendering using nested regular grids"* (ACM
   TOG 23(3), 2004, [hhoppe.com/proj/geomclipmap](https://hhoppe.com/proj/geomclipmap/)); GPU implementation, Asirvatham &
   Hoppe, *GPU Gems 2* Ch. 2, [NVIDIA](https://developer.nvidia.com/gpugems/gpugems2/part-i-geometric-complexity/chapter-2-terrain-rendering-using-gpu-based-geometry).
-  The nested camera-centred grid + transition-region morph is the reference for Decision 4a's *camera-centred residency
+  The nested camera-centered grid + transition-region morph is the reference for Decision 4a's *camera-centered residency
   rings* variant; our first-slice pyramid is a world-fixed occupancy min-mip (a simpler cousin), and the ADR flags the
   distinction for the owner.
 - **Sparse Brick Set (SBS) vs Sparse Voxel Set (SVS)** — the SDF acceleration-structure taxonomy (e.g. CrossRT,
@@ -340,7 +340,7 @@ path retired last.
    of producer AABBs IS built (owner ruled effort doesn't count against it) and REPLACES #63's chunk-bucketing as the
    sole edit broadphase — never alongside it. Stateless (rebuilt per edit, ~1ms at 10k objects); persistent/refit only
    if measured hot. Swap parity-gated. Render broadphase stays pyramid + sorted-record binary search.**
-3. ~~**World-fixed occupancy pyramid vs true camera-centred geometry clip-map rings?**~~ **RESOLVED (grill 2026-07-05):
+3. ~~**World-fixed occupancy pyramid vs true camera-centered geometry clip-map rings?**~~ **RESOLVED (grill 2026-07-05):
    world-fixed first. The "when is it architecture?" split: residency POLICY is engineering (defer to G4, measured);
    the residency-miss CONTRACT is architecture, decided now — a miss renders the block's coarse form
    (degraded-but-correct), baked into G1's lookup design. Rings are thereby pre-classified as pure eviction policy.**

@@ -1,5 +1,5 @@
 // Placement ghost — a translucent analytic SDF drawn where an armed primitive's voxels
-// WILL land (ADR 0022: "nothing recomposes during the gesture — render a coloured
+// WILL land (ADR 0022: "nothing recomposes during the gesture — render a colored
 // transparent SDF where the voxels will be"). The five `ShapeKind` primitives are rendered
 // as parametric fields, sphere-traced on the GPU, over the composed voxel display.
 //
@@ -13,17 +13,17 @@
 // ## Frames (ADR 0008)
 //
 // The producer samples its SDF at `local_voxel_index + 0.5 - grid/2`, i.e. in a frame
-// CENTRED on the producer's own grid. The display's world frame relates to absolute
-// voxels by `absolute = world + recentre` (derivable from the display frame law
-// `absolute = shading_absolute + (recentre - half)` together with
+// CENTERED on the producer's own grid. The display's world frame relates to absolute
+// voxels by `absolute = world + recenter` (derivable from the display frame law
+// `absolute = shading_absolute + (recenter - half)` together with
 // `shading_absolute = world + half`). A leaf's producer-local voxel is
 // `absolute - world_offset`. Composing:
 //
-//     sample = world_point + recentre - world_offset - grid/2
+//     sample = world_point + recenter - world_offset - grid/2
 //
-// so the CPU packs `center_world = world_offset + grid/2 - recentre` and the shader
+// so the CPU packs `center_world = world_offset + grid/2 - recenter` and the shader
 // evaluates the field at `world_point - center_world`. `grid/2` is the EXACT
-// half (a half-integer for an odd grid); `recentre` is the FLOORED half. The
+// half (a half-integer for an odd grid); `recenter` is the FLOORED half. The
 // difference is the half-voxel term that a naive "the shape is at the origin"
 // assumption silently drops.
 
@@ -31,7 +31,7 @@ struct PlacementGhostUniforms {
     view_projection: mat4x4<f32>,
     // The RAY-FRAME unprojection matrix (camera::SceneMatrices::ray_unprojection), inverted:
     // eye-anchored + camera-bracketed under perspective (a full-VP inverse melts the `/w` divide
-    // at a wide-baseline recentre — a06d215), the plain frame under ortho. Unproject through it
+    // at a wide-baseline recenter — a06d215), the plain frame under ortho. Unproject through it
     // for an EYE-RELATIVE ray; `ray_eye` carries the render-frame origin added back outside the
     // matrix math. `view_projection` (forward, immune) still reprojects the hit for depth.
     ray_inverse_unprojection: mat4x4<f32>,
@@ -40,7 +40,7 @@ struct PlacementGhostUniforms {
     ray_eye: vec4<f32>,
     // The central 3D viewport rect in physical pixels (x, y, width, height).
     viewport: vec4<f32>,
-    // xyz: the shape's field centre in the world/render frame (see the frame note
+    // xyz: the shape's field center in the world/render frame (see the frame note
     // above). w: the ShapeKind discriminant (0 Cylinder, 1 Tube, 2 Sphere, 3 Torus,
     // 4 Box) — matching `ShapeKind`'s declaration order in voxel_core.
     center_and_kind: vec4<f32>,
@@ -54,7 +54,7 @@ struct PlacementGhostUniforms {
     // coordinate. w: the value-probe world extent per axis.
     params: vec4<f32>,
     // The INVERSE lattice orientation (ADR 0026): maps a world sample (relative to the field
-    // centre) back into the shape's UN-TURNED local SDF frame. Identity for an upright drop; a
+    // center) back into the shape's UN-TURNED local SDF frame. Identity for an upright drop; a
     // signed axis permutation for a side/bottom-face drop, so the ghost lies the way the node
     // will land. The `value_main` probe ignores it (it samples the un-turned field for parity).
     orientation_inverse: mat3x3<f32>,
@@ -146,7 +146,7 @@ fn signed_distance(kind: u32, point: vec3<f32>, semi_axes: vec3<f32>, wall_voxel
 }
 
 // The field in the shader's own sample frame: world point -> producer sample point. ADR 0026:
-// un-turn the world offset from the field centre into the shape's local SDF frame, so an
+// un-turn the world offset from the field center into the shape's local SDF frame, so an
 // oriented node's ghost traces the turned shape (the semi-axes stay un-turned — only the
 // sample point turns, exactly as the classifier un-turns a query cell).
 fn field_at_world(world_point: vec3<f32>) -> f32 {
@@ -183,7 +183,7 @@ struct Ray {
 
 // Unproject a framebuffer pixel through the RAY-FRAME inverse into a render-frame ray.
 // Near/far unprojection handles perspective AND orthographic; the points come out
-// EYE-RELATIVE (small, precise at any recentre) and `ray_eye` carries the render frame's
+// EYE-RELATIVE (small, precise at any recenter) and `ray_eye` carries the render frame's
 // one large term added back OUTSIDE the melting `/w` divide — the CPU pick's `pick_voxel`
 // and the brick shader's `camera_ray` do the identical thing (minus the sv-frame shift;
 // this pass works in the render frame and moves the SHAPE into it instead).
@@ -353,7 +353,7 @@ fn fragment_main(@builtin(position) position: vec4<f32>) -> FragmentOutput {
 // — which is what makes the mirror above mechanically checkable rather than a promise.
 //
 // The sample lattice: pixel (x, y) of an N x N target maps to the producer's own local
-// voxel-centre grid, `(x + 0.5, y + 0.5, plane + 0.5)` less `grid/2` — i.e. exactly the
+// voxel-center grid, `(x + 0.5, y + 0.5, plane + 0.5)` less `grid/2` — i.e. exactly the
 // points `SdfShape::resolve_into` evaluates. `params.z` is the plane index; `params.w`
 // is the axis span in voxels.
 @fragment

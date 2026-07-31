@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use voxel_worker::{
     DisplayOrchestrator, DisplayRefreshContext, GpuContext, LayerBand, MaterialChoice,
-    RecentreVoxels, TwoLayerChunk, TwoLayerResidentCache, COLOR_TARGET_FORMAT,
+    RecenterVoxels, TwoLayerChunk, TwoLayerResidentCache, COLOR_TARGET_FORMAT,
 };
 
 mod common;
@@ -39,7 +39,7 @@ struct Fixture {
     scene: voxel_worker::Scene,
     chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     region_dimensions: [u32; 3],
-    recentre_voxels: RecentreVoxels,
+    recenter_voxels: RecenterVoxels,
 }
 
 impl Fixture {
@@ -47,12 +47,12 @@ impl Fixture {
         let scene = common::box_scene(blocks, VPB, MaterialChoice::Stone);
         let chunks = common::box_covering_chunks(blocks, VPB, MaterialChoice::Stone);
         let region_dimensions = scene.placed_region_dimensions(VPB);
-        let recentre_voxels = scene.recentre_voxels_for_resolve(VPB);
+        let recenter_voxels = scene.recenter_voxels_for_resolve(VPB);
         Self {
             scene,
             chunks,
             region_dimensions,
-            recentre_voxels,
+            recenter_voxels,
         }
     }
 
@@ -64,7 +64,7 @@ impl Fixture {
             COLOR_TARGET_FORMAT,
             &self.chunks,
             self.region_dimensions,
-            self.recentre_voxels,
+            self.recenter_voxels,
             VPB,
             debug_face_orientation,
         )
@@ -82,7 +82,7 @@ impl Fixture {
             two_layer_cache: cache,
             density: VPB,
             region_dimensions: self.region_dimensions,
-            recentre_voxels: self.recentre_voxels,
+            recenter_voxels: self.recenter_voxels,
             band: LayerBand::FULL,
             region: None,
             debug_face_orientation,
@@ -122,7 +122,7 @@ fn first_build_small_engages_brick_and_skips_mesh() {
     // Debug-face mode disengages the brick display even with a live field resident.
     assert!(
         !orchestrator.brick_display_engaged(true),
-        "debug-face orientation disengages the brick display (it needs the mesh's face colours)"
+        "debug-face orientation disengages the brick display (it needs the mesh's face colors)"
     );
 }
 
@@ -211,7 +211,7 @@ fn rebuild_keeps_brick_engaged_and_skips_mesh() {
         None,
         true,
         fixture.region_dimensions,
-        fixture.recentre_voxels,
+        fixture.recenter_voxels,
         VPB,
         LayerBand::FULL,
         None,

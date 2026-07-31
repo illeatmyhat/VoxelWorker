@@ -111,7 +111,7 @@ pub(super) fn build_node_list_section(
                 select = Some(*id);
             }
             // Right-click → Focus: a VIEW action that frames this node (camera target
-            // = node centre, distance fitted to its AABB). Carried on the response,
+            // = node center, distance fitted to its AABB). Carried on the response,
             // not as an Intent (Focus is not undoable).
             row_response.context_menu(|ui| {
                 if ui.button("Focus").clicked() {

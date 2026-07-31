@@ -1,7 +1,7 @@
 //! `constraint-vertical` — the exact 90° rotation of
 //! [`constraint_horizontal`](super::constraint_horizontal).
 //!
-//! Authored on a 22 × 36 canvas to its twin's 36 × 22 and centred onto the square grid, so the two
+//! Authored on a 22 × 36 canvas to its twin's 36 × 22 and centered onto the square grid, so the two
 //! really are one drawing turned. Padding either back to a square would break the correspondence
 //! that makes them legible as a pair.
 

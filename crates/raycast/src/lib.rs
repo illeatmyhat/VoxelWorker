@@ -68,7 +68,7 @@ pub use surface_raycast::{
     snap_to_lattice_then_reproject, MarchParams, SurfaceHit,
 };
 pub use view_cube_pick::{
-    pick_view_cube_slab, view_cube_hot_zone_neighbours, ViewCubeSlabHit,
-    VIEW_CUBE_CENTRE_PATCH_FRACTION, VIEW_CUBE_HALF_EXTENT, VIEW_CUBE_ZONE_THRESHOLD,
+    pick_view_cube_slab, view_cube_hot_zone_neighbors, ViewCubeSlabHit,
+    VIEW_CUBE_CENTER_PATCH_FRACTION, VIEW_CUBE_HALF_EXTENT, VIEW_CUBE_ZONE_THRESHOLD,
 };
 pub use voxel_dda::VoxelDda;

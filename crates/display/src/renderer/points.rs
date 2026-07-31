@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Reference-plane line colour `#39414a` (issue #91 item 4): a desaturated near-neutral
+/// Reference-plane line color `#39414a` (issue #91 item 4): a desaturated near-neutral
 /// slate from the Signal token family (the mock's faint `#2a2e33` ground strokes are the
 /// visual target), replacing the old bright teal `#5fb8a4` that buried the bottom-left
 /// status text. Used by the analytic infinite-grid shader.
@@ -35,9 +35,9 @@ enum ReferencePlane {
     Yz,
 }
 
-/// Append a Point's coloured axis lines (issue #29 S5; per-axis fix) through
-/// `origin_voxels` (the recentred render-frame position), reusing the gizmo axis
-/// colours. `enabled[axis]` gates each axis independently (X = red +X, Y = green
+/// Append a Point's colored axis lines (issue #29 S5; per-axis fix) through
+/// `origin_voxels` (the recentered render-frame position), reusing the gizmo axis
+/// colors. `enabled[axis]` gates each axis independently (X = red +X, Y = green
 /// +Y, Z = blue +Z), so e.g. turning Y off drops the green line and emits only the
 /// X and Z segments. Each enabled axis spans `±half` world units — a screen-stable
 /// length the caller derives per Point from the camera.
@@ -71,15 +71,15 @@ fn point_axes_into(
     }
 }
 
-/// The recentred render-frame position (voxels) of a Point's origin (issue #29 S5):
-/// `position_blocks·density − recentre`, the SAME frame the resolved voxels and the
+/// The recentered render-frame position (voxels) of a Point's origin (issue #29 S5):
+/// `position_blocks·density − recenter`, the SAME frame the resolved voxels and the
 /// per-object grids live in.
-fn point_origin_voxels(point: &Point, recentre: RecentreVoxels, density: i64) -> [f32; 3] {
-    // Unwrap the carried frame at this positional arithmetic (the recentre subtraction).
-    let recentre = recentre.voxels();
+fn point_origin_voxels(point: &Point, recenter: RecenterVoxels, density: i64) -> [f32; 3] {
+    // Unwrap the carried frame at this positional arithmetic (the recenter subtraction).
+    let recenter = recenter.voxels();
     let mut origin = [0.0f32; 3];
     for axis in 0..3 {
-        origin[axis] = (point.position_blocks[axis] * density - recentre[axis]) as f32;
+        origin[axis] = (point.position_blocks[axis] * density - recenter[axis]) as f32;
     }
     origin
 }
@@ -87,7 +87,7 @@ fn point_origin_voxels(point: &Point, recentre: RecentreVoxels, density: i64) ->
 /// Build the AXIS line batch for every VISIBLE Point in `scene` (issue #29 S5),
 /// gated CPU-side so it is unit-testable without a GPU. For each non-hidden Point
 /// its enabled axes (X = red +X, Y = green +Y, Z = blue +Z) are emitted as three
-/// coloured line segments through the Point's origin, in the recentred render frame.
+/// colored line segments through the Point's origin, in the recentered render frame.
 ///
 /// Issue #29 Points fast-follow: the reference PLANES no longer live here — they are
 /// drawn by [`InfiniteGridRenderer`] as an ANALYTIC infinite grid (a fullscreen
@@ -102,12 +102,12 @@ pub(crate) fn points_line_batch(
     let mut vertices = Vec::new();
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let recenter = scene.recenter_voxels_for_resolve(voxels_per_block);
     for point in &scene.points {
         if point.hidden {
             continue;
         }
-        let origin = point_origin_voxels(point, recentre, density);
+        let origin = point_origin_voxels(point, recenter, density);
         if point.axis_x || point.axis_y || point.axis_z {
             // Screen-stable half-length at this Point's depth (ADR 0031).
             let half = camera
@@ -124,12 +124,12 @@ pub(crate) fn points_line_batch(
 }
 
 /// One enabled reference PLANE of a visible Point (issue #29 Points fast-follow),
-/// resolved into the recentred render frame for the analytic infinite-grid shader.
+/// resolved into the recentered render frame for the analytic infinite-grid shader.
 /// Computed CPU-side from the scene so the plane selection is unit-testable without
 /// a GPU; [`InfiniteGridRenderer`] turns each into one fullscreen draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GridPlaneInstance {
-    /// The Point origin in the recentred render frame (voxels).
+    /// The Point origin in the recentered render frame (voxels).
     pub origin: [f32; 3],
     /// The two in-plane unit axes spanning the plane (`u`, `v`).
     pub u_axis: [f32; 3],
@@ -152,20 +152,20 @@ fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]
 }
 
 /// Collect every enabled reference PLANE of every VISIBLE Point (issue #29 Points
-/// fast-follow), in the recentred render frame, for the analytic infinite-grid pass.
+/// fast-follow), in the recentered render frame, for the analytic infinite-grid pass.
 /// Hidden Points and disabled planes contribute nothing; the common case (the
 /// Origin Point's XY ground plane, Z-up) yields exactly one instance. Pure + GPU-free
 /// so the plane selection/orientation is unit-tested.
 pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlaneInstance> {
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let recenter = scene.recenter_voxels_for_resolve(voxels_per_block);
     let mut planes = Vec::new();
     for point in &scene.points {
         if point.hidden {
             continue;
         }
-        let origin = point_origin_voxels(point, recentre, density);
+        let origin = point_origin_voxels(point, recenter, density);
         let mut push = |plane: ReferencePlane| {
             let (u_axis, v_axis, normal) = reference_plane_basis(plane);
             planes.push(GridPlaneInstance {
@@ -216,7 +216,7 @@ pub struct PointsRenderer {
 }
 
 impl PointsRenderer {
-    /// Create the Points renderer for a colour target. The batch starts empty — the
+    /// Create the Points renderer for a color target. The batch starts empty — the
     /// caller fills it each frame from the visible Points via [`Self::rebuild_from_scene`].
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let vertex_capacity = 1u32;

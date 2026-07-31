@@ -41,7 +41,7 @@ struct CuboidUniforms {
     material_atlas_rects: array<vec4<f32>, 3>,
     _ghost_tint_pad: vec4<f32>,
     // Added to `voxel_absolute_position` inside the on-face overlay to recover the TRUE
-    // world voxel frame (= recentre − grid_half_extent), anchoring the lines to the
+    // world voxel frame (= recenter − grid_half_extent), anchoring the lines to the
     // world block lattice. Must match the Rust `CuboidUniforms` tail exactly.
     overlay_world_offset: vec3<f32>,
     _overlay_pad: f32,
@@ -79,7 +79,7 @@ var material_sampler: sampler;
 // (per-voxel UV component) are shared — see `shaders/cuboid_face_shading.wgsl`,
 // prepended by `with_shared_shading`.
 
-// Signed-axis debug colour, identical to cuboid.wgsl (both carried it over from
+// Signed-axis debug color, identical to cuboid.wgsl (both carried it over from
 // the since-removed instanced voxel.wgsl, deleted with the legacy mesher, #20).
 fn debug_face_color(face_normal: vec3<f32>) -> vec3<f32> {
     let axis_magnitude = abs(face_normal);

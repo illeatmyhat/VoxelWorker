@@ -21,17 +21,17 @@
 //! When a consumer tiles a single packed tile *by itself* across a surface — mapping
 //! a repeating coordinate through `fract` into the tile's sub-rect rather than using
 //! a hardware `Repeat` address mode (which would wrap across the whole sheet into a
-//! neighbour) — two edge artifacts have to be defended against. Both are standard
+//! neighbor) — two edge artifacts have to be defended against. Both are standard
 //! atlas *bleed* defenses:
 //!
-//!  1. **Neighbour spill.** Even nearest-neighbour sampling can, at a tile seam,
+//!  1. **Neighbor spill.** Even nearest-neighbor sampling can, at a tile seam,
 //!     read one texel into the adjacent tile. Every tile is surrounded by a
 //!     **replicated-edge gutter** ([`ShelfBinPack::blit_with_replicated_edge`]): the
 //!     tile's own border texels copied outward by `gutter` texels, so a one-texel
-//!     spill lands on a copy of the correct edge, never the neighbour.
+//!     spill lands on a copy of the correct edge, never the neighbor.
 //!  2. **Within-tile wrap seam.** Because the consumer tiles with `fract`, the
 //!     reported sub-rect is pulled in by **half a texel** on each side
-//!     ([`ShelfBinPack::normalized_rect`]): sampling is clamped to texel centres so
+//!     ([`ShelfBinPack::normalized_rect`]): sampling is clamped to texel centers so
 //!     `fract → 0` and `fract → 1` both land inside the tile, never on its outer
 //!     edge where they could round into the gutter.
 //!
@@ -157,7 +157,7 @@ impl ShelfBinPack {
         let max_u = (placement.inner_x + tile_width) as f32 / sheet_w;
         let max_v = (placement.inner_y + tile_height) as f32 / sheet_h;
         // Half-texel inset: pull each edge in by half a texel so a fract-tiling
-        // consumer lands on texel centres, never the outermost edge (which could
+        // consumer lands on texel centers, never the outermost edge (which could
         // round into the gutter under interpolation/derivatives).
         let half_texel_u = 0.5 / sheet_w;
         let half_texel_v = 0.5 / sheet_h;
@@ -175,7 +175,7 @@ impl ShelfBinPack {
 
     /// Copy `tile` into the sheet with its inner corner at `placement` AND replicate
     /// its edge texels outward by `gutter` on every side, so a one-texel sample spill
-    /// at a cell border reads a copy of the correct edge, never a neighbour tile.
+    /// at a cell border reads a copy of the correct edge, never a neighbor tile.
     /// `bytes_per_texel` interleaved bytes per texel (e.g. `4` for RGBA8); `sheet` is
     /// row-major `sheet_width` texels wide. Destinations that fall outside the sheet
     /// (or sources past the tile) are skipped, so a caller need not pre-clip the
@@ -224,7 +224,7 @@ impl ShelfBinPack {
 /// invariant** — the sampling-correctness detail (module docs §"Gutter and half-texel inset"):
 /// for any valid placement the outer tile rect stays inside the unit square and the inset
 /// sampling window sits STRICTLY inside it and never inverts, so a `fract`-tiling consumer lands
-/// on texel centres and can never round out into the gutter (the bleed the whole gutter machinery
+/// on texel centers and can never round out into the gutter (the bleed the whole gutter machinery
 /// exists to prevent). Proved over all small placements rather than the fixtures the unit test
 /// names.
 ///
@@ -401,7 +401,7 @@ mod tests {
         }
     }
 
-    /// The gutter ring is a copy of the tile's nearest edge, not a neighbour's or a
+    /// The gutter ring is a copy of the tile's nearest edge, not a neighbor's or a
     /// cleared texel.
     #[test]
     fn gutter_replicates_edge_texels() {

@@ -34,14 +34,14 @@ fn glyphs_are_data() {
     }
 }
 
-/// No shelf can be added to the set and left off the catalogue.
+/// No shelf can be added to the set and left off the catalog.
 ///
 /// [`Group::ALL`] is what the design_reference sheet walks, so a variant missing from it is a
 /// shelf of glyphs that exist, gate green, and are invisible to the only reader of the set. Both
 /// halves are checked: the match names every variant, so a new one stops this compiling, and
 /// every shelf is asserted to actually hold a glyph, because an empty header says nothing.
 #[test]
-fn every_shelf_is_on_the_catalogue_and_holds_a_glyph() {
+fn every_shelf_is_on_the_catalog_and_holds_a_glyph() {
     for group in Group::ALL {
         // Naming each variant is the compile-time half — a new shelf breaks this arm.
         let named = match group {
@@ -62,14 +62,14 @@ fn every_shelf_is_on_the_catalogue_and_holds_a_glyph() {
         };
         assert!(
             Icon::ALL.iter().any(|icon| icon.group() == *named),
-            "{} is on the catalogue with nothing under it",
+            "{} is on the catalog with nothing under it",
             named.title(),
         );
     }
     for icon in Icon::ALL {
         assert!(
             Group::ALL.contains(&icon.group()),
-            "{} sits on a shelf the catalogue never walks",
+            "{} sits on a shelf the catalog never walks",
             icon.name(),
         );
     }

@@ -8,13 +8,13 @@
 use super::{Ink, Mark};
 
 /// The construction circle, and the edge-midpoint handle that rides it.
-const CENTRE: (f32, f32) = (9.0, 9.0);
+const CENTER: (f32, f32) = (9.0, 9.0);
 const RADIUS: f32 = 5.0;
 const HANDLE: (f32, f32) = (11.94, 4.955);
 
 pub(super) const DRAW: &[Mark] = &[
     Mark::Circle {
-        center: CENTRE,
+        center: CENTER,
         radius: RADIUS,
         ink: Ink::SOLID,
     },
@@ -30,7 +30,7 @@ pub(super) const DRAW: &[Mark] = &[
         ink: Ink::SOLID,
     },
     Mark::Node {
-        center: CENTRE,
+        center: CENTER,
         size: 2.6,
         ink: Ink::ACCENT,
     },

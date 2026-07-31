@@ -153,9 +153,9 @@ fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
 }
 
 /// Time one `SetOffset` + rebuild, reporting the milliseconds and the rebuild's
-/// `incremental_dirty_chunks` hint — `Some(n)` = the edit localised to `n` evicted chunks and
+/// `incremental_dirty_chunks` hint — `Some(n)` = the edit localized to `n` evicted chunks and
 /// the resident buffers stayed in frame. `None` covers BOTH non-local outcomes (a wholesale
-/// cache clear, and a localised edit whose floating-origin shift reframed every baked buffer);
+/// cache clear, and a localized edit whose floating-origin shift reframed every baked buffer);
 /// `rebuild` does not distinguish them to its caller, so neither does this probe.
 fn timed_offset(
     scene: &mut Scene,
@@ -173,11 +173,11 @@ fn timed_offset(
         },
     );
     let started = Instant::now();
-    let localised = match app_core.rebuild(scene, DENSITY) {
+    let localized = match app_core.rebuild(scene, DENSITY) {
         RebuildOutcome::Built(output) => output.incremental_dirty_chunks.map(|dirty| dirty.len()),
         RebuildOutcome::DensityRejected { .. } => panic!("the probe's density is in bounds"),
     };
-    (started.elapsed().as_secs_f64() * 1000.0, localised)
+    (started.elapsed().as_secs_f64() * 1000.0, localized)
 }
 
 /// **The case the first probe does not measure, and the one that decides the interaction
@@ -212,20 +212,20 @@ fn one_edit_rebuild_cost_by_edit_locality() {
         let backdrop = *scene.roots.first().expect("seeded scene has a root node");
         let dragged = add_dragged_node(&mut scene, &mut app_core);
 
-        // Park the dragged node near the backdrop's centre, so the whole gesture happens
+        // Park the dragged node near the backdrop's center, so the whole gesture happens
         // inside existing geometry and the scene's extent never grows.
-        let centre = blocks.map(|b| (b as i64 / 2) * DENSITY as i64);
+        let center = blocks.map(|b| (b as i64 / 2) * DENSITY as i64);
         let _ = app_core.rebuild(&scene, DENSITY);
-        let _ = timed_offset(&mut scene, &mut app_core, dragged, centre);
+        let _ = timed_offset(&mut scene, &mut app_core, dragged, center);
 
         // The drag that matters: nudge the SMALL node one voxel at a time.
         let mut small_samples = Vec::with_capacity(SAMPLES);
         let mut small_chunks = None;
         for step in 1..=SAMPLES as i64 {
-            let offset = [centre[0] + step, centre[1], centre[2]];
-            let (ms, localised) = timed_offset(&mut scene, &mut app_core, dragged, offset);
+            let offset = [center[0] + step, center[1], center[2]];
+            let (ms, localized) = timed_offset(&mut scene, &mut app_core, dragged, offset);
             small_samples.push(ms);
-            small_chunks = localised;
+            small_chunks = localized;
         }
 
         // The same gesture on the BACKDROP, for the contrast — this is the first probe's
@@ -233,9 +233,9 @@ fn one_edit_rebuild_cost_by_edit_locality() {
         let mut backdrop_samples = Vec::with_capacity(SAMPLES);
         let mut backdrop_chunks = None;
         for step in 1..=SAMPLES as i64 {
-            let (ms, localised) = timed_offset(&mut scene, &mut app_core, backdrop, [step, 0, 0]);
+            let (ms, localized) = timed_offset(&mut scene, &mut app_core, backdrop, [step, 0, 0]);
             backdrop_samples.push(ms);
-            backdrop_chunks = localised;
+            backdrop_chunks = localized;
         }
 
         let voxels: u64 = blocks.iter().map(|b| (*b * DENSITY) as u64).product();
@@ -261,10 +261,10 @@ fn one_edit_rebuild_cost_by_edit_locality() {
 /// **The third case: a drag that leaves the scene's existing extent.** Both probes above keep
 /// the dragged node INSIDE the geometry that is already there, which is the cheap half of the
 /// story. When a node passes the composite's current bound it grows the extent, which moves
-/// `recentre_voxels_for_resolve` — the floating origin — and `rebuild` then forces
-/// `incremental_dirty_chunks` to `None` even though the edit localised perfectly well. The
+/// `recenter_voxels_for_resolve` — the floating origin — and `rebuild` then forces
+/// `incremental_dirty_chunks` to `None` even though the edit localized perfectly well. The
 /// resident two-layer CACHE survives the shift (a chunk is chunk-local-integer, ADR 0008);
-/// what does not survive is the baked vertex buffers, because the mesher folds the recentre
+/// what does not survive is the baked vertex buffers, because the mesher folds the recenter
 /// into each vertex's world position. So the hypothesis under test is narrow: the surplus is a
 /// wholesale RE-MESH forced by the origin move, not extra classification work.
 ///
@@ -272,7 +272,7 @@ fn one_edit_rebuild_cost_by_edit_locality() {
 /// apart from a wholesale cache clear — so this probe does not try to read the answer off that
 /// flag. Instead it drags the node OUTWARD in one-voxel steps and splits the samples by
 /// something it can compute directly and independently: whether
-/// `Scene::recentre_voxels_for_resolve` actually changed across the step. Because the recentre
+/// `Scene::recenter_voxels_for_resolve` actually changed across the step. Because the recenter
 /// is the extent midpoint under a floor-halving, growing `max` by one voxel moves the midpoint
 /// only every OTHER step. That gives two sample sets taken at the same distance, in the same
 /// gesture, on the same scene, differing in exactly one bit: did the origin move. Every step in
@@ -281,7 +281,7 @@ fn one_edit_rebuild_cost_by_edit_locality() {
 /// **The hypothesis is REFUTED at this seam, and the refutation is the point.** `grow=` and
 /// `grow+` come out indistinguishable — the origin shift costs `rebuild` nothing measurable.
 /// That is not a surprise once stated: forcing `incremental_dirty_chunks` to `None` is a branch,
-/// not work. `rebuild` still localises the invalidation (the cache is frame-independent), still
+/// not work. `rebuild` still localizes the invalidation (the cache is frame-independent), still
 /// re-classifies the same handful of chunks, and then hands the shell a flag. The whole expense
 /// of a reframe is DOWNSTREAM — the shell re-meshing every resident chunk and re-uploading its
 /// buffers — and `rebuild` is headless, so none of it is inside these timings. So the honest
@@ -290,7 +290,7 @@ fn one_edit_rebuild_cost_by_edit_locality() {
 /// in the last two columns is a LOWER bound on what such a step costs the user.
 ///
 /// The second thing the table says, less expectedly: the outward steps often beat the inside
-/// ones. A node dragged out past the backdrop sits in empty neighbourhood, so its dirty AABB
+/// ones. A node dragged out past the backdrop sits in empty neighborhood, so its dirty AABB
 /// touches fewer occupied chunks than the same node nudged through the middle of dense
 /// geometry. Locality, not extent, is what this layer's cost tracks.
 #[test]
@@ -320,22 +320,22 @@ fn one_edit_rebuild_cost_by_extent_growth() {
         let dragged = add_dragged_node(&mut scene, &mut app_core);
 
         // The inside-extent baseline, seeded exactly as the locality probe does: park the node
-        // near the backdrop's centre so the gesture never touches the composite's bound.
-        let centre = blocks.map(|b| (b as i64 / 2) * DENSITY as i64);
+        // near the backdrop's center so the gesture never touches the composite's bound.
+        let center = blocks.map(|b| (b as i64 / 2) * DENSITY as i64);
         let _ = app_core.rebuild(&scene, DENSITY);
-        let _ = timed_offset(&mut scene, &mut app_core, dragged, centre);
+        let _ = timed_offset(&mut scene, &mut app_core, dragged, center);
 
         let mut inside_samples = Vec::with_capacity(SAMPLES);
         let mut inside_chunks = None;
         for step in 1..=SAMPLES as i64 {
-            let offset = [centre[0] + step, centre[1], centre[2]];
-            let (milliseconds, localised) =
+            let offset = [center[0] + step, center[1], center[2]];
+            let (milliseconds, localized) =
                 timed_offset(&mut scene, &mut app_core, dragged, offset);
             inside_samples.push(milliseconds);
-            inside_chunks = localised;
+            inside_chunks = localized;
             assert!(
-                localised.is_some(),
-                "an inside-extent step must localise and must not shift the origin"
+                localized.is_some(),
+                "an inside-extent step must localize and must not shift the origin"
             );
         }
 
@@ -346,9 +346,9 @@ fn one_edit_rebuild_cost_by_extent_growth() {
             &mut scene,
             &mut app_core,
             dragged,
-            [outside_start, centre[1], centre[2]],
+            [outside_start, center[1], center[2]],
         );
-        let mut previous_recentre = scene.recentre_voxels_for_resolve(DENSITY).voxels();
+        let mut previous_recenter = scene.recenter_voxels_for_resolve(DENSITY).voxels();
 
         // Then drag OUTWARD one voxel at a time. Every step grows the region; only every other
         // step moves the extent's midpoint, and that is the bit we split on.
@@ -357,18 +357,18 @@ fn one_edit_rebuild_cost_by_extent_growth() {
         let mut grow_unshifted_chunks = None;
         let mut grow_shifted_chunks = None;
         for step in 1..=(SAMPLES as i64 * 2) {
-            let offset = [outside_start + step, centre[1], centre[2]];
-            let (milliseconds, localised) =
+            let offset = [outside_start + step, center[1], center[2]];
+            let (milliseconds, localized) =
                 timed_offset(&mut scene, &mut app_core, dragged, offset);
-            let recentre = scene.recentre_voxels_for_resolve(DENSITY).voxels();
-            if recentre == previous_recentre {
+            let recenter = scene.recenter_voxels_for_resolve(DENSITY).voxels();
+            if recenter == previous_recenter {
                 grow_unshifted_samples.push(milliseconds);
-                grow_unshifted_chunks = localised;
+                grow_unshifted_chunks = localized;
             } else {
                 grow_shifted_samples.push(milliseconds);
-                grow_shifted_chunks = localised;
+                grow_shifted_chunks = localized;
             }
-            previous_recentre = recentre;
+            previous_recenter = recenter;
         }
 
         let voxels: u64 = blocks.iter().map(|b| (*b * DENSITY) as u64).product();
@@ -393,10 +393,10 @@ fn one_edit_rebuild_cost_by_extent_growth() {
          'grow+'   = the same outward drag on the steps where the midpoint moved, so the origin\n\
          shifted and every baked vertex buffer was reframed.\n\
          'grow=' vs 'grow+' is the isolated cost of the origin shift: same scene, same gesture,\n\
-         same region growth, differing only in whether the recentre moved.\n\
+         same region growth, differing only in whether the recenter moved.\n\
          'chunks' is the LAST step's incremental hint, not a median. 'none' means rebuild gave\n\
          the shell no incremental hint, so it must re-mesh wholesale — from outside, that flag\n\
          cannot distinguish a reframe from a wholesale cache clear, which is why the split above\n\
-         is made on the recentre itself rather than on this column.\n"
+         is made on the recenter itself rather than on this column.\n"
     );
 }

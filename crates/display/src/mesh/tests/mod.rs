@@ -6,14 +6,14 @@ mod cuboid;
 mod two_layer;
 
 /// Build a tiny grid from a set of occupied voxel indices, all one material, with
-/// the given dimensions, in the RECENTRED render frame the live cuboid path sees.
+/// the given dimensions, in the RECENTERED render frame the live cuboid path sees.
 ///
 /// The stored `local_index` reproduces the retired f32 fixture's
-/// `world_position = index + 0.5 − dim/2` EXACTLY for an EVEN dim (where the centre
+/// `world_position = index + 0.5 − dim/2` EXACTLY for an EVEN dim (where the center
 /// is a half-integer): `local_index = floor(index + 0.5 − dim/2)`, so
 /// `world_position()` (= `local_index + 0.5`) equals the old value bit-for-bit and the
 /// band-clip's `half = floor(dim/2)` frame assumption still holds. (An ODD dim's old
-/// centre fell on an INTEGER, which the integer payload — whose centres are always
+/// center fell on an INTEGER, which the integer payload — whose centers are always
 /// half-integers — cannot represent; the one odd-dim test below corner-anchors and
 /// reads the world planes directly, since the mesher is anchor-shift-invariant.)
 pub(super) fn grid_from_indices(
@@ -158,7 +158,7 @@ pub(super) fn grid_world_offset(grid: &VoxelGrid) -> [f32; 3] {
     [min_world[0] - 0.5, min_world[1] - 0.5, min_world[2] - 0.5]
 }
 /// The set of GENUINELY-exposed unit faces of an occupancy set: a `(voxel,
-/// direction)` whose neighbour cell is air. This is the VISIBLE silhouette — the
+/// direction)` whose neighbor cell is air. This is the VISIBLE silhouette — the
 /// surface that survives back-face culling + depth testing. The cuboid mesher's
 /// `face_is_exposed` emits a whole MERGED box face when ANY cell behind it is
 /// air, so it OVER-DRAWS the sub-faces backed by solid; those over-draw quads are

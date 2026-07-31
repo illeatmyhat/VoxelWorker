@@ -13,7 +13,7 @@ the first question asked of any new feature:
 1. **Per-frame** — runs every frame, so it must be constant-time in the scene: camera
    math, uniform uploads, display clipping (the onion skin), polling workers for
    finished results. Nothing per-frame may touch work proportional to the document.
-2. **Per-edit, incremental** — runs inline when an edit is *localised*: re-evaluating
+2. **Per-edit, incremental** — runs inline when an edit is *localized*: re-evaluating
    the dirty chunks, patching the mesh's touched chunk buffers, patching the brick
    field's touched records and atlas slots. Inline is correct here because the cost is
    proportional to the edit, and inline work has no swap latency — the user sees their
@@ -66,7 +66,7 @@ The law is enforced structurally, not by vigilance:
 
 - **Routing is a pure function.** For each derived artifact, one side-effect-free
   function decides patch-inline / rebuild-inline / rebuild-async from three facts: is a
-  rebuild outstanding, is the edit localised, does the resident artifact actually
+  rebuild outstanding, is the edit localized, does the resident artifact actually
   reflect the latest evaluation. Pure functions are exhaustively unit-tested; the shell
   merely obeys them.
 - **While a rebuild is outstanding, every edit routes wholesale.** No exception for

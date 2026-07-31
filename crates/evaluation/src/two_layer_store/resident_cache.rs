@@ -12,7 +12,7 @@ use super::*;
 /// **The resident two-layer display cache (ADR 0010 #54 — chunk-granular incremental edits).**
 ///
 /// The [`TwoLayerStore`] above is a *stateless* builder (every call re-classifies a chunk from
-/// the scene); this is its **incremental-edit counterpart**, the two-layer analogue of the dense
+/// the scene); this is its **incremental-edit counterpart**, the two-layer analog of the dense
 /// [`crate::store::Store`]. It holds the resident [`TwoLayerChunk`]s across edits and re-derives
 /// **only the chunks an edit's world-AABB intersects** (chunk-granular, ADR 0002 Decision 3),
 /// mirroring [`Store::invalidate_aabb`](crate::store::Store::invalidate_aabb) exactly. Untouched
@@ -26,13 +26,13 @@ use super::*;
 /// (re-classify only the blocks the edit AABB touches, keeping the rest of the chunk's coarse
 /// layer) is a later optimization, NOT this slice (ADR 0010 Consequences).
 ///
-/// ## Frame (ADR 0008) — why a recentre shift does NOT invalidate the cache
+/// ## Frame (ADR 0008) — why a recenter shift does NOT invalidate the cache
 ///
 /// A [`TwoLayerChunk`] is stored in **chunk-local integer** frame (its coarse ids + block-local
-/// cuboids never mention the absolute origin — that lives in the chunk COORD key). The recentre /
+/// cuboids never mention the absolute origin — that lives in the chunk COORD key). The recenter /
 /// floating origin is applied only at *expand* time as a pure index offset
 /// ([`TwoLayerChunk::expand_occupancy_into`]). So — unlike the dense [`Store`], which caches
-/// PRE-REBASED grids and must clear on a floating-origin shift — a recentre shift leaves every
+/// PRE-REBASED grids and must clear on a floating-origin shift — a recenter shift leaves every
 /// resident two-layer chunk VALID. Only a **density change** (which resizes each chunk's voxel
 /// extent) forces a wholesale clear; that is the one binding this cache tracks.
 ///
@@ -85,10 +85,10 @@ impl TwoLayerResidentCache {
         self.resident.len()
     }
 
-    /// Drop every cached chunk (the all-or-nothing invalidation seam) — the two-layer analogue
+    /// Drop every cached chunk (the all-or-nothing invalidation seam) — the two-layer analog
     /// of [`Store::clear`](crate::store::Store::clear). Used for the first build (no previous
     /// scene to diff) and the edit kinds [`invalidate_aabb`](Self::invalidate_aabb) can't
-    /// localise (a density change, or a region-spanning VoxelBody edit).
+    /// localize (a density change, or a region-spanning VoxelBody edit).
     pub fn clear(&mut self) {
         self.resident.clear();
         self.bound_density = None;
@@ -113,7 +113,7 @@ impl TwoLayerResidentCache {
     ///
     /// **Returns the chunk coords actually evicted** (resident AND intersecting the edit AABB),
     /// so the mesher's incremental plan (`cuboid_incremental_plan`, up in the display layer) can
-    /// dilate exactly this dirty set by the 26-neighbourhood. The density-mismatch path returns
+    /// dilate exactly this dirty set by the 26-neighborhood. The density-mismatch path returns
     /// every previously-resident coord.
     pub fn invalidate_aabb(
         &mut self,
@@ -142,7 +142,7 @@ impl TwoLayerResidentCache {
         evicted
     }
 
-    /// **Per-chunk two-layer accessor — the incremental analogue of
+    /// **Per-chunk two-layer accessor — the incremental analog of
     /// [`Store::resident_render_chunks`](crate::store::Store::resident_render_chunks).** Ensure
     /// every covering chunk of `(scene, voxels_per_block, lod)` is resident (re-run the
     /// classifier + build for any DIRTY or MISSING chunk, reuse resident HITs verbatim), then
@@ -150,7 +150,7 @@ impl TwoLayerResidentCache {
     /// SAME z,y,x order the dense store assembles.
     ///
     /// Because a two-layer chunk is chunk-local-integer (frame-independent), a resident HIT is
-    /// reused across a recentre shift; only [`invalidate_aabb`](Self::invalidate_aabb) (a dirty
+    /// reused across a recenter shift; only [`invalidate_aabb`](Self::invalidate_aabb) (a dirty
     /// edit) or a density change ([`clear`](Self::clear)) re-derives a chunk. The returned chunks
     /// are `Arc`-SHARED (an O(1) refcount bump per covering chunk, NOT a deep copy), so the caller
     /// owns a covering set that outlives this `&mut self` borrow and can be meshed, fog-expanded,
@@ -184,7 +184,7 @@ impl TwoLayerResidentCache {
         // (#57): gather the missing coords, build them in parallel into a Vec, THEN insert
         // serially (the insert is cheap next to the build). This keeps the incremental
         // dirty-set path (#54) intact — only chunks actually absent are (re)built, resident
-        // HITs are reused verbatim — while the initial build / density-change / recentre
+        // HITs are reused verbatim — while the initial build / density-change / recenter
         // fallback (which re-fills many chunks at once) now runs across threads. Each chunk
         // is deterministic given the scene, so the resident map is identical to the serial
         // one-by-one fill regardless of thread count.

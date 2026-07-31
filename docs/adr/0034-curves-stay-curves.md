@@ -15,7 +15,7 @@ polygon consumer, and it made a new curve kind purely additive at the authoring 
 
 It stopped being reasonable once the region became a *field*. Flattening happened at derivation
 time, so everything downstream — the extrude SDF, the revolve SDF, the exact occupancy sample,
-the coarse cell classifier, the GPU wash, the crease catalogue — received chords, at a tolerance
+the coarse cell classifier, the GPU wash, the crease catalog — received chords, at a tolerance
 chosen in **voxels**. A viewer that knows what a voxel is worth in pixels then has no way to ask
 for anything better except to pass a tolerance back *up* into the query, which is what shipped in
 `7b9052b` and did not work: a finer polygon is still a polygon, the wash still read as a fan of
@@ -32,7 +32,7 @@ a sphere in the volume is a sphere, and the only length scale is the occupancy s
 the meaning.**
 
 1. **`substrate::geom2d::RegionEdge`** is the region's boundary unit: a straight span, or a
-   circular arc carrying its centre, radius, start bearing and signed sweep. A loop is a list of
+   circular arc carrying its center, radius, start bearing and signed sweep. A loop is a list of
    edges, not a list of vertices. Distance to an arc is analytic; containment splits the arc at
    its own turning points into `axis1`-monotone pieces, each obeying the identical half-open
    crossing rule a segment does, so a vertex shared between a curve and a line counts exactly

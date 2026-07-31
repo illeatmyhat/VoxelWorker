@@ -18,7 +18,7 @@ const EDGES: [u32; 2] = [16, 64];
 /// The "occupied" byte the expand injects — an arbitrary distinctive nonzero.
 const SET_BYTE: u8 = 0xFF;
 
-/// A cube whose every row carries a short centred X-run (roughly the middle
+/// A cube whose every row carries a short centered X-run (roughly the middle
 /// third) — the sparse-ish brick a boundary rasterization tends to produce.
 fn cube_with_short_runs(edge: u32) -> BitCube {
     let mut cube = BitCube::empty(edge);

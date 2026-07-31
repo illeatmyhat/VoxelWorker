@@ -35,7 +35,7 @@ solve writes.
 Prior art splits on the second wall. SolveSpace is topological and ships a manual *Split Curves at
 Intersection* whose whole job is to create the shared endpoint. Fusion computes the arrangement:
 two overlapping circles are three profiles, with no constraints and no snapping ritual. Both model
-a circle as centre + size with no on-curve vertex.
+a circle as center + size with no on-curve vertex.
 
 ## Decision
 
@@ -81,7 +81,7 @@ same way it reaches a segment. Two limits follow from a constraint having no pos
   would change where a label sits and nothing about what is asserted. `SelectionTarget` answers
   this once, as a predicate, rather than each tool matching the variants itself.
 - **A marquee sweeps it, on the point rule.** The badge is a small square mark: window takes it
-  when its centre is inside the box, crossing when the box touches it. A constraint has no place
+  when its center is inside the box, crossing when the box touches it. A constraint has no place
   of its own, but its badge does, and that badge is the whole of how it is on screen — so a box
   drawn around it names it as plainly as a box drawn around a vertex names that.
 
@@ -244,16 +244,16 @@ that asserts nothing is worse than a cell that is not there.
 ### 6. Project, Intersect and Spun Profile are cut
 
 They define sketch geometry by another node's geometry, with a live dependency. That is exactly
-ADR 0017's **no operand targeting, ever**. Honouring it as a live reference makes the fold a DAG
+ADR 0017's **no operand targeting, ever**. Honoring it as a live reference makes the fold a DAG
 rather than an ordered DFS, leaks sealed scopes, and requires cycle detection — larger than the rest
 of this epic combined.
 
 A one-shot copy was rejected as worse than nothing: it *looks* associative, so the first time the
 source moves and the copy does not, it reads as a bug rather than a documented limit.
 
-### 7. A closed curve is its own loop, anchored by a centre
+### 7. A closed curve is its own loop, anchored by a center
 
-A circle stores a **centre point id and a radius**, with **no on-curve vertex** — as SolveSpace and
+A circle stores a **center point id and a radius**, with **no on-curve vertex** — as SolveSpace and
 Fusion both do. `faces::derive` grows a second path: closed curves are loops immediately and skip
 the half-edge walk. Ellipse and closed splines reuse it.
 
@@ -282,11 +282,11 @@ changes when anything moves, and the three faces of two overlapping circles shar
 A point in the middle of a face does not care how the boundary was cut.
 
 It pays for itself three times with machinery that exists: `point_in_region` is the containment
-test, and clicking a region and labelling it both need an interior point anyway.
+test, and clicking a region and labeling it both need an interior point anyway.
 
 Failure modes, accepted: a face that shrinks past its own sample point resets to picked (the
-behaviour ADR 0030 §3 already documents for restructuring); a sample point that ends up in a
-neighbouring face migrates the unpick there. `unpicked` stops being a `BTreeSet` — `f32` is not
+behavior ADR 0030 §3 already documents for restructuring); a sample point that ends up in a
+neighboring face migrates the unpick there. `unpicked` stops being a `BTreeSet` — `f32` is not
 `Ord` — and becomes a `Vec`.
 
 ### 10. Mirror and the patterns are associative and carry no freedom
@@ -401,13 +401,13 @@ the scene rather than the edit history.
 
 **`Quantize { pitch, phase }`** — this degree of freedom is a whole multiple of a pitch. On a
 position coordinate it reads as *on the lattice*; on a distance, as *a whole number of blocks
-thick*. `phase` carries parity: 0 is a voxel boundary, ½ a voxel centre, which is the difference
+thick*. `phase` carries parity: 0 is a voxel boundary, ½ a voxel center, which is the difference
 between an even-width and an odd-width mirror-symmetric shape and a whole class of off-by-one.
 
 A quantization constraint earns its place **only where the value is an output of the solve**. If
 the author knows the number, they type it. That test collapses the obvious longer list: a quantized
 *dimension* is this constraint on a distance, a lattice *radius* is this constraint on a radius plus
-this constraint on the centre, and parity symmetry is `phase`. A rational-slope constraint fails the
+this constraint on the center, and parity symmetry is `phase`. A rational-slope constraint fails the
 test outright — asserting 2:1 deliberately is an angle dimension, and it survives only as an
 inference (Decision 5) and a representation (Decision 12).
 
@@ -541,7 +541,7 @@ group free to rotate about anything the constraints do not pin, and a drawing th
 constraint has moved far more than one that slides.
 
 **Weight 1, and no number to tune.** Where a rigid motion satisfies the constraint, both blocks reach
-zero at once and there is nothing to trade. Where they genuinely conflict — levelling one edge of a
+zero at once and there is nothing to trade. Where they genuinely conflict — leveling one edge of a
 closed quad cannot leave the other three spans alone — the same two-stage shape as Decision 11
 settles it: stage one solves with rigidity preferred, stage two re-solves the constraints ALONE from
 that answer and is what the verdict and the freedom count are read from. Rigidity can therefore only
@@ -581,7 +581,7 @@ Decision 11's two stages stand unchanged.
 ## Consequences
 
 - **Text is deferred to its own epic.** It is a font subsystem — face loading, glyph outline
-  extraction, hinting — and wildly out of proportion to its neighbours on the list.
+  extraction, hinting — and wildly out of proportion to its neighbors on the list.
 - Two substrate subsystems are new: the continuous solver, and curve–curve intersection. The second
   is shared by the arrangement and by four modifiers, so it is built once.
 - 16 of the 25 creation tools emit only points, segments and arcs — Line, Midpoint Line, the three
@@ -590,7 +590,7 @@ Decision 11's two stages stand unchanged.
   slot ADR 0034 already sized for Bézier.
 - `Arc`'s `|sweep| < 360°` validity check relaxes for the closed case.
 - Face identity, the face walk, and `unpicked`'s container all change together; unpick-survives-edit
-  is shipped behaviour and needs its own tests before the arrangement lands.
+  is shipped behavior and needs its own tests before the arrangement lands.
 - The parameters panel is the least entangled item in the epic — it touches `crates/parametric` and
   the panel and nothing else — so it lands last and blocks nothing.
 - **The solve's living shape is `docs/architecture/01-document.md` § Constraints**, and the dated

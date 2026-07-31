@@ -45,19 +45,19 @@ fn apply_incremental_edit(
     let index_b = scene_b.build_leaf_spatial_index(density);
     let edit_aabb = index_b
         .edit_aabb_since(&index_a)
-        .expect("same-density localisable edit");
+        .expect("same-density localizable edit");
     let evicted = resolve_cache.invalidate_aabb(&edit_aabb, density);
 
-    // A recentre shift rebases EVERY chunk's contents, so the incremental path is
+    // A recenter shift rebases EVERY chunk's contents, so the incremental path is
     // invalid — main::rebuild_geometry falls back to a full rebuild. Model that.
-    let recentre_changed = scene_a.recentre_voxels_for_resolve(density)
-        != scene_b.recentre_voxels_for_resolve(density);
+    let recenter_changed = scene_a.recenter_voxels_for_resolve(density)
+        != scene_b.recenter_voxels_for_resolve(density);
 
     // 2. Freshly-resolved covering chunks for scene B (resolves the dirty/new
     //    chunks, reuses HITs).
     let render_chunks = resolve_cache.resident_render_chunks(scene_b, density, 0);
 
-    if recentre_changed {
+    if recenter_changed {
         // Full rebuild: clear + restore every non-empty covering chunk.
         render_cache.clear();
         for (coord, grid) in &render_chunks {
@@ -100,24 +100,24 @@ fn tool_node(kind: ShapeKind, size: [u32; 3], offset: [i64; 3], material: Materi
     node
 }
 
-/// **The key S6c-2c correctness test.** For a sequence of localised edits, the
+/// **The key S6c-2c correctness test.** For a sequence of localized edits, the
 /// render cache built INCREMENTALLY (rebuild only dirty/new chunks, evict
 /// vacated) is IDENTICAL — coord set AND every chunk's instance multiset — to a
 /// full wholesale rebuild of the post-edit scene. Proves no stale chunk survives
 /// and no fresh chunk is missed. Also asserts the dirty-chunk count is STRICTLY
-/// LESS than the total resident count for a localised edit (so it is genuinely
+/// LESS than the total resident count for a localized edit (so it is genuinely
 /// incremental, not a disguised full rebuild).
 #[test]
 fn incremental_rebuild_equals_full_rebuild_for_every_edit_kind() {
     let density = 16u32;
 
     // The base scene: three tools spread far apart in X so each occupies chunks
-    // the others don't touch (clean localised edits). Start the render + resolve
+    // the others don't touch (clean localized edits). Start the render + resolve
     // caches as a wholesale build of scene A.
     // Two STATIC anchor nodes at the X extremes pin the composite extent (hence
-    // the recentre / floating origin) so the interior edits below keep it FIXED —
+    // the recenter / floating origin) so the interior edits below keep it FIXED —
     // that is the regime where the incremental dirty-only path is valid (a
-    // recentre shift rebases every chunk and forces a full rebuild instead; see
+    // recenter shift rebases every chunk and forces a full rebuild instead; see
     // `apply_incremental_edit`). The interior "subject" box sits between them.
     let anchor_lo = || {
         tool_node(
@@ -142,7 +142,7 @@ fn incremental_rebuild_equals_full_rebuild_for_every_edit_kind() {
     ]);
 
     // Each case mutates scene_a → scene_b by ONE edit kind, all keeping the
-    // composite extent (recentre) fixed via the anchors, so all are genuinely
+    // composite extent (recenter) fixed via the anchors, so all are genuinely
     // incremental. Each is checked independently from a fresh wholesale build of A.
     let recolor = {
         let mut b = scene_a.clone();
@@ -164,7 +164,7 @@ fn incremental_rebuild_equals_full_rebuild_for_every_edit_kind() {
     };
     let move_node = {
         let mut b = scene_a.clone();
-        // Move the interior Box from +60X to +70X (still interior → recentre
+        // Move the interior Box from +60X to +70X (still interior → recenter
         // fixed; dirty around BOTH endpoints).
         b.root_node_mut(1).transform =
             document::scene::NodeTransform::from_blocks([70, 0, 0], density);
@@ -184,20 +184,20 @@ fn incremental_rebuild_equals_full_rebuild_for_every_edit_kind() {
     let remove_node = {
         let mut b = scene_a.clone();
         // REMOVE the interior Box (its chunks must be evicted/vacated; the
-        // anchors keep the extent so the recentre is unchanged).
+        // anchors keep the extent so the recenter is unchanged).
         let interior_id = b.roots[1];
         b.remove_node(interior_id);
         ("remove", b)
     };
 
     for (label, scene_b) in [recolor, resize, move_node, add_node, remove_node] {
-        // Precondition: every edit keeps the recentre fixed (so the incremental
-        // path applies — a recentre shift would force a full rebuild and the
+        // Precondition: every edit keeps the recenter fixed (so the incremental
+        // path applies — a recenter shift would force a full rebuild and the
         // dirty-count assertion below would not hold).
         assert_eq!(
-            scene_a.recentre_voxels_for_resolve(density),
-            scene_b.recentre_voxels_for_resolve(density),
-            "[{label}] this edit must keep the composite recentre fixed"
+            scene_a.recenter_voxels_for_resolve(density),
+            scene_b.recenter_voxels_for_resolve(density),
+            "[{label}] this edit must keep the composite recenter fixed"
         );
 
         // Incremental: wholesale-build A, then apply the single edit to B.
@@ -229,15 +229,15 @@ fn incremental_rebuild_equals_full_rebuild_for_every_edit_kind() {
                  chunk or a missed fresh chunk would differ here"
         );
 
-        // Dirty-count-is-less: a localised edit rebuilds strictly fewer chunks
+        // Dirty-count-is-less: a localized edit rebuilds strictly fewer chunks
         // than the scene's total resident chunks (proving it is incremental, not
         // a disguised full rebuild). `total_before` and `full.len()` are both the
-        // scene's full per-chunk count (A and B differ by one localised node), so
+        // scene's full per-chunk count (A and B differ by one localized node), so
         // a genuine incremental edit touches a strict subset.
         let scene_chunks = total_before.max(full.len());
         assert!(
             rebuilt < scene_chunks,
-            "[{label}] a localised edit must rebuild strictly FEWER chunks \
+            "[{label}] a localized edit must rebuild strictly FEWER chunks \
                  ({rebuilt}) than the scene's total ({scene_chunks}) — else it is a \
                  disguised full rebuild"
         );
@@ -246,7 +246,7 @@ fn incremental_rebuild_equals_full_rebuild_for_every_edit_kind() {
 
 /// A focused dirty-count assertion: an in-place recolor of ONE SMALL far-flung
 /// node dirties only the handful of chunks that node occupies, NOT the whole
-/// scene — so a localised edit rebuilds far fewer than half the resident chunks.
+/// scene — so a localized edit rebuilds far fewer than half the resident chunks.
 #[test]
 fn localized_recolor_rebuilds_few_chunks() {
     let density = 16u32;
@@ -290,7 +290,7 @@ fn localized_recolor_rebuilds_few_chunks() {
     );
     assert!(
         rebuilt * 2 < total,
-        "a localised recolor of a small node must rebuild far fewer than half the \
+        "a localized recolor of a small node must rebuild far fewer than half the \
              chunks: rebuilt {rebuilt} of {total}"
     );
     // And the result still matches a full rebuild.

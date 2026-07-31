@@ -38,7 +38,7 @@ vector for the preference pass.
 
 **Weight 1 needs no tuning once there are two passes.** Where a rigid motion satisfies the
 constraint, both residual blocks reach zero simultaneously and the weight is irrelevant.
-Where they genuinely conflict — levelling one edge of a closed quad cannot leave the other
+Where they genuinely conflict — leveling one edge of a closed quad cannot leave the other
 three spans alone — the exactness pass re-solves the constraints alone, so rigidity can only
 ever rank answers that satisfy them equally well. Verified: `Horizontal` on a quad edge still
 levels to within 1e-9.

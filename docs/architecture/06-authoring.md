@@ -81,7 +81,7 @@ nothing and reuses nothing is the cheap answer rather than the wasteful one.
   is the coarse default where it reads better; voxel granularity is the fine step.
 - **Emit exactly one intent per gesture.** A drag is one undoable act. Undoing a move one
   voxel at a time would be a worse tool than no undo at all.
-- **Carry the frame.** Manipulators work in the recentred render frame and the document takes
+- **Carry the frame.** Manipulators work in the recentered render frame and the document takes
   blocks and voxels; the reference point travels with the value rather than being re-derived
   at the far end.
 - **Never offer what the document cannot say.** No operand picking, and no transform on a
@@ -115,7 +115,7 @@ them.
 
 **While a command is running the menu is replaced entirely by accept and cancel.** A menu
 offering unrelated verbs mid-command is offering to start a second one. What accepting and
-cancelling *mean* is the running command's business — for a navigation command both simply
+canceling *mean* is the running command's business — for a navigation command both simply
 end it, because the navigation already happened and there is nothing to discard. There is
 deliberately no per-command "leave" row: that would be a second exit for one command and no
 exit for any other.
@@ -264,9 +264,9 @@ as part of one instrument rather than as a separate window.
 The single accent is the same hue the ghost pass uses, so chrome and geometry-preview share
 one identity. That is also the constraint the language is most likely to be asked to break:
 a second hue is the obvious way to express a second state, and the answer is usually a
-different *texture* — dashed against solid, filled against hollow — rather than a new colour.
+different *texture* — dashed against solid, filled against hollow — rather than a new color.
 Semantic exceptions are few and each is earned: a destructive verb, a subtractive operation,
-the three axis colours, and one deliberately neutral place-marker tone for a mark that spans
+the three axis colors, and one deliberately neutral place-marker tone for a mark that spans
 the whole frame and stands for a location rather than a value.
 
 ### What each channel is spent on

@@ -46,7 +46,7 @@ rationale/citation voice established by substrate/camera/raycast — this docume
 substrate · camera · raycast          CS/math + graphics math (done)
       ▲
 voxel_core        core_geom (material vocabulary + the CellKey codec), Voxel/VoxelGrid value types,
-                  RecentreVoxels, spatial_index (domain LeafSpatialIndex), units/Measurement, SDF math
+                  RecenterVoxels, spatial_index (domain LeafSpatialIndex), units/Measurement, SDF math
       ▲
 document          scene graph · producers · sketch · the VoxelProducer trait + SdfShape · debug_clouds ·
                   intents · command.   Law: truth imports no evaluation/display/wgpu.

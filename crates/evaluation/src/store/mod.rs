@@ -16,7 +16,7 @@
 //!   beyond the old 6M ceiling resolves fine as long as every individual chunk is small.
 //!   See [`voxel_core::voxel::MAX_CHUNK_VOXELS`].
 //! * **Identical render output.** The dense whole-region `Store::resolve_region` oracle
-//!   rebuilds the SAME recentred monolithic grid the mesher/exporter consume — but
+//!   rebuilds the SAME recentered monolithic grid the mesher/exporter consume — but
 //!   assembled from cached chunks. It is compile-gated behind the `oracle` feature.
 //!
 //! **Smart invalidation** (#27 S3) sits on this seam: [`Store::invalidate_aabb`] evicts
@@ -24,7 +24,7 @@
 //! 0002 Decision 3). The edit AABB is computed by
 //! [`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since)
 //! (diffing the scene's leaf spatial index before vs after the edit); [`Store::clear`]
-//! remains the fallback for edits that can't be localised (a density change or a
+//! remains the fallback for edits that can't be localized (a density change or a
 //! region-spanning VoxelBody edit).
 //!
 //! ## Modules

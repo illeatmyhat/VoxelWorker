@@ -48,7 +48,7 @@ pub struct PickFrame<'a> {
     /// The region's voxel dimensions, whose floored half corner-anchors the render frame.
     pub region_dimensions: [u32; 3],
     /// The floating origin the render frame is expressed against (ADR 0008).
-    pub recentre_voxels: [i64; 3],
+    pub recenter_voxels: [i64; 3],
     /// Voxels per block.
     pub density: u32,
     /// The resident two-layer chunks — CPU truth, borrowed from the last rebuild.
@@ -65,7 +65,7 @@ impl AppCore {
     /// than re-resolved, because the shell already holds them and re-resolving to answer a hover
     /// would be absurd.
     ///
-    /// **The band is honoured.** A pick clipped out of the visible band must miss: picking
+    /// **The band is honored.** A pick clipped out of the visible band must miss: picking
     /// something you cannot see is a worse failure than picking nothing, and the onion viewer
     /// modes make invisible-but-present geometry an ordinary state rather than an edge case.
     pub fn pick_voxel(
@@ -76,7 +76,7 @@ impl AppCore {
     ) -> Option<VoxelPick> {
         let PickFrame {
             region_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             density,
             chunks,
             band,
@@ -88,13 +88,13 @@ impl AppCore {
         let chunk_extent = (CHUNK_BLOCKS * density) as i64;
 
         // The march runs in the SHADING-ABSOLUTE frame the display path uses: the render frame
-        // corner-anchored by the floored half. `absolute = shading_absolute + (recentre − half)`.
+        // corner-anchored by the floored half. `absolute = shading_absolute + (recenter − half)`.
         // The brick path additionally splits that bias into a lattice shift so block boundaries
         // land on brick-edge multiples; a pick has no bricks to align to, so it uses the whole
         // bias directly and no shift.
         let half = region_dimensions.map(|dimension| (dimension / 2) as i64);
         let shading_to_absolute: [i64; 3] =
-            std::array::from_fn(|axis| recentre_voxels[axis] - half[axis]);
+            std::array::from_fn(|axis| recenter_voxels[axis] - half[axis]);
 
         let aspect_ratio = viewport[2] / viewport[3];
         let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
@@ -148,11 +148,11 @@ impl AppCore {
         // The band is REGION-LOCAL Z layers (`queries.rs` clamps `band_min`/`band_max` to
         // `[0, scene_grid_z]`), and the march voxel frame is ALSO region-local — `march_voxel =
         // absolute − shading_to_absolute`, and `shading_to_absolute` IS the region's absolute base
-        // (`recentre − half`), so the two frames coincide. The band therefore needs NO conversion:
+        // (`recenter − half`), so the two frames coincide. The band therefore needs NO conversion:
         // `band_low = band_min`, half-open `[band_min, band_max + 1)`. (The brick raymarch, the
         // working reference, likewise takes `band_min` directly, only adding its block-align
         // `lattice_shift`, which a pick does not have.) An earlier `− shading_to_absolute[2] +
-        // half[2]` here added a spurious `half[2]` floor — for a centred scene it clipped every
+        // half[2]` here added a spurious `half[2]` floor — for a centered scene it clipped every
         // voxel below the region mid-plane, making the LOWER HALF of any object unpickable.
         let clamp_to_i32 =
             |value: i64| value.clamp(i32::MIN as i64 + 1, i32::MAX as i64 - 1) as i32;
@@ -217,7 +217,7 @@ mod tests {
     struct Fixture {
         app_core: AppCore,
         region_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recenter_voxels: [i64; 3],
         chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     }
 
@@ -226,7 +226,7 @@ mod tests {
         fn frame(&self, band: LayerBand) -> PickFrame<'_> {
             PickFrame {
                 region_dimensions: self.region_dimensions,
-                recentre_voxels: self.recentre_voxels,
+                recenter_voxels: self.recenter_voxels,
                 density: DENSITY,
                 chunks: &self.chunks,
                 band,
@@ -252,12 +252,12 @@ mod tests {
             panic!("the fixture's density is in bounds");
         };
         let region_dimensions = output.region_dimensions;
-        let recentre_voxels = output.recentre_voxels.voxels();
+        let recenter_voxels = output.recenter_voxels.voxels();
         let chunks = output.two_layer_chunks.clone();
         Fixture {
             app_core,
             region_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             chunks,
         }
     }
@@ -266,7 +266,7 @@ mod tests {
     /// genuinely SOLID voxel — checked against the same chunks, independently of the march.
     ///
     /// This is the assertion worth making because the failure mode it guards is silent: the
-    /// march frame carries a bias (`absolute = shading_absolute + recentre − half`), and getting
+    /// march frame carries a bias (`absolute = shading_absolute + recenter − half`), and getting
     /// that bias wrong by one voxel still returns a plausible-looking hit near the object. Only
     /// asking "is the thing you named actually solid" catches it, and it catches it on every ray
     /// rather than at a hand-computed coordinate.
@@ -291,7 +291,7 @@ mod tests {
                 .collect();
 
             // Sweep a grid of cursor positions so the assertion covers rays entering through
-            // every face, not just the one the centre ray happens to hit.
+            // every face, not just the one the center ray happens to hit.
             let mut hits = 0;
             for row in 1..8 {
                 for column in 1..8 {
@@ -366,7 +366,7 @@ mod tests {
             band_max: 0,
             onion_depth: 0,
         };
-        // Layer 0 alone: the sphere's equator is nowhere near it, so a centre pick must miss
+        // Layer 0 alone: the sphere's equator is nowhere near it, so a center pick must miss
         // even though the same ray hits under a full band.
         let full =
             fixture
@@ -383,14 +383,14 @@ mod tests {
         );
     }
 
-    /// **The LOWER half of a centred object is pickable under a FULL band (2026-07-21
+    /// **The LOWER half of a centered object is pickable under a FULL band (2026-07-21
     /// regression).** The band→march conversion once added a spurious `half_z` floor
     /// (`band_min − shading_to_absolute + half`), clipping every voxel below the region
     /// mid-plane — so a pick could never name a voxel in an object's lower half even under a
     /// FULL (mask-nothing) band. The owner hit this trying to place a tube on the bottom half of
     /// a tall cylinder. This sweeps a tall box and asserts a hit lands BELOW the region mid.
     #[test]
-    fn the_lower_half_of_a_centred_object_is_pickable() {
+    fn the_lower_half_of_a_centered_object_is_pickable() {
         // A tall box viewed SIDE-ON (horizontal orthographic), so its whole near face — top to
         // bottom — is on screen and reachable; the default iso view looks down and cannot see a
         // tall object's lower half at all, which would mask the bug rather than expose it.
@@ -407,7 +407,7 @@ mod tests {
         );
         let camera = OrbitCamera {
             orbit_center: glam::Vec3::ZERO,
-            target: glam::Vec3::new(8.0, 8.0, 32.0), // the box centre (it fills [0,16)²×[0,64))
+            target: glam::Vec3::new(8.0, 8.0, 32.0), // the box center (it fills [0,16)²×[0,64))
             orbit_theta: 0.4,
             orbit_phi: std::f32::consts::FRAC_PI_2, // horizontal — the tall face side-on
             orbit_distance: 160.0,
@@ -419,17 +419,17 @@ mod tests {
         let RebuildOutcome::Built(output) = app_core.rebuild(&scene, DENSITY) else {
             panic!("the fixture's density is in bounds");
         };
-        let recentre_voxels = output.recentre_voxels.voxels();
+        let recenter_voxels = output.recenter_voxels.voxels();
         let chunks = output.two_layer_chunks.clone();
         let frame = PickFrame {
             region_dimensions: output.region_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             density: DENSITY,
             chunks: &chunks,
             band: LayerBand::FULL,
         };
 
-        let mid_layer = recentre_voxels[2]; // region mid-plane in absolute Z
+        let mid_layer = recenter_voxels[2]; // region mid-plane in absolute Z
         let mut lowest_hit_z = i64::MAX;
         for row in 0..40 {
             let cursor = [VIEWPORT[2] * 0.5, VIEWPORT[3] * (row as f32 + 0.5) / 40.0];
@@ -445,7 +445,7 @@ mod tests {
     }
 
     /// **A pick at a WIDE BASELINE hits the far object (2026-07-24 melt guard).** With two
-    /// objects near the ±1M-block authoring cap the composite recentre is ~10^7 voxels, so the
+    /// objects near the ±1M-block authoring cap the composite recenter is ~10^7 voxels, so the
     /// render frame puts the eye ~10^7 out. The old pick unprojected through the FULL scene
     /// view-projection; inverting a matrix carrying that eye translation melts the `/w` divide (the
     /// same disease a06d215 fixed for rendering), yielding a garbage ray direction that misses the
@@ -468,7 +468,7 @@ mod tests {
         let box_shape = || SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, VPB);
 
         // Near box at the origin; far box ~10,000 blocks out on +X. The composite spans both, so
-        // the recentre — and thus the render-frame eye — is ~10^5 voxels (the wide baseline).
+        // the recenter — and thus the render-frame eye — is ~10^5 voxels (the wide baseline).
         let near = Node::new(
             "Near",
             NodeContent::Tool {
@@ -492,22 +492,22 @@ mod tests {
         let far_hi_x = (FAR_BLOCKS + 4) * VPB as i64; // 160_064
         let box_half = 2 * VPB as i64; // 4-block box, half = 2 blocks
 
-        // Aim the camera at the FAR box's render-frame centre so it fills the screen. Render frame
-        // = absolute − recentre; the far box centre is absolute [far_lo_x + box_half, box_half,
-        // box_half]. Derive it from the actual recentre after a rebuild rather than hand-fixing it.
+        // Aim the camera at the FAR box's render-frame center so it fills the screen. Render frame
+        // = absolute − recenter; the far box center is absolute [far_lo_x + box_half, box_half,
+        // box_half]. Derive it from the actual recenter after a rebuild rather than hand-fixing it.
         let mut app_core = AppCore::new(OrbitCamera::default());
         let RebuildOutcome::Built(probe) = app_core.rebuild(&scene, VPB) else {
             panic!("the fixture's density is in bounds");
         };
-        let recentre = probe.recentre_voxels.voxels();
-        let far_centre_render = glam::Vec3::new(
-            (far_lo_x + box_half - recentre[0]) as f32,
-            (box_half - recentre[1]) as f32,
-            (box_half - recentre[2]) as f32,
+        let recenter = probe.recenter_voxels.voxels();
+        let far_center_render = glam::Vec3::new(
+            (far_lo_x + box_half - recenter[0]) as f32,
+            (box_half - recenter[1]) as f32,
+            (box_half - recenter[2]) as f32,
         );
         let camera = OrbitCamera {
             orbit_center: glam::Vec3::ZERO,
-            target: far_centre_render,
+            target: far_center_render,
             orbit_theta: 0.6,
             orbit_phi: 1.0,
             orbit_distance: 160.0, // frames the 64-voxel box
@@ -520,7 +520,7 @@ mod tests {
             panic!("the fixture's density is in bounds");
         };
         let region_dimensions = output.region_dimensions;
-        let recentre_voxels = output.recentre_voxels.voxels();
+        let recenter_voxels = output.recenter_voxels.voxels();
         let chunks = output.two_layer_chunks.clone();
         let chunk_extent = (CHUNK_BLOCKS * VPB) as i64;
         let resident: HashMap<[i32; 3], &TwoLayerChunk> = chunks
@@ -529,7 +529,7 @@ mod tests {
             .collect();
         let frame = PickFrame {
             region_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             density: VPB,
             chunks: &chunks,
             band: LayerBand::FULL,
@@ -624,15 +624,15 @@ mod tests {
         let RebuildOutcome::Built(probe) = app_core.rebuild(&scene, VPB) else {
             panic!("the fixture's density is in bounds");
         };
-        let recentre = probe.recentre_voxels.voxels();
-        let pair_centre = glam::Vec3::new(
-            ((GAP_BLOCKS * VPB as i64 + span) / 2 - recentre[0]) as f32,
-            (span / 2 - recentre[1]) as f32,
-            (span / 2 - recentre[2]) as f32,
+        let recenter = probe.recenter_voxels.voxels();
+        let pair_center = glam::Vec3::new(
+            ((GAP_BLOCKS * VPB as i64 + span) / 2 - recenter[0]) as f32,
+            (span / 2 - recenter[1]) as f32,
+            (span / 2 - recenter[2]) as f32,
         );
         app_core = AppCore::new(OrbitCamera {
             orbit_center: glam::Vec3::ZERO,
-            target: pair_centre,
+            target: pair_center,
             orbit_theta: 0.6,
             orbit_phi: 1.0,
             orbit_distance: 160.0,
@@ -646,7 +646,7 @@ mod tests {
         let chunks = output.two_layer_chunks.clone();
         let frame = PickFrame {
             region_dimensions: output.region_dimensions,
-            recentre_voxels: output.recentre_voxels.voxels(),
+            recenter_voxels: output.recenter_voxels.voxels(),
             density: VPB,
             chunks: &chunks,
             band: LayerBand::FULL,

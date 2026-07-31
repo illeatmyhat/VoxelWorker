@@ -1,11 +1,11 @@
 //! Disk-backed chunk store with bounded-RAM LRU eviction (issue #20 S6b).
 //!
-//! S6a ([`crate::chunk_storage`]) gave us a compact, serde-serialisable on-disk
+//! S6a ([`crate::chunk_storage`]) gave us a compact, serde-serializable on-disk
 //! form for one resolved chunk grid ([`CompressedChunk`]). This module is the
 //! **store** that uses it to bound RAM: it keeps at most a configured number of
 //! chunks resident in memory and, when a [`put`](DiskChunkStore::put) would push
 //! the resident set over that capacity, it **evicts the least-recently-used**
-//! resident chunks by serialising them to disk and dropping them from RAM. A
+//! resident chunks by serializing them to disk and dropping them from RAM. A
 //! later [`get`](DiskChunkStore::get) for an evicted key transparently reloads it
 //! from disk back into RAM (and counts as a use, refreshing its LRU position).
 //!
@@ -32,7 +32,7 @@
 //! feel. Capacity `0` is rejected (a store that can hold nothing is a bug, not a
 //! configuration).
 //!
-//! ## Serialisation format: `serde_json` (an existing dependency)
+//! ## Serialization format: `serde_json` (an existing dependency)
 //!
 //! Chunks are written as `serde_json` (already a dependency; `CompressedChunk` is
 //! already serde-round-trip tested through JSON in S6a). No new dependency is
@@ -60,7 +60,7 @@ use std::path::{Path, PathBuf};
 use crate::chunk_cache::ChunkCacheKey;
 use crate::chunk_storage::CompressedChunk;
 
-/// Observable counters for the store's eviction / reload behaviour, so tests (and
+/// Observable counters for the store's eviction / reload behavior, so tests (and
 /// future diagnostics) can prove the LRU/disk machinery does exactly what it
 /// claims — nothing more (no needless reloads), nothing less (the invariant holds).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -93,10 +93,10 @@ struct ResidentChunk {
 /// disk.
 ///
 /// See the module docs for the capacity model (resident chunk count), the
-/// serialisation format (`serde_json`) and the Windows handling.
+/// serialization format (`serde_json`) and the Windows handling.
 #[derive(Debug)]
 pub struct DiskChunkStore {
-    /// Where evicted chunks are serialised. Created on construction.
+    /// Where evicted chunks are serialized. Created on construction.
     directory: PathBuf,
     /// Maximum number of chunks that may be resident in RAM at once (≥ 1).
     capacity: usize,
@@ -240,7 +240,7 @@ impl DiskChunkStore {
     /// already cheap-to-clone compact structures.
     ///
     /// # Errors
-    /// Returns an I/O error if a reload read, its deserialise, or an eviction write
+    /// Returns an I/O error if a reload read, its deserialize, or an eviction write
     /// triggered by the reload fails.
     pub fn get(&mut self, key: ChunkCacheKey) -> std::io::Result<Option<CompressedChunk>> {
         let tick = self.next_tick();
@@ -293,7 +293,7 @@ impl DiskChunkStore {
         else {
             return Ok(());
         };
-        // Remove from RAM, serialise to disk, record it as on-disk.
+        // Remove from RAM, serialize to disk, record it as on-disk.
         let victim = self
             .resident
             .remove(&victim_key)
@@ -344,7 +344,7 @@ fn encode_key_filename(key: ChunkCacheKey) -> String {
     )
 }
 
-/// Serialise a [`CompressedChunk`] to `path` as `serde_json`. The file handle is
+/// Serialize a [`CompressedChunk`] to `path` as `serde_json`. The file handle is
 /// opened and closed entirely within `std::fs::write`, so no handle is held across
 /// store calls (Windows-safe re-delete/rewrite).
 fn write_chunk_file(path: &Path, chunk: &CompressedChunk) -> std::io::Result<()> {
@@ -352,7 +352,7 @@ fn write_chunk_file(path: &Path, chunk: &CompressedChunk) -> std::io::Result<()>
     std::fs::write(path, json)
 }
 
-/// Read + deserialise a [`CompressedChunk`] from `path` (inverse of
+/// Read + deserialize a [`CompressedChunk`] from `path` (inverse of
 /// [`write_chunk_file`]). Handle closed within `std::fs::read`.
 fn read_chunk_file(path: &Path) -> std::io::Result<CompressedChunk> {
     let bytes = std::fs::read(path)?;

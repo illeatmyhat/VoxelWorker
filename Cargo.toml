@@ -71,7 +71,7 @@ parametric = { path = "crates/parametric" }
 # domain types; see docs/architecture/data-structures.md ("Substrate").
 substrate = { path = "crates/substrate" }
 # The foundational value-vocabulary library (one layer above substrate): the resolved
-# voxel cell + sparse grid, the recentre frame, the SDF value functions, the block
+# voxel cell + sparse grid, the recenter frame, the SDF value functions, the block
 # palette id / cell-key codec, the absolute-voxel box + leaf index, and the units core.
 # Depends only on glam + serde + substrate. See docs/architecture/01-document.md.
 voxel_core = { path = "crates/voxel_core" }
@@ -100,7 +100,7 @@ assets = { path = "crates/assets" }
 # workers) are work-layer and stay in this app crate for now. See docs/architecture/03-display.md.
 display = { path = "crates/display" }
 # The INTERCHANGE library (one layer above evaluation, parallel to display): the HEADLESS export
-# sink. It serialises the evaluated boundary set to external formats — today the MagicaVoxel `.vox`
+# sink. It serializes the evaluated boundary set to external formats — today the MagicaVoxel `.vox`
 # writer — and NEVER links wgpu/egui/winit (export is CPU-owned truth; a headless build exports the
 # same bytes). That no-wgpu law is what earns it its own crate over a `display` module. It imports
 # no display/work/shell. See docs/architecture/README.md (laws 4 + 6, the Derivations layer).
@@ -172,12 +172,12 @@ document = { path = "crates/document", features = ["oracle", "test-support"] }
 # across the boundary. Dev-deps are absent from production `cargo build`.
 evaluation = { path = "crates/evaluation", features = ["oracle", "test-support"] }
 
-# Optimise DEBUG/TEST codegen. `debug_assertions` stay ON, so the gate keeps every
+# Optimize DEBUG/TEST codegen. `debug_assertions` stay ON, so the gate keeps every
 # invariant check and its semantics are unchanged — this only changes how the code is
 # compiled, not what it asserts.
 #
 # Why: the gate is dominated by O(volume) oracle-parity tests that materialise dense voxel
-# sets and diff them against the streaming path. Unoptimised, those are pathological —
+# sets and diff them against the streaming path. Unoptimized, those are pathological —
 # `streamed_vox_export_dissolves_6m_cap_on_large_solid` walks 800³ = 5.1e8 voxels and took
 # 277 s of a ~420 s workspace run on its own. Measured 2026-07-18:
 #

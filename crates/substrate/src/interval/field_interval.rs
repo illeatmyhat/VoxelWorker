@@ -18,7 +18,7 @@
 //!
 //! Given a bound, [`FieldInterval::classify`] answers the three-way membership query
 //! of a whole region against a threshold `isolevel`: wholly outside, wholly inside, or
-//! straddling the surface (the classic **black / white / grey** cell trichotomy). The
+//! straddling the surface (the classic **black / white / gray** cell trichotomy). The
 //! bound is **conservative** — it may be WIDER than the true field range but never
 //! narrower — so a coarse "wholly inside / wholly outside" verdict can never disagree
 //! with a per-sample evaluation; only the always-safe "straddling" verdict can be
@@ -27,8 +27,8 @@
 //!
 //! [`FieldInterval::from_lipschitz_center`] builds the bound for a **1-Lipschitz**
 //! field (a true signed-distance field, whose value changes by at most the travelled
-//! distance): from the centre sample and the region's circumradius `r`, the field over
-//! the region lies within `[centre − r, centre + r]`. Those two endpoints are the only
+//! distance): from the center sample and the region's circumradius `r`, the field over
+//! the region lies within `[center − r, center + r]`. Those two endpoints are the only
 //! place `f32` rounding could narrow an interval, so both are rounded **outward** — the
 //! standard directed-rounding discipline of interval arithmetic. Every other operation
 //! here (`min`/`max`/negation/compare) is exact in IEEE-754, so containment is rigorous
@@ -38,8 +38,8 @@
 //! (2009) — interval arithmetic and the containment (inclusion) property. Duff 1992,
 //! *Interval arithmetic and recursive subdivision for implicit functions and
 //! constructive solid geometry* (SIGGRAPH) — exactly this classify-a-cell-under-CSG
-//! use, the source of the black/white/grey subdivision. Hart 1996, *Sphere tracing* —
-//! the Lipschitz bound that makes a distance field's centre-plus-radius interval sound.
+//! use, the source of the black/white/gray subdivision. Hart 1996, *Sphere tracing* —
+//! the Lipschitz bound that makes a distance field's center-plus-radius interval sound.
 //! Deviation: bounds are `f32` rather than a wider type, and the classify threshold is a
 //! plain parameter rather than a fixed constant.
 
@@ -60,10 +60,10 @@ impl FieldInterval {
         Self { minimum, maximum }
     }
 
-    /// The interval of a 1-Lipschitz signed field over a region whose centre sample is
+    /// The interval of a 1-Lipschitz signed field over a region whose center sample is
     /// `field_at_center` and whose circumradius (half the space-diagonal) is
     /// `cell_circumradius`: `[field_at_center − r, field_at_center + r]`. A 1-Lipschitz
-    /// field changes by at most `r` between the centre and any point within radius `r`,
+    /// field changes by at most `r` between the center and any point within radius `r`,
     /// so this brackets every in-region sample. If a given field is only *approximately*
     /// 1-Lipschitz the caller must WIDEN `cell_circumradius`, never narrow it.
     ///
@@ -141,7 +141,7 @@ impl FieldInterval {
 }
 
 /// The three-way verdict a [`FieldInterval`] yields against a threshold: the classic
-/// black / white / grey (empty / full / partial) cell classification of the octree-CSG
+/// black / white / gray (empty / full / partial) cell classification of the octree-CSG
 /// literature (Duff 1992; Samet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldClassification {
@@ -152,7 +152,7 @@ pub enum FieldClassification {
     /// — the "black" node; no per-sample data needed.
     CoarseSolid,
     /// The interval straddles the isolevel (or the field could not be bounded): the
-    /// region must be resolved per-sample. The "grey" node — always the SAFE verdict.
+    /// region must be resolved per-sample. The "gray" node — always the SAFE verdict.
     Boundary,
 }
 

@@ -9,7 +9,7 @@
 //!
 //! * **incremental** — `rebuild` returned `Some(dirty)`, so the shell calls
 //!   [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]: re-mesh + re-upload
-//!   only `dirty ∪ 26-neighbourhood(dirty) ∩ resident`, keep every other chunk's buffers.
+//!   only `dirty ∪ 26-neighborhood(dirty) ∩ resident`, keep every other chunk's buffers.
 //! * **wholesale** — `rebuild` returned `None`, so the shell calls
 //!   [`CuboidMeshRenderer::new_from_two_layer_chunks`]: re-mesh + re-upload every resident
 //!   chunk, and rebuild the renderer whole.
@@ -42,7 +42,7 @@
 //!
 //! The probe runs the incremental FIRST and the wholesale SECOND within each sample, because
 //! the incremental has to mutate the persistent renderer for the next sample to be a real
-//! incremental. Any warm-cache advantage from that ordering therefore favours the wholesale
+//! incremental. Any warm-cache advantage from that ordering therefore favors the wholesale
 //! column, i.e. it cannot manufacture the divergence the probe is looking for.
 //!
 //! Run: `cargo test --release --test remesh_cost_probe -- --ignored --nocapture --test-threads=1`
@@ -160,17 +160,17 @@ fn move_dragged_node(
 ///
 /// **The incremental column is not monotonic, and that is the more interesting half.** It peaks
 /// on the MEDIUM backdrop and then falls as the scene grows. Nothing is anomalous about it: the
-/// incremental re-meshes the dirty set dilated by its 26-neighbourhood, so its cost is the cost
+/// incremental re-meshes the dirty set dilated by its 26-neighborhood, so its cost is the cost
 /// of ~27 chunks of geometry, and how expensive a chunk is depends on how much surface runs
-/// through it. The medium cylinder is small enough that the dragged node's neighbourhood is a
+/// through it. The medium cylinder is small enough that the dragged node's neighborhood is a
 /// large slice of a dense body; the large and huge backdrops are thin-walled Tubes whose
 /// interior — where the node is parked — is mostly empty, so the same 27 chunks carry far fewer
 /// faces. This is the same lesson the locality probe reached from the other side: at this layer
-/// cost tracks the neighbourhood's OCCUPANCY, not the scene's extent.
+/// cost tracks the neighborhood's OCCUPANCY, not the scene's extent.
 ///
-/// The probe deliberately keeps the dragged node INSIDE the backdrop so every rebuild localises
+/// The probe deliberately keeps the dragged node INSIDE the backdrop so every rebuild localizes
 /// and the incremental arm is legitimate; it then calls the wholesale builder anyway, on that
-/// same localised state, to price the counterfactual. That is the only way to hold everything
+/// same localized state, to price the counterfactual. That is the only way to hold everything
 /// but the strategy constant — a real origin-shifting drag would change the frame too, and the
 /// comparison would no longer be clean.
 #[test]
@@ -203,11 +203,11 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
         let mut app_core = AppCore::new(OrbitCamera::default());
         let dragged = add_dragged_node(&mut scene, &mut app_core);
 
-        // Park the dragged node near the backdrop's centre, so the whole gesture happens inside
+        // Park the dragged node near the backdrop's center, so the whole gesture happens inside
         // existing geometry: the extent never grows, the origin never shifts, and every rebuild
         // below hands back a real `Some(dirty)`.
-        let centre = blocks.map(|b| (b as i64 / 2) * DENSITY as i64);
-        move_dragged_node(&mut scene, &mut app_core, dragged, centre);
+        let center = blocks.map(|b| (b as i64 / 2) * DENSITY as i64);
+        move_dragged_node(&mut scene, &mut app_core, dragged, center);
 
         // The cold build: one wholesale mesh, which also seeds the persistent renderer the
         // incremental arm will keep mutating. Untimed — it is the first-build cost, already
@@ -219,7 +219,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
                 COLOR_TARGET_FORMAT,
                 &output.two_layer_chunks,
                 output.region_dimensions,
-                output.recentre_voxels,
+                output.recenter_voxels,
                 DENSITY,
             ),
             RebuildOutcome::DensityRejected { .. } => panic!("the probe's density is in bounds"),
@@ -236,7 +236,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
                 &mut scene,
                 &mut app_core,
                 dragged,
-                [centre[0] + step, centre[1], centre[2]],
+                [center[0] + step, center[1], center[2]],
             );
             let RebuildOutcome::Built(output) = app_core.rebuild(&scene, DENSITY) else {
                 panic!("the probe's density is in bounds");
@@ -244,7 +244,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
             let dirty = output
                 .incremental_dirty_chunks
                 .as_ref()
-                .expect("an in-extent drag step must localise, or the contrast is meaningless");
+                .expect("an in-extent drag step must localize, or the contrast is meaningless");
             resident_chunks = output.two_layer_chunks.len();
             dirty_chunks = dirty.len();
 
@@ -255,7 +255,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
                 &gpu.device,
                 &output.two_layer_chunks,
                 output.region_dimensions,
-                output.recentre_voxels,
+                output.recenter_voxels,
                 DENSITY,
                 dirty,
             );
@@ -271,7 +271,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
                 COLOR_TARGET_FORMAT,
                 &output.two_layer_chunks,
                 output.region_dimensions,
-                output.recentre_voxels,
+                output.recenter_voxels,
                 DENSITY,
             );
             wholesale_samples.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -285,7 +285,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
                 COLOR_TARGET_FORMAT,
                 &[],
                 output.region_dimensions,
-                output.recentre_voxels,
+                output.recenter_voxels,
                 DENSITY,
             );
             setup_samples.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -306,7 +306,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
     println!(
         "\n'chunks' = the resident covering set the wholesale arm re-meshes in full.\n\
          'dirty'  = the chunks the edit evicted; the incremental arm re-meshes those dilated by\n\
-         their 26-neighbourhood and intersected with the resident set, so its real footprint is\n\
+         their 26-neighborhood and intersected with the resident set, so its real footprint is\n\
          larger than this column and smaller than 'chunks'.\n\
          'incr'   = re-mesh + re-upload the dirty-dilated subset, keeping every other buffer.\n\
          'whole'  = re-mesh + re-upload the whole resident set, reconstructing the renderer.\n\
@@ -319,7 +319,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
          does not guess at the ratio. Neither column waits on the GPU: a timing ends when the\n\
          CPU has handed the work over. Neither is a frame time.\n\
          \n\
-         All drag steps here stay INSIDE the backdrop, so every rebuild genuinely localised;\n\
+         All drag steps here stay INSIDE the backdrop, so every rebuild genuinely localized;\n\
          the wholesale column is the priced counterfactual for the same step, not a separate\n\
          gesture. That is what makes the gap attributable to the strategy alone.\n"
     );

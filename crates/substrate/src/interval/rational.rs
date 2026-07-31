@@ -16,7 +16,7 @@
 //! operations can overflow — intended for small exact ratios (measurement expressions),
 //! not arbitrary-precision arithmetic.
 
-/// An exact, always-reduced rational number backed by `i128`. The sign is normalised
+/// An exact, always-reduced rational number backed by `i128`. The sign is normalized
 /// onto the numerator (denominator always `>= 1`) and the pair is gcd-reduced, so equal
 /// rationals compare equal bit-for-bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub struct Rational {
 }
 
 impl Rational {
-    /// A reduced rational from a raw numerator/denominator. The sign is normalised onto the
+    /// A reduced rational from a raw numerator/denominator. The sign is normalized onto the
     /// numerator so the denominator is always positive, and both are divided through by their
     /// greatest common divisor.
     ///

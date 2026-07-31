@@ -129,7 +129,7 @@ retained expression, so a profile does not warp under a density re-target.
 - **Geometric arrangement — auto-split at every crossing (rejected, §2).** Reintroduces the
   continuous intersection-robustness problems snapping-as-solver was chosen to avoid.
 - **Per-region persistent ids tracked incrementally across edits (rejected, §3).** The full
-  topological-naming machinery; the derived origin-set key gets the same behaviour with no id
+  topological-naming machinery; the derived origin-set key gets the same behavior with no id
   lifecycle.
 
 ## Consequences

@@ -92,7 +92,7 @@ impl PerlinNoise {
 
     /// Fractional Brownian motion: summed octaves of [`noise`](Self::noise) at
     /// frequency scaled by `lacunarity` and amplitude by `gain` each octave,
-    /// normalised back to roughly `[-1, 1]`.
+    /// normalized back to roughly `[-1, 1]`.
     pub fn fractal_noise(&self, point: Vec3, octaves: u32, lacunarity: f32, gain: f32) -> f32 {
         let mut frequency = 1.0;
         let mut amplitude = 1.0;
@@ -176,12 +176,12 @@ mod tests {
     }
 
     #[test]
-    fn fractal_noise_normalised_and_seed_sensitive() {
+    fn fractal_noise_normalized_and_seed_sensitive() {
         let a = PerlinNoise::new(1);
         let b = PerlinNoise::new(2);
         let p = Vec3::new(0.3, 0.7, 1.1);
         assert!(a.fractal_noise(p, 4, 2.0, 0.5).abs() <= 1.5);
-        // Zero octaves normalises to zero (no divide-by-zero).
+        // Zero octaves normalizes to zero (no divide-by-zero).
         assert_eq!(a.fractal_noise(p, 0, 2.0, 0.5), 0.0);
         // Different seeds give different fields.
         assert_ne!(

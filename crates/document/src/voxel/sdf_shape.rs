@@ -253,7 +253,7 @@ impl SdfShape {
         }
     }
 
-    /// Normalise the retained measurements to `None` when every axis is exactly the
+    /// Normalize the retained measurements to `None` when every axis is exactly the
     /// pure-voxel measurement of its derived voxels â€” i.e. there is NO parametric
     /// block content beyond the voxel count. Keeps a pure-voxel size in the same
     /// canonical form as a freshly-loaded shape (`None`) so applyâ†’undo is
@@ -382,12 +382,12 @@ impl VoxelProducer for SdfShape {
                 for k in win_z_lo..win_z_hi {
                     for i in win_x_lo..win_x_hi {
                         // The shape geometry is still inscribed symmetric about the
-                        // grid's centre, so SAMPLE the SDF at the centred coordinate
+                        // grid's center, so SAMPLE the SDF at the centered coordinate
                         // (`idx + 0.5 âˆ’ grid/2`). But STORE the voxel CORNER-ANCHORED
                         // (`idx + 0.5`): the local occupied span is `[0, grid)` and the
-                        // centre is a HALF-INTEGER for any grid size, so it always sits
+                        // center is a HALF-INTEGER for any grid size, so it always sits
                         // inside its voxel cell `[idx, idx+1)` â€” on the global voxel
-                        // lattice at any parity. (Was centred at `idx + 0.5 âˆ’ grid/2`,
+                        // lattice at any parity. (Was centered at `idx + 0.5 âˆ’ grid/2`,
                         // which lands on integers for an odd grid and straddles cells.)
                         let sample = Vec3::new(
                             i as f32 + 0.5 - half_x,
@@ -417,9 +417,9 @@ impl VoxelProducer for SdfShape {
     }
 
     /// Conservative 1-Lipschitz field interval over a cell (ADR 0010 Decision 2). The
-    /// resolve samples the SDF at the CENTRED coordinate `idx + 0.5 âˆ’ full_dim/2`, so
-    /// this maps the cell box (local voxel-index frame, ADR 0008) into that SAME centred
-    /// frame, evaluates the field at the cell's geometric centre, and brackets the
+    /// resolve samples the SDF at the CENTERED coordinate `idx + 0.5 âˆ’ full_dim/2`, so
+    /// this maps the cell box (local voxel-index frame, ADR 0008) into that SAME centered
+    /// frame, evaluates the field at the cell's geometric center, and brackets the
     /// variation over the cell by the (widened) circumradius.
     ///
     /// `signed_distance_box` and the torus SDF are exactly 1-Lipschitz, but the IQ
@@ -445,8 +445,8 @@ impl VoxelProducer for SdfShape {
         let wall_voxels = (self.wall_blocks * voxels_per_block) as f32;
         let half = semi_axes;
 
-        // The cell's geometric centre in the producer's CENTRED sampling frame: a cell
-        // sample at integer index `idx` sits at `idx + 0.5 âˆ’ half`, so the centre of the
+        // The cell's geometric center in the producer's CENTERED sampling frame: a cell
+        // sample at integer index `idx` sits at `idx + 0.5 âˆ’ half`, so the center of the
         // half-open cell box `[min, max)` is `(min + max) / 2 âˆ’ half`.
         let center = Vec3::new(
             (cell_local_voxels.min[0] + cell_local_voxels.max[0]) as f32 / 2.0 - half.x,
@@ -455,8 +455,8 @@ impl VoxelProducer for SdfShape {
         );
 
         // Circumradius = half the cell's space-diagonal. The brute-force seam SAMPLES
-        // each voxel at its own centre `idx + 0.5 âˆ’ half`, so the farthest sample from
-        // the cell centre is half the diagonal across the SPAN OF SAMPLE CENTRES â€” which
+        // each voxel at its own center `idx + 0.5 âˆ’ half`, so the farthest sample from
+        // the cell center is half the diagonal across the SPAN OF SAMPLE CENTERS â€” which
         // is `(extent âˆ’ 1)` voxels per axis. Using the full extent (`extent`) is strictly
         // wider, so we keep it: a wider radius is always conservative.
         let extent = Vec3::new(
@@ -522,7 +522,7 @@ impl VoxelProducer for SdfShape {
     /// A box its 12 edges on the `[0, full]` corners; a cylinder its 2 rim ellipses
     /// (axis along Z); a tube those plus the 2 inner rim ellipses — unless the wall
     /// consumes the whole cross-section, leaving no hole and no inner rims. A sphere
-    /// and a torus are smooth everywhere and catalogue none.
+    /// and a torus are smooth everywhere and catalog none.
     fn edge_polylines_local(
         &self,
         voxels_per_block: u32,
@@ -580,7 +580,7 @@ impl VoxelProducer for SdfShape {
 
 impl Field for SdfShape {
     /// Signed distance in the producer's `[0, full_dim)` voxel frame. The shape is inscribed
-    /// symmetric about the grid centre, so the sample is re-centred to `point âˆ’ grid/2` â€”
+    /// symmetric about the grid center, so the sample is re-centered to `point âˆ’ grid/2` â€”
     /// the same frame [`resolve_into`](VoxelProducer::resolve_into) samples in.
     ///
     /// `Box` is measured in **Chebyshev** and every other kind in **Euclidean**, matching
@@ -626,7 +626,7 @@ impl Field for SdfShape {
 /// ADR 0003 Â§3f(0): voxel-granular Size with parametric Measurement retention,
 /// mirroring the Offset tests in `scene.rs`. These pin the canonical
 /// `size_voxels`, the retained-expression round-trip, the density re-target, serde
-/// back-compat, and (the high-risk area) the occupied-voxel set / centring at
+/// back-compat, and (the high-risk area) the occupied-voxel set / centering at
 /// ODD / EVEN / MIXED-parity voxel-granular sizes.
 #[cfg(test)]
 mod sdf_size_units_tests {
@@ -753,7 +753,7 @@ mod sdf_size_units_tests {
         assert_eq!(pure.size_voxels, [1, 1, 1]);
     }
 
-    /// A pure-voxel size (no parametric block term) normalises its retained field to
+    /// A pure-voxel size (no parametric block term) normalizes its retained field to
     /// `None`, so it is in the same canonical form as a freshly-loaded shape and
     /// serde gains no redundant husk.
     #[test]
@@ -794,7 +794,7 @@ mod sdf_size_units_tests {
     /// An OLD `SdfShape` JSON predating `size_measurements` (and even predating
     /// `size_voxels`, carrying the legacy `size_blocks`... NO â€” the legacy field is
     /// gone; the realistic old-document shape carries `size_voxels` but NO
-    /// `size_measurements`) deserialises (serde default â†’ `None`) and the accessor
+    /// `size_measurements`) deserializes (serde default â†’ `None`) and the accessor
     /// synthesises a pure-voxel measurement from `size_voxels`.
     #[test]
     fn serde_back_compat_synthesises_measurements_from_voxels() {
@@ -825,8 +825,8 @@ mod sdf_size_units_tests {
             1,
             16,
         );
-        let json = serde_json::to_string(&shape).expect("serialises");
-        let restored: SdfShape = serde_json::from_str(&json).expect("deserialises");
+        let json = serde_json::to_string(&shape).expect("serializes");
+        let restored: SdfShape = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(restored, shape);
         assert_eq!(restored.size_measurements(), shape.size_measurements());
     }
@@ -899,7 +899,7 @@ mod field_tests {
     ];
 
     /// The load-bearing contract: a voxel is occupied exactly when the field is at or below
-    /// the isolevel at its centre. Checked over every voxel of every kind, so a field that
+    /// the isolevel at its center. Checked over every voxel of every kind, so a field that
     /// drifted from its own producer would fail here rather than downstream in a classifier.
     #[test]
     fn sdf_field_sign_agrees_with_the_resolve() {
@@ -920,13 +920,13 @@ mod field_tests {
             for x in 0..dimensions[0] {
                 for y in 0..dimensions[1] {
                     for z in 0..dimensions[2] {
-                        let centre = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
-                        let distance = field.signed_distance(centre, DENSITY);
+                        let center = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
+                        let distance = field.signed_distance(center, DENSITY);
                         let field_says_solid = distance <= SURFACE_ISOLEVEL;
                         let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                         assert_eq!(
                             field_says_solid, resolve_says_solid,
-                            "{kind:?} at {centre:?}: field {distance} says \
+                            "{kind:?} at {center:?}: field {distance} says \
                              solid={field_says_solid}, resolve says {resolve_says_solid}"
                         );
                         inside += u32::from(field_says_solid);
@@ -975,10 +975,10 @@ mod field_tests {
             (face - 3.0).abs() < 1e-4,
             "face distance {face}, expected 3"
         );
-        let centre = field.signed_distance([8.0, 8.0, 8.0], 8);
+        let center = field.signed_distance([8.0, 8.0, 8.0], 8);
         assert!(
-            (centre + 8.0).abs() < 1e-4,
-            "centre distance {centre}, expected -8"
+            (center + 8.0).abs() < 1e-4,
+            "center distance {center}, expected -8"
         );
     }
 

@@ -267,7 +267,7 @@ impl ClipmapPyramid {
 }
 
 /// Split a level's sorted u64 cell keys into the `(hi, lo)` u32 pairs the WGSL
-/// binary search consumes (no u64 in WGSL) — the pyramid analogue of
+/// binary search consumes (no u64 in WGSL) — the pyramid analog of
 /// `pack_gpu_records`' key split.
 pub fn pack_clipmap_level_keys(level: &ClipmapLevel) -> Vec<[u32; 2]> {
     level

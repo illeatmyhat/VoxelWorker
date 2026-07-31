@@ -182,7 +182,7 @@ fn subtract_degrades_coarse_blocks_to_boundary_or_air() {
         [3 * block, 3 * block, 3 * block],
     );
     // The block at blocks [4,5) per axis — inside the cutter but ADJACENT to its
-    // +face, where the Lipschitz-centre bound cannot prove the whole block is
+    // +face, where the Lipschitz-center bound cannot prove the whole block is
     // deeply inside the cutter: the conservative verdict degrades to BOUNDARY
     // (never coarse-solid), and the per-voxel resolve finds it empty — exact,
     // just unelided.

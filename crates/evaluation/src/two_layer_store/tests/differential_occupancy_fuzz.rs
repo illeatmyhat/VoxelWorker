@@ -37,7 +37,7 @@
 //!    whole-voxel seat is classified IN PHASE (`substrate::spatial::is_in_phase`), so
 //!    `Scene::resolve_region` emits it through `stamp_producer` — a pure translation of the
 //!    producer's own unrotated grid — and stamps the UNTURNED footprint, while `leaf_affine`
-//!    here honours the turn. Measured: a 4x2x2-block box quarter-turned about Z reports a
+//!    here honors the turn. Measured: a 4x2x2-block box quarter-turned about Z reports a
 //!    placed extent of 16x32x16 voxels and a dense-oracle span of 32x16x16.
 //!
 //! Everything here compares occupancy at the **CPU data level** (sets of occupied absolute
@@ -315,8 +315,8 @@ fn two_layer_matches_dense_for_integer_placements() {
         let block = density as i64;
 
         // A single tool at an OFF-BLOCK integer offset (−33 / −31 are not multiples of 8 or
-        // 16). The recentre folds a single leaf onto the origin, so this mainly pins that the
-        // covering-range / recentre stay exact for a non-block-aligned single leaf.
+        // 16). The recenter folds a single leaf onto the origin, so this mainly pins that the
+        // covering-range / recenter stay exact for a non-block-aligned single leaf.
         let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [3, 3, 3], 1, density);
         let mut node = Node::new(
             "Cyl",

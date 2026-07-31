@@ -15,13 +15,13 @@ jobs:
   # that they all skip was simply false. What matters is WHICH BACKEND answers: with no
   # Vulkan ICD installed, wgpu silently falls back to the GL backend, whose D2Array
   # sampling returns black and failed `gpu_parity` for weeks. `mesa-vulkan-drivers`
-  # (lavapipe) is therefore a TEST-CORRECTNESS dependency, not an optimisation: it puts
+  # (lavapipe) is therefore a TEST-CORRECTNESS dependency, not an optimization: it puts
   # CI on Vulkan, the same backend the app actually ships on. The `shot` binary needs a
   # GPU at run time, so we build it but never execute it. `shot` is the dense-oracle
   # golden tool and now its OWN workspace package (`crates/shot`), which enables the
   # `document/oracle` + `evaluation/oracle` features itself — so `--workspace` builds
   # it with no flags to pass and no way to silently skip it.
-  # EVERY gate below carries `if: '!cancelled()'` so it runs even when an earlier one
+  # EVERY gate below carries `if: '!canceled()'` so it runs even when an earlier one
   # failed. Without it the job is one sequential chain and the FIRST red step skips all
   # the rest: on 2026-07-27 the doc gate had been failing since 2026-07-23, which meant
   # the test suite and all fourteen per-crate gates had not run for 30+ commits while
@@ -52,15 +52,15 @@ jobs:
       # runner and a developer's machine can never disagree about what "formatted"
       # means. `.githooks/pre-commit` runs the identical command locally.
       - name: Format (cargo fmt --check)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo fmt --all --check
 
       - name: Build all binaries
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo build --workspace --bins
 
       - name: Clippy (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy --all-targets -- -D warnings
 
       # Documentation gate: broken and redundant intra-doc links fail the build so
@@ -72,13 +72,13 @@ jobs:
       # `#![allow(rustdoc::private_intra_doc_links)]`; everything else `-D warnings`
       # catches. `--no-deps` keeps the check to this workspace's own crates.
       - name: Doc (deny broken/redundant intra-doc links, private items included)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo doc --workspace --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: "-D warnings"
 
       - name: Test (GPU-free; `gpu` feature off)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test
 
       # The substrate library is a separate workspace member with no features
@@ -90,28 +90,28 @@ jobs:
       # resolvers at all — without it that code is never checked by anything. Its tests
       # need a GPU and so do not run here; the build + lint do not.
       - name: Clippy shot (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p shot --all-targets -- -D warnings
 
       - name: Clippy substrate (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p substrate --all-targets -- -D warnings
 
       - name: Test substrate
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p substrate
 
       # The voxel_core library is the foundational value-vocabulary member (one layer
-      # above substrate): the resolved voxel cell + sparse grid, the recentre frame, the
+      # above substrate): the resolved voxel cell + sparse grid, the recenter frame, the
       # SDF value functions, the block-palette id / cell-key codec, the absolute-voxel box
       # + leaf index, and the units core. It depends only on glam + serde + substrate and
       # carries its own gates so a regression in the value layer fails independently.
       - name: Clippy voxel_core (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p voxel_core --all-targets -- -D warnings
 
       - name: Test voxel_core
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p voxel_core
 
       # The document library is the authored-TRUTH member (one layer above voxel_core):
@@ -120,11 +120,11 @@ jobs:
       # imports no evaluation/display/wgpu and carries its own gates so a regression in
       # the truth layer fails independently of the app crate.
       - name: Clippy document (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p document --all-targets -- -D warnings
 
       - name: Test document
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p document
 
       # The evaluation library is the ONE EVALUATOR member (one layer above document): the
@@ -134,11 +134,11 @@ jobs:
       # set, imports no display/work/shell, and carries its own gates so a regression in the
       # evaluator fails independently of the app crate.
       - name: Clippy evaluation (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p evaluation --all-targets -- -D warnings
 
       - name: Test evaluation
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p evaluation
 
       # The assets library is a PURE-CPU LEAF below the domain layers: it scans a game install /
@@ -147,11 +147,11 @@ jobs:
       # wgpu/egui and names no domain crate; it carries its own gates so a content-loader
       # regression fails independently of the crates above it.
       - name: Clippy assets (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p assets --all-targets -- -D warnings
 
       - name: Test assets
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p assets
 
       # The display library is the ONE CRATE THAT LINKS wgpu (one layer above evaluation):
@@ -164,26 +164,26 @@ jobs:
       # need no GPU device; the GPU-device integration suites stay in the app under
       # `cargo test --features gpu`.)
       - name: Clippy display (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p display --all-targets -- -D warnings
 
       - name: Test display
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p display
 
       # The interchange library is the HEADLESS export sink (one layer above evaluation,
-      # parallel to display): it serialises the evaluated boundary set to external formats —
+      # parallel to display): it serializes the evaluated boundary set to external formats —
       # today the MagicaVoxel `.vox` writer — and NEVER links wgpu/egui/winit (export is
       # CPU-owned truth; a headless build exports the same bytes). It imports no display/work/
       # shell and carries its own gates so a regression in the exporter fails independently of
       # the app crate. Its `.vox` parity tests hold the streamed/region export against the dense
       # `Scene::resolve_region` oracle (document's `oracle` feature, TEST-only via its dev-dep).
       - name: Clippy interchange (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p interchange --all-targets -- -D warnings
 
       - name: Test interchange
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p interchange
 
       # The work library is the ASYNC WORKER POOL + engagement state machine (one layer above
@@ -195,11 +195,11 @@ jobs:
       # so they run GPU-less here; the orchestrator's device-dependent blocks are covered by the
       # workspace `--features gpu` clippy pass below and the app's `--features gpu` integration tests.
       - name: Clippy work (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p work --all-targets -- -D warnings
 
       - name: Test work
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p work
 
       # The camera library is the wgpu-free viewing + projective-geometry member
@@ -207,11 +207,11 @@ jobs:
       # it depends only on glam + substrate and carries its own gates so a regression
       # in the graphics math fails independently of the app crate.
       - name: Clippy camera (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p camera --all-targets -- -D warnings
 
       - name: Test camera
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p camera
 
       # The raycast library is the wgpu-free ray–volume traversal member (Amanatides–Woo
@@ -220,11 +220,11 @@ jobs:
       # a regression in the traversal math fails independently of the app crate. The WGSL
       # raymarch shader is its GPU mirror; the app's gpu_parity suite pins the two.
       - name: Clippy raycast (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p raycast --all-targets -- -D warnings
 
       - name: Test raycast
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p raycast
 
       # The ui library is the egui CONTROL SURFACE (the panel slice of the Shell layer):
@@ -236,11 +236,11 @@ jobs:
       # shell's PaletteHost). It carries its own gates so a regression in the control surface
       # fails independently of the app crate.
       - name: Clippy ui (deny warnings)
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo clippy -p ui --all-targets -- -D warnings
 
       - name: Test ui
-        if: '!cancelled()'
+        if: '!canceled()'
         run: cargo test -p ui
 
   windows-build:

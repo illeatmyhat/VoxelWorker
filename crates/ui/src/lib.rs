@@ -28,7 +28,7 @@
 // cross-reference is deliberate and stays a navigable link under `--document-private-items`.
 // The CI doc gate denies broken and redundant links but permits these.
 #![allow(rustdoc::private_intra_doc_links)]
-// Colours live in `theme::color_palette`; a raw `Color32::from_*` elsewhere is an error (clippy.toml).
+// Colors live in `theme::color_palette`; a raw `Color32::from_*` elsewhere is an error (clippy.toml).
 #![deny(clippy::disallowed_methods)]
 
 pub mod chrome;

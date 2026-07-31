@@ -7,7 +7,7 @@ use voxel_core::voxel::{ShapeKind, Voxel, VoxelGrid};
 /// The binary on-disk byte size of a whole [`CompressedChunk`] (header + palette +
 /// occupancy), used by the ratio report.
 fn compressed_binary_size(compressed: &CompressedChunk) -> usize {
-    // Header: dimensions 3×u32, min_corner 3×i64, centre_fraction 3×f32, box_spans
+    // Header: dimensions 3×u32, min_corner 3×i64, center_fraction 3×f32, box_spans
     // 3×u32 = 12 + 24 + 12 + 12 = 60 bytes; palette: 2 bytes/entry.
     60 + compressed.material_palette.len() * 2 + occupancy_binary_size(&compressed.occupancy)
 }
@@ -357,9 +357,9 @@ fn palette_has_no_duplicates_and_covers_every_material() {
     // back through it.
     let dimensions = [6u32, 6, 1];
     let mut grid = VoxelGrid::new(dimensions);
-    // Voxel centres sit at integer-plus-half (a resolved-grid invariant), so use
-    // `n + 0.5` directly — NOT `n + 0.5 - half`, which would land a centre on an
-    // integer (e.g. 0.0) that is not a valid voxel centre.
+    // Voxel centers sit at integer-plus-half (a resolved-grid invariant), so use
+    // `n + 0.5` directly — NOT `n + 0.5 - half`, which would land a center on an
+    // integer (e.g. 0.0) that is not a valid voxel center.
     let materials = [100u16, 200, 100, 300, 200, 100];
     for y in 0..6 {
         for x in 0..6 {
@@ -394,7 +394,7 @@ fn palette_has_no_duplicates_and_covers_every_material() {
 #[test]
 fn serde_round_trip_through_json_equals_original_grid() {
     // serialize → deserialize → decompress equals the original grid, proving the
-    // CompressedChunk is serde-serialisable for the later disk store.
+    // CompressedChunk is serde-serializable for the later disk store.
     let grid = shape_grid(ShapeKind::Sphere, [4, 4, 4], 8);
     assert!(
         !grid.occupied.is_empty(),
@@ -402,9 +402,9 @@ fn serde_round_trip_through_json_equals_original_grid() {
     );
     let compressed = compress(&grid);
 
-    let json = serde_json::to_string(&compressed).expect("CompressedChunk serialises");
+    let json = serde_json::to_string(&compressed).expect("CompressedChunk serializes");
     let restored: CompressedChunk =
-        serde_json::from_str(&json).expect("CompressedChunk deserialises");
+        serde_json::from_str(&json).expect("CompressedChunk deserializes");
     assert_eq!(
         restored, compressed,
         "serde must round-trip the CompressedChunk exactly"
@@ -465,7 +465,7 @@ fn report_compression_ratios_on_real_chunks() {
     report("box 4³@16 (whole grid, solid)", &solid_box);
 
     // Real PER-CHUNK resolved pieces of a sphere: a solid SDF sphere is a filled
-    // ellipsoid, so its chunks are dense-favourable (the dense bit-packed encoding
+    // ellipsoid, so its chunks are dense-favorable (the dense bit-packed encoding
     // wins) — the honest figure for the common SDF-solid case. Report the
     // aggregate ratio and the single best chunk.
     let per_chunk_report = |label: &str, kind: ShapeKind, size: [u32; 3]| -> f64 {

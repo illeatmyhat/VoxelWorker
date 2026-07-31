@@ -880,7 +880,7 @@ impl AppCore {
                 // leaf folds its own body, a Group its sealed composed body
                 // (Decision 3, issue #74), and an Instance the referenced
                 // definition's finished body: a definition instanced with Subtract
-                // is the reusable cutter (issue #76). The resolver honoured the
+                // is the reusable cutter (issue #76). The resolver honored the
                 // Instance operation since #74; this is its edit surface.
                 node_write(scene, target, full_effect, |node| {
                     node.operation = operation;

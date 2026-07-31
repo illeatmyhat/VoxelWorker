@@ -12,7 +12,7 @@
 //!
 //! * **air block** → no record (the ray skips it via the clip-map).
 //! * **coarse-solid block** → one [`BrickPayload::CoarseSolid`] record (no atlas slot),
-//!   UNLESS fully occluded (all six face-neighbours present + solid), in which case it
+//!   UNLESS fully occluded (all six face-neighbors present + solid), in which case it
 //!   emits nothing — a ray can never reach it first.
 //! * **boundary block** → one [`BrickPayload::Sculpted`] record whose atlas slot holds the
 //!   block's voxel occupancy, rasterized from its cuboids; a MIXED block also owns a
@@ -55,7 +55,7 @@ use crate::renderer::{LayerBand, RegionClip, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use evaluation::cuboid::VoxelBoxMaterial;
 use evaluation::two_layer_store::{SeamSolidity, TwoLayerChunk};
 use voxel_core::core_geom::{BlockId, CellKey, MaterialChoice, CHUNK_BLOCKS};
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 
 // The brick-record key codec IS substrate's `lattice_key`: an absolute world-block
 // coordinate packed into one sortable `u64` in z-major lexicographic (z, y, x) order,

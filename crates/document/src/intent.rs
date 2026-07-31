@@ -210,7 +210,7 @@ pub enum Intent {
         shape: SdfShape,
     },
     /// Set the [`SketchSolid`] producer of the sketch node `target` (a no-op for a
-    /// non-sketch node). The sketch-authoring analogue of [`SetShape`](Self::SetShape)
+    /// non-sketch node). The sketch-authoring analog of [`SetShape`](Self::SetShape)
     /// — a separate field-edit intent (not a reuse of `SetShape`) because a sketch
     /// node carries a producer, not an [`SdfShape`].
     SetSketch {

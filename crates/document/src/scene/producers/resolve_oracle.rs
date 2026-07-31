@@ -27,7 +27,7 @@ impl Scene {
     /// meshing) is a possible change rather than a signature break. Step 1
     /// asserts it is `0`.
     ///
-    /// **Identical-behaviour guarantee:** for a one-node scene whose `region`
+    /// **Identical-behavior guarantee:** for a one-node scene whose `region`
     /// equals the node's full extent with a zero offset, the stamp is the
     /// identity, so the result equals what the bare producer emits today.
     ///
@@ -47,9 +47,9 @@ impl Scene {
         debug_assert_eq!(lod, 0, "step 1 only resolves full resolution (lod 0)");
 
         // The region grid is sized in the PRODUCER VOXEL FRAME (corner-anchoring):
-        // the recentred composite occupies exactly `[region_low, region_low + D)` with
+        // the recentered composite occupies exactly `[region_low, region_low + D)` with
         // `D = max_v − min_v` (`placed_extent_voxels`) and `region_low = min_v −
-        // recentre`, so a block-framed region (`size·d`) would clip a parity-mismatched
+        // recenter`, so a block-framed region (`size·d`) would clip a parity-mismatched
         // multi-leaf composite. For a chunkable scene we IGNORE the passed-in block
         // `region` for sizing and use the voxel span; the explicit `region` argument
         // still sizes a VoxelBody-only scene (which has no composite voxel extent).
@@ -63,24 +63,24 @@ impl Scene {
         };
         let mut output = VoxelGrid::new(region_dimensions);
 
-        // Recentre the composite so its world positions sit symmetrically about
+        // Recenter the composite so its world positions sit symmetrically about
         // the origin (what the renderer + camera auto-frame assume). Each producer
         // CORNER-ANCHORS its grid (local span `[0, grid)`); a leaf's low corner in the
-        // composite's voxel space is `offset_voxels`, and the whole composite's centre
+        // composite's voxel space is `offset_voxels`, and the whole composite's center
         // is `(min + max).div_euclid(2)` (producer-true voxel frame). Subtracting that
-        // centre from every node's translation lands the composite centred in `output`.
+        // center from every node's translation lands the composite centered in `output`.
         // A VoxelBody-only scene (e.g. `DebugClouds`) has no composite extent, so this is
         // `[0,0,0]` and the field stays CORNER-anchored at `[0, region)` — the shipped
         // convention (see `part_only_cloud_at_odd_density_drops_no_voxels` /
-        // `mixed_tool_and_cloud_resolve_in_one_frame`). ADR 0008: the recentre is CARRIED on
+        // `mixed_tool_and_cloud_resolve_in_one_frame`). ADR 0008: the recenter is CARRIED on
         // the grid (below), so every consumer decodes correctly without re-deriving the
         // frame as `floor(dim/2)` (the assumption that dropped the corner-anchored cloud fog).
-        let recentre_voxels = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
-        output.recentre_voxels = recentre_voxels;
+        let recenter_voxels = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
+        output.recenter_voxels = recenter_voxels;
 
         // Walk the whole tree (groups + instances recurse, composing world
         // translation down — ADR 0001 step 4). Each visited leaf is stamped under
-        // its WORLD voxel offset minus the composite recentre. The offset is
+        // its WORLD voxel offset minus the composite recenter. The offset is
         // already voxels at the document density (ADR 0003 §3f(0)), so it enters
         // the sum as-is. All of this is in i64 (S4a) so a far-placed node composes
         // without overflow; the result is downcast to f32 inside the stamp (the
@@ -118,16 +118,16 @@ impl Scene {
             };
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // Every producer corner-anchors its grid at its world voxel offset (the low
-            // corner); the recentre (from the producer-true voxel frame) symmetrises the
+            // corner); the recenter (from the producer-true voxel frame) symmetrises the
             // composite about the origin for ALL size·d parities, so no per-leaf lattice
             // shift is needed — a leaf simply sits at its world voxel offset.
             //
             // An outset body grows on every side, so its low corner moves DOWN by the outset
             // (ADR 0008 — the frame is carried, never re-derived).
             let translation_voxels = [
-                world_offset_voxels[0] - recentre_voxels[0] - outset_voxels,
-                world_offset_voxels[1] - recentre_voxels[1] - outset_voxels,
-                world_offset_voxels[2] - recentre_voxels[2] - outset_voxels,
+                world_offset_voxels[0] - recenter_voxels[0] - outset_voxels,
+                world_offset_voxels[1] - recenter_voxels[1] - outset_voxels,
+                world_offset_voxels[2] - recenter_voxels[2] - outset_voxels,
             ];
             // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
             // never stamp material, so they take a mask path instead of a stamp. A
@@ -149,7 +149,7 @@ impl Scene {
             // translation below, so resample it by inverse gather through substrate's shared
             // placement affine — the SAME map (and the same per-cell field test) the two-layer
             // classifier folds through, so the dense oracle agrees with the live path. The output
-            // grid index `oi` denotes absolute cell `oi + recentre_voxels`, and the leaf's low
+            // grid index `oi` denotes absolute cell `oi + recenter_voxels`, and the leaf's low
             // corner in the absolute frame is `world_offset_voxels − outset` (matching the
             // two-layer leaf's `world_offset_voxels`).
             if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some() {
@@ -169,7 +169,7 @@ impl Scene {
                     material,
                     grid_on_faces,
                     operation,
-                    recentre_voxels,
+                    recenter_voxels,
                     None,
                     voxels_per_block,
                 );
@@ -229,16 +229,16 @@ impl Scene {
     }
 
     /// Resolve the scene's whole region by **decomposing it into chunks** and
-    /// merging them back into one grid, in **absolute (non-recentred) coordinates**.
+    /// merging them back into one grid, in **absolute (non-recentered) coordinates**.
     ///
     /// This loops over every chunk coordinate covering the composite AABB, calls
     /// [`resolve_chunk`](Self::resolve_chunk) for each, and unions the results. It
     /// proves the chunk decomposition reconstructs the whole scene; it is **not**
     /// wired into rendering (the render path stays on `resolve_region`, which
-    /// recentres — see issue #27 S0). The returned grid is sized to the full
+    /// recenters — see issue #27 S0). The returned grid is sized to the full
     /// composite extent and its voxels keep their absolute composite positions;
     /// compared against `resolve_region`'s output it differs only by the
-    /// recentre offset.
+    /// recenter offset.
     ///
     /// **Oracle — compile-gated.** A dense whole-region resolver kept only to prove the
     /// chunk decomposition reconstructs the scene; it is excluded from production builds
@@ -271,9 +271,9 @@ impl Scene {
     }
 }
 
-/// Resolve `producer` into its own local grid (centred at the origin, as the
+/// Resolve `producer` into its own local grid (centered at the origin, as the
 /// trait guarantees) and **stamp** it into `output`, translated by
-/// `translation_voxels` (the node's placement minus the composite recentre, in
+/// `translation_voxels` (the node's placement minus the composite recenter, in
 /// voxels).
 ///
 /// When `translation_voxels` is zero and no material override applies, the stamp
@@ -297,7 +297,7 @@ fn stamp_producer(
     voxels_per_block: u32,
 ) {
     // The producer sizes its own grid (`SdfShape::resolve` overwrites
-    // `dimensions` to its own canonical `size_voxels`, centred at the origin), so
+    // `dimensions` to its own canonical `size_voxels`, centered at the origin), so
     // the local grid need only seed the dimensions; the cloud field, which has no
     // intrinsic size, fills the region it is handed.
     let mut local = VoxelGrid::new(region_dimensions);
@@ -317,7 +317,7 @@ fn stamp_producer(
     }
 
     // General stamp: translate each voxel into the composite (the producer's
-    // origin-centred position plus the node's recentred placement), overwrite its
+    // origin-centered position plus the node's recentered placement), overwrite its
     // material id for a Tool, then OR the on-face-grid flag bit (issue #29 S4) when
     // this node opted in so it travels with each voxel.
     output.occupied.reserve(local.occupied.len());

@@ -91,9 +91,9 @@ impl CubeFace {
 
 /// A clickable element of the view cube: a single **face** (1 normal), an **edge**
 /// (2 adjacent face normals) or a **corner** (3 face normals). The standard
-/// Autodesk ViewCube hot-zone model divides each face into a 3×3 grid — the centre
+/// Autodesk ViewCube hot-zone model divides each face into a 3×3 grid — the center
 /// zone is the face, the 4 edge zones are edges (45° edge-on views shared with the
-/// neighbour) and the 4 corner zones are corners (isometric 3-face views).
+/// neighbor) and the 4 corner zones are corners (isometric 3-face views).
 ///
 /// One element thus addresses any of the 26 cube orientations (6 faces + 12 edges
 /// + 8 corners) uniformly through [`ViewCubeElement::snap_direction`].
@@ -107,7 +107,7 @@ pub struct ViewCubeElement {
 }
 
 impl ViewCubeElement {
-    /// A single-face element (centre zone of a face).
+    /// A single-face element (center zone of a face).
     pub fn from_face(face: CubeFace) -> Self {
         Self {
             faces: [face, face, face],
@@ -142,7 +142,7 @@ impl ViewCubeElement {
     /// face of the element touches that axis. A face has one non-zero entry, an edge
     /// two, a corner three (e.g. the FRONT·TOP·RIGHT corner → `[+1, -1, +1]`: Right +X,
     /// Front −Y, Top +Z). The renderer highlights a face fragment at cube position `p`
-    /// iff, on every axis `a`, `p[a]` lies on the selector's side of the centre patch
+    /// iff, on every axis `a`, `p[a]` lies on the selector's side of the center patch
     /// (`sel[a]·p[a] ≥ threshold`, or `|p[a]| ≤ threshold` when `sel[a] = 0`) — which
     /// lights exactly the 1/2/3 across-the-fold facets of the hovered element.
     pub fn axis_selectors(&self) -> [f32; 3] {
@@ -168,7 +168,7 @@ impl ViewCubeElement {
         self.count == 1 && matches!(self.faces[0], CubeFace::Top | CubeFace::Bottom)
     }
 
-    /// The unnormalised view direction: the sum of the element's face normals.
+    /// The unnormalized view direction: the sum of the element's face normals.
     /// Pointing from the target toward the eye, so the camera looks back along it.
     pub fn snap_direction(&self) -> Vec3 {
         self.faces()
@@ -231,7 +231,7 @@ pub enum RollDir {
     Ccw,
 }
 
-/// The neighbour face reached by a 90° ViewCube rotate in screen direction
+/// The neighbor face reached by a 90° ViewCube rotate in screen direction
 /// `dir`, starting from the current nearest face.
 ///
 /// **Convention** (pinned here; the renderer + wiring MUST match). A rotate arrow
@@ -259,7 +259,7 @@ pub enum RollDir {
 ///   * TOP (+Z):   Up→Back, Down→Front,  Left→Right, Right→Left
 ///   * BOTTOM(−Z): Up→Front, Down→Back,  Left→Right, Right→Left
 ///
-/// Properties (proven in tests): the four neighbours of any face are distinct
+/// Properties (proven in tests): the four neighbors of any face are distinct
 /// (never the face itself); four Up steps cycle the vertical circle and four
 /// Right steps cycle the equator; Up↔Down are mutual inverses on the four
 /// vertical-circle faces, and Left↔Right are mutual inverses on the four
@@ -404,7 +404,7 @@ pub fn classify_cube_point(
     cursor_y: f32,
     body_picker: impl FnOnce() -> Option<ViewCubeElement>,
 ) -> Option<CubeChromeZone> {
-    // Normalised position within the rect (0..1 across each axis).
+    // Normalized position within the rect (0..1 across each axis).
     let u = (cursor_x - rect.x) / rect.size;
     let v = (cursor_y - rect.y) / rect.size;
     if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
@@ -439,7 +439,7 @@ pub fn classify_cube_point(
     // when the ray missed the cube (a true margin hover). ---
     const GUTTER_LO: f32 = 0.38; // along-side span of each rotate arrow
     const GUTTER_HI: f32 = 0.62;
-    // UP gutter: hugging the TOP rect edge, horizontally centred.
+    // UP gutter: hugging the TOP rect edge, horizontally centered.
     if (0.00..0.13).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Up));
     }
@@ -447,11 +447,11 @@ pub fn classify_cube_point(
     if (0.87..1.00).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Down));
     }
-    // LEFT gutter: hugging the LEFT rect edge, vertically centred.
+    // LEFT gutter: hugging the LEFT rect edge, vertically centered.
     if (0.00..0.13).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Left));
     }
-    // RIGHT gutter: hugging the RIGHT rect edge, vertically centred.
+    // RIGHT gutter: hugging the RIGHT rect edge, vertically centered.
     if (0.87..1.00).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Right));
     }
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn classify_rotate_arrows_in_each_gutter() {
         let rect = test_cube_rect();
-        // UP gutter (top centre), DOWN (bottom centre), LEFT, RIGHT.
+        // UP gutter (top center), DOWN (bottom center), LEFT, RIGHT.
         let cases = [
             (0.50, 0.06, ArrowDir::Up),
             (0.50, 0.94, ArrowDir::Down),
@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_face_neighbours_are_distinct_and_exclude_self() {
+    fn adjacent_face_neighbors_are_distinct_and_exclude_self() {
         let faces = [
             CubeFace::Right,
             CubeFace::Left,
@@ -834,14 +834,14 @@ mod tests {
                     "{face:?} {dir:?} is a no-op"
                 );
             }
-            // The four neighbours of a face are pairwise distinct.
+            // The four neighbors of a face are pairwise distinct.
             let mut sorted: Vec<String> = dirs
                 .iter()
                 .map(|&d| format!("{:?}", adjacent_face(face, d)))
                 .collect();
             sorted.sort();
             sorted.dedup();
-            assert_eq!(sorted.len(), 4, "{face:?} must have 4 distinct neighbours");
+            assert_eq!(sorted.len(), 4, "{face:?} must have 4 distinct neighbors");
         }
     }
 

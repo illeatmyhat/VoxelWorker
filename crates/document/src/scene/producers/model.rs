@@ -54,7 +54,7 @@ pub enum NodeContent {
     /// primitives become sugar later. It resolves through the SAME stamp /
     /// `CombineOp` / chunk path as [`Tool`]. Both producers center-emit their grids
     /// at the origin and are placed purely by their world voxel offset (no per-leaf
-    /// lattice shift) — see [`Scene::recentre_voxels_for_resolve`].
+    /// lattice shift) — see [`Scene::recenter_voxels_for_resolve`].
     ///
     /// [`Tool`]: NodeContent::Tool
     /// [`VoxelBody`]: NodeContent::VoxelBody
@@ -261,7 +261,7 @@ impl LeafBody<'_> {
     }
 
     /// The leaf's emitted grid extent in voxels, grown by its outset — `None` for a body with
-    /// no localisable extent.
+    /// no localizable extent.
     pub(crate) fn grid_voxels(
         &self,
         voxels_per_block: u32,
@@ -445,7 +445,7 @@ pub struct LeafProducer {
     /// The flat list stays plain document order; a consumer reconstructs the
     /// depth-first fold's scope-open / scope-close markers by comparing adjacent
     /// leaves' paths (see [`ScopeFrame`]). Empty for a root-level leaf, which folds
-    /// directly into the scene's root accumulator — the pre-#74 behaviour.
+    /// directly into the scene's root accumulator — the pre-#74 behavior.
     pub scope_path: Vec<ScopeFrame>,
     /// Which node this leaf came from, and the instance it was expanded under (ADR 0032) —
     /// what a viewport pick that lands on this body resolves to. For a pre-composed scope
@@ -472,7 +472,7 @@ impl LeafProducer {
     /// ever PRESERVES parent cells its scope's body covers (it never creates root
     /// occupancy of its own). Purely additive leaves are also the only leaves that ever
     /// STAMP material at the root (booleans never stamp — Decision 1), which is why a
-    /// viewport pick considers only these (ADR 0032): the leaf that coloured a voxel is the
+    /// viewport pick considers only these (ADR 0032): the leaf that colored a voxel is the
     /// leaf that owns it.
     pub fn is_purely_additive(&self) -> bool {
         self.operation == CombineOp::Union

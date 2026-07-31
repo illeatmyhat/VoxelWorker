@@ -156,7 +156,7 @@ second, no build) and refuses the commit if rustfmt would change anything, mirro
 hook and CI can never disagree about what "formatted" means. Bypass with `--no-verify`.
 
 The workspace was first formatted in `5157b26`; that commit is listed in
-`.git-blame-ignore-revs`, which GitHub honours automatically and git honours after
+`.git-blame-ignore-revs`, which GitHub honors automatically and git honors after
 `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
 
 ## Golden-image regression tests (issue #24 — E0 safety net for ADR 0002)
@@ -195,12 +195,12 @@ to the temp dir and the mismatch fraction is printed. The 5 references live unde
 1. `cargo build --workspace --bins` (every bin, `shot` included — no flags) must succeed
    with no errors. Warnings: fix or justify.
 2. `cargo run -p shot -- <args> --out shots/mN.png` produces a PNG.
-3. Compare against the current behaviour recorded in `docs/architecture/` and the golden references.
+3. Compare against the current behavior recorded in `docs/architecture/` and the golden references.
 4. Report: files touched, build status, screenshot path, deviations from spec (+why), blockers,
    what the next milestone needs. Keep the report concise — the orchestrator reads the PNG.
 
 - **Face winding/culling check:** `shot --debug-faces` (or the "Debug: face orientation" Display
-  toggle) is the standard way to verify cube face winding/culling — it colours each fragment by its
+  toggle) is the standard way to verify cube face winding/culling — it colors each fragment by its
   outward normal (+X red/−X cyan, +Y green/−Y magenta, +Z blue/−Z yellow) with the cube pipeline's
   culling OFF and flags any back-facing fragment with black-on-white stripes. A correct cube from the
   default 3/4 view shows red/green/blue with no marker; cyan/magenta/yellow or stripes means inverted

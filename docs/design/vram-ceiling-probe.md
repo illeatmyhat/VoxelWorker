@@ -46,7 +46,7 @@ would come *after* a stretch of silently degrading, paging frames.
   VRAM minus working headroom" cannot be auto-derived portably.
 - **Error scopes + a device-lost callback are still worth installing**: scopes make Vulkan's
   ceiling fully graceful, and the lost-callback turns DX12's worst case from undefined
-  behaviour into a reportable, deliberate shutdown (or a future device-rebuild path).
+  behavior into a reportable, deliberate shutdown (or a future device-rebuild path).
 - **The 2048 dimension cap is not a safety net.** It caps the atlas at 8 GB, which already
   exceeds the 8 GB RTX 5070 Laptop GPU in this very machine's pool — DX12 would oversubscribe
   and eventually device-remove well under the cap. Whether to raise

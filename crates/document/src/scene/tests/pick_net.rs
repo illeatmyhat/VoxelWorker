@@ -122,15 +122,15 @@ fn with_material(scene: &mut Scene, tool: NodeId, choice: MaterialChoice) {
 
 /// The material the dense resolve STAMPED at each absolute cell: a last-wins fold over the
 /// oracle's occupied list, which is emitted in document order and never deduplicated, so the
-/// final writer at a cell is the one whose colour the user sees there (ADR 0017).
+/// final writer at a cell is the one whose color the user sees there (ADR 0017).
 fn stamped_materials(scene: &Scene, density: u32) -> BTreeMap<[i64; 3], u16> {
     let grid = scene.resolve_region(scene.full_extent_blocks(density), density, 0);
-    let recentre = grid.recentre_voxels;
+    let recenter = grid.recenter_voxels;
     let mut stamped = BTreeMap::new();
     for voxel in &grid.occupied {
         let position = voxel.world_position();
         let cell: [i64; 3] =
-            std::array::from_fn(|axis| (position[axis] - 0.5).round() as i64 + recentre[axis]);
+            std::array::from_fn(|axis| (position[axis] - 0.5).round() as i64 + recenter[axis]);
         stamped.insert(cell, voxel.color_index());
     }
     stamped
@@ -207,7 +207,7 @@ fn assert_the_pick_names_the_owner(scene: &Scene, density: u32, case: &str) -> u
 /// Every entry carrying a rotation also carries a FRACTIONAL slide, deliberately. A pure
 /// lattice turn on a whole-voxel seat is classified in phase
 /// (`substrate::spatial::is_in_phase`), which routes the dense oracle down `stamp_producer` — a
-/// translation that drops the turn — while the pick honours it, as the live classifier does.
+/// translation that drops the turn — while the pick honors it, as the live classifier does.
 /// That divergence is real and is reported as a finding against the ORACLE; pairing turns with
 /// a slide forces the gather path and keeps this net pointed at the pick. The lattice-turn case
 /// itself is held by `pick::a_quarter_turned_body_picks_on_its_turned_footprint`, whose

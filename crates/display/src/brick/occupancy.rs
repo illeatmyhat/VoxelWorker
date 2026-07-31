@@ -6,7 +6,7 @@ use super::*;
 // (`BlockOccupancyMasks::from_chunks`, its solid-chunk bulk fast path, and its first-writer-wins
 // fallback-material policy) at this seam; the parallel-array shape, the sort-by-key construction,
 // the binary search, and the bit set/test live in the substrate module (fallback = a caller-defined
-// `u32`, here the render-cell material colour index). See docs/architecture/03-display.md (the
+// `u32`, here the render-cell material color index). See docs/architecture/03-display.md (the
 // band-clip interior fallback) for how the packed cells feed the raymarch.
 use substrate::occupancy::bitmask_map::{set_mask_bit, SortedKeyBitmaskMap};
 
@@ -27,7 +27,7 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 ///
 /// The surface-only record set (interior elision, `b1cadb7`/`6f0718e`) omits fully-occluded
 /// interior blocks. Under a FULL band that is hit-identical (a ray reaches an interior block
-/// only through a solid surface neighbour that keeps its record, stopping the ray first —
+/// only through a solid surface neighbor that keeps its record, stopping the ray first —
 /// [`BrickOcclusionOracle`]). But a band cut-plane SLICES a solid, so a ray can start/enter
 /// INSIDE the solid at a block whose record was elided: the record search misses,
 /// indistinguishable at the record level from genuine air, and the cross-section renders
@@ -49,9 +49,9 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 /// [`SortedKeyBitmaskMap`] (see the seam comment above); this domain type wraps it, keeping the
 /// occupancy vocabulary at the GPU seam (`cell_keys` ∥
 /// `cell_masks` ∥ `cell_materials` — the fallback
-/// scalar IS the render-cell material colour index) and owning the domain `from_chunks` builder.
+/// scalar IS the render-cell material color index) and owning the domain `from_chunks` builder.
 /// The bit of a fallback word carrying the interior block's on-face-grid overlay flag, above
-/// the material colour index (which is tiny — 0..MATERIAL_COUNT). The interior-elision fallback
+/// the material color index (which is tiny — 0..MATERIAL_COUNT). The interior-elision fallback
 /// stores one `u32` per cell, so material and overlay are packed together and split apart at the
 /// GPU seam ([`OccupancyCellPod`](crate::brick) reads them as two fields). With the
 /// scene-wide overlay bool deleted, an interior-elision coarse hit sources its overlay from here.
@@ -61,7 +61,7 @@ pub const OCCUPANCY_FALLBACK_OVERLAY_BIT: u32 = 1 << 16;
 pub struct BlockOccupancyMasks {
     /// The substrate storage: present 8-block cell keys (sorted ascending) ∥ per-cell `512`-bit
     /// occupancy bitmask (`bit = (local_z*8 + local_y)*8 + local_x`, `local = block.rem_euclid(8)`)
-    /// ∥ per-cell fallback WORD: the first occupied block's material colour index packed with its
+    /// ∥ per-cell fallback WORD: the first occupied block's material color index packed with its
     /// on-face-grid overlay bit (`OCCUPANCY_FALLBACK_OVERLAY_BIT`) — the coarse-cube's shade AND
     /// overlay when the record-miss fallback fires. Exact for a uniform interior cell (every
     /// current band golden); best-effort where a cell mixes material/overlay (the documented
@@ -89,13 +89,13 @@ impl BlockOccupancyMasks {
         &self.map.masks
     }
 
-    /// Per-cell fallback material colour index, parallel to [`cell_keys`](Self::cell_keys).
+    /// Per-cell fallback material color index, parallel to [`cell_keys`](Self::cell_keys).
     pub fn cell_materials(&self) -> &[u32] {
         &self.map.fallbacks
     }
 
     /// Set one block's bit (and, first-writer-wins, its cell fallback word) in the accumulation
-    /// map. The `fallback` word packs the block's material colour index with its overlay bit
+    /// map. The `fallback` word packs the block's material color index with its overlay bit
     /// (`OCCUPANCY_FALLBACK_OVERLAY_BIT`) — the coarse-cube shade + overlay a record-miss
     /// interior hit resolves to. The cell fold (`floor_div` by the 8-block cell edge) and the
     /// cell-local z-major linear bit index are domain cell geometry; the bit-set on the
@@ -130,7 +130,7 @@ impl BlockOccupancyMasks {
     /// microblock), so a record-miss inside a band-clipped solid resolves to its coarse cube.
     ///
     /// A fully-solid chunk (all `CHUNK_BLOCKS³` coarse, no microblocks) sets its block bits in
-    /// BULK from the chunk's first block colour — one map lookup + a constant bit-set, no
+    /// BULK from the chunk's first block color — one map lookup + a constant bit-set, no
     /// per-block hashing (the interior-elision cost discipline). Partial/boundary chunks set one
     /// bit per occupied block. Cell keys are the same 8-block keys the pyramid's L1 carries.
     pub fn from_chunks(chunks: &[([i32; 3], Arc<TwoLayerChunk>)]) -> Self {
@@ -147,7 +147,7 @@ impl BlockOccupancyMasks {
                 chunk.microblocks.is_empty() && chunk.coarse.iter().all(Option::is_some);
             if fully_solid {
                 // Bulk: the whole `CHUNK_BLOCKS³` block box is occupied at the chunk's first
-                // block colour + overlay — no per-block visit beyond the constant bit-set (a
+                // block color + overlay — no per-block visit beyond the constant bit-set (a
                 // 4-aligned chunk box lands wholly inside one 8-block cell per axis).
                 let material = chunk
                     .coarse_block([0, 0, 0])
@@ -176,7 +176,7 @@ impl BlockOccupancyMasks {
                     for block_y in 0..CHUNK_BLOCKS {
                         for block_x in 0..CHUNK_BLOCKS {
                             let block = [block_x, block_y, block_z];
-                            // The fallback word: the block's material colour index packed with its
+                            // The fallback word: the block's material color index packed with its
                             // overlay bit (first cuboid's, or the coarse block's overlay marker).
                             let fallback = if let Some(block_id) = chunk.coarse_block(block) {
                                 block_id.color_index() as u32

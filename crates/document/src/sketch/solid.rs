@@ -40,11 +40,11 @@ pub(super) struct RevolveField<'region> {
     )],
     axis: RevolveAxis,
     turn_degrees: u32,
-    /// World axis carrying the profile's AXIAL coordinate (un-centred, profile-space).
+    /// World axis carrying the profile's AXIAL coordinate (un-centered, profile-space).
     axial_world_axis: usize,
     axial_min: i64,
     /// The two radial world axes, ascending, and their half-extents (the radial axes are
-    /// CENTRED; the axial one is not — the asymmetry the resolve has always carried).
+    /// CENTERED; the axial one is not — the asymmetry the resolve has always carried).
     radial_a: usize,
     radial_b: usize,
     half_a: f32,
@@ -106,9 +106,9 @@ impl RevolveField<'_> {
     pub(super) fn signed_distance_at(&self, point_local_voxels: [f32; 3]) -> f32 {
         // f32 throughout — the width of the sample the resolve forms, of the geom2d
         // measurement half, and of the WGSL preview that mirrors this field.
-        let centred_a = point_local_voxels[self.radial_a] - self.half_a;
-        let centred_b = point_local_voxels[self.radial_b] - self.half_b;
-        let radius = (centred_a * centred_a + centred_b * centred_b).sqrt();
+        let centered_a = point_local_voxels[self.radial_a] - self.half_a;
+        let centered_b = point_local_voxels[self.radial_b] - self.half_b;
+        let radius = (centered_a * centered_a + centered_b * centered_b).sqrt();
         let profile_axial = self.axial_min as f32 + point_local_voxels[self.axial_world_axis];
 
         let distance_at = |signed_radius: f32| {
@@ -135,17 +135,17 @@ impl RevolveField<'_> {
         if self.turn_degrees < 360 {
             let turn = (self.turn_degrees as f32).to_radians();
             // Inside the first edge (angle 0) is the +radial_b side.
-            let past_first_edge = -centred_b;
+            let past_first_edge = -centered_b;
             // Inside the closing edge is the clockwise side of its direction vector.
             //
             // The width matters here, and narrowing REPAIRS a seam. At turn = 135°
-            // `cos = −sin`, so this collapses to `−k·(centred_a + centred_b)` — exactly
+            // `cos = −sin`, so this collapses to `−k·(centered_a + centered_b)` — exactly
             // zero along the anti-diagonal, where half-integer lattice sites land precisely
             // ON the closing edge. True value 0 ⇒ on-boundary ⇒ occupied. In f64 the
             // libm `cos`/`sin` pair does not cancel and this returns ≈ +4.4e−16, a hair
             // outside, and the voxel is dropped; in f32 the two round to exact negatives of
             // each other and it returns +0.0, keeping the voxel. See the flip measurement.
-            let past_closing_edge = turn.cos() * centred_b - turn.sin() * centred_a;
+            let past_closing_edge = turn.cos() * centered_b - turn.sin() * centered_a;
             let to_wedge = if self.turn_degrees <= 180 {
                 past_first_edge.max(past_closing_edge)
             } else {
@@ -160,9 +160,9 @@ impl RevolveField<'_> {
     /// any profile vertex is outside the profile, so its distance is positive and the
     /// wedge `max` can only keep it positive. Skipping it is output-identical.
     fn beyond_radial_reach(&self, point_local_voxels: [f32; 3]) -> bool {
-        let centred_a = point_local_voxels[self.radial_a] - self.half_a;
-        let centred_b = point_local_voxels[self.radial_b] - self.half_b;
-        let radius = (centred_a * centred_a + centred_b * centred_b).sqrt() as f64;
+        let centered_a = point_local_voxels[self.radial_a] - self.half_a;
+        let centered_b = point_local_voxels[self.radial_b] - self.half_b;
+        let radius = (centered_a * centered_a + centered_b * centered_b).sqrt() as f64;
         radius > self.radial_max
     }
 }
@@ -455,7 +455,7 @@ impl SketchSolid {
     ///
     /// **On the boundary the predicate is authoritative, not the sign comparison.** A sample
     /// CAN land exactly on an edge — a diagonal between integer vertices passes through
-    /// half-integer points, e.g. the edge `(4,3)→(7,6)` contains the voxel centre
+    /// half-integer points, e.g. the edge `(4,3)→(7,6)` contains the voxel center
     /// `(4.5, 3.5)` — and there the distance is zero with only its SIGN BIT carrying the
     /// even-odd verdict (`-0.0` inside, `+0.0` outside). Occupancy derived from this field
     /// must therefore test [`f32::is_sign_negative`], not `< 0.0`, which is false for `-0.0`.
@@ -587,7 +587,7 @@ impl SketchSolid {
                 // Reinterpret the in-plane bbox as (axial, radial) per RevolveAxis. The
                 // axial world axis keeps its profile span; each of the two RADIAL world
                 // axes (the OTHER in-plane axis + the plane normal) spans the full disc
-                // diameter `2 * radial_max`, so the revolve axis sits at the grid centre.
+                // diameter `2 * radial_max`, so the revolve axis sits at the grid center.
                 let (axial_world_axis, axial_span, radial_coord_min, radial_coord_max) = match axis
                 {
                     RevolveAxis::InPlane0 => (in_plane_0, max[0] - min[0], min[1], max[1]),
@@ -683,13 +683,13 @@ impl SketchSolid {
     /// (ADR 0010). The normal span is already `⊆ [0, height_voxels]` (the caller's
     /// full-inside check + `grid_dimensions()[normal] = height_voxels`), so solidity
     /// reduces to: the cell's in-plane footprint RECTANGLE is entirely inside the profile
-    /// polygon. The rectangle is the SAMPLE-CENTRE span, exactly as
+    /// polygon. The rectangle is the SAMPLE-CENTER span, exactly as
     /// [`resolve_extrude`](Self::resolve_extrude) samples occupancy
     /// (`profile = bbox_min + idx + 0.5`): a cell spanning local `[c_lo, c_hi)` maps to
     /// `[min + c_lo + 0.5, min + c_hi − 0.5]`. Testing that (not the voxel corners) elides an
     /// axis-aligned FACE block — fully solid, but with its face lattice line collinear with
     /// the profile edge — while never over-claiming (the edge sits 0.5 beyond the outermost
-    /// sample centre).
+    /// sample center).
     pub(super) fn extrude_cell_is_solid(&self, cell: voxel_core::spatial_index::VoxelAabb) -> bool {
         let Some((min, _max)) = self.profile_bounds() else {
             return false;
@@ -722,9 +722,9 @@ impl SketchSolid {
     /// 1. RADIAL/AXIAL — the `(radius-range × axial-range)` rectangle is entirely inside the
     ///    profile polygon, mapped into native `(c0, c1)` per [`RevolveAxis`] EXACTLY as
     ///    [`resolve_revolve`](Self::resolve_revolve) maps its per-voxel samples:
-    ///    - axial: the SAMPLE-CENTRE span `[axial_min + cell.min + 0.5, axial_min + cell.max − 0.5]`
+    ///    - axial: the SAMPLE-CENTER span `[axial_min + cell.min + 0.5, axial_min + cell.max − 0.5]`
     ///      (elides the axial END-CAP blocks, whose face is collinear with the profile edge);
-    ///    - radius: over the two centred radial world axes (centred = `idx − half`), the
+    ///    - radius: over the two centered radial world axes (centered = `idx − half`), the
     ///      `[nearest, farthest]` distance from the axis over the cell's voxel-corner box,
     ///      widened by `EPS` so f32/f64 rounding can never SHRINK the tested rectangle below
     ///      the true sample coverage (a wider rectangle only makes "inside" rarer ⇒ never an
@@ -734,8 +734,8 @@ impl SketchSolid {
     ///    (see [`revolve_box_within_sweep_arc`]). At 360° the gate is inert, so a full turn
     ///    needs only condition 1.
     ///
-    /// CONSERVATIVE-NEVER-NARROW: the two conditions use the SAME centred corner box the
-    /// resolve derives its per-voxel samples from (a superset of the sample centres), so a
+    /// CONSERVATIVE-NEVER-NARROW: the two conditions use the SAME centered corner box the
+    /// resolve derives its per-voxel samples from (a superset of the sample centers), so a
     /// coarse claim can never disagree with the per-voxel truth.
     pub(super) fn revolve_cell_is_solid(
         &self,
@@ -760,13 +760,13 @@ impl SketchSolid {
             dimensions[2] as f64 / 2.0,
         ];
 
-        // Axial rectangle range in profile-axial coords — the SAMPLE-CENTRE span, matching
+        // Axial rectangle range in profile-axial coords — the SAMPLE-CENTER span, matching
         // the resolve's `axial_min + idx + 0.5` sampler exactly (a single-voxel span
         // collapses to a point, handled by `rectangle_inside_polygon`).
         let axial_lo = (axial_min + cell.min[axial_world_axis]) as f64 + 0.5;
         let axial_hi = (axial_min + cell.max[axial_world_axis]) as f64 - 0.5;
 
-        // Centred radial voxel-corner box per radial world axis (centred = idx − half).
+        // Centered radial voxel-corner box per radial world axis (centered = idx − half).
         let a_lo = cell.min[radial_a] as f64 - half[radial_a];
         let a_hi = cell.max[radial_a] as f64 - half[radial_a];
         let b_lo = cell.min[radial_b] as f64 - half[radial_b];
@@ -803,7 +803,7 @@ impl SketchSolid {
         }
         // Condition 1 (radial/axial) holds. A full turn needs nothing more (the sweep gate
         // is inert at 360°). A partial turn additionally requires the cell's ENTIRE angular
-        // span inside `[0, turn]` — over the SAME centred radial corner box the resolve
+        // span inside `[0, turn]` — over the SAME centered radial corner box the resolve
         // derives each per-voxel sweep angle from.
         if sweep.turn_degrees >= 360 {
             return true;
@@ -853,7 +853,7 @@ impl SketchSolid {
         // Rasterize the 2D profile ONCE (axis-aligned extrusion ⇒ the same fill on
         // every layer along the normal — §3i, cheap + predictable) over the WINDOWED
         // in-plane range, then sweep it across the WINDOWED `normal` layers. A cell
-        // `(cell_0, cell_1)` at local origin `min` is occupied iff its centre
+        // `(cell_0, cell_1)` at local origin `min` is occupied iff its center
         // `(min + cell + 0.5)` is inside the REGION — inside some `Fill` loop and no
         // `Hole` loop (#100; the even-odd rule this replaced could not express a hole).
         // The region test is on `min + cell`, which is FULL-derived;
@@ -873,9 +873,9 @@ impl SketchSolid {
         }
 
         // The voxel's grid index per world axis, assembled from the in-plane cell
-        // and the normal layer, then CORNER-ANCHORED (centre = idx + 0.5) exactly the
+        // and the normal layer, then CORNER-ANCHORED (center = idx + 0.5) exactly the
         // way `SdfShape::resolve` does, so a rectangle extrude is byte-identical to the
-        // matching `Box`. The centre is a half-integer for any grid size → always on
+        // matching `Box`. The center is a half-integer for any grid size → always on
         // the global voxel lattice.
         //
         // The normal-axis LAYERS are order-independent (each layer writes a disjoint
@@ -904,16 +904,16 @@ impl SketchSolid {
     /// (per [`RevolveAxis`]) is sampled at every grid cell:
     ///
     /// - The axial world axis maps the cell to profile-axial space the SAME way the
-    ///   extrude rasterizer maps an in-plane span: `axial_min + idx + 0.5` (un-centred
+    ///   extrude rasterizer maps an in-plane span: `axial_min + idx + 0.5` (un-centered
     ///   profile-space mapping), so a rectangle-revolve is exact against a cylinder.
     /// - The two RADIAL world axes (the non-axial in-plane axis + the plane normal)
-    ///   are CENTRED exactly like `SdfShape` (`idx + 0.5 − dim/2`); the radius is their
-    ///   Euclidean length, so the revolve axis lands at the grid centre.
+    ///   are CENTERED exactly like `SdfShape` (`idx + 0.5 − dim/2`); the radius is their
+    ///   Euclidean length, so the revolve axis lands at the grid center.
     /// - A cell is inside iff the even-odd `point_in_polygon` test passes for the
     ///   reconstructed profile point `(+radial folded, profile_axial)` placed back into
     ///   the profile's native `(c0, c1)` slots.
-    /// - PARTIAL turn: the swept angle `theta = atan2(centred[radial_b],
-    ///   centred[radial_a])` (normalized to `[0, 360)`) gates the cell — kept iff
+    /// - PARTIAL turn: the swept angle `theta = atan2(centered[radial_b],
+    ///   centered[radial_a])` (normalized to `[0, 360)`) gates the cell — kept iff
     ///   `theta <= turn_degrees`. At `turn_degrees == 360` the gate is inert.
     ///
     /// `radial_a` / `radial_b` are the two radial world axes in ASCENDING world-axis
@@ -938,7 +938,7 @@ impl SketchSolid {
 
         // ONE evaluation, shared with the bound — see [`RevolveField`]. Every per-solid
         // constant (the (axial, radial) reinterpretation, the ascending radial-axis sort,
-        // the centred half-extents, the straddle flag and the radial reach) is hoisted
+        // the centered half-extents, the straddle flag and the radial reach) is hoisted
         // into it ONCE here, out of the per-voxel loop; occupancy below is then literally
         // `signed_distance_at(..) <= SURFACE_ISOLEVEL` over that same function.
         //
@@ -955,7 +955,7 @@ impl SketchSolid {
         let density = voxels_per_block.max(1);
 
         // Clamp the WORLD-axis window to `[0, full_dim)`; all per-cell math (half,
-        // radial_max, the centred sample, profile_axial) stays FULL-derived — only
+        // radial_max, the centered sample, profile_axial) stays FULL-derived — only
         // the iterated cell range narrows. A full-window call reproduces the
         // historical `0..dimensions[*]` loops exactly.
         let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
@@ -979,8 +979,8 @@ impl SketchSolid {
             return;
         }
 
-        // Iterate every grid cell. The axial axis uses an un-centred profile-space
-        // mapping (matching the extrude rasterizer); the radial axes are centred.
+        // Iterate every grid cell. The axial axis uses an un-centered profile-space
+        // mapping (matching the extrude rasterizer); the radial axes are centered.
         //
         // The outer `k` slices are order-independent (each samples a disjoint set of
         // voxels), so — mirroring `SdfShape::resolve` — each slice produces a local

@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// The recentred-Z spans of one onion frame, derived by `AppCore::onion_fog_params`:
+/// The recentered-Z spans of one onion frame, derived by `AppCore::onion_fog_params`:
 /// the onion-band Z range (the ghosted layers OUTSIDE the solid band) and the solid
 /// band Z range. Both display paths (brick raymarch + cuboid mesh) select their ghost
 /// slabs from these edges — Z-up, layers are Z-slices.
@@ -11,7 +11,7 @@ use super::*;
 pub struct OnionFogParams {
     /// Inverse camera view-projection (to unproject screen → world rays).
     pub inverse_view_projection: glam::Mat4,
-    /// Inscribed semi-axes (= grid_dimensions / 2); maps world → normalised grid.
+    /// Inscribed semi-axes (= grid_dimensions / 2); maps world → normalized grid.
     pub semi_axes: [f32; 3],
     /// World-space Z extent of the onion band (the ghosted layers).
     pub onion_z_min: f32,
@@ -21,7 +21,7 @@ pub struct OnionFogParams {
     pub band_z_max: f32,
 }
 
-/// The onion tint hue (cool blue-grey), matching the retired volumetric fog haze so
+/// The onion tint hue (cool blue-gray), matching the retired volumetric fog haze so
 /// the ghost reads as the same "context around the band" the fog conveyed.
 const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 

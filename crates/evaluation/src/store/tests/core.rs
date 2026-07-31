@@ -35,7 +35,7 @@ fn cache_hit_matches_fresh_resolve_chunk() {
 }
 
 /// (b) The cache-assembled `resolve_region` output is IDENTICAL (occupied set +
-/// material_id, same recentre) to the monolithic `Scene::resolve_region` — for
+/// material_id, same recenter) to the monolithic `Scene::resolve_region` — for
 /// every required scene: all SDF shapes, demo-scene, demo-village.
 fn assert_cache_region_matches_monolithic(scene: &Scene, voxels_per_block: u32, label: &str) {
     let monolithic = scene.resolve_region(
@@ -59,7 +59,7 @@ fn assert_cache_region_matches_monolithic(scene: &Scene, voxels_per_block: u32, 
         occupied_multiset(&assembled),
         occupied_multiset(&monolithic),
         "[{label}] cache-assembled occupied set (position + material) must be \
-             BIT-IDENTICAL to monolithic resolve_region (same recentre)"
+             BIT-IDENTICAL to monolithic resolve_region (same recenter)"
     );
 }
 
@@ -78,7 +78,7 @@ fn cache_region_matches_monolithic_for_all_shapes() {
 }
 
 /// FLAT / odd-sized shapes (e.g. a 5×1×5 cylinder — the app default) are the
-/// regression case for the S0 covering-range bug S2 fixed: the producer centres
+/// regression case for the S0 covering-range bug S2 fixed: the producer centers
 /// its grid on the origin, so a 1-block (odd) axis straddles two chunks, but the
 /// old block-AABB covering range (`floor(size/2)` per block) missed one of them
 /// and dropped half the voxels. This pins that the cache covers the

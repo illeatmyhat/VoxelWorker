@@ -12,14 +12,14 @@ use super::ArmedConstraint;
 
 /// The armed-tool **placement ghost** (ADR 0022): the translucent analytic-SDF preview of
 /// where a primitive's voxels will land, drawn without recomposing the scene ("render a
-/// coloured transparent SDF where the voxels will be"). Lives INSIDE [`ArmedTool`] as its
+/// colored transparent SDF where the voxels will be"). Lives INSIDE [`ArmedTool`] as its
 /// [`pending_drop`](ArmedTool::pending_drop) — `Some` while the armed tool is pointed at a
 /// valid drop, `None` otherwise — so a ghost cannot exist without the tool that derives it.
 ///
 /// It carries the armed [`SdfShape`] and the ABSOLUTE, corner-anchored voxel offset the
 /// node would take — the SAME frame `Intent::PlaceNode { offset_voxels }` uses
-/// (`src/app_core/placement.rs`). The render-frame field centre the shader needs is
-/// DERIVED at draw time from the live resolve's recentre via [`center_world`], keeping the
+/// (`src/app_core/placement.rs`). The render-frame field center the shader needs is
+/// DERIVED at draw time from the live resolve's recenter via [`center_world`], keeping the
 /// frame law (ADR 0008) in one place rather than baked into stored state that a later
 /// rebuild would stale.
 ///
@@ -46,18 +46,18 @@ pub struct PlacementGhost {
 }
 
 impl PlacementGhost {
-    /// The field centre in the display's render frame — the box centre of the placed node, seated
+    /// The field center in the display's render frame — the box center of the placed node, seated
     /// through the **SAME** corner-anchored affine the classifier folds occupancy through
     /// ([`substrate::spatial::LeafPlacement`], the `LeafAffine` alias), so the ghost coincides with
     /// the solid drop BY CONSTRUCTION rather than by a kept-in-sync mirror (ADR 0008 + ADR 0027).
     ///
     /// Seat the continuous corner `offset_voxels + offset_local` (integer floor plus the sub-voxel
-    /// `NoSnap` remainder) via `LeafPlacement`, ask it where the producer-local centre `full/2`
+    /// `NoSnap` remainder) via `LeafPlacement`, ask it where the producer-local center `full/2`
     /// lands in absolute voxels, then rebase into this rebuild's render frame by subtracting
-    /// `recentre`. `full` is the EXACT grid (a half-integer half on odd axes), `recentre` the
+    /// `recenter`. `full` is the EXACT grid (a half-integer half on odd axes), `recenter` the
     /// FLOORED half — the difference is the half-voxel term a naive "the shape is at the origin"
     /// drops.
-    pub fn center_world(&self, recentre_voxels: [i64; 3], voxels_per_block: u32) -> [f32; 3] {
+    pub fn center_world(&self, recenter_voxels: [i64; 3], voxels_per_block: u32) -> [f32; 3] {
         use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
         let grid = self.shape.grid_dimensions(voxels_per_block);
         let full = glam::Vec3::new(grid[0] as f32, grid[1] as f32, grid[2] as f32);
@@ -72,15 +72,15 @@ impl PlacementGhost {
             full,
             TrueWorldVoxelPoint::from_voxels(world_offset),
         );
-        let centre_absolute = placement
+        let center_absolute = placement
             .world_of(ProducerLocalVoxelPoint::from_voxels(full * 0.5))
             .voxels();
-        let recentre = glam::Vec3::new(
-            recentre_voxels[0] as f32,
-            recentre_voxels[1] as f32,
-            recentre_voxels[2] as f32,
+        let recenter = glam::Vec3::new(
+            recenter_voxels[0] as f32,
+            recenter_voxels[1] as f32,
+            recenter_voxels[2] as f32,
         );
-        (centre_absolute - recentre).to_array()
+        (center_absolute - recenter).to_array()
     }
 
     /// The inscribed semi-axes in voxels (`grid/2` per axis, EXACT half) the SDF is
@@ -96,7 +96,7 @@ impl PlacementGhost {
 
     /// The **inverse** rotation as column-major `f32` columns for the shader's `mat3x3<f32>`
     /// uniform (ADR 0027). The ghost stores the forward rotation; the shader maps a world sample
-    /// back into the shape's local frame with its inverse, so `rotation_inverse · (world − centre)`
+    /// back into the shape's local frame with its inverse, so `rotation_inverse · (world − center)`
     /// lands in the un-turned SDF frame. Each column is padded to a `vec4` (std140 mat3 stride);
     /// the `w` lane is unused.
     pub fn rotation_inverse_columns(&self) -> [[f32; 4]; 3] {
@@ -169,11 +169,11 @@ pub enum AngleSnap {
 /// the placement spine (`place_primitive`) carries; it is never rounded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PlacementPivot {
-    /// Bottom-centre: the object's base rests on the contact and its centroid rides half its
+    /// Bottom-center: the object's base rests on the contact and its centroid rides half its
     /// local height out along the normal. The default.
     #[default]
     Base,
-    /// Volumetric centre: the object's centroid sits on the contact, so it straddles the surface
+    /// Volumetric center: the object's centroid sits on the contact, so it straddles the surface
     /// half in / half out.
     VolumetricCenter,
 }
@@ -379,7 +379,7 @@ pub struct LayerRange {
     pub upper: u32,
     /// Snap the handles to block boundaries (multiples of `voxels_per_block`).
     pub snap_to_blocks: bool,
-    /// Show ghosted neighbour layers around the band (3D onion skin).
+    /// Show ghosted neighbor layers around the band (3D onion skin).
     pub onion_skin: bool,
     /// How many layers on each side of the band to ghost (1..=8).
     pub onion_depth: u32,
@@ -492,7 +492,7 @@ pub struct PanelState {
     /// (ADR 0031). A display preference that outlives a project, so settings like the view cube.
     #[snapshot(settings)]
     pub axes_on_top: bool,
-    /// Whether the voxel cubes render in face-orientation debug mode (colour by
+    /// Whether the voxel cubes render in face-orientation debug mode (color by
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
     ///
@@ -505,7 +505,7 @@ pub struct PanelState {
     pub debug_face_orientation: bool,
     /// Grazing-rim DIAGNOSTIC for the BRICK raymarch (`set_debug_mode`): shade every hit
     /// by its face axis + a per-voxel UV checkerboard, so a wrong first-hit voxel/face
-    /// shows as a face-colour break and a UV smear. Unlike `debug_face_orientation` (which
+    /// shows as a face-color break and a UV smear. Unlike `debug_face_orientation` (which
     /// drops to the mesh path), this keeps the brick path ENGAGED — it IS the path under
     /// investigation. Display toggle, OFF by default.
     ///
@@ -703,7 +703,7 @@ pub struct PanelState {
 /// (`docs/design/tool-modes-and-navigation.md`).
 ///
 /// While it runs the left button turns the camera about `camera.target` instead of selecting, a
-/// targeting reticle marks that target, and a stationary click re-centres the view on the surface
+/// targeting reticle marks that target, and a stationary click re-centers the view on the surface
 /// it hits. Leaving restores left = select. It is independent of the orbit center — the Shift+MMB
 /// pivot — and never writes it.
 ///
@@ -890,7 +890,7 @@ pub struct PanelResponse {
     pub clicked_export_vox: bool,
     /// The user picked **Focus** from a node row's right-click context menu this
     /// frame → the loop should frame that node (set the camera target to the node's
-    /// world centre + fit the distance). A VIEW action, NOT a document `Intent` (it
+    /// world center + fit the distance). A VIEW action, NOT a document `Intent` (it
     /// is not undoable), so it rides on the response rather than `intents`. `None`
     /// when no Focus was requested.
     pub focus_node: Option<NodeId>,
@@ -960,7 +960,7 @@ impl PanelResponse {
     }
 
     /// Push a mutation AND request an auto-frame after this frame's intents apply (the
-    /// old `scene_changed` / `size_or_density_changed` behaviour). Used for structural
+    /// old `scene_changed` / `size_or_density_changed` behavior). Used for structural
     /// edits and size/density edits — everything that re-frames; a shape-chip switch
     /// and a material pick use [`emit`](Self::emit) instead so the camera stays put.
     pub(crate) fn emit_and_frame(&mut self, intent: Intent) {
@@ -976,7 +976,7 @@ impl PanelResponse {
 /// large-export message (or `None`). The shell formats the line — the panel only shows it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExportPanelState<'a> {
-    /// True while an export is running: the button is disabled (the shell serialises
+    /// True while an export is running: the button is disabled (the shell serializes
     /// exports, so a second one can never be queued).
     pub in_flight: bool,
     /// The already-formatted line to show under the button, or `None`.
@@ -989,16 +989,16 @@ mod tests {
     use document::voxel::SdfShape;
     use voxel_core::voxel::ShapeKind;
 
-    /// **The ghost centre carries the sub-voxel `offset_local`** — a `NoSnap` drop's fractional
+    /// **The ghost center carries the sub-voxel `offset_local`** — a `NoSnap` drop's fractional
     /// remainder — so the translucent preview sits exactly where the committed node lands rather
     /// than snapping to the integer voxel (the off-by-a-few-voxels mismatch a user hit in `NoSnap`
-    /// mode). Two ghosts differing ONLY in `offset_local` must have centres that differ by exactly
+    /// mode). Two ghosts differing ONLY in `offset_local` must have centers that differ by exactly
     /// that fraction, since `center_world` now seats through the same `LeafPlacement` affine the
     /// classifier folds occupancy through.
     #[test]
-    fn ghost_centre_carries_the_sub_voxel_offset() {
+    fn ghost_center_carries_the_sub_voxel_offset() {
         let shape = SdfShape::from_voxels(ShapeKind::Box, [16, 16, 16], 1);
-        let recentre = [3, 4, 5];
+        let recenter = [3, 4, 5];
         let density = 1;
         let base = PlacementGhost {
             shape,
@@ -1010,16 +1010,16 @@ mod tests {
             offset_local: [0.25, -0.5, 0.75],
             ..base.clone()
         };
-        let base_centre = base.center_world(recentre, density);
-        let shifted_centre = shifted.center_world(recentre, density);
+        let base_center = base.center_world(recenter, density);
+        let shifted_center = shifted.center_world(recenter, density);
         assert_eq!(
             [
-                shifted_centre[0] - base_centre[0],
-                shifted_centre[1] - base_centre[1],
-                shifted_centre[2] - base_centre[2],
+                shifted_center[0] - base_center[0],
+                shifted_center[1] - base_center[1],
+                shifted_center[2] - base_center[2],
             ],
             [0.25, -0.5, 0.75],
-            "the ghost centre must carry the sub-voxel offset, not snap to the integer voxel"
+            "the ghost center must carry the sub-voxel offset, not snap to the integer voxel"
         );
     }
 }

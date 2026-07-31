@@ -7,8 +7,8 @@ use voxel_core::voxel::ShapeKind;
 /// voxel count and dimensions survive (Z-up, no axis swap).
 ///
 /// Corner-anchoring: `from_grid`'s decode (`round(world + floor(dim/2) − 0.5)`)
-/// expects the grid in the RECENTRED frame (low corner `−floor(dim/2)`), which is
-/// what production produces. So resolve through a one-node scene (recentred), NOT
+/// expects the grid in the RECENTERED frame (low corner `−floor(dim/2)`), which is
+/// what production produces. So resolve through a one-node scene (recentered), NOT
 /// the bare producer grid (whose low corner is 0).
 #[test]
 fn vox_round_trip_matches_grid() {
@@ -154,7 +154,7 @@ fn vox_export_puts_vertical_on_vox_z_no_swap() {
 /// never silently truncate.
 #[test]
 fn vox_splits_models_over_256() {
-    // 17 blocks × 16 vx = 272 > 256 on X. Resolve through a scene (recentred
+    // 17 blocks × 16 vx = 272 > 256 on X. Resolve through a scene (recentered
     // frame) so `from_grid`'s corner-anchored decode lands every voxel in range.
     let scene = document::scene::Scene::from_geometry(
         GeometryParams {
@@ -215,7 +215,7 @@ fn parsed_model_sets(bytes: &[u8]) -> ModelSets {
 }
 
 /// Parse a `.vox` byte stream into a per-model **last-writer-wins** map
-/// `(x, y, z) -> colour` — the occupancy a MagicaVoxel reader actually renders. The
+/// `(x, y, z) -> color` — the occupancy a MagicaVoxel reader actually renders. The
 /// dense-path export writes DUPLICATE voxels at positions where leaves overlap (the
 /// dense occupied Vec keeps both leaves' entries; the LATER one in document order is
 /// the resolved winner a reader shows); the streamed two-layer export is one-id-per-
@@ -335,10 +335,10 @@ fn region_vox_export_equals_whole_grid_for_demo_scene() {
 
 // ===== Issue #20 Step 2: far-offset export ===================================
 
-/// Build a two-node scene whose composite is centred FAR from the world origin:
+/// Build a two-node scene whose composite is centered FAR from the world origin:
 /// one node at the origin and one node `offset_blocks` away on X. The composite
-/// centre lands at the midpoint, so each node sits ~`offset/2 × vpb` voxels from
-/// the recentred frame's origin. The second node is placed `offset_blocks` blocks
+/// center lands at the midpoint, so each node sits ~`offset/2 × vpb` voxels from
+/// the recentered frame's origin. The second node is placed `offset_blocks` blocks
 /// away on X.
 fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
     let make_box = |offset: [i64; 3], material| {
@@ -355,11 +355,11 @@ fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
     scene
 }
 
-/// **The rewired export is behaviour-equivalent to the old monolithic export, far
+/// **The rewired export is behavior-equivalent to the old monolithic export, far
 /// from the origin (issue #20 Step 2).** The live export button now routes through
 /// `ChunkResolveCache::vox_export` instead of a dense whole-region resolve + `from_grid`. This
 /// proves the rewiring is safe at far offset: for a scene whose composite is
-/// centred ~250,000 blocks out (4e6 voxels — well into the f32 large-magnitude
+/// centered ~250,000 blocks out (4e6 voxels — well into the f32 large-magnitude
 /// regime), the region-scoped export's model SET (sizes + per-model voxels) equals
 /// the old whole-grid export's, AND both keep the full voxel count (the per-chunk
 /// ground truth). So the wiring change is a true no-op on the written file.
@@ -368,7 +368,7 @@ fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
 /// genuinely region-WIDE far scene more accurate than the monolithic path. Both
 /// bucket into the region-relative `[0, grid_x)` frame, so both add `half_x` (≈ the
 /// region half-width) in f32; once the region exceeds ~2^24 voxels on an axis the
-/// voxel-centre `.5` is unrepresentable and BOTH paths collapse identically (the
+/// voxel-center `.5` is unrepresentable and BOTH paths collapse identically (the
 /// exports stay model-set-equal). The f32-`.5` loss is inherent to the f32
 /// `world_position` at large magnitude, not to which assembly path is used. The
 /// rewiring's value is the Step-4 decoupling from the monolithic grid, not a
@@ -376,7 +376,7 @@ fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
 #[test]
 fn far_offset_region_export_equals_monolithic() {
     let vpb = 16u32;
-    // 500,000-block separation → composite centred ~250,000 blocks out → each box
+    // 500,000-block separation → composite centered ~250,000 blocks out → each box
     // ~4e6 voxels from origin. Region grid stays under 2^24 voxels wide so the full
     // voxel set survives (the per-chunk ground truth is matched exactly).
     let scene = far_offset_two_box_scene(vpb, 500_000);
@@ -418,7 +418,7 @@ fn far_offset_region_export_equals_monolithic() {
 
 /// The far-offset region export, once parsed and re-read, round-trips to the same
 /// total voxel count the per-chunk ground truth holds — exercising the full
-/// build → serialise → `dot_vox::load_bytes` path the export button drives (minus
+/// build → serialize → `dot_vox::load_bytes` path the export button drives (minus
 /// the file dialog), so the wiring is verified end to end headlessly.
 #[test]
 fn far_offset_region_export_round_trips_full_voxel_set() {
@@ -469,7 +469,7 @@ fn streamed_vox_export(scene: &Scene, vpb: u32, rgba: BlockPaletteColors) -> Vox
 }
 
 /// **THE E4 `.vox` PARITY GATE:** the streamed export's written `.vox` (model set =
-/// sizes + per-voxel `(x, y, z, colour)`) is IDENTICAL to today's dense-path region
+/// sizes + per-voxel `(x, y, z, color)`) is IDENTICAL to today's dense-path region
 /// export, for the gated scene. Mirrors
 /// `assert_region_vox_export_equals_whole_grid` on the streaming path.
 fn assert_streamed_vox_export_equals_dense(scene: &Scene, vpb: u32, label: &str) {
@@ -489,7 +489,7 @@ fn assert_streamed_vox_export_equals_dense(scene: &Scene, vpb: u32, label: &str)
         "[{label}] streamed export model count must equal the dense-path export"
     );
     // The faithful parity comparison is the RESOLVED occupancy a MagicaVoxel reader
-    // renders — last-writer-per-coord (position + palette colour). For every
+    // renders — last-writer-per-coord (position + palette color). For every
     // non-overlapping scene each coord has one writer, so this is bit-identical to
     // the raw per-voxel set; only genuine leaf overlap differs (the dense file keeps
     // duplicate entries there, the streamed file is resolved), and the last-writer
@@ -500,7 +500,7 @@ fn assert_streamed_vox_export_equals_dense(scene: &Scene, vpb: u32, label: &str)
         parsed_model_last_writer_sets(&streamed_bytes),
         parsed_model_last_writer_sets(&dense_bytes),
         "[{label}] streamed export resolved occupancy (last-writer position + palette \
-             colour) must be IDENTICAL to the dense-path `.vox` export"
+             color) must be IDENTICAL to the dense-path `.vox` export"
     );
     // The streamed export is one-id-per-cell: it writes NO duplicate voxels, so its
     // raw voxel count equals its resolved count (the dense path over-counts at
@@ -694,7 +694,7 @@ fn streamed_vox_export_equals_dense_for_sketch_solid() {
 
 /// An OVERLAP multi-material scene (two boxes of different materials overlapping):
 /// the overlap blocks classify BOUNDARY (Union later-wins material is per-voxel), so
-/// each voxel's `.vox` palette colour must match the dense export through the palette.
+/// each voxel's `.vox` palette color must match the dense export through the palette.
 #[test]
 fn streamed_vox_export_equals_dense_for_overlap_multi_material() {
     let vpb = 16u32;

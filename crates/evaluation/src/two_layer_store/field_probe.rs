@@ -158,27 +158,27 @@ mod tests {
 
     /// The scene's resolved occupancy as a set of ABSOLUTE voxel indices — the INDEPENDENT
     /// oracle the composed field is held against. `resolve_region` yields voxels in its
-    /// recentred frame (`local_index`), so each is rebased to absolute by adding the grid's
-    /// carried `recentre_voxels` (ADR 0008: absolute = local + recentre).
+    /// recentered frame (`local_index`), so each is rebased to absolute by adding the grid's
+    /// carried `recenter_voxels` (ADR 0008: absolute = local + recenter).
     fn resolved_occupancy_abs(scene: &Scene, density: u32) -> BTreeSet<[i64; 3]> {
         let dense = scene.resolve_region(scene.full_extent_blocks(density), density, 0);
-        let recentre = dense.recentre_voxels;
+        let recenter = dense.recenter_voxels;
         dense
             .occupied
             .iter()
             .map(|voxel| {
                 [
-                    voxel.local_index[0] as i64 + recentre[0],
-                    voxel.local_index[1] as i64 + recentre[1],
-                    voxel.local_index[2] as i64 + recentre[2],
+                    voxel.local_index[0] as i64 + recenter[0],
+                    voxel.local_index[1] as i64 + recenter[1],
+                    voxel.local_index[2] as i64 + recenter[2],
                 ]
             })
             .collect()
     }
 
-    /// Assert `composed_field_at(centre) <= 0` agrees with `occupied` at EVERY absolute
+    /// Assert `composed_field_at(center) <= 0` agrees with `occupied` at EVERY absolute
     /// voxel in the axis-aligned box `[min, max)` (an integer voxel index box). Sampling at
-    /// the voxel CENTRE (`index + 0.5`) is the point the dense resolve classifies each voxel
+    /// the voxel CENTER (`index + 0.5`) is the point the dense resolve classifies each voxel
     /// at, so the two answer the SAME question — the consistency proof.
     fn assert_field_sign_matches_occupancy(
         leaves: &[&LeafProducer],
@@ -192,8 +192,8 @@ mod tests {
         for z in min[2]..max[2] {
             for y in min[1]..max[1] {
                 for x in min[0]..max[0] {
-                    let centre = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
-                    let field_says_inside = composed_field_at(leaves, centre, density) <= 0.0;
+                    let center = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+                    let field_says_inside = composed_field_at(leaves, center, density) <= 0.0;
                     let occupied_here = occupied.contains(&[x, y, z]);
                     assert_eq!(
                         field_says_inside,
@@ -227,12 +227,12 @@ mod tests {
         )
     }
 
-    /// (1) A single Sphere Tool: the centre is deep inside (negative), far outside is
+    /// (1) A single Sphere Tool: the center is deep inside (negative), far outside is
     /// positive, AND — the consistency proof — `composed_field_at <= 0` agrees with the
     /// resolved occupancy at EVERY voxel of a box covering the sphere plus a shell.
     #[test]
     fn single_sphere_field_matches_occupancy_everywhere() {
-        // A 4×4×4-block sphere at the origin → voxel extent [0, 32) per axis, centre (16,16,16).
+        // A 4×4×4-block sphere at the origin → voxel extent [0, 32) per axis, center (16,16,16).
         let scene = Scene::from_nodes(vec![tool(
             ShapeKind::Sphere,
             [4, 4, 4],
@@ -243,10 +243,10 @@ mod tests {
         let leaves = scene.leaf_producers(DENSITY);
         let leaves: Vec<&LeafProducer> = leaves.iter().collect();
 
-        let centre = Vec3::new(16.0, 16.0, 16.0);
+        let center = Vec3::new(16.0, 16.0, 16.0);
         assert!(
-            composed_field_at(&leaves, centre, DENSITY) < 0.0,
-            "the sphere centre is well inside the body (negative)"
+            composed_field_at(&leaves, center, DENSITY) < 0.0,
+            "the sphere center is well inside the body (negative)"
         );
         let far_outside = Vec3::new(500.0, 16.0, 16.0);
         assert!(
@@ -358,14 +358,14 @@ mod tests {
         let leaves = scene.leaf_producers(DENSITY);
         let leaves: Vec<&LeafProducer> = leaves.iter().collect();
 
-        // The cutter occupies voxels [8,24)³; its centre (16,16,16) is inside the BASE box
+        // The cutter occupies voxels [8,24)³; its center (16,16,16) is inside the BASE box
         // ([0,32)³) yet carved away — so the composed field there is POSITIVE.
-        let carved_centre = Vec3::new(16.0, 16.0, 16.0);
+        let carved_center = Vec3::new(16.0, 16.0, 16.0);
         assert!(
-            composed_field_at(&leaves, carved_centre, DENSITY) > 0.0,
+            composed_field_at(&leaves, carved_center, DENSITY) > 0.0,
             "a point inside the cutter is OUTSIDE the composed body (Subtract = max(acc, -v))"
         );
-        // The base box's own centre lies inside the cutter too; a corner of the base far
+        // The base box's own center lies inside the cutter too; a corner of the base far
         // from the cutter (voxel (2,2,2)) is still solid ⇒ negative.
         let uncarved = Vec3::new(2.5, 2.5, 2.5);
         assert!(
@@ -376,7 +376,7 @@ mod tests {
         let occupied = resolved_occupancy_abs(&scene, DENSITY);
         assert!(
             !occupied.iter().any(|voxel| *voxel == [16, 16, 16]),
-            "the carved centre voxel must NOT be occupied (sanity on the oracle)"
+            "the carved center voxel must NOT be occupied (sanity on the oracle)"
         );
         let (min, max) = occupancy_bounds(&occupied, 3);
         assert_field_sign_matches_occupancy(&leaves, &occupied, min, max, DENSITY, "subtract");

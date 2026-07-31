@@ -5,7 +5,7 @@ edition = "2021"
 
 # The foundational value-vocabulary crate: the plain domain values every higher
 # layer is phrased in — the resolved voxel cell and its sparse grid, the
-# frame-bearing recentre, the primitive-kind tag and the pure signed-distance
+# frame-bearing recenter, the primitive-kind tag and the pure signed-distance
 # functions, the block-palette id / cell-key codec / material choice, the
 # absolute-voxel box and the leaf spatial index, and the blocks/voxels units
 # core. It sits ABOVE `substrate` (whose pure CS/math structures it names at the

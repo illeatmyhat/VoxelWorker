@@ -226,7 +226,7 @@ answer is-enclosed approximately without a full grow; the seed-and-grow path is 
   "consume the reserved control surface" move):
   - `SpatialQuery::EnclosedVolume { cell }` (LOCAL: the cell's volume), `SpaceAdjacency { cell }`
     (LOCAL). **Global-topology** (seed-and-grow): `PortalConnectivity { from, to }` (a portal-path over
-    the space graph, the void analogue of 0004's joint-graph `Connectivity`) and `EgressCount { cell }`
+    the space graph, the void analog of 0004's joint-graph `Connectivity`) and `EgressCount { cell }`
     (number of portals reaching an outside cell) — both follow the connected void across residency
     boundaries and may return *indeterminate* under the budget cap.
   - `Issue::DeadEndSpace { cell }`, `Issue::UnreachableSpace { cell }`, `Issue::NotEnclosed { cell }`

@@ -1,12 +1,12 @@
 //! Sketch-mode vertex handles: each profile vertex's position in the display's
-//! recentred **render frame**, plus the inverse map (a cursor hit on the sketch plane
+//! recentered **render frame**, plus the inverse map (a cursor hit on the sketch plane
 //! back to a profile `(c0, c1)` voxel coordinate). This is the geometry #94's
 //! interactive vertex drag draws and hit-tests.
 //!
 //! **The frame is carried, never re-derived (ADR 0008).** Every position is routed
 //! through the SAME [`substrate::spatial::LeafPlacement`] the resolver folds occupancy
 //! through — the profile vertex is a producer-LOCAL voxel point, `world_of` places it,
-//! and the composite recentre rebases it into the render frame — so a handle coincides
+//! and the composite recenter rebases it into the render frame — so a handle coincides
 //! with the resolved geometry's profile corner BY CONSTRUCTION rather than by a
 //! kept-in-sync mirror (mirroring the placement ghost's `center_world`).
 //!
@@ -22,11 +22,11 @@ use crate::sketch::{EntityId, EntityRole, Operation};
 use glam::Vec3;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
-/// The sketch's profile vertices in the recentred render frame, with everything the UI
+/// The sketch's profile vertices in the recentered render frame, with everything the UI
 /// needs to draw draggable handles and turn a cursor ray back into a profile coordinate.
 ///
 /// Positions are in the SAME render frame the resolved voxels and the transform gizmo
-/// live in (voxel units, composite-recentred), so the UI projects them through the same
+/// live in (voxel units, composite-recentered), so the UI projects them through the same
 /// `view_projection` it uses for everything else.
 #[derive(Debug, Clone)]
 pub struct SketchHandles {
@@ -59,8 +59,8 @@ pub struct SketchHandles {
     /// The placement affine (carried so the inverse map rotates through the exact same
     /// transform the forward map placed vertices with).
     placement: LeafPlacement,
-    /// The composite recentre (render frame = true world − recentre), in voxels.
-    recentre: [i64; 3],
+    /// The composite recenter (render frame = true world − recenter), in voxels.
+    recenter: [i64; 3],
     /// The profile's in-plane bounding-box minimum, in voxels — added back so a local
     /// coordinate returns to absolute profile space.
     profile_min: [i64; 2],
@@ -76,7 +76,7 @@ impl SketchHandles {
     /// `SketchPoint.offset_voxels`.
     ///
     /// The inverse of the forward placement: rebase the render hit into true world
-    /// (`+ recentre`), invert the placement to producer-local, read the two in-plane
+    /// (`+ recenter`), invert the placement to producer-local, read the two in-plane
     /// components and add the profile minimum back. `render_hit` need not lie exactly on
     /// the plane — the normal component is simply discarded by reading only the in-plane
     /// axes — but a ray/plane intersection keeps it on-plane so the drag tracks the cursor.
@@ -96,17 +96,17 @@ impl SketchHandles {
             )))
             .voxels();
         [
-            world.x - self.recentre[0] as f32,
-            world.y - self.recentre[1] as f32,
-            world.z - self.recentre[2] as f32,
+            world.x - self.recenter[0] as f32,
+            world.y - self.recenter[1] as f32,
+            world.z - self.recenter[2] as f32,
         ]
     }
 
     pub fn render_hit_to_profile(&self, render_hit: [f32; 3]) -> [f64; 2] {
         let world = Vec3::new(
-            render_hit[0] + self.recentre[0] as f32,
-            render_hit[1] + self.recentre[1] as f32,
-            render_hit[2] + self.recentre[2] as f32,
+            render_hit[0] + self.recenter[0] as f32,
+            render_hit[1] + self.recenter[1] as f32,
+            render_hit[2] + self.recenter[2] as f32,
         );
         let local = self
             .placement
@@ -150,7 +150,7 @@ impl Scene {
         // a vertex outside it — and the points-min moved while the resolve's did not, so the
         // whole drawing slid off the solid it belongs to. Worse, the anchor compensation on every
         // edit (`SketchSolid::anchor_preserving_offset`) corrects for a change in the RESOLVE's
-        // anchor, so a points-min move was a shift nothing was cancelling.
+        // anchor, so a points-min move was a shift nothing was canceling.
         //
         // A sketch with nothing filled anchors on `[0, 0]`: it resolves to nothing, so there is
         // no solid to sit on and every point draws at its own offset from the node origin — where
@@ -159,7 +159,7 @@ impl Scene {
 
         // The extent of the box the HANDLES occupy, which is theirs and not the resolve's — it
         // covers free points and open chains that no face contains. Construction points are
-        // excluded: an arc's centre can sit well outside the profile.
+        // excluded: an arc's center can sit well outside the profile.
         let mut real = points
             .iter()
             .filter(|point| point.role == EntityRole::Real)
@@ -203,8 +203,8 @@ impl Scene {
             node.transform.offset_local_voxels,
         );
 
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
-        let recentre_vec = Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
+        let recenter = self.recenter_voxels_for_resolve(voxels_per_block).voxels();
+        let recenter_vec = Vec3::new(recenter[0] as f32, recenter[1] as f32, recenter[2] as f32);
 
         // One continuous profile coordinate into the render frame — the map every handle and
         // arc chord goes through, so a drawn curve and a dragged vertex share one frame.
@@ -218,7 +218,7 @@ impl Scene {
                     local,
                 )))
                 .voxels();
-            (world - recentre_vec).to_array()
+            (world - recenter_vec).to_array()
         };
 
         let vertices: Vec<[f32; 3]> = points
@@ -264,7 +264,7 @@ impl Scene {
         let plane_point = (placement
             .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::ZERO))
             .voxels()
-            - recentre_vec)
+            - recenter_vec)
             .to_array();
 
         Some(SketchHandles {
@@ -275,7 +275,7 @@ impl Scene {
             plane_point,
             plane_normal,
             placement,
-            recentre,
+            recenter,
             profile_min: anchor,
             in_plane_axes: [in0, in1],
         })
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn handles_land_on_profile_corners_of_a_lone_axis_aligned_rectangle() {
         // A 4×6 rectangle on the ground plane (XY), extruded up along Z. A lone node
-        // recentres onto the origin, so its handles are symmetric about it: the profile
+        // recenters onto the origin, so its handles are symmetric about it: the profile
         // spans 4 voxels in X and 6 in Z... no — plane Z ⇒ in-plane axes are X, Y.
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
@@ -350,7 +350,7 @@ mod tests {
     fn handle_extent_matches_the_profile_span_in_render_units() {
         // The rectangle spans 4 voxels along in-plane axis 0 (world X) and 6 along
         // in-plane axis 1 (world Y). The handle bounding box must span exactly that,
-        // regardless of where the composite recentre puts the origin.
+        // regardless of where the composite recenter puts the origin.
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
         let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
@@ -435,16 +435,16 @@ mod tests {
 
     #[test]
     fn handle_positions_match_the_resolver_frame_independently() {
-        // A frame bug (wrong anchor, a dropped recentre, a half-voxel offset) survives the
+        // A frame bug (wrong anchor, a dropped recenter, a half-voxel offset) survives the
         // round-trip tests because forward AND inverse share the bias. This pins the ABSOLUTE
-        // render-frame positions against values derived by hand from the resolver's centring
+        // render-frame positions against values derived by hand from the resolver's centering
         // rule, NOT from `sketch_handles` itself.
         //
         // Rectangle 4x6 on PlaneAxis::Z (in-plane X,Y; normal Z) extruded 2, single node at the
-        // origin. The composite recentre is the AABB centre `(min+max).div_euclid(2)` =
+        // origin. The composite recenter is the AABB center `(min+max).div_euclid(2)` =
         // `[4,6,2]/2 = [2,3,1]`. The profile lives at the producer's local origin corner
         // (bbox-min → local 0) on the base face (normal = 0), so each vertex's render position
-        // is `vertex_in_plane − recentre` on X/Y and `0 − recentre_z = −1` on Z.
+        // is `vertex_in_plane − recenter` on X/Y and `0 − recenter_z = −1` on Z.
         let sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         let (scene, id) = scene_with_sketch(sketch, 2, [0, 0, 0]);
         let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
@@ -466,8 +466,8 @@ mod tests {
         }
 
         // Cross-check against a DIFFERENT query: the handles' in-plane centroid must coincide
-        // with the transform gizmo's pivot (the node AABB centre in the same render frame),
-        // which is the origin for a lone centred node.
+        // with the transform gizmo's pivot (the node AABB center in the same render frame),
+        // which is the origin for a lone centered node.
         let (pivot, _extent) = scene
             .gizmo_placement_for_id(id, DENSITY)
             .expect("gizmo placement");
@@ -497,7 +497,7 @@ mod tests {
     ///
     /// This is the bug the owner hit: the frame used to anchor on the bbox over the real points,
     /// so a point outside the fill moved the anchor, and every handle, segment, arc and the
-    /// region wash with it. Nothing cancelled it, because the anchor compensation applied on
+    /// region wash with it. Nothing canceled it, because the anchor compensation applied on
     /// every edit corrects for a change in the resolve's anchor, which had not moved.
     #[test]
     fn a_point_reaching_past_the_fill_does_not_move_the_drawing() {

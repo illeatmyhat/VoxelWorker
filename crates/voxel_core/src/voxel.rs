@@ -1,5 +1,5 @@
 //! The foundational voxel VALUE layer: the resolved cell, its sparse grid, the
-//! frame-bearing recentre, the primitive-kind tag, and the pure signed-distance
+//! frame-bearing recenter, the primitive-kind tag, and the pure signed-distance
 //! functions the producers sample.
 //!
 //! This is the `voxel_core` value layer: it depends only DOWNWARD (on `core_geom`)
@@ -87,22 +87,22 @@ impl ShapeKind {
 
 pub use crate::core_geom::{BlockAttrs, BlockId};
 
-/// The composite floating-origin recentre, in voxels — the frame value every display artifact of
+/// The composite floating-origin recenter, in voxels — the frame value every display artifact of
 /// one rebuild is resolved in. **Now a substrate frame primitive** (co-located with the other
 /// coordinate-frame newtypes — [`TrueWorldVoxelPoint`](substrate::spatial::TrueWorldVoxelPoint) and
-/// friends — so the recentre point-crossings live in ONE audited place); re-exported here so the
-/// long-standing `voxel_core::voxel::RecentreVoxels` path keeps resolving.
-pub use substrate::spatial::RecentreVoxels;
+/// friends — so the recenter point-crossings live in ONE audited place); re-exported here so the
+/// long-standing `voxel_core::voxel::RecenterVoxels` path keeps resolving.
+pub use substrate::spatial::RecenterVoxels;
 
 /// One occupied voxel in the resolved grid (ADR 0003 §3a — the chunk-local integer +
 /// categorical block-palette cell).
 ///
 /// **The per-voxel record carries an INTEGER index, never an f32 position.** ADR 0003
 /// §3a / ADR 0008 (the voxel-frame invariant): the absolute i64 origin lives ONLY in
-/// the grid's carried frame (the chunk key / `recentre_voxels`), and each cell stores
+/// the grid's carried frame (the chunk key / `recenter_voxels`), and each cell stores
 /// its voxel index `[i, j, k]` *within that frame*. f32 is produced ONLY at consumption
 /// via [`world_position`](Voxel::world_position) (`index + 0.5`), reproducing exactly
-/// the half-integer voxel centre the old f32 payload stored — but exactly, with no f32
+/// the half-integer voxel center the old f32 payload stored — but exactly, with no f32
 /// magnitude loss for a far-placed (origin-rebased) chunk. The stamp keeps the integer
 /// in i64 right up to the downcast to the field, so a far scene is exact rather than
 /// merely "exact for near scenes".
@@ -117,8 +117,8 @@ pub use substrate::spatial::RecentreVoxels;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Voxel {
     /// Voxel index within the grid's CARRIED frame (ADR 0008): the absolute origin
-    /// (chunk key / `recentre_voxels`) lives on the grid, this is the local integer
-    /// index. `i32` carries any region-scoped index (recentred grids place index 0 at
+    /// (chunk key / `recenter_voxels`) lives on the grid, this is the local integer
+    /// index. `i32` carries any region-scoped index (recentered grids place index 0 at
     /// a negative position) with full precision and no f32 rounding.
     pub local_index: [i32; 3],
     /// Coordinate within the owning block: `(i % d, j % d, k % d)`.
@@ -141,8 +141,8 @@ pub struct Voxel {
 }
 
 impl Voxel {
-    /// The voxel centre as an f32 position in the grid's carried frame — `index + 0.5`,
-    /// EXACTLY the half-integer centre the retired `world_position: [f32; 3]` field
+    /// The voxel center as an f32 position in the grid's carried frame — `index + 0.5`,
+    /// EXACTLY the half-integer center the retired `world_position: [f32; 3]` field
     /// stored (ADR 0003 §3a: f32 produced only at consumption). Every consumer that
     /// decoded the old f32 back to an integer (`floor`, `round(world + half − 0.5)`, …)
     /// keeps working byte-identically because this reproduces the same `index + 0.5`.
@@ -155,15 +155,15 @@ impl Voxel {
         ]
     }
 
-    /// The categorical block id as the colour / atlas index the renderer + `.vox`
-    /// export use (today the 3-value palette maps 1:1 to the colour index). Replaces
+    /// The categorical block id as the color / atlas index the renderer + `.vox`
+    /// export use (today the 3-value palette maps 1:1 to the color index). Replaces
     /// the old `material_id_color_index` mask now that the render flag is gone.
     #[inline]
     pub fn color_index(&self) -> u16 {
         self.block_id.0
     }
 
-    /// Compose this voxel's cuboid region-cell key: the clean categorical colour index
+    /// Compose this voxel's cuboid region-cell key: the clean categorical color index
     /// in the low bits, the transient on-face-grid overlay marker in the high bit (ADR
     /// 0003 §3c). The overlay bit lives ONLY in this render-side key — never in the
     /// persistent [`Voxel`] payload, the chunk-storage codec, or the `.vox` export. The
@@ -189,26 +189,26 @@ pub struct VoxelGrid {
     /// Grid dimensions in voxels (the producer's voxel-granular size, already at
     /// document density — e.g. `SdfShape::size_voxels`).
     pub dimensions: [u32; 3],
-    /// The integer voxel offset this grid's world positions were RECENTRED by
+    /// The integer voxel offset this grid's world positions were RECENTERED by
     /// (`Scene::resolve_region` subtracts it from
-    /// every voxel). **ADR 0008 — the carried frame.** A placed composite is recentred by
+    /// every voxel). **ADR 0008 — the carried frame.** A placed composite is recentered by
     /// `(min+max)/2` (= `floor(dim/2)` for a lone producer); a VoxelBody-only / bare-producer
     /// grid is corner-anchored, so this is `[0,0,0]`. Carrying it lets every consumer
-    /// decode `world → index` correctly WITHOUT re-deriving the centring (the assumption
+    /// decode `world → index` correctly WITHOUT re-deriving the centering (the assumption
     /// that, hard-coded as `floor(dim/2)`, made the fog drop a corner-anchored cloud
-    /// field). Default `[0,0,0]` is correct for any un-recentred grid.
-    pub recentre_voxels: [i64; 3],
+    /// field). Default `[0,0,0]` is correct for any un-recentered grid.
+    pub recenter_voxels: [i64; 3],
     /// The occupied voxels (sparse).
     pub occupied: Vec<Voxel>,
 }
 
 impl VoxelGrid {
-    /// Create an empty grid with the given voxel dimensions (un-recentred:
-    /// `recentre_voxels = [0,0,0]`; a recentred resolve sets it explicitly).
+    /// Create an empty grid with the given voxel dimensions (un-recentered:
+    /// `recenter_voxels = [0,0,0]`; a recentered resolve sets it explicitly).
     pub fn new(dimensions: [u32; 3]) -> Self {
         Self {
             dimensions,
-            recentre_voxels: [0, 0, 0],
+            recenter_voxels: [0, 0, 0],
             occupied: Vec::new(),
         }
     }
@@ -221,7 +221,7 @@ impl VoxelGrid {
     // `voxel_index_of` — ADR 0008's world→index decode authority — was DELETED 2026-07-18.
     // Its last consumer was the per-chunk volumetric fog, which ADR 0012 removed along with
     // the rest of the fog subsystem; a survey found zero callers left in the tree, not even
-    // a test. The half of ADR 0008 that still binds is the CARRY half: `recentre_voxels`
+    // a test. The half of ADR 0008 that still binds is the CARRY half: `recenter_voxels`
     // below travels with the grid, and the two-layer expansion applies it (see
     // `core_geom::max_supported_block_offset` for the range over which that rebase is
     // lossless). Nothing decodes world→index any more, because nothing holds a world
@@ -252,8 +252,8 @@ impl VoxelGrid {
 /// (inclusive). Z-up: the band is a Z-layer range; `k` (Z) is the layer scan.
 ///
 /// `dimensions` (`[grid_x, grid_y, grid_z]`) gives the row width and the FLOORED
-/// half-extents used to decode a voxel's centred `world_position` to integer grid
-/// indices: the grid's low corner in the recentred frame is `−floor(dim/2)`, so
+/// half-extents used to decode a voxel's centered `world_position` to integer grid
+/// indices: the grid's low corner in the recentered frame is `−floor(dim/2)`, so
 /// `idx = round(world + floor(dim/2) − 0.5)`. FLOORED half (`dim/2` integer division,
 /// NOT `dim/2.0`) keeps the decode exact for an ODD dim too (world is half-integer).
 ///
@@ -318,9 +318,9 @@ fn widest_run_over<'voxel>(
 /// `region_dimensions` are the region's voxel dimensions (`[grid_x, grid_y,
 /// grid_z]`), exactly what the assembled monolithic grid's `dimensions` would be —
 /// they define the X-axis width of each scan row and the half-extents used to
-/// recover integer grid indices from a voxel's centred `world_position`. The
+/// recover integer grid indices from a voxel's centered `world_position`. The
 /// `chunk_grids` iterator yields each covering per-chunk grid whose voxels are in
-/// the SAME (recentred) coordinate frame the monolithic grid uses; only their
+/// the SAME (recentered) coordinate frame the monolithic grid uses; only their
 /// `occupied` lists are read (each chunk's own `dimensions` are irrelevant here).
 ///
 /// ## How runs are stitched across chunk seams (the subtle part)
@@ -476,7 +476,7 @@ mod categorical_block_id_tests {
     use super::*;
 
     /// ADR 0003 §3a/§3c: the per-voxel cell carries the categorical `block_id` ONLY —
-    /// the colour index IS the block id (no render flag sharing the field, no mask). The
+    /// the color index IS the block id (no render flag sharing the field, no mask). The
     /// three procedural materials keep their old ids (Stone/Wood/Plain ⇒ 0/1/2), so an
     /// existing scene resolves byte-identically.
     #[test]
@@ -492,16 +492,16 @@ mod categorical_block_id_tests {
             assert_eq!(
                 voxel.color_index(),
                 id,
-                "the colour index is the block id verbatim"
+                "the color index is the block id verbatim"
             );
             assert!(
                 voxel.color_index() <= 2,
-                "the procedural ids stay in the shader's colour range"
+                "the procedural ids stay in the shader's color range"
             );
         }
     }
 
-    /// The reconstructed f32 centre is exactly `index + 0.5` (ADR 0003 §3a: f32 produced
+    /// The reconstructed f32 center is exactly `index + 0.5` (ADR 0003 §3a: f32 produced
     /// only at consumption), so `floor` recovers the stored integer index losslessly.
     #[test]
     fn world_position_reconstructs_index_plus_half() {

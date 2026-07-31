@@ -46,7 +46,7 @@ pub(crate) struct CuboidChunkBuffers {
     /// overlay-active uniform = 0); `index_count_overlay` is the overlay-on run, drawn at
     /// byte offset `index_count * 4` with the uniform = 1. Splitting by overlay state into
     /// two draws keeps the render flag out of the vertex format while preserving the
-    /// per-object overlay behaviour.
+    /// per-object overlay behavior.
     index_buffer: wgpu::Buffer,
     index_count: u32,
     index_count_overlay: u32,
@@ -101,7 +101,7 @@ pub struct CuboidMeshRenderer {
     /// Per-chunk GPU buffers (issue #20 S6c-2d), keyed by absolute chunk coord (the
     /// coord `resident_render_chunks` reports). Replaces the single monolithic
     /// vertex/index buffer + `CuboidMesh.chunks` index ranges: each chunk owns its
-    /// own buffers, meshed from its own per-chunk grid + a 1-voxel neighbour apron.
+    /// own buffers, meshed from its own per-chunk grid + a 1-voxel neighbor apron.
     chunk_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
     /// Chunk coords (keys into `chunk_buffers`) that survived the last frustum cull;
     /// computed in `update_uniforms`, consumed in `draw`. Sorted for a deterministic
@@ -124,13 +124,13 @@ pub struct CuboidMeshRenderer {
     /// the shader mapping each face's `material_id` to its atlas sub-rect (carried
     /// in the uniforms). Clamp-to-edge sampler: the shader tiles the per-voxel slice
     /// itself via `fract` mapped into the sub-rect (a Repeat sampler would wrap into
-    /// a neighbouring material's cell).
+    /// a neighboring material's cell).
     atlas_bind_group: wgpu::BindGroup,
     /// The packed atlas's per-material sub-rects (inset sampling window), uploaded
     /// in the per-frame uniforms so the shader maps `material_id` → atlas window.
     atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
     /// Which procedural material the per-frame modulation was bound to.
-    /// `update_uniforms` records it (drives the per-box base-colour modulation only;
+    /// `update_uniforms` records it (drives the per-box base-color modulation only;
     /// the atlas is bound once regardless of material).
     bound_material: MaterialChoice,
     /// The per-chunk grids the mesh was last built from (OWNED copies), retained so
@@ -143,10 +143,10 @@ pub struct CuboidMeshRenderer {
     /// reclip (the layer scrubber) can re-mesh DIRECTLY from the two-layer store — no dense
     /// source grids. Empty on the dense path; populated only by
     /// [`new_from_two_layer_chunks`](Self::new_from_two_layer_chunks).
-    /// `recentre`/`density` are the frame + density the two-layer mesher needs to re-emit in
+    /// `recenter`/`density` are the frame + density the two-layer mesher needs to re-emit in
     /// the SAME world frame on every band change.
     source_two_layer_chunks: Vec<([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)>,
-    source_two_layer_recentre: RecentreVoxels,
+    source_two_layer_recenter: RecenterVoxels,
     source_two_layer_density: u32,
     /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
     /// the global region-local Z; only the Z half is used).
@@ -216,7 +216,7 @@ impl CuboidMeshRenderer {
     /// (issue #20 S6c-2d). `chunk_grids` is `resident_render_chunks`'s output
     /// (`(absolute_chunk_coord, &rebased_grid)` per covering chunk); `grid_dimensions`
     /// is the whole composite grid's voxel dims (the band-clip layer mapping). Meshes
-    /// every chunk with a 1-voxel neighbour apron (see [`build_chunk_meshes_with_apron`])
+    /// every chunk with a 1-voxel neighbor apron (see [`build_chunk_meshes_with_apron`])
     /// and stores one [`CuboidChunkBuffers`] per non-empty chunk.
     pub fn new_from_chunks(
         device: &wgpu::Device,
@@ -245,13 +245,13 @@ impl CuboidMeshRenderer {
     /// Build the cuboid renderer from a [`TwoLayerChunk`] per covering chunk (ADR 0010 E3):
     /// a coarse-solid block becomes a ONE-BOX fast path, a boundary block its stored
     /// microblock cuboids, and inter-block / inter-chunk seam faces are culled via the
-    /// per-face seam-solidity flags (plus the neighbour coarse layer) — NOT a densified
+    /// per-face seam-solidity flags (plus the neighbor coarse layer) — NOT a densified
     /// apron. The emitted exposed-face set is proven identical to the dense
     /// `new_from_chunks` path (the E3 parity gate), so it renders pixel-identical.
     ///
     /// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
-    /// `grid_dimensions` is the whole composite voxel dims; `recentre_voxels` is the
-    /// resolve's carried recentre (ADR 0008) so the two-layer mesh lands in the SAME world
+    /// `grid_dimensions` is the whole composite voxel dims; `recenter_voxels` is the
+    /// resolve's carried recenter (ADR 0008) so the two-layer mesh lands in the SAME world
     /// frame the dense path assembles. The INITIAL build is FULL-band (the E3 fast paths);
     /// the two-layer chunks are RETAINED so a later band reclip (the layer scrubber, ADR
     /// 0010 #53) re-meshes DIRECTLY from the store — no dense source grids needed.
@@ -261,7 +261,7 @@ impl CuboidMeshRenderer {
         color_format: wgpu::TextureFormat,
         chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
         voxels_per_block: u32,
     ) -> Self {
         // The synchronous path builds the FULL model (no band clip). Delegates to the banded
@@ -273,7 +273,7 @@ impl CuboidMeshRenderer {
             color_format,
             chunks,
             grid_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             voxels_per_block,
             LayerBand::FULL,
             None,
@@ -294,7 +294,7 @@ impl CuboidMeshRenderer {
         color_format: wgpu::TextureFormat,
         chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
         voxels_per_block: u32,
         band: LayerBand,
         region: Option<RegionClip>,
@@ -303,7 +303,7 @@ impl CuboidMeshRenderer {
         let chunk_meshes = build_two_layer_chunk_meshes(
             chunks,
             grid_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             voxels_per_block,
             band,
             solid_region(region),
@@ -319,7 +319,7 @@ impl CuboidMeshRenderer {
         // Retain the two-layer chunks + frame so `rebuild_for_band` re-meshes the band
         // slab from the store (ADR 0010 #53) — the layer scrubber on the two-layer path.
         renderer.source_two_layer_chunks = chunks.to_vec();
-        renderer.source_two_layer_recentre = recentre_voxels;
+        renderer.source_two_layer_recenter = recenter_voxels;
         renderer.source_two_layer_density = voxels_per_block.max(1);
         // The mesh was built AT `band` + `region`, so record them — a same-key
         // `update_uniforms` is then a no-op instead of a full re-mesh (M2). A later band
@@ -398,7 +398,7 @@ impl CuboidMeshRenderer {
         //
         // Sampler is CLAMP-to-edge + Nearest (matching the instanced texel grid).
         // The per-voxel tiling can NOT use a Repeat sampler here — Repeat would wrap
-        // to the WHOLE atlas, i.e. into a neighbour material — so the shader does the
+        // to the WHOLE atlas, i.e. into a neighbor material — so the shader does the
         // `fract`-tiling into the sub-rect itself, and the atlas's replicated-edge
         // gutter + half-texel inset (see `texture_atlas`) defend the cell borders.
         let atlas = MaterialAtlas::from_procedural_materials();
@@ -697,7 +697,7 @@ impl CuboidMeshRenderer {
             // The dense builders retain no two-layer chunks; `new_from_two_layer_chunks`
             // overrides these after `assemble` so its band reclip re-meshes from the store.
             source_two_layer_chunks: Vec::new(),
-            source_two_layer_recentre: RecentreVoxels::new([0; 3]),
+            source_two_layer_recenter: RecenterVoxels::new([0; 3]),
             source_two_layer_density: 1,
             source_grid_dimensions: grid_dimensions,
             total_box_count,
@@ -715,17 +715,17 @@ impl CuboidMeshRenderer {
     }
 
     /// Incrementally update the per-chunk buffers for a geometry edit (issue #40):
-    /// re-mesh + re-upload ONLY the chunks the edit (and its apron neighbours) touched,
+    /// re-mesh + re-upload ONLY the chunks the edit (and its apron neighbors) touched,
     /// drop vacated chunks, and KEEP every other chunk's existing buffers — instead of
     /// the wholesale `new_from_chunks` recreate (the measured ~600ms/edit GPU cost).
     ///
     /// `chunk_grids` is the FULL post-edit covering set (`resident_render_chunks`),
-    /// needed IN FULL so the re-meshed chunks' aprons see every neighbour; `grid_dimensions`
+    /// needed IN FULL so the re-meshed chunks' aprons see every neighbor; `grid_dimensions`
     /// is the whole composite's voxel dims (band-clip mapping); `evicted_dirty` is the
     /// resolve cache's evicted coords for this edit (from `invalidate_aabb`).
     ///
     /// PRECONDITION: the floating origin did NOT shift since the last rebuild. Chunk
-    /// grids are stored pre-rebased against the composite recentre, so a recentre shift
+    /// grids are stored pre-rebased against the composite recenter, so a recenter shift
     /// staleens EVERY buffer — the caller must fall back to `new_from_chunks` then. The
     /// active layer band is preserved (re-meshes at `self.current_band`).
     pub fn incremental_rebuild_from_chunks(
@@ -763,7 +763,7 @@ impl CuboidMeshRenderer {
         let rebuilt_buffers = upload_chunk_meshes(device, &meshes);
 
         // Apply. Drop evicted buffers, then drop EVERY rebuild coord's old buffer (a
-        // rebuild coord that now meshes to EMPTY — e.g. fully occluded by new neighbour
+        // rebuild coord that now meshes to EMPTY — e.g. fully occluded by new neighbor
         // occupancy — produces no buffer and must lose its stale one), then insert the
         // freshly built buffers. Net result == wholesale rebuild's buffer set.
         let grids_by_coord: std::collections::HashMap<[i32; 3], &VoxelGrid> = chunk_grids
@@ -801,8 +801,8 @@ impl CuboidMeshRenderer {
     }
 
     /// Incrementally update the per-chunk buffers for a geometry edit on the **two-layer**
-    /// path (issue #55 — the two-layer analogue of `incremental_rebuild_from_chunks`):
-    /// re-mesh + re-upload ONLY the chunks the edit (and its 26-neighbourhood seam footprint)
+    /// path (issue #55 — the two-layer analog of `incremental_rebuild_from_chunks`):
+    /// re-mesh + re-upload ONLY the chunks the edit (and its 26-neighborhood seam footprint)
     /// touched, drop vacated chunks, and KEEP every other chunk's existing buffers — instead
     /// of the wholesale `new_from_two_layer_chunks` recreate that re-meshes + re-uploads the
     /// WHOLE resident set every edit (the exact per-edit latency #40 fixed for the dense path,
@@ -810,23 +810,23 @@ impl CuboidMeshRenderer {
     ///
     /// `chunks` is the FULL post-edit covering set (the `TwoLayerResidentCache`'s resident
     /// chunks), needed IN FULL so the re-meshed chunks' seam-flag culling consults every
-    /// neighbour; `recentre_voxels` / `voxels_per_block` are the resolve's carried frame
+    /// neighbor; `recenter_voxels` / `voxels_per_block` are the resolve's carried frame
     /// (ADR 0008); `grid_dimensions` the whole composite's voxel dims (band-clip mapping);
     /// `evicted_dirty` the resident cache's evicted coords for this edit (from
     /// [`TwoLayerResidentCache::invalidate_aabb`](evaluation::two_layer_store::TwoLayerResidentCache::invalidate_aabb)).
     ///
-    /// The dirty set is dilated by the 26-neighbourhood via the SAME
+    /// The dirty set is dilated by the 26-neighborhood via the SAME
     /// [`cuboid_incremental_plan`] the dense path uses — the seam-solidity dependency footprint
-    /// is that same 26-neighbourhood (a neighbour's coarse / microblock face occupancy can cull
+    /// is that same 26-neighborhood (a neighbor's coarse / microblock face occupancy can cull
     /// this chunk's seam faces). Applying the plan — re-mesh `rebuild`, drop `evict`, keep the
     /// rest — yields a per-chunk buffer set IDENTICAL to a wholesale two-layer rebuild (proven
     /// by `incremental_two_layer_gpu_buffer_rebuild_equals_wholesale`).
     ///
     /// PRECONDITION: this must be the two-layer path (built via
     /// `new_from_two_layer_chunks`). A two-layer chunk is chunk-local-integer (ADR 0008), so
-    /// — unlike the dense path — a floating-origin recentre SHIFT does NOT staleen the resident
-    /// buffers (the recentre is a pure index offset re-applied here as `recentre_voxels`); the
-    /// caller need not fall back on a recentre shift, only on a DENSITY change (which resizes
+    /// — unlike the dense path — a floating-origin recenter SHIFT does NOT staleen the resident
+    /// buffers (the recenter is a pure index offset re-applied here as `recenter_voxels`); the
+    /// caller need not fall back on a recenter shift, only on a DENSITY change (which resizes
     /// every chunk's voxel extent and re-keys the whole buffer set). The active layer band is
     /// preserved (re-meshes at `self.current_band`).
     pub fn incremental_rebuild_from_two_layer_chunks(
@@ -834,13 +834,13 @@ impl CuboidMeshRenderer {
         device: &wgpu::Device,
         chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
         voxels_per_block: u32,
         evicted_dirty: &[[i32; 3]],
     ) {
         profiling::scope!("cuboid_mesh_incremental_two_layer");
         self.source_grid_dimensions = grid_dimensions;
-        self.source_two_layer_recentre = recentre_voxels;
+        self.source_two_layer_recenter = recenter_voxels;
         self.source_two_layer_density = voxels_per_block.max(1);
 
         // The renderer's KNOWN set is its retained two-layer chunks' coords (includes
@@ -866,7 +866,7 @@ impl CuboidMeshRenderer {
             chunks,
             Some(&rebuild_set),
             grid_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             voxels_per_block,
             self.current_band,
             solid_region(self.current_region),
@@ -874,7 +874,7 @@ impl CuboidMeshRenderer {
         let rebuilt_buffers = upload_chunk_meshes(device, &meshes);
 
         // Apply. Drop evicted buffers, then drop EVERY rebuild coord's old buffer (a rebuild
-        // coord that now meshes to EMPTY — e.g. fully occluded by new neighbour occupancy —
+        // coord that now meshes to EMPTY — e.g. fully occluded by new neighbor occupancy —
         // produces no buffer and must lose its stale one), then insert the freshly built
         // buffers. Net result == wholesale two-layer rebuild's buffer set.
         for coord in &plan.evict {
@@ -976,7 +976,7 @@ impl CuboidMeshRenderer {
 
     /// Build the per-chunk meshes clipped to `band` + `region` from whichever source the
     /// renderer retains (the two-layer store, else the dense per-chunk grids). `None`
-    /// when the renderer has neither source (an empty build). The two-layer analogue of
+    /// when the renderer has neither source (an empty build). The two-layer analog of
     /// the dense apron mesher, kept as ONE helper so [`rebuild_for_band`](Self::rebuild_for_band) and the ghost
     /// slab build share the exact same clip semantics (ADR 0012: the two ghost slabs are
     /// just this build at the slab bands). `region` carries its own [`RegionRole`], so the
@@ -990,7 +990,7 @@ impl CuboidMeshRenderer {
             return Some(build_two_layer_chunk_meshes(
                 &self.source_two_layer_chunks,
                 self.source_grid_dimensions,
-                self.source_two_layer_recentre,
+                self.source_two_layer_recenter,
                 self.source_two_layer_density,
                 band,
                 region,
@@ -1014,7 +1014,7 @@ impl CuboidMeshRenderer {
 
     /// (ADR 0012 H1) Rebuild the two onion GHOST slab meshes for `band`: the layers
     /// `[band_min − depth, band_min)` (lower slab) and `(band_max, band_max + depth]`
-    /// (upper slab), the recentred-Z remainder of the onion span `AppCore::onion_fog_params`
+    /// (upper slab), the recentered-Z remainder of the onion span `AppCore::onion_fog_params`
     /// derives (floored half, Z-up, depth clamped 1..8). Each slab is meshed by the SAME
     /// banded builder the solid uses, so it carries real cap faces at the slab edges — the
     /// brick raymarch ghost's per-slab traversal clamp produces the same caps, which is what
@@ -1097,13 +1097,13 @@ impl CuboidMeshRenderer {
 
     /// Upload the per-frame uniforms (camera matrix, grid half-extent + density
     /// for the per-voxel texture slice + grid overlay, grid-overlay params +
-    /// toggle, per-material base colours) and frustum-cull the mesh chunks.
+    /// toggle, per-material base colors) and frustum-cull the mesh chunks.
     ///
     /// `grid_dimensions` give the half-extent so `world + half` is the absolute
     /// voxel position the UV slice + overlay key off. `voxels_per_block` is the
     /// density (slice size + block-line period). `grid_overlay_enabled` reflects
     /// the Display toggle. `bound` is the active procedural material: it selects
-    /// the bound texture (E3b-2) AND drives the relative base-colour modulation
+    /// the bound texture (E3b-2) AND drives the relative base-color modulation
     /// (exactly like the instanced step-3b). `None` means a loaded VS block is
     /// active: modulation is disabled here, and the loaded-block pipeline selected in
     /// `draw` (when its 6-layer D2Array bind group is supplied) ignores the
@@ -1162,8 +1162,8 @@ impl CuboidMeshRenderer {
         let overlay = crate::renderer::grid_overlay_params();
         // The render grid cage's corner-anchoring term (`floor(dim/2)`), shared by the
         // `grid_half_extent` uniform AND the overlay's true-world offset below — ONE typed value
-        // so the two can never diverge, and so `recentre − grid_half_extent` only compiles via the
-        // audited `RecentreVoxels::render_absolute_to_true_world_offset` conversion.
+        // so the two can never diverge, and so `recenter − grid_half_extent` only compiles via the
+        // audited `RecenterVoxels::render_absolute_to_true_world_offset` conversion.
         let grid_half_extent =
             substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions);
         let uniforms = CuboidUniforms {
@@ -1195,21 +1195,21 @@ impl CuboidMeshRenderer {
             material_base_colors: base_colors,
             material_atlas_rects: self.atlas_rects,
             ghost_tint: [0.0, 0.0, 0.0, 0.0],
-            // `render_absolute + (recentre − grid_half_extent)` is the TRUE world voxel coord — so
+            // `render_absolute + (recenter − grid_half_extent)` is the TRUE world voxel coord — so
             // the overlay's block lines land on the world block lattice, not the render grid's
             // half-extent frame. The subtraction happens ONLY inside this named conversion (the SAME
             // floor(dim/2) `grid_half_extent` above), so no code can treat the render-local
-            // `world_position + grid_half_extent` as if it were true-world; `recentre` is the
+            // `world_position + grid_half_extent` as if it were true-world; `recenter` is the
             // resolve's carried frame (ADR 0008).
             overlay_world_offset: self
-                .source_two_layer_recentre
+                .source_two_layer_recenter
                 .render_absolute_to_true_world_offset(grid_half_extent),
             _overlay_pad: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // ADR 0012 (H1) — the onion GHOST uniform. Identical camera/frame to the solid,
-        // but `ghost_mode = 1` (flat translucent tint) + the tint colour. Both onion
+        // but `ghost_mode = 1` (flat translucent tint) + the tint color. Both onion
         // slabs share this ONE uniform (the slab distinction lives in the per-slab GHOST
         // geometry, not the uniform), so a band scrub only re-meshes the thin slabs and
         // never touches this buffer's shape. The tint is the SAME constant the brick

@@ -14,7 +14,7 @@ fn resident_coords(cache: &Store) -> std::collections::BTreeSet<[i32; 3]> {
 fn targeted_invalidation_evicts_only_intersecting_chunks() {
     let density = 16u32;
     // A scene spread far enough in X that the Box occupies chunks no other leaf
-    // touches (so moving it is a clean, localised edit).
+    // touches (so moving it is a clean, localized edit).
     let scene_a = three_tool_scene(density, 40);
     let mut cache = Store::new();
     let _ = cache.resolve_region(&scene_a, density, 0);
@@ -94,8 +94,8 @@ fn move_invalidates_chunks_around_both_endpoints() {
     let index_b = scene_b.build_leaf_spatial_index(density);
     let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
 
-    // The chunk owning the OLD Box centre (40·16 = 640 voxels) and the chunk
-    // owning the NEW centre (80·16 = 1280 voxels) must BOTH be in the edit range.
+    // The chunk owning the OLD Box center (40·16 = 640 voxels) and the chunk
+    // owning the NEW center (80·16 = 1280 voxels) must BOTH be in the edit range.
     let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * density) as i32;
     let old_chunk_x = (640i32).div_euclid(chunk_extent);
     let new_chunk_x = (1280i32).div_euclid(chunk_extent);

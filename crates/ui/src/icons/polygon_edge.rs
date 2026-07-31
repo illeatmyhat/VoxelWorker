@@ -2,7 +2,7 @@
 //!
 //! No construction circle at all, and the polygon left open along its base: the two accented nodes
 //! are the edge's ends, and everything else follows from them. Dropping the circle is what says
-//! this tool has no centre — it is the third polygon mark and the only one that does not start
+//! this tool has no center — it is the third polygon mark and the only one that does not start
 //! from the middle.
 
 use super::{Ink, Mark};

@@ -91,7 +91,7 @@ impl ChunkCoverage for VoxelAabb {
 }
 
 /// A content fingerprint distinguishing two leaves that occupy the SAME world-AABB
-/// but emit DIFFERENT voxels (e.g. a recoloured Tool, or a swapped shape kind at an
+/// but emit DIFFERENT voxels (e.g. a recolored Tool, or a swapped shape kind at an
 /// identical bounding box). The edit diff ([`LeafSpatialIndex::edit_aabb_since`])
 /// must dirty a leaf whose voxels changed even when its box did not, so the
 /// fingerprint is compared alongside the AABB.
@@ -99,14 +99,14 @@ impl ChunkCoverage for VoxelAabb {
 /// It is derived from the bytes of the leaf's `NodeContent` that affect the
 /// resolved voxels. `RegionSpanning` marks a leaf with no intrinsic AABB (a VoxelBody
 /// such as the debug-cloud field, whose voxels fill the whole composite region):
-/// such a leaf cannot be localised to chunks, so any edit touching it forces a
+/// such a leaf cannot be localized to chunks, so any edit touching it forces a
 /// wholesale clear (see [`LeafSpatialIndex::edit_aabb_since`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LeafFingerprint {
-    /// A localisable leaf with a concrete world-AABB; the payload identifies its
+    /// A localizable leaf with a concrete world-AABB; the payload identifies its
     /// resolved content so a same-box content change is still detected.
     Bounded(String),
-    /// A leaf with a concrete world-AABB whose EDITS nevertheless cannot be localised
+    /// A leaf with a concrete world-AABB whose EDITS nevertheless cannot be localized
     /// to that box (ADR 0017 issue #75): an `Intersect`-influence leaf — its own
     /// operation is `Intersect`, or an enclosing scope folds under `Intersect`. Such a
     /// mask removes occupancy anywhere OUTSIDE its body, so a change involving it
@@ -118,7 +118,7 @@ pub enum LeafFingerprint {
     MasksBeyondItsBox(String),
     /// A leaf with no intrinsic AABB (region-spanning), e.g. a VoxelBody. Carries its
     /// content bytes so a VoxelBody edit is still seen as a change, but its presence in a
-    /// diff forces a wholesale clear (it cannot be chunk-localised).
+    /// diff forces a wholesale clear (it cannot be chunk-localized).
     RegionSpanning(String),
 }
 
@@ -155,7 +155,7 @@ pub struct LeafSpatialIndex {
 impl LeafSpatialIndex {
     /// The leaves whose world-AABBs intersect `query` (a linear overlap scan).
     /// Region-spanning leaves (empty AABB) never match an AABB query — they are not
-    /// localisable; callers that must account for them use
+    /// localizable; callers that must account for them use
     /// [`has_region_spanning_leaf`](Self::has_region_spanning_leaf).
     pub fn leaves_intersecting(&self, query: &VoxelAabb) -> Vec<&LeafEntry> {
         self.entries
@@ -182,7 +182,7 @@ impl LeafSpatialIndex {
     ///   source and the destination).
     /// * **Add** — the new leaf is only in `self`; its box is dirtied.
     /// * **Remove** — the old leaf is only in `previous`; its box is dirtied.
-    /// * **Edit in place (resize / recolour / shape swap)** — the (AABB,
+    /// * **Edit in place (resize / recolor / shape swap)** — the (AABB,
     ///   fingerprint) pair differs, so both old and new boxes are dirtied.
     ///
     /// Returns:
@@ -191,7 +191,7 @@ impl LeafSpatialIndex {
     /// * `None` — a **conservative fallback**: the caller must `clear()` the whole
     ///   cache. This happens when (a) the two indices were built at different
     ///   densities (every chunk's voxel extent changed), (b) a **region-spanning**
-    ///   leaf (a VoxelBody) was added, removed, or edited — it has no localisable box, so
+    ///   leaf (a VoxelBody) was added, removed, or edited — it has no localizable box, so
     ///   its dirty region is "everywhere" — or (c) an **Intersect-influence** leaf
     ///   ([`LeafFingerprint::MasksBeyondItsBox`], ADR 0017 #75) appears in the diff:
     ///   its mask effect reaches beyond its box, so the box union under-dirties.

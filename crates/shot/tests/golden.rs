@@ -31,7 +31,7 @@
 //! compare would flake. Instead we count a pixel as "different" only when its
 //! max per-channel absolute difference exceeds `CHANNEL_DIFF_THRESHOLD` (8/255),
 //! and FAIL only when the fraction of such pixels exceeds `MAX_MISMATCH_FRACTION`
-//! (0.5%). On this RTX machine the `--debug-faces` case (flat orientation colours)
+//! (0.5%). On this RTX machine the `--debug-faces` case (flat orientation colors)
 //! comes out essentially bit-exact, and the shaded cases sit far below 0.5% across
 //! repeated runs (observed << 0.1%). On a mismatch we write `<case>-actual.png` and
 //! `<case>-diff.png` next to the reference dir's sibling temp output and print the
@@ -91,7 +91,7 @@ const CASES: &[GoldenCase] = &[
     // village, but its whole composite is placed at ~XZ 10,000 blocks (vertical bounded;
     // Z-up, so the far offset is on the two horizontal axes X/Y). Every other golden is
     // near-origin, where the f32 voxel payload is still exact — they cannot see far-scene
-    // precision loss. At XZ~10k an absolute f32 voxel centre has barely a fractional bit
+    // precision loss. At XZ~10k an absolute f32 voxel center has barely a fractional bit
     // left, so this golden is the guard the ADR 0003 §3a chunk-local-integer payload move
     // (#48) must preserve. It renders pixel-identical to `demo-village` TODAY because the
     // resolve rebases to the composite floating-origin in i64 BEFORE the f32 downcast
@@ -120,7 +120,7 @@ const CASES: &[GoldenCase] = &[
     // An 8³-block sphere (grid 128³) with an onion-skinned equatorial band: layers [56,72]
     // render as the crisp solid stone disk, while the sphere's shell ABOVE and BELOW the
     // band ghosts as crisp TRANSLUCENT voxels (8 onion layers each side, the retired fog
-    // haze's blue/grey hue). The ghost is two thin per-slab meshes (cuboid path) / two
+    // haze's blue/gray hue). The ghost is two thin per-slab meshes (cuboid path) / two
     // per-slab raymarches (brick path), alpha-blended, depth test `Less` + write ON (nearest
     // ghost surface). This golden pins the DENSE mesh ghost (draws in the onion slabs, solid
     // band unfogged). The translucent ghost is NOT pixel-identical across display paths (the
@@ -372,7 +372,7 @@ const CASES: &[GoldenCase] = &[
     // Sphere selected (`--select-node 0`). The Sphere clips to its mid-band [30,50] of its own
     // 80-layer Z track with the ghost haze above/below — INSIDE its placed AABB only; the Box
     // and Torus, outside that AABB, render FULLY SOLID/finished. This is what distinguishes the
-    // per-object clip from the retired scene-wide band: two untouched neighbours beside a
+    // per-object clip from the retired scene-wide band: two untouched neighbors beside a
     // sectioned object.
     GoldenCase {
         name: "onion-region-two-object",
@@ -431,7 +431,7 @@ const CASES: &[GoldenCase] = &[
     // derives per-pixel screen-space widths (`fwidth` on the mesh paths, the analytic
     // plane-step on the brick raymarch), holds each line at a minimum pixel width, and
     // fades a tier out as its pitch nears the pixel grid. This golden is the ONLY case
-    // exercising `--grid`, pinning that behaviour at exactly the kind of view that
+    // exercising `--grid`, pinning that behavior at exactly the kind of view that
     // exposed the bug.
     GoldenCase {
         name: "tube-grid-overlay",
@@ -442,7 +442,7 @@ const CASES: &[GoldenCase] = &[
     },
     // ADR 0032: the selection-cel JUNCTION creases — the subtract scene with the HOST
     // selected under `--selection-cel`. The cel draws the screen-space outline + wash plus
-    // the analytic edge overlay: the host's authored box catalogue AND the three traced
+    // the analytic edge overlay: the host's authored box catalog AND the three traced
     // open L-curves where the flush-corner cutter's walls meet the host's faces
     // (`trace_intersection_curves`, no closed form). Pins the traced-junction pipeline in
     // the render gate end-to-end: pair enumeration, bracket pruning, seed screen, and the
@@ -472,7 +472,7 @@ const CASES: &[GoldenCase] = &[
 /// path there, which the cross-check would test only trivially. Every name MUST exist in
 /// `CASES`.
 ///
-/// ADR 0010 #53: the two LAYER-BAND-clip cases are now INCLUDED — the two-layer mesher honours
+/// ADR 0010 #53: the two LAYER-BAND-clip cases are now INCLUDED — the two-layer mesher honors
 /// a layer band (clips coarse blocks to the band one-box, clips microblock cuboids, synthesises
 /// cut-plane cap faces at the band edge), so the band slab renders pixel-identical to the dense
 /// banded path with no dense source grids:
@@ -856,7 +856,7 @@ fn two_layer_golden_matches_dense() {
 /// raymarch (`shot --brick`: block-DDA over the G0 sorted records + R8 sculpted atlas, the
 /// cuboid mesh built EMPTY so the pixels provably come from the atlas) and assert each is
 /// PIXEL-IDENTICAL to the SAME committed dense reference — the parity gate's clause (c). The
-/// finest-LOD raymarch is designed (per-sample MSAA rays + pixel-centre face evaluation) to
+/// finest-LOD raymarch is designed (per-sample MSAA rays + pixel-center face evaluation) to
 /// reproduce the rasterized mesh, not merely approximate it, so this reuses the mesh path's
 /// own goldens with no new references. The view cube composites over the brick-drawn solid
 /// the same as over the mesh, so a byte-for-byte-equivalent render is the depth-compositing

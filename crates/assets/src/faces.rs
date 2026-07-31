@@ -21,10 +21,10 @@
 //!     resolved against the block's own domain, then `game`, then `survival`,
 //!     until a file exists (leading-slash tolerated like M6).
 //!
-//! ## What falls back to uniform (the M6 behaviour)
+//! ## What falls back to uniform (the M6 behavior)
 //!
 //!   * No matching blocktype, or a parse failure (VS JSON is lenient — unquoted
-//!     keys / trailing commas — and we pre-normalise it, but anything that still
+//!     keys / trailing commas — and we pre-normalize it, but anything that still
 //!     won't parse falls back).
 //!   * `overlays` / tints / `rotation` (ignored for v1 — only `base` is read).
 //!   * Unknown face keys (e.g. `inside-*` cut faces) are ignored.
@@ -109,7 +109,7 @@ pub enum FaceProvenance {
 }
 
 impl FaceTextures {
-    /// A uniform mapping: the same `path` on all six faces (M6 behaviour).
+    /// A uniform mapping: the same `path` on all six faces (M6 behavior).
     pub fn uniform(path: PathBuf) -> Self {
         Self {
             paths: [
@@ -184,7 +184,7 @@ impl ParsedBlockType {
     }
 }
 
-/// Normalise VS's lenient JSON into strict JSON `serde_json` can parse.
+/// Normalize VS's lenient JSON into strict JSON `serde_json` can parse.
 ///
 /// VS blocktype files use unquoted object keys and trailing commas (JSON5-ish).
 /// We make a best-effort pass that strips `//` and `/* */` comments (rare but
@@ -192,7 +192,7 @@ impl ParsedBlockType {
 /// trailing commas before `}` / `]`.
 ///
 /// String contents are preserved verbatim (we track whether we're inside a
-/// string and skip transformations there). This is a pragmatic normaliser, not a
+/// string and skip transformations there). This is a pragmatic normalizer, not a
 /// full JSON5 parser; anything it can't fix cleanly just fails to parse and the
 /// caller falls back to uniform.
 pub fn normalize_vs_json(source: &str) -> String {
@@ -317,7 +317,7 @@ fn is_ident_part(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.'
 }
 
-/// Parse a normalised blocktype JSON value into a [`ParsedBlockType`], or `None`
+/// Parse a normalized blocktype JSON value into a [`ParsedBlockType`], or `None`
 /// if it has neither a usable `code` nor any texture map.
 pub fn parse_block_type(raw: &str) -> Option<ParsedBlockType> {
     let normalized = normalize_vs_json(raw);

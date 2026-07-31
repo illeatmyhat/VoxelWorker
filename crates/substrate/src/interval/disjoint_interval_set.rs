@@ -46,7 +46,7 @@ impl DisjointIntervalSet {
     }
 
     /// The stored intervals, in ascending order — each `(lo, hi)` disjoint and
-    /// non-touching from its neighbours.
+    /// non-touching from its neighbors.
     pub fn intervals(&self) -> &[(i64, i64)] {
         &self.intervals
     }
@@ -114,7 +114,7 @@ impl DisjointIntervalSet {
 // known bounded-model-checking pathology for heavy std-collection mutation, not a property
 // failure. This is exactly why the extraction map (docs/design/substrate-extraction-map.md,
 // decision-6) assigns this stateful invariant to a DEDUCTIVE prover (Creusot/Verus), not Kani;
-// it waits for that tier to be stood up. The unit tests below pin the behaviour meanwhile.
+// it waits for that tier to be stood up. The unit tests below pin the behavior meanwhile.
 
 /// Kani probes of the MACHINE-INTEGER edges of this type — the edges the Verus proof of `insert`
 /// deliberately assumed away in its preconditions, and which the deductive tier therefore never
@@ -182,7 +182,7 @@ mod tests {
         let mut set = DisjointIntervalSet::new();
         set.insert(0, 2);
         set.insert(6, 8);
-        // A run that spans the gap fuses BOTH neighbours into one interval.
+        // A run that spans the gap fuses BOTH neighbors into one interval.
         set.insert(2, 6);
         assert_eq!(set.intervals(), &[(0, 8)]);
         assert_eq!(set.widest_span(), 8);

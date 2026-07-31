@@ -90,7 +90,7 @@ theorem different_cell_512_implies_different_cell_8 (a b : Int) (h : a / 512 ≠
     is irrelevant to membership (it is there for the binary search, whose correctness is the
     Kani harness `binary_search_membership_agrees_with_linear_scan`), so the set-level content
     is the map and the dedup. `List.dedup` is not in Lean core, so the dedup is modelled
-    explicitly below and its membership behaviour proved rather than assumed. -/
+    explicitly below and its membership behavior proved rather than assumed. -/
 
 /-- Remove duplicates, keeping the first occurrence — the model of `sort_unstable + dedup`
     at the level of SET membership (which is all the superset property depends on). -/

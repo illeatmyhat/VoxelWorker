@@ -39,7 +39,7 @@
 /// A rebuild covering at most this many chunks is cheap enough to build synchronously on
 /// the main thread without a perceptible hitch (the small-object common case), so it
 /// avoids the worker hop + its one-frame swap latency. Only a rebuild whose covering set
-/// EXCEEDS this — a large object's initial create / resize / density / recentre, the ~3s
+/// EXCEEDS this — a large object's initial create / resize / density / recenter, the ~3s
 /// case the issue targets — goes async. Chosen conservatively: at the default density a
 /// chunk is `4×4×4` blocks, so 128 chunks is a large multi-hundred-block object, well
 /// past the point where an inline build stalls a frame. (Incremental dirty-chunk edits —
@@ -48,12 +48,12 @@
 pub const ASYNC_REBUILD_CHUNK_THRESHOLD: usize = 128;
 
 /// The shape of the edit the resolve produced (issue #60 C1), consumed by
-/// [`route_geometry_rebuild`]. Either the edit localised to a few dirty chunks (an inline
+/// [`route_geometry_rebuild`]. Either the edit localized to a few dirty chunks (an inline
 /// incremental fast-path candidate) or it needs a wholesale rebuild of `chunk_count`
 /// covering chunks (threshold-gated between inline and async).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditShape {
-    /// The edit localised — the resolve returned `incremental_dirty_chunks = Some(..)`.
+    /// The edit localized — the resolve returned `incremental_dirty_chunks = Some(..)`.
     Incremental,
     /// The edit needs a full rebuild (`incremental_dirty_chunks = None`), covering
     /// `chunk_count` chunks. The threshold decides inline-vs-async.
@@ -100,7 +100,7 @@ pub struct DerivedArtifactState {
     /// is stale (it reflects S0 while the worker builds S1), so it must not be inline-patched.
     pub outstanding: bool,
     /// A patch TARGET is resident — the mesh's re-meshable buffers, or the brick's incremental
-    /// mirror. When false there is nothing sound to patch in place, so even a localised edit
+    /// mirror. When false there is nothing sound to patch in place, so even a localized edit
     /// rebuilds wholesale.
     pub patchable: bool,
     /// The shell's INLINE install seam bumps the supersede generation, so building a small
@@ -116,7 +116,7 @@ pub struct DerivedArtifactState {
 /// The one routing policy shared by every derived display artifact — the single rule the three
 /// per-artifact wrappers ([`route_geometry_rebuild`], [`route_mesh_build`],
 /// [`route_brick_rebuild`]) now express: *patch inline iff the resident artifact is current and
-/// the edit is localised; otherwise rebuild wholesale — inline below the chunk threshold, async
+/// the edit is localized; otherwise rebuild wholesale — inline below the chunk threshold, async
 /// above it; while the resident copy is stale (outstanding OR not current) never patch, and —
 /// unless this artifact's inline install seam supersedes an in-flight result — never build a
 /// wholesale inline either.* Pure (no GPU, no window) so the interlock is unit-testable.
@@ -250,7 +250,7 @@ pub fn route_mesh_build(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrickDisplayHandover {
     /// The brick raymarch is (still) the live display this rebuild — no handover; any pending
-    /// deferred clear is cancelled (the brick is drawing, not being replaced).
+    /// deferred clear is canceled (the brick is drawing, not being replaced).
     KeepAsDisplay,
     /// Hand the display back to the cuboid mesh NOW: clear the stale brick field this frame.
     /// Chosen when the replacement mesh is already current, OR the brick can't/needn't draw (a
@@ -321,7 +321,7 @@ pub fn brick_patch_in_place(
 // chapter) for how routing pairs a `GenerationTracker` with each async worker.
 pub use substrate::GenerationTracker;
 
-/// Where a brick rebuild is routed. The brick analogue of [`RebuildRoute`], with the patch
+/// Where a brick rebuild is routed. The brick analog of [`RebuildRoute`], with the patch
 /// precondition (a resident mirror) folded in so the shell reads ONE decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrickRebuildAction {
@@ -364,7 +364,7 @@ pub fn route_brick_rebuild(
     covering_chunk_count: usize,
     async_threshold: usize,
 ) -> BrickRebuildAction {
-    // An incremental edit is expressible as a localised patch only when a mirror is resident and
+    // An incremental edit is expressible as a localized patch only when a mirror is resident and
     // no rebuild is outstanding; otherwise it must be realised as a wholesale of its covering set
     // (which carries the count the shared policy needs to gate inline vs async).
     let edit = if incremental_edit && mirror_resident && !async_outstanding {
@@ -607,7 +607,7 @@ mod tests {
 
     /// A mesh-only mode is active (debug-face / loaded material) so the brick would NOT draw even
     /// if kept → clear now (keeping a stale field is pointless and risks a stale patch, F2). This
-    /// preserves the pre-F1 behaviour for the loaded-material window.
+    /// preserves the pre-F1 behavior for the loaded-material window.
     #[test]
     fn disengaged_brick_would_not_draw_clears_now() {
         assert_eq!(
@@ -732,7 +732,7 @@ mod tests {
 
     // --- route_derived_artifact: the shared policy's exhaustive decision table ---
 
-    /// The three edit shapes the exhaustive table iterates: a localised edit, a wholesale AT the
+    /// The three edit shapes the exhaustive table iterates: a localized edit, a wholesale AT the
     /// threshold (builds inline when not interlocked), and a wholesale ABOVE it (async).
     const EDIT_SHAPES: [EditShape; 3] = [
         EditShape::Incremental,
@@ -752,7 +752,7 @@ mod tests {
         edit: EditShape,
         threshold: usize,
     ) -> RebuildRoute {
-        // The patch fast path: a localised edit onto a current, patchable, settled artifact.
+        // The patch fast path: a localized edit onto a current, patchable, settled artifact.
         let can_patch = matches!(edit, EditShape::Incremental)
             && state.current
             && state.patchable

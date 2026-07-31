@@ -34,7 +34,7 @@ fn face_fill_hex(layer: usize) -> u32 {
 /// GEOMETRIC `materialIndex` order +X,-X,+Y,-Y,+Z,-Z). Z-up labels each geometric
 /// face: +Y = BACK, −Y = FRONT, +Z = TOP, −Z = BOTTOM. Signal style: a flat
 /// near-black fill (per-face, [`face_fill_hex`]), hairline `#2b3238` slice lines at
-/// the 68 %-centre partition, and a monospace `#aeb9c4` label in the centre patch.
+/// the 68 %-center partition, and a monospace `#aeb9c4` label in the center patch.
 pub(super) fn generate_face_label_textures() -> Vec<u8> {
     const LABELS: [&str; 6] = ["RIGHT", "LEFT", "BACK", "FRONT", "TOP", "BOTTOM"];
     let size = FACE_LABEL_TEXTURE_SIZE as usize;
@@ -49,7 +49,7 @@ pub(super) fn generate_face_label_textures() -> Vec<u8> {
 /// flat `fill_hex` background and the monospace label. The 3×3 slice lines are NOT baked
 /// here anymore (issue #91 item 3): they render as a constant-width anti-aliased SDF in
 /// `viewcube.wgsl` (screen-space, so glancing angles never thin them), leaving this
-/// texture as just the flat fill + centred label.
+/// texture as just the flat fill + centered label.
 fn render_face_label(label: &str, fill_hex: u32) -> Vec<u8> {
     let size = FACE_LABEL_TEXTURE_SIZE as usize;
     let background = hex_texel(fill_hex);
@@ -60,12 +60,12 @@ fn render_face_label(label: &str, fill_hex: u32) -> Vec<u8> {
         pixel.copy_from_slice(&background);
     }
 
-    // Monospace label, sized to sit inside the 68 % centre patch.
+    // Monospace label, sized to sit inside the 68 % center patch.
     draw_centered_label(&mut pixels, size, label, text);
     pixels
 }
 
-/// Draw `label` centred using the built-in 5×7 bitmap font, scaled to fill the
+/// Draw `label` centered using the built-in 5×7 bitmap font, scaled to fill the
 /// face, into the RGBA8 `pixels` buffer.
 fn draw_centered_label(pixels: &mut [u8], size: usize, label: &str, color: [u8; 4]) {
     let glyph_width = 5usize;
@@ -73,7 +73,7 @@ fn draw_centered_label(pixels: &mut [u8], size: usize, label: &str, color: [u8; 
     let spacing = 1usize;
     let count = label.chars().count().max(1);
     let text_cells_wide = count * glyph_width + (count - 1) * spacing;
-    // Choose an integer scale that keeps the label inside the 68 % centre patch
+    // Choose an integer scale that keeps the label inside the 68 % center patch
     // (~60% of the face width, ~34% of its height), clear of the slice lines.
     let max_scale_w = (size * 6 / 10) / text_cells_wide.max(1);
     let max_scale_h = (size * 34 / 100) / glyph_height;

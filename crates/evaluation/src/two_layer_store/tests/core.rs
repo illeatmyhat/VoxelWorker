@@ -57,8 +57,8 @@ pub(super) fn assert_two_layer_round_trip_matches_dense(
         "[{label}] two-layer round-trip dimensions must match dense resolve_region"
     );
     assert_eq!(
-        assembled.recentre_voxels, dense.recentre_voxels,
-        "[{label}] two-layer round-trip must carry the SAME recentre as dense"
+        assembled.recenter_voxels, dense.recenter_voxels,
+        "[{label}] two-layer round-trip must carry the SAME recenter as dense"
     );
     let dense_set = resolved_occupancy_set(&dense);
     let assembled_set = resolved_occupancy_set(&assembled);
@@ -388,8 +388,8 @@ fn sketch_interior_elides_to_coarse_solid() {
 
     // (1) SOLID extrude box, 8 blocks per axis (64³ voxels), BLOCK-ALIGNED: every block
     // is fully solid (the axis-aligned wall blocks too — their face lattice line is
-    // collinear with the profile edge but every voxel centre is inside), so the whole
-    // box is COARSE with ZERO boundary blocks (the sample-centre rectangle win).
+    // collinear with the profile edge but every voxel center is inside), so the whole
+    // box is COARSE with ZERO boundary blocks (the sample-center rectangle win).
     let edge = 8 * density as i64;
     let extrude = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
     let scene = Scene::from_nodes(vec![Node::new(
@@ -487,7 +487,7 @@ fn sketch_interior_elides_to_coarse_solid() {
 
     // (4) NON-BLOCK-ALIGNED interior edge: a right-triangle profile whose hypotenuse
     // (x + y = 24) cuts through block INTERIORS at d8. A block the hypotenuse crosses
-    // stays BOUNDARY; a block fully below it goes coarse — proving the sample-centre
+    // stays BOUNDARY; a block fully below it goes coarse — proving the sample-center
     // test still distinguishes true-boundary blocks from fully-solid axis-aligned walls.
     let triangle = vec![
         SketchPoint::new(0, 0),
@@ -688,7 +688,7 @@ fn whole_chunk_fast_path_matches_per_block_sweep() {
     assert_identical(&box_scene, density, "sketch-extrude-box");
 
     // (b) SDF shapes — curved surfaces give a real boundary shell + coarse interiors,
-    // and exercise the Lipschitz-centre interval's inclusion-monotonicity.
+    // and exercise the Lipschitz-center interval's inclusion-monotonicity.
     for kind in [
         ShapeKind::Sphere,
         ShapeKind::Box,
@@ -891,7 +891,7 @@ fn capability_off_by_default_returns_none() {
 /// **The scope-outset parity gate**: the two-layer classifier must agree with the dense
 /// resolve for a Part carrying an outset (ADR 0019 Decision 7, ADR 0020 Decision 7).
 ///
-/// This is the composed-scope analogue of the per-leaf outset gate. The two paths reach
+/// This is the composed-scope analog of the per-leaf outset gate. The two paths reach
 /// the dilated Part by different routes — the dense one resolves the composed field's
 /// sign per voxel, the two-layer one classifies whole blocks from the composed field's
 /// Lipschitz bracket and only resolves the straddling ones. A bracket that claimed AIR

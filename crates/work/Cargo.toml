@@ -27,7 +27,7 @@ default = []
 # The GPU display sinks this crate OWNS + drives off-thread: the cuboid mesher, the brick field
 # build + raymarch renderer, the packed GPU records, the clip-map pyramid, the layer band.
 display = { path = "../display" }
-# The headless `.vox` export sink the export worker serialises to off-thread.
+# The headless `.vox` export sink the export worker serializes to off-thread.
 interchange = { path = "../interchange" }
 # The pure-CPU asset-pack loader the scan worker drives off-thread (detect sources, walk the
 # install, decode PNGs, resolve per-face textures).
@@ -37,7 +37,7 @@ assets = { path = "../assets" }
 evaluation = { path = "../evaluation" }
 # The authored-TRUTH layer: the Scene the rebuild requests carry.
 document = { path = "../document" }
-# The foundational value vocabulary: the recentre frame (RecentreVoxels) the builds land in.
+# The foundational value vocabulary: the recenter frame (RecenterVoxels) the builds land in.
 voxel_core = { path = "../voxel_core" }
 # The pure CS/math substrate: the generic drain-to-latest/supersede worker (CoalescingWorker) and
 # the panic-catch (catch_unwind_or_log) the domain workers are built on.

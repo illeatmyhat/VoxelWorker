@@ -538,7 +538,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
 
     // Resolve the covering two-layer chunks exactly as the live rebuild does.
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
-    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb);
+    let recenter_voxels = scene.recenter_voxels_for_resolve(vpb);
     // Use the placed region dims (what the live shell passes for `grid.dimensions`).
     let grid_dimensions = scene.placed_region_dimensions(vpb);
 
@@ -556,7 +556,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
         COLOR_TARGET_FORMAT,
         &two_layer_chunks,
         grid_dimensions,
-        recentre_voxels,
+        recenter_voxels,
         vpb,
     );
 
@@ -565,7 +565,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
         generation: 1,
         two_layer_chunks,
         grid_dimensions,
-        recentre_voxels,
+        recenter_voxels,
         density: vpb,
         // FULL band — the worker's banded build at FULL is byte-identical to the sync build.
         band: LayerBand::FULL,
@@ -720,7 +720,7 @@ fn brick_render_cases() -> Vec<BrickRenderCase> {
 /// The exact-evaluator occupancy set in the march's ABSOLUTE voxel frame (raw world
 /// voxels): `chunk_coord · chunk_extent + chunk_local_index` for every voxel the
 /// shipped two-layer expansion emits (coarse-solid interiors + boundary microblocks).
-/// The march's `voxel_bias` recovers exactly this frame (the recentre cancels), so a
+/// The march's `voxel_bias` recovers exactly this frame (the recenter cancels), so a
 /// march hit's `absolute_voxel` indexes straight into this set.
 fn exact_occupancy_set(
     two_layer_chunks: &[(
@@ -813,7 +813,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         // The hit-identity image is occupancy-only, so material never enters the hit set;
         // a distinct-material union is brick-representable at G2 (each block single-material)
         // and still exercises the traversal. `unwrap_or(false)` keeps the overlay off.
-        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let recenter = case.scene.recenter_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         // The exact-evaluator oracle (the truth the raymarch is checked against).
@@ -843,7 +843,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
             &build.atlas_payload(),
             &gpu_records,
             &pyramid,
-            recentre,
+            recenter,
         );
         let frame = renderer.update_uniforms(
             &gpu.queue,
@@ -898,8 +898,8 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
                                 .map(|h| h.absolute_voxel)
                             })
                             .collect();
-                    let centre = cpu.map(|h| h.absolute_voxel);
-                    let unstable = jittered.iter().any(|j| *j != centre);
+                    let center = cpu.map(|h| h.absolute_voxel);
+                    let unstable = jittered.iter().any(|j| *j != center);
                     let reachable = jittered.contains(&gpu_answer);
                     if unstable && reachable && conceded < SILHOUETTE_CONCESSION_MAX {
                         conceded += 1;
@@ -914,7 +914,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
                              exact={:?} brick_field_cpu={:?} (agree-with-brick isolates a \
                              BUILD/frame bug; disagree isolates a SHADER bug) \
                              [unstable={unstable} reachable={reachable} conceded={conceded}]",
-                            centre,
+                            center,
                             brick.map(|h| h.absolute_voxel),
                         ));
                     }
@@ -957,13 +957,13 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
 /// brick display; instead the raymarch shades each solid hit per-face from the block's
 /// 6-layer D2Array by `face_layer` + per-face UV + `fract` — copied verbatim from
 /// `cuboid_loaded.wgsl`. This gates that copy END-TO-END on the GPU: bind a synthetic
-/// per-face material of six DISTINCT SOLID colours (so the texel is UV-independent — no
-/// silhouette-filtering ambiguity), render the shaded colour image, then for every INTERIOR
+/// per-face material of six DISTINCT SOLID colors (so the texel is UV-independent — no
+/// silhouette-filtering ambiguity), render the shaded color image, then for every INTERIOR
 /// hit pixel recompute the expected texel independently — the CPU march's hit-face normal →
-/// `face_layer` → that layer's colour, through the SAME sRGB-decode + directional lighting
+/// `face_layer` → that layer's color, through the SAME sRGB-decode + directional lighting
 /// the shader applies — and require a match. Cross-path filtering differs only at
-/// silhouettes, so per-path gating (interior pixels where the single-sample GPU centre ray
-/// and the CPU centre ray agree on the hit) is used, NOT a cross-path byte compare.
+/// silhouettes, so per-path gating (interior pixels where the single-sample GPU center ray
+/// and the CPU center ray agree on the hit) is used, NOT a cross-path byte compare.
 #[test]
 fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     if skip_without_gpu("brick_loaded_material_hit_samples_mesh_rule_texel") {
@@ -996,8 +996,8 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         }
     }
     // The shader's per-channel sRGB decode (the D2Array is Rgba8UnormSrgb) + directional
-    // lighting (identical constants to shade_cuboid_surface), then re-quantised to the
-    // Rgba8Unorm (linear) target the colour-identity pass writes.
+    // lighting (identical constants to shade_cuboid_surface), then re-quantized to the
+    // Rgba8Unorm (linear) target the color-identity pass writes.
     fn srgb_to_linear(s: f32) -> f32 {
         if s <= 0.04045 {
             s / 12.92
@@ -1032,7 +1032,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
     let build = build_brick_field(&two_layer_chunks, vpb);
     assert!(!build.brick_records.is_empty(), "empty brick field");
-    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+    let recenter = case.scene.recenter_voxels_for_resolve(vpb);
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
     let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1051,10 +1051,10 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         &build.atlas_payload(),
         &gpu_records,
         &pyramid,
-        recentre,
+        recenter,
     );
 
-    // A synthetic per-face material: six distinct solid colours, one per D2Array layer
+    // A synthetic per-face material: six distinct solid colors, one per D2Array layer
     // (the mesh path's own headless fixture — no VS assets needed). 2×2 so `fract` tiling
     // is exercised even though every texel of a layer is identical.
     let layer_colors: [[u8; 4]; 6] = [
@@ -1093,7 +1093,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     );
 
     // Mirror the applied-block state into the shader (bound = None → no modulation, overlay
-    // off), then render the shaded colour with the block's D2Array bound at group(2).
+    // off), then render the shaded color with the block's D2Array bound at group(2).
     renderer.set_loaded_material_active(true);
     let frame = renderer.update_uniforms(
         &gpu.queue,
@@ -1182,7 +1182,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
 /// interiors never emitted) — the clip-map (chunk-derived, identical on both sides), atlas
 /// (identical: the sculpted set is never elided) and frame identical — and assert the
 /// hit-identity images are BYTE-IDENTICAL. This is the display proof that never emitting a
-/// fully-occluded interior block (its six neighbours all solid) never changes a ray's first
+/// fully-occluded interior block (its six neighbors all solid) never changes a ray's first
 /// hit: the ray stops at the surrounding surface record before ever reaching it. The CPU
 /// half is `brick::build_emits_only_surface_records_of_a_solid_box`.
 #[test]
@@ -1219,7 +1219,7 @@ fn brick_surface_elision_hit_set_unchanged() {
             "{}: surface-only build must pack the identical atlas",
             case.name
         );
-        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let recenter = case.scene.recenter_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let full_records = pack_gpu_records(&full_build.brick_records, |_| false);
@@ -1247,7 +1247,7 @@ fn brick_surface_elision_hit_set_unchanged() {
                 &build.atlas_payload(),
                 gpu_records,
                 &pyramid,
-                recentre,
+                recenter,
             );
             renderer.update_uniforms(
                 &gpu.queue,
@@ -1337,7 +1337,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
         if full_build.brick_records.is_empty() {
             continue;
         }
-        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let recenter = case.scene.recenter_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
         let grid_z = grid_dimensions[2];
         if grid_z < 3 {
@@ -1374,7 +1374,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
                 &build.atlas_payload(),
                 gpu_records,
                 &pyramid,
-                recentre,
+                recenter,
             );
             let frame = renderer.update_uniforms(
                 &gpu.queue,
@@ -1427,7 +1427,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
 }
 
 /// **ADR 0011 slice G3 — incremental patch render == wholesale install render.** Drive a
-/// scene through the LIVE incremental path (install scene A → apply a localised occupancy
+/// scene through the LIVE incremental path (install scene A → apply a localized occupancy
 /// edit → `patch_brick_field` writing ONLY the dirty slots), render its hit-identity
 /// image, and assert it is PIXEL-IDENTICAL to a from-scratch `install_brick_field` of the
 /// same final scene B. This gates the whole G3 machinery THROUGH the render (not just the
@@ -1485,7 +1485,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     let index_b = scene_b.build_leaf_spatial_index(vpb);
     let edit_aabb = index_b
         .edit_aabb_since(&index_a)
-        .expect("the middle-tool edit is localisable");
+        .expect("the middle-tool edit is localizable");
     let dirty = cache.invalidate_aabb(&edit_aabb, vpb);
     let fresh_b: Vec<_> = cache
         .resident_two_layer_chunks(&scene_b, vpb, 0)
@@ -1509,7 +1509,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         fresh_b.len()
     );
 
-    let recentre_b = scene_b.recentre_voxels_for_resolve(vpb);
+    let recenter_b = scene_b.recenter_voxels_for_resolve(vpb);
     let grid_dimensions = scene_b.placed_region_dimensions(vpb);
 
     // The headless camera framing B at the origin (the same rig the other brick tests use).
@@ -1531,7 +1531,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &build_a.atlas_payload(),
         &pack_gpu_records(&build_a.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_a),
-        scene_a.recentre_voxels_for_resolve(vpb),
+        scene_a.recenter_voxels_for_resolve(vpb),
     );
     incremental_renderer.patch_brick_field(
         &gpu.device,
@@ -1540,7 +1540,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &update,
         &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
-        recentre_b,
+        recenter_b,
     );
     if !update.atlas_grew {
         assert_eq!(
@@ -1572,7 +1572,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &wholesale_build.atlas_payload(),
         &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
-        recentre_b,
+        recenter_b,
     );
     wholesale_renderer.update_uniforms(
         &gpu.queue,
@@ -1611,14 +1611,14 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
 
 /// **ADR 0011 interior elision × G3 — the CARVE seam through the render.** Under the
 /// surface-only record contract, deleting a solid that abutted another across a CHUNK
-/// boundary un-occludes the neighbour chunk's face blocks: their records must APPEAR even
+/// boundary un-occludes the neighbor chunk's face blocks: their records must APPEAR even
 /// though their chunk is NOT in the edit's dirty set (the `apply_dirty_update`
-/// 26-neighbourhood ring re-derivation). Drive that exact edit through the LIVE incremental
+/// 26-neighborhood ring re-derivation). Drive that exact edit through the LIVE incremental
 /// path (install A = two abutting chunk-filling boxes → delete one → `patch_brick_field`)
 /// and assert the render is PIXEL-IDENTICAL to a from-scratch wholesale install of the
 /// carved scene, and that the surviving record keys are BYTE-IDENTICAL to the wholesale
 /// build's. The CPU-side byte equality (occupancy included) is gated in
-/// `brick::incremental_carve_across_chunk_boundary_flips_neighbour_occlusion`.
+/// `brick::incremental_carve_across_chunk_boundary_flips_neighbor_occlusion`.
 #[test]
 fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     if skip_without_gpu("brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary") {
@@ -1679,7 +1679,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     let index_carved = scene_carved.build_leaf_spatial_index(vpb);
     let carve_aabb = index_carved
         .edit_aabb_since(&index_with_b)
-        .expect("a node delete is a localisable edit");
+        .expect("a node delete is a localizable edit");
     let dirty = cache.invalidate_aabb(&carve_aabb, vpb);
     let fresh_carved = cache.resident_two_layer_chunks(&scene_carved, vpb, 0);
     assert_eq!(
@@ -1706,7 +1706,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
             .collect::<Vec<_>>(),
         "patched record keys must equal the wholesale surface-only build's"
     );
-    // The carve must have grown the NON-dirty neighbour's record set (box A's exposed
+    // The carve must have grown the NON-dirty neighbor's record set (box A's exposed
     // face) — otherwise the ring seam is untested.
     let dirty_set: std::collections::BTreeSet<[i32; 3]> = dirty.iter().copied().collect();
     let non_dirty_records = |build: &voxel_worker::BrickFieldBuild| -> usize {
@@ -1729,7 +1729,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         "the carve must EXPOSE records in a non-dirty chunk (the fixture must be real)"
     );
 
-    let recentre_carved = scene_carved.recentre_voxels_for_resolve(vpb);
+    let recenter_carved = scene_carved.recenter_voxels_for_resolve(vpb);
     let grid_dimensions = scene_carved.placed_region_dimensions(vpb);
 
     let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1764,7 +1764,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &build_with_b.atlas_payload(),
         &pack_gpu_records(&build_with_b.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_with_b),
-        scene_with_b.recentre_voxels_for_resolve(vpb),
+        scene_with_b.recenter_voxels_for_resolve(vpb),
     );
     incremental_renderer.patch_brick_field(
         &gpu.device,
@@ -1773,7 +1773,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &update,
         &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
-        recentre_carved,
+        recenter_carved,
     );
     let incremental_image = render(&mut incremental_renderer);
 
@@ -1787,7 +1787,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &wholesale_build.atlas_payload(),
         &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
-        recentre_carved,
+        recenter_carved,
     );
     let wholesale_image = render(&mut wholesale_renderer);
 
@@ -1847,7 +1847,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             "{}: fixture must contain sculpted bricks to force a miss",
             case.name
         );
-        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let recenter = case.scene.recenter_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1881,7 +1881,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &build.atlas_payload(),
             &pack_gpu_records(&build.brick_records, |_| false),
             &pyramid,
-            recentre,
+            recenter,
         );
         let resident_image = render_image(&renderer);
         // Forced residency miss: every sculpted record → NON_RESIDENT sentinel.
@@ -1892,7 +1892,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &build.atlas_payload(),
             &pack_gpu_records(&build.brick_records, |_| true),
             &pyramid,
-            recentre,
+            recenter,
         );
         let miss_image = render_image(&renderer);
 
@@ -1998,7 +1998,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
             "{}: pyramid has no cells — the on/off comparison would be vacuous",
             case.name
         );
-        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let recenter = case.scene.recenter_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
@@ -2020,7 +2020,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
                 &atlas,
                 &gpu_records,
                 pyramid,
-                recentre,
+                recenter,
             );
             renderer.update_uniforms(
                 &gpu.queue,
@@ -2163,7 +2163,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     let build = build_brick_field(&two_layer_chunks, vpb);
     let pyramid_on = ClipmapPyramid::from_records(&build.brick_records);
     let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
-    let recentre = scene.recentre_voxels_for_resolve(vpb);
+    let recenter = scene.recenter_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
 
     // The four clip-map configs, each a slice of levels COARSEST→FINEST (the descent
@@ -2193,7 +2193,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
         &build.atlas_payload(),
         &gpu_records,
         &pyramid_on,
-        recentre,
+        recenter,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
@@ -2327,7 +2327,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     );
     let records = pack_gpu_records(&build.brick_records, |_| false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
-    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+    let recenter = case.scene.recenter_voxels_for_resolve(vpb);
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
     let grid_z = grid_dimensions[2];
 
@@ -2337,7 +2337,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         band_max: grid_z / 2 + 1,
         onion_depth: depth,
     };
-    // The two onion slabs the ghost draws — the recentred-Z remainder of the onion span.
+    // The two onion slabs the ghost draws — the recentered-Z remainder of the onion span.
     let lower_slab = LayerBand {
         band_min: band.band_min - depth,
         band_max: band.band_min - 1,
@@ -2364,7 +2364,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         &build.atlas_payload(),
         &records,
         &pyramid,
-        recentre,
+        recenter,
     );
 
     // The absolute-voxel-Z set of the hits a given band clip renders, via the SOLID
@@ -2457,9 +2457,9 @@ fn onion_ghost_marches_only_the_onion_slabs() {
 /// **ADR 0018 Decision 5 (S5) — the brick raymarch's onion clip is REGION-SCOPED: the layer
 /// band bites ONLY inside the selected object's placed AABB; everything outside renders
 /// finished/full-Z.** The two paths' onion AESTHETICS legitimately differ (haze vs crisp), so
-/// this gate — the brick-path twin of the mesh path's region behaviour — asserts on the clip
+/// this gate — the brick-path twin of the mesh path's region behavior — asserts on the clip
 /// REGION, entirely from GPU hit-identity renders (no CPU-march oracle, matching the onion
-/// gate's style). The region is the +X half of the tall sphere in the recentred voxel frame
+/// gate's style). The region is the +X half of the tall sphere in the recentered voxel frame
 /// (`x >= 0`); the band is a mid-Z slab. Three SOLID hit-identity renders are compared:
 ///  - `full`   — `LayerBand::FULL`, no region (the no-onion render).
 ///  - `banded` — the mid slab, no region (the pre-S5 SCENE-WIDE band).
@@ -2510,8 +2510,8 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
     );
     let records = pack_gpu_records(&build.brick_records, |_| false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
-    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
-    let recentre_v = recentre.voxels();
+    let recenter = case.scene.recenter_voxels_for_resolve(vpb);
+    let recenter_v = recenter.voxels();
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
     let grid_z = grid_dimensions[2];
 
@@ -2520,7 +2520,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
         band_max: grid_z / 2 + 1,
         onion_depth: 0,
     };
-    // The region: the +X half in the recentred voxel frame (`x >= 0`), spanning all of Y and Z
+    // The region: the +X half in the recentered voxel frame (`x >= 0`), spanning all of Y and Z
     // (bounds far beyond the sphere). Any region is CORRECT for the invariants; this one makes
     // each existence check non-vacuous (right half in-band, left half band-transcending).
     let far = 1_000_000i64;
@@ -2545,7 +2545,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
         &build.atlas_payload(),
         &records,
         &pyramid,
-        recentre,
+        recenter,
     );
 
     let render = |renderer: &BrickRaymarchRenderer,
@@ -2569,9 +2569,9 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
     let banded = render(&renderer, band, None);
     let regioned = render(&renderer, band, Some(region));
 
-    // A hit pixel `[hit, x, y, z]` → the recentred X (the region split axis) and absolute Z.
-    let recentred_x = |px: &[u32; 4]| px[1] as i32 as i64 - recentre_v[0];
-    let inside_region = |px: &[u32; 4]| recentred_x(px) >= 0; // Y/Z bounds are effectively infinite
+    // A hit pixel `[hit, x, y, z]` → the recentered X (the region split axis) and absolute Z.
+    let recentered_x = |px: &[u32; 4]| px[1] as i32 as i64 - recenter_v[0];
+    let inside_region = |px: &[u32; 4]| recentered_x(px) >= 0; // Y/Z bounds are effectively infinite
     let abs_z = |px: &[u32; 4]| px[3] as i32;
 
     // The absolute-Z span the SCENE-WIDE banded render occupies (the band, observed).
@@ -2691,7 +2691,7 @@ fn brick_mixed_material_matches_cpu_reference() {
     use voxel_worker::{
         build_brick_field, cpu_brick_hit_material, cpu_march_brick_field, pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MicroblockGeometry, OrbitCamera,
-        RecentreVoxels, SeamSolidity, TwoLayerChunk, COLOR_TARGET_FORMAT,
+        RecenterVoxels, SeamSolidity, TwoLayerChunk, COLOR_TARGET_FORMAT,
     };
 
     let gpu = common::shared_gpu();
@@ -2749,15 +2749,15 @@ fn brick_mixed_material_matches_cpu_reference() {
     );
     let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
 
-    // recentre [0,0,0] makes the residency-absolute frame coincide with the world-block frame,
-    // so the region occupies world voxels [0, span·edge); frame the camera at its centre.
-    let recentre = RecentreVoxels::new([0, 0, 0]);
+    // recenter [0,0,0] makes the residency-absolute frame coincide with the world-block frame,
+    // so the region occupies world voxels [0, span·edge); frame the camera at its center.
+    let recenter = RecenterVoxels::new([0, 0, 0]);
     let region = (span_blocks * edge as i32) as u32;
     let grid_dimensions = [region, region, region];
-    let centre = (span_blocks * edge as i32) as f32 / 2.0;
+    let center = (span_blocks * edge as i32) as f32 / 2.0;
 
     let mut app_core = AppCore::new(OrbitCamera::default());
-    app_core.camera.target = glam::Vec3::splat(centre);
+    app_core.camera.target = glam::Vec3::splat(center);
     app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
     let scene_matrices = app_core.scene_matrices(width as f32 / height as f32, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
@@ -2775,7 +2775,7 @@ fn brick_mixed_material_matches_cpu_reference() {
         &build.cell_key_atlas_payload(),
         &gpu_records,
         &pyramid,
-        recentre,
+        recenter,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
@@ -2885,7 +2885,7 @@ fn skip_without_gpu(test: &str) -> bool {
 
 /// Render the wash pass ALONE over a transparent target and resolve it, returning the RGBA bytes.
 ///
-/// The pipeline is built for the viewport's MSAA colour + depth attachments, so the harness
+/// The pipeline is built for the viewport's MSAA color + depth attachments, so the harness
 /// supplies both and resolves down; the wash is the only thing drawn, so every non-zero alpha in
 /// the readback came from the region field.
 fn render_sketch_region_wash(
@@ -3042,12 +3042,12 @@ fn wash_square(origin: f32, side: f32) -> Vec<substrate::geom2d::RegionEdge> {
 
 /// A full circle as ONE arc edge — the shape that has no polygon at all, and the one the wash used
 /// to draw as a visible chord fan.
-fn wash_circle(centre: [f32; 2], radius: f32) -> Vec<substrate::geom2d::RegionEdge> {
-    let seam = [centre[0] + radius, centre[1]];
+fn wash_circle(center: [f32; 2], radius: f32) -> Vec<substrate::geom2d::RegionEdge> {
+    let seam = [center[0] + radius, center[1]];
     vec![substrate::geom2d::RegionEdge::Arc {
         start: seam,
         end: seam,
-        centre,
+        center,
         radius,
         start_radians: 0.0,
         sweep_radians: std::f32::consts::TAU,
@@ -3184,13 +3184,13 @@ fn nested_picked_regions_wash_to_one_alpha() {
         tint,
         ray_frame,
     );
-    let centre = ((size / 2) * size + size / 2) as usize;
+    let center = ((size / 2) * size + size / 2) as usize;
     assert!(
-        one[centre][3] > 0,
-        "the fixture washed nothing at the centre"
+        one[center][3] > 0,
+        "the fixture washed nothing at the center"
     );
     assert_eq!(
-        nested[centre], one[centre],
+        nested[center], one[center],
         "a doubly-enclosed pixel composited differently"
     );
     assert_eq!(nested, one, "the nested fill changed the wash");
@@ -3216,7 +3216,7 @@ fn a_curved_region_washes_the_curve_and_not_its_chords() {
     let size = 128u32;
     let span = 32.0f32;
     let voxels_per_pixel = span / size as f32;
-    let centre = [16.0f32, 16.0];
+    let center = [16.0f32, 16.0];
     let radius = 12.0f32;
     let tint = [0.2, 0.4, 0.8, 0.54];
 
@@ -3224,7 +3224,7 @@ fn a_curved_region_washes_the_curve_and_not_its_chords() {
         gpu,
         size,
         WASH_PLANE,
-        &[(LoopRole::Fill, wash_circle(centre, radius))],
+        &[(LoopRole::Fill, wash_circle(center, radius))],
         tint,
         overhead_ortho_ray_frame(span),
     );
@@ -3242,7 +3242,7 @@ fn a_curved_region_washes_the_curve_and_not_its_chords() {
                 span - (y as f32 + 0.5) * voxels_per_pixel,
             ];
             // The analytic truth, owing nothing to the shader or to geom2d: distance to the circle.
-            let distance = (profile[0] - centre[0]).hypot(profile[1] - centre[1]) - radius;
+            let distance = (profile[0] - center[0]).hypot(profile[1] - center[1]) - radius;
             if distance.abs() <= clear_of_the_edge {
                 continue;
             }

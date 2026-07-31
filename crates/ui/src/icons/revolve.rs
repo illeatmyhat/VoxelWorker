@@ -17,7 +17,7 @@ pub(super) const DRAW: &[Mark] = &[
         b: (6.5, 13.5),
         ink: Ink::SOLID,
     },
-    // The sweep: the SVG arc from (11, 4.2) to (11, 13.8) at r 5.4, resolved to its centre.
+    // The sweep: the SVG arc from (11, 4.2) to (11, 13.8) at r 5.4, resolved to its center.
     Mark::Arc {
         center: (8.526, 9.0),
         rx: 5.4,

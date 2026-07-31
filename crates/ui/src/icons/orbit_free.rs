@@ -19,7 +19,7 @@
 //! [`orbit_constrained`](super::orbit_constrained) with an extra stroke.
 //!
 //! It is axis-aligned rather than tipped. Tipping a few degrees puts both arms off the pixel grid
-//! at once and each resolves as a two-pixel grey smear; a full 45° stays crisp but hands the glyph
+//! at once and each resolves as a two-pixel gray smear; a full 45° stays crisp but hands the glyph
 //! the `cancel` silhouette.
 
 use super::IconPainter;
@@ -39,7 +39,7 @@ const TALL_SWEEP: (f32, f32) = (0.7317, 5.5663);
 /// what says these are two different turns rather than one long swirl.
 const WIDE_HEAD: [(f32, f32); 3] = [(11.5312, 7.0312), (13.3312, 5.8500), (13.3312, 8.2125)];
 const TALL_HEAD: [(f32, f32); 3] = [(10.9688, 6.4688), (9.7875, 4.6688), (12.1500, 4.6688)];
-/// Half an arm of the centre cross.
+/// Half an arm of the center cross.
 const ARM_HALF_LENGTH: f32 = 1.6875;
 
 pub(super) fn draw(g: &IconPainter) {

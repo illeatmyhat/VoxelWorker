@@ -45,9 +45,9 @@ pub enum RegionRole {
 }
 
 /// The selected object's placed AABB the onion-fog band clip is confined to (ADR 0018
-/// Decision 5), in the **recentred voxel frame** the mesher emits vertices in — a voxel
-/// at absolute producer coord `a` sits at recentred `a − recentre_voxels` (ADR 0008),
-/// so the two-layer mesher tests its `block_low_recentred` directly and the dense mesher
+/// Decision 5), in the **recentered voxel frame** the mesher emits vertices in — a voxel
+/// at absolute producer coord `a` sits at recentered `a − recenter_voxels` (ADR 0008),
+/// so the two-layer mesher tests its `block_low_recentered` directly and the dense mesher
 /// tests `global_index + world_offset` (both the same world lattice). Half-open
 /// `[min, max)` per axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,27 +58,27 @@ pub struct RegionClip {
 }
 
 impl RegionClip {
-    /// Whether recentred voxel `v` is inside the half-open region box.
+    /// Whether recentered voxel `v` is inside the half-open region box.
     #[inline]
     pub fn contains(&self, v: [i64; 3]) -> bool {
         (0..3).all(|axis| v[axis] >= self.min[axis] && v[axis] < self.max[axis])
     }
 
-    /// Whether a block spanning recentred `[lo, hi]` (INCLUSIVE corners) lies wholly
+    /// Whether a block spanning recentered `[lo, hi]` (INCLUSIVE corners) lies wholly
     /// OUTSIDE the region (no overlap on some axis).
     #[inline]
     pub fn block_fully_outside(&self, lo: [i64; 3], hi: [i64; 3]) -> bool {
         (0..3).any(|axis| hi[axis] < self.min[axis] || lo[axis] >= self.max[axis])
     }
 
-    /// Whether a block spanning recentred `[lo, hi]` (INCLUSIVE corners) lies wholly
+    /// Whether a block spanning recentered `[lo, hi]` (INCLUSIVE corners) lies wholly
     /// INSIDE the region.
     #[inline]
     pub fn block_fully_inside(&self, lo: [i64; 3], hi: [i64; 3]) -> bool {
         (0..3).all(|axis| lo[axis] >= self.min[axis] && hi[axis] < self.max[axis])
     }
 
-    /// Whether a block spanning recentred `[lo, hi]`, DILATED by `pad` voxels on every
+    /// Whether a block spanning recentered `[lo, hi]`, DILATED by `pad` voxels on every
     /// side, intersects the region. The SOLID pass routes a fully-outside block that is
     /// still within one block of the region through the banded mesher so its wall
     /// against the band-clipped interior is exposed correctly (the cross-seam fix).
@@ -251,7 +251,7 @@ fn rgba(r: f32, g: f32, b: f32) -> [u8; 4] {
     ]
 }
 
-/// Stone: 32×32 grey ~rgb(132,126,118) with ±20 per-pixel noise + darker speckles.
+/// Stone: 32×32 gray ~rgb(132,126,118) with ±20 per-pixel noise + darker speckles.
 /// Port of `makeStone` (chisel-bench-reference.html).
 fn generate_stone_texture() -> Vec<u8> {
     let mut rng = Lcg::new(0x5701_3a9f);
@@ -296,7 +296,7 @@ fn generate_wood_texture() -> Vec<u8> {
     pixels
 }
 
-/// Plain: flat warm grey `#b6a079`. Port of `makePlain`.
+/// Plain: flat warm gray `#b6a079`. Port of `makePlain`.
 fn generate_plain_texture() -> Vec<u8> {
     let count = (MATERIAL_TEXTURE_SIZE * MATERIAL_TEXTURE_SIZE) as usize;
     let mut pixels = Vec::with_capacity(count * 4);
@@ -306,8 +306,8 @@ fn generate_plain_texture() -> Vec<u8> {
     pixels
 }
 
-/// The average RGBA colour of a procedural material's texture — the
-/// representative palette colour used by the `.vox` export (M8). A loaded VS
+/// The average RGBA color of a procedural material's texture — the
+/// representative palette color used by the `.vox` export (M8). A loaded VS
 /// block can supply its own average instead; this covers the procedural case.
 pub fn procedural_material_average_color(material: MaterialChoice) -> [u8; 4] {
     let pixels = match material {
@@ -331,7 +331,7 @@ pub fn procedural_material_average_color(material: MaterialChoice) -> [u8; 4] {
     ]
 }
 
-/// The average colour of a material's procedural texture as a LINEAR `[r, g, b]`
+/// The average color of a material's procedural texture as a LINEAR `[r, g, b]`
 /// (the space the shader lights/blends in). Indexed by `material_id` order
 /// (Stone/Wood/Plain) via [`MaterialChoice::from_material_id`].
 fn material_average_linear(id: u16) -> [f32; 3] {
@@ -343,15 +343,15 @@ fn material_average_linear(id: u16) -> [f32; 3] {
     ]
 }
 
-/// The per-voxel material base colours (ADR 0001 step 3) RELATIVE to the bound
-/// texture's own average colour. Slot `id` holds `avg(id) / avg(bound)`, so:
+/// The per-voxel material base colors (ADR 0001 step 3) RELATIVE to the bound
+/// texture's own average color. Slot `id` holds `avg(id) / avg(bound)`, so:
 ///   * the bound material's own slot is ~`[1,1,1]` (neutral — its texture is
 ///     shown unchanged, preserving the existing look for a single-material model);
-///   * every other material's slot recolours the shared bound texture toward that
+///   * every other material's slot recolors the shared bound texture toward that
 ///     material's tint, so a Wood node and a Stone node drawn from one bound
-///     texture render in visibly distinct colours.
+///     texture render in visibly distinct colors.
 ///
-/// This is the cheap base-colour-modulation the ADR/task call for, NOT a
+/// This is the cheap base-color-modulation the ADR/task call for, NOT a
 /// per-material texture array.
 fn relative_material_base_colors(
     bound: MaterialChoice,
@@ -373,9 +373,9 @@ fn relative_material_base_colors(
     colors
 }
 
-/// Public access to the per-material relative base colours (step 3b) for the cuboid
-/// mesh path (ADR 0002 E3b-1), so it modulates per-box material colour. Returns each
-/// material's average colour relative to `bound`'s average (the bound material's
+/// Public access to the per-material relative base colors (step 3b) for the cuboid
+/// mesh path (ADR 0002 E3b-1), so it modulates per-box material color. Returns each
+/// material's average color relative to `bound`'s average (the bound material's
 /// own slot is ~neutral white).
 pub fn relative_material_base_colors_public(
     bound: MaterialChoice,
@@ -386,7 +386,7 @@ pub fn relative_material_base_colors_public(
 /// The grid-overlay tuning, originally authored for the instanced voxel pass
 /// (removed with the legacy mesher, #20) and now shared: both the cuboid mesh
 /// path (ADR 0002 E3b-2) and the brick raymarch path draw the position-based
-/// grid overlay with the EXACT same colours/half-widths/alphas — keeping the
+/// grid overlay with the EXACT same colors/half-widths/alphas — keeping the
 /// merged box faces phase-aligned to the same per-voxel/per-block lines.
 #[derive(Debug, Clone, Copy)]
 pub struct GridOverlayParams {
@@ -398,7 +398,7 @@ pub struct GridOverlayParams {
     pub block_line_alpha: f32,
 }
 
-/// The shared grid-overlay parameters (colours in LINEAR space, the same the
+/// The shared grid-overlay parameters (colors in LINEAR space, the same the
 /// voxel shader receives) — originally the instanced pass's, now reused
 /// verbatim by both the cuboid mesh path and the brick raymarch path.
 pub fn grid_overlay_params() -> GridOverlayParams {

@@ -56,7 +56,7 @@ impl ChromeGlyph {
 
 /// Render one chrome glyph into an RGBA8 buffer (`CHROME_GLYPH_TEXTURE_SIZE`
 /// square) with a TRANSPARENT background so the glyph floats over the scene; the
-/// opaque pixels are white (tinted to parchment/teal by the vertex colour).
+/// opaque pixels are white (tinted to parchment/teal by the vertex color).
 fn chrome_glyph_pixels(glyph: ChromeGlyph) -> Vec<u8> {
     let size = CHROME_GLYPH_TEXTURE_SIZE as usize;
     let mut pixels = vec![0u8; size * size * 4]; // transparent
@@ -80,7 +80,7 @@ enum ArrowFacing {
     Right,
 }
 
-/// Draw a clean filled triangular rotate arrow pointing in `facing`, centred.
+/// Draw a clean filled triangular rotate arrow pointing in `facing`, centered.
 /// #13 Step 6.3: a crisp equilateral-ish head (apex ~78% across the box, base
 /// ~28%..72%) reads as a sharp directional cue at the small gutter size, with
 /// anti-aliased edges from `fill_triangle`.
@@ -422,7 +422,7 @@ pub(crate) fn build_chrome_overlay(
     (pipeline, bind_group)
 }
 
-/// The glyph + rect-fraction centre of the rotate arrow for `dir`. #13 Step 6.8:
+/// The glyph + rect-fraction center of the rotate arrow for `dir`. #13 Step 6.8:
 /// edge-hugging gutters; #13 Step 6.7: the glyph points the way the cube CONTENT
 /// rolls under the 90° step (OPPOSITE the edge it sits on), so it matches the
 /// action. Shared by the persistent draw and the hovered-highlight draw so the
@@ -444,7 +444,7 @@ fn rotate_arrow_layout(dir: camera::ArrowDir) -> (ChromeGlyph, f32, f32) {
 /// Build the per-frame chrome vertices (screen-space, NDC within the cube
 /// viewport). `hovered_zone` decides which glyph is brightened. #13 Step 6
 /// follow-up: `rotate_arrows_visible` (= the view is face-constrained) draws ALL
-/// FOUR rotate arrows PERSISTENTLY in their dim state (Fusion behaviour); the
+/// FOUR rotate arrows PERSISTENTLY in their dim state (Fusion behavior); the
 /// hovered one brightens. When `false` (off-face view) no rotate arrows draw at
 /// all. The layout fractions MUST match `classify_cube_point`.
 pub(crate) fn build_chrome_vertices(
@@ -491,7 +491,7 @@ pub(crate) fn build_chrome_vertices(
     verts
 }
 
-/// Push two triangles for a textured glyph quad. `(cx, cy)` is the centre and
+/// Push two triangles for a textured glyph quad. `(cx, cy)` is the center and
 /// `(half_w, half_h)` the half-extents, ALL in rect fractions \[0,1\] (origin
 /// top-left, y down). Converts to NDC (x: f*2-1, y: 1-f*2) for the viewport.
 fn push_glyph_quad(

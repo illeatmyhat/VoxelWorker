@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use voxel_worker::{
     build_brick_field, spawn_brick_worker, BrickRebuildOutcome, BrickRebuildRequest,
-    GenerationTracker, MaterialChoice, RecentreVoxels, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    GenerationTracker, MaterialChoice, RecenterVoxels, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 
 mod common;
@@ -42,7 +42,7 @@ fn build_request(generation: u64, blocks: u32, vpb: u32) -> BrickRebuildRequest 
         generation,
         two_layer_chunks,
         density: vpb,
-        recentre_voxels: RecentreVoxels::new([7, -3, 11]),
+        recenter_voxels: RecenterVoxels::new([7, -3, 11]),
         build_display_artifacts: true,
     }
 }
@@ -67,7 +67,7 @@ fn large_request(generation: u64) -> BrickRebuildRequest {
 
 /// Dispatching a LARGE wholesale brick rebuild returns PROMPTLY (the ~2s-class build runs
 /// on the worker thread, not inline — the "the UI never freezes" guarantee), and the
-/// arrived result carries the dispatched generation + recentre and artifacts equal to the
+/// arrived result carries the dispatched generation + recenter and artifacts equal to the
 /// synchronous calls the pre-async shell made (the build-equivalence net).
 #[test]
 fn dispatch_is_non_blocking_and_result_matches_sync_build() {
@@ -78,7 +78,7 @@ fn dispatch_is_non_blocking_and_result_matches_sync_build() {
     // synchronous path made, over the same covering set.
     let chunks = request.two_layer_chunks.clone();
     let density = request.density;
-    let recentre = request.recentre_voxels;
+    let recenter = request.recenter_voxels;
 
     let started = Instant::now();
     worker.dispatch(request);
@@ -99,8 +99,8 @@ fn dispatch_is_non_blocking_and_result_matches_sync_build() {
     let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "non-blocking dispatch");
     assert_eq!(result.generation, generation);
     assert_eq!(
-        result.recentre_voxels, recentre,
-        "the recentre travels with the build (ADR 0008 — never re-derived at install)"
+        result.recenter_voxels, recenter,
+        "the recenter travels with the build (ADR 0008 — never re-derived at install)"
     );
     let outcome = result.outcome.expect("a normal build returns Some outcome");
     let BrickRebuildOutcome::Display(install) = outcome else {
@@ -199,7 +199,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         generation: 1,
         two_layer_chunks: Vec::new(),
         density: 16,
-        recentre_voxels: RecentreVoxels::new([0; 3]),
+        recenter_voxels: RecenterVoxels::new([0; 3]),
         build_display_artifacts: true,
     });
     let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "empty request");

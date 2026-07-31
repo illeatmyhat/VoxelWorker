@@ -78,7 +78,7 @@ That question is settled here because the answer determines what a profile *is*.
    **The theorem to prove is soundness, not fidelity.** Recorded because it was got wrong
    once during the grill and is easy to get wrong again: *chord tolerance below half a voxel
    does NOT imply occupancy identical to the exact curve.* Occupancy comes from an even-odd
-   test at voxel centres, and a centre can lie arbitrarily close to the true boundary, so
+   test at voxel centers, and a center can lie arbitrarily close to the true boundary, so
    any positive tolerance can flip a bit. No tolerance fixes this. What is true, and what
    the architecture actually needs, is that **`cell_field_interval` never disagrees with
    `resolve_into` over the same flattening** — they consume one normal form, so they agree
@@ -165,7 +165,7 @@ That question is settled here because the answer determines what a profile *is*.
 - **NURBS / B-rep foundation**: rejected per Decision 8. Recorded rather than omitted
   because it is the obvious question to re-raise and the answer is structural.
 - **Replacing `SketchSolid`'s exact predicate with the Lipschitz bound**: rejected per
-  Decision 5. It would have unified the classifier at the cost of levelling the better
+  Decision 5. It would have unified the classifier at the cost of leveling the better
   producer down to the weaker one, losing measurable interior elision.
 - **Density-derived flattening tolerance**: rejected. Combined with a definitional normal
   form it would make `SetDensity` mutate geometry, violating the units law. The fixed
@@ -246,10 +246,10 @@ of Decision 6 — that an imperceptible data change never flips the outset shape
 untouched, since the lift is a deliberate authoring choice, not an accident of edge angles.
 
 **A field sample can land exactly on the boundary, and the sign comparison then fails.**
-Decision 5 stands, but an assumption made while implementing it was wrong: that voxel centres
-never sit on a profile edge because vertices are integers and centres are half-integers. A
+Decision 5 stands, but an assumption made while implementing it was wrong: that voxel centers
+never sit on a profile edge because vertices are integers and centers are half-integers. A
 **diagonal** edge between integer vertices passes through half-integer points — the edge
-`(4,3)→(7,6)` contains the centre `(4.5, 3.5)`. There the distance is zero and only its SIGN
+`(4,3)→(7,6)` contains the center `(4.5, 3.5)`. There the distance is zero and only its SIGN
 BIT carries the even-odd verdict, so occupancy read from a field must test the sign bit, not
 `< 0.0`, which is false for `-0.0`.
 

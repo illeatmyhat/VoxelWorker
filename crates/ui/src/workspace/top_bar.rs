@@ -73,7 +73,7 @@ pub(super) fn build_top_bar(
         });
 }
 
-/// Paint a letter-spaced run at `x`, vertically centred on `middle`. Returns its width so
+/// Paint a letter-spaced run at `x`, vertically centered on `middle`. Returns its width so
 /// the caller can advance.
 fn paint_left(
     ui: &egui::Ui,

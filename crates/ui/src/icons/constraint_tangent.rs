@@ -6,13 +6,13 @@
 use super::{Ink, Mark};
 
 /// The ring, and the height its top therefore reaches.
-const CENTRE: (f32, f32) = (8.0, 11.0);
+const CENTER: (f32, f32) = (8.0, 11.0);
 const RADIUS: f32 = 4.5;
-const TOUCH: f32 = CENTRE.1 - RADIUS;
+const TOUCH: f32 = CENTER.1 - RADIUS;
 
 pub(super) const DRAW: &[Mark] = &[
     Mark::Circle {
-        center: CENTRE,
+        center: CENTER,
         radius: RADIUS,
         ink: Ink::CONSTRAINT,
     },

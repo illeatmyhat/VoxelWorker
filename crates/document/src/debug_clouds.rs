@@ -43,7 +43,7 @@ const CLOUD_NOISE_WAVELENGTH_FRACTION: f32 = 0.6;
 
 /// The PROVEN bound on `|fractal_noise|`, from `substrate::noise::perlin` (ADR 0021
 /// Decision 1): noise is a convex combination of gradient dot-products each bounded by 2,
-/// and fBm normalises by its amplitude sum so it inherits the same bound for ANY octave
+/// and fBm normalizes by its amplitude sum so it inherits the same bound for ANY octave
 /// count, lacunarity or gain. Deliberately loose — the observed extreme is around 0.87 —
 /// but sound without depending on an unproven literature constant. It sets only how deep a
 /// puff's provably-solid core reaches; the air side does not use it.
@@ -51,7 +51,7 @@ const NOISE_RANGE_BOUND: f32 = 2.0;
 
 /// How far a puff can CLAIM, in units of `CLOUD_EDGE_BILLOW`, irrespective of the noise's
 /// true range. [`cloud_field_is_solid`]'s `radial < -CLOUD_EDGE_BILLOW` early-out is
-/// **semantics, not an optimisation**: a puff is skipped outright beyond that radius, so it
+/// **semantics, not an optimization**: a puff is skipped outright beyond that radius, so it
 /// can never claim a point past `radius * (1 + CLOUD_EDGE_BILLOW)` even if the noise were to
 /// exceed 1. That is what makes the AIR verdict exact and independent of
 /// [`NOISE_RANGE_BOUND`]. Deleting the early-out as "just a fast path" would both change the
@@ -61,7 +61,7 @@ const NOISE_CLAIM_REACH: f32 = 1.0;
 /// A single cloud puff.
 #[derive(Debug, Clone, Copy)]
 struct CloudPuff {
-    /// World-centred centre (same coordinate frame as `Voxel::world_position()`).
+    /// World-centered center (same coordinate frame as `Voxel::world_position()`).
     center: Vec3,
     /// Base radius in voxels (before noise displacement).
     radius: f32,
@@ -143,10 +143,10 @@ impl VoxelProducer for DebugCloudField {
                 let mut local = Vec::new();
                 for k in win_z_lo..win_z_hi {
                     for i in win_x_lo..win_x_hi {
-                        // SAMPLE the field at the centred coordinate (`idx + 0.5 −
+                        // SAMPLE the field at the centered coordinate (`idx + 0.5 −
                         // half`) so the cloud geometry is unchanged, but STORE the voxel
                         // CORNER-ANCHORED (`idx + 0.5`) exactly like `SdfShape` /
-                        // `SketchSolid`: the centre is a half-integer for any grid
+                        // `SketchSolid`: the center is a half-integer for any grid
                         // size → always on the global voxel lattice, and the cloud
                         // resolves in the SAME frame as the Tools it mixes with.
                         let sample = Vec3::new(
@@ -308,7 +308,7 @@ fn box_distance_bounds(point: Vec3, lo: Vec3, hi: Vec3) -> (f32, f32) {
 }
 
 /// Whether `point` lands inside any cloud puff. The field is the per-cloud radial
-/// falloff (1 at the centre, 0 at the base radius, negative beyond) plus the fBm
+/// falloff (1 at the center, 0 at the base radius, negative beyond) plus the fBm
 /// displacement; the voxel is solid when the strongest cloud's field clears zero.
 /// Taking the MAX across clouds keeps the puffs separate (they only merge where
 /// they actually overlap).
@@ -336,7 +336,7 @@ fn cloud_field_is_solid(point: Vec3, clouds: &[CloudPuff], noise: &PerlinNoise) 
     false
 }
 
-/// Place the cloud puffs on the eight octant centres of the volume, each jittered
+/// Place the cloud puffs on the eight octant centers of the volume, each jittered
 /// and sized deterministically from the seed so they read as eight distinct clouds
 /// with clear gaps between them. Radii stay small enough (relative to the
 /// half-octant spacing) that even fully billowed they don't bridge the gaps.
@@ -346,7 +346,7 @@ fn scatter_cloud_puffs(seed: u32, extent: Vec3) -> Vec<CloudPuff> {
 
     let mut clouds = Vec::with_capacity(8);
     for octant in 0..8u32 {
-        // Octant centre at ±0.25 of the extent on each axis.
+        // Octant center at ±0.25 of the extent on each axis.
         let sign = |bit: u32| if (octant >> bit) & 1 == 0 { -1.0 } else { 1.0 };
         let base = Vec3::new(
             sign(0) * extent.x * 0.25,

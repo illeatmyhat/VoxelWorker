@@ -13,7 +13,7 @@ pub(super) const DRAW: &[Mark] = &[
         b: (10.4, 10.4),
         ink: Ink::SOLID,
     },
-    // The loose region — nothing quantises it.
+    // The loose region — nothing quantizes it.
     Mark::Circle {
         center: (9.0, 9.0),
         radius: 5.6,

@@ -25,7 +25,7 @@ use voxel_worker::block_palette::PaletteHost;
 use voxel_worker::frame::egui_frame::EguiPaintBridge;
 use voxel_worker::{build_panel, GpuContext, PanelState};
 
-/// A tiny solid-colour decoded RGBA image to stand in for a block texture.
+/// A tiny solid-color decoded RGBA image to stand in for a block texture.
 fn dummy_decoded() -> (u32, u32, Vec<u8>) {
     let size = 4u32;
     let mut pixels = Vec::with_capacity((size * size * 4) as usize);

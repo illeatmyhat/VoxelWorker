@@ -6,8 +6,8 @@
 use super::*;
 
 /// Expand a `LineList` vertex stream (consecutive `a, b` pairs) into thick-line quad
-/// vertices (6 per segment). Both endpoints of a cube edge share a colour, so the quad
-/// takes the pair's first colour.
+/// vertices (6 per segment). Both endpoints of a cube edge share a color, so the quad
+/// takes the pair's first color.
 pub(super) fn expand_thick_lines(segments: &[LineVertex]) -> Vec<ThickLineVertex> {
     // (side, end) for the two triangles of the quad.
     const CORNERS: [(f32, f32); 6] = [
@@ -33,7 +33,7 @@ pub(super) fn expand_thick_lines(segments: &[LineVertex]) -> Vec<ThickLineVertex
     out
 }
 
-/// Build the labelled-cube geometry (side 1.4, centred on origin). Face order +X,
+/// Build the labelled-cube geometry (side 1.4, centered on origin). Face order +X,
 /// -X, +Y, -Y, +Z, -Z (matches `materialIndex` / `CubeFace`).
 pub(crate) fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
     const HALF: f32 = 0.7; // side 1.4
@@ -122,10 +122,10 @@ pub(crate) fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
 }
 
 /// The Signal cube wireframe: the 12 silhouette edges (`#59636d`), the three
-/// axis-coloured edges emanating from the front-bottom-right corner
+/// axis-colored edges emanating from the front-bottom-right corner
 /// (`(+HALF, −HALF, −HALF)` = right/front/bottom), and small projected X/Y/Z letter
 /// glyphs at the far ends of those edges. All drawn by the shared line pipeline
-/// (per-vertex colour, cube VP transform), so the axis triad foreshortens WITH the
+/// (per-vertex color, cube VP transform), so the axis triad foreshortens WITH the
 /// cube — never a screen-space approximation.
 ///
 /// Z-up world mapping (front = −Y): from the shared corner, X (`#d9603f`) runs along
@@ -154,7 +154,7 @@ pub(super) fn view_cube_edges() -> Vec<LineVertex> {
         [HALF, HALF, HALF],
         [-HALF, HALF, HALF],
     ];
-    // The 12 edges as index pairs; the three axis edges are tagged with their colour.
+    // The 12 edges as index pairs; the three axis edges are tagged with their color.
     let edges: [((usize, usize), [f32; 4]); 12] = [
         ((0, 1), axis_x), // bottom-front (varies X): the X axis edge
         ((1, 2), axis_y), // right-bottom (varies Y): the Y axis edge
@@ -224,8 +224,8 @@ pub(super) fn view_cube_edges() -> Vec<LineVertex> {
 type LetterStroke = ((f32, f32), (f32, f32));
 
 /// Append the line segments of a single axis letter (`X`/`Y`/`Z`) to `vertices`,
-/// centred at `center` in the cube-space plane spanned by unit vectors `right` and
-/// `up`, with box side `scale` and colour `color`. Strokes are defined in a unit
+/// centered at `center` in the cube-space plane spanned by unit vectors `right` and
+/// `up`, with box side `scale` and color `color`. Strokes are defined in a unit
 /// `[-0.5, 0.5]²` cell (u along `right`, v along `up`) and mapped into cube space, so
 /// the glyph foreshortens with the cube under the shared VP.
 fn push_line_letter(

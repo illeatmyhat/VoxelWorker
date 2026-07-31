@@ -29,22 +29,22 @@ pub(super) fn with_minted_ids(mut scene: Scene) -> Scene {
 /// `(absolute_voxel_index, material_id)` so two resolves can be compared as
 /// the same shape regardless of voxel emission ORDER.
 ///
-/// `recentre_voxels` translates the frame into ABSOLUTE composite space: pass
+/// `recenter_voxels` translates the frame into ABSOLUTE composite space: pass
 /// `[0,0,0]` for the chunked (already-absolute) frame, and the scene's
-/// recentre for the monolithic frame (whose positions are `absolute −
-/// recentre`). A voxel centre sits at an `n + 0.5` position, so `(p − 0.5)`
+/// recenter for the monolithic frame (whose positions are `absolute −
+/// recenter`). A voxel center sits at an `n + 0.5` position, so `(p − 0.5)`
 /// recovers the integer voxel index exactly.
 pub(super) fn occupied_multiset(
     grid: &VoxelGrid,
-    recentre_voxels: [i64; 3],
+    recenter_voxels: [i64; 3],
 ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
     let mut multiset = std::collections::BTreeMap::new();
     for voxel in &grid.occupied {
         let position = voxel.world_position();
         let key = [
-            (position[0] - 0.5).round() as i64 + recentre_voxels[0],
-            (position[1] - 0.5).round() as i64 + recentre_voxels[1],
-            (position[2] - 0.5).round() as i64 + recentre_voxels[2],
+            (position[0] - 0.5).round() as i64 + recenter_voxels[0],
+            (position[1] - 0.5).round() as i64 + recenter_voxels[1],
+            (position[2] - 0.5).round() as i64 + recenter_voxels[2],
         ];
         *multiset.entry((key, voxel.color_index())).or_insert(0) += 1;
     }
@@ -89,13 +89,13 @@ pub(super) fn instance_node(
 }
 
 /// Resolve `scene` through the dense oracle and return its occupancy multiset in
-/// ABSOLUTE voxel space (recentre-normalised), keyed `(index, material)`. The shared
+/// ABSOLUTE voxel space (recenter-normalized), keyed `(index, material)`. The shared
 /// resolve-and-canonicalise fixture (was duplicated across the CSG test modules).
 pub(super) fn resolved_absolute_multiset(
     scene: &Scene,
 ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
     let grid = scene.resolve_region(scene.full_extent_blocks(DENSITY), DENSITY, 0);
-    occupied_multiset(&grid, scene.recentre_voxels(DENSITY))
+    occupied_multiset(&grid, scene.recenter_voxels(DENSITY))
 }
 
 /// The `--demo-scene` shape: a Sphere + an offset Box + an offset Torus, three

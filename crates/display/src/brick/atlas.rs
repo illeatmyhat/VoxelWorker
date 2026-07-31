@@ -61,7 +61,7 @@ pub fn upload_brick_atlas(
 /// Land the MATERIAL SIDE ATLAS's cell-key bytes in an **R16Uint** 3D texture — the second,
 /// independently pooled atlas beside [`upload_brick_atlas`]'s R8 occupancy one. `R16Uint`
 /// because the texel IS the `u16` cell key verbatim (palette id + overlay bit): an integer
-/// sampled with `textureLoad` and compared exactly, never filtered or normalised — a float
+/// sampled with `textureLoad` and compared exactly, never filtered or normalized — a float
 /// format would round the id. Two bytes per texel (little-endian, the packer's order), so a
 /// row is `2 · edge` bytes. `COPY_SRC` is set for the parity net's readback; a field with no
 /// MIXED brick returns a 1³ placeholder (nothing samples it — every record carries its one

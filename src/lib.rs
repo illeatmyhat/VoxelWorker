@@ -10,13 +10,13 @@
 //!     capture texture — guaranteeing the screenshot matches the window.
 //!   * A single egui panel builder ([`build_panel`]) used by both paths so the
 //!     captured frame is identical to the live one.
-//!   * The warm-dark "workshop" colour identity (`docs/design/colour-vocabulary.md`).
+//!   * The warm-dark "workshop" color identity (`docs/design/color-vocabulary.md`).
 
 // A public item's doc may link to a private helper to explain how the two relate; that
 // cross-reference is deliberate and stays a navigable link under `--document-private-items`.
 // The CI doc gate denies broken and redundant links but permits these.
 #![allow(rustdoc::private_intra_doc_links)]
-// Colours live in `ui::theme::color_palette`; a raw `Color32::from_*` elsewhere is an error.
+// Colors live in `ui::theme::color_palette`; a raw `Color32::from_*` elsewhere is an error.
 #![deny(clippy::disallowed_methods)]
 
 // ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
@@ -153,19 +153,19 @@ pub use interchange::vox_export::{VoxExport, VoxExportBuilder};
 // etc. keep resolving for the bins and integration tests.
 pub use document::voxel::{GeometryParams, SdfShape, VoxelProducer};
 pub use voxel_core::voxel::{
-    widest_run_in_band_over_chunks, RecentreVoxels, ShapeKind, Voxel, VoxelGrid,
+    widest_run_in_band_over_chunks, RecenterVoxels, ShapeKind, Voxel, VoxelGrid,
 };
 
-/// Surface / offscreen colour format used everywhere in the project.
+/// Surface / offscreen color format used everywhere in the project.
 ///
 /// Using the same sRGB format for the windowed surface and the headless capture
 /// texture keeps the screenshot identical to the window (Hard requirement #9).
 pub const COLOR_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// The warm-dark "workshop" clear colour (`docs/design/colour-vocabulary.md`).
+/// The warm-dark "workshop" clear color (`docs/design/color-vocabulary.md`).
 ///
 /// These are *linear* component values handed to wgpu; with an sRGB render
-/// target the GPU encodes them back to sRGB on write, so the perceived colour is
+/// target the GPU encodes them back to sRGB on write, so the perceived color is
 /// a warm near-black with a faint copper cast.
 pub const WORKSHOP_CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.030,

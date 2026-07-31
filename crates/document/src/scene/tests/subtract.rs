@@ -135,7 +135,7 @@ fn subtract_preserves_surviving_materials() {
 
 /// The chunk-addressable resolve applies the SAME subtract semantics as the
 /// monolithic oracle: reassembling every covering chunk reproduces the carved
-/// occupancy exactly (recentre-normalised) — so the runtime per-chunk paths and
+/// occupancy exactly (recenter-normalized) — so the runtime per-chunk paths and
 /// the dense oracle can never disagree about a carve.
 #[test]
 fn chunked_resolve_matches_monolithic_for_subtract_scene() {
@@ -157,8 +157,8 @@ fn chunked_resolve_matches_monolithic_for_subtract_scene() {
     let chunked = scene.resolve_region_via_chunks(DENSITY, 0);
     assert_eq!(
         occupied_multiset(&chunked, [0, 0, 0]),
-        occupied_multiset(&monolithic, scene.recentre_voxels(DENSITY)),
-        "chunked subtract resolve must equal the monolithic oracle (recentre-normalised)"
+        occupied_multiset(&monolithic, scene.recenter_voxels(DENSITY)),
+        "chunked subtract resolve must equal the monolithic oracle (recenter-normalized)"
     );
 }
 

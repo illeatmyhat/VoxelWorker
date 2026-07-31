@@ -60,7 +60,7 @@ pub type DiameterWorker = Worker<DiameterRequest, DiameterResult>;
 /// covers the VoxelBody-only / empty scene (no covering chunk range); the two-layer capability is
 /// always ON. Unlike the geometry/brick workers this build cannot panic on bad input, so it
 /// carries no `build_catching` — preserving the measure path's original (containment-free)
-/// behaviour.
+/// behavior.
 pub fn spawn_diameter_worker() -> DiameterWorker {
     Worker::spawn(
         "voxel-worker diameter measure",

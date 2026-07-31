@@ -2,7 +2,7 @@
 //!
 //! The carrier is DASHED so the mark cannot be read as
 //! [`constraint_horizontal`](super::constraint_horizontal), which is a solid bar with its nodes at
-//! the ends. Here the bar is the reference and the single centred node is what the constraint
+//! the ends. Here the bar is the reference and the single centered node is what the constraint
 //! drives — the two marks would otherwise be the same picture.
 
 use super::{Ink, Mark};

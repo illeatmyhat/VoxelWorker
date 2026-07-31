@@ -9,9 +9,9 @@
 //! a triangle mesh of each box's **exposed faces only** (faces internal to the
 //! solid set are culled). Each face vertex carries the box's `material_id` and a
 //! face normal; the shader (`shaders/cuboid.wgsl`) flat-shades it with
-//! normal-based lighting + per-material base-colour modulation.
+//! normal-based lighting + per-material base-color modulation.
 //!
-//! SCOPE (E3b-1): SHAPE parity + per-box material colour + basic lighting.
+//! SCOPE (E3b-1): SHAPE parity + per-box material color + basic lighting.
 //! SCOPE (E3b-2): added the per-voxel TEXTURE SLICE (block texture tiled once per
 //! voxel across a merged box face, via a voxel-unit UV + a Repeat sampler,
 //! replicating the old instanced path's per-face UV direction so even non-symmetric
@@ -25,10 +25,10 @@
 //! `[world_offset + l, world_offset + l + 1]` per axis, so a box spanning voxels
 //! `min..=max` becomes the world AABB `[world_offset + min, world_offset + max + 1]`
 //! (`emit_box_faces`'s `world_offset` parameter). `world_offset` is NOT a fixed
-//! `dimensions/2` centring: it is the cloud-anchored offset `region_from_voxel_cloud`
+//! `dimensions/2` centering: it is the cloud-anchored offset `region_from_voxel_cloud`
 //! (in `builder.rs`) computes per grid, so the mesh lands exactly where the grid's own
-//! `world_position` places that same voxel even when the composite is recentred off
-//! its geometric centre — see that function's doc for why the old fixed-centre,
+//! `world_position` places that same voxel even when the composite is recentered off
+//! its geometric center — see that function's doc for why the old fixed-center,
 //! origin-at-0 assumption this module used to make was wrong.
 
 use std::sync::Arc;
@@ -46,7 +46,7 @@ use substrate::solids::CulledBoxMeshing;
 use substrate::spatial::RealAabb as Aabb;
 use voxel_core::core_geom::CellKey;
 use voxel_core::core_geom::{MaterialChoice, CHUNK_BLOCKS};
-use voxel_core::voxel::{RecentreVoxels, VoxelGrid};
+use voxel_core::voxel::{RecenterVoxels, VoxelGrid};
 
 mod builder;
 mod emit;

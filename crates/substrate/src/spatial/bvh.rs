@@ -196,7 +196,7 @@ mod tests {
     /// The BVH's whole contract: a query returns EXACTLY the input indices a naive linear
     /// `intersects` filter returns, sorted ascending (input order). Exercised over a
     /// deterministic pseudo-random population including empty boxes, duplicates, nested
-    /// boxes, and far-flung outliers, with queries of every flavour (miss, point-ish,
+    /// boxes, and far-flung outliers, with queries of every flavor (miss, point-ish,
     /// spanning, everything, empty).
     #[test]
     fn bvh_matches_naive_filter() {

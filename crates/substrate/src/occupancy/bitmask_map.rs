@@ -234,7 +234,7 @@ mod tests {
 
     /// Word-boundary bits: the last bit of word 0 (31), the first bit of word 1 (32), and the very
     /// last bit of the fixed width (`MASK_WORDS * 32 - 1`) each land in exactly the expected word,
-    /// with no bleed into a neighbour.
+    /// with no bleed into a neighbor.
     #[test]
     fn word_boundary_bits_land_in_the_right_word() {
         let last_bit = WORDS * 32 - 1; // 511 for a 512-bit mask.
@@ -243,7 +243,7 @@ mod tests {
             set_mask_bit(&mut mask, index);
             // The bit reads back.
             assert!(mask_bit_is_set(&mask, index), "bit {index} must read set");
-            // Exactly one bit is set across the whole mask (no bleed into a neighbouring word).
+            // Exactly one bit is set across the whole mask (no bleed into a neighboring word).
             let total: u32 = mask.iter().map(|word| word.count_ones()).sum();
             assert_eq!(total, 1, "setting bit {index} must set exactly one bit");
             // It lands in the arithmetic word / bit position.

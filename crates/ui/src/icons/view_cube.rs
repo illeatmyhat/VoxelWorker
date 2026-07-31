@@ -2,7 +2,7 @@
 //!
 //! The cube is not a body here: it is a control whose faces, edges and corners are all
 //! pickable camera stations. The lit cell is the **front-bottom-right** corner — the one
-//! visible origin the axis-coloured edges share, by owner ruling — so the mark says the cube
+//! visible origin the axis-colored edges share, by owner ruling — so the mark says the cube
 //! has addressable regions, and where they are counted from.
 //!
 //! It previously carried two hairline zone rules on the near face, which at 15 pt closed up

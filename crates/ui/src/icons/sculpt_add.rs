@@ -1,4 +1,4 @@
-//! `sculpt-add` — a dashed brush disc with a plus at its centre.
+//! `sculpt-add` — a dashed brush disc with a plus at its center.
 //!
 //! The disc is dashed because it is a brush *radius*, an authored Measurement, not the edge of
 //! a body — the same reason a chisel or pencil was rejected for this mark.

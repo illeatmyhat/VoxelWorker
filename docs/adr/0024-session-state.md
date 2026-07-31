@@ -25,7 +25,7 @@ classification said one thing and the code did another, for a release.
 That happened for a structural reason worth restating: the compiler's guarantee stops at
 `AppConfig`, whose captures destructure exhaustively. `PanelState` is read field by field, by
 hand, in exactly the shape of the capture that lost the camera's pan target. Classification
-without a capture that honours it is a comment.
+without a capture that honors it is a comment.
 
 But the amendment also declined to fix it, and was right to, because two decisions
 contradicted each other. ADR 0018 decision 3 says the viewer mode is:
@@ -57,7 +57,7 @@ share with a colleague.
 The two membership tests, stated so they can be applied rather than admired:
 
 * **Against settings — chosen versus left.** A setting is something the user picked and would
-  want honoured in every project: the Home view they pressed a button to keep, the window
+  want honored in every project: the Home view they pressed a button to keep, the window
   size, the projection. Session state is merely where they stopped. Nobody *chooses* to be in
   Onion fog the way they choose a projection; they were in the middle of something.
 * **Against view — looking versus arranging.** View state answers "where was the camera" — the
@@ -132,7 +132,7 @@ constant.
   cheapest way to make the compiler stop complaining". It also states something false about the
   debug flags (decision 4) and something the owner rejects about the viewer mode.
 - **Leave them `view` and simply route them.** This works mechanically — `view` already reaches
-  the dump — and was rejected on meaning rather than behaviour. The dump is not the only reader
+  the dump — and was rejected on meaning rather than behavior. The dump is not the only reader
   of these categories; a human deciding where a *new* field goes is, and "view" would have told
   them the panel's fold state is a camera pose. The four fields also share a distinct question
   ("how was the workspace left") that neither `view` nor `settings` asks.

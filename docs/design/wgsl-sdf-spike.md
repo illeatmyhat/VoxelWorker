@@ -77,7 +77,7 @@ vertices rebased to the shape's own origin, where f32 is exact.
 
 The genuine `SketchSolid` risks are elsewhere, and two of them are real:
 
-* **The `-0.0` boundary convention.** Integer vertices plus half-integer sample centres mean
+* **The `-0.0` boundary convention.** Integer vertices plus half-integer sample centers mean
   samples land *exactly* on edges, so the verdict lives in the **sign bit** — callers must use
   `is_sign_negative`, not `< 0.0`. A GPU evaluator must port the even-odd predicate as the
   authority and never infer occupancy from `d <= 0`. `solid.rs` documents a **shipped**
@@ -109,18 +109,18 @@ Three clauses, and the first is the one that gets forgotten:
 Both bugs hit during the spike were frame/wiring bugs; **neither was math**.
 
 ```
-absolute         = shading_absolute + (recentre − half)     [the display frame law]
+absolute         = shading_absolute + (recenter − half)     [the display frame law]
 shading_absolute = world + half                             [the camera ray]
-⟹ sample = world_point − (world_offset + grid/2 − recentre)
+⟹ sample = world_point − (world_offset + grid/2 − recenter)
 ```
 
 * **The half-voxel term is not zero.** `grid/2` is the *exact* half (half-integer on odd axes);
-  `recentre` is the *floored* half. Assuming "the shape is at the origin" is correct only for
+  `recenter` is the *floored* half. Assuming "the shape is at the origin" is correct only for
   even grids and silently half-voxel-shifts every odd one — which the sensitivity table prices
   at 4–10% of voxels.
-* **A resolved region grid's indices are recentred.** `resolve_region` stores voxel `v` at index
-  `v − recentre`, so a 32³ box spans `[−16, 15]`, not `[0, 32)`. Comparing producer-local
-  indices against a recentred grid reported 87.5% disagreement for a *Box*.
+* **A resolved region grid's indices are recentered.** `resolve_region` stores voxel `v` at index
+  `v − recenter`, so a 32³ box spans `[−16, 15]`, not `[0, 32)`. Comparing producer-local
+  indices against a recentered grid reported 87.5% disagreement for a *Box*.
 
 The lesson for costing any future work here: **budget the frame work, not the SDF work.**
 
@@ -177,13 +177,13 @@ the whitelist table**:
 f32::signum → sign        // one line, reads obviously correct, compiles, and is WRONG
 ```
 
-Rust's `signum` returns ±1.0 at zero; WGSL's `sign` returns 0.0. A voxel centre minus a
+Rust's `signum` returns ±1.0 at zero; WGSL's `sign` returns 0.0. A voxel center minus a
 half-integer semi-axis lands on exact zero, so this is not a contrived input — 1 in 9 samples
 disagreed on the GPU.
 
 **So the generator does not eliminate the trust, it relocates it** — from N function bodies to
 one table of ~15 entries. That is a large, real reduction. It is not zero, and what remains is
-caught only behaviourally. Drift becomes structurally impossible **for the bodies** and merely
+caught only behaviorally. Drift becomes structurally impossible **for the bodies** and merely
 tested **for the table**, which is weaker than the headline claim and should not be reported as
 the headline claim.
 

@@ -25,7 +25,7 @@ fn a_circle_bounds_a_face_on_its_own() {
 }
 
 /// The face's boundary is ONE edge that closes on itself, and the document holds no point on the
-/// curve — only the centre. A seam is not a vertex: nothing can select it, and moving the circle
+/// curve — only the center. A seam is not a vertex: nothing can select it, and moving the circle
 /// takes it along with no trace.
 #[test]
 fn the_boundary_is_one_closed_edge_with_no_on_curve_vertex() {
@@ -36,11 +36,11 @@ fn the_boundary_is_one_closed_edge_with_no_on_curve_vertex() {
     assert_eq!(
         sketch.points().len(),
         1,
-        "the centre, and nothing on the curve"
+        "the center, and nothing on the curve"
     );
     assert_eq!(sketch.points()[0].role, EntityRole::Construction);
-    let centre = sketch.points()[0].at.in_plane();
-    assert_eq!(centre, [3.0, 5.0]);
+    let center = sketch.points()[0].at.in_plane();
+    assert_eq!(center, [3.0, 5.0]);
 }
 
 /// The region classifies against the true circle, so a sample just inside the rim is solid and one
@@ -49,7 +49,7 @@ fn the_boundary_is_one_closed_edge_with_no_on_curve_vertex() {
 fn the_region_classifies_against_the_curve() {
     let sketch = lone_circle(0, 0, 8);
     let region = sketch.region_field_loops();
-    assert!(point_in_region(&region, [0.0, 0.0]), "the centre is solid");
+    assert!(point_in_region(&region, [0.0, 0.0]), "the center is solid");
     assert!(point_in_region(&region, [7.9, 0.0]), "just inside the rim");
     assert!(!point_in_region(&region, [8.1, 0.0]), "just outside it");
     // A diagonal sample a polygon of chords would get wrong: inside the circle, outside the
@@ -100,20 +100,20 @@ fn an_unpicked_circle_inside_a_square_is_a_hole() {
 }
 
 /// Two concentric circles about ONE point are two faces — the ring, without a square around it.
-/// The second one is not a duplicate: same centre, different curve.
+/// The second one is not a duplicate: same center, different curve.
 #[test]
 fn concentric_circles_are_two_faces() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
-    let centre = sketch.add_free_point(SketchPoint::new(0, 0));
+    let center = sketch.add_free_point(SketchPoint::new(0, 0));
     sketch
-        .circle_about(centre, SketchLength::new(9))
+        .circle_about(center, SketchLength::new(9))
         .expect("the outer circle");
     sketch
-        .circle_about(centre, SketchLength::new(3))
+        .circle_about(center, SketchLength::new(3))
         .expect("the inner one");
     assert_eq!(sketch.faces().len(), 2);
     assert!(
-        sketch.circle_about(centre, SketchLength::new(3)).is_none(),
+        sketch.circle_about(center, SketchLength::new(3)).is_none(),
         "the same curve twice is not two curves"
     );
 }
@@ -130,7 +130,7 @@ fn two_overlapping_circles_bound_three_faces() {
     let faces = sketch.faces();
     assert_eq!(faces.len(), 3, "two crescents and the lens");
 
-    // Equal circles, r=10 at a centre distance of 12: the lens is
+    // Equal circles, r=10 at a center distance of 12: the lens is
     // 2r^2*acos(d/2r) - (d/2)*sqrt(4r^2 - d^2), and a crescent is a disc less the lens.
     let lens = 200.0 * (0.6f64).acos() - 6.0 * (400.0f64 - 144.0).sqrt();
     let crescent = std::f64::consts::PI * 100.0 - lens;
@@ -170,7 +170,7 @@ fn two_overlapping_circles_bound_three_faces() {
 ///
 /// This is the sketch-level proof that the full turn is legal where the closed case actually lives.
 /// The store refuses a 360° *bulge* because endpoints-plus-bulge has a pole there
-/// (`the_full_turn_is_where_the_radius_diverges`); substrate's centre-radius-sweep form has no pole
+/// (`the_full_turn_is_where_the_radius_diverges`); substrate's center-radius-sweep form has no pole
 /// and carries the closed piece. Get the re-seaming wrong and the disc either splits in two or
 /// disappears, so this test fails loudly in both directions.
 #[test]
@@ -195,7 +195,7 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
     let region = sketch.region_field_loops();
     assert!(
         point_in_region(&region, [10.0, 10.0]),
-        "the centre is solid"
+        "the center is solid"
     );
     assert!(
         !point_in_region(&region, [10.0, 16.0]),
@@ -220,7 +220,7 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
 /// `ProfileEdge::circle` is a `sweep_radians: TAU` arc whose chord is zero length. Everything that
 /// consumes it was moved off the endpoint-plus-bulge derivation and onto the solved circle:
 /// `interior_points` walks the circle, `signed_area_term` integrates the real sweep, `measured`
-/// hands substrate a centre and a sweep. None of those has a full-turn guard, and this test fails if
+/// hands substrate a center and a sweep. None of those has a full-turn guard, and this test fails if
 /// one is ever put back.
 ///
 /// `arc_sweep_is_valid` guards a different form on a different path — authoring an `Arc` ENTITY from
@@ -228,8 +228,8 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
 /// (`the_full_turn_is_where_the_radius_diverges`).
 #[test]
 fn a_full_turn_profile_edge_is_the_relaxed_closed_case() {
-    let (centre, radius) = ([2.0, -3.0], 4.0);
-    let edge = ProfileEdge::circle(centre, radius);
+    let (center, radius) = ([2.0, -3.0], 4.0);
+    let edge = ProfileEdge::circle(center, radius);
     assert!(edge.is_closed(), "a loop with no vertex");
     assert_eq!(
         edge.from.in_plane(),
@@ -254,15 +254,15 @@ fn a_full_turn_profile_edge_is_the_relaxed_closed_case() {
     );
     for point in &interior {
         let at = point.in_plane();
-        let distance = ((at[0] - centre[0]).powi(2) + (at[1] - centre[1]).powi(2)).sqrt();
+        let distance = ((at[0] - center[0]).powi(2) + (at[1] - center[1]).powi(2)).sqrt();
         assert!((distance - radius).abs() < 1e-5, "off the circle: {at:?}");
     }
     let bearings: Vec<f64> = interior
         .iter()
         .map(|point| {
             let at = point.in_plane();
-            (at[1] - centre[1])
-                .atan2(at[0] - centre[0])
+            (at[1] - center[1])
+                .atan2(at[0] - center[0])
                 .rem_euclid(std::f64::consts::TAU)
         })
         .collect();
@@ -285,13 +285,13 @@ fn a_full_turn_profile_edge_is_the_relaxed_closed_case() {
     );
 }
 
-/// A circle IS its centre plus a radius, so deleting the centre deletes the circle — and deleting
-/// the circle takes its minted centre with it, since nothing else was ever named there.
+/// A circle IS its center plus a radius, so deleting the center deletes the circle — and deleting
+/// the circle takes its minted center with it, since nothing else was ever named there.
 #[test]
-fn the_centre_and_the_circle_live_and_die_together() {
+fn the_center_and_the_circle_live_and_die_together() {
     let mut sketch = lone_circle(0, 0, 4);
-    let centre = sketch.points()[0].id;
-    sketch.delete_point_cascade(centre);
+    let center = sketch.points()[0].id;
+    sketch.delete_point_cascade(center);
     assert!(sketch.circles().is_empty());
     assert!(sketch.faces().is_empty());
 
@@ -300,20 +300,20 @@ fn the_centre_and_the_circle_live_and_die_together() {
     sketch.delete_circle(circle);
     assert!(
         sketch.points().is_empty(),
-        "the minted centre goes with the curve it anchored"
+        "the minted center goes with the curve it anchored"
     );
 }
 
-/// A centre the author has since drawn to is referenced geometry and survives the circle.
+/// A center the author has since drawn to is referenced geometry and survives the circle.
 #[test]
-fn a_centre_something_else_names_survives_the_circle() {
+fn a_center_something_else_names_survives_the_circle() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
-    let centre = sketch.add_free_point(SketchPoint::new(0, 0));
+    let center = sketch.add_free_point(SketchPoint::new(0, 0));
     let far = sketch.add_free_point(SketchPoint::new(10, 0));
     let circle = sketch
-        .circle_about(centre, SketchLength::new(4))
+        .circle_about(center, SketchLength::new(4))
         .expect("a circle");
-    sketch.connect(centre, far).expect("a spoke");
+    sketch.connect(center, far).expect("a spoke");
     sketch.delete_circle(circle);
     assert_eq!(sketch.points().len(), 2, "the spoke still needs its ends");
 }
@@ -323,11 +323,11 @@ fn a_centre_something_else_names_survives_the_circle() {
 #[test]
 fn an_authored_radius_survives_a_density_retarget() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
-    let centre = sketch.add_free_point(SketchPoint::new(0, 0));
+    let center = sketch.add_free_point(SketchPoint::new(0, 0));
     let one_block = Measurement::new(::parametric::ExactRational::from_integer(1), 0);
     sketch
         .circle_about(
-            centre,
+            center,
             SketchLength {
                 voxels: 16,
                 local_voxels: 0.0,
@@ -347,12 +347,12 @@ fn an_authored_radius_survives_a_density_retarget() {
     assert_eq!(plain.circles()[0].radius.voxels, 8, "a plain radius scales");
 }
 
-/// Load repair erases a circle with no centre or no radius, and reports it — the same policy every
+/// Load repair erases a circle with no center or no radius, and reports it — the same policy every
 /// other entity gets (ADR 0030 load policy: erase the invalid, never fail the load).
 #[test]
 fn repair_erases_a_circle_that_cannot_be_drawn() {
     let mut sketch = lone_circle(0, 0, 4);
-    let centre = sketch.circles()[0].center;
+    let center = sketch.circles()[0].center;
     sketch.circles_mut_for_test().push(Circle {
         id: 900,
         center: 901,
@@ -362,7 +362,7 @@ fn repair_erases_a_circle_that_cannot_be_drawn() {
     });
     sketch.circles_mut_for_test().push(Circle {
         id: 902,
-        center: centre,
+        center,
         radius: SketchLength::new(0),
         origin: 902,
         role: EntityRole::Real,
@@ -375,11 +375,11 @@ fn repair_erases_a_circle_that_cannot_be_drawn() {
 #[test]
 fn an_impossible_radius_is_refused() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
-    let centre = sketch.add_free_point(SketchPoint::new(0, 0));
-    assert!(sketch.circle_about(centre, SketchLength::new(0)).is_none());
-    assert!(sketch.circle_about(centre, SketchLength::new(-2)).is_none());
+    let center = sketch.add_free_point(SketchPoint::new(0, 0));
+    assert!(sketch.circle_about(center, SketchLength::new(0)).is_none());
+    assert!(sketch.circle_about(center, SketchLength::new(-2)).is_none());
     let circle = sketch
-        .circle_about(centre, SketchLength::new(4))
+        .circle_about(center, SketchLength::new(4))
         .expect("a real one");
     assert!(!sketch.set_circle_radius(circle, SketchLength::new(0)));
     assert_eq!(

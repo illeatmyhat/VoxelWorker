@@ -10,13 +10,13 @@
 use super::{Ink, Mark};
 
 /// The construction circle, and the vertex handle that rides it.
-const CENTRE: (f32, f32) = (9.0, 9.0);
+const CENTER: (f32, f32) = (9.0, 9.0);
 const RADIUS: f32 = 6.5;
 const HANDLE: (f32, f32) = (9.0, 2.5);
 
 pub(super) const DRAW: &[Mark] = &[
     Mark::Circle {
-        center: CENTRE,
+        center: CENTER,
         radius: RADIUS,
         ink: Ink::SOLID,
     },
@@ -32,7 +32,7 @@ pub(super) const DRAW: &[Mark] = &[
         ink: Ink::SOLID,
     },
     Mark::Node {
-        center: CENTRE,
+        center: CENTER,
         size: 2.6,
         ink: Ink::ACCENT,
     },

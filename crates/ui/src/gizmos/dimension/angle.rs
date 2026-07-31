@@ -1,6 +1,6 @@
 //! `angle` — an angular dimension between two lines.
 //!
-//! An arc centred on the two lines' intersection, with the terminators TANGENT to the arc at each
+//! An arc centered on the two lines' intersection, with the terminators TANGENT to the arc at each
 //! leg. The tight case makes the same reversal [`span`](super::span()) makes — arc length below two
 //! arrow lengths and the arrows swing outside the legs pointing in — which is what keeps the two
 //! gizmos legible as one family rather than two conventions.

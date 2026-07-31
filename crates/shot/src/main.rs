@@ -1,6 +1,6 @@
 //! `shot` — the headless screenshot harness.
 //!
-//! Renders the SAME clear colour and the SAME egui panel as the windowed app
+//! Renders the SAME clear color and the SAME egui panel as the windowed app
 //! into an offscreen texture (no window, no surface), reads the pixels back, and
 //! writes a PNG. This is the self-verification harness for every later
 //! milestone: a milestone is "done" when its `shot` looks right.
@@ -19,7 +19,7 @@
 //!   --proj <perspective|ortho>              (default: perspective)
 //!   --material <stone|wood|plain>           (default: stone)
 //!   --grid                                  enable the voxel/block grid overlay
-//!   --debug-faces                           face-orientation debug render (colour
+//!   --debug-faces                           face-orientation debug render (color
 //!                                            by outward normal + back-face marker)
 //!   --theta/--phi/--dist                    orbit overrides (auto-framed dist)
 //! ```

@@ -166,7 +166,7 @@ fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
     let carved = innermost(&sketch);
     sketch.set_face_picked(carved, false);
 
-    // A chord across the pocket, well off its centre so the stored point is unambiguously on one
+    // A chord across the pocket, well off its center so the stored point is unambiguously on one
     // side. Its ends are free points on the boundary — the arrangement cuts at the crossings.
     let low = sketch.add_free_point(SketchPoint::new(4, 5));
     let high = sketch.add_free_point(SketchPoint::new(8, 5));

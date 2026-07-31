@@ -2,7 +2,7 @@
 //! module tree).
 //!
 //! winit 0.30 `ApplicationHandler` + wgpu 29 surface + egui 0.34 panel. Shows the warm-dark
-//! workshop clear colour and the shared right-hand egui side panel. It uses the exact same
+//! workshop clear color and the shared right-hand egui side panel. It uses the exact same
 //! [`render_frame`]/[`run_egui_frame`] code as the headless `shot` binary, so the live window
 //! and the captured PNG match.
 //!
@@ -29,7 +29,7 @@ use crate::{
     procedural_material_average_color, view_cube_corner, AppConfig, AppCore, ChromeClickAction,
     CubeChromeZone, CubeFace, CubeRect, GpuContext, HomeView, InfiniteGridRenderer, LayerBand,
     MaterialSource, NodeSpec, OrbitCamera, OrbitType, PanelState, PointsRenderer, RebuildOutcome,
-    RebuildOutput, RecentreVoxels, SceneGridRenderer, SdfShape, SnapTween, TransformGizmoRenderer,
+    RebuildOutput, RecenterVoxels, SceneGridRenderer, SdfShape, SnapTween, TransformGizmoRenderer,
     ViewCubeElement, ViewCubeRenderer, COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 use display::block_texture::LoadedMaterial;
@@ -151,11 +151,11 @@ struct WindowedState {
     /// block resolves its blocktype JSON → per-face PNGs on the main thread.
     /// Rebuilt when "Connect folder…" switches the source.
     face_resolver: FaceResolver,
-    /// ADR 0011 G5: the last rebuild's region dimensions (voxels) + composite recentre
+    /// ADR 0011 G5: the last rebuild's region dimensions (voxels) + composite recenter
     /// (floating origin, ADR 0008). The dense `VoxelGrid` husk is GONE — the camera
     /// auto-frame and layer scrubber read these scalars directly.
     region_dimensions: [u32; 3],
-    recentre_voxels: RecentreVoxels,
+    recenter_voxels: RecenterVoxels,
     /// The headless orchestrator (ADR 0003 keystone): owns the per-chunk resolve
     /// store (issue #27 S2 — the resolve mechanism behind `rebuild_geometry`, with
     /// issue #27 S3's TARGETED invalidation that diffs the scene's leaf spatial
@@ -182,10 +182,10 @@ struct WindowedState {
     /// discarded, exactly as the geometry worker's [`GenerationTracker`]).
     diameter_generation: GenerationTracker,
     /// Slow-paths backlog item 2: the background `.vox` export worker. A `.vox` write
-    /// re-streams the whole scene occupancy + serialises it — multi-second on a huge scene
+    /// re-streams the whole scene occupancy + serializes it — multi-second on a huge scene
     /// — so it runs off the event-loop thread. Unlike the display workers it carries NO
     /// supersede generation (an export is a user-chosen file, never superseded); the shell
-    /// serialises via `export_outstanding` below (see `workers::export`).
+    /// serializes via `export_outstanding` below (see `workers::export`).
     vox_export_worker: VoxExportWorker,
     /// True while an export request is in flight. Disables the export button (so a second
     /// export can never be queued — the worker's drain-to-latest would otherwise silently
@@ -208,7 +208,7 @@ struct WindowedState {
     /// truncated one.
     close_requested_while_exporting: bool,
     depth_view: wgpu::TextureView,
-    /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
+    /// 4× MSAA color target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
     /// The saved Home view (#13): the orbit angles + distance the Home button
     /// returns to. Restored from the persisted config; updated by
@@ -229,8 +229,8 @@ struct WindowedState {
     /// Latched at press like every other camera verb, so leaving the mode mid-drag cannot strand
     /// a gesture that no longer has a mode to belong to.
     orbiting_in_orbit_mode: bool,
-    /// Whether this orbit-mode press is still a candidate for the RE-CENTRING click — cleared the
-    /// moment the drag threshold is crossed, so one press is either a turn or a re-centre and
+    /// Whether this orbit-mode press is still a candidate for the RE-CENTERING click — cleared the
+    /// moment the drag threshold is crossed, so one press is either a turn or a re-center and
     /// never both.
     orbit_mode_recenter_press: bool,
     /// Whether the icon rail's orbit-type menu is open. Shell state and not panel state: it is a
@@ -330,7 +330,7 @@ struct WindowedState {
     /// their interaction state, refreshed at the END of each frame and drawn on the NEXT
     /// (a one-frame lag, imperceptible for handle chrome). Empty outside sketch mode.
     sketch_overlay_points: Vec<(egui::Pos2, ui::gizmos::HandleState)>,
-    /// Every profile vertex's centre in PHYSICAL pixels, **in profile order** — `None` where
+    /// Every profile vertex's center in PHYSICAL pixels, **in profile order** — `None` where
     /// projection culled a behind-camera vertex. The press hit-tests (in `events`, outside
     /// `render`) read these: a vertex grab / delete finds the nearest `Some`, and add-point
     /// finds the nearest projected SEGMENT (consecutive `Some` pairs, closing the loop). Kept
@@ -566,16 +566,16 @@ impl WindowedState {
         };
         let shape = SdfShape::from_geometry(panel_state.geometry.clone());
         // ADR 0011 G5: the startup DOOR constructs NO `VoxelGrid` — it returns only the region
-        // dimensions + resolve recentre (the camera auto-frame and layer scrubber
+        // dimensions + resolve recenter (the camera auto-frame and layer scrubber
         // consume these scalars), exactly what the per-edit `AppCore::rebuild` yields. This
         // closes the startup OOM on both binaries: the persisted 8000×800×800 scene once
         // resolved a dense ~5.1-billion-cell grid (~28.5 GB → OOM hang before the first print),
         // and the non-gpu binary streamed the same region — now neither materialises occupancy.
-        // (The recentre half is recomputed below as `startup_recentre`, reused by the brick
+        // (The recenter half is recomputed below as `startup_recenter`, reused by the brick
         // install + mesh; discard the tuple's copy here.)
         let (region_dimensions, _) =
             AppCore::startup_region(&panel_state.scene, panel_state.geometry.voxels_per_block);
-        // Initialise the layer-range band to the full grid height (issue #12). Z-up:
+        // Initialize the layer-range band to the full grid height (issue #12). Z-up:
         // layers are Z-slices, so the track spans the Z dimension (index 2).
         let grid_z = region_dimensions[2];
         panel_state
@@ -617,9 +617,9 @@ impl WindowedState {
             startup_density,
             0,
         );
-        let startup_recentre = panel_state
+        let startup_recenter = panel_state
             .scene
-            .recentre_voxels_for_resolve(startup_density);
+            .recenter_voxels_for_resolve(startup_density);
         // Map item 2: the display-state machine builds itself from the startup covering set —
         // the brick engagement decision, both worker spawns, the (possibly skipped-empty)
         // cuboid mesh, and all display bookkeeping. Cloned wgpu handles keep the shell's
@@ -630,7 +630,7 @@ impl WindowedState {
             COLOR_TARGET_FORMAT,
             &startup_two_layer_chunks,
             region_dimensions,
-            startup_recentre,
+            startup_recenter,
             startup_density,
             panel_state.debug_face_orientation,
         );
@@ -734,7 +734,7 @@ impl WindowedState {
             loaded_material: None,
             face_resolver: FaceResolver::auto(),
             region_dimensions,
-            recentre_voxels: startup_recentre,
+            recenter_voxels: startup_recenter,
             // The startup covering set was built through this cache, so it is WARM from
             // frame one (see the `startup_two_layer_cache` comment above).
             app_core: AppCore::with_warm_two_layer_cache(camera, startup_two_layer_cache),
@@ -823,7 +823,7 @@ impl WindowedState {
         self.surface_config.height = height;
         self.surface
             .configure(&self.gpu.device, &self.surface_config);
-        // Recreate the depth + MSAA colour textures to match the new target size.
+        // Recreate the depth + MSAA color textures to match the new target size.
         self.depth_view = create_depth_view(&self.gpu.device, width, height);
         self.msaa_color_view =
             create_msaa_color_view(&self.gpu.device, width, height, COLOR_TARGET_FORMAT);
@@ -838,7 +838,7 @@ impl WindowedState {
         panel_state: &'a PanelState,
         two_layer_cache: &'a mut crate::TwoLayerResidentCache,
         region_dimensions: [u32; 3],
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
         band: LayerBand,
         region: Option<crate::RegionClip>,
     ) -> DisplayRefreshContext<'a> {
@@ -847,7 +847,7 @@ impl WindowedState {
             two_layer_cache,
             density: panel_state.geometry.voxels_per_block,
             region_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             band,
             region,
             debug_face_orientation: panel_state.debug_face_orientation,
@@ -927,7 +927,7 @@ impl WindowedState {
             selected_ghost_view_mode: _,
             selected_cel_nodes: _,
             region_dimensions: _,
-            recentre_voxels: _,
+            recenter_voxels: _,
             resident_chunks: _,
             last_pick_band: _,
             measured_diameter: _,
@@ -1062,7 +1062,7 @@ impl WindowedState {
     }
 
     /// The shared shutdown sequence: persist config, then exit the loop. Called from both
-    /// the immediate `CloseRequested` path and the deferred-close honour seam so the two
+    /// the immediate `CloseRequested` path and the deferred-close honor seam so the two
     /// never drift (finding #9).
     fn shutdown(&self, event_loop: &ActiveEventLoop) {
         self.save_config();

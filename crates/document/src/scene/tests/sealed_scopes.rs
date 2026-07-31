@@ -383,8 +383,8 @@ fn chunked_resolve_matches_monolithic_for_scoped_scene() {
     let chunked = scene.resolve_region_via_chunks(DENSITY, 0);
     assert_eq!(
         occupied_multiset(&chunked, [0, 0, 0]),
-        occupied_multiset(&monolithic, scene.recentre_voxels(DENSITY)),
-        "chunked scoped resolve must equal the monolithic oracle (recentre-normalised)"
+        occupied_multiset(&monolithic, scene.recenter_voxels(DENSITY)),
+        "chunked scoped resolve must equal the monolithic oracle (recenter-normalized)"
     );
 }
 

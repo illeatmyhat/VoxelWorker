@@ -12,11 +12,11 @@
 //!
 //! **Leak-free by construction (§3i leak-retirement).** The profile points and the
 //! extrude span are integer voxels on the lattice/sub-lattice — there is no
-//! implicit centre anchor and so no half-block correction. The producer samples
+//! implicit center anchor and so no half-block correction. The producer samples
 //! CORNER-ANCHORED: the resolve tests the profile at `bbox_min + idx + 0.5` (no
-//! `grid/2` centring anywhere — a revolve centres only its two RADIAL axes), and
+//! `grid/2` centering anywhere — a revolve centers only its two RADIAL axes), and
 //! its placement does NOT route through `leaf_lattice_shift_voxels`: a sketch's
-//! footprint is corner-anchored, so the block-lattice shift the implicit-centre
+//! footprint is corner-anchored, so the block-lattice shift the implicit-center
 //! model needed is identically zero. (The
 //! resolve path treats a sketch leaf like a VoxelBody — no intrinsic block size, no
 //! lattice snap — see `Scene::resolve_*`.)
@@ -396,11 +396,11 @@ pub struct ProfileEdge {
 /// form (ADR 0030 §5).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProfileArc {
-    /// The circle's centre, in profile voxels.
-    pub centre: [f64; 2],
+    /// The circle's center, in profile voxels.
+    pub center: [f64; 2],
     /// The circle's radius, in voxels.
     pub radius: f64,
-    /// The bearing of the edge's tail from the centre.
+    /// The bearing of the edge's tail from the center.
     pub start_radians: f64,
     /// The signed angle travelled tail → head; positive counter-clockwise.
     pub sweep_radians: f64,
@@ -419,7 +419,7 @@ impl ProfileEdge {
     /// An arc through the signed `sweep_degrees`, or the plain chord when the sweep is degenerate
     /// — the same fallback [`arc_interior_points`] makes by returning nothing.
     pub fn curved(from: SketchPoint, to: SketchPoint, sweep_degrees: f64) -> Self {
-        let Some((centre, radius)) =
+        let Some((center, radius)) =
             arc_center_radius(from.in_plane(), to.in_plane(), sweep_degrees)
         else {
             return ProfileEdge::straight(from, to);
@@ -429,28 +429,28 @@ impl ProfileEdge {
             from,
             to,
             arc: Some(ProfileArc {
-                centre,
+                center,
                 radius,
-                start_radians: (tail[1] - centre[1]).atan2(tail[0] - centre[0]),
+                start_radians: (tail[1] - center[1]).atan2(tail[0] - center[0]),
                 sweep_radians: sweep_degrees.to_radians(),
             }),
         }
     }
 
     /// A whole circle as ONE closed edge (ADR 0035 Decision 7): tail and head are the same point,
-    /// and the arc sweeps a full turn counter-clockwise about `centre`.
+    /// and the arc sweeps a full turn counter-clockwise about `center`.
     ///
-    /// The seam sits at bearing zero — `centre + [radius, 0]` — matching
+    /// The seam sits at bearing zero — `center + [radius, 0]` — matching
     /// [`substrate::geom2d::RegionEdge`]'s convention so the CPU field and its WGSL mirror cut the
     /// circle in the same place. It is a seam and not a vertex: the document holds no [`Point`]
     /// there, nothing may snap to it, and moving the circle moves it with no trace.
-    pub fn circle(centre: [f64; 2], radius: f64) -> Self {
-        let seam = SketchPoint::from_continuous(centre[0] + radius, centre[1]);
+    pub fn circle(center: [f64; 2], radius: f64) -> Self {
+        let seam = SketchPoint::from_continuous(center[0] + radius, center[1]);
         ProfileEdge {
             from: seam,
             to: seam,
             arc: Some(ProfileArc {
-                centre,
+                center,
                 radius,
                 start_radians: 0.0,
                 sweep_radians: std::f64::consts::TAU,
@@ -505,8 +505,8 @@ impl ProfileEdge {
         match self.arc {
             Some(arc) => {
                 0.5 * (arc.radius * arc.radius * arc.sweep_radians
-                    + arc.centre[0] * (to[1] - from[1])
-                    - arc.centre[1] * (to[0] - from[0]))
+                    + arc.center[0] * (to[1] - from[1])
+                    - arc.center[1] * (to[0] - from[0]))
             }
             None => 0.5 * (from[0] * to[1] - to[0] * from[1]),
         }
@@ -538,7 +538,7 @@ impl ProfileEdge {
             Some(arc) => substrate::geom2d::RegionEdge::Arc {
                 start,
                 end,
-                centre: [arc.centre[0] as f32, arc.centre[1] as f32],
+                center: [arc.center[0] as f32, arc.center[1] as f32],
                 radius: arc.radius as f32,
                 start_radians: arc.start_radians as f32,
                 sweep_radians: arc.sweep_radians as f32,
@@ -565,8 +565,8 @@ impl ProfileEdge {
                     continue;
                 }
                 let reach = [
-                    arc.centre[0] + arc.radius * bearing.cos(),
-                    arc.centre[1] + arc.radius * bearing.sin(),
+                    arc.center[0] + arc.radius * bearing.cos(),
+                    arc.center[1] + arc.radius * bearing.sin(),
                 ];
                 for axis in 0..2 {
                     low[axis] = low[axis].min(reach[axis]);
@@ -614,7 +614,7 @@ pub struct Segment {
 
 /// A circular-arc entity joining two [`Point`]s **by id** (ADR 0030 §5, #102). The
 /// canonical stored form is the two endpoints plus one included-angle bulge — compact,
-/// unambiguous, fully parametric; centre and radius are DERIVED. Creation tools (the
+/// unambiguous, fully parametric; center and radius are DERIVED. Creation tools (the
 /// 3-point tool today) compute this form; their extra inputs (the through-point) are
 /// consumed at creation, never persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -631,12 +631,12 @@ pub struct Arc {
     /// strictly inside `(0, 360)` — zero and full-turn bulges are degenerate and erased
     /// by [`Sketch::repair`].
     pub bulge: AngleMeasurement,
-    /// The [`Point`] entity standing at the arc's centre — a REIFIED derived value. Its
+    /// The [`Point`] entity standing at the arc's center — a REIFIED derived value. Its
     /// coordinates are recomputed from the endpoints and the bulge by
     /// [`Sketch::sync_arc_centers`] and are never authored directly, but it is a real point
     /// entity with a stable id so it selects, snaps and drags exactly like every other
-    /// sketch point. Always [`EntityRole::Construction`]: a centre never bounds a region.
-    /// `serde(default)` yields [`ABSENT_CENTER`] for a pre-centre document, which
+    /// sketch point. Always [`EntityRole::Construction`]: a center never bounds a region.
+    /// `serde(default)` yields [`ABSENT_CENTER`] for a pre-center document, which
     /// [`Sketch::repair`] materialises on load.
     #[serde(default = "absent_center")]
     pub center: EntityId,
@@ -647,21 +647,21 @@ pub struct Arc {
     pub role: EntityRole,
 }
 
-/// A whole-circle entity: a centre [`Point`] **by id** plus a radius (ADR 0035 Decision 7).
+/// A whole-circle entity: a center [`Point`] **by id** plus a radius (ADR 0035 Decision 7).
 ///
 /// A closed curve is its own loop. There is no on-curve vertex to anchor it to and none is
 /// invented — a circle drawn on an empty plane bounds a face immediately, where an arc has to meet
-/// something to bound anything. The centre is the handle: dragging it moves the circle, and
+/// something to bound anything. The center is the handle: dragging it moves the circle, and
 /// changing [`radius`](Self::radius) resizes it, so the two authored degrees of freedom are exactly
 /// the two the shape has.
 ///
-/// The centre is always [`EntityRole::Construction`] — a centre is not on the boundary, so it never
-/// bounds a region, exactly as an [`Arc`]'s centre does not.
+/// The center is always [`EntityRole::Construction`] — a center is not on the boundary, so it never
+/// bounds a region, exactly as an [`Arc`]'s center does not.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Circle {
     /// Stable identity.
     pub id: EntityId,
-    /// The [`Point`] entity at the circle's centre. Unlike an [`Arc`]'s centre this is AUTHORED,
+    /// The [`Point`] entity at the circle's center. Unlike an [`Arc`]'s center this is AUTHORED,
     /// not derived: it is where the author put it, and nothing recomputes it.
     pub center: EntityId,
     /// The radius, in voxels, optionally retaining the authored expression.
@@ -673,7 +673,7 @@ pub struct Circle {
     pub role: EntityRole,
 }
 
-/// The `center` of an arc that has no centre point yet — a pre-centre document, or an arc
+/// The `center` of an arc that has no center point yet — a pre-center document, or an arc
 /// mid-construction. Ids are handed out monotonically from zero and never reused, so the top
 /// of the range can never collide with a live entity.
 pub const ABSENT_CENTER: EntityId = EntityId::MAX;
@@ -837,12 +837,12 @@ impl Sketch {
         }
     }
 
-    /// A sketch on `plane` holding ONE circle of `radius_voxels` about `centre` — the circle twin
+    /// A sketch on `plane` holding ONE circle of `radius_voxels` about `center` — the circle twin
     /// of [`rectangle`](Self::rectangle), and the shortest path to a profile with no straight edge
     /// in it at all.
-    pub fn circle(plane: PlaneAxis, centre: SketchPoint, radius_voxels: i64) -> Self {
+    pub fn circle(plane: PlaneAxis, center: SketchPoint, radius_voxels: i64) -> Self {
         let mut sketch = Self::empty(plane);
-        sketch.add_circle(centre, SketchLength::new(radius_voxels));
+        sketch.add_circle(center, SketchLength::new(radius_voxels));
         sketch
     }
 
@@ -1139,7 +1139,7 @@ impl Sketch {
     /// Move the point `id` to `at` and settle the drawing around it — the drag write path.
     /// Reports whether the point exists.
     ///
-    /// Dragging an arc's CENTRE moves only the centre: the endpoints hold still and the arc's
+    /// Dragging an arc's CENTER moves only the center: the endpoints hold still and the arc's
     /// radius follows the cursor ([`resweep_arc_to_center`](Self::resweep_arc_to_center)). Every
     /// other point simply takes `at`, and then the standing constraints are re-solved with it
     /// pinned there — see [`settle_under_the_hand`](Self::settle_under_the_hand). A constraint
@@ -1150,7 +1150,7 @@ impl Sketch {
             return false;
         };
         match self.arcs.iter().position(|arc| arc.center == id) {
-            // An arc's centre is DERIVED from its ends and its sweep, so there is no pinning it:
+            // An arc's center is DERIVED from its ends and its sweep, so there is no pinning it:
             // the resweep is the whole edit and no constraint can hold the result anywhere else.
             Some(arc_index) => {
                 self.resweep_arc_to_center(arc_index, at.in_plane());
@@ -1222,17 +1222,17 @@ impl Sketch {
         true
     }
 
-    /// Re-solve the arc at `arc_index` so its centre sits as close to `target` as the canonical
+    /// Re-solve the arc at `arc_index` so its center sits as close to `target` as the canonical
     /// form allows, its endpoints unmoved.
     ///
-    /// For a fixed chord a centre has ONE degree of freedom, not two: it lives on the chord's
+    /// For a fixed chord a center has ONE degree of freedom, not two: it lives on the chord's
     /// perpendicular bisector, and where it sits along that line IS the sweep — far out for a
     /// shallow arc, on the chord for a half turn, across to the other side for the major one.
     /// So the drag projects onto the bisector and inverts `arc_center_radius`: the signed
     /// apothem `a` and the half-chord `h` give `sweep / 2 = atan2(h, a)`, which covers every
     /// positive sweep in `(0°, 360°)` as `a` runs over the reals. The existing sweep's SIGN is
-    /// preserved — it says which way round the arc goes, and a drag of the centre is not a
-    /// request to reverse it. A degenerate chord or a sweep that quantises to nothing leaves
+    /// preserved — it says which way round the arc goes, and a drag of the center is not a
+    /// request to reverse it. A degenerate chord or a sweep that quantizes to nothing leaves
     /// the arc alone rather than erasing it.
     fn resweep_arc_to_center(&mut self, arc_index: usize, target: [f64; 2]) {
         let arc = self.arcs[arc_index];
@@ -1267,13 +1267,13 @@ impl Sketch {
 
     /// Delete a point by id and every segment/arc incident to it (ADR 0030 §6). The
     /// edges' other endpoints survive as free points. No dangling reference can result.
-    /// Deleting an arc's CENTRE deletes that arc: the centre is the arc's own derived
-    /// geometry, so there is no arc left for it to be the centre of.
+    /// Deleting an arc's CENTER deletes that arc: the center is the arc's own derived
+    /// geometry, so there is no arc left for it to be the center of.
     pub fn delete_point_cascade(&mut self, id: EntityId) {
         self.segments.retain(|seg| seg.from != id && seg.to != id);
         self.arcs
             .retain(|arc| arc.from != id && arc.to != id && arc.center != id);
-        // A circle IS its centre plus a radius, so deleting the centre deletes the circle.
+        // A circle IS its center plus a radius, so deleting the center deletes the circle.
         self.circles.retain(|circle| circle.center != id);
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
@@ -1560,7 +1560,7 @@ impl Sketch {
     /// Solve `constraints` on a COPY of the drawing and judge the result. The copy is what lets a
     /// refusal leave the sketch exactly where it was rather than where a failed solve pushed it.
     ///
-    /// The judgement is on the RESIDUALS, not on why the search stopped — see
+    /// The judgment is on the RESIDUALS, not on why the search stopped — see
     /// [`SATISFIED_RESIDUAL`], which is where that distinction is argued and where the bug that
     /// came of confusing the two is recorded.
     fn trial(&self, constraints: &[Constraint], anchor: &[EntityId]) -> Trial {
@@ -1888,12 +1888,12 @@ impl Sketch {
         Some(id)
     }
 
-    /// Draw a circle of `radius` about a FRESH construction centre at `at`, returning the circle's
+    /// Draw a circle of `radius` about a FRESH construction center at `at`, returning the circle's
     /// id (ADR 0035 Decision 7). `None` — and no mutation — for a non-positive or non-finite
     /// radius, which is not a curve.
     ///
-    /// The centre is minted here rather than taken as an id because that is what the centre-radius
-    /// tool does: one click plants the centre, the drag sets the radius. Drawing about a point that
+    /// The center is minted here rather than taken as an id because that is what the center-radius
+    /// tool does: one click plants the center, the drag sets the radius. Drawing about a point that
     /// already exists is [`circle_about`](Self::circle_about).
     pub fn add_circle(&mut self, at: SketchPoint, radius: SketchLength) -> Option<EntityId> {
         if !circle_radius_is_valid(radius.value()) {
@@ -1904,7 +1904,7 @@ impl Sketch {
     }
 
     /// Draw a circle of `radius` about the EXISTING point `center`, returning its id. `None` for an
-    /// unknown point, an invalid radius, or a circle the store already holds about that centre at
+    /// unknown point, an invalid radius, or a circle the store already holds about that center at
     /// that radius — the same curve twice is not two curves.
     ///
     /// Concentric circles of different radii are fine, and are the ring: two faces, the inner one
@@ -1932,7 +1932,7 @@ impl Sketch {
         Some(id)
     }
 
-    /// Whether a circle of this radius about this centre is already stored.
+    /// Whether a circle of this radius about this center is already stored.
     pub fn circle_traces(&self, center: EntityId, radius_voxels: f64) -> bool {
         self.circles
             .iter()
@@ -1952,8 +1952,8 @@ impl Sketch {
         true
     }
 
-    /// Delete just the circle with id `circle_id`. Its centre goes with it when nothing else names
-    /// it — the centre is the circle's own anchor, so there is no circle left for it to centre.
+    /// Delete just the circle with id `circle_id`. Its center goes with it when nothing else names
+    /// it — the center is the circle's own anchor, so there is no circle left for it to center.
     pub fn delete_circle(&mut self, circle_id: EntityId) {
         self.circles.retain(|circle| circle.id != circle_id);
         self.prune_orphan_centers();
@@ -1984,10 +1984,10 @@ impl Sketch {
             .collect()
     }
 
-    /// Re-derive every arc's centre point from its endpoints and bulge (ADR 0030 §5), minting
-    /// one for any arc that has none yet. The centre is a real [`Point`] so it can be selected,
+    /// Re-derive every arc's center point from its endpoints and bulge (ADR 0030 §5), minting
+    /// one for any arc that has none yet. The center is a real [`Point`] so it can be selected,
     /// snapped to and dragged like any other, but its coordinates are OWNED here — every edit
-    /// that can move an arc ends by calling this, so a centre can never drift out of agreement
+    /// that can move an arc ends by calling this, so a center can never drift out of agreement
     /// with the curve it belongs to. An arc whose endpoints are missing or coincident is left
     /// alone; [`repair`](Self::repair) erases it.
     pub fn sync_arc_centers(&mut self) {
@@ -2012,8 +2012,8 @@ impl Sketch {
         }
     }
 
-    /// Drop every construction point nothing references any more — the centre of an arc that
-    /// has just been deleted. A centre the author has since drawn to (an edge names it) is
+    /// Drop every construction point nothing references any more — the center of an arc that
+    /// has just been deleted. A center the author has since drawn to (an edge names it) is
     /// referenced, so it survives as ordinary geometry.
     fn prune_orphan_centers(&mut self) {
         let mut referenced = std::collections::BTreeSet::new();
@@ -2129,7 +2129,7 @@ impl Sketch {
                 && point_ids.contains(&arc.to)
                 && arc_sweep_is_valid(arc.bulge.to_degrees_f64())
         });
-        // A circle is invalid on a missing centre or a radius that is not a positive finite
+        // A circle is invalid on a missing center or a radius that is not a positive finite
         // length — either way there is no curve to draw.
         self.circles.retain(|circle| {
             point_ids.contains(&circle.center) && circle_radius_is_valid(circle.radius.value())
@@ -2143,7 +2143,7 @@ impl Sketch {
             - self.arcs.len()
             - self.circles.len()
             - self.constraints.len();
-        // A pre-centre document names no centre at all, and a just-erased arc leaves one
+        // A pre-center document names no center at all, and a just-erased arc leaves one
         // behind; both are settled here, so a loaded sketch always agrees with its arcs.
         self.prune_orphan_centers();
         self.sync_arc_centers();
@@ -2168,7 +2168,7 @@ const ARC_MAX_CHORDS: u32 = 512;
 /// Whether a signed sweep is a legal [`Arc`] bulge: finite, non-zero, strictly under a full
 /// turn in magnitude.
 ///
-/// The full turn stays excluded ON PURPOSE. A closed curve is a [`Circle`] — a centre and a radius
+/// The full turn stays excluded ON PURPOSE. A closed curve is a [`Circle`] — a center and a radius
 /// — not an arc bulged all the way round (ADR 0035 Decision 7): the endpoint-plus-bulge form
 /// degenerates there, its chord shrinking to nothing and taking the circle it was supposed to
 /// determine with it. Admitting a 360° bulge would put an unsolvable arc in the store to spare a
@@ -2192,8 +2192,8 @@ fn circle_radius_is_valid(radius_voxels: f64) -> bool {
     radius_voxels.is_finite() && radius_voxels > 0.0
 }
 
-/// The centre and radius DERIVED from the canonical arc form (ADR 0030 §5): endpoints
-/// plus signed sweep, positive sweeping counter-clockwise about the centre. `None` for a
+/// The center and radius DERIVED from the canonical arc form (ADR 0030 §5): endpoints
+/// plus signed sweep, positive sweeping counter-clockwise about the center. `None` for a
 /// degenerate chord (coincident endpoints) or an invalid sweep.
 pub fn arc_center_radius(
     from: [f64; 2],
@@ -2210,7 +2210,7 @@ pub fn arc_center_radius(
     }
     let half_sweep = sweep_degrees.to_radians() / 2.0;
     let radius = chord_length / (2.0 * half_sweep.sin().abs());
-    // The centre sits on the chord's perpendicular bisector at the signed apothem: the
+    // The center sits on the chord's perpendicular bisector at the signed apothem: the
     // signed tangent puts it left of `from → to` for a minor CCW sweep and flips it for
     // the major/CW cases, one formula covering all four quadrants (continuous through
     // the 180° apothem-zero).
@@ -2245,14 +2245,14 @@ pub fn arc_interior_points_within(
     sweep_degrees: f64,
     sagitta_tolerance_voxels: f64,
 ) -> Vec<SketchPoint> {
-    let Some((centre, radius)) = arc_center_radius(from, to, sweep_degrees) else {
+    let Some((center, radius)) = arc_center_radius(from, to, sweep_degrees) else {
         return Vec::new();
     };
     arc_interior_on_circle(
         ProfileArc {
-            centre,
+            center,
             radius,
-            start_radians: (from[1] - centre[1]).atan2(from[0] - centre[0]),
+            start_radians: (from[1] - center[1]).atan2(from[0] - center[0]),
             sweep_radians: sweep_degrees.to_radians(),
         },
         sagitta_tolerance_voxels,
@@ -2263,7 +2263,7 @@ pub fn arc_interior_points_within(
 /// exclusive.
 ///
 /// This is the form the closed case needs. Recovering a circle from endpoints plus a bulge is a
-/// chord solve, and a whole turn has no chord; carrying the solved centre and radius instead means
+/// chord solve, and a whole turn has no chord; carrying the solved center and radius instead means
 /// a circle tessellates by the same rule as every other arc rather than by a special case.
 fn arc_interior_on_circle(arc: ProfileArc, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
     let chords = arc_chord_count(
@@ -2276,8 +2276,8 @@ fn arc_interior_on_circle(arc: ProfileArc, sagitta_tolerance_voxels: f64) -> Vec
         .map(|chord_index| {
             let angle = arc.start_radians + step * chord_index as f64;
             SketchPoint::from_continuous(
-                arc.centre[0] + arc.radius * angle.cos(),
-                arc.centre[1] + arc.radius * angle.sin(),
+                arc.center[0] + arc.radius * angle.cos(),
+                arc.center[1] + arc.radius * angle.sin(),
             )
         })
         .collect()
@@ -2306,7 +2306,7 @@ pub fn included_angle_through_degrees(
     to: [f64; 2],
     through: [f64; 2],
 ) -> Option<f64> {
-    // Circumcentre via the perpendicular-bisector determinant.
+    // Circumcenter via the perpendicular-bisector determinant.
     let determinant = 2.0
         * (from[0] * (to[1] - through[1])
             + to[0] * (through[1] - from[1])

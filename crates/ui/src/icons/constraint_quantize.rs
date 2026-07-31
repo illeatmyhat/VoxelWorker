@@ -7,11 +7,11 @@
 //! record. ADR 0035 D1 insists on the distinction, and here the ink enforces it: the quantized
 //! vertex is driven and takes the constraint red, the lattice around it is only a reference.
 //!
-//! The centre of the lattice is left to the node — a ninth dot under a square is mush at 16 px.
+//! The center of the lattice is left to the node — a ninth dot under a square is mush at 16 px.
 
 use super::{Ink, Mark};
 
-/// The vertex the constraint drives, at the centre of a lattice of pitch 5.
+/// The vertex the constraint drives, at the center of a lattice of pitch 5.
 const VERTEX: (f32, f32) = (9.0, 9.0);
 
 pub(super) const DRAW: &[Mark] = &[

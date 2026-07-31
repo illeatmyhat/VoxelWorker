@@ -58,7 +58,7 @@ fn extrude_field_cases() -> Vec<(&'static str, SketchSolid)> {
 /// The contract the whole field layer rests on (ADR 0019 Decision 4): the field must
 /// agree with the resolve, over EVERY voxel of the grid rather than a sample.
 ///
-/// Occupancy is read from the SIGN BIT, not `< 0.0`. A voxel centre can land exactly on a
+/// Occupancy is read from the SIGN BIT, not `< 0.0`. A voxel center can land exactly on a
 /// profile edge — a diagonal between integer vertices passes through half-integer points,
 /// which the notched case below actually hits at `(4.5, 3.5)` — and there the distance is
 /// zero with only its sign carrying the even-odd verdict. `-0.0 < 0.0` is false, so a
@@ -82,13 +82,13 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
         for x in 0..dimensions[0] {
             for y in 0..dimensions[1] {
                 for z in 0..dimensions[2] {
-                    let centre = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
-                    let distance = solid.signed_distance(centre);
+                    let center = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
+                    let distance = solid.signed_distance(center);
                     let field_says_solid = distance.is_sign_negative();
                     let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                     assert_eq!(
                         field_says_solid, resolve_says_solid,
-                        "{label} at {centre:?}: field distance {distance} says \
+                        "{label} at {center:?}: field distance {distance} says \
                          solid={field_says_solid}, resolve says {resolve_says_solid}"
                     );
                     if distance == 0.0 {
@@ -107,7 +107,7 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
         if label == "notched/Y" {
             assert!(
                 on_boundary > 0,
-                "the notched case is here BECAUSE its diagonal edge puts voxel centres \
+                "the notched case is here BECAUSE its diagonal edge puts voxel centers \
                  exactly on the boundary; if that stops happening this test no longer \
                  guards the sign-bit contract"
             );
@@ -162,8 +162,8 @@ fn extrude_field_is_chebyshev_exact_on_a_prism() {
     let face = solid.signed_distance([6.0, 2.0, 1.0]);
     assert!((face - 2.0).abs() < 1e-4, "face distance {face}");
     // Deepest interior point is 1 from the nearest face (the normal slab is thinnest).
-    let centre = solid.signed_distance([2.0, 2.0, 1.0]);
-    assert!((centre + 1.0).abs() < 1e-4, "centre distance {centre}");
+    let center = solid.signed_distance([2.0, 2.0, 1.0]);
+    assert!((center + 1.0).abs() < 1e-4, "center distance {center}");
     // Revolve reports Euclidean instead — the lift decides the metric, not the profile.
     let revolved = SketchSolid::revolve(
         Sketch::rectangle(PlaneAxis::Z, 4, 4),
@@ -259,13 +259,13 @@ fn revolve_signed_distance_agrees_with_the_resolve() {
         for x in 0..dimensions[0] {
             for y in 0..dimensions[1] {
                 for z in 0..dimensions[2] {
-                    let centre = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
-                    let distance = solid.signed_distance(centre);
+                    let center = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
+                    let distance = solid.signed_distance(center);
                     let field_says_solid = distance.is_sign_negative();
                     let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                     assert_eq!(
                         field_says_solid, resolve_says_solid,
-                        "{label} at {centre:?}: field distance {distance} says \
+                        "{label} at {center:?}: field distance {distance} says \
                          solid={field_says_solid}, resolve says {resolve_says_solid}"
                     );
                     inside += u32::from(field_says_solid);
@@ -319,7 +319,7 @@ fn revolve_signed_distance_is_one_lipschitz_in_euclidean() {
 /// Occupancy is `field <= SURFACE_ISOLEVEL`, so a sample lying exactly ON the closing
 /// edge of the swept wedge is inside. At `turn = 135` that edge runs along the
 /// anti-diagonal: `cos(135) = -sin(135)`, so the wedge term `cos*b - sin*a` collapses
-/// to `-k*(a + b)`, which is EXACTLY zero wherever `a = -b`. Centred radial coordinates
+/// to `-k*(a + b)`, which is EXACTLY zero wherever `a = -b`. Centered radial coordinates
 /// are half-integers on an even-dimensioned grid, so a whole diagonal line of lattice
 /// sites lands precisely there - this is not a measure-zero curiosity, it is a visible
 /// seam of voxels.
@@ -355,8 +355,8 @@ fn revolve_closing_edge_is_inclusive_at_135_degrees() {
     let half_a = dimensions[radial_a] as f32 / 2.0;
     let half_b = dimensions[radial_b] as f32 / 2.0;
 
-    // Walk the anti-diagonal `centred_a = -centred_b`. Sample centres are `idx + 0.5`,
-    // so centred coords are half-integers and the closing edge passes exactly through
+    // Walk the anti-diagonal `centered_a = -centered_b`. Sample centers are `idx + 0.5`,
+    // so centered coords are half-integers and the closing edge passes exactly through
     // them. Keep only radii inside the profile band [2, 8].
     //
     // The 135 degree ray points UP-LEFT: theta is measured from `+radial_a` toward
@@ -364,23 +364,23 @@ fn revolve_closing_edge_is_inclusive_at_135_degrees() {
     // is rejected by the FIRST edge (`-b <= 0`) and says nothing about this seam.
     let mut tested = 0;
     for step in 0..8i32 {
-        let centred_b = step as f32 + 0.5;
-        let centred_a = -centred_b;
-        let radius = (centred_a * centred_a + centred_b * centred_b).sqrt();
+        let centered_b = step as f32 + 0.5;
+        let centered_a = -centered_b;
+        let radius = (centered_a * centered_a + centered_b * centered_b).sqrt();
         if !(2.0..=8.0).contains(&radius) {
             continue;
         }
         let mut point = [0.0f32; 3];
         point[0] = 3.5; // mid-axial, comfortably inside the profile 0..6 span
-        point[radial_a] = centred_a + half_a;
-        point[radial_b] = centred_b + half_b;
+        point[radial_a] = centered_a + half_a;
+        point[radial_b] = centered_b + half_b;
         let field = solid.signed_distance(point);
         assert!(
             field <= voxel_core::voxel::SURFACE_ISOLEVEL,
-            "sample on the 135 degree closing edge at {point:?} (centred {centred_a}, \
-             {centred_b}, radius {radius}) reads field {field} - the closing edge must \
+            "sample on the 135 degree closing edge at {point:?} (centered {centered_a}, \
+             {centered_b}, radius {radius}) reads field {field} - the closing edge must \
              be INCLUSIVE. A positive few-ulp value here means the wedge term stopped \
-             cancelling exactly, i.e. this path was widened back to f64."
+             canceling exactly, i.e. this path was widened back to f64."
         );
         tested += 1;
     }

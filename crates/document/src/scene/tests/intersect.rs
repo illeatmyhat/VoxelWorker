@@ -291,8 +291,8 @@ fn chunked_resolve_matches_monolithic_for_intersect_scenes() {
     let chunked = scene.resolve_region_via_chunks(DENSITY, 0);
     assert_eq!(
         occupied_multiset(&chunked, [0, 0, 0]),
-        occupied_multiset(&monolithic, scene.recentre_voxels(DENSITY)),
-        "chunked intersect resolve must equal the monolithic oracle (recentre-normalised)"
+        occupied_multiset(&monolithic, scene.recenter_voxels(DENSITY)),
+        "chunked intersect resolve must equal the monolithic oracle (recenter-normalized)"
     );
 
     // Scoped: a group closing under Intersect whose body misses whole chunks of
@@ -318,13 +318,13 @@ fn chunked_resolve_matches_monolithic_for_intersect_scenes() {
     let chunked = scene.resolve_region_via_chunks(DENSITY, 0);
     assert_eq!(
         occupied_multiset(&chunked, [0, 0, 0]),
-        occupied_multiset(&monolithic, scene.recentre_voxels(DENSITY)),
+        occupied_multiset(&monolithic, scene.recenter_voxels(DENSITY)),
         "chunked SCOPED intersect resolve must equal the monolithic oracle"
     );
 }
 
 /// Invalidation conservatism (ADR 0017 #75): an Intersect-influence leaf's edits
-/// cannot be localised to its box (the mask kills cells anywhere outside its
+/// cannot be localized to its box (the mask kills cells anywhere outside its
 /// body), so (a) a Union↔Intersect flip changes the fingerprint, (b) such a leaf
 /// carries the `MasksBeyondItsBox` fingerprint kind, and (c) an edit diff
 /// involving it degrades to `None` — the wholesale-clear fallback — never a
@@ -365,7 +365,7 @@ fn intersect_edits_force_the_wholesale_invalidation_fallback() {
             masked_index.entries[0].fingerprint,
             LeafFingerprint::Bounded(_)
         ),
-        "a plain Union leaf keeps the localisable fingerprint kind"
+        "a plain Union leaf keeps the localizable fingerprint kind"
     );
 
     // Adding the mask, and moving it, both involve a MasksBeyondItsBox entry in

@@ -52,16 +52,16 @@ fn vertex_main(vertex: VertexInput) -> VertexOutput {
     return output;
 }
 
-// The half-width of the 68 %-centre patch in cube units: 0.68 · HALF (HALF = 0.7).
+// The half-width of the 68 %-center patch in cube units: 0.68 · HALF (HALF = 0.7).
 // MUST track `raycast::VIEW_CUBE_ZONE_THRESHOLD` so the highlight lands on the drawn
 // slice lines and the pick zones.
-const CENTRE_HALF: f32 = 0.476;
+const CENTER_HALF: f32 = 0.476;
 
-// The 68 %-centre patch fraction (issue #91 item 3): the 3×3 partition boundaries sit
-// at these face-UV coordinates. MUST track `raycast::VIEW_CUBE_CENTRE_PATCH_FRACTION`.
+// The 68 %-center patch fraction (issue #91 item 3): the 3×3 partition boundaries sit
+// at these face-UV coordinates. MUST track `raycast::VIEW_CUBE_CENTER_PATCH_FRACTION`.
 const PATCH_FRACTION: f32 = 0.68;
 
-// sRGB (0..1) → linear, for baking the hairline slice-line colour in shader.
+// sRGB (0..1) → linear, for baking the hairline slice-line color in shader.
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let cutoff = vec3<f32>(0.04045);
     let low = c / 12.92;
@@ -84,14 +84,14 @@ fn slice_coverage(uv: vec2<f32>) -> f32 {
     return 1.0 - smoothstep(half_px - 0.5, half_px + 0.5, d);
 }
 
-// Is coordinate `p` on the selector's side of the centre patch on one axis?
-//   sel > 0  → high strip  (p ≥ +CENTRE_HALF)
-//   sel < 0  → low strip   (p ≤ -CENTRE_HALF)
-//   sel = 0  → centre band (|p| ≤ CENTRE_HALF)
+// Is coordinate `p` on the selector's side of the center patch on one axis?
+//   sel > 0  → high strip  (p ≥ +CENTER_HALF)
+//   sel < 0  → low strip   (p ≤ -CENTER_HALF)
+//   sel = 0  → center band (|p| ≤ CENTER_HALF)
 fn axis_ok(sel: f32, p: f32) -> bool {
-    if (sel > 0.5) { return p >= CENTRE_HALF; }
-    if (sel < -0.5) { return p <= -CENTRE_HALF; }
-    return abs(p) <= CENTRE_HALF;
+    if (sel > 0.5) { return p >= CENTER_HALF; }
+    if (sel < -0.5) { return p <= -CENTER_HALF; }
+    return abs(p) <= CENTER_HALF;
 }
 
 @fragment

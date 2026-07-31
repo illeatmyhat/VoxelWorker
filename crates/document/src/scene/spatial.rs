@@ -23,7 +23,7 @@ impl Scene {
 
     /// The composite occupied AABB in **absolute voxel** space, as the producers
     /// actually emit it. Each leaf producer fills its own grid (`size_blocks ×
-    /// density` voxels) **corner-anchored** (local span `[0, grid)`, centres at
+    /// density` voxels) **corner-anchored** (local span `[0, grid)`, centers at
     /// `idx + 0.5`), placed so its `world_offset` is its LOW CORNER; so a leaf
     /// occupies the half-open absolute-voxel box `[world_offset, world_offset + grid)`
     /// per axis, where `grid = size_blocks · d`. The composite is the union of those
@@ -68,7 +68,7 @@ impl Scene {
         for axis in 0..3 {
             let min_voxel = min_voxel_corner[axis];
             // The AABB is the half-open box `[min, max)`; its last occupied voxel
-            // centre is at `max_voxel - 1 + 0.5`, so the highest chunk is the one
+            // center is at `max_voxel - 1 + 0.5`, so the highest chunk is the one
             // owning `max_voxel - 1`.
             let max_voxel = max_voxel_corner[axis];
             min_chunk[axis] = narrow_chunk_coord(min_voxel.div_euclid(chunk_extent_voxels));
@@ -103,7 +103,7 @@ impl Scene {
     /// `[off·d − grid/2, off·d + grid/2)`; a region-spanning leaf (a VoxelBody, no
     /// intrinsic size) gets an empty box and a
     /// [`RegionSpanning`](voxel_core::spatial_index::LeafFingerprint::RegionSpanning)
-    /// fingerprint (it cannot be chunk-localised; an edit touching it forces a
+    /// fingerprint (it cannot be chunk-localized; an edit touching it forces a
     /// wholesale clear).
     ///
     /// By construction the index's entries ARE the leaves `for_each_leaf` yields, so
@@ -153,7 +153,7 @@ impl Scene {
                         scope_path,
                     );
                     // ADR 0017 (#75): an Intersect-influence leaf's edits cannot be
-                    // localised to its box (its mask kills cells anywhere outside its
+                    // localized to its box (its mask kills cells anywhere outside its
                     // body), so it carries the fingerprint kind whose presence in an
                     // edit diff forces a wholesale clear. The box itself stays real
                     // for overlap queries.
@@ -170,7 +170,7 @@ impl Scene {
                 None => {
                     // A region-spanning leaf (a VoxelBody): no intrinsic box. Record it
                     // with an empty AABB + a region-spanning fingerprint so an edit
-                    // touching it forces a wholesale clear (it can't be localised).
+                    // touching it forces a wholesale clear (it can't be localized).
                     has_region_spanning_leaf = true;
                     entries.push(LeafEntry {
                         world_aabb: VoxelAabb::new([0; 3], [0; 3]),

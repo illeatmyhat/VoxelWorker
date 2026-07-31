@@ -1,7 +1,7 @@
 //! The **culled box meshing** of the voxel-meshing literature: given a set of disjoint
-//! axis-aligned integer boxes and a neighbour-solidity oracle, decide which of each box's
+//! axis-aligned integer boxes and a neighbor-solidity oracle, decide which of each box's
 //! six faces are *exposed* — part of the solid set's outer surface — and which are *hidden*
-//! by a solid neighbour and may be culled.
+//! by a solid neighbor and may be culled.
 //!
 //! This is the pure **kernel** of a culled mesher: it never sees vertices, UVs, atlas
 //! layers, materials, chunk seams, or wgpu. Its input is one [`Cuboid<T>`] (the box whose
@@ -15,8 +15,8 @@
 //! ## The culling decision
 //!
 //! A box is a solid, so a face can only be hidden from *outside*: the face at direction
-//! `d` is **hidden** exactly when every cell of the one-cell-thick neighbour slab immediately
-//! beyond that face is solid, and **exposed** the instant any such neighbour cell is not
+//! `d` is **hidden** exactly when every cell of the one-cell-thick neighbor slab immediately
+//! beyond that face is solid, and **exposed** the instant any such neighbor cell is not
 //! solid (air, or outside the caller's populated domain). The slab is the box's face pushed
 //! one cell along `d`: the face-normal axis collapses to the single layer just past the box,
 //! while the two in-plane axes scan the box's full extent. A merged box therefore keeps
@@ -28,7 +28,7 @@
 //!
 //! ## The oracle
 //!
-//! The neighbour-solidity predicate is how domain concerns stay out of the kernel. It is
+//! The neighbor-solidity predicate is how domain concerns stay out of the kernel. It is
 //! queried on **signed** integer lattice coordinates (a face on the low side of a box at the
 //! domain origin queries a negative coordinate), and it must answer `false` for any cell
 //! outside the populated region — an unpopulated cell is air, and air exposes the face. A
@@ -56,33 +56,33 @@ use crate::solids::greedy_cuboid_decomposition::Cuboid;
 pub struct CulledBoxMeshing;
 
 impl CulledBoxMeshing {
-    /// Is the `direction`-face of `box_` exposed under the neighbour-solidity oracle?
+    /// Is the `direction`-face of `box_` exposed under the neighbor-solidity oracle?
     ///
-    /// Returns `true` when **any** cell of the one-cell-thick neighbour slab immediately
+    /// Returns `true` when **any** cell of the one-cell-thick neighbor slab immediately
     /// beyond the face is not solid (so the face is part of the outer surface and must be
-    /// emitted), and `false` when every neighbour cell is solid (the face is hidden and may
+    /// emitted), and `false` when every neighbor cell is solid (the face is hidden and may
     /// be culled).
     ///
     /// * `box_` — the (inclusive–inclusive) integer box whose face is under test; only its
     ///   `min`/`max` extent is read, so the label type `T` is irrelevant here.
     /// * `direction` — a **unit axis step**: exactly one component is `+1` or `-1` and names
     ///   which of the six faces to test; the sign picks the low or high face on that axis.
-    /// * `neighbour_is_solid` — the caller's oracle over **signed** lattice cells: `true`
+    /// * `neighbor_is_solid` — the caller's oracle over **signed** lattice cells: `true`
     ///   iff the cell is backed by solid. Cells outside the populated domain must answer
     ///   `false` (air ⇒ exposed).
     ///
     /// The face-normal axis (the non-zero component of `direction`) collapses to the single
-    /// neighbour layer one cell past the box; the other two axes scan the box's full extent.
+    /// neighbor layer one cell past the box; the other two axes scan the box's full extent.
     pub fn face_is_exposed<T>(
         box_: &Cuboid<T>,
         direction: [i32; 3],
-        neighbour_is_solid: impl Fn([i64; 3]) -> bool,
+        neighbor_is_solid: impl Fn([i64; 3]) -> bool,
     ) -> bool {
         // The box's inclusive extent per axis, as signed lattice bounds.
         let box_min = [box_.min[0] as i64, box_.min[1] as i64, box_.min[2] as i64];
         let box_max = [box_.max[0] as i64, box_.max[1] as i64, box_.max[2] as i64];
 
-        // For the axis the face faces along, the neighbour plane is the single layer at the
+        // For the axis the face faces along, the neighbor plane is the single layer at the
         // box edge + direction; the other two axes scan the box's full extent.
         let scan_range = |axis: usize| -> (i64, i64) {
             if direction[axis] != 0 {
@@ -103,8 +103,8 @@ impl CulledBoxMeshing {
         for nz in nz0..=nz1 {
             for ny in ny0..=ny1 {
                 for nx in nx0..=nx1 {
-                    // A single not-solid neighbour cell exposes the whole merged face.
-                    if !neighbour_is_solid([nx, ny, nz]) {
+                    // A single not-solid neighbor cell exposes the whole merged face.
+                    if !neighbor_is_solid([nx, ny, nz]) {
                         return true;
                     }
                 }
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn isolated_box_exposes_all_six_faces() {
-        // A box floating in air: every neighbour cell is air ⇒ every face exposed.
+        // A box floating in air: every neighbor cell is air ⇒ every face exposed.
         let box_ = unit_box();
         for direction in FACE_DIRECTIONS {
             assert!(
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn fully_enclosed_box_culls_all_six_faces() {
-        // Every neighbour cell is solid ⇒ no face exposed (fully interior box).
+        // Every neighbor cell is solid ⇒ no face exposed (fully interior box).
         let box_ = unit_box();
         for direction in FACE_DIRECTIONS {
             assert!(
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn oracle_solid_neighbour_culls_and_air_neighbour_exposes_the_same_face() {
+    fn oracle_solid_neighbor_culls_and_air_neighbor_exposes_the_same_face() {
         // The single boundary face at +X: a solid oracle culls it, an air oracle exposes it.
         let box_ = unit_box();
         assert!(!CulledBoxMeshing::face_is_exposed(
@@ -224,14 +224,14 @@ mod tests {
 
     #[test]
     fn partially_backed_merged_face_is_reported_exposed() {
-        // A merged face over a 3-wide slab: back only two of its three neighbour cells solid;
+        // A merged face over a 3-wide slab: back only two of its three neighbor cells solid;
         // the one air cell must expose the WHOLE merged quad (the culled-merged over-draw rule).
         let box_ = Cuboid {
             min: [0, 0, 0],
             max: [2, 0, 0],
             label: 5u16,
         };
-        // +Y neighbour slab is the cells (0,1,0),(1,1,0),(2,1,0); leave (2,1,0) air.
+        // +Y neighbor slab is the cells (0,1,0),(1,1,0),(2,1,0); leave (2,1,0) air.
         let all_but_one_solid = |cell: [i64; 3]| cell[1] == 1 && cell[0] < 2;
         assert!(CulledBoxMeshing::face_is_exposed(
             &box_,
@@ -265,7 +265,7 @@ mod tests {
         assert!(exposed);
         assert!(
             queried_negative.get(),
-            "the low face must probe the negative neighbour cell"
+            "the low face must probe the negative neighbor cell"
         );
     }
 }

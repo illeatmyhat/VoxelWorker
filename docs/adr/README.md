@@ -8,7 +8,7 @@ record carries the new decision.
 
 The **current shape of the system** is not described here. It lives in
 [`docs/architecture/`](../architecture/README.md), which is edited freely and kept
-timeless. The division of labour:
+timeless. The division of labor:
 
 | Place | Role | Editing rule |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ had already been absorbed, usually in more depth:
 | --- | --- |
 | `REPRESENTATION.md` — "the voxel grid is the one consumed truth" | `0006-authoring-truth-and-gpu-boundary.md` (quoted verbatim); the sparse-override layer in `0003` §3g |
 | `ARCHITECTURE.md` §3 — the two shader-bug regression guards | `0002-engine-streaming-meshing.md` (per-voxel texture slice; position-based grid overlay), and the README's "Regression guards" |
-| `ARCHITECTURE.md` §4/§5/§8 — camera rig, gizmo, palette | `0015` (camera crate), `0018` + `docs/design/viewport-chrome-signal.md`, `docs/design/colour-vocabulary.md` |
+| `ARCHITECTURE.md` §4/§5/§8 — camera rig, gizmo, palette | `0015` (camera crate), `0018` + `docs/design/viewport-chrome-signal.md`, `docs/design/color-vocabulary.md` |
 | `ARCHITECTURE.md` §7 — the instance/voxel caps | `0002` retires them explicitly; `0009`/`0010` dissolve the need |
 | `DATA.md` — units model, VS install paths, chiselable block list | `docs/architecture/01-document.md` (units); the `assets` crate is now the source of truth for paths and the block list |
 | `HANDOFF.md` — tech-choice rationale, build order | `docs/DEV_NOTES.md` (pinned versions); the build order is complete and historical |

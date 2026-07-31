@@ -28,7 +28,7 @@ pub struct LoadedMaterial {
     /// Whether the resolved faces are genuinely per-face (top != side); used for
     /// logging / verification (`--list-perface`, `--apply-block`).
     pub is_per_face: bool,
-    /// Average RGBA colour of the side face — the representative palette colour
+    /// Average RGBA color of the side face — the representative palette color
     /// used by the `.vox` export (M8).
     pub average_color: [u8; 4],
 }
@@ -40,7 +40,7 @@ impl LoadedMaterial {
     /// 4 +Z, 5 -Z); the texture is uploaded as the SAME sRGB D2Array + bind-group
     /// shape `from_faces` produces, so it is interchangeable on both render paths
     /// without needing a real VS install. Used by the headless harness to apply six
-    /// distinct solid-colour faces and prove the cuboid path textures per-face.
+    /// distinct solid-color faces and prove the cuboid path textures per-face.
     #[allow(clippy::too_many_arguments)]
     pub fn from_face_layers(
         device: &wgpu::Device,
@@ -114,7 +114,7 @@ impl LoadedMaterial {
         ));
         let (target_width, target_height, _) = representative;
 
-        // Normalise every layer to (target_width, target_height) so the array's
+        // Normalize every layer to (target_width, target_height) so the array's
         // layers share one size. Missing faces use the representative image.
         let layers_rgba: Vec<Vec<u8>> = decoded_faces
             .into_iter()
@@ -124,7 +124,7 @@ impl LoadedMaterial {
             })
             .collect();
 
-        // Representative palette colour for the .vox export: the average of the
+        // Representative palette color for the .vox export: the average of the
         // side face (layer 0), which is the most representative of the block.
         let average_color = average_rgba(&layers_rgba[0]);
 
@@ -171,7 +171,7 @@ impl LoadedMaterial {
 }
 
 /// Average RGBA of a tightly-packed RGBA8 buffer (alpha forced opaque). Used for
-/// the `.vox` export's representative palette colour (M8).
+/// the `.vox` export's representative palette color (M8).
 fn average_rgba(pixels: &[u8]) -> [u8; 4] {
     if pixels.len() < 4 {
         return [0x80, 0x80, 0x80, 0xff];
@@ -192,7 +192,7 @@ fn average_rgba(pixels: &[u8]) -> [u8; 4] {
     ]
 }
 
-/// Nearest-neighbour rescale of a decoded RGBA image to `target_width`×
+/// Nearest-neighbor rescale of a decoded RGBA image to `target_width`×
 /// `target_height`. A no-op (clone) when the size already matches. Nearest keeps
 /// VS block textures crisp and matches the material sampler's filter.
 fn resize_rgba_nearest(decoded: &DecodedRgba, target_width: u32, target_height: u32) -> Vec<u8> {

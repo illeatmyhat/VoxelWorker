@@ -87,7 +87,7 @@ impl ApplicationHandler for App {
                         && !in_chrome
                         && state.commit_orbit_center_placement();
                     // ADR 0032: the explicit ORBIT MODE flips the left button's verb — a drag
-                    // turns the camera about `camera.target` and a stationary click re-centres
+                    // turns the camera about `camera.target` and a stationary click re-centers
                     // the view on the surface it hits. It outranks selection and the sketch
                     // paths, which is the whole point of a mode, but NOT an armed orbit-center
                     // placement: that is a transient overlay the user is mid-way through.
@@ -340,14 +340,14 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0032 orbit mode: a STATIONARY release RE-CENTRES the view — the surface
+                    // ADR 0032 orbit mode: a STATIONARY release RE-CENTERS the view — the surface
                     // under the cursor becomes `camera.target`, so the next turn happens about
                     // what the user just pointed at. A miss (sky, no plane) is a REFUSAL, not a
                     // fallback: the view keeps the target it had. This never touches the orbit
                     // CENTER, which only the context menu moves.
                     //
                     // It ANIMATES, through the same eased tween every camera snap uses: a cut
-                    // straight to the new centre gives no cue which way the view went, and the
+                    // straight to the new center gives no cue which way the view went, and the
                     // point of aiming at a feature is to keep hold of it while the frame comes.
                     if state.orbit_mode_recenter_press {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
@@ -562,7 +562,7 @@ impl ApplicationHandler for App {
                 // `camera.target` — the same turn the cube drag performs, but at the latched
                 // ACTIVE type (the mode may be running a per-session override of the default).
                 // The first move past the threshold also spends the press: one press is either a
-                // turn or a re-centring click, never both.
+                // turn or a re-centering click, never both.
                 let orbiting = orbiting || state.orbiting_in_orbit_mode;
                 if state.orbiting_in_orbit_mode {
                     if let Some((previous_x, previous_y)) = state.last_cursor_position {
@@ -633,7 +633,7 @@ impl ApplicationHandler for App {
                     ) {
                         // #13 Step 6.6: rotate arrows are a face-relative affordance —
                         // only offer them when the view is constrained to a face
-                        // (Fusion behaviour). Off-face hovers over a rotate gutter
+                        // (Fusion behavior). Off-face hovers over a rotate gutter
                         // don't light up.
                         Some(CubeChromeZone::RotateArrow(_))
                             if !state.app_core.camera.is_face_constrained() =>
@@ -664,7 +664,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Finding #0 (data-loss guard): poll the export worker and honour a pending
+                // Finding #0 (data-loss guard): poll the export worker and honor a pending
                 // deferred close BEFORE `render()`. `render()` early-returns before it can
                 // poll anything when the surface isn't presentable (window minimized /
                 // occluded), which would otherwise hang the deferred close FOREVER — the
@@ -673,7 +673,7 @@ impl ApplicationHandler for App {
                 state.poll_vox_export_worker();
                 if state.close_requested_while_exporting && !state.export_outstanding {
                     // The export we were waiting on landed successfully (a failure clears
-                    // the deferral in the poll above), so honour the pending close.
+                    // the deferral in the poll above), so honor the pending close.
                     state.shutdown(event_loop);
                 } else {
                     state.render();

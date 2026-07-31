@@ -13,7 +13,7 @@
 //! * [`BlockClassification`] / [`classify_chunk_block`] —
 //!   the conservative classifier: compose every leaf's field interval over a block cell by
 //!   CSG interval arithmetic (v1 only has [`document::scene::CombineOp::Union`]) and take
-//!   the 3-way verdict through the substrate black/white/grey
+//!   the 3-way verdict through the substrate black/white/gray
 //!   [`substrate::solids::CellClassification`] kernel. An unboundable producer
 //!   (`cell_field_interval == None`) surfaces as "cannot classify" and forces the block
 //!   BOUNDARY.
@@ -39,7 +39,7 @@
 //! chunk-local block index `[0, CHUNK_BLOCKS)`, and the absolute origin lives in the chunk
 //! key ([`crate::store::ChunkCacheKey::chunk_coord`]). The boundary blocks' [`VoxelBox`](crate::cuboid::VoxelBox)es
 //! are in **chunk-local voxel** indices `[0, chunk_extent_voxels)`. The expansion stamps
-//! voxels into the SAME (recentred / floating-origin-rebased) frame
+//! voxels into the SAME (recentered / floating-origin-rebased) frame
 //! [`Scene::resolve_chunk_rebased`](document::scene::Scene::resolve_chunk_rebased)
 //! produces, so the round-trip is occupancy-identical to the dense path.
 //!
@@ -73,7 +73,7 @@ pub(crate) use classify::*;
 // The public ADR 0010 E2 boundary-residency surface.
 pub use builder::TwoLayerStore;
 pub use chunk::{BlockClassification, MicroblockGeometry, SeamSolidity, TwoLayerChunk};
-pub use classify::seat_centre_at;
+pub use classify::seat_center_at;
 pub use field_probe::composed_field_at;
 pub use resident_cache::TwoLayerResidentCache;
 pub use stream::{stream_vox_occupancy, streamed_widest_run_in_band};

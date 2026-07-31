@@ -78,7 +78,7 @@ This was the expected escape hatch and it is not one. **There is no per-object m
 anywhere in the display path** (verified: no `model_matrix` / per-node transform in
 `crates/display`):
 
-- **Mesh path** — the mesher bakes world position into each vertex, which is why a recentre
+- **Mesh path** — the mesher bakes world position into each vertex, which is why a recenter
   shift staleens every kept buffer (`src/app_core/rebuild.rs`). Buffers are **chunk**-granular,
   not node-granular, so no draw call corresponds to one node.
 - **Brick raymarch** — `BrickUniformsPod` carries `view_projection`, `grid_half_extent`,
@@ -93,7 +93,7 @@ mesh path and a per-record transform in the brick pipeline.
 ## Conclusion
 
 None of the three mechanisms beats the existing incremental rebuild, which
-`tests/edit_cost_probe.rs` measures at 1.7–4.0 ms flat for a localised drag regardless of scene
+`tests/edit_cost_probe.rs` measures at 1.7–4.0 ms flat for a localized drag regardless of scene
 size. **A resize preview belongs on that path, or on a dedicated analytic-SDF pass — not on a
 prebuilt LOD ladder.**
 

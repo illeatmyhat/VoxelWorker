@@ -5,7 +5,7 @@ use substrate::interval::DisjointIntervalSet;
 
 use document::scene::Scene;
 use voxel_core::core_geom::CHUNK_BLOCKS;
-use voxel_core::voxel::{RecentreVoxels, Voxel};
+use voxel_core::voxel::{RecenterVoxels, Voxel};
 // Used only by the compile-gated whole-region oracles (`resolve_region_two_layer` under
 // `oracle`, `expand_resident_chunks_into_grid` under `test-support`); gated so the plain
 // production build does not carry an unused import.
@@ -17,27 +17,27 @@ use voxel_core::voxel::VoxelGrid;
 #[allow(unused_imports)]
 use super::*;
 
-/// The rebase offset that maps a chunk's LOCAL voxel indices into the recentred frame:
-/// a chunk-local voxel `l` sits at absolute `chunk_min + l`, and the recentred frame
-/// subtracts `recentre_voxels`, so the offset is `chunk_coord·chunk_extent − recentre`
-/// (i64, before the i32 downcast — the same `chunk_min − recentre` rebase
+/// The rebase offset that maps a chunk's LOCAL voxel indices into the recentered frame:
+/// a chunk-local voxel `l` sits at absolute `chunk_min + l`, and the recentered frame
+/// subtracts `recenter_voxels`, so the offset is `chunk_coord·chunk_extent − recenter`
+/// (i64, before the i32 downcast — the same `chunk_min − recenter` rebase
 /// `resolve_chunk_rebased` applies, ADR 0008). One source of truth for the "same z,y,x
 /// order as the dense store" rebase several call sites depend on.
 fn chunk_index_offset(
     chunk_coord: [i32; 3],
     chunk_extent_voxels: i64,
-    recentre_voxels: [i64; 3],
+    recenter_voxels: [i64; 3],
 ) -> [i64; 3] {
     std::array::from_fn(|axis| {
-        chunk_coord[axis] as i64 * chunk_extent_voxels - recentre_voxels[axis]
+        chunk_coord[axis] as i64 * chunk_extent_voxels - recenter_voxels[axis]
     })
 }
 
-/// Stream a whole scene's two-layer chunks back to one recentred [`VoxelGrid`], in the
+/// Stream a whole scene's two-layer chunks back to one recentered [`VoxelGrid`], in the
 /// EXACT frame the dense [`Store::resolve_region`](crate::store::Store::resolve_region)
 /// assembles — the parity gate's "two-layer round-trip" (ADR 0010 parity (a)). Builds
 /// each covering chunk via the capability, expands it (coarse fast-fill + boundary
-/// per-voxel), and rebases by `chunk_min_voxels − recentre` so the occupied SET matches
+/// per-voxel), and rebases by `chunk_min_voxels − recenter` so the occupied SET matches
 /// the dense path bit-for-bit (position + block id).
 ///
 /// Returns `None` when the capability is OFF (the caller stays on the dense path) or the
@@ -63,17 +63,17 @@ pub fn resolve_region_two_layer(
 
     let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
     let mut output = VoxelGrid::new(region_dimensions);
-    // ADR 0008: carry the recentre so consumers decode world→index without re-deriving it
+    // ADR 0008: carry the recenter so consumers decode world→index without re-deriving it
     // — the same value the dense `resolve_region` stamps (the parity gate compares it).
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
-    output.recentre_voxels = recentre.voxels();
+    let recenter = scene.recenter_voxels_for_resolve(voxels_per_block);
+    output.recenter_voxels = recenter.voxels();
 
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
         return Some(output); // No composite extent (VoxelBody-only): empty region.
     };
 
     // Unwrap the frame at the per-chunk rebase arithmetic below.
-    let recentre_voxels = recentre.voxels();
+    let recenter_voxels = recenter.voxels();
     let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
     // Visit chunks in the SAME z,y,x order the dense store assembles them in, so the
     // emitted voxel order matches too (the multiset compare is order-independent, but
@@ -85,13 +85,13 @@ pub fn resolve_region_two_layer(
                 let chunk = store
                     .build_chunk(chunk_coord, scene, voxels_per_block, lod)
                     .expect("capability is enabled");
-                // Rebase chunk-local indices into the recentred frame: a voxel at
+                // Rebase chunk-local indices into the recentered frame: a voxel at
                 // chunk-local index `l` has absolute index `chunk_min + l`, and the
-                // recentred frame subtracts `recentre` — so the offset is
-                // `chunk_min − recentre` (i64, before the i32 downcast). This is exactly
-                // `resolve_chunk_rebased`'s rebase with floating origin = recentre.
+                // recentered frame subtracts `recenter` — so the offset is
+                // `chunk_min − recenter` (i64, before the i32 downcast). This is exactly
+                // `resolve_chunk_rebased`'s rebase with floating origin = recenter.
                 let index_offset =
-                    chunk_index_offset(chunk_coord, chunk_extent_voxels, recentre_voxels);
+                    chunk_index_offset(chunk_coord, chunk_extent_voxels, recenter_voxels);
                 chunk.expand_occupancy_into(&mut output.occupied, index_offset);
             }
         }
@@ -101,15 +101,15 @@ pub fn resolve_region_two_layer(
 }
 
 /// Expand an already-resident two-layer chunk set (ADR 0010 E5 — the
-/// [`TwoLayerResidentCache`] display path) into one recentred [`VoxelGrid`], in the
+/// [`TwoLayerResidentCache`] display path) into one recentered [`VoxelGrid`], in the
 /// EXACT frame the retired dense `Store::resolve_region` assembled. Unlike
 /// [`resolve_region_two_layer`] (which re-classifies each chunk from the scene via a
 /// stateless [`TwoLayerStore`]), this reuses the caller's ALREADY-BUILT resident chunks.
 ///
 /// `chunks` is `(absolute_chunk_coord, Arc<TwoLayerChunk>)` per covering chunk (the
 /// [`TwoLayerResidentCache::resident_two_layer_chunks`] output); `region_dimensions` is
-/// the composite voxel extent ([`Scene::placed_region_dimensions`]); `recentre`
-/// is the composite recentre frame (ADR 0008). The occupied SET is bit-identical to
+/// the composite voxel extent ([`Scene::placed_region_dimensions`]); `recenter`
+/// is the composite recenter frame (ADR 0008). The occupied SET is bit-identical to
 /// [`resolve_region_two_layer`]'s (the E2 round-trip parity gate proves the shared expand
 /// path).
 ///
@@ -127,21 +127,21 @@ pub fn resolve_region_two_layer(
 pub fn expand_resident_chunks_into_grid(
     chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     region_dimensions: [u32; 3],
-    recentre: RecentreVoxels,
+    recenter: RecenterVoxels,
     voxels_per_block: u32,
 ) -> VoxelGrid {
     let mut output = VoxelGrid::new(region_dimensions);
     // Unwrap at the chunk-rebase arithmetic (the index offset below) and the grid's carried
     // raw frame field.
-    let recentre_voxels = recentre.voxels();
-    output.recentre_voxels = recentre_voxels;
+    let recenter_voxels = recenter.voxels();
+    output.recenter_voxels = recenter_voxels;
     let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
     for (chunk_coord, chunk) in chunks {
-        // Rebase chunk-local indices into the recentred frame: a voxel at chunk-local
-        // index `l` sits at absolute `chunk_min + l`, and the recentred frame subtracts
-        // the recentre — the SAME `chunk_min − recentre` offset `resolve_region_two_layer`
+        // Rebase chunk-local indices into the recentered frame: a voxel at chunk-local
+        // index `l` sits at absolute `chunk_min + l`, and the recentered frame subtracts
+        // the recenter — the SAME `chunk_min − recenter` offset `resolve_region_two_layer`
         // applies (ADR 0008).
-        let index_offset = chunk_index_offset(*chunk_coord, chunk_extent_voxels, recentre_voxels);
+        let index_offset = chunk_index_offset(*chunk_coord, chunk_extent_voxels, recenter_voxels);
         chunk.expand_occupancy_into(&mut output.occupied, index_offset);
     }
     output
@@ -158,7 +158,7 @@ pub fn expand_resident_chunks_into_grid(
 // block is per-voxel field eval. This is why the `.vox` 6M whole-region cap
 // dissolves on the export path — no dense interior is ever materialised.
 
-/// Build ONE covering chunk in the recentred frame and stream its occupancy into a
+/// Build ONE covering chunk in the recentered frame and stream its occupancy into a
 /// FRESH `Vec<Voxel>` (coarse `d³` fast-fill + boundary per-voxel), in the EXACT
 /// frame the dense oracle-gated `Store::resolve_region`
 /// assembles. Returns `None` when the capability is OFF.
@@ -168,29 +168,29 @@ pub fn expand_resident_chunks_into_grid(
 /// caller wanting the whole occupancy just concatenates. No dense whole-region grid
 /// is ever allocated — the chunk buffer is the only transient, bounded to one
 /// chunk's surface + (for export) its coarse interior.
-pub(crate) fn stream_chunk_recentred(
+pub(crate) fn stream_chunk_recentered(
     store: &TwoLayerStore,
     scene: &Scene,
     chunk_coord: [i32; 3],
     voxels_per_block: u32,
-    recentre: RecentreVoxels,
+    recenter: RecenterVoxels,
 ) -> Option<Vec<Voxel>> {
     let chunk = store.build_chunk(chunk_coord, scene, voxels_per_block, 0)?;
     let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
-    // Rebase chunk-local indices into the recentred frame (mirrors
+    // Rebase chunk-local indices into the recentered frame (mirrors
     // `resolve_region_two_layer` / `resolve_chunk_rebased`): a chunk-local voxel `l`
-    // has absolute index `chunk_min + l`, and the recentred frame subtracts the
-    // recentre, so the offset is `chunk_min − recentre` (i64, before the i32 downcast).
+    // has absolute index `chunk_min + l`, and the recentered frame subtracts the
+    // recenter, so the offset is `chunk_min − recenter` (i64, before the i32 downcast).
     // Unwrap at this arithmetic.
-    let recentre_voxels = recentre.voxels();
-    let index_offset = chunk_index_offset(chunk_coord, chunk_extent_voxels, recentre_voxels);
+    let recenter_voxels = recenter.voxels();
+    let index_offset = chunk_index_offset(chunk_coord, chunk_extent_voxels, recenter_voxels);
     let mut output = Vec::new();
     chunk.expand_occupancy_into(&mut output, index_offset);
     Some(output)
 }
 
 /// **Cacheless `.vox` streaming source (ADR 0010 E4).** Stream the scene's exact
-/// occupancy region-scoped, ONE covering chunk at a time, in the recentred frame the
+/// occupancy region-scoped, ONE covering chunk at a time, in the recentered frame the
 /// dense path produces, invoking `sink` with each chunk's freshly-expanded
 /// `Vec<Voxel>` (coarse `d³` fast-fill + boundary per-voxel) before dropping it. The
 /// caller's `sink` buckets each chunk into the `.vox` model set (so no whole-region
@@ -211,8 +211,8 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
     }
     let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
     // Carry the frame newtype through the per-chunk stream; it is unwrapped inside
-    // `stream_chunk_recentred`'s per-chunk rebase, never at this return.
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+    // `stream_chunk_recentered`'s per-chunk rebase, never at this return.
+    let recenter = scene.recenter_voxels_for_resolve(voxels_per_block);
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
         // No composite extent (VoxelBody-only): an empty occupancy is still a valid export.
         return Some(region_dimensions);
@@ -220,12 +220,12 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
     for chunk_z in min_chunk[2]..=max_chunk[2] {
         for chunk_y in min_chunk[1]..=max_chunk[1] {
             for chunk_x in min_chunk[0]..=max_chunk[0] {
-                if let Some(chunk_voxels) = stream_chunk_recentred(
+                if let Some(chunk_voxels) = stream_chunk_recentered(
                     store,
                     scene,
                     [chunk_x, chunk_y, chunk_z],
                     voxels_per_block,
-                    recentre,
+                    recenter,
                 ) {
                     sink(chunk_voxels);
                 }
@@ -253,8 +253,8 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
 /// The shared per-`(y, z)` occupancy rows are keyed by the GLOBAL X index the dense
 /// [`VoxelGrid::widest_run_in_band`](voxel_core::voxel::VoxelGrid::widest_run_in_band) computes
 /// (`i = round(world_x + floor(grid_x/2) − 0.5)`). A coarse-solid block is stamped
-/// at the SAME indices its per-voxel expansion would land — the recentred chunk-local
-/// voxel index `chunk_min + block_low + local − recentre`, whose `world = index + 0.5`
+/// at the SAME indices its per-voxel expansion would land — the recentered chunk-local
+/// voxel index `chunk_min + block_low + local − recenter`, whose `world = index + 0.5`
 /// decodes back to `index − region_low = index + floor(dim/2)` — so the analytic span
 /// is bit-identical to expanding the block and scanning. A boundary block's per-voxel
 /// fill uses the identical decode, so a run crossing a coarse↔boundary seam is one
@@ -274,7 +274,7 @@ pub fn streamed_widest_run_in_band(
         return Some(0);
     }
     // Unwrap the frame at this cacheless query's per-block rebase arithmetic.
-    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
+    let recenter_voxels = scene.recenter_voxels_for_resolve(voxels_per_block).voxels();
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
         return Some(0);
     };
@@ -282,7 +282,7 @@ pub fn streamed_widest_run_in_band(
     let width = grid_x as usize;
     // The dense decode: `idx = round(world + floor(dim/2) − 0.5)`. Because every
     // streamed voxel index `n` decodes `world = n + 0.5` ⇒ `idx = n + floor(dim/2)`,
-    // the recentred index maps to the global grid index by ADDING `floor(dim/2)`.
+    // the recentered index maps to the global grid index by ADDING `floor(dim/2)`.
     let half = [
         (grid_x / 2) as i64,
         (grid_y / 2) as i64,
@@ -297,7 +297,7 @@ pub fn streamed_widest_run_in_band(
     // ADR 0010 E5 — BLOCK-ROW DEDUP (the O(volume)→O(total blocks) diameter fix).
     //
     // The widest run is folded one **(chunk_z, chunk_y) band at a time**: every global
-    // (z, y) row maps to EXACTLY ONE band (the recentred z/y ranges partition disjointly),
+    // (z, y) row maps to EXACTLY ONE band (the recentered z/y ranges partition disjointly),
     // so a band is complete once its `chunk_x` sweep finishes. Bands are independent, so the
     // fold runs across them in PARALLEL with a deterministic `max` reduction — live state is
     // bounded per band, never a region-wide bitset (the prior `Vec<bool>` per (z,y) row was
@@ -335,8 +335,8 @@ pub fn streamed_widest_run_in_band(
     // immutable inputs (store/scene/frame scalars), so it parallelises across bands.
     let band_widest = |(chunk_z, chunk_y): (i32, i32)| -> u32 {
         // The band's global-row origins (`to_global[1..=2]`, constant over `chunk_x`).
-        let z_base = chunk_z as i64 * chunk_extent_voxels - recentre_voxels[2] + half[2];
-        let y_base = chunk_y as i64 * chunk_extent_voxels - recentre_voxels[1] + half[1];
+        let z_base = chunk_z as i64 * chunk_extent_voxels - recenter_voxels[2] + half[2];
+        let y_base = chunk_y as i64 * chunk_extent_voxels - recenter_voxels[1] + half[1];
 
         // Per block-row (index `block_z * CHUNK_BLOCKS + block_y`) coarse X spans — the ONE
         // span set shared by every voxel row the block-row covers. Boundary cuboid spans are
@@ -352,11 +352,11 @@ pub fn streamed_widest_run_in_band(
             let Some(chunk) = store.build_chunk(chunk_coord, scene, voxels_per_block, 0) else {
                 continue;
             };
-            // The recentred→global X origin: global_x = chunk_min_x + block_low_x + local
-            // − recentre + half. Spans arrive in ascending X (chunk_x, block_x, local all
+            // The recentered→global X origin: global_x = chunk_min_x + block_low_x + local
+            // − recenter + half. Spans arrive in ascending X (chunk_x, block_x, local all
             // increase), so `DisjointIntervalSet::insert`'s append fast path coalesces a
             // solid row in O(1).
-            let to_global_x = chunk_x as i64 * chunk_extent_voxels - recentre_voxels[0] + half[0];
+            let to_global_x = chunk_x as i64 * chunk_extent_voxels - recenter_voxels[0] + half[0];
             for block_z in 0..CHUNK_BLOCKS {
                 for block_y in 0..CHUNK_BLOCKS {
                     let block_row = block_z as usize * CHUNK_BLOCKS as usize + block_y as usize;

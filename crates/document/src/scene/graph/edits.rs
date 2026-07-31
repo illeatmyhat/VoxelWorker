@@ -373,7 +373,7 @@ impl Scene {
     }
 
     /// Build the one-node Tool scene that reproduces today's single-shape
-    /// behaviour from the panel's [`GeometryParams`] plus the active
+    /// behavior from the panel's [`GeometryParams`] plus the active
     /// [`MaterialChoice`]. The node is a [`NodeContent::Tool`] wrapping the SDF
     /// shape, carrying `material` as its single material.
     ///

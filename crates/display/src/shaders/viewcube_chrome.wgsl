@@ -7,7 +7,7 @@
 // badge glyphs.) Positions arrive already in NDC
 // (computed on the CPU from the Step-1 layout fractions, within the scissored
 // cube viewport), so the vertex stage is a pass-through. Each glyph samples its
-// own layer from a 2D texture array and is tinted by a per-vertex colour (used
+// own layer from a 2D texture array and is tinted by a per-vertex color (used
 // to highlight a hovered arrow). Alpha-blended over the already-drawn scene/cube.
 
 struct ChromeVertexInput {

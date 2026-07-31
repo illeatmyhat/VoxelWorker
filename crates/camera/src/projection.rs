@@ -6,7 +6,7 @@
 //! bounding sphere so no in-scene geometry is ever depth-clipped.
 //! [`OrbitCamera::view_cube_view_projection`] is the small independent orthographic
 //! matrix for the corner ViewCube. [`unproject_screen_point_to_ray`] runs the
-//! inverse: it maps a normalised-device-coordinate screen point back through the
+//! inverse: it maps a normalized-device-coordinate screen point back through the
 //! inverse `view_projection` to the pair of world points on the near and far clip
 //! planes, and returns the [`Ray`] through them — the generic operation behind
 //! every "what did the cursor point at" pick.
@@ -51,7 +51,7 @@ pub struct SceneMatrices {
     /// projects through `ray_view_projection`. Under ORTHOGRAPHIC this is the scene
     /// matrix itself.
     pub ray_unprojection: Mat4,
-    /// The ray frame's origin in the recentred render frame: the eye under
+    /// The ray frame's origin in the recentered render frame: the eye under
     /// PERSPECTIVE, zero under ORTHOGRAPHIC. Consumers add it back outside the
     /// matrix math.
     pub ray_eye: Vec3,
@@ -64,7 +64,7 @@ pub struct SceneMatrices {
 /// pass can convert a world-length tolerance into an NDC-depth tolerance AT a
 /// sampled depth — comparing hardware z against hardware z directly. Never
 /// linearize a hardware depth to compare in view space: the inverse map amplifies
-/// quantisation noise by `view_depth² / near`, exploding at wide baselines; the
+/// quantization noise by `view_depth² / near`, exploding at wide baselines; the
 /// forward slope below degrades gracefully instead.
 ///
 /// With `d` = view depth (distance along the forward axis, positive in front) and
@@ -90,14 +90,14 @@ pub struct NdcDepthMapping {
 impl OrbitCamera {
     /// Build the combined `view_projection` matrix for an aspect ratio (w/h), with
     /// the near/far planes derived to ENCLOSE the scene's bounding sphere
-    /// (`scene_centre` + `scene_radius`, render-frame units) so no in-scene geometry
+    /// (`scene_center` + `scene_radius`, render-frame units) so no in-scene geometry
     /// is ever depth-clipped.
     ///
     /// The old near/far keyed only off `orbit_distance` (`near = distance·0.01`).
     /// That clipped the moment another object sat closer to the eye than the
     /// auto-framed target — e.g. Focus shrinks `orbit_distance` to fit one node, so
     /// a second node 15 blocks toward the camera fell in front of the near plane.
-    /// Instead, project the bounding-sphere centre onto the view axis and place the
+    /// Instead, project the bounding-sphere center onto the view axis and place the
     /// planes a sphere-radius (plus a small margin) either side: the WHOLE scene is
     /// then always within `[near, far]`, making near-plane clipping of scene
     /// geometry unrepresentable. Orthographic tolerates a near plane behind the eye,
@@ -111,11 +111,11 @@ impl OrbitCamera {
     pub fn view_projection(
         &self,
         aspect_ratio: f32,
-        scene_centre: Vec3,
+        scene_center: Vec3,
         scene_radius: f32,
     ) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
-        self.projection_enclosing_sphere(aspect_ratio, scene_centre, scene_radius) * view
+        self.projection_enclosing_sphere(aspect_ratio, scene_center, scene_radius) * view
     }
 
     /// [`view_projection`](Self::view_projection) with the camera EYE at the frame
@@ -129,14 +129,14 @@ impl OrbitCamera {
     pub fn camera_relative_view_projection(
         &self,
         aspect_ratio: f32,
-        scene_centre: Vec3,
+        scene_center: Vec3,
         scene_radius: f32,
     ) -> Mat4 {
         // look_at_rh = [R | R·(−eye)]; zeroing the translation column leaves exactly
         // the rotation the full view matrix applies — same bits, no re-derivation.
         let mut rotation_only_view = Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
         rotation_only_view.w_axis = Vec4::W;
-        self.projection_enclosing_sphere(aspect_ratio, scene_centre, scene_radius)
+        self.projection_enclosing_sphere(aspect_ratio, scene_center, scene_radius)
             * rotation_only_view
     }
 
@@ -145,13 +145,13 @@ impl OrbitCamera {
     pub fn scene_matrices(
         &self,
         aspect_ratio: f32,
-        scene_centre: Vec3,
+        scene_center: Vec3,
         scene_radius: f32,
     ) -> SceneMatrices {
-        let view_projection = self.view_projection(aspect_ratio, scene_centre, scene_radius);
+        let view_projection = self.view_projection(aspect_ratio, scene_center, scene_radius);
         // The SAME projection the view_projection above composed (identical args →
         // identical near/far), so the mapping can never drift from the matrix.
-        let projection = self.projection_enclosing_sphere(aspect_ratio, scene_centre, scene_radius);
+        let projection = self.projection_enclosing_sphere(aspect_ratio, scene_center, scene_radius);
         let ndc_depth = NdcDepthMapping {
             depth_scale: projection.z_axis.z,
             depth_offset: projection.w_axis.z,
@@ -162,7 +162,7 @@ impl OrbitCamera {
                 view_projection,
                 ray_view_projection: self.camera_relative_view_projection(
                     aspect_ratio,
-                    scene_centre,
+                    scene_center,
                     scene_radius,
                 ),
                 // Camera-sized bracket: the near clamps to the 0.05 floor (eye inside
@@ -189,22 +189,22 @@ impl OrbitCamera {
 
     /// The projection half of [`view_projection`](Self::view_projection): near/far
     /// placed a sphere-radius (plus margin) either side of the bounding-sphere
-    /// centre's view depth. Eye-position-independent apart from that depth, so the
+    /// center's view depth. Eye-position-independent apart from that depth, so the
     /// full and camera-relative view-projections share it verbatim.
     fn projection_enclosing_sphere(
         &self,
         aspect_ratio: f32,
-        scene_centre: Vec3,
+        scene_center: Vec3,
         scene_radius: f32,
     ) -> Mat4 {
-        // Signed depth from the eye to the bounding-sphere centre along the view
+        // Signed depth from the eye to the bounding-sphere center along the view
         // axis (forward = the unit look direction, target − eye = −direction()).
         let forward = -self.direction();
-        let centre_depth = (scene_centre - self.eye()).dot(forward);
+        let center_depth = (scene_center - self.eye()).dot(forward);
         // A hair of slack so faces exactly on the sphere don't sit on a plane.
         let margin = scene_radius * 0.05 + 0.5;
-        let mut near = centre_depth - scene_radius - margin;
-        let mut far = centre_depth + scene_radius + margin;
+        let mut near = center_depth - scene_radius - margin;
+        let mut far = center_depth + scene_radius + margin;
         match self.projection_mode {
             ProjectionMode::Perspective => {
                 // Perspective needs near > 0; clamp to a small floor and keep far
@@ -247,7 +247,7 @@ impl OrbitCamera {
     }
 }
 
-/// Unproject a normalised-device-coordinate screen point through the inverse of a
+/// Unproject a normalized-device-coordinate screen point through the inverse of a
 /// `view_projection` matrix into the world-space [`Ray`] the cursor points along.
 ///
 /// `ndc_x` / `ndc_y` are in clip space `[-1, 1]` with **y up** (a caller working in
@@ -257,7 +257,7 @@ impl OrbitCamera {
 /// pushing both through `view_projection.inverse()` and dividing by `w` recovers
 /// their world positions, and the ray runs from the near point toward the far one.
 /// Returns `None` only if the two unprojected points coincide (a degenerate matrix),
-/// so the direction cannot be normalised.
+/// so the direction cannot be normalized.
 pub fn unproject_screen_point_to_ray(view_projection: Mat4, ndc_x: f32, ndc_y: f32) -> Option<Ray> {
     let inverse = view_projection.inverse();
     let near = inverse * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
@@ -295,7 +295,7 @@ mod tests {
         let forward = -camera.direction();
         let up = camera.up_vector();
         let right = forward.cross(up).normalize();
-        // Sample the sphere's six axis-extreme surface points (centre = ZERO). The
+        // Sample the sphere's six axis-extreme surface points (center = ZERO). The
         // two along the view axis are the binding ones; all must map to a depth
         // inside [0, 1] (glam's `_rh` projections use the wgpu [0,1] z range).
         for dir in [forward, -forward, up, -up, right, -right] {
@@ -354,25 +354,25 @@ mod tests {
 
     /// The unprojected ray round-trips: its near-plane origin projects back to the
     /// same NDC point, and the ray points INTO the scene (away from the eye) — so a
-    /// centre-screen pick aims at the look target.
+    /// center-screen pick aims at the look target.
     #[test]
     fn unprojected_ray_round_trips_and_points_into_the_scene() {
         let camera = OrbitCamera::default();
         let vp = camera.view_projection(1.0, Vec3::ZERO, 10.0);
-        // Centre of the screen (NDC origin) unprojects to a ray toward the target.
+        // Center of the screen (NDC origin) unprojects to a ray toward the target.
         let ray = unproject_screen_point_to_ray(vp, 0.0, 0.0).expect("non-degenerate VP");
         // The direction must run from the eye toward the target (the forward axis).
         let forward = (camera.target - camera.eye()).normalize();
         assert!(
             ray.direction.dot(forward) > 0.999,
-            "centre pick should aim along forward: dot {}",
+            "center pick should aim along forward: dot {}",
             ray.direction.dot(forward)
         );
         // Re-project the ray origin: it lands back at NDC (0, 0) on the near plane.
         let clip = vp * ray.origin.extend(1.0);
         assert!(
             (clip.x / clip.w).abs() < 1e-3 && (clip.y / clip.w).abs() < 1e-3,
-            "origin should re-project to NDC centre: {clip:?}"
+            "origin should re-project to NDC center: {clip:?}"
         );
     }
 

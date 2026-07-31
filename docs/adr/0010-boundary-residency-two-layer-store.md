@@ -23,7 +23,7 @@ literal storage fact, not a slogan): a chunk is a **32³ block-ID array** (palet
 even multi-material, is **just block ids with no voxel data** — plus a **sparse map of position → `BlockEntityMicroBlock`**
 for chiseled blocks. Each microblock stores a small `BlockIds[]` material palette and its geometry **already
 greedy-decomposed into cuboids** (one bit-packed `uint` each: min/max X,Y,Z in 0–15 + material index), with **per-face
-solidity flags** (`sideAlmostSolid`/`sidecenterSolid`) for neighbour face culling. This dissolved an earlier mis-framing
+solidity flags** (`sideAlmostSolid`/`sidecenterSolid`) for neighbor face culling. This dissolved an earlier mis-framing
 (that a "full" chunk must be single-material): VS keeps material **per block** in the coarse array, so multi-material
 solids need no voxels and no single-material constraint.
 
@@ -35,7 +35,7 @@ solids need no voxels and no single-material constraint.
 - a **microblock layer** — a **sparse** map of boundary blocks (blocks the producer surface passes through) → their
   sub-block geometry **stored already as cuboids** (our `cuboid::VoxelBox` list *is* VS's packed-cuboid form), never a
   dense 16³ grid.
-- **per-face seam-solidity flags** per boundary block — the coarse-vs-microblock analogue of the dense-fog **apron**.
+- **per-face seam-solidity flags** per boundary block — the coarse-vs-microblock analog of the dense-fog **apron**.
 
 **2. One evaluator; conservative per-op interval bound classifies each block.** `VoxelProducer` gains a conservative
 **cell field-interval bound** (`Option<(min,max)>` over a block cell): all-outside ⇒ **air**, all-inside ⇒ **coarse-solid**,
@@ -126,9 +126,9 @@ optimization** on the data seam, never an observable change.
   win and closest to shipped code, but defers the exact data seam every exporter/query/golden binds to and its correctness
   gate. Rejected: build the exact CPU seam first, then generalize it to the GPU display sink.
 - **Single-material "full" chunk** (full = one solid bit + a majority material). Re-introduces the exact multi-material
-  problem VS avoids by keeping material per block; rejected in favour of the coarse block-ID grid.
+  problem VS avoids by keeping material per block; rejected in favor of the coarse block-ID grid.
 - **Expand the elided cache for exact sinks** (export/query read the display cache and re-materialize interiors). Keeps a
-  dense `resolve_region`-shaped path alive and re-grows the 6M pattern on export; rejected in favour of cacheless evaluator
+  dense `resolve_region`-shaped path alive and re-grows the 6M pattern on export; rejected in favor of cacheless evaluator
   reads.
 - **Corner-sample block classification** (8 corners + center). Cheap and uniform but **not conservative** — a thin feature
   inside a cell is missed, violating the exact-on-data-seam rule. Rejected for the exact seam (it is an allowed *display*

@@ -9,7 +9,7 @@ use super::AppCore;
 
 /// The mesh/brick layer clip for a frame, region-scoped per ADR 0018 Decision 5. Bundles
 /// the effective [`LayerBand`] (scene-absolute layers), the optional [`RegionClip`] the
-/// band is confined to (the selected object's placed AABB, recentred voxels — `None` for a
+/// band is confined to (the selected object's placed AABB, recentered voxels — `None` for a
 /// scene-wide band / no clip), and the layer-track domain the UI scrubber spans.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshClip {
@@ -36,7 +36,7 @@ impl AppCore {
     /// The startup region door — the SINGLE place the windowed shell seeds its first-frame
     /// display frame from (`WindowedState::new`). ADR 0011 G5: with the dense grid retired
     /// this constructs NO `VoxelGrid` at all — it returns only the region dimensions + the
-    /// resolve recentre (the camera auto-frame, layer scrubber and fog frame consume these),
+    /// resolve recenter (the camera auto-frame, layer scrubber and fog frame consume these),
     /// exactly what the per-edit [`AppCore::rebuild`] yields. This is what closes the startup
     /// OOM on BOTH binaries: a persisted 8000×800×800 scene once resolved a dense
     /// ~5.1-billion-cell grid (~28.5 GB RSS → OOM hang before the first print), and the non-gpu
@@ -44,7 +44,7 @@ impl AppCore {
     pub fn startup_region(scene: &Scene, density: u32) -> ([u32; 3], [i64; 3]) {
         (
             scene.placed_region_dimensions(density),
-            scene.recentre_voxels_for_resolve(density).voxels(),
+            scene.recenter_voxels_for_resolve(density).voxels(),
         )
     }
 
@@ -62,14 +62,14 @@ impl AppCore {
     }
 
     /// The camera's view-projection matrix for the given viewport aspect ratio —
-    /// the recentred-frame matrix every overlay + the voxel pass draw with. A
+    /// the recentered-frame matrix every overlay + the voxel pass draw with. A
     /// `&self` getter (it reads the owned camera) so the shell and `shot` source the
     /// frame matrix identically.
     ///
-    /// `region_dimensions` is the resolved grid extent (voxels). The recentre
-    /// centres the composite on the render-frame origin (Fit/Home both target
-    /// `Vec3::ZERO`), so the scene's bounding sphere is `centre = ORIGIN`,
-    /// `radius = ½·diagonal` (with a small margin for the integer-recentre's
+    /// `region_dimensions` is the resolved grid extent (voxels). The recenter
+    /// centers the composite on the render-frame origin (Fit/Home both target
+    /// `Vec3::ZERO`), so the scene's bounding sphere is `center = ORIGIN`,
+    /// `radius = ½·diagonal` (with a small margin for the integer-recenter's
     /// sub-voxel asymmetry and a floor for tiny scenes). The camera derives its
     /// near/far from that sphere so no part of the scene is ever depth-clipped.
     pub fn view_projection(&self, aspect_ratio: f32, region_dimensions: [u32; 3]) -> glam::Mat4 {
@@ -101,8 +101,8 @@ impl AppCore {
     /// source both the shell and `shot` consume (the [`view_projection`] pattern), so the
     /// two never drift.
     ///
-    /// Centred on the camera TARGET, with the radius EXPANDED to reach every visible Point's
-    /// axes. Target-centred alone is not enough: orbiting a distant node with the world origin
+    /// Centered on the camera TARGET, with the radius EXPANDED to reach every visible Point's
+    /// axes. Target-centered alone is not enough: orbiting a distant node with the world origin
     /// in view puts the origin Point thousands of blocks beyond the target depth — on screen,
     /// yet outside any bracket sized to the target (in perspective, "on screen" bounds nothing
     /// along the view axis). So the radius starts at 2× the viewport's world extent at the
@@ -119,16 +119,16 @@ impl AppCore {
     ) -> glam::Mat4 {
         let camera = &self.camera;
         let mut radius = camera.view_extent_at_depth(camera.orbit_distance).max(1.0) * 2.0;
-        let recentre = scene.recentre_voxels_for_resolve(density).voxels();
+        let recenter = scene.recenter_voxels_for_resolve(density).voxels();
         let forward = -camera.direction();
         for point in &scene.points {
             if point.hidden || !(point.axis_x || point.axis_y || point.axis_z) {
                 continue;
             }
             let origin = glam::Vec3::new(
-                (point.position_blocks[0] * density as i64 - recentre[0]) as f32,
-                (point.position_blocks[1] * density as i64 - recentre[1]) as f32,
-                (point.position_blocks[2] * density as i64 - recentre[2]) as f32,
+                (point.position_blocks[0] * density as i64 - recenter[0]) as f32,
+                (point.position_blocks[1] * density as i64 - recenter[1]) as f32,
+                (point.position_blocks[2] * density as i64 - recenter[2]) as f32,
             );
             let depth_at_point = (origin - camera.eye()).dot(forward);
             let axis_reach = camera.view_extent_at_depth(depth_at_point);
@@ -149,7 +149,7 @@ impl AppCore {
         (0.5 * diagonal * 1.15).max(1.0)
     }
 
-    /// The recentred `(pivot_voxels, extent_voxels)` for a node id — where the
+    /// The recentered `(pivot_voxels, extent_voxels)` for a node id — where the
     /// transform gizmo sits (issue #29 S2), and what the camera "Focus" view action
     /// frames. A thin wrapper over [`Scene::gizmo_placement_for_id`]; `None` when the
     /// id no longer resolves or the node has no extent (Focus is then a no-op).
@@ -171,8 +171,8 @@ impl AppCore {
     /// In Onion-fog the scrubber's `lower`/`upper` are **object-relative** layer indices
     /// over the selected object's Z extent (Decision 5: the track spans the object, not the
     /// scene); this offsets them by the object's base layer into scene-absolute band indices
-    /// and derives the recentred-voxel region the band is confined to. Selecting the ROOT
-    /// part gives the whole-scene region (the pre-0018 behaviour recovered).
+    /// and derives the recentered-voxel region the band is confined to. Selecting the ROOT
+    /// part gives the whole-scene region (the pre-0018 behavior recovered).
     pub fn mesh_clip(
         scene: &Scene,
         selection: Option<NodeId>,
@@ -194,11 +194,11 @@ impl AppCore {
         // Onion-fog needs a selected object to scope the clip to. No selection / hidden /
         // empty subtree ⇒ finished (no implicit whole-scene clip — ADR 0018 Decision 2/5).
         let Some((rmin, rmax)) = selection
-            .and_then(|target| scene.selected_region_extent_recentred_voxels(target, density))
+            .and_then(|target| scene.selected_region_extent_recentered_voxels(target, density))
         else {
             return finished;
         };
-        // The mesher maps a recentred voxel-Z `v` to absolute layer `v + floor(dim_z/2)`.
+        // The mesher maps a recentered voxel-Z `v` to absolute layer `v + floor(dim_z/2)`.
         let half_z = (scene_grid_z / 2) as i64;
         // The object's bottom layer in scene-absolute layer indices.
         let obj_base_layer = rmin[2] + half_z;
@@ -238,11 +238,11 @@ impl AppCore {
     }
 
     /// Build the onion-skin frame parameters (issue #12) from the camera-derived
-    /// view-projection, grid, and layer-range scrubber — the recentred-Z spans the display
+    /// view-projection, grid, and layer-range scrubber — the recentered-Z spans the display
     /// paths' ghost pass derives its onion slabs from (ADR 0012; the volumetric fog that once
     /// consumed these is retired). Z-up: layers are Z-slices, so
-    /// the band is a Z-range. Corner-anchoring: the grid's low corner in the recentred
-    /// frame is `−floor(dim/2)`, so layer `k` has its voxel centre at
+    /// the band is a Z-range. Corner-anchoring: the grid's low corner in the recentered
+    /// frame is `−floor(dim/2)`, so layer `k` has its voxel center at
     /// `k + 0.5 − floor(grid_z/2)` and spans world-Z `[k − floor(grid_z/2),
     /// k+1 − floor(grid_z/2)]`. The solid band is layers `[lower, upper]`; the onion
     /// band extends `onion_depth` layers on each side.
@@ -252,7 +252,7 @@ impl AppCore {
         layer_range: LayerRange,
     ) -> OnionFogParams {
         // FLOORED half (`(dim/2) as f32`) throughout, for a frame CONSISTENT with the
-        // corner-anchored voxels: the grid's low corner in the recentred frame is
+        // corner-anchored voxels: the grid's low corner in the recentered frame is
         // `−floor(dim/2)`, so the layer→world-Z conversion AND the ellipsoid `semi_axes`
         // (which bounds the voxel volume `[−floor(dim/2), −floor(dim/2)+dim)`) must both
         // use the floored half. (`dim/2.0` would put the ghost-fog ellipsoid ½ voxel off

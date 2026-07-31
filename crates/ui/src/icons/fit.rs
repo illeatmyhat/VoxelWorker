@@ -1,4 +1,4 @@
-//! `fit` — four corner brackets around a centre square: frame the subject.
+//! `fit` — four corner brackets around a center square: frame the subject.
 //!
 //! The brackets are open Ls rather than a closed frame, so the mark reads as *framing
 //! something* rather than as a window or a crop region.

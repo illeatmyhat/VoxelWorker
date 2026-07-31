@@ -34,7 +34,7 @@
 //!   unprojection (Akenine-Möller, Haines & Hoffman, *Real-Time Rendering*).
 //! * [`view_cube`] — the Autodesk ViewCube 26-orientation model, its screen chrome,
 //!   and the pure zone→action dispatch.
-//! * [`tween`] — eased angle interpolation (`easeInOutQuad`) and angle normalisation.
+//! * [`tween`] — eased angle interpolation (`easeInOutQuad`) and angle normalization.
 //! * [`frustum`] — Gribb–Hartmann plane extraction (2001) + Ericson positive-vertex
 //!   AABB culling (2005), over substrate's closed continuous [`substrate::spatial::RealAabb`]
 //!   (co-located there beside its half-open integer twin [`substrate::spatial::LatticeAabb`]).

@@ -100,7 +100,7 @@ fn l_shape_extrude_occupancy() {
     assert_eq!(grid.dimensions, [4, 1, 4], "L AABB is 4×1×4");
 
     // Recover the in-plane cell of each voxel (plane Y ⇒ axes X, Z). Corner-
-    // anchored: centres are `idx + 0.5`, so the cell index is `world − 0.5`.
+    // anchored: centers are `idx + 0.5`, so the cell index is `world − 0.5`.
     let mut cells: BTreeSet<(i64, i64)> = BTreeSet::new();
     for voxel in &grid.occupied {
         let position = voxel.world_position();

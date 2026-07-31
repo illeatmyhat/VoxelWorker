@@ -30,7 +30,7 @@
 //! is a dense O(volume) whole-region resolver, the measuring stick the sparse runtime
 //! path (which lives up in the evaluation layer) is held against. It is compile-gated
 //! behind the `oracle` feature (and `cfg(test)`), so it is absent from production
-//! builds and the truth layer stays behaviour-free at runtime.
+//! builds and the truth layer stays behavior-free at runtime.
 //!
 //! ## The chapter it serves
 //!

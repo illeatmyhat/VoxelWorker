@@ -20,7 +20,7 @@ fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
 
 impl WindowedState {
     /// Bring the camera back to the spherical chart before a **chart-native** camera op runs,
-    /// re-levelling the horizon with an eased tween if it had to convert.
+    /// re-leveling the horizon with an eased tween if it had to convert.
     ///
     /// The ViewCube, Home and Fit all speak `theta`/`phi` — snap tables, saved angles, eased
     /// interpolation — so none of them can act on a live trackball, whose chart fields are stale
@@ -66,9 +66,9 @@ impl WindowedState {
     }
 
     /// #13: frame the model (the "Fit to view" action). Recompute the auto-frame
-    /// distance from the scene's region dimensions and recentre the target on the
-    /// model centroid — the recentred composite always sits at the world origin
-    /// (`resolve_region` centres it), so the centroid is `Vec3::ZERO`. No geometry
+    /// distance from the scene's region dimensions and recenter the target on the
+    /// model centroid — the recentered composite always sits at the world origin
+    /// (`resolve_region` centers it), so the centroid is `Vec3::ZERO`. No geometry
     /// rebuild: only the camera distance + target change. The distance math is the
     /// same `auto_framed_distance` covered by camera tests.
     pub(super) fn fit_to_view(&mut self) {
@@ -146,9 +146,9 @@ impl WindowedState {
     /// the cube's screen rect, then unprojected through the view-cube matrix; the
     /// entry face is found by a slab intersection, and the 3D hit point's in-plane
     /// coordinates pick one of the face's 9 hot zones (3×3 grid at the Signal 68 %
-    /// centre patch, ±`VIEW_CUBE_ZONE_THRESHOLD`): centre → the face, an edge zone →
-    /// this face + the neighbour the zone points toward, a corner zone → this face +
-    /// both neighbours.
+    /// center patch, ±`VIEW_CUBE_ZONE_THRESHOLD`): center → the face, an edge zone →
+    /// this face + the neighbor the zone points toward, a corner zone → this face +
+    /// both neighbors.
     pub(super) fn pick_view_cube_element(&self, x: f64, y: f64) -> Option<ViewCubeElement> {
         // Signal (#86): the cube's corner is the top-right of the central viewport rect
         // (shared with the renderer via `view_cube_corner`).
@@ -176,15 +176,15 @@ impl WindowedState {
         let face = CubeFace::from_material_index(material_index)?;
 
         // The two in-plane axes' 3×3 hot zones (split at ±HALF/3) point toward the
-        // neighbouring faces; the combined set of faces resolves the element (Z-up:
+        // neighboring faces; the combined set of faces resolves the element (Z-up:
         // +X→Right, +Y→Back, +Z→Top).
-        let neighbours: Vec<CubeFace> =
-            raycast::view_cube_hot_zone_neighbours(&hit, raycast::VIEW_CUBE_ZONE_THRESHOLD)
+        let neighbors: Vec<CubeFace> =
+            raycast::view_cube_hot_zone_neighbors(&hit, raycast::VIEW_CUBE_ZONE_THRESHOLD)
                 .into_iter()
                 .map(|(axis, positive)| face_for_axis_sign(axis, positive))
                 .collect();
 
-        Some(match neighbours.as_slice() {
+        Some(match neighbors.as_slice() {
             [] => ViewCubeElement::from_face(face),
             [a] => ViewCubeElement::from_edge(face, *a),
             [a, b] => ViewCubeElement::from_corner(face, *a, *b),

@@ -51,16 +51,16 @@ fn assert_render_chunks_match_resolve_region(scene: &Scene, voxels_per_block: u3
     );
 
     // Coord correctness: each returned coord is the absolute chunk coord that
-    // owns its grid's voxels. The accessor binds to the recentre, so a chunk
-    // coord `c` owns rebased voxels in `[c·E - recentre, (c+1)·E - recentre)`.
+    // owns its grid's voxels. The accessor binds to the recenter, so a chunk
+    // coord `c` owns rebased voxels in `[c·E - recenter, (c+1)·E - recenter)`.
     let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
+    let recenter = scene.recenter_voxels_for_resolve(voxels_per_block).voxels();
     for (coord, grid) in &chunks {
         for voxel in &grid.occupied {
             let position = voxel.world_position();
             for axis in 0..3 {
-                // Rebased absolute voxel index = floor(position) + recentre.
-                let absolute = position[axis].floor() as i64 + recentre[axis];
+                // Rebased absolute voxel index = floor(position) + recenter.
+                let absolute = position[axis].floor() as i64 + recenter[axis];
                 let owner = absolute.div_euclid(chunk_extent) as i32;
                 assert_eq!(
                     owner, coord[axis],
@@ -149,17 +149,17 @@ fn render_chunks_empty_for_part_only_scene() {
 /// **ADR 0002 S4b — origin-rebased rendering, far-offset precision.** A box
 /// placed a HUGE distance from the origin must resolve to a grid whose voxel
 /// positions are **byte-identical** to the SAME box at the origin — because the
-/// render frame is rebased to the floating origin (= the composite recentre) in
+/// render frame is rebased to the floating origin (= the composite recenter) in
 /// i64 BEFORE the f32 downcast, so the absolute distance never reaches the f32
 /// data.
 ///
 /// The offset is **1_000_000 blocks** = 16_000_000 voxels at density 16, PAST the
-/// f32 exact-integer ceiling (2²⁴ ≈ 16.7M). Under the OLD recentre-AFTER-f32-add
-/// path the absolute position `local + 1.6e7` lost the voxel-centre `.5` on EVERY
+/// f32 exact-integer ceiling (2²⁴ ≈ 16.7M). Under the OLD recenter-AFTER-f32-add
+/// path the absolute position `local + 1.6e7` lost the voxel-center `.5` on EVERY
 /// voxel (the S1 far-lands jitter — verified at ~13% of the 3D viewport in the
 /// headless render). This test is the durable CPU regression guard that the
 /// rebased path keeps far == near to the LAST BIT (replacing S1's degraded
-/// far-offset behaviour). The bit-exact key (`f32::to_bits`) fails on any sub-ULP
+/// far-offset behavior). The bit-exact key (`f32::to_bits`) fails on any sub-ULP
 /// shift, so it would catch a regression that a rounded-voxel comparison misses.
 #[test]
 fn far_offset_resolves_byte_identical_to_near_after_rebase() {
@@ -185,7 +185,7 @@ fn far_offset_resolves_byte_identical_to_near_after_rebase() {
 
     assert_eq!(near.occupied_count(), far.occupied_count(), "same shape");
     assert!(near.occupied_count() > 0, "the box must resolve to voxels");
-    // Every voxel-centre `.5` fraction must survive the rebase (would be lost to
+    // Every voxel-center `.5` fraction must survive the rebase (would be lost to
     // f32 rounding at 1.6e7 under the old subtract-AFTER-f32 path).
     for voxel in &far.occupied {
         let position = voxel.world_position();
@@ -193,7 +193,7 @@ fn far_offset_resolves_byte_identical_to_near_after_rebase() {
             let frac = position[axis].fract().abs();
             assert!(
                 (frac - 0.5).abs() < 1e-4,
-                "far voxel centre lost its .5 fraction (f32 jitter): {:?}",
+                "far voxel center lost its .5 fraction (f32 jitter): {:?}",
                 position
             );
         }
@@ -207,7 +207,7 @@ fn far_offset_resolves_byte_identical_to_near_after_rebase() {
     );
 }
 
-/// A VoxelBody-only scene (no intrinsic-size leaf) resolves to an empty recentred
+/// A VoxelBody-only scene (no intrinsic-size leaf) resolves to an empty recentered
 /// grid through the cache, exactly as monolithic `resolve_region` does.
 #[test]
 fn part_only_scene_resolves_empty_through_cache() {
@@ -265,8 +265,8 @@ fn assert_region_widest_run_matches_whole_grid(scene: &Scene, vpb: u32, label: &
 }
 
 /// **Far-offset diameter (issue #20 Step 2).** Two 3-block boxes 20,000 blocks
-/// apart on X: the composite is centred ~10,000 blocks out, so each box sits
-/// ~160,000 voxels from the recentred origin — far beyond any object the camera
+/// apart on X: the composite is centered ~10,000 blocks out, so each box sits
+/// ~160,000 voxels from the recentered origin — far beyond any object the camera
 /// frames, while keeping the whole-grid reference cheap. The live diameter readout
 /// now routes through
 /// the region-scoped `widest_run_in_band`; it must report the box's TRUE width (a
@@ -289,7 +289,7 @@ fn region_widest_run_correct_at_far_offset() {
         node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
         node
     };
-    // 20,000-block separation → composite centred ~10,000 blocks out → each box
+    // 20,000-block separation → composite centered ~10,000 blocks out → each box
     // ~160,000 voxels from the origin (far beyond any normal scene), while the
     // whole-grid reference (an O(grid_x)-per-row bitset) stays cheap to assemble.
     let scene = Scene::from_nodes(vec![make_box([0, 0, 0]), make_box([20_000, 0, 0])]);

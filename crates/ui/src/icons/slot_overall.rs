@@ -9,7 +9,7 @@ use super::{Ink, Mark};
 
 const PI: f32 = std::f32::consts::PI;
 
-/// The extremes the typed length spans — the cap centres pushed out by the cap radius.
+/// The extremes the typed length spans — the cap centers pushed out by the cap radius.
 const LEFT: (f32, f32) = (2.5, 6.0);
 const RIGHT: (f32, f32) = (15.5, 6.0);
 const CAP: f32 = 3.0;

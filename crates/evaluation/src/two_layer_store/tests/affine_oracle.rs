@@ -137,7 +137,7 @@ fn gather_reproduces_the_axis_aligned_permutation_on_a_cube() {
 }
 
 /// **Rotated-sphere sanity.** An isotropic sphere rotated by an arbitrary angle occupies
-/// essentially the same cells as the unrotated one at the same centre: the occupied count
+/// essentially the same cells as the unrotated one at the same center: the occupied count
 /// matches within a few boundary voxels, and the gathered set is centro-symmetric.
 #[test]
 fn a_rotated_sphere_stays_the_same_sphere() {
@@ -172,7 +172,7 @@ fn a_rotated_sphere_stays_the_same_sphere() {
     );
 
     // Centro-symmetry: reflect every cell through `2·centroid` (integer for a symmetric
-    // set) and count how many mirrors land back in the set. A rotated sphere's centre
+    // set) and count how many mirrors land back in the set. A rotated sphere's center
     // generally does NOT sit on a half-integer of the ABSOLUTE lattice, so its voxelization
     // is only APPROXIMATELY cell-reflection-symmetric — a thin boundary rim breaks exact
     // reflection. Require the overwhelming majority (a grossly-wrong gather — sheared or

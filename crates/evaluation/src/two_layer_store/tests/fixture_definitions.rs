@@ -72,7 +72,7 @@ fn wall(offset_blocks: [i64; 3]) -> Node {
 /// THE GATE for the fixture slice (issue #77 acceptance): the two-layer
 /// classification + boundary resolve for fixture scenes is occupancy-IDENTICAL
 /// to the dense brute-force oracle, across the splice shapes the resolver must
-/// honour: the window golden (a root-scope splice — the spliced cutter is a
+/// honor: the window golden (a root-scope splice — the spliced cutter is a
 /// plain root cutter to the fast paths), a fixture sealed inside a Group with an
 /// overlapping outside bystander (the spliced children carry the GROUP frame),
 /// a fixture placed before its would-be host (subtract-from-nothing + a buried

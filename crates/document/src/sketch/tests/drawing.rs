@@ -37,7 +37,7 @@ fn point_at_finds_only_an_exact_coincidence() {
     assert_eq!(
         sketch.point_at(SketchPoint::new(2, 4)),
         None,
-        "a neighbouring coord is not a hit — coincidence is exact, proximity lives in the shell"
+        "a neighboring coord is not a hit — coincidence is exact, proximity lives in the shell"
     );
 }
 

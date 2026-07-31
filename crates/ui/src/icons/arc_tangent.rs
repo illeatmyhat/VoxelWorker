@@ -1,6 +1,6 @@
 //! `arc-tangent` — an arc leaving an existing curve along its direction.
 //!
-//! The straight run and the arc meet with no kink: the run ends at (9, 13) and the arc's centre is
+//! The straight run and the arc meet with no kink: the run ends at (9, 13) and the arc's center is
 //! directly above it, so the arc's tangent there is horizontal. A mark that only nearly did this
 //! would be teaching that "tangent" means "close enough".
 //!
@@ -15,7 +15,7 @@ const PI: f32 = std::f32::consts::PI;
 const SEAM: (f32, f32) = (9.0, 13.0);
 
 /// Directly above the seam, which is what makes the join tangent.
-const CENTRE: (f32, f32) = (9.0, 8.0);
+const CENTER: (f32, f32) = (9.0, 8.0);
 const RADIUS: f32 = 5.0;
 
 pub(super) const DRAW: &[Mark] = &[
@@ -24,7 +24,7 @@ pub(super) const DRAW: &[Mark] = &[
         ink: Ink::SOLID,
     },
     Mark::Arc {
-        center: CENTRE,
+        center: CENTER,
         rx: RADIUS,
         ry: RADIUS,
         from: PI / 2.0,

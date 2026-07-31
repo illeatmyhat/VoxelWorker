@@ -28,11 +28,11 @@ pub enum BlockClassification {
     Boundary,
 }
 
-/// Per-face solidity flags for a boundary block — the coarse/microblock analogue of the
+/// Per-face solidity flags for a boundary block — the coarse/microblock analog of the
 /// dense-fog **apron** (CONTEXT.md "Seam solidity"; VS `sideAlmostSolid`). Each face flag
 /// is `true` iff that whole face of the block is solid (every voxel of the `density²`
 /// face cells is occupied), so E3's mesher can cull a seam face against a fully-solid
-/// neighbour face without expanding the neighbour's voxels.
+/// neighbor face without expanding the neighbor's voxels.
 ///
 /// Faces are indexed by `(axis, side)`: axis 0/1/2 = X/Y/Z (Z-up), side
 /// 0 = the LOW face (`coord == 0`), side 1 = the HIGH face (`coord == density - 1`).
@@ -69,7 +69,7 @@ pub struct MicroblockGeometry {
     /// without the render flag ever entering the categorical cell. Consumers that want the
     /// clean id (E2 occupancy expansion) mask the overlay bit off.
     pub cuboids: Vec<VoxelBox>,
-    /// Per-face solidity flags (the seam apron analogue) for this block.
+    /// Per-face solidity flags (the seam apron analog) for this block.
     pub seam_solidity: SeamSolidity,
 }
 
@@ -140,7 +140,7 @@ impl TwoLayerChunk {
 
     /// Whether this chunk holds ANY geometry (at least one coarse-solid block OR one
     /// boundary block) — i.e. it would produce a mesh / occupancy. An all-air chunk returns
-    /// `false`. The two-layer analogue of the dense `!grid.occupied.is_empty()` the cuboid
+    /// `false`. The two-layer analog of the dense `!grid.occupied.is_empty()` the cuboid
     /// incremental plan keys "occupied" off (issue #55): only non-empty chunks are meshed,
     /// so a chunk that an edit turned all-air drops out of the rebuild set and is evicted.
     pub fn has_geometry(&self) -> bool {
@@ -205,7 +205,7 @@ impl TwoLayerChunk {
     /// parity gate (a)): a coarse-solid block is a fast `density³` fill at its block id;
     /// a boundary block expands its cuboids per-voxel. Each voxel is stamped at its
     /// CHUNK-LOCAL voxel index (the chunk's own `[0, chunk_extent_voxels)` frame) +
-    /// `index_offset`, so the caller can rebase the whole chunk into the recentred /
+    /// `index_offset`, so the caller can rebase the whole chunk into the recentered /
     /// floating-origin frame in one integer add (mirroring
     /// [`Scene::resolve_chunk_rebased`](document::scene::Scene::resolve_chunk_rebased)).
     ///

@@ -1,6 +1,6 @@
-//! `ellipse-sketch` — centre, then the two semi-axes.
+//! `ellipse-sketch` — center, then the two semi-axes.
 //!
-//! Three accented nodes: the centre and one end of each axis, which is exactly the click sequence.
+//! Three accented nodes: the center and one end of each axis, which is exactly the click sequence.
 //! The axes themselves are not drawn — the nodes already sit on them, and two crossing lines
 //! inside a small ellipse close the shape into a blob at 16 px.
 //!
@@ -9,8 +9,8 @@
 
 use super::{Ink, Mark};
 
-/// The centre, and the ends the two drags land on.
-const CENTRE: (f32, f32) = (9.0, 7.5);
+/// The center, and the ends the two drags land on.
+const CENTER: (f32, f32) = (9.0, 7.5);
 const RX: f32 = 7.5;
 const RY: f32 = 4.5;
 
@@ -18,23 +18,23 @@ pub(super) const DRAW: &[Mark] = &[
     // The outline is drawn a half unit inside the major handle, so the node sits ON the curve
     // rather than half a stroke outside it.
     Mark::Ellipse {
-        center: CENTRE,
+        center: CENTER,
         rx: 7.0,
         ry: RY,
         ink: Ink::SOLID,
     },
     Mark::Node {
-        center: CENTRE,
+        center: CENTER,
         size: 2.6,
         ink: Ink::ACCENT,
     },
     Mark::Node {
-        center: (CENTRE.0, CENTRE.1 - RY),
+        center: (CENTER.0, CENTER.1 - RY),
         size: 2.6,
         ink: Ink::ACCENT,
     },
     Mark::Node {
-        center: (CENTRE.0 + RX, CENTRE.1),
+        center: (CENTER.0 + RX, CENTER.1),
         size: 2.6,
         ink: Ink::ACCENT,
     },

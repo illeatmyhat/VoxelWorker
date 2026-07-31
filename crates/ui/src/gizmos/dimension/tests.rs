@@ -20,7 +20,7 @@ fn heads(drawing: &Drawing) -> Vec<[Pos2; 3]> {
         .collect()
 }
 
-/// A head's direction: tip minus base midpoint, normalised.
+/// A head's direction: tip minus base midpoint, normalized.
 fn aim(head: [Pos2; 3]) -> Vec2 {
     let base = head[1] + (head[2] - head[1]) / 2.0;
     (head[0] - base).normalized()
@@ -145,7 +145,7 @@ fn the_radial_leader_cannot_be_made_non_radial() {
         let drawing = radius(center, radius_length, anchor, "21", Rank::Driving);
         let head = heads(&drawing)[0];
         let touch = head[0];
-        // The arrow's tip is the arc point: it must be exactly `radius` from the centre, and
+        // The arrow's tip is the arc point: it must be exactly `radius` from the center, and
         // exactly on the ray through the anchor.
         assert!(
             ((touch - center).length() - radius_length).abs() < 1e-3,

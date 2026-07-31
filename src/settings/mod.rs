@@ -37,7 +37,7 @@ use voxel_core::voxel::ShapeKind;
 /// like [`ViewMode`] and the Signal stack — it is persisted from out here. It stores the
 /// armed primitive's kind/size/wall plus (when a drop was pending) the ABSOLUTE
 /// corner-anchored offset the node would take (`Intent::PlaceNode`'s frame); the
-/// render-frame centre is re-derived from the live recentre at draw time, never stored.
+/// render-frame center is re-derived from the live recenter at draw time, never stored.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ArmedToolConfig {
     /// The armed primitive kind (`ShapeKind` carries its own serde).
@@ -292,7 +292,7 @@ pub struct AppConfig {
     // The whole assembly (node tree + reusable definitions + the active
     // selection) is persisted here. It is the ONE `#[snapshot(document)]` field, so
     // `DocumentArtifact` is built from it alone. An absent `scene` key on disk
-    // deserialises to `None`, which loads the default seed scene in `to_panel_state`
+    // deserializes to `None`, which loads the default seed scene in `to_panel_state`
     // (the same one a brand-new config gets). A malformed/partial `scene` value can
     // never reach this field as garbage: serde tolerates missing inner fields (every
     // scene field is `#[serde(default)]`), and an outright unparseable config is
@@ -376,7 +376,7 @@ pub struct AppConfig {
     /// The orbit TARGET (the world point the camera looks at / orbits). Panning moves it off
     /// the origin, so without it a repro reframes on the origin and misses a panned view (the
     /// F9 `--from-config` flow). A dump written without the key restores `[0,0,0]`, matching
-    /// the pre-field behaviour (target defaulted to the origin).
+    /// the pre-field behavior (target defaulted to the origin).
     #[snapshot(view)]
     pub orbit_target: [f32; 3],
     /// The ORBIT CENTER (the Shift+MMB pivot). The other pivot, and the one nothing
@@ -413,13 +413,13 @@ pub struct AppConfig {
     // These four were classified on `PanelState` as reaching the dump and reached
     // nothing: `to_panel_state` hard-coded every one of them to a default, and no field
     // here carried them. That is the pan-target bug exactly — a decision recorded at the
-    // field and never honoured by a capture — and it survived because the
+    // field and never honored by a capture — and it survived because the
     // `PanelState` -> `AppConfig` seam is hand-written, which is the gap ADR 0022's third
     // amendment recorded. These fields are that seam being closed.
     //
     // Session rather than view: they say how the workspace was arranged, not where the
     // camera was. Session rather than settings: nobody chose them, they are merely where
-    // the user stopped, and a preference is something you would want honoured in every
+    // the user stopped, and a preference is something you would want honored in every
     // project.
     /// The viewer's exclusive rendering mode. ADR 0018 decision 3 ruled it out of the
     /// document, which stands; ADR 0024 supersedes the part where that was implemented as
@@ -621,7 +621,7 @@ impl AppConfig {
     }
 
     /// The persisted [`HomeView`] (#13) — the saved Home-button view restored on
-    /// load. An EXPLICIT home (the user pressed "set home") is honoured verbatim; an
+    /// load. An EXPLICIT home (the user pressed "set home") is honored verbatim; an
     /// IMPLICIT home (never captured) always tracks the CURRENT code default instead
     /// of whatever angles a prior session happened to persist, so changing the
     /// default Home angle takes effect even on an existing config (no stale TOP view
@@ -694,7 +694,7 @@ impl AppConfig {
             },
             // ADR 0024, superseding ADR 0018 decision 3: the viewer mode stays out of the
             // document and is restored across relaunch. Decision 3 said "not saved with
-            // the scene"; this always honoured that, and the reset was the wider claim
+            // the scene"; this always honored that, and the reset was the wider claim
             // nobody made.
             view_mode: self.view_mode,
             placement_snap: self.placement_snap,
@@ -878,7 +878,7 @@ impl AppConfig {
                     eprintln!("config: could not write {}: {error}", path.display());
                 }
             }
-            Err(error) => eprintln!("config: could not serialise: {error}"),
+            Err(error) => eprintln!("config: could not serialize: {error}"),
         }
     }
 }

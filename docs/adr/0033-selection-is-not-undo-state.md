@@ -5,7 +5,7 @@
 - **Relates to:** [ADR 0032](0032-selection-as-workspace-state.md) (the substrate this amends —
   §2 kept `selection_before` on the command "for exactly that effect"; this delta removes it),
   [ADR 0022](0022-document-dump-and-state-classification.md) (the classification selection now
-  fully honours). Design map: `docs/design/tool-modes-and-navigation.md`.
+  fully honors). Design map: `docs/design/tool-modes-and-navigation.md`.
 
 ## Context
 

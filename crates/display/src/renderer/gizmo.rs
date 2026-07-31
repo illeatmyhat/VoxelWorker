@@ -2,13 +2,13 @@
 
 use super::*;
 
-/// X axis colour `#d9603f` (sRGB hex → linear).
+/// X axis color `#d9603f` (sRGB hex → linear).
 pub(crate) const GIZMO_AXIS_X_HEX: u32 = 0xd9_60_3f;
-/// Y axis colour `#6fcf5f`.
+/// Y axis color `#6fcf5f`.
 pub(crate) const GIZMO_AXIS_Y_HEX: u32 = 0x6f_cf_5f;
-/// Z axis colour `#5a8cff`.
+/// Z axis color `#5a8cff`.
 pub(crate) const GIZMO_AXIS_Z_HEX: u32 = 0x5a_8c_ff;
-/// Right-angle square colour `#bdb39a`.
+/// Right-angle square color `#bdb39a`.
 const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
 
 /// The fraction of the viewport height a manipulator gizmo's axis spans — the one place the
@@ -16,7 +16,7 @@ const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
 /// Fed to [`OrbitCamera::screen_stable_model`](camera::OrbitCamera::screen_stable_model).
 pub const GIZMO_SCREEN_FRACTION: f32 = 0.16;
 
-/// The transform gizmo (issue #29 S2): three coloured axis lines and three
+/// The transform gizmo (issue #29 S2): three colored axis lines and three
 /// perpendicular square line-loops, drawn with **depth-test disabled** so it
 /// shows through a solid model (correct manipulator behavior). Drawn in the MSAA
 /// pass, after the voxels. The geometry is a fixed **unit** gizmo; it FOLLOWS the
@@ -34,7 +34,7 @@ pub struct TransformGizmoRenderer {
 }
 
 impl TransformGizmoRenderer {
-    /// Create the transform gizmo renderer for a colour target format. The geometry is a
+    /// Create the transform gizmo renderer for a color target format. The geometry is a
     /// **unit** gizmo (unit axis length); its on-screen size is set per-frame by the `scale`
     /// [`update_uniforms`](Self::update_uniforms) bakes into the model matrix, so the gizmo
     /// holds a fixed screen size at any zoom.
@@ -80,7 +80,7 @@ impl TransformGizmoRenderer {
     /// sizes the unit gizmo WITHOUT touching the shared `LineUniforms` layout. `model` is the
     /// screen-stable `translate(pivot) · scale(size)` the caller builds from
     /// [`OrbitCamera::screen_stable_model`](camera::OrbitCamera::screen_stable_model); `pivot`
-    /// is in the SAME recentred frame as the voxels, so the gizmo sits on the object.
+    /// is in the SAME recentered frame as the voxels, so the gizmo sits on the object.
     pub fn update_uniforms(
         &self,
         queue: &wgpu::Queue,

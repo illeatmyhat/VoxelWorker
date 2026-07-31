@@ -84,7 +84,7 @@ The two debug flags are the clearer half. Embedding them ships a debugging state
 who did not ask to debug anything, and the dump already carries them for the one reader who
 does (ADR 0024 decision 4). There is no case for a second route.
 
-**`stack` is the judgement call, and it stays out.** It is the field the prior-art report found
+**`stack` is the judgment call, and it stays out.** It is the field the prior-art report found
 embedded *badly*: Vintage Story's `editor.collapsedPaths` is `SignalStackState` under another
 name, sitting in shared, version-controlled assets in 1,420 public repositories. That is not an
 analogy — it is the same field, in the same ecosystem, with the cost visible in the open. It
@@ -103,7 +103,7 @@ bits and hope one of them lands.
 **This is the condition that makes the whole feature safe, and it outranks every other
 statement in this record.**
 
-If the embedded block is absent, fails to parse, is of an unrecognised shape, or names a viewer
+If the embedded block is absent, fails to parse, is of an unrecognized shape, or names a viewer
 mode, composition scope or node that no longer exists, **it is dropped silently and the document
 opens with defaults.** No error, no warning, no repair prompt, no migration. A document with an
 unreadable session block is not a damaged document; it is a document whose advice was declined.
@@ -123,7 +123,7 @@ state the loader is entitled to require.
 
 **The rollback cursor has more ways to dangle than `view_mode` does**, and this must be said
 sharply because it is the sole substantive risk the reversal introduces. A viewer mode is a
-small closed enumeration; an unrecognised value has one obvious floor. The cursor names a
+small closed enumeration; an unrecognized value has one obvious floor. The cursor names a
 *position in the fold*, per composition scope — a scope that may have been deleted, and a
 position that may be past the end of a fold that has since been shortened, or that no longer
 means what it meant when a node was reordered. **When a cursor entry cannot be resolved, it
@@ -133,12 +133,12 @@ parts rolled as advised and the root complete.
 
 Dropping to the end is chosen because it is the *safe* failure in the exact sense ADR 0022
 decision 2 argued for: the reader sees the complete model. The failure mode of this feature is
-therefore the behaviour ADR 0022 mandated unconditionally. That is worth stating plainly,
+therefore the behavior ADR 0022 mandated unconditionally. That is worth stating plainly,
 because it is what makes the reversal small rather than a change of philosophy: **the old
 decision is now this feature's fallback.**
 
 A consequence follows for the writer: the embedded cursor must be *validated on load rather than
-trusted*. An implementation that resolves the cursor optimistically and panics on a stale
+trusted*. An implementation that resolves the cursor optimiztically and panics on a stale
 reference has violated this law even if the file parses.
 
 **And that constrains how the cursor names its position.** A first draft of this ADR worried
@@ -189,7 +189,7 @@ option that only ever costs.
 **The author can answer it.** They know whether they are saving a working file or handing
 something over. So the flag is written once, by the writer, and recorded in the file; the reader
 makes no decision at all, and there is no reader-side toggle to be sticky, to be forgotten, or
-to crash. Sybren Stüvel's defence of in-file viewport state — the one primary studio voice the
+to crash. Sybren Stüvel's defense of in-file viewport state — the one primary studio voice the
 report found on the subject, and it argues *for* embedding — is fully satisfied by a writer-side
 flag, because his case is a handover: an author deliberately sending a view along with a model.
 
@@ -257,7 +257,7 @@ cursor themselves, which costs one gesture.
 - **The document format grows a versioned optional block, and the version is allowed to be
   ignored.** This is the first thing in the document whose schema may be broken by a UI change,
   and Law A is what makes that acceptable: the block declares its shape, and a loader that does
-  not recognise the shape drops it. The document's own versioning promise (ADR 0022 decision 1)
+  not recognize the shape drops it. The document's own versioning promise (ADR 0022 decision 1)
   is unaffected, because nothing in the block is document data.
 
 - **The sticky flag is itself document state, not session state.** "This project embeds its

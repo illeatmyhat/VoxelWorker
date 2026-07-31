@@ -25,7 +25,7 @@ struct InfiniteGridUniforms {
     u_axis: [f32; 4],
     v_axis: [f32; 4],
     normal_axis: [f32; 4],
-    /// Line colour (linear RGB); `.w` = voxel spacing (1.0).
+    /// Line color (linear RGB); `.w` = voxel spacing (1.0).
     line_color: [f32; 4],
     /// `[block_spacing(=density), minor_alpha, major_alpha, lod_fade_scale]`. `.w` scales
     /// BOTH ends of the shader's per-tier sub-pixel fade window, so a smaller value keeps
@@ -35,7 +35,7 @@ struct InfiniteGridUniforms {
 
 /// Scales the shader's sub-pixel fade window (3→7 px) under **perspective**, pushing each tier's
 /// fade ~2× further out. Only worth it alongside the shader's sub-block tier — on its own a wider
-/// window adds sub-pixel grey, not lines.
+/// window adds sub-pixel gray, not lines.
 const PERSPECTIVE_LOD_FADE_SCALE: f32 = 0.5;
 
 /// The base fade window under **orthographic**, unchanged: ortho's fade is a zoom dissolve, not a
@@ -68,7 +68,7 @@ pub struct InfiniteGridRenderer {
 }
 
 impl InfiniteGridRenderer {
-    /// Create the analytic-grid renderer for a colour target. The plane batch starts
+    /// Create the analytic-grid renderer for a color target. The plane batch starts
     /// empty — the caller fills it each frame via [`Self::rebuild_from_scene`].
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

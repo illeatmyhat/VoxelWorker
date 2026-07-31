@@ -7,7 +7,7 @@
 // Draws the exposed-face triangle mesh built by `cuboid_mesh.rs`: each vertex
 // carries a WORLD position, the face's outward normal, and the box's material_id.
 //
-// E3b-1 rendered SHAPE + per-box material colour + lighting only (FLAT). E3b-2
+// E3b-1 rendered SHAPE + per-box material color + lighting only (FLAT). E3b-2
 // adds the two per-voxel surface features that make a MERGED box face read as a
 // stack of per-voxel cubes, matching the look of the since-removed instanced path
 // (it lived in `shaders/voxel.wgsl` before #20 deleted it with the legacy mesher):
@@ -29,7 +29,7 @@
 // face's material_id selects its sub-rect (uniform `material_atlas_rects`); the
 // per-voxel slice is `fract`-tiled INTO that sub-rect. A chunk of mixed materials
 // is therefore one mesh = one draw. The per-box material modulation from E3b-1
-// still multiplies the lit texture colour; layer-range clip + debug-faces unchanged.
+// still multiplies the lit texture color; layer-range clip + debug-faces unchanged.
 
 // std140-safe; field order matches `CuboidUniforms` in cuboid_mesh.rs.
 struct CuboidUniforms {
@@ -40,12 +40,12 @@ struct CuboidUniforms {
     // and carries the density (voxels per block).
     grid_half_extent: vec3<f32>,
     voxels_per_block: f32,
-    // Grid overlay (BUG-2-style position-based lines): the two line colours (each
+    // Grid overlay (BUG-2-style position-based lines): the two line colors (each
     // padded by a following scalar so the vec3 never straddles a 16-byte slot).
     voxel_line_color: vec3<f32>,
     grid_overlay_enabled: f32,
     block_line_color: vec3<f32>,
-    // 1 = modulate the lit colour by material_base_colors[material_id], 0 = off.
+    // 1 = modulate the lit color by material_base_colors[material_id], 0 = off.
     material_modulation_enabled: f32,
     // Grid-line half-widths (voxel units) and blend alphas. These four floats
     // exactly fill the 16-byte slot, so the band slot below starts 16-aligned.
@@ -60,8 +60,8 @@ struct CuboidUniforms {
     // Full range = band_min 0, band_max huge.
     band_min: f32,
     band_max: f32,
-    // Face-orientation debug flag (0 = normal render, 1 = colour-by-normal debug),
-    // matching the instanced `debug_face_mode`: colours faces by outward normal,
+    // Face-orientation debug flag (0 = normal render, 1 = color-by-normal debug),
+    // matching the instanced `debug_face_mode`: colors faces by outward normal,
     // draws a back-face stripe (with culling off), and disables band-clip /
     // texture / material / overlay. A trailing pad fills the 16-byte slot so the
     // array below stays 16-aligned.
@@ -73,7 +73,7 @@ struct CuboidUniforms {
     // needed). Occupies the former `_band_pad` slot; 0 for the solid draw keeps its
     // uniform bytes identical (non-onion goldens byte-green).
     ghost_mode: f32,
-    // Per-material base colours ([r,g,b,_pad], LINEAR), relative to the bound
+    // Per-material base colors ([r,g,b,_pad], LINEAR), relative to the bound
     // texture's average — identical to the instanced path's step-3b array.
     material_base_colors: array<vec4<f32>, 3>,
     // Per-material atlas sub-rect (ADR 0002 E3c-1 / O8), indexed by material_id:
@@ -87,7 +87,7 @@ struct CuboidUniforms {
     // `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
     ghost_tint: vec4<f32>,
     // Added to `voxel_absolute_position` inside the on-face grid overlay to recover the
-    // TRUE world voxel frame (= recentre − grid_half_extent), so the overlay lines anchor
+    // TRUE world voxel frame (= recenter − grid_half_extent), so the overlay lines anchor
     // to the world block lattice. Only the overlay reads it; the texture UV keeps the
     // local `absolute`, so tiling is unchanged.
     overlay_world_offset: vec3<f32>,
@@ -101,13 +101,13 @@ var<uniform> uniforms: CuboidUniforms;
 // retired `GRID_OVERLAY_BIT` mirror) NOR a per-vertex attribute. The chunk mesh is split
 // into an overlay-off and an overlay-on draw, each binding this PER-DRAW `u32` (group 2,
 // dynamic offset) — 1 when the draw's boxes carry the on-face grid, 0 otherwise. So the
-// colour lookup never masks a render flag and the vertex format is free of it.
+// color lookup never masks a render flag and the vertex format is free of it.
 struct OverlayActive { value: u32 };
 @group(2) @binding(0)
 var<uniform> draw_overlay: OverlayActive;
 
-// `material_id` is already the clean colour index (no flag to strip); clamped to ≤2 at
-// each call site for the procedural colour range.
+// `material_id` is already the clean color index (no flag to strip); clamped to ≤2 at
+// each call site for the procedural color range.
 fn material_color_index(material_id: u32) -> u32 {
     return material_id;
 }
@@ -123,7 +123,7 @@ fn on_face_grid_enabled() -> bool {
 // (in `material_atlas_rects`) that the per-voxel slice tiles into. The sampler is
 // CLAMP-to-edge (NOT Repeat): the shader tiles the slice itself via `fract` mapped
 // into the sub-rect, because a Repeat sampler would wrap to the whole atlas (i.e.
-// into a neighbouring material's cell).
+// into a neighboring material's cell).
 @group(1) @binding(0)
 var material_texture: texture_2d<f32>;
 @group(1) @binding(1)
@@ -137,7 +137,7 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 // `coord_component` (per-voxel UV component) is shared — see
 // `shaders/cuboid_face_shading.wgsl`, prepended by `with_shared_shading`.
 
-// Map an outward normal to a signed-axis debug colour — reproduces the signed-axis
+// Map an outward normal to a signed-axis debug color — reproduces the signed-axis
 // palette the since-removed instanced `debug_face_color` (voxel.wgsl, deleted with
 // the legacy mesher, #20) used to render, so the cuboid debug-faces output still
 // matches that reference:
@@ -199,7 +199,7 @@ fn fragment_main(
     let absolute = input.voxel_absolute_position;
 
     // --- Face-orientation debug mode (cull-off parity) ---
-    // Colour each fragment by its outward face normal (signed-axis palette),
+    // Color each fragment by its outward face normal (signed-axis palette),
     // bypassing texture + lighting + material + overlay. Any fragment that is NOT
     // front-facing (a back face that survived because culling is off in the debug
     // pipeline) is flagged with bold black diagonal stripes — identical to the
@@ -245,7 +245,7 @@ fn fragment_main(
     // --- Per-voxel slice → atlas sub-rect (E3c-1 / O8) ---
     // The former path divided by density and let a Repeat sampler take `fract`,
     // tiling the material's tile once per voxel. With one shared atlas we can't
-    // Repeat (it would wrap into a neighbouring material), so take the `fract`
+    // Repeat (it would wrap into a neighboring material), so take the `fract`
     // ourselves and map it into THIS material's atlas sub-rect. `fract(texture_
     // coord)` is exactly what the Repeat sampler used to wrap to, so the sampled
     // slice is unchanged — just relocated into the packed atlas window.
@@ -258,7 +258,7 @@ fn fragment_main(
     var color = sampled * lambert_lighting(input.world_normal);
 
     // Per-box material modulation (ADR 0001 step 3): multiply by the material's
-    // relative base colour so distinct boxes render in distinct materials.
+    // relative base color so distinct boxes render in distinct materials.
     if (uniforms.material_modulation_enabled > 0.5) {
         let base = material_base_colors_lookup(input.material_id);
         color = color * base;

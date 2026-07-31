@@ -34,7 +34,7 @@ pub struct Frustum {
 impl Frustum {
     /// Extract the six frustum planes from a combined `view_projection` matrix
     /// (Gribb–Hartmann, 2001). glam stores matrices column-major; the rows of
-    /// the matrix are recovered from the columns. The planes are normalised so a
+    /// the matrix are recovered from the columns. The planes are normalized so a
     /// later signed-distance test is in world units (not strictly required for a
     /// pure inside/outside test, but it keeps the maths well-conditioned).
     pub fn from_view_projection(view_projection: Mat4) -> Self {

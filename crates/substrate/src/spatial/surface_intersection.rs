@@ -1,7 +1,7 @@
 //! Intersection-curve tracing between two implicit surfaces — the CSG junction
 //! curves of ADR 0032 selection feedback: where one body's surface crosses
 //! another's (a cutter's wall meeting the face it carved), the composed surface
-//! creases along the space curve `{ F = 0 } ∩ { G = 0 }`. No per-shape catalogue
+//! creases along the space curve `{ F = 0 } ∩ { G = 0 }`. No per-shape catalog
 //! contains that curve, and most shape pairs have no closed form (two turned
 //! cylinders intersect in a degree-4 space curve), so it is traced numerically on
 //! the two LEAF fields — never the folded CSG field, whose `min`/`max` is
@@ -127,13 +127,13 @@ pub struct TracedCurve {
 /// claim on the ±4096 value domain the selection overlap boxes inhabit.
 pub const PRUNE_SLOP: f32 = 1e-2;
 
-/// The bracket of an L-Lipschitz field over a cell, from its centre sample: every
-/// value on the cell lies within `L · circumradius` of the centre value — up to
+/// The bracket of an L-Lipschitz field over a cell, from its center sample: every
+/// value on the cell lies within `L · circumradius` of the center value — up to
 /// f32 rounding at the interval edges, which the prune's [`PRUNE_SLOP`] absorbs
 /// (see the `#[cfg(kani)]` lemma below for exactly what is proven).
-pub fn lipschitz_cell_bracket(centre_value: f32, lipschitz: f32, circumradius: f32) -> (f32, f32) {
+pub fn lipschitz_cell_bracket(center_value: f32, lipschitz: f32, circumradius: f32) -> (f32, f32) {
     let spread = lipschitz * circumradius;
-    (centre_value - spread, centre_value + spread)
+    (center_value - spread, center_value + spread)
 }
 
 fn gradient(field: &dyn Fn(Vec3) -> f32, point: Vec3, half_width: f32) -> Vec3 {
@@ -297,19 +297,19 @@ pub fn trace_intersection_curves(
             continue;
         }
         if size <= config.seed_cell {
-            let centre = cell_min + Vec3::splat(size * 0.5);
+            let center = cell_min + Vec3::splat(size * 0.5);
             // A FLUSH contact floods this budget: both fields are ≈0 over the whole
             // 2D patch, every cell there passes the brackets, and the cap can then
             // exhaust before genuinely transversal cells enumerate. Screen the
             // tangency-doomed cells out here — at half the trace floor, so a
-            // borderline cell whose centre sits off the curve still seeds.
-            let grad_f = gradient(pair.field_f, centre, config.gradient_half_width);
-            let grad_g = gradient(pair.field_g, centre, config.gradient_half_width);
+            // borderline cell whose center sits off the curve still seeds.
+            let grad_f = gradient(pair.field_f, center, config.gradient_half_width);
+            let grad_g = gradient(pair.field_g, center, config.gradient_half_width);
             let lengths = grad_f.length() * grad_g.length();
             if lengths >= 1e-9
                 && grad_f.cross(grad_g).length() / lengths >= config.tangency_sine_floor * 0.5
             {
-                seeds.push(centre);
+                seeds.push(center);
             }
             continue;
         }
@@ -327,7 +327,7 @@ pub fn trace_intersection_curves(
 
     // Trace, consuming seeds the growing curves cover.
     let bounds = (overlap_min, overlap_max);
-    // A seed cell's centre sits up to half its space diagonal from the curve that
+    // A seed cell's center sits up to half its space diagonal from the curve that
     // crosses the cell — the consume radius must cover that plus a march step.
     let consume_radius = config.seed_cell * 0.87 + config.step;
     let consume_radius_squared = consume_radius * consume_radius;
@@ -417,7 +417,7 @@ pub fn trace_intersection_curves(
 ///
 /// What is and is NOT proven: the slop-free claim "any sample consistent with the
 /// Lipschitz hypothesis lies inside [`lipschitz_cell_bracket`]" is FALSE in f32 —
-/// Kani refuted it (rounding of `sample - centre` versus `centre ± spread` under
+/// Kani refuted it (rounding of `sample - center` versus `center ± spread` under
 /// catastrophic cancellation), and the witness harness pins that refutation so the
 /// slop never reads as optional. The proven form adds [`PRUNE_SLOP`], on the
 /// ±4096 value domain selection overlap boxes inhabit (half-ulp there is ~5e-4,
@@ -442,13 +442,13 @@ mod kani_proofs {
     /// close within the harness timeout.
     #[kani::proof]
     fn lipschitz_bracket_with_slop_contains_every_consistent_sample() {
-        let centre_value: f32 = kani::any();
+        let center_value: f32 = kani::any();
         let spread: f32 = kani::any();
         let sample: f32 = kani::any();
-        kani::assume(centre_value.abs() <= DOMAIN && sample.abs() <= DOMAIN);
+        kani::assume(center_value.abs() <= DOMAIN && sample.abs() <= DOMAIN);
         kani::assume(spread >= 0.0 && spread <= DOMAIN);
-        kani::assume((sample - centre_value).abs() <= spread);
-        let (low, high) = lipschitz_cell_bracket(centre_value, spread, 1.0);
+        kani::assume((sample - center_value).abs() <= spread);
+        let (low, high) = lipschitz_cell_bracket(center_value, spread, 1.0);
         assert!(sample >= low - PRUNE_SLOP && sample <= high + PRUNE_SLOP);
     }
 
@@ -457,17 +457,17 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::should_panic]
     fn lipschitz_bracket_without_slop_is_refuted() {
-        let centre_value: f32 = kani::any();
+        let center_value: f32 = kani::any();
         let lipschitz: f32 = kani::any();
         let circumradius: f32 = kani::any();
         let sample: f32 = kani::any();
-        kani::assume(centre_value.is_finite() && sample.is_finite());
+        kani::assume(center_value.is_finite() && sample.is_finite());
         kani::assume(lipschitz.is_finite() && lipschitz >= 0.0);
         kani::assume(circumradius.is_finite() && circumradius >= 0.0);
         let spread = lipschitz * circumradius;
         kani::assume(spread.is_finite());
-        kani::assume((sample - centre_value).abs() <= spread);
-        let (low, high) = lipschitz_cell_bracket(centre_value, lipschitz, circumradius);
+        kani::assume((sample - center_value).abs() <= spread);
+        let (low, high) = lipschitz_cell_bracket(center_value, lipschitz, circumradius);
         assert!(sample >= low && sample <= high);
     }
 }
@@ -480,12 +480,12 @@ mod tests {
         SurfaceIntersectionConfig::default()
     }
 
-    /// Brackets for a 1-Lipschitz field from its centre sample.
+    /// Brackets for a 1-Lipschitz field from its center sample.
     fn bracket_of<'a>(field: &'a dyn Fn(Vec3) -> f32) -> impl Fn(Vec3, f32) -> (f32, f32) + 'a {
         move |cell_min, size| {
-            let centre = cell_min + Vec3::splat(size * 0.5);
+            let center = cell_min + Vec3::splat(size * 0.5);
             let circumradius = (size * 0.5) * 3f32.sqrt();
-            lipschitz_cell_bracket(field(centre), 1.0, circumradius)
+            lipschitz_cell_bracket(field(center), 1.0, circumradius)
         }
     }
 
@@ -494,10 +494,10 @@ mod tests {
     #[test]
     fn sphere_pair_traces_the_analytic_circle() {
         let radius = 8.0f32;
-        let centre_a = Vec3::new(10.0, 10.0, 10.0);
-        let centre_b = Vec3::new(16.0, 10.0, 10.0);
-        let field_f = move |p: Vec3| p.distance(centre_a) - radius;
-        let field_g = move |p: Vec3| p.distance(centre_b) - radius;
+        let center_a = Vec3::new(10.0, 10.0, 10.0);
+        let center_b = Vec3::new(16.0, 10.0, 10.0);
+        let field_f = move |p: Vec3| p.distance(center_a) - radius;
+        let field_g = move |p: Vec3| p.distance(center_b) - radius;
         let config = lipschitz_pair_config();
         let f: &dyn Fn(Vec3) -> f32 = &field_f;
         let g: &dyn Fn(Vec3) -> f32 = &field_g;
@@ -562,9 +562,9 @@ mod tests {
     /// C0 face seams — every traced point is on both box surfaces.
     #[test]
     fn chebyshev_box_pair_traces_the_notch_frame() {
-        let box_field = |centre: Vec3, half: Vec3| {
+        let box_field = |center: Vec3, half: Vec3| {
             move |p: Vec3| {
-                let d = (p - centre).abs() - half;
+                let d = (p - center).abs() - half;
                 d.x.max(d.y).max(d.z)
             }
         };

@@ -11,12 +11,12 @@ pub const ORBIT_CENTER_RADIUS: f32 = 9.0;
 
 /// How far the crosshair arms reach past the ring.
 const ARM_OVERSHOOT: f32 = 5.0;
-/// The gap between the centre dot and the inner end of each arm, so the dot stays readable.
+/// The gap between the center dot and the inner end of each arm, so the dot stays readable.
 const ARM_INNER_GAP: f32 = 3.5;
-/// The centre dot's radius — the pivot itself, as exactly as a screen can say it.
+/// The center dot's radius — the pivot itself, as exactly as a screen can say it.
 const DOT_RADIUS: f32 = 2.0;
 
-/// Draw the **orbit center**: a ringed crosshair around a filled centre dot, at the pivot's
+/// Draw the **orbit center**: a ringed crosshair around a filled center dot, at the pivot's
 /// projected position.
 ///
 /// `placing` brightens it to the hover step while a placement is armed and the marker is riding
@@ -65,7 +65,7 @@ pub fn orbit_center_overlay(ui: &egui::Ui, center: Pos2, placing: bool) {
     orbit_center(&painter, center, placing);
 }
 
-/// The palette entries this gizmo uses, named so the colour lint sees them as theme tokens
+/// The palette entries this gizmo uses, named so the color lint sees them as theme tokens
 /// rather than as raw values.
 const _: [Color32; 3] = [
     color_palette::ACCENT,

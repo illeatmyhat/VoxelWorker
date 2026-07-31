@@ -51,8 +51,8 @@ fn resident_snapshot(
 /// Apply ONE incremental edit (scene_a → scene_b) to `cache` in place, driving the
 /// dirty set exactly as `app_core::rebuild`: build the leaf spatial index for both
 /// scenes, diff for the edit AABB, and `invalidate_aabb` the dirty chunks (or
-/// `clear()` for the non-localisable fallback). Returns `(evicted_count, took_aabb_path)`
-/// so the harness can assert the localisable edits touch a strict subset.
+/// `clear()` for the non-localizable fallback). Returns `(evicted_count, took_aabb_path)`
+/// so the harness can assert the localizable edits touch a strict subset.
 fn apply_two_layer_incremental_edit(
     cache: &mut TwoLayerResidentCache,
     scene_a: &Scene,
@@ -68,14 +68,14 @@ fn apply_two_layer_incremental_edit(
         }
         None => {
             // The wholesale fallback: a density change or a region-spanning VoxelBody edit
-            // has no localisable box (mirrors `app_core::rebuild`'s `clear()` arm).
+            // has no localizable box (mirrors `app_core::rebuild`'s `clear()` arm).
             cache.clear();
             (0, false)
         }
     }
 }
 
-/// **THE #54 GATE — incremental == full for every LOCALISABLE edit kind.** For each of
+/// **THE #54 GATE — incremental == full for every LOCALIZABLE edit kind.** For each of
 /// add / remove / move / resize / recolor, the two-layer resident cache after the
 /// incremental edit is IDENTICAL (coarse layer + overlay + microblock maps + seam
 /// flags) to a full from-scratch two-layer rebuild of scene B, AND the edit touched a
@@ -87,9 +87,9 @@ fn incremental_two_layer_equals_full_rebuild_for_every_edit_kind() {
     let density = 16u32;
 
     // Three tools spread far apart in X so each occupies chunks the others don't
-    // touch (clean localised edits). The interior "subject" box sits between two
+    // touch (clean localized edits). The interior "subject" box sits between two
     // static anchors that pin the composite extent (as in the dense net) — though
-    // note a recentre shift does NOT invalidate the two-layer cache (chunk-local
+    // note a recenter shift does NOT invalidate the two-layer cache (chunk-local
     // frame), the anchors keep the setup parallel to the dense parity net.
     let anchor_lo = || {
         incr_tool_node(
@@ -167,7 +167,7 @@ fn incremental_two_layer_equals_full_rebuild_for_every_edit_kind() {
     let operation_flip = {
         // ADR 0017 (#73): flip the subject Union→Subtract — it becomes a cutter
         // (here carving nothing, so its own chunks empty out). The flip must be
-        // localisable (the operation is part of the leaf fingerprint, so the diff
+        // localizable (the operation is part of the leaf fingerprint, so the diff
         // dirties exactly the leaf's AABB) and the dirtied chunks must
         // RE-CLASSIFY, not merely re-mesh: solid blocks become air.
         let mut b = scene_a.clone();
@@ -193,7 +193,7 @@ fn incremental_two_layer_equals_full_rebuild_for_every_edit_kind() {
             apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
         assert!(
             took_aabb_path,
-            "[{label}] this edit kind must be localisable (the AABB path, not clear())"
+            "[{label}] this edit kind must be localizable (the AABB path, not clear())"
         );
         let incremental = resident_snapshot(&mut cache, &scene_b, density);
 
@@ -212,7 +212,7 @@ fn incremental_two_layer_equals_full_rebuild_for_every_edit_kind() {
         let scene_chunks = total_before.max(full.len());
         assert!(
             evicted < scene_chunks,
-            "[{label}] a localised edit must evict strictly FEWER chunks ({evicted}) than \
+            "[{label}] a localized edit must evict strictly FEWER chunks ({evicted}) than \
                  the scene's total ({scene_chunks}) — else it is a disguised full rebuild"
         );
     }
@@ -291,8 +291,8 @@ fn two_layer_sketch_box_build_probe() {
     }
 }
 
-/// A localised recolor of one small far-flung node dirties only the handful of chunks
-/// that node occupies, NOT the whole scene — the two-layer analogue of
+/// A localized recolor of one small far-flung node dirties only the handful of chunks
+/// that node occupies, NOT the whole scene — the two-layer analog of
 /// `store.rs::localized_recolor_rebuilds_few_chunks`.
 #[test]
 fn incremental_two_layer_localized_recolor_evicts_few_chunks() {
@@ -325,7 +325,7 @@ fn incremental_two_layer_localized_recolor_evicts_few_chunks() {
     };
     let (evicted, took_aabb_path) =
         apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
-    assert!(took_aabb_path, "an in-place recolor must be localisable");
+    assert!(took_aabb_path, "an in-place recolor must be localizable");
     let incremental = resident_snapshot(&mut cache, &scene_b, density);
 
     assert!(
@@ -334,13 +334,13 @@ fn incremental_two_layer_localized_recolor_evicts_few_chunks() {
     );
     assert!(
         evicted * 2 < total,
-        "a localised recolor of a small node must evict far fewer than half the chunks: \
+        "a localized recolor of a small node must evict far fewer than half the chunks: \
              evicted {evicted} of {total}"
     );
     assert_eq!(incremental, full_two_layer_resident(&scene_b, density));
 }
 
-/// **Localisable move re-derives BOTH endpoints.** A moved node's dirty AABB spans its
+/// **Localizable move re-derives BOTH endpoints.** A moved node's dirty AABB spans its
 /// source AND destination (the `edit_aabb_since` union), so the two-layer cache vacates
 /// the source chunks and rebuilds the destination — and the result equals a full
 /// rebuild (no stale geometry left at the old location).
@@ -375,7 +375,7 @@ fn incremental_two_layer_move_clears_source_and_fills_destination() {
     };
     let (evicted, took_aabb_path) =
         apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
-    assert!(took_aabb_path, "a move must be localisable");
+    assert!(took_aabb_path, "a move must be localizable");
     let incremental = resident_snapshot(&mut cache, &scene_b, density);
     assert_eq!(
         incremental,
@@ -407,12 +407,12 @@ fn incremental_two_layer_density_change_falls_back_to_wholesale() {
     let mut cache = TwoLayerResidentCache::enabled();
     let _ = cache.resident_two_layer_chunks(&scene, density_a, 0);
     // The density-change diff: the same scene rebuilt at a different density has no
-    // localisable AABB (the indices differ in density), so `edit_aabb_since` is None.
+    // localizable AABB (the indices differ in density), so `edit_aabb_since` is None.
     let index_a = scene.build_leaf_spatial_index(density_a);
     let index_b = scene.build_leaf_spatial_index(density_b);
     assert!(
         index_b.edit_aabb_since(&index_a).is_none(),
-        "a density change must have no localisable edit AABB (the wholesale fallback)"
+        "a density change must have no localizable edit AABB (the wholesale fallback)"
     );
     cache.clear();
     let incremental = resident_snapshot(&mut cache, &scene, density_b);

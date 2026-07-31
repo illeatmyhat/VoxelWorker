@@ -4,7 +4,7 @@
 //! `(chunk_coord, lod)` that resolves a chunk **on demand** (lazily) and stores the
 //! result, so a second request for the same chunk is a map lookup instead of a
 //! re-resolve. `Store::resolve_region` (the dense whole-region oracle, compile-gated
-//! behind the `oracle` feature) rebuilds the recentred monolithic grid from cached
+//! behind the `oracle` feature) rebuilds the recentered monolithic grid from cached
 //! chunks; [`Store::invalidate_aabb`] evicts exactly the chunks an edit's world-AABB
 //! intersects (whole-chunk dirty granularity), and [`Store::clear`] is the wholesale
 //! fallback. Out-of-core spill (issue #20 Step 3) moves least-recently-used resident
@@ -39,7 +39,7 @@ pub struct Store {
     /// The resolved per-chunk grids, in coordinates **rebased to the bound floating
     /// origin** (ADR 0002 Decision 2, S4b). With the default floating origin
     /// `[0, 0, 0]` these are absolute composite coordinates (the S0 contract); the
-    /// render path binds the origin to the composite recentre so the chunks come out
+    /// render path binds the origin to the composite recenter so the chunks come out
     /// already rebased (and far chunks keep f32 precision — the subtraction is done in
     /// i64 inside [`Scene::resolve_chunk_rebased`], not in f32 here).
     // `pub(crate)` so the sibling `tests` submodule (split out of this module by ADR 0016
@@ -52,7 +52,7 @@ pub struct Store {
     /// The floating origin (in absolute voxels) every cached chunk was rebased
     /// around (ADR 0002 S4b). `[0, 0, 0]` until bound otherwise. A request at a
     /// different origin clears + re-binds (every cached chunk's stored positions are
-    /// relative to it). `resolve_region` binds it to the composite recentre.
+    /// relative to it). `resolve_region` binds it to the composite recenter.
     bound_floating_origin: [i64; 3],
 
     // ===== Out-of-core spill (issue #20 Step 3) ==============================
@@ -90,7 +90,7 @@ pub struct Store {
 
 impl Store {
     /// A fresh, empty cache that NEVER spills (unbounded resident set). This is the
-    /// behaviour every existing caller relies on (the renderer, `shot`, `vox_export`,
+    /// behavior every existing caller relies on (the renderer, `shot`, `vox_export`,
     /// every golden and parity test) — identical to before issue #20 Step 3.
     pub fn new() -> Self {
         Self::default()
@@ -178,7 +178,7 @@ impl Store {
         // The public entry binds the cache to the ABSOLUTE frame (floating origin
         // `[0, 0, 0]`) — the S0 contract a bare `chunk()` caller expects. The render
         // path goes through `resolve_region`, which binds the floating origin to the
-        // composite recentre first and then pulls chunks via `chunk_for_current_binding`.
+        // composite recenter first and then pulls chunks via `chunk_for_current_binding`.
         self.rebind_if_changed(voxels_per_block, [0, 0, 0]);
         self.chunk_for_current_binding(chunk_coord, scene, voxels_per_block, lod)
     }
@@ -186,7 +186,7 @@ impl Store {
     /// Pull (or resolve) one chunk for the cache's CURRENT density + floating-origin
     /// binding, WITHOUT re-binding. The caller is responsible for having bound the
     /// cache (via `rebind_if_changed`) to the intended density/origin first — this is
-    /// what lets `resolve_region` bind to the composite recentre once and then pull
+    /// what lets `resolve_region` bind to the composite recenter once and then pull
     /// every covering chunk already rebased.
     fn chunk_for_current_binding(
         &mut self,
@@ -296,7 +296,7 @@ impl Store {
         }
     }
 
-    /// Rebuild the SAME recentred monolithic [`VoxelGrid`] the renderer, mesher and
+    /// Rebuild the SAME recentered monolithic [`VoxelGrid`] the renderer, mesher and
     /// onion fog consume today — but assembled by pulling each covering chunk from
     /// the cache (resolving misses on demand) instead of stamping every leaf into
     /// one grid in a single pass.
@@ -304,22 +304,22 @@ impl Store {
     /// ## Identical-output invariant
     ///
     /// The render path's truth is [`Scene::resolve_region`], which (a) sizes the
-    /// output to the composite extent and (b) **recentres** the composite on the
-    /// origin by subtracting `recentre_voxels` from every voxel. This method
+    /// output to the composite extent and (b) **recenters** the composite on the
+    /// origin by subtracting `recenter_voxels` from every voxel. This method
     /// reproduces both:
     ///
     /// 1. Pull each covering chunk from the cache. A cached chunk holds voxels in
     ///    **absolute** composite coordinates (`producer_local + world_offset ×
     ///    density`), the exact value [`Scene::resolve_chunk`] emits — and, by the S0
     ///    equivalence proof, the union of all covering chunks is the exact occupied
-    ///    SET of [`Scene::resolve_region`] **before** its recentre.
-    /// 2. Apply the SAME recentre offset [`Scene::resolve_region`] uses, subtracting
-    ///    it from each voxel to land the composite centred in the output.
+    ///    SET of [`Scene::resolve_region`] **before** its recenter.
+    /// 2. Apply the SAME recenter offset [`Scene::resolve_region`] uses, subtracting
+    ///    it from each voxel to land the composite centered in the output.
     ///
     /// For every scene whose occupied voxels sit at coordinates exactly
     /// representable in `f32` (all near-origin scenes — every golden, and every
     /// scene in the S2 parity tests: sphere/cylinder/torus/village/demo), the
-    /// recentre subtraction is exact, so the reassembled grid's `(position,
+    /// recenter subtraction is exact, so the reassembled grid's `(position,
     /// material_id)` set is **bit-identical** to [`Scene::resolve_region`]'s. The
     /// parity tests assert this equality directly; if a scene ever moved the
     /// goldens it would mean an observable geometry change, not a rebaseline.
@@ -339,42 +339,42 @@ impl Store {
         debug_assert_eq!(lod, 0, "S2 only resolves full resolution (lod 0)");
 
         // Thin wrapper over the [`bind_region`](Self::bind_region) primitive (A2c):
-        // bind the cache to the composite recentre/floating origin (ADR 0002
+        // bind the cache to the composite recenter/floating origin (ADR 0002
         // Decision 2 / S4b) and make every covering chunk resident — the only step
         // needing `&mut self` — then assemble the union of the resident chunks'
         // voxels. Each chunk comes out ALREADY rebased by `resolve_chunk_rebased`,
-        // with the recentre subtracted in i64 BEFORE the f32 downcast, so a
+        // with the recenter subtracted in i64 BEFORE the f32 downcast, so a
         // far-placed scene keeps full f32 precision (the S1 speckle is gone). For a
         // near scene this is bit-identical to the previous direct f32 subtract (the
-        // recentre is integer-block-aligned and positions are small), so the goldens
+        // recenter is integer-block-aligned and positions are small), so the goldens
         // are unchanged. The covering chunks are visited in the same z,y,x order the
         // bind resolved them in, so the assembled voxel order is identical too.
         let region_dimensions = self.bind_region(scene, voxels_per_block, lod);
         let mut output = VoxelGrid::new(region_dimensions);
-        // ADR 0008: carry the recentre the chunks were rebased by, so the fog (and any
+        // ADR 0008: carry the recenter the chunks were rebased by, so the fog (and any
         // other consumer) decodes `world → index` without re-deriving `floor(dim/2)`. This
         // matches `Scene::resolve_region`'s output exactly (the S2 identical-output net).
-        output.recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
+        output.recenter_voxels = scene.recenter_voxels_for_resolve(voxels_per_block).voxels();
         for grid in self.covering_chunk_grids(scene, voxels_per_block, lod) {
             // The cached chunk is already rebased to the floating origin
-            // (= recentre), so its voxels drop straight into the output.
+            // (= recenter), so its voxels drop straight into the output.
             output.occupied.extend_from_slice(&grid.occupied);
         }
         output
     }
 
     /// **Per-chunk render accessor (issue #20 S6c step 4).** Bind the cache to the
-    /// composite recentre/floating-origin for `(scene, density, lod)` EXACTLY as
+    /// composite recenter/floating-origin for `(scene, density, lod)` EXACTLY as
     /// `resolve_region` does, then return every covering
     /// chunk as `([i32; 3] absolute_chunk_coord, &VoxelGrid rebased_grid)`.
     ///
     /// The returned grids are the SAME rebased per-chunk grids whose union
     /// `resolve_region` assembles — byte-identical (each one
-    /// is already rebased to the floating origin = composite recentre, with the
+    /// is already rebased to the floating origin = composite recenter, with the
     /// subtraction done in i64 inside
     /// [`Scene::resolve_chunk_rebased`](document::scene::Scene::resolve_chunk_rebased)
     /// before the f32 downcast). The union of all returned chunks' occupied voxels
-    /// (position + `material_id`, in the recentred frame) therefore equals
+    /// (position + `material_id`, in the recentered frame) therefore equals
     /// `resolve_region`'s assembled grid voxel-for-voxel; this is the seam the
     /// upcoming per-chunk renderer consumes instead of one monolithic grid.
     ///
@@ -397,7 +397,7 @@ impl Store {
         voxels_per_block: u32,
         lod: u32,
     ) -> Vec<([i32; 3], &VoxelGrid)> {
-        // Bind to the recentre + resolve/resident every covering chunk (the only
+        // Bind to the recenter + resolve/resident every covering chunk (the only
         // step needing `&mut self`); after this the gather below is all HITs.
         let _region_dimensions = self.bind_region(scene, voxels_per_block, lod);
 
@@ -427,9 +427,9 @@ impl Store {
     /// [`VoxelGrid::widest_run_in_band`](voxel_core::voxel::VoxelGrid::widest_run_in_band)
     /// returns for the assembled region.
     ///
-    /// The cache is bound to the composite recentre (exactly as
+    /// The cache is bound to the composite recenter (exactly as
     /// `resolve_region`) so each covering chunk's voxels are
-    /// in the recentred frame, then every chunk's voxels are bucketed into ONE
+    /// in the recentered frame, then every chunk's voxels are bucketed into ONE
     /// shared per-`(y, z)` occupancy row keyed by the GLOBAL X index — so a run
     /// crossing a chunk seam is one contiguous span (see
     /// [`widest_run_in_band_over_chunks`](voxel_core::voxel::widest_run_in_band_over_chunks)
@@ -453,7 +453,7 @@ impl Store {
     }
 
     /// **Bound-region read primitive (ADR 0003 store seam; issue #20 S6d).** Bind
-    /// the cache to the scene's ACTIVE region (recentre + density, as
+    /// the cache to the scene's ACTIVE region (recenter + density, as
     /// `resolve_region` does), ensure every covering chunk
     /// is resolved + resident, and return the region's voxel dimensions alongside
     /// the resident covering chunks' occupied slices — WITHOUT assembling a
@@ -478,7 +478,7 @@ impl Store {
     }
 
     /// **The bound-region primitive (ADR 0003 store seam).** Bind the cache to the
-    /// composite recentre/floating origin + density for `(scene, voxels_per_block)`
+    /// composite recenter/floating origin + density for `(scene, voxels_per_block)`
     /// and ensure every covering chunk is resolved + resident, returning the
     /// region's voxel dimensions. This is the shared `&mut self` step the four
     /// consumer-shaped reads (the oracle-gated `resolve_region`,
@@ -486,11 +486,11 @@ impl Store {
     /// [`widest_run_in_band`](Self::widest_run_in_band),
     /// [`bound_region_occupied`](Self::bound_region_occupied)) are thin wrappers
     /// over. After this, [`covering_chunk_grids`](Self::covering_chunk_grids) yields
-    /// the resident covering chunks (all cache HITs) in the recentred frame.
+    /// the resident covering chunks (all cache HITs) in the recentered frame.
     fn bind_region(&mut self, scene: &Scene, voxels_per_block: u32, lod: u32) -> [u32; 3] {
         debug_assert_eq!(lod, 0, "S6d only operates at full resolution (lod 0)");
-        let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
-        self.rebind_if_changed(voxels_per_block, recentre_voxels);
+        let recenter_voxels = scene.recenter_voxels_for_resolve(voxels_per_block).voxels();
+        self.rebind_if_changed(voxels_per_block, recenter_voxels);
 
         if let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) {
             for chunk_z in min_chunk[2]..=max_chunk[2] {
@@ -513,7 +513,7 @@ impl Store {
     /// Assumes [`bind_region`](Self::bind_region) has
     /// already resolved + resident every covering chunk at the cache's current
     /// binding (so these are all map lookups, no resolves), and that the cache is
-    /// bound to the recentre (so the voxels are in the recentred frame).
+    /// bound to the recenter (so the voxels are in the recentered frame).
     fn covering_chunk_grids<'cache>(
         &'cache self,
         scene: &Scene,
@@ -536,8 +536,8 @@ impl Store {
     /// Drop every cached chunk (the all-or-nothing invalidation seam).
     ///
     /// Still used for the edit kinds [`invalidate_aabb`](Self::invalidate_aabb) can't
-    /// localise (a density change, or a region-spanning VoxelBody edit) and on the very
-    /// first rebuild (no previous scene to diff against). For a localisable edit,
+    /// localize (a density change, or a region-spanning VoxelBody edit) and on the very
+    /// first rebuild (no previous scene to diff against). For a localizable edit,
     /// prefer `invalidate_aabb`.
     pub fn clear(&mut self) {
         self.chunks.clear();
@@ -682,7 +682,7 @@ impl Store {
         }
         if self.bound_density.is_some() && !(density_matches && origin_matches) {
             // Re-binding from a previous binding: drop the now-stale chunks from RAM,
-            // disk and LRU state. A spilled chunk is keyed/serialised in the OLD
+            // disk and LRU state. A spilled chunk is keyed/serialized in the OLD
             // binding, so it must not survive a rebind (the S6c wiring-note correctness
             // condition — otherwise a far chunk would reload mis-placed; issue #20 Step 3).
             self.chunks.clear();

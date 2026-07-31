@@ -16,11 +16,11 @@ impl AppCore {
     /// edit's dirty world-AABB, and evict ONLY the chunks that AABB touches (every
     /// other cached chunk stays resident). Fall back to a wholesale `clear()` when a
     /// precise AABB can't be computed — the first rebuild (no previous index), a
-    /// density change, or a region-spanning VoxelBody edit (no localisable box, see
+    /// density change, or a region-spanning VoxelBody edit (no localizable box, see
     /// `LeafSpatialIndex::edit_aabb_since`). The reassembled grid is byte-identical
     /// either way (the same chunks are re-resolved; untouched chunks are reused).
     ///
-    /// Returns the region dimensions + recentre + the per-chunk render accessor, which
+    /// Returns the region dimensions + recenter + the per-chunk render accessor, which
     /// BORROWS the store. The returned [`RebuildOutcome`] therefore borrows `self`, so the
     /// shell must consume it (build the cuboid mesh, refresh the brick field) BEFORE the
     /// next `&mut AppCore` call. A density whose single-chunk voxel capacity exceeds the bound
@@ -50,44 +50,44 @@ impl AppCore {
         // `invalidate_aabb` evicts the edit's dirty chunks (so the next
         // `resident_two_layer_chunks` re-classifies only them); `clear()` handles the
         // first build / density change / region-spanning VoxelBody edit where there is no
-        // localisable AABB. A two-layer chunk is chunk-local-integer (ADR 0008), so —
+        // localizable AABB. A two-layer chunk is chunk-local-integer (ADR 0008), so —
         // unlike the retired dense store — a floating-origin SHIFT does NOT invalidate
-        // the cache (the recentre is a pure index offset applied at expand/mesh time).
+        // the cache (the recenter is a pure index offset applied at expand/mesh time).
         let new_leaf_index = scene.build_leaf_spatial_index(density);
-        // The ONE mint point returns the recentre already carrying its frame (finding #7);
+        // The ONE mint point returns the recenter already carrying its frame (finding #7);
         // unwrap to the raw triple only for the shift arithmetic + the `[i64; 3]` previous
-        // recentre state below. The `RecentreVoxels` itself flows straight into the output.
-        let new_recentre = scene.recentre_voxels_for_resolve(density);
-        let new_recentre_voxels = new_recentre.voxels();
+        // recenter state below. The `RecenterVoxels` itself flows straight into the output.
+        let new_recenter = scene.recenter_voxels_for_resolve(density);
+        let new_recenter_voxels = new_recenter.voxels();
         // The floating-origin shift since the last rebuild (render-frame voxels). The
-        // first rebuild has no previous recentre, so it shifts nothing (the camera is
+        // first rebuild has no previous recenter, so it shifts nothing (the camera is
         // framed explicitly at startup, not compensated). The shell subtracts this
         // from `camera.target` so the view stays put as the origin floats.
-        let previous_recentre = self.previous_recentre_voxels.unwrap_or(new_recentre_voxels);
-        let recentre_shift_voxels = [
-            new_recentre_voxels[0] - previous_recentre[0],
-            new_recentre_voxels[1] - previous_recentre[1],
-            new_recentre_voxels[2] - previous_recentre[2],
+        let previous_recenter = self.previous_recenter_voxels.unwrap_or(new_recenter_voxels);
+        let recenter_shift_voxels = [
+            new_recenter_voxels[0] - previous_recenter[0],
+            new_recenter_voxels[1] - previous_recenter[1],
+            new_recenter_voxels[2] - previous_recenter[2],
         ];
         // The chunk-granular GPU-buffer incremental (#55) reuses UNTOUCHED chunks' baked
         // buffers verbatim, so it is only valid when those buffers are still in the right
-        // frame. Two guards force a wholesale re-mesh even for a localisable edit:
+        // frame. Two guards force a wholesale re-mesh even for a localizable edit:
         //   * DENSITY change — re-keys every chunk (chunk extent = CHUNK_BLOCKS × density),
         //     so the whole resident buffer set is in a different voxel frame.
-        //   * RECENTRE (floating-origin) SHIFT — although a two-layer chunk is chunk-local-
+        //   * RECENTER (floating-origin) SHIFT — although a two-layer chunk is chunk-local-
         //     integer (so the resident CACHE stays valid across a shift), the MESHER bakes the
-        //     recentre into each vertex's world position at emit time. A shift therefore
+        //     recenter into each vertex's world position at emit time. A shift therefore
         //     staleens every kept buffer's vertices (an untouched chunk's mesh would sit at the
         //     old origin), exactly the dense `incremental_rebuild_from_chunks` precondition.
         //     The cache invalidation below still runs (it is frame-independent); only the
         //     GPU-buffer incremental falls back.
         let density_changed = self.previous_density != Some(density);
-        let recentre_shifted = recentre_shift_voxels != [0; 3];
-        let buffers_reframed = density_changed || recentre_shifted;
+        let recenter_shifted = recenter_shift_voxels != [0; 3];
+        let buffers_reframed = density_changed || recenter_shifted;
         // The incremental GPU-buffer re-mesh hint (#55): `Some(evicted_dirty)` only when the
-        // edit LOCALISED (an `invalidate_aabb` path) AND the resident buffers stayed in frame.
+        // edit LOCALIZED (an `invalidate_aabb` path) AND the resident buffers stayed in frame.
         // Any wholesale `clear()` — first build, region-spanning VoxelBody edit — and any reframing
-        // (density change / recentre shift) yields `None`, so the shell re-meshes wholesale.
+        // (density change / recenter shift) yields `None`, so the shell re-meshes wholesale.
         let incremental_dirty_chunks: Option<Vec<[i32; 3]>> =
             match self.previous_leaf_index.as_ref() {
                 Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
@@ -114,7 +114,7 @@ impl AppCore {
                     None
                 }
             };
-        self.previous_recentre_voxels = Some(new_recentre_voxels);
+        self.previous_recenter_voxels = Some(new_recenter_voxels);
         self.previous_leaf_index = Some(new_leaf_index);
         self.previous_density = Some(density);
 
@@ -139,8 +139,8 @@ impl AppCore {
         RebuildOutcome::Built(RebuildOutput {
             region_dimensions,
             two_layer_chunks,
-            recentre_voxels: new_recentre,
-            recentre_shift_voxels,
+            recenter_voxels: new_recenter,
+            recenter_shift_voxels,
             incremental_dirty_chunks,
         })
     }

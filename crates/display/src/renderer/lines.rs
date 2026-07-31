@@ -7,17 +7,17 @@ use super::*;
 /// Grid overlay tuning, transcribed from the prototype `GRID` uniforms
 /// (chisel-bench-reference.html). Half-widths are in voxel units (the overlay is
 /// computed from absolute voxel position), alphas are blend strengths, and the
-/// colours are the sRGB hex line colours (`docs/design/colour-vocabulary.md`).
+/// colors are the sRGB hex line colors (`docs/design/color-vocabulary.md`).
 pub(crate) const VOXEL_LINE_HALF_WIDTH: f32 = 0.05;
 pub(crate) const BLOCK_LINE_HALF_WIDTH: f32 = 0.11;
 pub(crate) const VOXEL_LINE_ALPHA: f32 = 0.40;
 pub(crate) const BLOCK_LINE_ALPHA: f32 = 0.92;
-/// Voxel grid line colour `#17120b` (sRGB hex → linear).
+/// Voxel grid line color `#17120b` (sRGB hex → linear).
 pub(crate) const VOXEL_LINE_COLOR_HEX: u32 = 0x17_12_0b;
-/// Block grid line colour `#080605` (sRGB hex → linear, darker/bolder).
+/// Block grid line color `#080605` (sRGB hex → linear, darker/bolder).
 pub(crate) const BLOCK_LINE_COLOR_HEX: u32 = 0x08_06_05;
 
-/// One coloured line-segment vertex (position + linear RGBA colour). The alpha
+/// One colored line-segment vertex (position + linear RGBA color). The alpha
 /// lets the M8 block lattice / floor grid draw at low opacity through the same
 /// alpha-blending line pipeline the gizmo / view-cube edges use (those pass 1.0).
 #[repr(C)]

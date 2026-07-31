@@ -17,13 +17,13 @@ pub use aabb::{enclosing_block_aabb, LatticeAabb, RealAabb};
 pub use bvh::Bvh;
 pub use min_mip_pyramid::{MinMipLevel, SparseMinMipPyramid};
 pub use orientation::LatticeOrientation;
-pub use placement::{is_axis_aligned, is_in_phase, seat_centre_at, LeafPlacement};
+pub use placement::{is_axis_aligned, is_in_phase, seat_center_at, LeafPlacement};
 pub use ray::{guarded_direction, Ray, RayBoxIntersection, SLAB_ZERO_DIRECTION_GUARD};
 pub use surface_intersection::{
     lipschitz_cell_bracket, trace_intersection_curves, ImplicitSurfacePair,
     SurfaceIntersectionConfig, SurfaceIntersectionOutcome, TracedCurve, PRUNE_SLOP,
 };
 pub use voxel_frames::{
-    GridHalfExtent, ProducerLocalVoxelPoint, RecentreVoxels, RecentredVoxelPoint,
+    GridHalfExtent, ProducerLocalVoxelPoint, RecenterVoxels, RecenteredVoxelPoint,
     TrueWorldVoxelPoint,
 };

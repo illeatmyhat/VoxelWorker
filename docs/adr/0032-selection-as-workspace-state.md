@@ -63,7 +63,7 @@ hosting scene). Ownership follows the ordered fold: a surviving voxel belongs to
 never the cutter; where unioned bodies overlap, the later node in fold order wins.
 
 The rule is **evaluated against authoring truth at the picked voxel** (leaf fields in reverse
-fold order), never stored: the chunk store, bricks, and meshes stay attribution-free, honouring
+fold order), never stored: the chunk store, bricks, and meshes stay attribution-free, honoring
 "no dense grids" and truth-is-the-op-stack (ADR 0006/0009).
 
 ## Considered options

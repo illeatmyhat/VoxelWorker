@@ -42,7 +42,7 @@ use crate::tween::nearest_equivalent_theta;
 /// floor exist only because the chart's map degenerates at the poles.
 const RADIANS_PER_PIXEL: f32 = 0.01;
 
-/// Below this the projection of world-up onto the view plane is too short to normalise: the
+/// Below this the projection of world-up onto the view plane is too short to normalize: the
 /// camera is looking straight down (or up) the vertical axis.
 const POLE_PROJECTION_EPSILON: f32 = 1e-6;
 

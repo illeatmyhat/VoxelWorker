@@ -3,7 +3,7 @@
 //! [`OrbitCamera`] parameterises the eye as a spherical orbit around a fixed
 //! `target`: an azimuth `theta` in the XY ground plane, a polar angle `phi` from
 //! the +Z (vertical) axis, and a `distance`. The drag/pan/zoom controls are the
-//! arcball-family gestures of a modelling viewer — a pole-clamped orbit with
+//! arcball-family gestures of a modeling viewer — a pole-clamped orbit with
 //! `sin(phi)` azimuth damping, a cursor-locked view-plane pan, and a multiplicative
 //! zoom — plus a `roll` degree of freedom about the view axis. The load-bearing
 //! subtlety is the **up vector**: near the poles a naive `Vec3::Z` up makes
@@ -116,7 +116,7 @@ pub struct HomeView {
     /// which case the Home button FRAMES the model (re-fits the distance) instead of
     /// using the canned default distance, so Home never zooms in too close on a
     /// model of a different size. `true` once [`Self::from_camera`] records the live
-    /// view, and then the saved distance is honoured verbatim.
+    /// view, and then the saved distance is honored verbatim.
     pub explicitly_set: bool,
 }
 
@@ -134,7 +134,7 @@ impl Default for HomeView {
 
 impl HomeView {
     /// Capture the live camera's orbit angles + distance as the new home. This is
-    /// an EXPLICIT user home, so its saved distance is honoured by Home (no re-fit).
+    /// an EXPLICIT user home, so its saved distance is honored by Home (no re-fit).
     pub fn from_camera(camera: &OrbitCamera) -> Self {
         Self {
             theta: camera.orbit_theta,
@@ -244,22 +244,22 @@ impl OrbitCamera {
     }
 
     /// Frame a single node's AABB for the "Focus" view action. Given the node's
-    /// recentred AABB `centre` (the gizmo pivot, in the recentred render frame) and
+    /// recentered AABB `center` (the gizmo pivot, in the recentered render frame) and
     /// its voxel `extent`, returns the `(target, distance)` the camera should adopt:
-    /// the target is the node centre, and the distance reuses the SAME
+    /// the target is the node center, and the distance reuses the SAME
     /// [`auto_framed_distance`](Self::auto_framed_distance) fit math
     /// (`longest_axis * 1.9`) so a focused node is framed exactly like a whole-scene
     /// Fit, scoped to that node. The orbit angles are left to the caller (Focus
     /// moves the pivot + distance only, like Fit). A zero-extent node yields a
     /// floored minimum distance so the camera never collapses onto the target.
-    pub fn focus_target_and_distance(centre: Vec3, extent: [f32; 3]) -> (Vec3, f32) {
+    pub fn focus_target_and_distance(center: Vec3, extent: [f32; 3]) -> (Vec3, f32) {
         let extent_dimensions = [
             extent[0].round().max(0.0) as u32,
             extent[1].round().max(0.0) as u32,
             extent[2].round().max(0.0) as u32,
         ];
         let distance = Self::auto_framed_distance(extent_dimensions).max(0.1);
-        (centre, distance)
+        (center, distance)
     }
 
     /// Unit direction from the target toward the camera eye (Z-up spherical:
@@ -304,7 +304,7 @@ impl OrbitCamera {
     /// offered when the view is face-on. An edge/corner/arbitrary-orbit view returns
     /// `false` (no rotate arrows). The test: the eye direction is within ~8° of the
     /// nearest face's outward normal AND the view is roughly upright (roll ≈ 0), so
-    /// the four screen-aligned arrows map cleanly to the face's four neighbours.
+    /// the four screen-aligned arrows map cleanly to the face's four neighbors.
     pub fn is_face_constrained(&self) -> bool {
         // cos(8°) ≈ 0.990 — a tight cone around the face normal.
         const FACE_ALIGN_COS: f32 = 0.990;
@@ -323,7 +323,7 @@ impl OrbitCamera {
     ///
     /// Away from the poles this is just `Vec3::Z`. Within `UP_BLEND_BAND` of a
     /// pole it smoothly blends to an **azimuth-derived horizontal up** — the exact
-    /// limit of "`Vec3::Z` projected onto the view plane, normalised" as
+    /// limit of "`Vec3::Z` projected onto the view plane, normalized" as
     /// `phi → 0/π`. That limit is `(−cos θ, −sin θ, 0)` at the top pole and
     /// `(cos θ, sin θ, 0)` at the bottom, so the screen "up" the user sees is the
     /// direction the camera would tilt toward, and it never jumps as the drag
@@ -359,7 +359,7 @@ impl OrbitCamera {
         let weight = t * t * (3.0 - 2.0 * t); // smoothstep
         let blended = horizontal_up.lerp(Vec3::Z, weight);
         // The two endpoints are orthogonal unit vectors, so the lerp is never
-        // zero-length; normalise so `look_at_rh` gets a clean unit up.
+        // zero-length; normalize so `look_at_rh` gets a clean unit up.
         blended.normalize()
     }
 
@@ -779,12 +779,12 @@ mod tests {
     }
 
     #[test]
-    fn focus_target_and_distance_centres_and_fits_node() {
-        // Focus sets the target to the node centre and fits the distance from the
+    fn focus_target_and_distance_centers_and_fits_node() {
+        // Focus sets the target to the node center and fits the distance from the
         // longest extent axis via the same `auto_framed_distance` math (longest×1.9).
-        let centre = Vec3::new(3.0, -2.0, 5.0);
-        let (target, distance) = OrbitCamera::focus_target_and_distance(centre, [4.0, 12.0, 6.0]);
-        assert_eq!(target, centre);
+        let center = Vec3::new(3.0, -2.0, 5.0);
+        let (target, distance) = OrbitCamera::focus_target_and_distance(center, [4.0, 12.0, 6.0]);
+        assert_eq!(target, center);
         assert!(approx(distance, 12.0 * 1.9), "distance = {distance}");
     }
 
@@ -792,9 +792,9 @@ mod tests {
     fn focus_target_and_distance_floors_zero_extent() {
         // A node with no resolvable extent must not collapse the camera onto the
         // target (distance 0) — it is floored to a small minimum.
-        let centre = Vec3::ZERO;
-        let (target, distance) = OrbitCamera::focus_target_and_distance(centre, [0.0, 0.0, 0.0]);
-        assert_eq!(target, centre);
+        let center = Vec3::ZERO;
+        let (target, distance) = OrbitCamera::focus_target_and_distance(center, [0.0, 0.0, 0.0]);
+        assert_eq!(target, center);
         assert!(distance >= 0.1, "distance = {distance}");
     }
 
@@ -991,7 +991,7 @@ mod tests {
             // For any NONZERO roll the up is orthogonalised against forward (rolled
             // screen-up), so it is exactly ⊥ the view direction — `look_at_rh` never
             // degenerates. (roll=0 keeps the raw base up, which look_at re-orthogonalises
-            // itself; it need not be ⊥ forward, matching pre-roll behaviour.)
+            // itself; it need not be ⊥ forward, matching pre-roll behavior.)
             if roll != 0.0 {
                 let view_dir = -camera.direction();
                 assert!(

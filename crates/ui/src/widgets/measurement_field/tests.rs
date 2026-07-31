@@ -66,17 +66,17 @@ fn the_bound_is_the_only_difference_between_the_two_sites() {
     assert!(bounded_field(4, 16).parse_and_validate("0v").is_err());
 }
 
-/// A block term that does not land on a whole voxel names BOTH neighbours, because
+/// A block term that does not land on a whole voxel names BOTH neighbors, because
 /// picking one of them is the user's next action.
 #[test]
-fn a_non_landing_block_term_names_both_neighbouring_voxels() {
+fn a_non_landing_block_term_names_both_neighboring_voxels() {
     // At density 3, half a block is 1.5 voxels — between 1 and 2.
     let error = signed_field(0, 3)
         .parse_and_validate("0.5b")
         .expect_err("a fractional voxel count must be rejected");
     assert!(
         error.contains("whole voxel") && error.contains('1') && error.contains('2'),
-        "the message must name both neighbours, got: {error}"
+        "the message must name both neighbors, got: {error}"
     );
 }
 

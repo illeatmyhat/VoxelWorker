@@ -43,7 +43,7 @@ pub struct BrickFieldUpdate {
 /// unreachable). The pyramid is REBUILT (not patched) from the merged record keys per
 /// edit (a cheap pure function; ADR 0011's G0-G5 slices shipped a 3rd clip-map level and
 /// off-screen residency eviction under the "G4" name instead — incremental pyramid
-/// patching itself was never scheduled and stays an open, unscheduled optimisation).
+/// patching itself was never scheduled and stays an open, unscheduled optimization).
 #[derive(Debug, Clone)]
 pub struct IncrementalBrickField {
     /// The brick edge in voxels (`voxels_per_block`, the ONE-BLOCK granule) — fixed for
@@ -303,7 +303,7 @@ impl IncrementalBrickField {
     }
 
     /// Re-evaluate ONLY the blocks of the dirty chunks (plus, for occlusion verdicts, their
-    /// 26-neighbourhood ring) and merge them into the field.
+    /// 26-neighborhood ring) and merge them into the field.
     ///
     /// * `fresh_chunks` — the FULL current covering set (dirty chunks freshly resolved,
     ///   clean chunks reused verbatim). Only the dirty chunks + their ring are read.
@@ -314,12 +314,12 @@ impl IncrementalBrickField {
     ///
     /// **The occlusion dilation (ADR 0011 interior elision — the tricky seam).** Under the
     /// surface-only record contract, whether a coarse block emits a record at all depends on
-    /// its six FACE-NEIGHBOURS — which may live in an adjacent, NON-dirty chunk. An edit can
+    /// its six FACE-NEIGHBORS — which may live in an adjacent, NON-dirty chunk. An edit can
     /// therefore flip records in the 1-chunk dilation of the dirty set: carving a hole
-    /// exposes previously-interior blocks of the neighbour chunk (their records must appear),
+    /// exposes previously-interior blocks of the neighbor chunk (their records must appear),
     /// and filling can occlude previously-surface blocks (their records must vanish). So the
-    /// re-mask covers the dirty set DILATED by the 26-neighbourhood (the same dilation the
-    /// mesh's cross-chunk seam culling uses; face-dilation would suffice for the 6-neighbour
+    /// re-mask covers the dirty set DILATED by the 26-neighborhood (the same dilation the
+    /// mesh's cross-chunk seam culling uses; face-dilation would suffice for the 6-neighbor
     /// test, the 26-ring is the conservative shared convention):
     ///
     /// * **dirty chunks** — all records dropped (sculpted slots freed) and rebuilt from the
@@ -331,7 +331,7 @@ impl IncrementalBrickField {
     ///   (the `one_chunk_edit_writes_only_that_chunks_slots` guarantee). Coarse records carry
     ///   no slot, so the ring contributes zero atlas traffic.
     /// * **outside the dilation** — a block's verdict reads only its own chunk + face
-    ///   neighbours, all unchanged, so its record is provably identical; kept verbatim.
+    ///   neighbors, all unchanged, so its record is provably identical; kept verbatim.
     ///
     /// Byte-equality vs a from-scratch surface-only [`build_brick_field`] after every edit is
     /// the acceptance bar (`incremental_dirty_update_equals_wholesale_after_every_step`, the
@@ -345,19 +345,19 @@ impl IncrementalBrickField {
     ) -> BrickFieldUpdate {
         let edge = self.brick_edge_voxels;
         let dirty: std::collections::BTreeSet<[i32; 3]> = dirty_chunks.iter().copied().collect();
-        // The occlusion ring: the dirty set's 26-neighbourhood minus the dirty set itself.
+        // The occlusion ring: the dirty set's 26-neighborhood minus the dirty set itself.
         let mut ring: std::collections::BTreeSet<[i32; 3]> = std::collections::BTreeSet::new();
         for coord in &dirty {
             for offset_z in -1i32..=1 {
                 for offset_y in -1i32..=1 {
                     for offset_x in -1i32..=1 {
-                        let neighbour = [
+                        let neighbor = [
                             coord[0] + offset_x,
                             coord[1] + offset_y,
                             coord[2] + offset_z,
                         ];
-                        if !dirty.contains(&neighbour) {
-                            ring.insert(neighbour);
+                        if !dirty.contains(&neighbor) {
+                            ring.insert(neighbor);
                         }
                     }
                 }

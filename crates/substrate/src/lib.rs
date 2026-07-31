@@ -75,7 +75,7 @@
 //!   [`CubeTilePacking`](occupancy::CubeTilePacking), the
 //!   [`ShelfBinPack`](occupancy::ShelfBinPack) rectangle packer, and the
 //!   [`SortedKeyBitmaskMap`](occupancy::SortedKeyBitmaskMap).
-//! - [`solids`] — the [`CellClassification`](solids::CellClassification) black/white/grey CSG cell
+//! - [`solids`] — the [`CellClassification`](solids::CellClassification) black/white/gray CSG cell
 //!   classifier, the [`GreedyCuboidDecomposition`](solids::GreedyCuboidDecomposition) into
 //!   [`Cuboid`](solids::Cuboid)s, and the [`CulledBoxMeshing`](solids::CulledBoxMeshing)
 //!   exposed-face determination.

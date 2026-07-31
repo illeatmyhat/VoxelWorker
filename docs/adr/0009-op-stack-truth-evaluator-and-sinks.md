@@ -42,7 +42,7 @@ lifetime):
 - **Display sink** — visible region, approximate (LOD / skin / aliasing OK), **GPU allowed**, transient.
 - **Exporter sink** — bounded + complete region, **exact + deterministic**, CPU (or GPU + A/B), persistent file. A
   *pluggable family* over the region-occupancy query (generalizes ADR 0003 §S6c's `bound_region_occupied` →
-  `VoxExport::from_region_voxels`). **`.vox` is demoted to one constrained backend** (256³/255-colour limit — tile or
+  `VoxExport::from_region_voxels`). **`.vox` is demoted to one constrained backend** (256³/255-color limit — tile or
   refuse beyond it); it does not shape the architecture.
 - **Query sink** — point/region, exact, CPU, transient. Measurement/diameter readouts and the ADR 0004/0005
   agent-authoring + analysis stack bind here (they were always occupancy *query* consumers, not dense-grid iterators).

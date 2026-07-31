@@ -82,10 +82,10 @@ pub fn build_cuboid_mesh_banded(
     }
 
     // Densify the WHOLE grid into a region anchored on the ACTUAL occupied voxel
-    // cloud rather than assuming it is perfectly centred at `dimensions/2`. The
-    // scene resolve path (`Scene::resolve_region`) can recentre a composite by a
+    // cloud rather than assuming it is perfectly centered at `dimensions/2`. The
+    // scene resolve path (`Scene::resolve_region`) can recenter a composite by a
     // non-zero offset (an odd block size shifts the cloud off the geometric
-    // centre), so densifying with the project-wide `round(world + dimensions/2 -
+    // center), so densifying with the project-wide `round(world + dimensions/2 -
     // 0.5)` convention anchored at index 0 mapped the shifted cloud partly OUT of
     // `[0, dimensions)` and silently dropped voxels — the cuboid cylinder lost
     // ~55% of its voxels this way and rendered a wedge. The instanced path is
@@ -130,7 +130,7 @@ pub fn build_cuboid_mesh_banded(
     // the EXACT location the instanced path draws that voxel, i.e.
     // `min(world_position) - 0.5`. Adding it to a local index `l` gives the box's
     // world corner, so the reference mesh sits pixel-for-pixel on the instanced
-    // voxels even when the scene recentred the cloud off the geometric centre.
+    // voxels even when the scene recentered the cloud off the geometric center.
     //
     // This WHOLE-GRID builder is the per-chunk mesher's structural REFERENCE (the
     // parity test asserts the per-chunk-with-apron exposed-face SET equals this), so
@@ -175,7 +175,7 @@ pub fn build_cuboid_mesh_banded(
 /// demoted to a test helper in 2026-07-18 once this superseded it — this
 /// anchors region-local index 0 at the cloud's own minimum voxel
 /// (`round(world - min_world_center)`). That makes it **shift-invariant**: a
-/// composite recentred off `dimensions/2` (e.g. an odd block size, via
+/// composite recentered off `dimensions/2` (e.g. an odd block size, via
 /// `Scene::resolve_region`) still densifies into the region with no voxel falling
 /// out of bounds — the previous "anchor at 0" densification silently dropped the
 /// voxels whose shifted convention index went negative or past `dimensions` (the
@@ -184,8 +184,8 @@ pub fn build_cuboid_mesh_banded(
 /// The returned `world_offset` is `min(world_position) - 0.5` per axis: adding it
 /// to a region-local index reproduces the EXACT world position the instanced path
 /// draws that voxel at, so the cuboid mesh overlays the instanced one pixel-for-
-/// pixel. For a perfectly centred grid the indices and offset collapse to the old
-/// behaviour (`world_offset = [-w/2, -h/2, -d/2]`).
+/// pixel. For a perfectly centered grid the indices and offset collapse to the old
+/// behavior (`world_offset = [-w/2, -h/2, -d/2]`).
 ///
 /// Two distinct voxels can only collide on the same region index if they already
 /// shared a world position (the grid is a set of distinct cells), so densification
@@ -196,7 +196,7 @@ pub(crate) fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3
         return (VoxelRegion::new_empty([0, 0, 0]), [0.0; 3]);
     }
 
-    // Pass 1: the cloud's minimum voxel centre per axis (the anchor).
+    // Pass 1: the cloud's minimum voxel center per axis (the anchor).
     let mut min_world = [f32::INFINITY; 3];
     for voxel in &grid.occupied {
         let position = voxel.world_position();
@@ -241,7 +241,7 @@ pub(crate) fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3
         );
     }
 
-    // World min-corner plane of region-local index 0 = its centre minus 0.5.
+    // World min-corner plane of region-local index 0 = its center minus 0.5.
     let world_offset = [min_world[0] - 0.5, min_world[1] - 0.5, min_world[2] - 0.5];
     (region, world_offset)
 }
@@ -303,7 +303,7 @@ pub(crate) struct GlobalOccupancy {
 }
 
 /// Build the global occupancy + cloud anchor over all per-chunk grids (issue #20
-/// S6c-2d). The anchor is the union cloud's minimum voxel centre, identical to the
+/// S6c-2d). The anchor is the union cloud's minimum voxel center, identical to the
 /// whole-region path's [`region_from_voxel_cloud`] anchor (the union of the chunk
 /// grids IS the assembled whole grid, voxel-for-voxel, by the S6c-2a seam).
 pub(crate) fn global_occupancy_from_chunks(
@@ -359,18 +359,18 @@ pub(crate) fn global_occupancy_from_chunks(
 /// this plan drives.
 pub struct CuboidRebuildPlan {
     /// Chunk coords to re-mesh + re-upload (occupied, and either changed or a
-    /// neighbour-of-changed).
+    /// neighbor-of-changed).
     pub rebuild: Vec<[i32; 3]>,
     /// Resident chunk coords to drop (no longer occupied — vacated or emptied).
     pub evict: Vec<[i32; 3]>,
 }
 
 /// Decide which chunks an edit forces the cuboid mesher to re-mesh, ACCOUNTING FOR THE
-/// 1-VOXEL APRON: a chunk's boundary faces are culled against its neighbours
-/// ([`build_chunk_meshes_with_apron`]), so a neighbour's occupancy change can alter
+/// 1-VOXEL APRON: a chunk's boundary faces are culled against its neighbors
+/// ([`build_chunk_meshes_with_apron`]), so a neighbor's occupancy change can alter
 /// this chunk's mesh. This is the load-bearing difference from the instanced-era
 /// [`evaluation::store::incremental_rebuild_plan`] (one-instance-per-voxel, no
-/// inter-chunk dependency): here the dirty set is DILATED by the 26-neighbourhood.
+/// inter-chunk dependency): here the dirty set is DILATED by the 26-neighborhood.
 ///
 /// - `resident` — the chunk coords whose state the renderer currently holds (its
 ///   `source_chunk_grids` coords, NOT just the buffered ones, so fully-occluded
@@ -380,9 +380,9 @@ pub struct CuboidRebuildPlan {
 /// - `occupied` — the post-edit covering coords that resolve to a NON-EMPTY grid.
 ///
 /// `seed` = changed-occupancy chunks = `evicted_dirty` ∪ newly-appeared
-/// (`occupied \ resident`). `rebuild` = `seed` dilated by the 26-neighbourhood ∩
-/// `occupied` (only non-empty chunks are meshed; a neighbour that went empty drops out
-/// here and re-exposes its occupied neighbours' faces, which ARE in `rebuild`).
+/// (`occupied \ resident`). `rebuild` = `seed` dilated by the 26-neighborhood ∩
+/// `occupied` (only non-empty chunks are meshed; a neighbor that went empty drops out
+/// here and re-exposes its occupied neighbors' faces, which ARE in `rebuild`).
 /// `evict` = `resident \ occupied`. Applying this plan — re-mesh `rebuild`, drop
 /// `evict`, keep the rest — yields a per-chunk buffer set byte-identical to a wholesale
 /// rebuild (proven by the CPU parity test).
@@ -404,16 +404,16 @@ pub fn cuboid_incremental_plan(
         }
     }
 
-    // Dilate the seed by the 26-neighbourhood (the apron footprint) and keep only
+    // Dilate the seed by the 26-neighborhood (the apron footprint) and keep only
     // occupied coords — those are the chunks whose mesh can have changed.
     let mut rebuild_set: HashSet<[i32; 3]> = HashSet::new();
     for coord in &seed {
         for delta_z in -1..=1 {
             for delta_y in -1..=1 {
                 for delta_x in -1..=1 {
-                    let neighbour = [coord[0] + delta_x, coord[1] + delta_y, coord[2] + delta_z];
-                    if occupied_set.contains(&neighbour) {
-                        rebuild_set.insert(neighbour);
+                    let neighbor = [coord[0] + delta_x, coord[1] + delta_y, coord[2] + delta_z];
+                    if occupied_set.contains(&neighbor) {
+                        rebuild_set.insert(neighbor);
                     }
                 }
             }
@@ -438,7 +438,7 @@ pub fn cuboid_incremental_plan(
 /// Apron-aware per-chunk cuboid meshing (issue #20 S6c-2d), meshed one chunk at a
 /// time instead of densifying + greedy-decomposing the WHOLE region. This dense
 /// (`VoxelGrid`-keyed) path now backs only the shot/test oracle — the live app builds
-/// exclusively through the two-layer analogue in `two_layer.rs`
+/// exclusively through the two-layer analog in `two_layer.rs`
 /// (`new_from_two_layer_chunks`); `CuboidMeshRenderer::new_from_chunks`, which calls
 /// into this function, has no production caller.
 ///
@@ -506,11 +506,11 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
         layer >= band.band_min as i64 && layer <= band.band_max as i64
     };
 
-    // ADR 0018 Decision 5 — region-scoped clip. A global index `gi` sits at recentred
+    // ADR 0018 Decision 5 — region-scoped clip. A global index `gi` sits at recentered
     // voxel coord `gi + world_offset` (both this dense path and the two-layer path emit
-    // that voxel at the same recentred world position; `world_offset` is integer-valued —
-    // `min_world` is a half-integer voxel centre — so the round is exact). The band test
-    // in the recentred frame is `layer = recentred_z + floor(dim_z/2) ∈ [band_min,
+    // that voxel at the same recentered world position; `world_offset` is integer-valued —
+    // `min_world` is a half-integer voxel center — so the round is exact). The band test
+    // in the recentered frame is `layer = recentered_z + floor(dim_z/2) ∈ [band_min,
     // band_max]`, equal to `global_z_in_band(gz)`.
     let half_z_i = (grid_dimensions[2] / 2) as i64;
     let world_offset_int = [
@@ -518,21 +518,21 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
         world_offset[1].round() as i64,
         world_offset[2].round() as i64,
     ];
-    let z_in_band_recentred = |recentred_z: i64| -> bool {
+    let z_in_band_recentered = |recentered_z: i64| -> bool {
         if !band_active {
             return true;
         }
-        let layer = recentred_z + half_z_i;
+        let layer = recentered_z + half_z_i;
         layer >= band.band_min as i64 && layer <= band.band_max as i64
     };
     // Whether the voxel at global index `gi` is meshed (band + optional region clip).
     let voxel_shown = |gi: [i64; 3]| -> bool {
-        let recentred = [
+        let recentered = [
             gi[0] + world_offset_int[0],
             gi[1] + world_offset_int[1],
             gi[2] + world_offset_int[2],
         ];
-        voxel_meshed(recentred, &z_in_band_recentred, region)
+        voxel_meshed(recentered, &z_in_band_recentered, region)
     };
 
     let mut meshes = Vec::new();
@@ -542,7 +542,7 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
         }
         // Incremental subset: skip chunks not in the rebuild set. The apron still sees
         // every chunk (global occupancy above is over the FULL set), so a skipped
-        // neighbour's occupancy correctly culls the meshed chunk's seam faces.
+        // neighbor's occupancy correctly culls the meshed chunk's seam faces.
         if let Some(only) = only {
             if !only.contains(coord) {
                 continue;
@@ -593,7 +593,7 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
 
         // Apron region: same frame; every cell (interior + border) read from the
         // GLOBAL occupancy, BAND-CLIPPED exactly as the interior — so a seam
-        // neighbour that the band masked out reads as air and the cap face is
+        // neighbor that the band masked out reads as air and the cap face is
         // synthesised, identical to whole-region meshing under the same band.
         //
         // The global occupancy is a DENSE row-major region (issue #20 perf), so a

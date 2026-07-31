@@ -178,7 +178,7 @@ mod kani_proofs {
     }
 
     /// **Row isolation.** Setting a run in one row `(row_y, row_z)` leaves every cell of every
-    /// OTHER row clear — the addressing `row = z·edge + y` never spills a run into a neighbour.
+    /// OTHER row clear — the addressing `row = z·edge + y` never spills a run into a neighbor.
     /// (A concrete edge 8 keeps the row-word vector small; the row-index arithmetic is the same
     /// at every edge.)
     #[kani::proof]

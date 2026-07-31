@@ -1,6 +1,6 @@
 //! `move-copy` — the free transform handle.
 //!
-//! Four arrows on two axes through one centre. It draws the HANDLE rather than a moved shape,
+//! Four arrows on two axes through one center. It draws the HANDLE rather than a moved shape,
 //! because the tool works on whatever is selected and a glyph that showed a specific shape would
 //! be naming a thing the tool has no opinion about.
 

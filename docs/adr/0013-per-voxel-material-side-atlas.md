@@ -70,7 +70,7 @@ brick back to byte-per-voxel.
 ## Consequences
 
 - VRAM: a mixed brick pays `2 × edge³` bytes (d=16: 8 KB) *in addition to* its occupancy slot; uniform
-  bricks pay nothing new. The untested VRAM-ceiling behaviour (slow-paths item 3) now covers two pools —
+  bricks pay nothing new. The untested VRAM-ceiling behavior (slow-paths item 3) now covers two pools —
   the planned graceful-degradation test must exercise both.
 - The parked mesh-path ghost top-cap seam (#17) becomes unreachable outside non-gpu builds, as does the
   1–2-frame blank on the non-representable display handover; both retire with the gate.

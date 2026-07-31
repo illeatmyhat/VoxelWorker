@@ -10,8 +10,8 @@ use voxel_worker::{
 /// jitter-free). A large block offset, resolved through the now-`i64` voxel offset
 /// (widened in S4a). At
 /// density 16 this is **16 million voxels** from the origin — past the f32
-/// exact-integer ceiling (2²⁴ ≈ 16.7M), where the old recentre-AFTER-f32-add path
-/// lost the voxel-centre `.5` fraction on EVERY voxel (the real precision breakdown
+/// exact-integer ceiling (2²⁴ ≈ 16.7M), where the old recenter-AFTER-f32-add path
+/// lost the voxel-center `.5` fraction on EVERY voxel (the real precision breakdown
 /// the S1 flag exists to expose). The S4b camera-relative rebase (subtract the
 /// floating origin in i64 BEFORE the f32 downcast) renders this byte-identical to the
 /// near box. (At the previous 100_000 the f32 ULP at 1.6M is 0.125, so `.5` survived
@@ -25,7 +25,7 @@ pub(crate) const FAR_OFFSET_BLOCKS: [i64; 3] = [1_000_000, 0, 0];
 /// two HORIZONTAL axes are X (index 0) and Y (index 1), and the VERTICAL axis is Z
 /// (index 2) — so the far horizontal offset goes on X and Y and the vertical Z stays at
 /// 0. At density 16 this sits 160,000 voxels from the origin per horizontal axis, where
-/// an absolute f32 voxel centre has barely a fractional bit left (the precision loss the
+/// an absolute f32 voxel center has barely a fractional bit left (the precision loss the
 /// §3a chunk-local-integer payload exists to remove). The composite SPAN stays small (a
 /// ~20-block row of houses), so only the OFFSET is far — the resolved grid is the same
 /// size as the near `--demo-village`.
@@ -217,7 +217,7 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> DemoScene {
 /// Build the `--demo-cylinder-subtract` (ADR 0032 selection feedback): a solid Stone box
 /// DRILLED by a Subtract cylinder standing through its top face — a blind bore. The bore
 /// mouth is a CIRCLE on the top face: the curved junction the selection cel must trace
-/// (no straight catalogue edge could stand in for it), while the cylinder's own rim
+/// (no straight catalog edge could stand in for it), while the cylinder's own rim
 /// circles sit above the box, off the composed surface.
 ///
 /// [`CombineOp::Subtract`]: voxel_worker::CombineOp
@@ -660,7 +660,7 @@ pub(crate) fn build_demo_village(voxels_per_block: u32) -> DemoScene {
 /// instanced village as [`build_demo_village`], but with its whole composite shifted
 /// to [`FAR_SCENE_BASE_BLOCKS`] (~XZ 10,000 blocks, vertical bounded). The composite
 /// SPAN is unchanged (the row of four houses), so only the OFFSET is far — the
-/// resolved grid is the same size as the near village, but every absolute voxel centre
+/// resolved grid is the same size as the near village, but every absolute voxel center
 /// now lives ~160k voxels out, where the f32 payload is lossy. The render is still
 /// crisp today because the resolve rebases to the composite floating-origin in i64
 /// before the f32 downcast (S4b); this golden is the baseline the §3a chunk-local
@@ -688,7 +688,7 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
     // instance + group transforms). The body is kept small (2 blocks) so that four
     // instances stay well under the renderer's drawn-instance cap and all four draw.
     // Four instances of the SAME definition in a straight row, 8 blocks apart in X
-    // (a 4-block house → 4-block gap between neighbours). A row (not a 2×2 grid, in
+    // (a 4-block house → 4-block gap between neighbors). A row (not a 2×2 grid, in
     // which diagonal pairs self-occlude from an isometric angle) keeps all four
     // houses non-overlapping in screen space when viewed perpendicular to the row,
     // so the headless PNG unambiguously shows the repeated assembly at four
@@ -740,7 +740,7 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
 /// The profile is an L: a `4×4`-block square with its top-right `2×2`-block
 /// quadrant removed (a reflex vertex), at the document density `d`, extruded
 /// `3` blocks (`3·d` voxels) along +Z (Z-up: "up"). The whole footprint is a whole
-/// multiple of blocks so it sits cleanly on the lattice in the recentred render frame.
+/// multiple of blocks so it sits cleanly on the lattice in the recentered render frame.
 /// Build the `--demo-sketch-box <edge_voxels>` fixture: a solid cube of `edge_voxels`
 /// per axis, produced through the SKETCH EXTRUDE path — a square profile of
 /// `edge_voxels` per side extruded `edge_voxels` along +Z. Used to exercise the
@@ -808,7 +808,7 @@ pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> DemoScene {
 /// cross-section). The profile coords `(c0, c1) = (radial, axial)`, so each vertex is
 /// `(radius, height)` in voxels. The silhouette: a wide foot, a pinched waist, and a
 /// flared lip — a stepped vase. All extents are whole blocks so the body sits cleanly
-/// on the lattice in the recentred render frame.
+/// on the lattice in the recentered render frame.
 pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
     let block = voxels_per_block.max(1) as i64;
     // Radial profile (radius, height) in voxels, walked up one side of the silhouette
@@ -818,14 +818,14 @@ pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
     let radial = |blocks: i64| blocks * block;
     let axial = |blocks: i64| blocks * block;
     let profile = vec![
-        SketchPoint::new(0, axial(0)),         // bottom centre, on the axis
+        SketchPoint::new(0, axial(0)),         // bottom center, on the axis
         SketchPoint::new(radial(4), axial(0)), // foot outer edge
         SketchPoint::new(radial(4), axial(1)), // foot top
         SketchPoint::new(radial(2), axial(3)), // pinch in to the waist
         SketchPoint::new(radial(2), axial(5)), // waist
         SketchPoint::new(radial(4), axial(6)), // flare out to the shoulder
         SketchPoint::new(radial(3), axial(8)), // lip
-        SketchPoint::new(0, axial(8)),         // top centre, back on the axis
+        SketchPoint::new(0, axial(8)),         // top center, back on the axis
     ];
     let producer = SketchSolid::revolve(
         Sketch::new(PlaneAxis::X, profile),
@@ -922,7 +922,7 @@ pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
     let block = voxels_per_block.max(1) as i64;
     let radius = 4 * block;
     let mut sketch = Sketch::empty(PlaneAxis::Z);
-    // Centres 1.5 radii apart, so the lens is a substantial third of the drawing.
+    // Centers 1.5 radii apart, so the lens is a substantial third of the drawing.
     sketch.add_circle(SketchPoint::new(0, 0), SketchLength::new(radius));
     sketch.add_circle(
         SketchPoint::new(radius + radius / 2, 0),
@@ -1032,11 +1032,11 @@ pub(crate) fn build_demo_groups(voxels_per_block: u32) -> DemoScene {
 /// At density 16 the far placement sits 1.6M voxels from the origin in ABSOLUTE
 /// composite space — which the CPU placement test in `scene.rs` asserts directly.
 ///
-/// IMPORTANT (today's render math): `Scene::resolve_region` recentres the
-/// composite on its OWN centre, so a lone far box is recentred straight back to
+/// IMPORTANT (today's render math): `Scene::resolve_region` recenters the
+/// composite on its OWN center, so a lone far box is recentered straight back to
 /// the origin before rendering. The far and near renders therefore look identical
 /// today — f32 jitter from the large offset cannot show up in the live render
-/// until S4 removes the recentre / adds origin-rebasing. This flag exists to be
+/// until S4 removes the recenter / adds origin-rebasing. This flag exists to be
 /// the visual regression target for S4 (it must STAY jitter-free once S4 lands).
 pub(crate) fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
     let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);

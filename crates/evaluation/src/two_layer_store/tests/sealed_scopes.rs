@@ -31,7 +31,7 @@ fn box_tool(
 
 /// THE GATE for the sealed-scope slice (issue #74 acceptance): the two-layer
 /// classification + boundary resolve for scoped scenes is occupancy-IDENTICAL to
-/// the dense brute-force oracle, across the scope shapes the resolver must honour:
+/// the dense brute-force oracle, across the scope shapes the resolver must honor:
 /// a cutter sealed inside a group (with an overlapping outside bystander), a root
 /// cutter carving a group's composed body, nested scopes, a definition's internal
 /// cutter under multiple instances, and a whole group placed under Subtract.

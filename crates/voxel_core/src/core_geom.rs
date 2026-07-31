@@ -50,7 +50,7 @@ pub fn local_voxel_index_fits(absolute_voxel_index: i64) -> bool {
 }
 
 /// Bounded model checking of the frame-rebase cast (ADR 0008): the expansion rebases a
-/// chunk-local voxel into the recentred frame in `i64`, then stamps it into an `i32`
+/// chunk-local voxel into the recentered frame in `i64`, then stamps it into an `i32`
 /// `local_index` with an unchecked `as`. These harnesses establish exactly where that is
 /// lossless and exactly where it stops being so.
 ///
@@ -65,10 +65,10 @@ mod kani_proofs {
     use super::*;
 
     /// The expansion's rebase arithmetic, verbatim from
-    /// `two_layer_store::chunk::stamped_voxel` + `stream::stream_chunk_recentred`:
-    /// `index_offset = chunk_coord·chunk_extent − recentre`, then `chunk_local + offset`.
-    fn rebased_index(chunk_coord: i64, density: i64, recentre: i64, chunk_local: i64) -> i64 {
-        chunk_local + (chunk_coord * (CHUNK_BLOCKS as i64 * density) - recentre)
+    /// `two_layer_store::chunk::stamped_voxel` + `stream::stream_chunk_recentered`:
+    /// `index_offset = chunk_coord·chunk_extent − recenter`, then `chunk_local + offset`.
+    fn rebased_index(chunk_coord: i64, density: i64, recenter: i64, chunk_local: i64) -> i64 {
+        chunk_local + (chunk_coord * (CHUNK_BLOCKS as i64 * density) - recenter)
     }
 
     /// **Within the envelope the cast is LOSSLESS.** If the rebased index satisfies
@@ -105,8 +105,8 @@ mod kani_proofs {
     }
 
     /// The same soundness statement over the PRODUCTION arithmetic rather than an abstract
-    /// index: the chunk rebase `chunk_local + (chunk_coord·chunk_extent − recentre)` that
-    /// `stream_chunk_recentred` + `stamped_voxel` actually perform is lossless whenever its
+    /// index: the chunk rebase `chunk_local + (chunk_coord·chunk_extent − recenter)` that
+    /// `stream_chunk_recentered` + `stamped_voxel` actually perform is lossless whenever its
     /// result is in the envelope, and — the part worth checking — the `i64` it computes in
     /// cannot itself overflow for any chunk coordinate `narrow_chunk_coord` can produce.
     #[kani::proof]
@@ -117,15 +117,15 @@ mod kani_proofs {
         // A chunk-local voxel index, bounded by one chunk's extent.
         let chunk_local: i64 = kani::any();
         kani::assume(chunk_local >= 0 && chunk_local < CHUNK_BLOCKS as i64 * density as i64);
-        // The recentre is a raw carried `i64`; bound it to the same scale the chunk term can
-        // reach, which is what any minted recentre satisfies (it is a composite extent
+        // The recenter is a raw carried `i64`; bound it to the same scale the chunk term can
+        // reach, which is what any minted recenter satisfies (it is a composite extent
         // midpoint, not an arbitrary word).
-        let recentre: i64 = kani::any();
-        kani::assume(recentre > -(1i64 << 48) && recentre < (1i64 << 48));
+        let recenter: i64 = kani::any();
+        kani::assume(recenter > -(1i64 << 48) && recenter < (1i64 << 48));
 
         // No `i64` overflow anywhere in the rebase: the chunk term is at most
-        // 2^31 · (4 · 64) = 2^39, and the recentre is bounded to 2^48.
-        let rebased = rebased_index(chunk_coord as i64, density as i64, recentre, chunk_local);
+        // 2^31 · (4 · 64) = 2^39, and the recenter is bounded to 2^48.
+        let rebased = rebased_index(chunk_coord as i64, density as i64, recenter, chunk_local);
 
         // Within the envelope, the stamp the expansion performs is exact.
         if local_voxel_index_fits(rebased) {
@@ -214,13 +214,13 @@ pub enum MaterialChoice {
 
 impl MaterialChoice {
     /// The number of distinct procedural materials (Stone/Wood/Plain). The
-    /// renderer's per-voxel base-colour uniform array is sized to this, and a
+    /// renderer's per-voxel base-color uniform array is sized to this, and a
     /// `material_id` is always `< MATERIAL_COUNT`.
     pub const MATERIAL_COUNT: usize = 3;
 
     /// The per-voxel `material_id` this choice stamps onto its voxels (ADR 0001
     /// step 3 "Materials"). Stable, dense (`0..MATERIAL_COUNT`), so it indexes both
-    /// the renderer's base-colour uniform array and the procedural-texture table.
+    /// the renderer's base-color uniform array and the procedural-texture table.
     /// Stone = 0, Wood = 1, Plain = 2.
     pub fn material_id(self) -> u16 {
         match self {
@@ -255,7 +255,7 @@ impl MaterialChoice {
 /// This replaces the old 3-value `material_id` enum jammed into a `u16` (with a render
 /// flag in its high bit). It is an OPAQUE palette index that rides through the store,
 /// the chunk-storage codec and meshing; the active block palette (`block_palette`)
-/// maps it to a colour / texture, and `.vox` export maps it
+/// maps it to a color / texture, and `.vox` export maps it
 /// through that same palette. The three procedural materials occupy ids `0..3`
 /// (Stone/Wood/Plain), so existing scenes resolve byte-identically; the rich VS palette
 /// CONTENT (hundreds of named blocks) is the deferred part — this is only the
@@ -270,9 +270,9 @@ impl BlockId {
     /// `material_id: 0` default — Stone in the procedural palette).
     pub const DEFAULT: BlockId = BlockId(0);
 
-    /// The colour / atlas index the renderer + `.vox` export use for this id. Today the
+    /// The color / atlas index the renderer + `.vox` export use for this id. Today the
     /// palette is the three procedural materials, so the index IS the id; a clamp keeps
-    /// it inside the shader's `[0, MATERIAL_COUNT)` colour range for any stray id.
+    /// it inside the shader's `[0, MATERIAL_COUNT)` color range for any stray id.
     pub fn color_index(self) -> u16 {
         self.0
     }
@@ -346,7 +346,7 @@ impl CellKey {
 /// Typed per-`block_id` attributes (ADR 0003 §3a-bis).
 ///
 /// **Minimal forward-compat placeholder.** ADR 0003 §3a-bis pins `BlockAttrs` as a typed
-/// schema (orientation in the order-48 group + variant flags + neighbour-connection
+/// schema (orientation in the order-48 group + variant flags + neighbor-connection
 /// bits) so a rotated stateful block re-composes its facing and VS schematic export is
 /// not lossy. That whole schema — and the connection-resolve pass and block-entity
 /// side-table — is **explicitly out of scope** for this slice (it is ADR 0003 §3a-bis /

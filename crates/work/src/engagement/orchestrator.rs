@@ -35,7 +35,7 @@ use display::mesh::CuboidMeshRenderer;
 use display::renderer::{LayerBand, RegionClip};
 use document::scene::Scene;
 use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 // Consumed by the GPU display-install paths (alongside the CPU brick mirror the
 // orchestrator maintains for every chunkable scene).
 use crate::engagement::routing::{
@@ -60,9 +60,9 @@ pub struct DisplayRefreshContext<'a> {
     pub density: u32,
     /// The last rebuild's region dimensions (voxels) — the mesh's frame parameters.
     pub region_dimensions: [u32; 3],
-    /// The last rebuild's composite recentre (floating origin, voxels), carried as the
-    /// frame value [`RecentreVoxels`].
-    pub recentre_voxels: RecentreVoxels,
+    /// The last rebuild's composite recenter (floating origin, voxels), carried as the
+    /// frame value [`RecenterVoxels`].
+    pub recenter_voxels: RecenterVoxels,
     /// The effective layer-clip band the render path will apply this frame (so a stale-mesh
     /// rebuild builds already clipped to it — no swap-frame re-mesh).
     pub band: LayerBand,
@@ -84,7 +84,7 @@ pub struct DisplayOrchestrator {
     device: wgpu::Device,
     /// A clone of the wgpu queue (same `Arc`-backed clone contract as `device`).
     queue: wgpu::Queue,
-    /// The colour target format the renderers build against (the shared sRGB surface format,
+    /// The color target format the renderers build against (the shared sRGB surface format,
     /// so the live window and the headless capture stay pixel-identical).
     color_format: wgpu::TextureFormat,
     /// The cuboid mesh renderer — the sole voxel render path (part of #20; the legacy
@@ -160,7 +160,7 @@ pub struct DisplayOrchestrator {
     /// accepted/installed). While `true` the resident `incremental_brick_field` mirror and
     /// the renderer's live field are STALE (S0 while the worker builds S1), so an
     /// incremental edit must NOT patch them — [`route_brick_rebuild`] sends every edit to
-    /// a fresh wholesale dispatch instead (the brick analogue of the C1 interlock).
+    /// a fresh wholesale dispatch instead (the brick analog of the C1 interlock).
     /// Cleared when `poll_brick_worker` accepts a result, or when an inline wholesale
     /// build supersedes the in-flight one.
     brick_async_outstanding: bool,
@@ -183,7 +183,7 @@ impl DisplayOrchestrator {
         color_format: wgpu::TextureFormat,
         two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
         region_dimensions: [u32; 3],
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
         density: u32,
         debug_face_orientation: bool,
     ) -> Self {
@@ -220,7 +220,7 @@ impl DisplayOrchestrator {
                     &mut brick_async_outstanding,
                     two_layer_chunks.to_vec(),
                     density,
-                    recentre_voxels,
+                    recenter_voxels,
                 );
                 println!(
                     "brick raymarch: startup field building async ({} covering chunks)",
@@ -235,13 +235,13 @@ impl DisplayOrchestrator {
                 // installs nothing and lets the cuboid mesh take over, exactly as before.
                 let startup_request = BrickRebuildRequest {
                     // Not dispatched to the worker and never superseded, so the generation and
-                    // recentre the request carries are unread by `build_brick_rebuild` (the
-                    // install below uses the local `recentre_voxels`). A zero generation keeps
+                    // recenter the request carries are unread by `build_brick_rebuild` (the
+                    // install below uses the local `recenter_voxels`). A zero generation keeps
                     // `brick_generation` untouched — the inline path never consumed one.
                     generation: 0,
                     two_layer_chunks: two_layer_chunks.to_vec(),
                     density,
-                    recentre_voxels,
+                    recenter_voxels,
                     build_display_artifacts: true,
                 };
                 if let BrickRebuildOutcome::Display(install) =
@@ -266,7 +266,7 @@ impl DisplayOrchestrator {
                         &cell_key_atlas,
                         &gpu_records,
                         &pyramid,
-                        recentre_voxels,
+                        recenter_voxels,
                     );
                     println!(
                         "brick raymarch: startup field installed ({} records, {} sculpted)",
@@ -311,7 +311,7 @@ impl DisplayOrchestrator {
                 two_layer_chunks
             },
             region_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             density,
         );
 
@@ -352,7 +352,7 @@ impl DisplayOrchestrator {
     /// raymarch shades solid hits per-face from the block's 6-layer D2Array by the SAME rule
     /// the merged mesh uses (`face_layer` + per-face UV + `fract`), with zero per-brick data.
     /// With the representability gate deleted (material atlas), the mesh is the fallback ONLY for
-    /// debug-face mode (it needs the mesh's per-vertex face colours) and for machines/scenes with
+    /// debug-face mode (it needs the mesh's per-vertex face colors) and for machines/scenes with
     /// no live brick field — every non-empty scene otherwise engages the brick display.
     fn brick_display_engaged_predicate(
         has_live_brick_field: bool,
@@ -421,7 +421,7 @@ impl DisplayOrchestrator {
         self.complete_brick_display_handover();
     }
 
-    /// The brick-install seam — the brick analogue of [`Self::finish_mesh_install`].
+    /// The brick-install seam — the brick analog of [`Self::finish_mesh_install`].
     /// EVERY path that makes the resident brick state (mirror + field) reflect the
     /// latest resolve funnels through here: bump the generation so a superseded
     /// in-flight worker result is discarded on arrival (this is what makes the
@@ -444,7 +444,7 @@ impl DisplayOrchestrator {
         brick_async_outstanding: &mut bool,
         two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
         density: u32,
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
     ) {
         let generation = brick_generation.next_generation();
         *brick_async_outstanding = true;
@@ -452,7 +452,7 @@ impl DisplayOrchestrator {
             generation,
             two_layer_chunks,
             density,
-            recentre_voxels,
+            recenter_voxels,
             // The display artifacts (classify + pyramid + GPU record pack) are consumed
             // by the raymarch display, matching the synchronous path.
             build_display_artifacts: true,
@@ -462,7 +462,7 @@ impl DisplayOrchestrator {
     /// Dispatch a WHOLESALE cuboid-mesh rebuild to the async geometry worker: mint the next
     /// generation, mark the build OUTSTANDING (the C1 interlock — every edit routes wholesale
     /// until the result installs), and send the owned covering set + frame params. The mesh
-    /// analogue of [`Self::dispatch_wholesale_brick_rebuild`], shared by [`Self::rebuild`]'s
+    /// analog of [`Self::dispatch_wholesale_brick_rebuild`], shared by [`Self::rebuild`]'s
     /// WholesaleAsync arm and [`Self::rebuild_stale_display_mesh`]. The generation is minted
     /// BEFORE the outstanding flag is set BEFORE the dispatch — the C1 interlock depends on
     /// that exact ordering.
@@ -470,7 +470,7 @@ impl DisplayOrchestrator {
         &mut self,
         two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
         grid_dimensions: [u32; 3],
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
         density: u32,
         band: LayerBand,
         region: Option<RegionClip>,
@@ -481,7 +481,7 @@ impl DisplayOrchestrator {
             generation,
             two_layer_chunks,
             grid_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             density,
             band,
             region,
@@ -501,7 +501,7 @@ impl DisplayOrchestrator {
         incremental_dirty_chunks: Option<Vec<[i32; 3]>>,
         chunkable: bool,
         grid_dimensions: [u32; 3],
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
         density: u32,
         band: LayerBand,
         region: Option<RegionClip>,
@@ -571,7 +571,7 @@ impl DisplayOrchestrator {
                     // O(chunks) Arc bumps — the mesh route below may MOVE the vec.
                     two_layer_chunks.clone(),
                     density,
-                    recentre_voxels,
+                    recenter_voxels,
                 );
                 // The mesh-skip decision reads "is the brick the display this rebuild"; while
                 // the build is in flight that is a PREDICTION, and we predict ENGAGED: the
@@ -703,7 +703,7 @@ impl DisplayOrchestrator {
                                 update,
                                 &gpu_records,
                                 &pyramid,
-                                recentre_voxels,
+                                recenter_voxels,
                             );
                         } else {
                             // Wholesale install: the upload payload was moved out of the
@@ -729,7 +729,7 @@ impl DisplayOrchestrator {
                                 &cell_key_atlas,
                                 &gpu_records,
                                 &pyramid,
-                                recentre_voxels,
+                                recenter_voxels,
                             );
                         }
                         brick_display_installed = true;
@@ -810,7 +810,7 @@ impl DisplayOrchestrator {
                         &self.device,
                         &two_layer_chunks,
                         grid_dimensions,
-                        recentre_voxels,
+                        recenter_voxels,
                         density,
                         &dirty,
                     );
@@ -832,7 +832,7 @@ impl DisplayOrchestrator {
                 self.dispatch_wholesale_mesh_rebuild(
                     two_layer_chunks,
                     grid_dimensions,
-                    recentre_voxels,
+                    recenter_voxels,
                     density,
                     band,
                     region,
@@ -857,7 +857,7 @@ impl DisplayOrchestrator {
                     self.color_format,
                     &two_layer_chunks,
                     grid_dimensions,
-                    recentre_voxels,
+                    recenter_voxels,
                     density,
                     band,
                     region,
@@ -1002,7 +1002,7 @@ impl DisplayOrchestrator {
                         &cell_key_atlas,
                         &gpu_records,
                         &pyramid,
-                        result.recentre_voxels,
+                        result.recenter_voxels,
                     );
                     println!(
                         "brick: async wholesale field installed ({} records, {} sculpted)",
@@ -1075,13 +1075,13 @@ impl DisplayOrchestrator {
         // The mesh is about to be the display but is stale — rebuild it wholesale from the
         // RESIDENT two-layer cache (scene unchanged ⇒ the same set the last resolve produced,
         // handed out as O(chunks) Arc bumps). Route like any wholesale edit: small inline, large
-        // async. The frame parameters come from the last rebuild's stored recentre + region.
+        // async. The frame parameters come from the last rebuild's stored recenter + region.
         let density = context.density;
         let chunks = context
             .two_layer_cache
             .resident_two_layer_chunks(context.scene, density, 0);
         let grid_dimensions = context.region_dimensions;
-        let recentre = context.recentre_voxels;
+        let recenter = context.recenter_voxels;
         let band = context.band;
         let region = context.region;
         if chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD {
@@ -1092,7 +1092,7 @@ impl DisplayOrchestrator {
             self.dispatch_wholesale_mesh_rebuild(
                 chunks,
                 grid_dimensions,
-                recentre,
+                recenter,
                 density,
                 band,
                 region,
@@ -1109,7 +1109,7 @@ impl DisplayOrchestrator {
                 self.color_format,
                 &chunks,
                 grid_dimensions,
-                recentre,
+                recenter,
                 density,
                 band,
                 region,

@@ -70,7 +70,7 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
     let build = build_brick_field(&two_layer_chunks, vpb);
     assert!(!build.brick_records.is_empty(), "empty brick field");
 
-    let recentre = scene.recentre_voxels_for_resolve(vpb);
+    let recenter = scene.recenter_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
     eprintln!(
         "grid_dimensions = {grid_dimensions:?}, records = {}",
@@ -103,7 +103,7 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
         &build.atlas_payload(),
         &gpu_records,
         &pyramid,
-        recentre,
+        recenter,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,

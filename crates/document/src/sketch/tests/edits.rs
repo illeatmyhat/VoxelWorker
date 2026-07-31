@@ -84,7 +84,7 @@ fn split_of_an_unknown_segment_is_a_noop() {
 #[test]
 fn delete_removes_the_point_and_cascades_only_its_segments() {
     // ADR 0030 §6: deleting the point at [6, 5] removes it and its TWO incident segments — and
-    // nothing else. The two neighbours survive as free points, so the loop opens and resolves to
+    // nothing else. The two neighbors survive as free points, so the loop opens and resolves to
     // nothing (flattened_loop is empty for an open graph, never a phantom polygon).
     let before = bracket();
     let victim = point_id_at(&before, [6, 5]);

@@ -48,7 +48,7 @@ struct GridUniforms {
     u_axis: vec4<f32>,
     v_axis: vec4<f32>,
     normal_axis: vec4<f32>,
-    // Line colour (linear RGB) in .xyz; .w = voxel spacing (always 1.0, kept for
+    // Line color (linear RGB) in .xyz; .w = voxel spacing (always 1.0, kept for
     // clarity / future tuning).
     line_color: vec4<f32>,
     // Grid tuning: x = block spacing (= density, voxels per block), y = minor (per
@@ -82,7 +82,7 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
     return out;
 }
 
-// Unproject an NDC point (z in [0,1]) to the EYE-RELATIVE frame (recentred frame
+// Unproject an NDC point (z in [0,1]) to the EYE-RELATIVE frame (recentered frame
 // translated by −eye — small coordinates, so the /w divide keeps its precision).
 fn unproject(ndc: vec3<f32>) -> vec3<f32> {
     let eye_relative = grid.ray_inverse_unprojection * vec4<f32>(ndc, 1.0);
@@ -117,7 +117,7 @@ fn grid_coverage(coord: vec2<f32>, spacing: f32, line_pixels: f32) -> vec2<f32> 
     // KEY anti-saturation step: as cells approach sub-pixel (derivative → large), the
     // line can no longer be resolved; fade each axis' coverage toward its DUTY CYCLE
     // (2*half_width, the fraction of the cell the line covers) rather than letting it
-    // clamp to 1 everywhere. This keeps the average grey constant instead of solid.
+    // clamp to 1 everywhere. This keeps the average gray constant instead of solid.
     line2 = mix(line2, clamp(half_width * 2.0, vec2<f32>(0.0), vec2<f32>(1.0)), clamp(derivative - 1.0, vec2<f32>(0.0), vec2<f32>(1.0)));
     // Combine the two axes the pristine-grid way: a + b - a*b (a pixel on EITHER line
     // is lit), which avoids the over-bright corner of a naive max.
@@ -131,7 +131,7 @@ fn grid_coverage(coord: vec2<f32>, spacing: f32, line_pixels: f32) -> vec2<f32> 
     // This is the core of the ortho moiré fix: under orthographic the world scale is
     // UNIFORM across the screen (no foreshortening), so when zoomed out EVERY pixel's
     // cells are equally sub-pixel — there is no near band where the lines resolve.
-    // A duty-cycle "keep the average grey" trick then paints a constant sheet that
+    // A duty-cycle "keep the average gray" trick then paints a constant sheet that
     // the `fract` sampling turns into a beat/moiré pattern. Driving the tier hard to
     // zero once it is sub-pixel dissolves it cleanly instead (perspective is
     // unaffected: its near cells are many px and keep lod≈1).
@@ -140,7 +140,7 @@ fn grid_coverage(coord: vec2<f32>, spacing: f32, line_pixels: f32) -> vec2<f32> 
     // Issue #91 (item 4) set the base window to 3→7 px. `lod_fade_scale` (params.w) scales both
     // ends per projection: 1.0 under ORTHO (its fade is a zoom dissolve and this cutoff IS the
     // moiré guard above — never loosen it), 0.5 under PERSPECTIVE, which pushes each tier's fade
-    // ~2× further out. Widening this alone only adds sub-pixel grey; it pays off in company with
+    // ~2× further out. Widening this alone only adds sub-pixel gray; it pays off in company with
     // the sub-block tier below, which is coarse enough to still resolve out there. Guarded so a
     // zero window can't make smoothstep divide by zero.
     let lod_fade_scale = max(grid.params.w, 1e-3);
@@ -239,7 +239,7 @@ fn fragment_main(input: VsOut) -> FsOut {
     // Quarter-block tier: without it the ladder jumps straight from the voxel tier to the block
     // tier, so the moment voxels go sub-pixel the line density drops by a whole `density` in one
     // step — the "grid gave up too early" cliff. Being 4× coarser than a voxel it stays RESOLVABLE
-    // ~4× further out (real lines, unlike widening the LOD window, which only adds sub-pixel grey).
+    // ~4× further out (real lines, unlike widening the LOD window, which only adds sub-pixel gray).
     // `coarse / sub_block` is 32 for ANY density, so the divides-the-coarsest invariant the CPU's
     // plane-origin slide relies on holds; the clamp keeps it >= 1 voxel at density <= 4, where it
     // simply coincides with the voxel tier.

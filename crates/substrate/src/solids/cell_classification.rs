@@ -1,4 +1,4 @@
-//! The **black / white / grey cell classification** of the octree-CSG literature: given an
+//! The **black / white / gray cell classification** of the octree-CSG literature: given an
 //! ordered sequence of per-operation conservative field intervals over one cell (each tagged with
 //! the CSG role by which it combines into the running result), fold them into a single conservative
 //! interval under CSG interval arithmetic, then classify that interval against an occupancy
@@ -10,7 +10,7 @@
 //! plus a [`CellCombineOp`]. Its output is the three-way [`FieldClassification`] of
 //! [`FieldInterval::classify`], or `None` when the cell **cannot be classified coarsely** — because
 //! some operation was unboundable, or because the contribution list was empty. A caller that gets
-//! `None` (or the `Boundary`/grey verdict) must resolve the cell by exact per-sample evaluation;
+//! `None` (or the `Boundary`/gray verdict) must resolve the cell by exact per-sample evaluation;
 //! both are the always-safe fallback.
 //!
 //! ## The fold
@@ -37,7 +37,7 @@
 //! Because every operand interval is conservative (never narrower than the operation's true range
 //! over the cell) and each CSG interval extension preserves that inclusion property, the folded
 //! interval is itself conservative. An "empty" or "full" verdict therefore can **never** disagree
-//! with a per-sample evaluation of the same cell; only the always-safe "partial" (grey) verdict —
+//! with a per-sample evaluation of the same cell; only the always-safe "partial" (gray) verdict —
 //! or the `None` cannot-classify — is reported where a per-sample pass might have decided. That
 //! one-sided soundness is what lets a caller elide the interior of a solid and the exterior of a
 //! void while remaining bit-exact against brute force.
@@ -48,10 +48,10 @@
 //! and recursive subdivision for implicit functions and constructive solid geometry* (SIGGRAPH) —
 //! the direct ancestor: fold a CSG tree's per-primitive interval bounds over a cell, then decide the
 //! cell against the surface. The three-way *empty / full / partial* verdict is the **black / white /
-//! grey** node classification of the region-octree literature (**Samet 2006**, *Foundations of
+//! gray** node classification of the region-octree literature (**Samet 2006**, *Foundations of
 //! Multidimensional and Metric Data Structures*, ch. 2 — a node is white/empty, black/full, or
-//! grey/mixed). A voxel domain's *air / coarse-solid / boundary* trichotomy **is** exactly this
-//! black/white/grey classification; the mapping to [`FieldClassification`]'s `Air` / `CoarseSolid` /
+//! gray/mixed). A voxel domain's *air / coarse-solid / boundary* trichotomy **is** exactly this
+//! black/white/gray classification; the mapping to [`FieldClassification`]'s `Air` / `CoarseSolid` /
 //! `Boundary` lives in the shared [`FieldInterval::classify`] verdict this kernel returns.
 
 use crate::interval::field_interval::{FieldClassification, FieldInterval};
@@ -98,7 +98,7 @@ impl CellContribution {
     }
 }
 
-/// The black/white/grey cell classifier — a namespace for the [`CellClassification::classify`] fold.
+/// The black/white/gray cell classifier — a namespace for the [`CellClassification::classify`] fold.
 /// Zero-sized: it carries no state, only the algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellClassification;
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn straddle_is_partial() {
-        // A single operand crossing the isolevel ⇒ the cell straddles the surface (Boundary/grey).
+        // A single operand crossing the isolevel ⇒ the cell straddles the surface (Boundary/gray).
         let verdict = CellClassification::classify([union(-1.0, 1.0)], 0.0);
         assert_eq!(verdict, Some(FieldClassification::Boundary));
     }

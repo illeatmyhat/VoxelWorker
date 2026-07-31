@@ -23,7 +23,7 @@ pub(super) const DRAW: &[Mark] = &[
         points: &[(8.5, 13.0), (15.5, 13.0)],
         ink: Ink::SOLID,
     },
-    // Centre is RADIUS in from both legs, so the arc meets each along its tangent.
+    // Center is RADIUS in from both legs, so the arc meets each along its tangent.
     Mark::Arc {
         center: (8.0, 8.0),
         rx: RADIUS,

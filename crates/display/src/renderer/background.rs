@@ -1,7 +1,7 @@
 //! Viewport background gradient (issue #91, item 1; `docs/design/viewport-chrome-signal.md`).
 //!
 //! A dependency-free fullscreen pass that paints the Signal "field" — a cool near-black
-//! radial gradient biased above-left of centre — as the viewport's background. It draws
+//! radial gradient biased above-left of center — as the viewport's background. It draws
 //! FIRST in the shared 3D MSAA pass (before the voxels, depth-test off), so both display
 //! paths (cuboid mesh + brick raymarch) and the headless `shot` composite the scene over
 //! an identical background. See `shaders/background_gradient.wgsl` for the stops + the
@@ -16,7 +16,7 @@ pub struct BackgroundGradientRenderer {
 }
 
 impl BackgroundGradientRenderer {
-    /// Build the background-gradient renderer for a colour target format. The pipeline is
+    /// Build the background-gradient renderer for a color target format. The pipeline is
     /// 4× MSAA (it draws inside the shared 3D MSAA pass) and does not touch depth.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

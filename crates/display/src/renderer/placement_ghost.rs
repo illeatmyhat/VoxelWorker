@@ -1,6 +1,6 @@
 //! The placement ghost renderer (ADR 0022): a translucent analytic SDF drawn where an
 //! armed primitive's voxels WILL land — "nothing recomposes during the gesture, render a
-//! coloured transparent SDF where the voxels will be".
+//! colored transparent SDF where the voxels will be".
 //!
 //! A fullscreen sphere-trace of the parametric field (the `InfiniteGridRenderer`
 //! precedent: fullscreen triangle, one uniform, no vertex buffers), drawn INSIDE the
@@ -26,7 +26,7 @@ struct PlacementGhostUniforms {
     ray_eye: [f32; 4],
     /// The central 3D viewport rect in physical pixels (x, y, width, height).
     viewport: [f32; 4],
-    /// xyz: the shape's field centre in the world/render frame. w: the `ShapeKind`
+    /// xyz: the shape's field center in the world/render frame. w: the `ShapeKind`
     /// discriminant.
     center_and_kind: [f32; 4],
     /// xyz: the inscribed semi-axes in voxels (`grid/2` per axis). w: `wall_blocks *
@@ -69,7 +69,7 @@ pub const PLACEMENT_GHOST_TINT: [f32; 4] = [0.32, 0.78, 0.92, 0.55];
 /// voxels drawn earlier in the SAME MSAA pass occlude it wherever they are in front.
 ///
 /// The renderer is deliberately dumb: the frame math (`center_world = world_offset +
-/// grid/2 - recentre`, ADR 0008) lives in the CALLER, which passes a resolved
+/// grid/2 - recenter`, ADR 0008) lives in the CALLER, which passes a resolved
 /// `center_world` — passing the shape's raw parameters and letting the shader re-derive
 /// its placement is exactly the silent frame-error mode this split prevents.
 ///
@@ -86,7 +86,7 @@ pub struct PlacementGhostRenderer {
 }
 
 impl PlacementGhostRenderer {
-    /// Create the placement-ghost renderer for a colour target. It starts DISARMED —
+    /// Create the placement-ghost renderer for a color target. It starts DISARMED —
     /// the caller arms it each frame via [`Self::update_uniforms`] when a tool is armed.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -146,7 +146,7 @@ impl PlacementGhostRenderer {
                 entry_point: Some("fragment_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
-                    // The shader outputs PREMULTIPLIED colour (`tint.rgb * lit * alpha`).
+                    // The shader outputs PREMULTIPLIED color (`tint.rgb * lit * alpha`).
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -196,10 +196,10 @@ impl PlacementGhostRenderer {
     /// Arm and upload this frame's ghost. `view_projection` / `ray_inverse_unprojection` /
     /// `ray_eye` are the SAME ray-frame values the voxel pass used (`SceneMatrices`), so the
     /// analytic ray and the voxel ray are the same ray — and the unprojection stays precise at a
-    /// wide-baseline recentre (a06d215).
+    /// wide-baseline recenter (a06d215).
     ///
-    /// `center_world` is the field centre in the display's render frame — the caller
-    /// resolves it via the frame law (`world_offset + grid/2 - recentre`, ADR 0008);
+    /// `center_world` is the field center in the display's render frame — the caller
+    /// resolves it via the frame law (`world_offset + grid/2 - recenter`, ADR 0008);
     /// `semi_axes` are the inscribed half-extents in voxels (`grid/2` per axis, EXACT
     /// half); `wall_voxels` is `wall_blocks * density` (Tube only); `tint` is linear RGB +
     /// source alpha.

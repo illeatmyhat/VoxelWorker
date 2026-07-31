@@ -54,7 +54,7 @@ struct SketchRegionUniforms {
     plane_axis1: vec4<f32>,
     // xyz: the plane's unit normal in the render frame. w unused.
     plane_normal: vec4<f32>,
-    // LINEAR RGB + source alpha of the wash. The shell converts the theme token, so the colour
+    // LINEAR RGB + source alpha of the wash. The shell converts the theme token, so the color
     // has one definition and it is the one the 2D chrome uses.
     tint: vec4<f32>,
     // The profile's bounding box, padded: xy = minimum, zw = maximum, in profile voxels. The
@@ -75,12 +75,12 @@ struct RegionLoop {
 };
 
 // MIRROR of `substrate::geom2d::RegionEdge` — a straight span, or an arc that stays an arc.
-// `centre`/`radius`/`start_radians`/`sweep_radians` are unused when `kind` is EDGE_SEGMENT.
+// `center`/`radius`/`start_radians`/`sweep_radians` are unused when `kind` is EDGE_SEGMENT.
 struct RegionEdge {
     // `from`/`to` would be nicer, but `from` is a WGSL reserved keyword.
     start_point: vec2<f32>,
     end_point: vec2<f32>,
-    centre: vec2<f32>,
+    center: vec2<f32>,
     radius: f32,
     start_radians: f32,
     sweep_radians: f32,
@@ -155,7 +155,7 @@ fn distance_to_edge(edge: RegionEdge, point: vec2<f32>) -> f32 {
     if (edge.kind == EDGE_SEGMENT) {
         return distance_point_to_segment(edge.start_point, edge.end_point, point);
     }
-    let offset = point - edge.centre;
+    let offset = point - edge.center;
     let bearing = atan2(offset.y, offset.x);
     if (travel_to_bearing(edge.start_radians, edge.sweep_radians, bearing) >= 0.0) {
         return abs(length(offset) - edge.radius);
@@ -226,22 +226,22 @@ fn edge_crossings(edge: RegionEdge, sample: vec2<f32>) -> u32 {
         var low = edge.start_point;
         if (entry != 0.0) {
             let bearing = edge.start_radians + direction * entry;
-            low = edge.centre + edge.radius * vec2<f32>(cos(bearing), sin(bearing));
+            low = edge.center + edge.radius * vec2<f32>(cos(bearing), sin(bearing));
         }
         var high = edge.end_point;
         if (exit != span) {
             let bearing = edge.start_radians + direction * exit;
-            high = edge.centre + edge.radius * vec2<f32>(cos(bearing), sin(bearing));
+            high = edge.center + edge.radius * vec2<f32>(cos(bearing), sin(bearing));
         }
         if ((low.y > sample.y) == (high.y > sample.y)) {
             continue;
         }
-        let rise = sample.y - edge.centre.y;
+        let rise = sample.y - edge.center.y;
         let half_chord = sqrt(max(edge.radius * edge.radius - rise * rise, 0.0));
         let middle = edge.start_radians + direction * (entry + exit) * 0.5;
-        var crossing_0 = edge.centre.x - half_chord;
+        var crossing_0 = edge.center.x - half_chord;
         if (cos(middle) >= 0.0) {
-            crossing_0 = edge.centre.x + half_chord;
+            crossing_0 = edge.center.x + half_chord;
         }
         if (sample.x < crossing_0) {
             crossings = crossings + 1u;

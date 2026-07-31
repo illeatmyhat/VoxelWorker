@@ -21,7 +21,7 @@ use voxel_core::voxel::{BlockAttrs, BlockId, Voxel, VoxelGrid, SURFACE_ISOLEVEL}
 /// Dilation grows the body by `N` on every side, so the wrapper's `[0, full_dim)` frame is
 /// the inner one shifted: wrapper coordinate `x` is inner coordinate `x − N`, and the
 /// wrapper's dimensions are the inner's plus `2N`. Callers anchor the wrapper by subtracting
-/// `N` from the leaf's world offset, which keeps the dilated body centred on the original
+/// `N` from the leaf's world offset, which keeps the dilated body centered on the original
 /// (ADR 0008 — the frame is carried, never re-derived).
 ///
 /// # Why this needs a field
@@ -78,7 +78,7 @@ impl VoxelProducer for OutsetProducer {
     }
 
     /// Fill by testing the dilated field directly: a voxel is occupied iff
-    /// `d(centre) <= N`, the closed Minkowski dilation of the body by a ball of radius `N`
+    /// `d(center) <= N`, the closed Minkowski dilation of the body by a ball of radius `N`
     /// in the inner producer's own metric.
     ///
     /// This resolves through the FIELD rather than through the inner producer's occupancy
@@ -113,11 +113,11 @@ impl VoxelProducer for OutsetProducer {
         for k in low[2]..high[2] {
             for j in low[1]..high[1] {
                 for i in low[0]..high[0] {
-                    // Sample at the voxel centre in the wrapper frame, mapped back into the
+                    // Sample at the voxel center in the wrapper frame, mapped back into the
                     // inner producer's frame.
-                    let centre =
+                    let center =
                         self.to_inner_point([i as f32 + 0.5, j as f32 + 0.5, k as f32 + 0.5]);
-                    if field.signed_distance(centre, voxels_per_block) - outset <= SURFACE_ISOLEVEL
+                    if field.signed_distance(center, voxels_per_block) - outset <= SURFACE_ISOLEVEL
                     {
                         occupied.push(Voxel {
                             local_index: [i as i32, j as i32, k as i32],
@@ -128,13 +128,13 @@ impl VoxelProducer for OutsetProducer {
                             ],
                             // A composed Part carries per-voxel materials, and the dilated
                             // shell must inherit the material of the surface it grew from
-                            // rather than flattening the Part to one colour — so the
+                            // rather than flattening the Part to one color — so the
                             // material is sampled at the SAME inner point as the distance.
                             // A single-material producer answers `None` here and its leaf
                             // override stamps instead, exactly as before.
                             block_id: self
                                 .inner
-                                .material_at(centre, voxels_per_block)
+                                .material_at(center, voxels_per_block)
                                 .unwrap_or(BlockId::DEFAULT),
                             attrs: BlockAttrs::DEFAULT,
                             grid_overlay: false,
@@ -176,7 +176,7 @@ impl VoxelProducer for OutsetProducer {
         Some(super::metric_cell_bracket(
             cell_local_voxels,
             self.metric(),
-            |centre| self.signed_distance(centre, voxels_per_block),
+            |center| self.signed_distance(center, voxels_per_block),
         ))
     }
 

@@ -76,8 +76,8 @@ fn snapped_profile_resolves_identically_through_the_continuous_path() {
 
 #[test]
 fn fractional_profile_resolves_off_the_voxel_grid() {
-    // A rectangle 0.4..4.4 × 0.4..3.4 extruded 2. Cell centres land at `min + cell + 0.5`
-    // with the floored min 0: in-plane centres 0.5, 1.5, 2.5, 3.5 (4.5 is past 4.4) on
+    // A rectangle 0.4..4.4 × 0.4..3.4 extruded 2. Cell centers land at `min + cell + 0.5`
+    // with the floored min 0: in-plane centers 0.5, 1.5, 2.5, 3.5 (4.5 is past 4.4) on
     // axis 0 and 0.5, 1.5, 2.5 on axis 1 — 4×3 cells per layer, NOT the 4×3 the snapped
     // 0..4 × 0..3 box would give at a different position, and NOT 5×4 (the ceiled grid).
     let solid = SketchSolid::extrude(

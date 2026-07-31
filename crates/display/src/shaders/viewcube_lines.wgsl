@@ -1,7 +1,7 @@
 // View-cube wireframe lines — constant screen-space width, anti-aliased (issue #91 item 3).
 //
 // Replaces the hardware `LineList` pipeline (1 px, aliased) for the cube's silhouette,
-// the three axis-coloured edges, and the projected X/Y/Z letter glyphs. Each source
+// the three axis-colored edges, and the projected X/Y/Z letter glyphs. Each source
 // segment is expanded on the GPU into a screen-space quad of CONSTANT pixel width with a
 // 1 px feathered alpha edge, so the linework stays ~1.4 px wide and crisp at ANY orbit
 // angle (no perspective-minification thinning at glancing angles). The face fills stay
@@ -30,7 +30,7 @@ struct VsIn {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec4<f32>,
-    // Signed distance (px) from the segment centre-line, for the fragment AA.
+    // Signed distance (px) from the segment center-line, for the fragment AA.
     @location(1) v_offset: f32,
 };
 

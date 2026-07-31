@@ -4,7 +4,7 @@
 //! the UI for the whole multi-second export. It now runs on the shared background
 //! [`Worker`](voxel_worker::Worker) via [`spawn_vox_export_worker`]. Unlike the display
 //! workers it carries NO supersede generation — a `.vox` is a user-chosen file, so the
-//! shell serialises exports rather than draining to the latest.
+//! shell serializes exports rather than draining to the latest.
 //!
 //! These tests drive the REAL worker (a spawned thread, real mpsc channels) headlessly —
 //! no window, no GPU — and assert the guarantees a reviewer would otherwise check by hand:
@@ -32,21 +32,21 @@ mod common;
 /// acceptable unbounded wait. Generous so a slow machine doesn't flake.
 const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The `.vox` palette the tests export with — a genuinely DISTINCT colour per procedural
+/// The `.vox` palette the tests export with — a genuinely DISTINCT color per procedural
 /// material (the red channel is index-derived) so a multi-material export exercises the
-/// per-`block_id` palette mapping rather than collapsing every slot to one colour. Any fixed
+/// per-`block_id` palette mapping rather than collapsing every slot to one color. Any fixed
 /// scheme works; parity only needs both paths to use the SAME palette.
 fn test_palette() -> interchange::vox_export::BlockPaletteColors {
     let mut palette = [[0x40, 0x50, 0x60, 0xff]; MaterialChoice::MATERIAL_COUNT];
     for (index, slot) in palette.iter_mut().enumerate() {
-        // Vary one channel per slot so no two materials share a colour.
+        // Vary one channel per slot so no two materials share a color.
         slot[0] = 0x40u8.wrapping_add((index as u8).wrapping_mul(0x30));
     }
     palette
 }
 
 /// The canonical small export fixture: a solid box, resolved the SAME way the shell
-/// exports (through a recentred scene). Small so the covering set is a handful of chunks.
+/// exports (through a recentered scene). Small so the covering set is a handful of chunks.
 fn export_fixture() -> (Scene, u32) {
     let vpb = 4u32;
     (common::box_scene(2, vpb, MaterialChoice::default()), vpb)

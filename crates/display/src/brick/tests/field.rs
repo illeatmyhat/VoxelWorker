@@ -115,9 +115,9 @@ fn brick_records_map_two_layer_partition_one_to_one() {
 
 /// **The surface-only record contract (ADR 0011 interior elision, fused into the
 /// build).** [`build_brick_field`] over a SOLID box emits exactly the surface blocks (a
-/// block with ≥1 absent/air neighbour) of the interior-inclusive oracle build
+/// block with ≥1 absent/air neighbor) of the interior-inclusive oracle build
 /// ([`build_brick_field_all_blocks`]) and omits the strictly-interior ones (all six
-/// neighbours present + solid) — checked against an independent neighbour-presence
+/// neighbors present + solid) — checked against an independent neighbor-presence
 /// oracle over the FULL key set. The GPU
 /// `brick_surface_elision_hit_set_unchanged` proves the surface-only build renders the
 /// same hit set as the oracle build.
@@ -158,7 +158,7 @@ fn build_emits_only_surface_records_of_a_solid_box() {
     );
 
     // Independent oracle: with all blocks coarse-solid, a block is INTERIOR iff all six
-    // of its neighbours are present in the FULL record set. (The tiny fixture never
+    // of its neighbors are present in the FULL record set. (The tiny fixture never
     // nears the packed-key lane limit, so no range guard is needed.)
     let full_keys: std::collections::HashSet<u64> = full_build
         .brick_records
@@ -171,7 +171,7 @@ fn build_emits_only_surface_records_of_a_solid_box() {
         .map(|r| r.packed_world_block_key)
         .filter(|&key| {
             let block = unpack_world_block_key(key);
-            let all_neighbours_present = [
+            let all_neighbors_present = [
                 [1i64, 0, 0],
                 [-1, 0, 0],
                 [0, 1, 0],
@@ -184,7 +184,7 @@ fn build_emits_only_surface_records_of_a_solid_box() {
                 let nb = [block[0] + d[0], block[1] + d[1], block[2] + d[2]];
                 full_keys.contains(&pack_world_block_key(nb))
             });
-            !all_neighbours_present
+            !all_neighbors_present
         })
         .collect();
     let surface_keys: Vec<u64> = surface_build

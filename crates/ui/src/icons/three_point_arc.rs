@@ -2,7 +2,7 @@
 //!
 //! Re-drawn from the sheet (owner, 2026-07-30). The old glyph drew an arc bulging over a chord
 //! with its three inputs in line art; this one draws the arc that ACTUALLY passes through its
-//! three marks. The centre and radius below are the circumcircle of the three nodes, not a
+//! three marks. The center and radius below are the circumcircle of the three nodes, not a
 //! convenient curve with points laid near it — which is the difference between a glyph that
 //! depicts the tool and one that depicts its result.
 //!
@@ -16,9 +16,9 @@ use super::{Ink, Mark};
 
 /// The three picks, and the circumcircle they define.
 ///
-/// Centre and radius are resolved from `(2.5, 13)`, `(15.5, 13)`, `(9, 4)`: the perpendicular
-/// bisector of the chord is `x = 9`, and the other bisector puts the centre at `y = 97.625/9`.
-/// The angles are the two endpoints' bearings about that centre, `to` carried past a full turn
+/// Center and radius are resolved from `(2.5, 13)`, `(15.5, 13)`, `(9, 4)`: the perpendicular
+/// bisector of the chord is `x = 9`, and the other bisector puts the center at `y = 97.625/9`.
+/// The angles are the two endpoints' bearings about that center, `to` carried past a full turn
 /// so the sweep runs the long way, over the top, through the third point.
 const CENTER: (f32, f32) = (9.0, 10.8473);
 const RADIUS: f32 = 6.8472;

@@ -84,8 +84,8 @@ separate microblock entities). A solid interior is never voxelized.
 
 - **Seam solidity** — per-boundary-block, per-face solidity flags (VS
   `sideAlmostSolid`/`sidecenterSolid`) used to **cull faces across a chunk/block
-  seam** without expanding a neighbour's voxels: a tiny pre-digested summary of
-  exactly what a neighbour is entitled to know.
+  seam** without expanding a neighbor's voxels: a tiny pre-digested summary of
+  exactly what a neighbor is entitled to know.
 
 ## GPU brick-field display sink (the cached-brick raymarch)
 
@@ -113,7 +113,7 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   set (e.g. cells of 8 blocks, then 64 blocks). A ray's **hierarchical DDA** jumps straight to the
   exit of the coarsest EMPTY level covering its position — one big stride through empty space —
   descending to per-block brick work only where the finest level is occupied. World-fixed levels (a
-  min-mip of the brick set) are distinct from a **geometry clip-map** (nested camera-centred grids,
+  min-mip of the brick set) are distinct from a **geometry clip-map** (nested camera-centered grids,
   Losasso–Hoppe); the latter is the residency-ring variant for the off-screen case.
 
 - **Render broadphase vs edit broadphase** — two different "what's near this box?" problems, never
@@ -144,7 +144,7 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   definition body. Children compose into one body within the scope; a boolean inside a
   scope can never affect geometry outside it.
 
-- **Sealed part** — the default definition behaviour: the definition pre-composes its
+- **Sealed part** — the default definition behavior: the definition pre-composes its
   children into one finished body, and an instance places that body under a single
   combine operation. Internal booleans are fully spent inside the definition.
 
@@ -334,7 +334,7 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 
 - **Quantize** — the one voxel-native constraint: this degree of freedom is a whole multiple of a
   **pitch**, at a **phase**. On a position it reads as *on the lattice*; on a distance, as *a whole
-  number of blocks thick*. Phase 0 is a voxel boundary and ½ a voxel centre — the difference between
+  number of blocks thick*. Phase 0 is a voxel boundary and ½ a voxel center — the difference between
   an even-width and an odd-width mirror-symmetric shape. Earns its place **only where the value is
   an output of the solve**; if the author knows the number, they type it.
 
@@ -484,7 +484,7 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   variant of it. Unversioned — it is read by the version that wrote it.
 
 - **Settings** — user preference that outlives any one project: window size, the saved Home
-  view. Reaches the dump but never the document, because a preference travelling inside a
+  view. Reaches the dump but never the document, because a preference traveling inside a
   shared file would impose one person's setup on everyone who opened it. **Projection mode is
   NOT a setting** — it is a session variable (owner ruling 2026-07-26), like the orbit type:
   how the workspace was left, not who the user is.
@@ -511,9 +511,9 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 
 ## Authoring frame
 
-- **Recentre** — the integer voxel offset a producer's grid was placed at. A placed Tool is
-  recentred onto the origin by `floor(dim/2)`; a corner-anchored Part (e.g. `DebugClouds`) has
-  recentre `[0,0,0]`. **Carried on the grid, never re-derived** (ADR 0008).
+- **Recenter** — the integer voxel offset a producer's grid was placed at. A placed Tool is
+  recentered onto the origin by `floor(dim/2)`; a corner-anchored Part (e.g. `DebugClouds`) has
+  recenter `[0,0,0]`. **Carried on the grid, never re-derived** (ADR 0008).
 
 - **Field position vs voxel position** — a **field**'s position is **continuous** (a float on the
   node transform, the authoring truth); a **voxel**'s position is **integer** (the quantized

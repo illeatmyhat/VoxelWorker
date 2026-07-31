@@ -3,14 +3,14 @@ use super::*;
 /// A CPU march hit: the hit voxel in ABSOLUTE voxel coordinates (the exact
 /// evaluator's frame), plus the entered face's outward normal as an exact ±1 axis
 /// vector (`[i32; 3]`, so `Eq` still derives). The normal drives the loaded-material
-/// shading rule (`face_layer`) the colour-parity test cross-checks (ADR 0011 G2).
+/// shading rule (`face_layer`) the color-parity test cross-checks (ADR 0011 G2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuMarchHit {
     pub absolute_voxel: [i32; 3],
     pub face_normal: [i32; 3],
 }
 
-/// The pixel-centre camera ray in the shifted march frame — mirrors `camera_ray`:
+/// The pixel-center camera ray in the shifted march frame — mirrors `camera_ray`:
 /// the CAMERA-RELATIVE unproject yields eye-relative points, and `eye_sv` (the
 /// pre-combined eye + half-extent + shift) carries the sv frame's one large term.
 pub(crate) fn cpu_camera_ray(
@@ -97,7 +97,7 @@ pub(crate) fn cpu_clipmap_cell_occupied(level: &ClipmapLevel, absolute_block: gl
     )
 }
 
-/// March one pixel-centre ray through the brick field on the CPU — a step-for-step
+/// March one pixel-center ray through the brick field on the CPU — a step-for-step
 /// f32 mirror of the WGSL `march_brick_field` (same op order, same tie-breaks, same
 /// clamped boxes, residency-miss branch, and G2 hierarchical clip-map skip),
 /// returning the hit voxel in absolute coordinates. The parity net asserts the GPU
@@ -201,7 +201,7 @@ pub fn cpu_march_levels_counted(
     )
 }
 
-/// March one pixel-centre ray over the EXACT evaluator's occupancy — a plain
+/// March one pixel-center ray over the EXACT evaluator's occupancy — a plain
 /// voxel-level DDA (no bricks, no records) inside the same frame/band, querying
 /// `occupied(absolute_voxel)`. This is the parity net's INDEPENDENT content
 /// oracle: the brick march's hit-voxel set must equal this march's hit-voxel set

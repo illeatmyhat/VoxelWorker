@@ -1,7 +1,7 @@
 //! The workspace selection — one mixed-kind set of picked targets (ADR 0032).
 //!
 //! ADR 0032 repeals the node side's law (`Scene::active`, document state restored by undo)
-//! in favour of the sketch side's: selection is **workspace** state. It never travels in a
+//! in favor of the sketch side's: selection is **workspace** state. It never travels in a
 //! shared file, never enters undo history, and rides the dump. Edits still *steer* it as an
 //! effect — a created node arrives selected, undoing a delete re-selects what came back —
 //! but that is a workspace write, not document truth.

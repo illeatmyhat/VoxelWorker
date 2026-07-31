@@ -83,7 +83,7 @@ pub trait BlockSource: Send {
     /// (so `{rock}`/`{wood}` placeholders resolve to the right material and any
     /// face the blocktype doesn't cover falls back to it). Implementations look
     /// up the matching blocktype JSON and map each cube face to a PNG; the
-    /// default returns a uniform mapping (the M6 single-texture behaviour), which
+    /// default returns a uniform mapping (the M6 single-texture behavior), which
     /// is also the graceful fallback when no blocktype matches.
     fn resolve_faces(&self, _group: &BlockGroup, chosen_variant: &std::path::Path) -> FaceTextures {
         FaceTextures::uniform(chosen_variant.to_path_buf())

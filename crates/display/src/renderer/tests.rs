@@ -403,7 +403,7 @@ fn points_plane_and_axis_toggles_gate() {
 }
 
 /// Per-axis gating (issue #29 fix): the X/Y/Z axes toggle independently. All three
-/// on ⇒ three segments (one per colour); turning Y off drops the GREEN segment and
+/// on ⇒ three segments (one per color); turning Y off drops the GREEN segment and
 /// leaves the red (X) and blue (Z) ones; a single axis on ⇒ exactly one segment.
 #[test]
 fn points_axes_toggle_per_axis() {
@@ -458,7 +458,7 @@ fn points_axes_toggle_per_axis() {
 #[test]
 fn grid_planes_carry_correct_orientation() {
     for density in [1u32, 15, 16] {
-        // All three planes on at the Origin (recentre = 0 → origin at world 0).
+        // All three planes on at the Origin (recenter = 0 → origin at world 0).
         let scene = origin_point_scene(true, true, true, false);
         let planes = enabled_grid_planes(&scene, density);
         assert_eq!(
@@ -510,7 +510,7 @@ fn grid_planes_carry_correct_orientation() {
 }
 
 /// A second Point offset from the origin places its grid PLANE and its AXES at that
-/// WORLD position: with a lone Point (recentre = 0 — no sized leaf) both pass
+/// WORLD position: with a lone Point (recenter = 0 — no sized leaf) both pass
 /// through `position_blocks · density`.
 #[test]
 fn points_offset_point_frame_sits_at_world_position() {
@@ -541,21 +541,21 @@ fn points_offset_point_frame_sits_at_world_position() {
     );
     let batch = points_line_batch(&scene, density as u32, &camera::OrbitCamera::default());
     assert_eq!(batch.len(), 6, "axes only ⇒ three segments");
-    // The axes cross at the Point origin; every axis segment shares that centre on
-    // its two non-running coordinates. Recover the centre as the midpoint of the X
-    // axis segment (vertices 0,1 are the X axis through the centre).
-    let centre = [
+    // The axes cross at the Point origin; every axis segment shares that center on
+    // its two non-running coordinates. Recover the center as the midpoint of the X
+    // axis segment (vertices 0,1 are the X axis through the center).
+    let center = [
         (batch[0].position[0] + batch[1].position[0]) / 2.0,
         (batch[0].position[1] + batch[1].position[1]) / 2.0,
         (batch[0].position[2] + batch[1].position[2]) / 2.0,
     ];
     assert!(
-        (centre[0] - (10 * density) as f32).abs() < 1e-3,
+        (center[0] - (10 * density) as f32).abs() < 1e-3,
         "X frame at 10 blocks"
     );
-    assert!((centre[1]).abs() < 1e-3, "Y frame at 0");
+    assert!((center[1]).abs() < 1e-3, "Y frame at 0");
     assert!(
-        (centre[2] - (-4 * density) as f32).abs() < 1e-3,
+        (center[2] - (-4 * density) as f32).abs() < 1e-3,
         "Z frame at -4 blocks"
     );
 }

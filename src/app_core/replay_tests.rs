@@ -5,21 +5,21 @@ use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-/// The `RecentreVoxels` frame newtype round-trips through its one door: whatever
+/// The `RecenterVoxels` frame newtype round-trips through its one door: whatever
 /// triple it carries is exactly what `voxels()` hands back (the accessor contract the
 /// mesh / two-layer / uniform boundaries unwrap with), and equal triples compare equal.
 #[test]
-fn recentre_voxels_round_trips_through_voxels() {
+fn recenter_voxels_round_trips_through_voxels() {
     for triple in [[0, 0, 0], [7, -3, 11], [i64::MIN, 0, i64::MAX]] {
-        assert_eq!(RecentreVoxels::new(triple).voxels(), triple);
+        assert_eq!(RecenterVoxels::new(triple).voxels(), triple);
     }
     assert_eq!(
-        RecentreVoxels::new([1, 2, 3]),
-        RecentreVoxels::new([1, 2, 3])
+        RecenterVoxels::new([1, 2, 3]),
+        RecenterVoxels::new([1, 2, 3])
     );
     assert_ne!(
-        RecentreVoxels::new([1, 2, 3]),
-        RecentreVoxels::new([1, 2, 4])
+        RecenterVoxels::new([1, 2, 3]),
+        RecenterVoxels::new([1, 2, 4])
     );
 }
 

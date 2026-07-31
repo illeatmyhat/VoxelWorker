@@ -12,11 +12,11 @@ fn l_profile() -> Vec<SketchPoint> {
     ]
 }
 
-/// An L extrude catalogues 2 cap outlines + one lateral edge per corner: an L has
+/// An L extrude catalogs 2 cap outlines + one lateral edge per corner: an L has
 /// 6 corners, so 8 polylines. Laterals span the full height at the corner's
 /// bbox-anchored in-plane position.
 #[test]
-fn l_extrude_catalogues_caps_and_six_laterals() {
+fn l_extrude_catalogs_caps_and_six_laterals() {
     let solid = SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile()), 3);
     let polylines = solid.profile_edge_polylines_local(96);
     assert_eq!(polylines.len(), 8);
@@ -68,10 +68,10 @@ fn split_segment_midpoint_is_tangent_and_adds_no_lateral() {
 }
 
 /// A full-turn revolve of an off-axis rectangle: the two on-axis vertices are poles
-/// (nothing), the two off-axis vertices each catalogue a closed latitude circle at
-/// their axial height, centred on the radial grid centre; no meridian outlines.
+/// (nothing), the two off-axis vertices each catalog a closed latitude circle at
+/// their axial height, centered on the radial grid center; no meridian outlines.
 #[test]
-fn full_revolve_catalogues_latitude_circles_only() {
+fn full_revolve_catalogs_latitude_circles_only() {
     // Plane Z, axis InPlane0: axial = coord 0 (world X), radial = coord 1;
     // radial world axes = {Y, Z} → dims[1] = dims[2] = 2 * radial_max = 6.
     let solid = SketchSolid::revolve(
@@ -100,7 +100,7 @@ fn full_revolve_catalogues_latitude_circles_only() {
 /// A quarter-turn revolve keeps the latitude arcs' angular density (24 steps of the
 /// full 96) and adds the profile outline at both sweep ends.
 #[test]
-fn partial_revolve_catalogues_arcs_and_end_meridians() {
+fn partial_revolve_catalogs_arcs_and_end_meridians() {
     let solid = SketchSolid::revolve(
         Sketch::rectangle(PlaneAxis::Z, 4, 3),
         RevolveAxis::InPlane0,
@@ -155,10 +155,10 @@ fn straddling_partial_revolve_outline_folds_at_the_axis() {
     }
 }
 
-/// Degenerate producers catalogue nothing: a zero-height extrude and a zero-turn
+/// Degenerate producers catalog nothing: a zero-height extrude and a zero-turn
 /// revolve have no body, hence no edges.
 #[test]
-fn degenerate_solids_catalogue_nothing() {
+fn degenerate_solids_catalog_nothing() {
     let flat = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 0);
     assert!(flat.profile_edge_polylines_local(96).is_empty());
     let unswept = SketchSolid::revolve(
@@ -170,7 +170,7 @@ fn degenerate_solids_catalogue_nothing() {
 }
 
 /// An arc reaches the boundary as a run of tessellation samples. Those are steps around a
-/// smooth curve, so they crease nothing: the rounded-bottom profile catalogues laterals at
+/// smooth curve, so they crease nothing: the rounded-bottom profile catalogs laterals at
 /// its four AUTHORED corners and not one per chord, however finely the arc is tessellated.
 #[test]
 fn an_arc_creases_only_at_its_authored_ends() {

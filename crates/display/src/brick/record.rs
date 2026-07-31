@@ -72,8 +72,8 @@ impl BrickPayload {
 pub struct BrickRecord {
     /// [`pack_world_block_key`] of the block's absolute world-block coordinate.
     pub packed_world_block_key: u64,
-    /// The block's clean render-cell material colour index (`0..MATERIAL_COUNT`) — the
-    /// `block_id`'s colour index for a coarse block, the single microblock material for a
+    /// The block's clean render-cell material color index (`0..MATERIAL_COUNT`) — the
+    /// `block_id`'s color index for a coarse block, the single microblock material for a
     /// UNIFORM boundary block. The occupancy atlas is occupancy-only, so this is the
     /// per-BLOCK material the raymarch shades with, packed into the GPU record's `kind`
     /// high bits by `pack_gpu_records`. **Don't-care for a

@@ -1,8 +1,8 @@
 //! The sRGB ↔ linear transfer function (electro-optical transfer function).
 //!
-//! sRGB stores colour with a non-linear encoding so 8-bit codes are spread
+//! sRGB stores color with a non-linear encoding so 8-bit codes are spread
 //! perceptually rather than uniformly in light energy; any correct *arithmetic* on
-//! colour (blending, filtering, lighting) must happen in **linear** light, so an
+//! color (blending, filtering, lighting) must happen in **linear** light, so an
 //! encoded value has to be decoded first. This module is the standard decode: the
 //! piecewise sRGB electro-optical transfer function (EOTF) of **IEC 61966-2-1:1999**.
 //!
@@ -22,7 +22,7 @@
 
 /// Decode one 8-bit sRGB component to linear light in `[0, 1]`, via the piecewise
 /// IEC 61966-2-1 EOTF (linear toe below `0.04045`, `2.4`-power above). This is the
-/// same decode a GPU applies when sampling an sRGB-format texture, so colours
+/// same decode a GPU applies when sampling an sRGB-format texture, so colors
 /// computed through it mix in the same space as textured surfaces.
 pub fn srgb_component_to_linear(byte: u8) -> f32 {
     let value = byte as f32 / 255.0;
@@ -33,7 +33,7 @@ pub fn srgb_component_to_linear(byte: u8) -> f32 {
     }
 }
 
-/// Decode a packed `0xRRGGBB` sRGB colour to a linear `[r, g, b]`, each channel
+/// Decode a packed `0xRRGGBB` sRGB color to a linear `[r, g, b]`, each channel
 /// through [`srgb_component_to_linear`].
 pub fn srgb_hex_to_linear(hex: u32) -> [f32; 3] {
     [
@@ -74,10 +74,10 @@ mod tests {
     }
 
     /// A known mid value: sRGB `188` (`≈0.737` encoded) decodes to ≈`0.5` linear —
-    /// linear mid-grey encodes to just under byte 188, so the exact decode is
+    /// linear mid-gray encodes to just under byte 188, so the exact decode is
     /// ≈`0.503`, checked against a curve-shape tolerance rather than a bit value.
     #[test]
-    fn mid_grey_decodes_near_half() {
+    fn mid_gray_decodes_near_half() {
         let mid = srgb_component_to_linear(188);
         assert!((mid - 0.5).abs() < 5e-3, "expected ≈0.5, got {mid}");
     }

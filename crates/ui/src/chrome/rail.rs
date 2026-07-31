@@ -15,10 +15,10 @@ const RAIL_GAP: f32 = 6.0;
 /// the `design_reference` sheet judges against too.
 const GLYPH_BOX: f32 = 24.0;
 /// Height of the orbit-type button's dropdown half, which sits BELOW the face rather than beside
-/// it. Taking the strip off the side left the mark an off-centre 23 pt of a 34 pt rail to live in,
+/// it. Taking the strip off the side left the mark an off-center 23 pt of a 34 pt rail to live in,
 /// and every legibility problem the pair had was really that: a glyph authored for a square box,
 /// judged in a letterbox. The button grows by this much instead, so the face stays a full,
-/// centred, rail-width square and the caret costs the mark nothing.
+/// centered, rail-width square and the caret costs the mark nothing.
 const CARET_HEIGHT: f32 = 13.0;
 /// The caret's own glyph box — smaller than [`GLYPH_BOX`], because a chevron is a pointer at the
 /// menu and must not read as a second subject beside the face's mark.
@@ -103,7 +103,7 @@ fn split_halves(button_rect: Rect) -> (Rect, Rect) {
     )
 }
 
-/// Draw the icon rail centred under the view cube and return a click, if any. `cube_left` /
+/// Draw the icon rail centered under the view cube and return a click, if any. `cube_left` /
 /// `cube_bottom` / `cube_size` are the cube's screen anchors (egui points). Painted through a
 /// foreground `layer_painter` at absolute coordinates (not an `egui::Area`) so it renders on the
 /// headless `shot`'s single frame; interaction is `Ui::interact` on the same rects.
@@ -285,7 +285,7 @@ fn orbit_face_tooltip(default_orbit_type: OrbitType, orbit_mode: OrbitMode) -> S
     }
 }
 
-/// A centred square glyph box inside a rail button — the rail set is authored on a square 18-unit
+/// A centered square glyph box inside a rail button — the rail set is authored on a square 18-unit
 /// grid, so a square box keeps `IconPainter`'s scale at 1 and the stroke on the design's 1.25 pt.
 fn glyph_box(button_rect: Rect) -> Rect {
     Rect::from_center_size(button_rect.center(), Vec2::splat(GLYPH_BOX))

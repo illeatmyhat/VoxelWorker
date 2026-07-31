@@ -169,7 +169,7 @@ impl FaceResolver {
     /// Resolve a group's per-face textures, picking the source by matching the
     /// group key against the source's scanned groups. `chosen_variant` is the
     /// specific PNG the palette picked. Falls back to a uniform mapping if no
-    /// source recognises the group (the M6 behaviour).
+    /// source recognizes the group (the M6 behavior).
     pub fn resolve(
         &self,
         group: &BlockGroup,

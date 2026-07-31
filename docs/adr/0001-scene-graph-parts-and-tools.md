@@ -110,7 +110,7 @@ Scale): `Scene::resolve_region(&self, region_blocks: Aabb) -> VoxelGrid`.
    over node world-AABBs skips the whole subtree of anything that doesn't intersect the region — so
    a 1000-node village costs ~the nodes actually touching the region, not all of them.
 3. For each **visible** leaf whose world-AABB hits the region: resolve its producer into a local
-   grid (producers still emit centred-at-origin content — the trait is unchanged), then **stamp**
+   grid (producers still emit centered-at-origin content — the trait is unchanged), then **stamp**
    it into the output under the node's world transform. Each written voxel carries a `material_id`:
    a **Tool** stamps its one material; a **Part** copies its own per-voxel materials.
 4. **v1 composition = union only** (additive): the voxel set is the OR of the contributing nodes; on
@@ -120,7 +120,7 @@ Scale): `Scene::resolve_region(&self, region_blocks: Aabb) -> VoxelGrid`.
 
 The producer trait does **not** change; compositing (tree walk + transform + stamp) is the new step
 the Scene owns. For a small scene the requested region is the whole extent and this is one grid —
-identical behaviour to today.
+identical behavior to today.
 
 ### Materials (per-voxel)
 
@@ -305,7 +305,7 @@ library, and the in-Tool SDF construction tree.
   a chunked, frustum-culled, origin-rebased, greedy-meshed, out-of-core voxel-world renderer. That is
   engine-level and by far the largest piece; the model refactor (steps 1–4) is comparatively small.
   Sequenced so small scenes ship long before the canvas does. The current `MAX_GRID_VOXELS`
-  single-object cap is retired in favour of per-chunk bounds. **LOD is intentionally not built** — we
+  single-object cap is retired in favor of per-chunk bounds. **LOD is intentionally not built** — we
   pay only a tiny seam (an unused `lod` key) to keep it possible.
 
 ## Alternatives considered

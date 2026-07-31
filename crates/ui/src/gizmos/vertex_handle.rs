@@ -25,15 +25,15 @@ pub enum HandleState {
     Marked,
 }
 
-/// Draw a **profile vertex handle**. A square thumb of half-extent `half` (points) centred at
+/// Draw a **profile vertex handle**. A square thumb of half-extent `half` (points) centered at
 /// `center`: dark fill + accent border idle, bright fill on hover, accent fill when selected,
 /// and the snap tick-cross around it when snapped. Distinct from the 3D position axis-handles
 /// (those move a whole node; this moves one profile vertex).
 pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleState) {
     let (fill, border) = match state {
         HandleState::Idle => (HANDLE_FILL, HANDLE_ACCENT),
-        // Hover FILLS with the bright hover colour, and Selected fills accent — the same two
-        // colours the hovered / selected lines use, so a point and an edge answer alike (owner
+        // Hover FILLS with the bright hover color, and Selected fills accent — the same two
+        // colors the hovered / selected lines use, so a point and an edge answer alike (owner
         // 2026-07-23). Idle stays hollow (dark fill, accent border), so the three read distinctly.
         HandleState::Hover => (HANDLE_HOVER, HANDLE_HOVER),
         HandleState::Selected | HandleState::Snapped => (HANDLE_ACCENT, HANDLE_ACCENT),

@@ -29,7 +29,7 @@
 //! This is the **document-bound** producer half. It depends DOWNWARD on the
 //! foundational value vocabulary in the `voxel_core` crate (the resolved
 //! [`Voxel`](voxel_core::voxel::Voxel),
-//! its [`VoxelGrid`], the frame-bearing recentre, the primitive-kind tag and the pure
+//! its [`VoxelGrid`], the frame-bearing recenter, the primitive-kind tag and the pure
 //! signed-distance functions) and on `voxel_core`'s `units` / `spatial_index`; the
 //! value crate never names anything here. That ⊥ is compile-enforced by the crate
 //! boundary: `voxel_core` cannot import the document layer.
@@ -45,7 +45,7 @@ use voxel_core::voxel::VoxelGrid;
 // never disagree with a brute-force per-voxel evaluation — the boundary-residency
 // classifier's soundness (see the Boundary-residency material in
 // `docs/architecture/02-evaluation.md`, proven by the E1 parity gate in
-// `cell_interval_parity_tests`). The interval algebra, the Lipschitz-centre bound, and
+// `cell_interval_parity_tests`). The interval algebra, the Lipschitz-center bound, and
 // the classify threshold-parameter live in the substrate module doc.
 pub use substrate::interval::{FieldClassification, FieldInterval};
 
@@ -89,7 +89,7 @@ pub trait VoxelProducer: Send + Sync {
     ///   call (`[0,0,0]..full_dim`) reproduces the historical resolve EXACTLY.
     ///
     /// Every producer's per-cell output depends ONLY on the cell index and the FULL
-    /// dimensions (centred sample `idx + 0.5 − full_dim/2`; corner-anchored store
+    /// dimensions (centered sample `idx + 0.5 − full_dim/2`; corner-anchored store
     /// `idx + 0.5`; revolve radius/axial from the full extent; cloud puffs scattered
     /// from the full extent) — never on which window is being filled. So restricting
     /// the iteration to `window ∩ [0, full_dim)` produces a byte-identical subset.
@@ -133,7 +133,7 @@ pub trait VoxelProducer: Send + Sync {
     /// answers instead, which is the case for every Tool and sketch solid. A
     /// [`CompositeProducer`] overrides it because a composed Part's material varies across
     /// the body, and an outset shell has to inherit the material of the surface it grew from
-    /// rather than flattening the Part to one colour.
+    /// rather than flattening the Part to one color.
     ///
     /// [`CompositeProducer`]: crate::voxel::CompositeProducer
     fn material_at(
@@ -156,7 +156,7 @@ pub trait VoxelProducer: Send + Sync {
     /// **The pick follows the material.** The rule here is the one
     /// [`material_at`](VoxelProducer::material_at) uses — last containing `Union` member
     /// inside the body, nearest one out in an outset shell — so the node you select is the
-    /// node that coloured the voxel you clicked. Two answers here would be two answers to
+    /// node that colored the voxel you clicked. Two answers here would be two answers to
     /// "whose voxel is this", and the user can see the material.
     ///
     /// [`CompositeProducer`]: crate::voxel::CompositeProducer
@@ -233,9 +233,9 @@ pub(crate) fn clamp_window_to_grid(
 /// The metric Lipschitz bracket of a field over a cell (ADR 0010/0019) — the ONE fold the
 /// composite, outset, and sketch producers share for their `cell_field_interval`.
 ///
-/// Occupancy is decided at voxel CENTRES (`index + 0.5`), so the region to bracket is the
-/// centre span `[min + 0.5, max − 0.5]` — the exact samples `resolve_into` visits, tighter than
-/// the whole cell box. The field is sampled at that span's centre (via `sample_centre`, the only
+/// Occupancy is decided at voxel CENTERS (`index + 0.5`), so the region to bracket is the
+/// center span `[min + 0.5, max − 0.5]` — the exact samples `resolve_into` visits, tighter than
+/// the whole cell box. The field is sampled at that span's center (via `sample_center`, the only
 /// per-producer difference) and widened by the cell circumradius in the field's `metric`, which
 /// the field is 1-Lipschitz in ([`Metric::cell_circumradius`](substrate::geom2d::Metric::cell_circumradius)).
 /// Callers keep their own empties/no-field guard and any post-refinement.
@@ -243,18 +243,18 @@ pub(crate) fn clamp_window_to_grid(
 pub(crate) fn metric_cell_bracket(
     cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
     metric: substrate::geom2d::Metric,
-    sample_centre: impl FnOnce([f32; 3]) -> f32,
+    sample_center: impl FnOnce([f32; 3]) -> f32,
 ) -> FieldInterval {
-    let mut centre = [0.0f32; 3];
+    let mut center = [0.0f32; 3];
     let mut half_extent = [0.0f32; 3];
     for axis in 0..3 {
         let low = cell_local_voxels.min[axis] as f32 + 0.5;
         let high = (cell_local_voxels.max[axis] - 1) as f32 + 0.5;
-        centre[axis] = 0.5 * (low + high);
+        center[axis] = 0.5 * (low + high);
         half_extent[axis] = 0.5 * (high - low);
     }
     FieldInterval::from_lipschitz_center(
-        sample_centre(centre),
+        sample_center(center),
         metric.cell_circumradius(half_extent),
     )
 }

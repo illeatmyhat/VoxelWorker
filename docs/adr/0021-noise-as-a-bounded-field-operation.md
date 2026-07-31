@@ -21,7 +21,7 @@ reason.** The construction is already field arithmetic
 (`crates/document/src/debug_clouds.rs`):
 
 ```
-per puff   f(p) = radial + BILLOW · fbm(…)      radial = 1 − |p − centre| / R
+per puff   f(p) = radial + BILLOW · fbm(…)      radial = 1 − |p − center| / R
 solid iff  max over puffs of f(p) > 0
 ```
 

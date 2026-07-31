@@ -23,7 +23,7 @@ pub struct BrickMarchFrame {
     pub viewport: [f32; 4],
     /// `floor(grid_dimensions / 2)` — the cuboid path's corner-anchoring half.
     pub grid_half_extent: glam::Vec3,
-    /// `(recentre − half) mod edge` per axis — re-aligns block boundaries onto
+    /// `(recenter − half) mod edge` per axis — re-aligns block boundaries onto
     /// multiples of the brick edge in the shifted march frame.
     pub lattice_shift: [i32; 3],
     /// absolute block = sv block cell + this.
@@ -83,7 +83,7 @@ pub(crate) fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<Occupancy
         .zip(masks.cell_materials())
         .map(|((&key, &mask), &fallback)| {
             let [key_hi, key_lo] = substrate::spatial::lattice_key::split_key_hi_lo(key);
-            // The fallback word packs the overlay bit above the material colour index (the map
+            // The fallback word packs the overlay bit above the material color index (the map
             // stores one u32 per cell); split it into the pod's two fields the shader reads.
             let overlay = u32::from(fallback & crate::brick::OCCUPANCY_FALLBACK_OVERLAY_BIT != 0);
             let material = fallback & (crate::brick::OCCUPANCY_FALLBACK_OVERLAY_BIT - 1);
@@ -167,9 +167,9 @@ pub struct BrickRaymarchRenderer {
     /// render is builder-independent), while the solid (drawn first) occludes the ghost.
     ghost_render_pipeline: wgpu::RenderPipeline,
     hit_identity_pipeline: wgpu::RenderPipeline,
-    /// ADR 0011 G2 — the single-sample COLOUR entry (`fragment_color_identity`) the
-    /// colour-parity test reads back: shades each hit exactly as the MSAA render pass'
-    /// centre-ray evaluation would, into a plain `Rgba8Unorm` target. Same pipeline
+    /// ADR 0011 G2 — the single-sample COLOR entry (`fragment_color_identity`) the
+    /// color-parity test reads back: shades each hit exactly as the MSAA render pass'
+    /// center-ray evaluation would, into a plain `Rgba8Unorm` target. Same pipeline
     /// layout (group 2 = loaded material) as the render pipeline.
     color_identity_pipeline: wgpu::RenderPipeline,
     /// ADR 0013 — the single-sample MATERIAL-identity entry (`fragment_material_identity`)
@@ -198,7 +198,7 @@ pub struct BrickRaymarchRenderer {
     /// When a block is applied the app binds `LoadedMaterial::bind_group` at group(2)
     /// instead (built against the SAME `renderer::build_face_material_layout`), so the
     /// raymarch textures per-face by the owner's lattice rule. Kept alive here so the
-    /// hit-identity / colour / ghost passes (which never sample it) can still satisfy
+    /// hit-identity / color / ghost passes (which never sample it) can still satisfy
     /// the 3-group pipeline layout.
     dummy_loaded_material_bind_group: wgpu::BindGroup,
     /// Whether a VS block is applied this frame — mirrored into `voxel_bias.w` so the
@@ -228,10 +228,10 @@ pub struct BrickRaymarchRenderer {
     /// patch writes only the dirty chunks' slots (unless the atlas grew — then every slot).
     last_atlas_slots_written: u32,
     record_count: u32,
-    /// The composite recentre the boundary set was resolved under (ADR 0008 —
-    /// carried from the install as [`RecentreVoxels`], the same value the two-layer mesher
+    /// The composite recenter the boundary set was resolved under (ADR 0008 —
+    /// carried from the install as [`RecenterVoxels`], the same value the two-layer mesher
     /// bakes; unwrapped with `.voxels()` only where `march_frame` packs the uniform).
-    recentre_voxels: RecentreVoxels,
+    recenter_voxels: RecenterVoxels,
     brick_edge_voxels: u32,
     bricks_per_axis: u32,
     /// Inclusive absolute world-block bounds of the resident record set (the
@@ -251,7 +251,7 @@ pub struct BrickRaymarchRenderer {
     /// rebuilt with the records/pyramid in [`rebuild_field_state`](Self::rebuild_field_state).
     occupancy_cell_count: u32,
     /// Grazing-rim DIAGNOSTIC mode (`--debug-faces --brick`): 0 = normal shade, 1 =
-    /// face-axis colour + UV checkerboard. Uploaded into the spare `band_voxel_sv.w`
+    /// face-axis color + UV checkerboard. Uploaded into the spare `band_voxel_sv.w`
     /// slot; default 0 keeps every non-debug draw byte-identical. See `debug_face_shade`.
     debug_mode: u32,
 }
@@ -560,7 +560,7 @@ impl BrickRaymarchRenderer {
         });
 
         // The live pass: fullscreen triangle INSIDE the 4× MSAA voxel pass, writing
-        // colour + per-sample ray-hit depth (Less, exactly the mesh pipeline's
+        // color + per-sample ray-hit depth (Less, exactly the mesh pipeline's
         // depth state) so everything after composites unchanged.
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("brick raymarch render pipeline"),
@@ -703,11 +703,11 @@ impl BrickRaymarchRenderer {
                 cache: None,
             });
 
-        // ADR 0011 G2 — the colour-parity pass: single sample, no depth, the SHADED
-        // colour into a plain `Rgba8Unorm` target (read back by tests/gpu_parity.rs).
+        // ADR 0011 G2 — the color-parity pass: single sample, no depth, the SHADED
+        // color into a plain `Rgba8Unorm` target (read back by tests/gpu_parity.rs).
         let color_identity_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("brick raymarch colour-identity pipeline"),
+                label: Some("brick raymarch color-identity pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
@@ -807,7 +807,7 @@ impl BrickRaymarchRenderer {
             cell_key_texture_dim,
             last_atlas_slots_written: 0,
             record_count: 0,
-            recentre_voxels: RecentreVoxels::new([0, 0, 0]),
+            recenter_voxels: RecenterVoxels::new([0, 0, 0]),
             brick_edge_voxels: 1,
             bricks_per_axis: 0,
             absolute_block_bounds: None,
@@ -823,7 +823,7 @@ impl BrickRaymarchRenderer {
     }
 
     /// Set the grazing-rim DIAGNOSTIC mode (`--debug-faces --brick` / the live-app
-    /// keybind): `0` = normal shade; `1` = face-axis colour + UV checkerboard (the
+    /// keybind): `0` = normal shade; `1` = face-axis color + UV checkerboard (the
     /// geometry-staircase vs shading-precision discriminator, `debug_face_shade` in the
     /// shader). Carried in the otherwise-unused `band_voxel_sv.w` slot, so the default
     /// `0` leaves every uniform byte — and thus every golden — unchanged.
@@ -834,8 +834,8 @@ impl BrickRaymarchRenderer {
     /// Install (or replace) the brick field: upload the packed records + the
     /// sculpted atlas and rebuild the field bind group — the per-edit swap, no
     /// pipeline work. `gpu_records` is [`pack_gpu_records`]' output (possibly with
-    /// forced non-resident slots); `recentre_voxels` the resolve's carried
-    /// recentre. Material AND the on-face-grid overlay are per-record (packed in
+    /// forced non-resident slots); `recenter_voxels` the resolve's carried
+    /// recenter. Material AND the on-face-grid overlay are per-record (packed in
     /// `gpu_records`, ADR 0011 G2 / material atlas) — no scene-wide overlay rides here.
     #[allow(clippy::too_many_arguments)]
     pub fn install_brick_field(
@@ -846,7 +846,7 @@ impl BrickRaymarchRenderer {
         atlas: &SculptedAtlasPayload,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
     ) {
         // The occupancy-only install: the MATERIAL SIDE ATLAS installs EMPTY — the honest default
         // for a caller that holds no cell-key payload (a scene with no MIXED brick). A field WITH
@@ -868,7 +868,7 @@ impl BrickRaymarchRenderer {
             &empty_cell_keys,
             gpu_records,
             pyramid,
-            recentre_voxels,
+            recenter_voxels,
         );
     }
 
@@ -887,7 +887,7 @@ impl BrickRaymarchRenderer {
         cell_key_atlas: &SculptedCellKeyAtlasPayload,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
     ) {
         // A wholesale install (re)creates the atlas texture from scratch and uploads
         // every sculpted slot — the from-scratch / scene-load / gate-re-engage path.
@@ -908,7 +908,7 @@ impl BrickRaymarchRenderer {
             atlas.geometry.bricks_per_axis,
             gpu_records,
             pyramid,
-            recentre_voxels,
+            recenter_voxels,
         );
     }
 
@@ -935,7 +935,7 @@ impl BrickRaymarchRenderer {
         update: &BrickFieldUpdate,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
     ) {
         // Read the atlas geometry + dirty-slot bytes straight from the single-owner mirror —
         // no `to_build()` (item 9: the per-edit full records clone + whole-atlas re-pack is gone).
@@ -998,7 +998,7 @@ impl BrickRaymarchRenderer {
             geometry.bricks_per_axis,
             gpu_records,
             pyramid,
-            recentre_voxels,
+            recenter_voxels,
         );
     }
 
@@ -1025,7 +1025,7 @@ impl BrickRaymarchRenderer {
         bricks_per_axis: u32,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recentre_voxels: RecentreVoxels,
+        recenter_voxels: RecenterVoxels,
     ) {
         // Inclusive absolute block bounds over the record set (the sort is z-major,
         // so x/y still need the full scan; records are few — thousands).
@@ -1174,7 +1174,7 @@ impl BrickRaymarchRenderer {
         self.clipmap_level_3_blocks = pyramid.level_3.blocks_per_cell;
         self.clipmap_level_3_count = level_3_keys.len() as u32;
         self.record_count = gpu_records.len() as u32;
-        self.recentre_voxels = recentre_voxels;
+        self.recenter_voxels = recenter_voxels;
         self.brick_edge_voxels = brick_edge_voxels;
         self.bricks_per_axis = bricks_per_axis;
         self.absolute_block_bounds = absolute_block_bounds;
@@ -1221,13 +1221,13 @@ impl BrickRaymarchRenderer {
             (grid_dimensions[1] / 2) as i64,
             (grid_dimensions[2] / 2) as i64,
         ];
-        // absolute voxel = shading-absolute p + S, with S = recentre − half. Unwrap the
+        // absolute voxel = shading-absolute p + S, with S = recenter − half. Unwrap the
         // carried frame to its raw triple exactly here — the one uniform-packing consumption.
-        let recentre = self.recentre_voxels.voxels();
+        let recenter = self.recenter_voxels.voxels();
         let shading_to_absolute = [
-            recentre[0] - half[0],
-            recentre[1] - half[1],
-            recentre[2] - half[2],
+            recenter[0] - half[0],
+            recenter[1] - half[1],
+            recenter[2] - half[2],
         ];
         let mut lattice_shift = [0i32; 3];
         let mut voxel_bias = [0i32; 3];
@@ -1265,9 +1265,9 @@ impl BrickRaymarchRenderer {
         let band_lo_sv = clamp_i32(band.band_min as i64 + lattice_shift[2] as i64);
         let band_hi_sv = clamp_i32(band.band_max as i64 + 1 + lattice_shift[2] as i64);
 
-        // ADR 0018 Decision 5 (S5): the onion-fog region → the sv voxel frame. A recentred voxel
+        // ADR 0018 Decision 5 (S5): the onion-fog region → the sv voxel frame. A recentered voxel
         // `v` maps to `sv = v + half + lattice_shift` (the exact frame the band conversion above
-        // uses on Z: `band_min` is already `recentred_z + half_z`). Half-open `[lo, hi)`.
+        // uses on Z: `band_min` is already `recentered_z + half_z`). Half-open `[lo, hi)`.
         let region_sv = region.map(|clip| {
             let to_sv = |v: [i64; 3]| {
                 [
@@ -1381,7 +1381,7 @@ impl BrickRaymarchRenderer {
             false,
         );
         // The bound procedural material drives modulation exactly as the cuboid
-        // path: `Some` enables the relative base-colour array, `None` (a loaded VS
+        // path: `Some` enables the relative base-color array, `None` (a loaded VS
         // block — the brick path disengages for those, but mirror anyway) is neutral.
         let (modulation_enabled, base_colors) = match bound {
             Some(material) => (
@@ -1514,7 +1514,7 @@ impl BrickRaymarchRenderer {
     /// (ADR 0012 H1) Upload the two onion GHOST slab uniforms (slots 1 + 2) for `band`.
     /// Each slab is the SAME march as the solid but with its band clamped to ONE onion
     /// slab — `[band_min − depth, band_min)` (lower) and `(band_max, band_max + depth]`
-    /// (upper), the recentred-Z remainder of `AppCore::onion_fog_params`' onion span — plus
+    /// (upper), the recentered-Z remainder of `AppCore::onion_fog_params`' onion span — plus
     /// `ghost_mode = 1` + the flat tint. The traversal-AABB clamp `march_frame` applies for
     /// the slab band IS the onion clip (so a slab draw hits only its slab's voxels, capped at
     /// the slab edges exactly as the mesh ghost's per-slab geometry, and `band_clip_active`
@@ -1909,8 +1909,8 @@ impl BrickRaymarchRenderer {
         pixels
     }
 
-    /// ADR 0011 G2 — render the SHADED colour image (the colour-parity harness): one
-    /// `Rgba8Unorm` pixel per hit, shaded exactly as the MSAA render pass' centre-ray
+    /// ADR 0011 G2 — render the SHADED color image (the color-parity harness): one
+    /// `Rgba8Unorm` pixel per hit, shaded exactly as the MSAA render pass' center-ray
     /// evaluation. `loaded_material` binds the applied block's group(2) D2Array (call
     /// [`set_loaded_material_active(true)`](Self::set_loaded_material_active) +
     /// `update_uniforms` first so the shading branch matches); `None` binds the dummy.
@@ -1924,7 +1924,7 @@ impl BrickRaymarchRenderer {
         loaded_material: Option<&wgpu::BindGroup>,
     ) -> Vec<[u8; 4]> {
         let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("brick colour-identity target"),
+            label: Some("brick color-identity target"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1944,7 +1944,7 @@ impl BrickRaymarchRenderer {
         let padded_row = unpadded_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("brick colour-identity readback"),
+            label: Some("brick color-identity readback"),
             size: padded_row as u64 * height as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1954,7 +1954,7 @@ impl BrickRaymarchRenderer {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("brick colour-identity pass"),
+                label: Some("brick color-identity pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &target_view,
                     resolve_target: None,

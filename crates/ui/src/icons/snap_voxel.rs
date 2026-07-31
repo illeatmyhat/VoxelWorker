@@ -1,6 +1,6 @@
 //! `snap-voxel` — the vertex snaps to the fine lattice crossing. The default.
 //!
-//! The node sits ON the crossing of the two in-plane axes: whole-voxel quantisation, the
+//! The node sits ON the crossing of the two in-plane axes: whole-voxel quantization, the
 //! sketch's default position snap. The 2D reuse of ADR 0027's snap (ADR 0028 §5).
 //!
 //! Geometry re-drawn from the sheet (owner, 2026-07-30) — the axes now run the full 2.5–15.5

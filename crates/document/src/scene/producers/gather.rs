@@ -63,7 +63,7 @@ pub(super) fn leaf_is_out_of_phase(rotation: glam::Quat, offset_local_voxels: [f
 /// [`substrate::spatial::LeafPlacement`], so the dense reference can no longer drop the rotation
 /// the live path applies.
 ///
-/// For every output cell in the placed box, its centre is inverse-mapped into the producer-local
+/// For every output cell in the placed box, its center is inverse-mapped into the producer-local
 /// frame and the field is sampled: inside-or-on-surface cells are covered. The leaf's `operation`
 /// is then applied to `output` exactly as the forward stamp path does — `Union` stamps the covered
 /// cells (later document-order write wins on overlap), `Subtract` clears every covered cell, and
@@ -71,10 +71,10 @@ pub(super) fn leaf_is_out_of_phase(rotation: glam::Quat, offset_local_voxels: [f
 /// including the whole grid when the body covers nothing — `A ∩ ∅ = ∅`).
 ///
 /// `output_origin_abs` is the absolute voxel the output grid's index `[0,0,0]` denotes (the
-/// recentre for `resolve_region`; the floating origin for `resolve_chunk_rebased`), so output
+/// recenter for `resolve_region`; the floating origin for `resolve_chunk_rebased`), so output
 /// index `oi` denotes absolute cell `oi + output_origin_abs`. `clip_abs`, when `Some`, keeps only
 /// cells whose absolute index lies in the half-open box (the chunk membership clip — the voxel
-/// centre `+0.5` cancels on integer chunk edges exactly as the forward chunk stamp derives).
+/// center `+0.5` cancels on integer chunk edges exactly as the forward chunk stamp derives).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn gather_placed_field_into_grid(
     output: &mut VoxelGrid,
@@ -97,7 +97,7 @@ pub(super) fn gather_placed_field_into_grid(
     // The output-index box the leaf can touch: its absolute world AABB rebased to the output
     // frame (`abs − output_origin_abs`), intersected with the optional absolute clip box. Both the
     // world box and the clip are half-open, so the per-axis min/max of their rebased edges is the
-    // exact overlap. The result is NOT clamped to the grid dimensions: a recentred dense grid
+    // exact overlap. The result is NOT clamped to the grid dimensions: a recentered dense grid
     // stores `i32` indices whose origin sits at a negative position (see `Voxel::local_index`), so
     // the stamp path never bounds the index to `[0, dimensions)`, and neither may the gather.
     let mut lo = [0i64; 3];
@@ -113,7 +113,7 @@ pub(super) fn gather_placed_field_into_grid(
         hi[axis] = max_index.max(min_index);
     }
 
-    // Sample the field at every candidate cell centre, collecting the covered output cells and
+    // Sample the field at every candidate cell center, collecting the covered output cells and
     // the material each takes (the leaf's single-material override, else the producer's per-voxel
     // material, else the default id — the same precedence the forward stamp uses).
     let mut covered: Vec<([i32; 3], voxel_core::core_geom::BlockId)> = Vec::new();
@@ -122,22 +122,22 @@ pub(super) fn gather_placed_field_into_grid(
             for x in lo[0]..hi[0] {
                 let output_index = [x, y, z];
                 // ADR 0027 §1 wandering origin: rebase the absolute cell against the leaf origin in
-                // i64 (inside `local_of_abs_cell_centre`) before the rotation, so a far-out cell
-                // keeps full precision — no huge f32 `abs_centre − world_offset` cancellation.
+                // i64 (inside `local_of_abs_cell_center`) before the rotation, so a far-out cell
+                // keeps full precision — no huge f32 `abs_center − world_offset` cancellation.
                 let abs_cell = [
                     output_index[0] + output_origin_abs[0],
                     output_index[1] + output_origin_abs[1],
                     output_index[2] + output_origin_abs[2],
                 ];
                 let local = placement
-                    .local_of_abs_cell_centre(abs_cell)
+                    .local_of_abs_cell_center(abs_cell)
                     .voxels()
                     .to_array();
                 if field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL {
                     let block_id = material_override
                         .or_else(|| producer.material_at(local, voxels_per_block))
                         .unwrap_or(voxel_core::core_geom::BlockId::DEFAULT);
-                    // The recentred dense grid stores i32 indices (ADR 0008): the rebased output
+                    // The recentered dense grid stores i32 indices (ADR 0008): the rebased output
                     // index fits i32 for every representable scene, as the stamp path assumes.
                     covered.push((
                         [

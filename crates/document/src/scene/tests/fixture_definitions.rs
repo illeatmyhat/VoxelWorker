@@ -10,7 +10,7 @@ use voxel_core::core_geom::MaterialChoice;
 // These tests pin the dense-oracle semantics: the window (cut + fill in one
 // placement), the positional host, the ordering law, the one-level piercing
 // limit, reuse-by-reference def edits, the inert instance operation, and the
-// fingerprint contract a fixture flip must honour.
+// fingerprint contract a fixture flip must honor.
 
 const DENSITY: u32 = 8;
 

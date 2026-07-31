@@ -6,7 +6,7 @@
 //! nothing else needs to be — this is the one command whose whole result is a mark.
 //!
 //! The proportions are [`orbit_center`](crate::gizmos::orbit_center)'s, rescaled onto the set's
-//! dominant 2.5–15.5 box: arms 2.75 → 6.5 out from centre, ring at 4.25 so the arms cross it
+//! dominant 2.5–15.5 box: arms 2.75 → 6.5 out from center, ring at 4.25 so the arms cross it
 //! rather than stopping at it, dot 1.4. The crossing is the whole reading — a ring with arms
 //! butted against it is a wheel, and a ring the arms pass through is a sight.
 

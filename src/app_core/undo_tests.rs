@@ -670,7 +670,7 @@ fn set_density_round_trips() {
     // Size is now voxel-granular and SetDensity RE-TARGETS each Tool's size at the
     // new density (ADR 0003 §3f(0)), so the fixture's shapes must be built at the
     // SAME density the scene runs at (5) — a `2 blocks` shape is 10 voxels at d5,
-    // not the d16 default's 32 — otherwise the density round-trip would normalise
+    // not the d16 default's 32 — otherwise the density round-trip would normalize
     // the inconsistency and undo could not restore it byte-for-byte.
     let mut scene = Scene::from_nodes(vec![
         tool_node(
@@ -1312,7 +1312,7 @@ fn rebuild_grid_overlay_count(core: &mut AppCore, scene: &Scene, density: u32) -
             let grid = evaluation::two_layer_store::expand_resident_chunks_into_grid(
                 &output.two_layer_chunks,
                 output.region_dimensions,
-                output.recentre_voxels,
+                output.recenter_voxels,
                 density,
             );
             grid.occupied
@@ -1326,10 +1326,10 @@ fn rebuild_grid_overlay_count(core: &mut AppCore, scene: &Scene, density: u32) -
     }
 }
 
-/// Read the recentre shift a single `rebuild` of `scene` at `density` reports.
-fn rebuild_recentre_shift(core: &mut AppCore, scene: &Scene, density: u32) -> [i64; 3] {
+/// Read the recenter shift a single `rebuild` of `scene` at `density` reports.
+fn rebuild_recenter_shift(core: &mut AppCore, scene: &Scene, density: u32) -> [i64; 3] {
     match core.rebuild(scene, density) {
-        RebuildOutcome::Built(output) => output.recentre_shift_voxels,
+        RebuildOutcome::Built(output) => output.recenter_shift_voxels,
         RebuildOutcome::DensityRejected { .. } => {
             panic!("density {density} unexpectedly rejected")
         }
@@ -1339,24 +1339,24 @@ fn rebuild_recentre_shift(core: &mut AppCore, scene: &Scene, density: u32) -> [i
 /// The camera-stability wiring (the windowed re-frame bug): `rebuild` must report
 /// the floating-origin SHIFT so the shell can compensate `camera.target` and keep
 /// the view put across an edit. The first build shifts nothing; an offset that
-/// moves the composite extent shifts the recentre by exactly the change in
-/// `recentre_voxels_for_resolve` — the delta the camera subtracts.
+/// moves the composite extent shifts the recenter by exactly the change in
+/// `recenter_voxels_for_resolve` — the delta the camera subtracts.
 #[test]
-fn rebuild_reports_recentre_shift_across_extent_change() {
+fn rebuild_reports_recenter_shift_across_extent_change() {
     let density = 8;
     let mut scene = two_tool_scene();
     let mut core = test_core();
 
-    // First rebuild: no previous recentre, so the shift is zero (the camera is
+    // First rebuild: no previous recenter, so the shift is zero (the camera is
     // framed explicitly at startup, never compensated on the first build).
-    let first_shift = rebuild_recentre_shift(&mut core, &scene, density);
+    let first_shift = rebuild_recenter_shift(&mut core, &scene, density);
     assert_eq!(
         first_shift, [0; 3],
         "the first rebuild must not move the camera"
     );
 
-    // Move a node so the composite extent (hence its recentre) shifts.
-    let recentre_before = scene.recentre_voxels_for_resolve(density).voxels();
+    // Move a node so the composite extent (hence its recenter) shifts.
+    let recenter_before = scene.recenter_voxels_for_resolve(density).voxels();
     let target = scene.roots[0];
     let mut selection = selection_of_first_root(&scene);
     core.apply_intent(
@@ -1367,26 +1367,26 @@ fn rebuild_reports_recentre_shift_across_extent_change() {
             offset_measurements: whole_block_offset([10, -4, 6]),
         },
     );
-    let recentre_after = scene.recentre_voxels_for_resolve(density).voxels();
+    let recenter_after = scene.recenter_voxels_for_resolve(density).voxels();
     let expected_shift = [
-        recentre_after[0] - recentre_before[0],
-        recentre_after[1] - recentre_before[1],
-        recentre_after[2] - recentre_before[2],
+        recenter_after[0] - recenter_before[0],
+        recenter_after[1] - recenter_before[1],
+        recenter_after[2] - recenter_before[2],
     ];
     assert_ne!(
         expected_shift, [0; 3],
         "the offset must actually move the origin"
     );
 
-    let reported_shift = rebuild_recentre_shift(&mut core, &scene, density);
+    let reported_shift = rebuild_recenter_shift(&mut core, &scene, density);
     assert_eq!(
         reported_shift, expected_shift,
-        "rebuild must report the exact recentre delta the camera compensates",
+        "rebuild must report the exact recenter delta the camera compensates",
     );
 
     // A re-resolve with no further extent change reports zero — a no-op edit (or a
     // pure selection change) must not nudge the view.
-    let steady_shift = rebuild_recentre_shift(&mut core, &scene, density);
+    let steady_shift = rebuild_recenter_shift(&mut core, &scene, density);
     assert_eq!(
         steady_shift, [0; 3],
         "an unchanged extent must not move the camera"
@@ -1394,28 +1394,28 @@ fn rebuild_reports_recentre_shift_across_extent_change() {
 }
 
 /// ADR 0011 G5 startup door (the OOM-hang regression guard): the startup door builds NO
-/// `VoxelGrid` at all — it returns only the region dimensions + resolve recentre. The
+/// `VoxelGrid` at all — it returns only the region dimensions + resolve recenter. The
 /// persisted 8000×800×800 scene can therefore no longer build a dense ~5.1-billion-cell
 /// grid at startup, on EITHER binary (the door is `gpu`-feature-agnostic). The dims match
-/// the placed region and the recentre matches the resolve frame the camera + fog consume.
+/// the placed region and the recenter matches the resolve frame the camera + fog consume.
 #[test]
-fn startup_region_returns_dims_and_recentre_no_grid() {
+fn startup_region_returns_dims_and_recenter_no_grid() {
     let density = 16u32;
     let scene = default_replay_seed_scene();
     assert!(
         scene.has_chunkable_extent(density),
         "the seed scene is chunkable"
     );
-    let (dimensions, recentre) = AppCore::startup_region(&scene, density);
+    let (dimensions, recenter) = AppCore::startup_region(&scene, density);
     assert_eq!(
         dimensions,
         scene.placed_region_dimensions(density),
         "startup dimensions must match the placed region"
     );
     assert_eq!(
-        recentre,
-        scene.recentre_voxels_for_resolve(density).voxels(),
-        "startup recentre must match the resolve frame (the camera consumes it)"
+        recenter,
+        scene.recenter_voxels_for_resolve(density).voxels(),
+        "startup recenter must match the resolve frame (the camera consumes it)"
     );
 }
 
@@ -1455,8 +1455,8 @@ fn rebuild_yields_sparse_two_layer_output_no_dense_grid() {
 /// offset `[0, 0, 0]`, resolved at `density` through **`AppCore::rebuild`** — the
 /// per-chunk store path the WINDOWED APP actually renders. Returns
 /// `(min_corner, max_corner)` per axis in absolute voxel units (the half-open box
-/// `[min, max)`; voxel centres sit at `n + 0.5`, so the corner is `floor(centre)`
-/// for the min and `floor(centre) + 1` for the max).
+/// `[min, max)`; voxel centers sit at `n + 0.5`, so the corner is `floor(center)`
+/// for the min and `floor(center) + 1` for the max).
 fn rebuild_frame_corner_bbox(shape: SdfShape, density: u32) -> ([i64; 3], [i64; 3]) {
     let mut scene = Scene::from_nodes(vec![tool_node(shape, MaterialChoice::Stone)]);
     scene.ensure_node_ids();
@@ -1472,7 +1472,7 @@ fn rebuild_frame_corner_bbox(shape: SdfShape, density: u32) -> ([i64; 3], [i64; 
     let grid = evaluation::two_layer_store::expand_resident_chunks_into_grid(
         &output.two_layer_chunks,
         output.region_dimensions,
-        output.recentre_voxels,
+        output.recenter_voxels,
         density,
     );
     assert!(!grid.occupied.is_empty(), "shape resolved empty");
@@ -1490,21 +1490,21 @@ fn rebuild_frame_corner_bbox(shape: SdfShape, density: u32) -> ([i64; 3], [i64; 
 }
 
 /// PERMANENT GUARD (corrects the coordinator's mistaken premise). A shape placed
-/// at world offset `[0, 0, 0]` is rendered CENTRED ON THE WORLD ORIGIN through
+/// at world offset `[0, 0, 0]` is rendered CENTERED ON THE WORLD ORIGIN through
 /// the `AppCore::rebuild` / per-chunk store path — the exact path the windowed app
 /// renders. This pins the EMPIRICAL render-frame coordinates so the convention can
 /// never be misdescribed again.
 ///
-/// The per-chunk store applies the composite recentre (`Store::bind_region`
-/// rebases every chunk to the composite's recentre / floating origin), so the
-/// rebuild grid is in the SAME centred frame as the monolithic `resolve_region`
+/// The per-chunk store applies the composite recenter (`Store::bind_region`
+/// rebases every chunk to the composite's recenter / floating origin), so the
+/// rebuild grid is in the SAME centered frame as the monolithic `resolve_region`
 /// (bit-identical for a near scene — proven by the goldens). The #30 lattice shift
 /// snaps the producer grid onto the block lattice in the PRODUCER-TRUE
-/// (pre-recentre) frame, but the recentre then re-symmetrises the composite about
-/// the origin — so the shape the user sees is centred, NOT corner-at-origin.
+/// (pre-recenter) frame, but the recenter then re-symmetrises the composite about
+/// the origin — so the shape the user sees is centered, NOT corner-at-origin.
 ///
 /// Measured coordinates (this test pins them):
-///   * 1×1×1 box  @ d16 → `[−8, 8)`  per axis  (d8 → `[−4, 4)`)  — centred, NOT `[0, 16)`.
+///   * 1×1×1 box  @ d16 → `[−8, 8)`  per axis  (d8 → `[−4, 4)`)  — centered, NOT `[0, 16)`.
 ///   * 5×5×5 sphere @ d16 → `[−40, 40)` per axis (d8 → `[−20, 20)`).
 ///   * 5×1×5 box  @ d16 → X/Z `[−40, 40)`, Y `[−8, 8)` (d8 → `[−20, 20)`, `[−4, 4)`).
 ///
@@ -1524,12 +1524,12 @@ fn shapes_render_centered_on_origin_in_rebuild_frame() {
             let shape = SdfShape::from_blocks(kind, size, 1, density);
             let (min, max) = rebuild_frame_corner_bbox(shape, density);
             for axis in 0..3 {
-                // Centred: the half-open corner box is symmetric about 0.
+                // Centered: the half-open corner box is symmetric about 0.
                 assert_eq!(
                     min[axis] + max[axis],
                     0,
                     "{kind:?} {size:?}@d{density} axis {axis}: rebuild-frame corner bbox \
-                         [{}, {}) must be centred on the origin (min + max == 0)",
+                         [{}, {}) must be centered on the origin (min + max == 0)",
                     min[axis],
                     max[axis]
                 );
@@ -1543,18 +1543,18 @@ fn shapes_render_centered_on_origin_in_rebuild_frame() {
         }
     }
     // Pin the exact 1×1×1 @ d16 box so the convention is unambiguous: it occupies
-    // [−8, 8) per axis (centred), NOT [0, 16) (corner-at-origin).
+    // [−8, 8) per axis (centered), NOT [0, 16) (corner-at-origin).
     let one_block = SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, 16);
     let (min, max) = rebuild_frame_corner_bbox(one_block, 16);
     assert_eq!(
         min,
         [-8, -8, -8],
-        "1×1×1 box @ d16 min corner is centred at −8, not 0"
+        "1×1×1 box @ d16 min corner is centered at −8, not 0"
     );
     assert_eq!(
         max,
         [8, 8, 8],
-        "1×1×1 box @ d16 max corner is centred at +8, not 16"
+        "1×1×1 box @ d16 max corner is centered at +8, not 16"
     );
 }
 

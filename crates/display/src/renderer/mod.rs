@@ -21,9 +21,9 @@ use wgpu::util::DeviceExt;
 
 use document::scene::{Point, Scene};
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 // The sRGB↔linear transfer function is textbook math with no domain content, so it
-// lives in substrate (see the material/colour handling in docs/architecture); the
+// lives in substrate (see the material/color handling in docs/architecture); the
 // call sites below keep their names via this import.
 use substrate::srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 
@@ -90,7 +90,7 @@ pub(crate) use grid::*;
 #[cfg(test)]
 pub(crate) use view_cube::*;
 
-/// Append an alpha channel to a linear RGB colour, producing the `[f32; 4]` the
+/// Append an alpha channel to a linear RGB color, producing the `[f32; 4]` the
 /// line pipeline's vertices carry (M8: lattice/floor draw at low opacity).
 pub(crate) fn with_alpha(rgb: [f32; 3], alpha: f32) -> [f32; 4] {
     [rgb[0], rgb[1], rgb[2], alpha]

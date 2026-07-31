@@ -6,7 +6,7 @@
 //! This table is what makes a transposition slip a test failure rather than a subtly wrong icon.
 //!
 //! Coordinates are the sheet's 36-unit canvas halved onto the glyph grid. Arcs arrive in
-//! endpoint form and are converted here by the SVG 1.1 F.6.5 centre formula, because the large
+//! endpoint form and are converted here by the SVG 1.1 F.6.5 center formula, because the large
 //! and sweep flags interact and a sign heuristic gets a plausible wrong answer.
 
 use super::{Ink, Mark};
@@ -30,7 +30,7 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (11.8785, 4.2115), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (13.2233, 9.2306), size: 2.6, ink: Ink::ACCENT },
     ]),
-    // Midpoint line — centre · end
+    // Midpoint line — center · end
     ("midpoint-line", &[
         Mark::Line { points: &[(3.0, 3.0), (15.0, 15.0)], ink: Ink::SOLID },
         Mark::Line { points: &[(4.9394, 7.0606), (7.0606, 4.9394)], ink: Ink::SOLID },
@@ -39,7 +39,7 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (9.0, 9.0), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (15.0, 15.0), size: 2.6, ink: Ink::ACCENT },
     ]),
-    // Circle — centre · diameter
+    // Circle — center · diameter
     ("circle-center-diameter", &[
         Mark::Circle { center: (9.0, 9.0), radius: 6.0, ink: Ink::SOLID },
         Mark::Line { points: &[(9.0, 9.0), (13.2425, 13.2425)], ink: Ink::SOLID },
@@ -74,7 +74,7 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Line { points: &[(1.2, 3.9), (16.8, 15.6)], ink: Ink::ACCENT },
         Mark::Circle { center: (5.5, 11.5), radius: 3.5, ink: Ink::SOLID },
     ]),
-    // Arc — centre · endpoints
+    // Arc — center · endpoints
     ("arc-center-endpoints", &[
         Mark::Arc { center: (5.0, 14.0), rx: 10.0, ry: 10.0, from: -1.570796, to: 0.000000, ink: Ink::SOLID },
         Mark::Line { points: &[(5.0, 14.0), (15.0, 14.0)], ink: Ink::SOLID },
@@ -89,14 +89,14 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (9.0, 13.0), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (14.0, 8.0), size: 2.6, ink: Ink::ACCENT },
     ]),
-    // Ellipse — centre · 2 axes
+    // Ellipse — center · 2 axes
     ("ellipse-sketch", &[
         Mark::Ellipse { center: (9.0, 7.5), rx: 7.0, ry: 4.5, ink: Ink::SOLID },
         Mark::Node { center: (9.0, 7.5), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (9.0, 3.0), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (16.5, 7.5), size: 2.6, ink: Ink::ACCENT },
     ]),
-    // Slot — centre-to-centre
+    // Slot — center-to-center
     ("slot-center-to-center", &[
         Mark::Line { points: &[(5.5, 3.0), (12.5, 3.0)], ink: Ink::SOLID },
         Mark::Arc { center: (12.5, 6.0), rx: 3.0, ry: 3.0, from: -1.570796, to: 1.570796, ink: Ink::SOLID },
@@ -116,7 +116,7 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (15.5, 6.0), size: 2.2, ink: Ink::ACCENT },
         Mark::Node { center: (12.5, 3.0), size: 2.2, ink: Ink::ACCENT },
     ]),
-    // Slot — centre-point
+    // Slot — center-point
     ("slot-center-point", &[
         Mark::Line { points: &[(5.5, 3.0), (12.5, 3.0)], ink: Ink::SOLID },
         Mark::Arc { center: (12.5, 6.0), rx: 3.0, ry: 3.0, from: -1.570796, to: 1.570796, ink: Ink::SOLID },
@@ -126,7 +126,7 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (12.5, 6.0), size: 2.2, ink: Ink::ACCENT },
         Mark::Node { center: (12.5, 3.0), size: 2.2, ink: Ink::ACCENT },
     ]),
-    // Slot — centre-point arc
+    // Slot — center-point arc
     ("slot-center-point-arc", &[
         Mark::Arc { center: (9.0, 11.0), rx: 9.0, ry: 9.0, from: -2.617999, to: -0.523594, ink: Ink::SOLID },
         Mark::Arc { center: (15.0614, 7.4986), rx: 2.0, ry: 2.0, from: -0.522763, to: 2.617157, ink: Ink::SOLID },
@@ -199,7 +199,7 @@ pub(super) const REFERENCE: &[(&str, &[Mark])] = &[
         Mark::Node { center: (11.5, 15.0), size: 2.6, ink: Ink::ACCENT },
         Mark::Node { center: (14.346, 6.462), size: 2.6, ink: Ink::ACCENT },
     ]),
-    // Rectangle — centre · corner
+    // Rectangle — center · corner
     ("rectangle-center-corner", &[
         Mark::Rect { a: (3.0, 4.5), b: (15.0, 13.5), ink: Ink::SOLID },
         Mark::Node { center: (3.0, 4.5), size: 2.6, ink: Ink::SOLID },

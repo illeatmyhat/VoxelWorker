@@ -2,7 +2,7 @@
 //!
 //! Writing a `.vox` re-streams the scene's exact occupancy region-scoped (one covering
 //! chunk at a time — a coarse-solid block is a fast `d³` fill, a boundary block is
-//! per-voxel) and serialises the result to a user-chosen file. At the user's current
+//! per-voxel) and serializes the result to a user-chosen file. At the user's current
 //! scene scale (an 8000³ region, ~1.95M covering chunks) that build + write is a
 //! multi-second job; running it inline on the event-loop thread (the button handler used
 //! to) froze the UI for the whole export. This module moves it onto the shared background
@@ -12,14 +12,14 @@
 //! (`docs/architecture/04-work.md`) for the worker plumbing and the evaluation chapter
 //! (`docs/architecture/02-evaluation.md`) for the two-layer streaming export source.
 //!
-//! ## No supersede generation — the shell serialises instead (a deliberate divergence)
+//! ## No supersede generation — the shell serializes instead (a deliberate divergence)
 //!
 //! Every other background worker (geometry, diameter, brick) carries a monotonic
 //! generation and the loop **drains to the latest**, dropping superseded requests — the
 //! right policy for a display rebuild, where only the newest matters. An export is
 //! different: it is a **user-chosen file**. Drain-to-latest would silently drop a real
 //! export the moment a second one was queued, losing a file the user asked for. So this
-//! worker carries NO generation; instead the shell **serialises** — it disables the
+//! worker carries NO generation; instead the shell **serializes** — it disables the
 //! export button while a request is outstanding, so a second export can never be queued
 //! and drain-to-latest never bites. The [`build_catching`]
 //! generation argument is therefore a fixed `0` (there is no generation to report); it
@@ -44,7 +44,7 @@ pub struct VoxExportRequest {
     /// The document density (voxels per block) the export resolves at.
     pub density: u32,
     /// The per-`block_id` `.vox` palette (ADR 0003 §3a), computed on the main thread from
-    /// the active material's representative colour, exactly as the inline path did.
+    /// the active material's representative color, exactly as the inline path did.
     pub palette_colors: BlockPaletteColors,
     /// The user-chosen destination file (from the rfd save dialog, which stays on the main
     /// thread — a native modal, not the slow part).
@@ -78,7 +78,7 @@ pub struct VoxExportResult {
 /// The background `.vox` export worker: a [`Worker`] whose build closure streams the
 /// scene into a [`VoxExportBuilder`] and writes the file. Spawn it via
 /// [`spawn_vox_export_worker`]. Unlike the display workers it carries no supersede
-/// generation — the shell serialises exports (see the module doc).
+/// generation — the shell serializes exports (see the module doc).
 pub type VoxExportWorker = Worker<VoxExportRequest, VoxExportResult>;
 
 /// Spawn the `.vox` export worker on a dedicated thread. The closure mirrors the body of
@@ -98,12 +98,12 @@ pub fn spawn_vox_export_worker() -> VoxExportWorker {
             progress_chunks,
         } = request;
         // `build_catching`'s generation is a fixed 0: this worker has no supersede
-        // generation (the shell serialises — see the module doc). The catch still earns
+        // generation (the shell serializes — see the module doc). The catch still earns
         // its keep — a panic anywhere below becomes an Err the shell shows, not a dead
         // thread that would wedge `export_outstanding` forever.
         //
         // The ENTIRE job — stream + build + write — runs inside the ONE catch, so even a
-        // serialisation/IO panic in `write` (not just an `io::Error`) still delivers a
+        // serialization/IO panic in `write` (not just an `io::Error`) still delivers a
         // `VoxExportResult` and re-enables the Export button. `build_catching` maps the
         // panic case to `None`, which becomes the "panicked" Err below.
         let built: Option<Result<VoxExportSummary, String>> = build_catching(0, move || {

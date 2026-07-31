@@ -341,7 +341,7 @@ impl Shortcuts {
     /// The commands whose bindings were pressed this frame, **consuming** the presses.
     ///
     /// Call it AFTER the egui pass: a focused text field has already eaten its keys by then, so a
-    /// typed Escape ends the edit instead of cancelling the running viewport command. That
+    /// typed Escape ends the edit instead of canceling the running viewport command. That
     /// ordering is the reason this reads egui's input rather than the raw winit event — the guard
     /// is structural instead of a "was egui focused?" flag the caller has to remember.
     pub fn consume(&self, ctx: &egui::Context) -> Vec<ShortcutCommand> {

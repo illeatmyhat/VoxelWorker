@@ -57,7 +57,7 @@ pub fn sketch_exit_control(
         (SketchExit::Finish, "FINISH SKETCH", true),
         (SketchExit::Cancel, "CANCEL", false),
     ] {
-        // PLACEHOLDER ink so one colour-independent layout serves measure + paint.
+        // PLACEHOLDER ink so one color-independent layout serves measure + paint.
         let galley = painter.layout_no_wrap(label.to_string(), mono.clone(), Color32::PLACEHOLDER);
         let size = galley.size() + pad * 2.0;
         let rect = Rect::from_min_max(
@@ -131,7 +131,7 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
 /// should depend on two vectors staying the same length.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstraintBadge {
-    /// Where the badge's box is centred, in egui points, already projected by the shell.
+    /// Where the badge's box is centered, in egui points, already projected by the shell.
     pub center: Pos2,
     /// The glyph — the same mark the rail cell that made this constraint carries.
     pub icon: crate::icons::Icon,
@@ -150,7 +150,7 @@ pub struct ConstraintBadge {
 /// which the evidence is a line that merely *looks* level, and only the badge distinguishes
 /// "asserted horizontal" from "drawn nearly horizontal".
 ///
-/// A PICKED badge switches to the accent, giving up its role colour for as long as it is held.
+/// A PICKED badge switches to the accent, giving up its role color for as long as it is held.
 /// The role says what the mark is and the accent says you have hold of it, and on every other
 /// surface in the workspace the second reading wins while it applies.
 ///

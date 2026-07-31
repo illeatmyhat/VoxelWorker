@@ -1,18 +1,18 @@
-//! Analytic feature-edge catalogue of a sketch solid (ADR 0032 selection feedback):
+//! Analytic feature-edge catalog of a sketch solid (ADR 0032 selection feedback):
 //! the authored profile's own creases, lifted by the operation. An extrude creases
 //! along its two cap outlines and at every non-tangent profile vertex; a revolve
 //! creases on a latitude circle per non-tangent off-axis vertex, plus the profile
 //! outline at both sweep ends of a partial turn. A tangent vertex (collinear,
-//! same-direction neighbours — e.g. a `split_segment` midpoint) creases nothing, and neither
+//! same-direction neighbors — e.g. a `split_segment` midpoint) creases nothing, and neither
 //! does a vertex the author never placed: an arc reaches the boundary as a run of tessellation
 //! samples, and those are steps around a smooth curve, not corners.
 
 use super::solid::revolve_axes;
 use super::*;
 
-/// The catalogue's fixed-point resolution: profile coords quantise to 1/256 voxel so the
+/// The catalog's fixed-point resolution: profile coords quantize to 1/256 voxel so the
 /// tangency test stays EXACT integer arithmetic for sub-voxel vertices (#101). Display
-/// only — the resolve never quantises.
+/// only — the resolve never quantizes.
 const EDGE_FIXED_SCALE: f64 = 256.0;
 
 /// A profile coordinate on the 1/256-voxel lattice the tangency test works over.
@@ -34,10 +34,10 @@ fn vertex_is_tangent(previous: [i64; 2], vertex: [i64; 2], next: [i64; 2]) -> bo
 }
 
 impl SketchSolid {
-    /// The catalogue as polylines in the producer-local `[0, grid_dimensions()]` voxel
+    /// The catalog as polylines in the producer-local `[0, grid_dimensions()]` voxel
     /// frame — the SAME frame the resolve samples (ADR 0008: extrude fully
     /// corner-anchored on the profile bbox min; revolve corner-anchored axially,
-    /// centred on the two radial axes). Empty for a degenerate producer.
+    /// centered on the two radial axes). Empty for a degenerate producer.
     /// `circle_segments` tessellates one full latitude turn; a partial arc keeps the
     /// same angular density.
     pub(crate) fn profile_edge_polylines_local(&self, circle_segments: u32) -> Vec<Vec<[f32; 3]>> {
@@ -60,7 +60,7 @@ impl SketchSolid {
         polylines
     }
 
-    /// The catalogue contribution of ONE closed boundary, appended to `polylines`. Split out so
+    /// The catalog contribution of ONE closed boundary, appended to `polylines`. Split out so
     /// a multi-loop region reuses one definition per loop rather than duplicating the crease
     /// rules (#100).
     fn ring_edge_polylines(
@@ -70,7 +70,7 @@ impl SketchSolid {
         circle_segments: u32,
         polylines: &mut Vec<Vec<[f32; 3]>>,
     ) {
-        // The ring in 1/256-voxel FIXED POINT: sub-voxel coords (#101) quantise onto an
+        // The ring in 1/256-voxel FIXED POINT: sub-voxel coords (#101) quantize onto an
         // integer lattice so dedup/tangency stay exact; every emitted coordinate divides
         // back out through `fixed_to_voxels`.
         let mut ring: Vec<[i64; 2]> = boundary
@@ -96,7 +96,7 @@ impl SketchSolid {
             .map(|point| to_fixed(point.at.in_plane()))
             .collect();
         let vertex_count = ring.len();
-        let neighbours = |index: usize| {
+        let neighbors = |index: usize| {
             (
                 ring[(index + vertex_count - 1) % vertex_count],
                 ring[index],
@@ -126,7 +126,7 @@ impl SketchSolid {
                     polylines.push(outline);
                 }
                 for index in 0..vertex_count {
-                    let (previous, vertex, next) = neighbours(index);
+                    let (previous, vertex, next) = neighbors(index);
                     if authored.contains(&vertex) && !vertex_is_tangent(previous, vertex, next) {
                         polylines.push(vec![local_point(vertex, 0.0), local_point(vertex, height)]);
                     }
@@ -156,7 +156,7 @@ impl SketchSolid {
                 // vertex; a vertex ON the axis is a pole and creases nothing.
                 let steps = (circle_segments * turn_degrees).div_ceil(360).max(1);
                 for index in 0..vertex_count {
-                    let (previous, vertex, next) = neighbours(index);
+                    let (previous, vertex, next) = neighbors(index);
                     if !authored.contains(&vertex)
                         || vertex_is_tangent(previous, vertex, next)
                         || vertex[radial_coord] == 0

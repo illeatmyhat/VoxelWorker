@@ -3,7 +3,7 @@
 /// The cache key: a chunk coordinate (in `CHUNK_BLOCKS`-cell space) plus its
 /// level-of-detail. `lod` is the parked LOD seam (ADR 0002 Decision 2): it is
 /// always `0` today and is carried so a future down-sampling LOD level is a
-/// behavioural change, not a key-shape change.
+/// behavioral change, not a key-shape change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkCacheKey {
     /// The chunk's integer cell coordinate (see [`Scene::resolve_chunk`](document::scene::Scene::resolve_chunk)).

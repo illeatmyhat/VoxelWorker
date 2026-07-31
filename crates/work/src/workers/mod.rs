@@ -21,7 +21,7 @@
 //! The domain workers themselves live in the submodules: [`brick`], [`diameter`],
 //! [`export`], [`geometry`], and the one-shot streaming [`scan`]. The [`export`] worker
 //! diverges from the supersede contract — a `.vox` is a user-chosen file, so the shell
-//! serialises exports rather than draining to the latest (see its module doc).
+//! serializes exports rather than draining to the latest (see its module doc).
 
 pub mod brick;
 pub mod diameter;

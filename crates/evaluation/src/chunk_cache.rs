@@ -52,7 +52,7 @@ mod scene_cache_equivalence_tests {
     /// `resolve_region` and the chunk-cache reassembly seed their output to it. So
     /// the camera / gizmo / lattice / floor-grid / layer-scrubber may read the
     /// region dimensions from the SCENE rather than from the assembled `VoxelGrid`,
-    /// with zero behavioural change. This pins that substitution across every
+    /// with zero behavioral change. This pins that substitution across every
     /// representative scene (all SDF shapes, flat/odd sizes, a placed multi-node
     /// scene, and an instanced village) for BOTH resolve paths.
     #[test]
@@ -169,7 +169,7 @@ mod scene_cache_equivalence_tests {
     /// density ∈ {1,2,5,15,16}, for BOTH a single shape AND a 2-leaf mixed-parity
     /// composite, assert the four invariants that the old center-emit broke:
     ///
-    /// (a) every occupied voxel CENTRE is a HALF-INTEGER (`fract()==0.5`) — on the
+    /// (a) every occupied voxel CENTER is a HALF-INTEGER (`fract()==0.5`) — on the
     ///     voxel lattice, inside a cell, for ANY size·d parity (the win: odd grids no
     ///     longer land on integers and straddle cell boundaries);
     /// (b) ZERO voxels dropped — occupied count == the expected filled-cell count;
@@ -232,14 +232,14 @@ mod scene_cache_equivalence_tests {
                     "[{label}] assembled dims voxel-framed"
                 );
 
-                // (a) every centre is a half-integer.
+                // (a) every center is a half-integer.
                 for voxel in &monolithic.occupied {
                     let position = voxel.world_position();
                     for axis in 0..3 {
                         assert_eq!(
                         position[axis].fract().abs(),
                         0.5,
-                        "[{label}] centre {:?} axis {axis} must be a half-integer (on the lattice)",
+                        "[{label}] center {:?} axis {axis} must be a half-integer (on the lattice)",
                         position
                     );
                     }

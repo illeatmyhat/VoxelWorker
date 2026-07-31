@@ -27,7 +27,7 @@ brick, scan}.rs`). Drain-to-latest, panic containment, and thread lifetime are o
 implementation with one set of tests. The prediction held immediately: the `.vox`
 exporter (`src/workers/export.rs`, `67bd305`) cost exactly a request type and a build
 closure — plus one deliberate divergence worth knowing: an export is a *user-chosen
-file*, so it opts OUT of supersede semantics (the shell serialises with a single-flight
+file*, so it opts OUT of supersede semantics (the shell serializes with a single-flight
 flag instead; a drain-to-latest drop would silently discard a file the user asked for).
 
 ## 2. Extract the display orchestrator out of `main.rs` — **DONE** (`6ffc553`)
@@ -108,15 +108,15 @@ survives only as the parity-oracle materialisation (every remaining caller is a 
 ## 10. Type-enforce the frame law, then machine-check the pure kernel — **(a) BEGUN, (b) FUTURE**
 
 **(a) Frame newtypes — first two increments done (`26cfd81`, `de3da33`; `294029b`,
-`55311c7`).** `RecentreVoxels` (spatial-primitive layer, `src/voxel.rs`; no arithmetic,
+`55311c7`).** `RecenterVoxels` (spatial-primitive layer, `src/voxel.rs`; no arithmetic,
 `new()` in / `voxels()` out) is minted at the ONE origin —
-`Scene::recentre_voxels_for_resolve` — and now travels through the orchestrator, both
+`Scene::recenter_voxels_for_resolve` — and now travels through the orchestrator, both
 worker channels, the renderer install seams, AND the `cuboid_mesh` / `two_layer_store` /
 `scene/` internals, unwrapping only at the point of positional arithmetic and at uniform
 packing (a high-effort review of the second increment found no frame bugs; its three
-cleanup findings — a dead raw recentre return leg in `stream_vox_occupancy`, doubled
-unwrap doors — are applied). Deliberately still raw: `recentre_shift_voxels` (a frame
-*delta*) and `previous_recentre_voxels` (a comparison cache) — positional arithmetic,
+cleanup findings — a dead raw recenter return leg in `stream_vox_occupancy`, doubled
+unwrap doors — are applied). Deliberately still raw: `recenter_shift_voxels` (a frame
+*delta*) and `previous_recenter_voxels` (a comparison cache) — positional arithmetic,
 not transport — and the dense-oracle grid. **Next increment:** the next frame-bearing
 value — the sculpt-delta intent's addresses, when sculpt lands.
 
@@ -151,7 +151,7 @@ doc comment cites the architecture chapter it implements rather than a decision 
 ## 13. File-size guard sweep — **DONE** (2026-07-22)
 
 Seventeen files sat over the 1000-line advisory guard. A parallel survey classified each,
-then a fan-out of worktree-isolated agents carved eleven of them (behaviour-preserving,
+then a fan-out of worktree-isolated agents carved eleven of them (behavior-preserving,
 each gated per-crate then re-gated composed; goldens byte-identical):
 
 - **Multi-concern source carves** (folder module, `mod.rs` facade re-exports for zero consumer

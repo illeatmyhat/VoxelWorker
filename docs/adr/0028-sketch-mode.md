@@ -113,7 +113,7 @@ is a **real entity**, not a rubber-band preview.
 - **A separate transient undo stack committing atomically on Finish (rejected).** Matches the
   "transient history" wording literally, but a parallel history system is machinery to keep coherent.
   An **open group** on the existing stack (§4) delivers the same in-mode-fine / main-coarse / Cancel
-  behaviour with one concept and one stack.
+  behavior with one concept and one stack.
 - **All edits live on the flat main stack, no grouping (rejected).** Simplest, but the undo explosion
   the owner flagged: undoing a sketch means undoing every vertex one at a time.
 - **A live volume ghost preview while drawing (rejected).** Redundant with editing the real profile,

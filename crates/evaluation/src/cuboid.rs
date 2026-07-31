@@ -82,9 +82,9 @@ fn region_from_voxel_grid(
     if grid_x == 0 || grid_y == 0 || grid_z == 0 {
         return region;
     }
-    // Corner-anchoring: the grid's index space is `[0, dim)` with voxel centres at
-    // `idx + 0.5`, so `idx = floor(world)` — exact for any parity (centres are
-    // half-integers). (Was `round(world + dim/2 − 0.5)` for the retired origin-centred
+    // Corner-anchoring: the grid's index space is `[0, dim)` with voxel centers at
+    // `idx + 0.5`, so `idx = floor(world)` — exact for any parity (centers are
+    // half-integers). (Was `round(world + dim/2 − 0.5)` for the retired origin-centered
     // grid, which broke for odd dim.)
     for voxel in &grid.occupied {
         let i = voxel.local_index[0] as i64;
@@ -127,7 +127,7 @@ mod tests {
         // adapter, confirming the world_position → index mapping round-trips.
         let dimensions = [2u32, 2, 2];
         let mut grid = VoxelGrid::new(dimensions);
-        // Corner-anchored grid: voxel (i,j,k) centre at `idx + 0.5`. Fill a 2×2×1 slab
+        // Corner-anchored grid: voxel (i,j,k) center at `idx + 0.5`. Fill a 2×2×1 slab
         // (z=0) with material 5; leave z=1 air.
         for k in 0..1u32 {
             for j in 0..2u32 {
@@ -235,7 +235,7 @@ mod tests {
                     continue;
                 }
                 let region = region_from_voxel_grid(&grid, [0, 0, 0], dimensions);
-                // The adapter must not drop any voxel for an origin-centred grid.
+                // The adapter must not drop any voxel for an origin-centered grid.
                 let region_solid = region.cells.iter().filter(|c| c.is_some()).count();
                 assert_eq!(
                     region_solid,

@@ -79,7 +79,7 @@ pub(super) fn to_region_edges_measured(
         .collect()
 }
 
-/// A lower bound on the distance from every point of the sample box (`centre ± half_extent`)
+/// A lower bound on the distance from every point of the sample box (`center ± half_extent`)
 /// to the producer's grid extent `[0, dimensions]`, in `metric`.
 ///
 /// The occupied set is a SUBSET of the extent, so distance-to-the-solid is at least
@@ -90,15 +90,15 @@ pub(super) fn to_region_edges_measured(
 /// answered `(1, 2)` for every outside cell regardless of how far away it was, which is why
 /// shifting it by an outset was unsound (ADR 0019 Decision 1).
 fn box_clearance(
-    centre: [f32; 3],
+    center: [f32; 3],
     half_extent: [f32; 3],
     dimensions: [u32; 3],
     metric: substrate::geom2d::Metric,
 ) -> f32 {
     let mut gaps = [0.0f32; 3];
     for axis in 0..3 {
-        let low = centre[axis] - half_extent[axis];
-        let high = centre[axis] + half_extent[axis];
+        let low = center[axis] - half_extent[axis];
+        let high = center[axis] + half_extent[axis];
         // Signed gap to `[0, dimension]`, clamped at zero when the box straddles the slab.
         gaps[axis] = (-high).max(low - dimensions[axis] as f32).max(0.0);
     }
@@ -110,16 +110,16 @@ fn box_clearance(
     }
 }
 
-/// Whether the centred radial corner box `[a_lo, a_hi] × [b_lo, b_hi]` — over the two
+/// Whether the centered radial corner box `[a_lo, a_hi] × [b_lo, b_hi]` — over the two
 /// radial world axes `(radial_a, radial_b)` in ASCENDING index, matching
-/// [`SketchSolid::resolve_revolve`](SketchSolid::resolve_revolve)'s `centred[radial_a]` /
-/// `centred[radial_b]` — lies ENTIRELY inside the swept arc `[0, turn_degrees]` (partial
+/// [`SketchSolid::resolve_revolve`](SketchSolid::resolve_revolve)'s `centered[radial_a]` /
+/// `centered[radial_b]` — lies ENTIRELY inside the swept arc `[0, turn_degrees]` (partial
 /// coarse-solid condition 2, ADR 0010 Decision 2).
 ///
-/// The resolve keeps a voxel iff its sweep angle `theta = atan2(centred[radial_b],
-/// centred[radial_a])` (normalised to `[0, 360)`) satisfies `theta <= turn_degrees`. A cell
+/// The resolve keeps a voxel iff its sweep angle `theta = atan2(centered[radial_b],
+/// centered[radial_a])` (normalized to `[0, 360)`) satisfies `theta <= turn_degrees`. A cell
 /// is coarse-solid only when EVERY sample angle is `<= turn_degrees`; since the passed box is
-/// the voxel-INDEX corner box (a superset of the actual sample centres `idx + 0.5 − half`),
+/// the voxel-INDEX corner box (a superset of the actual sample centers `idx + 0.5 − half`),
 /// its angular span over-covers the true samples — never under (CONSERVATIVE-NEVER-NARROW).
 ///
 /// Two configurations are unboundable and return `false` (⇒ BOUNDARY, still exact):
@@ -142,7 +142,7 @@ pub(super) fn revolve_box_within_sweep_arc(
 ) -> bool {
     // Unboundable: the box contains/touches the axis, or straddles the theta=0 ray.
     //
-    // The seam of the normalised angle is the `+radial_a` axis alone (`b = 0, a > 0`):
+    // The seam of the normalized angle is the `+radial_a` axis alone (`b = 0, a > 0`):
     // approaching from `b > 0` gives `theta → 0⁺`, from `b < 0` gives `theta → 360⁻`. A box
     // that dips to `b < 0` while reaching UP TO OR ABOVE `b = 0` with any `a > 0` therefore
     // holds samples at `theta → 360⁻` (an angle no partial arc `[0, turn < 360]` covers) AND
@@ -154,7 +154,7 @@ pub(super) fn revolve_box_within_sweep_arc(
     if contains_or_touches_origin || straddles_zero_ray {
         return false;
     }
-    // Sweep angle of a corner, normalised to [0, 360) exactly as `resolve_revolve` does.
+    // Sweep angle of a corner, normalized to [0, 360) exactly as `resolve_revolve` does.
     let sweep_angle = |a: f64, b: f64| -> f64 {
         let mut theta = b.atan2(a).to_degrees();
         if theta < 0.0 {
@@ -205,7 +205,7 @@ impl VoxelProducer for SketchSolid {
         }
     }
 
-    /// Conservative field interval over a block cell (ADR 0010 Decision 2), honouring the
+    /// Conservative field interval over a block cell (ADR 0010 Decision 2), honoring the
     /// interior-elision contract for BOTH extrude and revolve (this FINISHES the
     /// boundary-residency rollout for `SketchSolid` — see ADR 0009 §3–§4 / ADR 0010).
     ///
@@ -218,7 +218,7 @@ impl VoxelProducer for SketchSolid {
     /// survives a dilation of `N` exactly when its clearance exceeds `N`, and the clearance is
     /// now the number itself.
     ///
-    /// The bracket is the Lipschitz bound about the cell's centre sample, in the metric the
+    /// The bracket is the Lipschitz bound about the cell's center sample, in the metric the
     /// field is exact in ([`field_metric`](SketchSolid::field_metric)), then NARROWED by the
     /// two structural facts the predicates prove: the occupied set is a SUBSET of the grid
     /// AABB `[0, full_dim)` (giving a real clearance for an outside cell), and a
@@ -276,22 +276,22 @@ impl VoxelProducer for SketchSolid {
                 }
             };
 
-        // The metric bracket. Occupancy is decided at voxel CENTRES (`index + 0.5`), so the
+        // The metric bracket. Occupancy is decided at voxel CENTERS (`index + 0.5`), so the
         // region the bracket must cover is `[min + 0.5, max − 0.5]`, not the whole cell box —
-        // tighter, and exactly what `resolve_into` samples. (`centre` / `half_extent` are kept
+        // tighter, and exactly what `resolve_into` samples. (`center` / `half_extent` are kept
         // for the box-clearance refinement below, so this cannot fold into `metric_cell_bracket`;
         // the drift-prone metric split is still routed through `Metric::cell_circumradius`.)
         let metric = self.field_metric();
-        let mut centre = [0.0f32; 3];
+        let mut center = [0.0f32; 3];
         let mut half_extent = [0.0f32; 3];
         for axis in 0..3 {
             let low = cell_local_voxels.min[axis] as f32 + 0.5;
             let high = (cell_local_voxels.max[axis] - 1) as f32 + 0.5;
-            centre[axis] = 0.5 * (low + high);
+            center[axis] = 0.5 * (low + high);
             half_extent[axis] = 0.5 * (high - low);
         }
         let mut interval = crate::voxel::FieldInterval::from_lipschitz_center(
-            SketchSolid::signed_distance(self, centre),
+            SketchSolid::signed_distance(self, center),
             metric.cell_circumradius(half_extent),
         );
 
@@ -309,14 +309,14 @@ impl VoxelProducer for SketchSolid {
         //     outside and `d >= clearance` holds. A box that OVERLAPS the extent has zero
         //     clearance and may well be inside the solid, where `d < 0` — raising the lower
         //     bound to zero there would be a false claim, not a refinement.
-        let clearance = box_clearance(centre, half_extent, dimensions, metric);
+        let clearance = box_clearance(center, half_extent, dimensions, metric);
         if clearance > 0.0 {
             interval.minimum = interval.minimum.max(clearance);
         }
-        // (2) A provably-solid cell has every sample centre inside, so the true distance there
+        // (2) A provably-solid cell has every sample center inside, so the true distance there
         //     is `<= 0` everywhere and the upper bound may close to zero. Without this the
         //     bracket would lose the interior elision the sentinel form had: a cell exactly
-        //     filling the body has centre distance `−r` and would bracket to `[−2r, 0+]`.
+        //     filling the body has center distance `−r` and would bracket to `[−2r, 0+]`.
         if provably_solid {
             interval.maximum = interval.maximum.min(0.0);
         }

@@ -172,7 +172,7 @@ impl<'a> MeasurementField<'a> {
 
 /// A [`MeasurementError`] as the sentence shown under the field.
 ///
-/// The non-landing case names BOTH neighbouring whole-voxel values, because the useful
+/// The non-landing case names BOTH neighboring whole-voxel values, because the useful
 /// next action is picking one of them.
 pub fn measurement_error_text(error: &MeasurementError) -> String {
     match error {

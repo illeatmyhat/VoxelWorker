@@ -196,7 +196,7 @@ impl CombineOp {
 /// reaches the resolve (it ORs the on-face-grid bit into the leaf's stamped
 /// material id, so it travels with each voxel through chunk bucketing — see
 /// `Scene::for_each_leaf`), and `block_lattice` drives the per-object lattice
-/// extent (`Scene::node_block_lattice_box_recentred`) the renderer draws from.
+/// extent (`Scene::node_block_lattice_box_recentered`) the renderer draws from.
 /// The old scene-wide `AppConfig.show_*` toggles these replaced were deleted in #31.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeGrids {
@@ -268,7 +268,7 @@ pub struct Node {
     /// Only the latter is what "give this Part clearance" means.
     ///
     /// A scope whose subtree contains a `VoxelBody` declines to compose and keeps its
-    /// members' behaviour unchanged — such a body is fieldless, so it could not be outset
+    /// members' behavior unchanged — such a body is fieldless, so it could not be outset
     /// anyway (ADR 0020 Decision 1).
     #[serde(default)]
     pub outset: parametric::units::Measurement,
@@ -280,7 +280,7 @@ pub struct Node {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// Per-node grid display settings (issue #29). Defaults all-off; an older
-    /// config without this field deserialises to the all-off default.
+    /// config without this field deserializes to the all-off default.
     #[serde(default)]
     pub grids: NodeGrids,
     /// What the node is.

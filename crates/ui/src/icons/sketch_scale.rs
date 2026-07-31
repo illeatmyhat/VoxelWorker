@@ -2,7 +2,7 @@
 //!
 //! Two nested rectangles sharing their top-left corner, and a diagonal arrow leaving it. Sharing
 //! the corner is the mark's claim: scaling has an ANCHOR, and two concentric boxes would say it
-//! grows about its centre, which is a different tool.
+//! grows about its center, which is a different tool.
 //!
 //! Uniform is said by the outer box being the inner one's shape, not merely a larger rectangle —
 //! both are squares here so the ratio is visible at a glance.

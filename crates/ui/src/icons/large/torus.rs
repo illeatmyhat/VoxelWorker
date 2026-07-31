@@ -7,7 +7,7 @@
 //! never forms. Two things do that here:
 //!
 //! * **The bore is displaced upward**, not concentric. A real ring seen from above-front
-//!   projects its hole above the silhouette's centre, so the gap above the bore is about half
+//!   projects its hole above the silhouette's center, so the gap above the bore is about half
 //!   the gap below it. That asymmetry is what an iris never has.
 //! * **The bore's far half is faded** while its near half is solid, so the mark states a
 //!   direction of view. An eye is symmetric front-on; this cannot be.
@@ -28,7 +28,7 @@ pub(super) const DRAW: &[Mark] = &[
         ry: 6.0,
         ink: Ink::SOLID,
     },
-    // The bore, near half — solid, and sitting ABOVE the silhouette's centre.
+    // The bore, near half — solid, and sitting ABOVE the silhouette's center.
     Mark::Arc {
         center: (13.0, 12.0),
         rx: 4.3,

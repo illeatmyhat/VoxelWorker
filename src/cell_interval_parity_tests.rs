@@ -131,7 +131,7 @@ fn fuzz_cells(full_dimensions: [u32; 3], voxels_per_block: u32, seed: u64) -> Ve
     }
 
     // Every single-voxel cell would be too many; sample a deterministic spread,
-    // including the 8 corners + centre (tiny-feature cases).
+    // including the 8 corners + center (tiny-feature cases).
     let corners = [
         [0, 0, 0],
         [dims[0] - 1, 0, 0],
@@ -317,12 +317,12 @@ fn strongly_anisotropic_sdf_cells_stay_sound_where_lipschitz_is_underestimated()
                         if let Some(interval) = shape.cell_field_interval(cell, density) {
                             checked += 1;
                             // The Lipschitz constant this cell's samples ACTUALLY require.
-                            let centre = Vec3::new(
+                            let center = Vec3::new(
                                 (cell.min[0] + cell.max[0]) as f32 / 2.0 - half.x,
                                 (cell.min[1] + cell.max[1]) as f32 / 2.0 - half.y,
                                 (cell.min[2] + cell.max[2]) as f32 / 2.0 - half.z,
                             );
-                            let field_at_centre = signed_distance(kind, centre, half, wall_voxels);
+                            let field_at_center = signed_distance(kind, center, half, wall_voxels);
                             // Recover the Lipschitz constant the PRODUCTION code actually
                             // used, rather than duplicating its formula here: the interval is
                             // `[f_c ± L·R]`, so `L = (max − min) / 2R`. Reading it back keeps
@@ -363,10 +363,10 @@ fn strongly_anisotropic_sdf_cells_stay_sound_where_lipschitz_is_underestimated()
                                             "{label}: sample {field} escaped the interval \
                                              {interval:?} (cell={cell:?})"
                                         );
-                                        let travel = (sample - centre).length();
+                                        let travel = (sample - center).length();
                                         if travel > 1e-6 {
                                             required_lipschitz = required_lipschitz
-                                                .max((field - field_at_centre).abs() / travel);
+                                                .max((field - field_at_center).abs() / travel);
                                         }
                                     }
                                 }
@@ -655,8 +655,8 @@ fn sketch_cell_interval_brackets_the_true_distance() {
             let Some(interval) = producer.cell_field_interval(cell, density) else {
                 continue;
             };
-            // Voxel centres sit at index + 0.5, so the cell's sample region spans
-            // `[min + 0.5, max − 0.5]` on each axis. Probe its corners and its centre.
+            // Voxel centers sit at index + 0.5, so the cell's sample region spans
+            // `[min + 0.5, max − 0.5]` on each axis. Probe its corners and its center.
             for corner in 0..8u32 {
                 let point = std::array::from_fn(|axis| {
                     let lo = cell.min[axis] as f32 + 0.5;

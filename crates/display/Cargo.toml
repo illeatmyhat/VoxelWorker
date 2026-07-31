@@ -30,7 +30,7 @@ evaluation = { path = "../evaluation" }
 # scene-graph nouns (Node / NodeContent / NodeTransform) the brick-field tests build fixtures from.
 document = { path = "../document" }
 # The foundational value vocabulary: the resolved Voxel + the block palette id / cell-key
-# codec + BlockAttrs, CHUNK_BLOCKS, the recentre frame (RecentreVoxels), and the absolute-voxel box.
+# codec + BlockAttrs, CHUNK_BLOCKS, the recenter frame (RecenterVoxels), and the absolute-voxel box.
 voxel_core = { path = "../voxel_core" }
 # The pure CS/math substrate (interval arithmetic, cuboid decomposition, GenerationTracker) the
 # GPU sinks and the packed records are built on.

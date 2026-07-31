@@ -51,7 +51,7 @@ pub(crate) struct ShotOptions {
     /// override every repro.
     pub(crate) view_mode_explicit: bool,
     /// `--orbit-type <constrained|free>` (ADR 0032): the DEFAULT orbit type the icon rail's
-    /// split button shows. Camera behaviour is unaffected — the capture takes no drags — so
+    /// split button shows. Camera behavior is unaffected — the capture takes no drags — so
     /// this exists to render the rail in its other state.
     pub(crate) orbit_type: OrbitType,
     /// `--stack-folded` (issue #88): start the floating Signal display stack FOLDED to its
@@ -77,7 +77,7 @@ pub(crate) struct ShotOptions {
     /// / offset. Only meaningful together with `--points`.
     pub(crate) extra_point_blocks: Option<[i64; 3]>,
     /// Whether the voxel cubes render in face-orientation debug mode
-    /// (`--debug-faces`): colour by outward face normal + back-facing marker,
+    /// (`--debug-faces`): color by outward face normal + back-facing marker,
     /// cull off. The standard way to verify face winding/culling.
     pub(crate) debug_face_orientation: bool,
     /// When `Some`, write the resolved grid to this `.vox` path (M8
@@ -147,7 +147,7 @@ pub(crate) struct ShotOptions {
     /// instanced `--demo-village` scene, but its whole composite is offset to the FAR
     /// end of the anisotropic horizontal extent ([`crate::demos::FAR_SCENE_BASE_BLOCKS`] ≈
     /// XZ 10,000 blocks, vertical Y bounded at 0). The near goldens cannot see
-    /// far-scene f32 precision loss — at XZ~10k the absolute voxel centre has barely a
+    /// far-scene f32 precision loss — at XZ~10k the absolute voxel center has barely a
     /// mantissa bit below the voxel — so this golden establishes the far-scene baseline
     /// the §3a chunk-local-integer payload move (#48) must preserve. It renders crisp
     /// TODAY because `resolve_chunk_rebased` subtracts the floating origin in i64 BEFORE
@@ -163,11 +163,11 @@ pub(crate) struct ShotOptions {
     /// recognizable box placed at a LARGE block offset (a block offset of
     /// [100_000, 0, 0]) so the far-lands f32-precision question can be observed.
     /// This is the precision baseline the S4 64-bit/origin-rebasing work regresses
-    /// against. NOTE: today's `resolve_region` recentres the composite on its own
-    /// centre, so a LONE far node is recentred back to the origin — see the S1
+    /// against. NOTE: today's `resolve_region` recenters the composite on its own
+    /// center, so a LONE far node is recentered back to the origin — see the S1
     /// PROGRESS note. The durable artifact is the CPU placement test in `scene.rs`
     /// (the node resolves to absolute coords around 100_000); this render flag is
-    /// the visual baseline that S4 must keep jitter-free once the recentre is
+    /// the visual baseline that S4 must keep jitter-free once the recenter is
     /// removed. Overrides --shape/--size/--density.
     pub(crate) far_offset: bool,
     /// `--demo-far-offset-near` (ADR 0002 streaming S1): the SAME small box as
@@ -210,7 +210,7 @@ pub(crate) struct ShotOptions {
     /// Definitions list. Overrides --shape/--size/--density.
     pub(crate) demo_groups: bool,
     /// `--synthetic-block` (part of #20 verification): build a LoadedMaterial from
-    /// SIX distinct solid-colour faces in-process (no VS install needed) and apply
+    /// SIX distinct solid-color faces in-process (no VS install needed) and apply
     /// it as the active material. Lets the headless harness prove the cuboid path
     /// now renders a loaded per-face D2Array (and that cuboid vs instanced match per
     /// face). Overrides --scan-vs/--apply-block material selection.
@@ -228,7 +228,7 @@ pub(crate) struct ShotOptions {
     pub(crate) demo_subtract: bool,
     /// `--demo-cylinder-subtract` (ADR 0032 selection feedback): a Stone box drilled by a
     /// Subtract CYLINDER through its top face — the CURVED junction case: the selection
-    /// cel's traced crease is the circular bore mouth, no straight catalogue edge could
+    /// cel's traced crease is the circular bore mouth, no straight catalog edge could
     /// stand in for it. Overrides --shape/--size/--density.
     pub(crate) demo_cylinder_subtract: bool,
     /// `--demo-group-subtract` (ADR 0017 Decision 3 / #74): a Group holding a Stone body
@@ -318,7 +318,7 @@ pub(crate) struct ShotOptions {
     /// render -> write PNG to `--out`). `--replay` takes precedence over the demo/shape
     /// scene sources (it is the scene SOURCE); the camera/projection flags
     /// (`--proj`, `--theta`, `--phi`, `--dist`, ...) still apply. `None` keeps the
-    /// existing demo/shape behaviour, byte-identical to today.
+    /// existing demo/shape behavior, byte-identical to today.
     pub(crate) replay_path: Option<PathBuf>,
     /// `--placement-ghost` (ADR 0022): arm the translucent placement ghost of the current
     /// `--shape`/`--size`/`--density` geometry at `--ghost-offset` (default the origin), so
@@ -996,7 +996,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\
                      \x20                blocks (ADR 0002 streaming S1). Precision baseline:\n\
-                     \x20                today's recentre maps it to the origin, so far jitter\n\
+                     \x20                today's recenter maps it to the origin, so far jitter\n\
                      \x20                is hidden until S4. Overrides --shape/--size/--density.\n\
                      \x20  --demo-far-offset-near the SAME box at the origin, for A/B compare.\n\
                      \x20  --replay <path>  build the scene by replaying a newline-delimited\n\

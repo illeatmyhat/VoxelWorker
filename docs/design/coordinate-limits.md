@@ -17,10 +17,10 @@ carrying the wide integer base alongside the records the way every other artifac
 its reference point. The 21-bit lanes then span the field's own extent rather than its
 distance from the world origin, so a lone field placed anywhere in the document's range
 renders — as long as **one field** spans under ~2M blocks. The mesh path is already
-recentre-relative, so it follows for free.
+recenter-relative, so it follows for free.
 
 Lifts the brick-key ceiling to document range for the single-object case. Does nothing for
-the f32 ceiling: a wide *composite* still exceeds f32's reach from any single recentre.
+the f32 ceiling: a wide *composite* still exceeds f32's reach from any single recenter.
 
 ## Option B — per-chunk camera-relative render frames
 

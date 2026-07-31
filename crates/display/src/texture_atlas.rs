@@ -26,17 +26,17 @@
 //! The cuboid per-voxel texture slice TILES a material's tile once per voxel across
 //! a merged face. With the whole atlas in one texture, that tiling can NOT use the
 //! GPU `Repeat` address mode (it would wrap to the WHOLE atlas, i.e. into a
-//! neighbouring material). The shader instead computes `fract(per_voxel_uv)` itself
+//! neighboring material). The shader instead computes `fract(per_voxel_uv)` itself
 //! and maps that `[0,1)` into the material's sub-rect. Two artifacts must be
 //! defended against at atlas-cell borders:
 //!   1. **Filter/derivative spill across the cell border.** Even with NEAREST
 //!      filtering, a fragment exactly on a tile seam can sample the adjacent cell.
 //!      We surround every tile with a **replicated-edge gutter** (the tile's own
 //!      border pixels copied outward by `GUTTER_TEXELS`), so a one-texel spill lands
-//!      on a copy of the correct edge, never the neighbour material.
+//!      on a copy of the correct edge, never the neighbor material.
 //!   2. **Wrap seam within a tile.** Because the shader tiles with `fract`, the
 //!      sampled sub-rect is reported with a **half-texel inset** on each side
-//!      (`inset_uv_*`): sampling is clamped to texel centres, so `fract`→0 and
+//!      (`inset_uv_*`): sampling is clamped to texel centers, so `fract`→0 and
 //!      `fract`→1 both land inside the tile rather than on its outer edge where they
 //!      could round into the gutter.
 //!
@@ -53,14 +53,14 @@ use substrate::occupancy::shelf_bin_pack::{ShelfBinPack, TileImage, TileSize};
 
 /// Texels of replicated-edge gutter padded around every tile in the atlas. One
 /// texel is enough to absorb a single-texel filter/derivative spill at a cell
-/// border; we use a small constant rather than 0 so the seam defence is explicit.
+/// border; we use a small constant rather than 0 so the seam defense is explicit.
 pub const GUTTER_TEXELS: u32 = 1;
 
 /// One material's place in the atlas, in atlas UV space (`[0,1]` across the whole
 /// atlas image). `min_*`/`max_*` are the tile's OUTER bounds (the original tile,
 /// excluding the gutter); `inset_*` are those bounds pulled in by half a texel so
 /// the shader's `fract`-based per-voxel tiling never samples the outermost texel
-/// edge (where it could round into the gutter / neighbour). The shader maps a
+/// edge (where it could round into the gutter / neighbor). The shader maps a
 /// per-voxel `fract` in `[0,1)` linearly into the inset window.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtlasSubRect {

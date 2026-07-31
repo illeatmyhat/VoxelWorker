@@ -23,7 +23,7 @@ use super::{Ink, Mark};
 
 /// The axis corner: up the left, along the bottom, meeting at `(3.5, 14.5)`.
 const AXES: &[(f32, f32)] = &[(3.5, 3.5), (3.5, 14.5), (14.5, 14.5)];
-/// The author's segment, 45° across the corner, centred on `(9.0, 9.0)`.
+/// The author's segment, 45° across the corner, centered on `(9.0, 9.0)`.
 const SEGMENT: &[(f32, f32)] = &[(5.5, 12.5), (12.5, 5.5)];
 
 pub(super) const DRAW: &[Mark] = &[

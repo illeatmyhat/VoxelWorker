@@ -16,7 +16,7 @@ use voxel_core::voxel::{ShapeKind, VoxelGrid};
 ///
 /// EXACT occupancy-set equality. The revolve rasterizes the rim with
 /// `radial = sqrt(x²+y²) <= R` via the polygon edge at radial R, while the SDF
-/// rasterizes `(|p_xy| − R_semi) <= 0`. Both compare the SAME centred radius to the
+/// rasterizes `(|p_xy| − R_semi) <= 0`. Both compare the SAME centered radius to the
 /// SAME R (R = grid/2 = semi-axis), so the rim cells agree cell-for-cell and the
 /// equality holds EXACTLY (measured symmetric difference = 0 for both R parities).
 /// Covered for an EVEN and an ODD radial extent at density 16 (parity).
@@ -240,7 +240,7 @@ fn revolve_degenerate_profiles_are_empty() {
 
 /// PARITY: a rectangle revolved on EACH `RevolveAxis` at even and odd diameters is
 /// corner-anchored with NO straddle — occupancy spans exactly `[0, dim)` per axis,
-/// and the disc is symmetric about the grid centre on the two radial axes.
+/// and the disc is symmetric about the grid center on the two radial axes.
 #[test]
 fn revolve_parity_axis_placement() {
     let density = 8u32;
@@ -264,7 +264,7 @@ fn revolve_parity_axis_placement() {
 
                 // No straddle: every cell index is within [0, dim) per axis, and the
                 // occupancy touches 0 and dim-1 on the radial axes (the disc spans
-                // the full diameter symmetric about the centre).
+                // the full diameter symmetric about the center).
                 let mut min_cell = [i64::MAX; 3];
                 let mut max_cell = [i64::MIN; 3];
                 for voxel in &grid.occupied {
@@ -298,7 +298,7 @@ fn revolve_parity_axis_placement() {
                 for &axis in &radial_axes {
                     // The widest slice (through the rectangle's full radial extent)
                     // spans the whole diameter, touching both ends ⇒ no straddle and
-                    // symmetric about the centre.
+                    // symmetric about the center.
                     assert_eq!(
                         min_cell[axis], 0,
                         "{plane:?}/{revolve_axis:?}: radial axis {axis} does not start at 0"
@@ -352,7 +352,7 @@ fn partial_revolve_360_equals_full() {
 /// PARTIAL turn 180° is roughly half a 360° revolve, and one angular half of the
 /// disc is empty (structural). The angle is measured from radial_a toward radial_b
 /// (ascending world-axis index); for PlaneAxis::X + InPlane1, radial_a=X, radial_b=Y,
-/// so the kept wedge is theta ∈ [0,180] ⇒ the centred-Y < 0 half is empty.
+/// so the kept wedge is theta ∈ [0,180] ⇒ the centered-Y < 0 half is empty.
 #[test]
 fn partial_revolve_180_is_half() {
     let density = 8u32;
@@ -374,14 +374,14 @@ fn partial_revolve_180_is_half() {
         "180° revolve count ratio {ratio} not ~0.5"
     );
     // Structural: the half with theta > 180 is empty. For PlaneAxis::X + InPlane1,
-    // radial_a = X (idx 0), radial_b = Y (idx 1); theta > 180 ⇔ centred-Y < 0. The
-    // grid is [48,48,32]; centred-Y < 0 means cell-Y < 24.
+    // radial_a = X (idx 0), radial_b = Y (idx 1); theta > 180 ⇔ centered-Y < 0. The
+    // grid is [48,48,32]; centered-Y < 0 means cell-Y < 24.
     let mut grid = VoxelGrid::default();
     half.resolve(&mut grid, density);
     let dim_y = grid.dimensions[1];
     let any_in_lower_half = grid.occupied.iter().any(|voxel| {
         let cell_y = (voxel.world_position()[1] - 0.5).round() as i64;
-        // centred-Y = cell_y + 0.5 - dim_y/2 < 0
+        // centered-Y = cell_y + 0.5 - dim_y/2 < 0
         (cell_y as f32 + 0.5 - dim_y as f32 / 2.0) < 0.0
     });
     assert!(

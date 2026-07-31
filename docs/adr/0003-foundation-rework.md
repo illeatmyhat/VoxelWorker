@@ -161,12 +161,12 @@ consumption**.
   shapes** that make the shift identically zero by construction, see §3i); "extent-changing edit nukes
   the whole cache" (the
   `ChunkResolveCache` rebinds on a *floating-origin / density* change — `chunk_cache.rs::rebind_if_changed`
-  — and chunks are stored pre-rebased against the composite recentre); ~~`incremental_rebuild_plan` is
+  — and chunks are stored pre-rebased against the composite recenter); ~~`incremental_rebuild_plan` is
   computed but not consumed (renderer re-meshes wholesale on edit)~~ **[RESOLVED 2026-06-29, #40 `9ff63c3`]:
   the live cuboid renderer now re-meshes only the dirty chunks (apron-dilated via `cuboid_incremental_plan`),
   wholesale only on a floating-origin shift / density change — see §4.**
 - **Per-voxel payload is f32-absolute.** `voxel.rs::Voxel` stores `world_position: [f32; 3]` (the
-  voxel *centre* in world-grid space). At XZ~10k that f32 has ~1 mantissa bit below the voxel and the
+  voxel *center* in world-grid space). At XZ~10k that f32 has ~1 mantissa bit below the voxel and the
   position becomes ambiguous; the current code only stays exact because the i64 rebase in
   `resolve_chunk_rebased` keeps the *rendered* magnitude small — the **stored** payload is still f32
   and is the wrong representation for an absolute-i64 store (see §3 G1).
@@ -409,9 +409,9 @@ ADR 0004 builds the relational solver and the parametric kit on top.
 #### 3a. Per-voxel payload becomes chunk-local integer + categorical block-palette cell (load-bearing — G1 + materials FOUNDATIONAL)
 
 This is a **prerequisite** of the absolute-i64 store (§4) and of the override codec (§5), not a
-detail. Today `voxel.rs::Voxel` stores `world_position: [f32; 3]` (the absolute voxel centre, see
+detail. Today `voxel.rs::Voxel` stores `world_position: [f32; 3]` (the absolute voxel center, see
 `voxel.rs:99-107`); `chunk_storage::compress` already has to *reverse-engineer* the integer index
-out of that f32 (it debug-asserts a uniform per-axis `centre_fraction` and `floor()`s the position —
+out of that f32 (it debug-asserts a uniform per-axis `center_fraction` and `floor()`s the position —
 `chunk_storage.rs`). At XZ~10k the f32 itself is lossy, so absolute storage in f32 is unsound.
 
 **The categorical material/attribute model is ELEVATED from deferred to FOUNDATIONAL.** Today a
@@ -482,7 +482,7 @@ pub struct BlockAttrs {
   signed-permutation**, so a rotated stair faces the rotated way and a mirrored door hinges the
   mirrored way. **Stale facings are the bug this prevents.** (`orientation` lives in the same order-48
   group as the transform precisely so the composition is one exact permutation, not a special case.)
-- **Connection-resolve pass (the state analogue of WFC):** a **neighbor-aware** pass computes
+- **Connection-resolve pass (the state analog of WFC):** a **neighbor-aware** pass computes
   `connections` from adjacency (fences/walls/stairs/panes that connect to neighbors). It runs over
   resolved occupancy + attrs, deterministic and seed-free; it is the *state* counterpart to the
   material-fill WFC (which stays deferred, §Consequences). Specified here as a seam; the producers/UX
@@ -628,7 +628,7 @@ Sculpt overrides are part-local and anchored to **integer voxel addresses in the
 They are stored as a **sparse, chunk-keyed** layer (the *concept* reused from the existing store), but
 encoded with a **dedicated integer-delta codec** (§5 G2) — explicitly **not** a binary reuse of
 `chunk_storage::compress`, which consumes an f32 `VoxelGrid` and debug-asserts a uniform
-`centre_fraction` that integer force-on/force-off deltas do not satisfy.
+`center_fraction` that integer force-on/force-off deltas do not satisfy.
 
 **A sculpt/override layer is VOXEL-GRANULAR at the document's density (pinning the
 previously-unspecified density-change case).** A sculpt layer's keys are integer voxel addresses at the
@@ -697,7 +697,7 @@ is **not** a one-substep change but a **dedicated milestone** (Phase F-rot) with
 
   where `d = voxels_per_block` is the **document's density** (below). Placement is stored **directly in
   voxels** — a single field, voxel-granular, period. At resolve it enters the i64 placement sum as-is
-  (`translation_voxels = offset_voxels + lattice_shift − recentre`), with **no rounding and no
+  (`translation_voxels = offset_voxels + lattice_shift − recenter`), with **no rounding and no
   integer-multiple caveat** (the resolved grid *is* `d`). It composes by pure i64 addition, serializes
   byte-stably as plain integers, and leaves the store/chunking unaffected. It follows the
   `Point.offset_voxels` precedent already in the code (`scene.rs:381`), which is itself single-field
@@ -929,7 +929,7 @@ pub enum ShapePoint {
   `leaf_lattice_shift` is computed from `size_blocks` **regardless of kind**, so corner-anchoring zeroes
   the **block-lattice** shift for every shape (Box and radius shapes alike). The stronger "surface lands
   exactly on the lattice" is a **Box** property; a radius shape with an **odd voxel diameter** still
-  centres on a half-voxel — but that is a *producer* sampling property (the SDF inscribes the shape in
+  centers on a half-voxel — but that is a *producer* sampling property (the SDF inscribes the shape in
   its AABB), not a placement shift, and is independent of this anchoring change.
 - **Points are inline OR `HostedOnDatum` references (the F4 Datums seam, §1)** so the relational/solver
   tier can **NAME a shape's anchor** — a shape corner can be hosted on a datum/level/grid exactly like a
@@ -987,18 +987,18 @@ holding its full (bounded) Y stack. This matches the >10k XZ / ~1–2k Y profile
 out-of-core the foundation, not an afterthought.
 
 **Absolute-i64 addressing; rebase at CONSUMPTION, store rebase-free (fixes the cache-nuke).** Today
-chunks are stored **pre-rebased against the composite recentre** and the cache rebinds (clears) on a
+chunks are stored **pre-rebased against the composite recenter** and the cache rebinds (clears) on a
 floating-origin / density change (`chunk_cache.rs::rebind_if_changed`), so any extent-changing edit
-that moves the recentre invalidates *everything*. The fix:
+that moves the recenter invalidates *everything*. The fix:
 
 - Chunks are stored and keyed by **absolute i64 chunk coordinates** — never against a moving
-  recentre/origin. A chunk's stored content (now chunk-local integers per §3a) is independent of the
+  recenter/origin. A chunk's stored content (now chunk-local integers per §3a) is independent of the
   scene's current extent.
 - Rebasing to f32 happens **only at consumption** (mesh upload / render), as
   `chunk_world_origin_i64 − camera_floating_origin_i64`, downcast per frame (ADR 0002). The store
   never re-rebases.
 - **The floating origin is sticky/quantized and decoupled from composite extent.** It is NOT
-  recomputed per edit from the composite AABB (which is what makes the current recentre move on every
+  recomputed per edit from the composite AABB (which is what makes the current recenter move on every
   extent change and re-rebase all resident meshes). It snaps to a quantized grid near the camera
   focus and only re-bases when the camera has moved far enough that f32 precision demands it — so an
   edit never invalidates resident meshes merely by growing the bbox.
@@ -1026,7 +1026,7 @@ re-mesh; **all other chunks keep their cached GPU buffers**. The renderer stops 
 on edit (falls back to wholesale only on a floating-origin shift / density change). NB the *live*
 plan is `cuboid_mesh::cuboid_incremental_plan`, NOT the instanced-era `renderer::incremental_rebuild_plan`:
 the cuboid mesher culls each chunk's boundary faces against a 1-voxel apron from global occupancy, so
-the dirty set is DILATED by the 26-neighbourhood (a neighbour's occupancy change alters this chunk's
+the dirty set is DILATED by the 26-neighborhood (a neighbor's occupancy change alters this chunk's
 seam faces) — the instanced planner had no such inter-chunk dependency. Region-scoped consumers
 (diameter, layer
 scrubber, `.vox` export) read the per-chunk store over the active region, never an assembled
@@ -1074,9 +1074,9 @@ struct ProjectFile {
 
 - **Sculpt overrides use a DEDICATED sparse override codec (G2), not `chunk_storage::compress`.**
   The existing `chunk_storage::compress`/`decompress` consume an **f32 `VoxelGrid`** and
-  **debug-assert a uniform per-axis `centre_fraction`** (`chunk_storage.rs`) — an invariant that
+  **debug-assert a uniform per-axis `center_fraction`** (`chunk_storage.rs`) — an invariant that
   producer-resolved grids satisfy but that **integer force-on / force-off deltas do NOT** (a delta is
-  not a centred resolved grid). So overrides keep the *conceptual* "sparse, chunk-keyed storage"
+  not a centered resolved grid). So overrides keep the *conceptual* "sparse, chunk-keyed storage"
   reuse but get their own codec:
   - **force-on:** a per-chunk set of **sorted integer voxel keys** (chunk-local `[u16; 3]` packed to
     a single sorted `u64` or delta-varint key list) + a **block palette** (a `block_id` + attrs
@@ -1250,9 +1250,9 @@ The whole point is that **edits, undo/redo, and camera always feel instant**, ev
   a big rebuild **amortizes across frames** instead of stalling one.
 - **never `device.poll(Wait)` on the main thread;** use **async readback** for `shot` / export.
 
-**Optimistic sculpt feedback (the one feel special-case):** on a sculpt stroke, render the touched
+**Optimiztic sculpt feedback (the one feel special-case):** on a sculpt stroke, render the touched
 stroke region **immediately** — a tiny bounded local remesh or a lightweight overlay — while the full
-per-chunk re-resolve completes off-thread and then **replaces** the optimistic patch.
+per-chunk re-resolve completes off-thread and then **replaces** the optimiztic patch.
 
 **Tie back to S10 (the per-scope revision invariant — unchanged, this is its model):** `AppCore` as
 the **sole document writer** + **`Arc` snapshots** to workers + the **revision-stamped completion
@@ -1406,7 +1406,7 @@ the `shot.rs` parallel path and the second LRU.
 15. Move resolve+mesh fully onto **prioritized, cancellable per-chunk worker jobs** over **Arc
     snapshots**; enforce the main-thread **integration budget (~2 ms drain + bounded GPU upload)** and
     **never `poll(Wait)`** (async readback for `shot`/export); add I/O-thread **prefetch-ahead /
-    evict-behind** for >10k-XZ horizontal motion; add **optimistic sculpt feedback** (immediate
+    evict-behind** for >10k-XZ horizontal motion; add **optimiztic sculpt feedback** (immediate
     bounded local remesh/overlay replaced by the off-thread re-resolve). Land the **per-scope
     cache-entry revision** invariant (not a global doc version): chunk clean only on **integrated,
     epoch-matched** result; stale-discard. **(S10.)** (Much of the worker scaffolding exists in
@@ -1605,18 +1605,18 @@ retrofit cascade later; building the features is separate design-doc work.
   + entity side-table) for VS export fidelity; VS supplies the behavior. A tick/signal simulation is a
   categorically different subsystem and is not bolted into the static three-tier model.
 - **Reusing `chunk_storage::compress` for sculpt overrides.** Rejected: `compress` consumes an f32
-  `VoxelGrid` and debug-asserts a uniform per-axis `centre_fraction` (`chunk_storage.rs`), which
+  `VoxelGrid` and debug-asserts a uniform per-axis `center_fraction` (`chunk_storage.rs`), which
   integer force-on / force-off deltas do not satisfy. A dedicated integer-delta codec (sorted keys +
   block palette + separate force-off set) is required; only the *concept* of sparse chunk-keyed
   storage is reused.
 - **Force-off as a reserved palette slot / sentinel block.** Rejected: it re-pollutes the categorical
   `block_id` field with a non-block meaning — the same class of leak as `GRID_OVERLAY_BIT` that §3c
   removes. Force-off is a **separate sorted key set**.
-- **f32-absolute per-voxel payload in an absolute-i64 store.** Rejected: at XZ~10k the f32 centre is
+- **f32-absolute per-voxel payload in an absolute-i64 store.** Rejected: at XZ~10k the f32 center is
   lossy, so absolute storage in f32 is unsound. The payload must be chunk-local integer (§3a) with
   the absolute origin in the chunk key only.
-- **Keep two LRUs / keep the recentre-pre-rebased store.** Rejected: the second LRU is redundant
-  bookkeeping over `DiskChunkStore`, and recentre-pre-rebased storage with an extent-coupled floating
+- **Keep two LRUs / keep the recenter-pre-rebased store.** Rejected: the second LRU is redundant
+  bookkeeping over `DiskChunkStore`, and recenter-pre-rebased storage with an extent-coupled floating
   origin is the direct cause of the extent-change cache-nuke (S8). Absolute-i64 + sticky/quantized
   origin + rebase-at-consume removes both.
 - **Global doc version for worker-staleness.** Rejected: it marks every resident chunk stale on any

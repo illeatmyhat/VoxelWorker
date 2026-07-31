@@ -3,29 +3,29 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// The catalogue cannot silently lose a glyph.
+/// The catalog cannot silently lose a glyph.
 ///
 /// `ALL` is hand-maintained beside the enum, and nothing about a missing entry fails to
-/// compile — the glyph just vanishes from every gallery that iterates the catalogue. This
+/// compile — the glyph just vanishes from every gallery that iterates the catalog. This
 /// pins it from the OTHER side: whatever [`LargeIcon::for_icon`] can produce is exactly what
 /// `ALL` contains, so adding a tile glyph without listing it fails here.
 #[test]
-fn every_reachable_tile_glyph_is_in_the_catalogue() {
+fn every_reachable_tile_glyph_is_in_the_catalog() {
     let reachable: BTreeSet<&str> = Icon::ALL
         .iter()
         .filter_map(|icon| LargeIcon::for_icon(*icon))
         .map(|large| large.name())
         .collect();
-    let catalogued: BTreeSet<&str> = LargeIcon::ALL.iter().map(|l| l.name()).collect();
+    let catalogd: BTreeSet<&str> = LargeIcon::ALL.iter().map(|l| l.name()).collect();
     assert_eq!(
-        reachable, catalogued,
+        reachable, catalogd,
         "LargeIcon::ALL and what for_icon can return must agree"
     );
 }
 
 /// No duplicate entries — a copy-paste slip when adding a glyph.
 #[test]
-fn the_catalogue_has_no_duplicates() {
+fn the_catalog_has_no_duplicates() {
     let unique: BTreeSet<&str> = LargeIcon::ALL.iter().map(|l| l.name()).collect();
     assert_eq!(unique.len(), LargeIcon::ALL.len());
 }

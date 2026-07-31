@@ -358,7 +358,7 @@ mod kani_proofs {
             kani::assume(value >= -(1 << 24) && value <= (1 << 24));
             value
         };
-        // The REAL guard, not a hand-written model of it. Modelling it here is what let the
+        // The REAL guard, not a hand-written model of it. Modeling it here is what let the
         // proof assume a sign-preserving guard while production shipped one that flipped
         // `-0.0` to `+1e-20`; calling the production function makes that impossible.
         let safe = substrate::spatial::guarded_direction(Vec3::new(

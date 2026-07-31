@@ -2,7 +2,7 @@
 //!
 //! Deliberately built ON the `cylinder` tile — same cap radii, same wall x, same faded
 //! bottom cap — because a tube IS a cylinder with a hole and the two marks should read as
-//! neighbours rather than as unrelated drawings. Everything added here states the bore.
+//! neighbors rather than as unrelated drawings. Everything added here states the bore.
 //!
 //! Unlike `torus`, the concentric cap ring is safe: the walls and the faded bottom cap
 //! already fix the reading as a solid of revolution before the eye reaches the inner curve,

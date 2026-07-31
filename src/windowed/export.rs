@@ -1,13 +1,13 @@
-//! The shell's `.vox` export dispatch: the save dialog + palette-colour assembly stay on the
-//! main thread, but the multi-second [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build + streaming resolve + serialise +
+//! The shell's `.vox` export dispatch: the save dialog + palette-color assembly stay on the
+//! main thread, but the multi-second [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build + streaming resolve + serialize +
 //! write move to the background [`VoxExportWorker`]. The `.vox` palette helpers live here beside
 //! their only caller. Split out of `windowed/mod.rs` (ADR 0016).
 
 use super::*;
 
 /// The per-`block_id` `.vox` palette over the three procedural materials (ADR 0003
-/// §3a): slot `material_id` carries that material's average colour, so a multi-material
-/// scene exports each block in its own colour.
+/// §3a): slot `material_id` carries that material's average color, so a multi-material
+/// scene exports each block in its own color.
 fn vox_export_procedural_palette() -> interchange::vox_export::BlockPaletteColors {
     use voxel_core::core_geom::MaterialChoice;
     let mut palette = [[0u8; 4]; MaterialChoice::MATERIAL_COUNT];
@@ -28,15 +28,15 @@ impl WindowedState {
     /// Open the `.vox` save dialog and DISPATCH the export to the background worker
     /// (slow-paths item 2 — the build + write used to run inline here and freeze the UI
     /// for the whole multi-second export). The default filename encodes the shape + voxel
-    /// dims (e.g. `cylinder_80x16x80.vox`). The palette colour is the active material's
-    /// representative colour (a loaded block's average, or the procedural one), computed
+    /// dims (e.g. `cylinder_80x16x80.vox`). The palette color is the active material's
+    /// representative color (a loaded block's average, or the procedural one), computed
     /// here on the main thread exactly as before.
     ///
     /// The dialog (a native modal, not the slow part) stays on this thread; everything
-    /// after it — [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build, streaming resolve, serialise, write — moves to
+    /// after it — [`TwoLayerStore`](evaluation::two_layer_store::TwoLayerStore) build, streaming resolve, serialize, write — moves to
     /// the [`VoxExportWorker`]. The button is disabled while `export_outstanding`, so this
     /// can't be re-entered mid-export (the worker carries no supersede generation — an
-    /// export is a user-chosen file — so the shell serialises instead; see
+    /// export is a user-chosen file — so the shell serializes instead; see
     /// `workers::export`). The completion/failure readout lands in `poll_vox_export_worker`.
     pub(super) fn export_vox(&mut self) {
         // Single-flight invariant (depth-correct guard): only ONE export may be in flight.
@@ -58,10 +58,10 @@ impl WindowedState {
             Some(loaded) => loaded.average_color,
             None => procedural_material_average_color(self.panel_state.material),
         };
-        // ADR 0003 §3a: map each categorical `block_id` to its colour. The palette is
-        // the three procedural materials' colours; the ACTIVE material's slot takes the
+        // ADR 0003 §3a: map each categorical `block_id` to its color. The palette is
+        // the three procedural materials' colors; the ACTIVE material's slot takes the
         // representative (a loaded VS block's average, when applied), so a single-active-
-        // material scene exports byte-identically to the old single-colour `.vox`.
+        // material scene exports byte-identically to the old single-color `.vox`.
         let mut palette_colors = vox_export_procedural_palette();
         palette_colors[self.panel_state.material.material_id() as usize] = representative;
 

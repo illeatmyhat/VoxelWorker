@@ -13,7 +13,7 @@
 //!   occupied set as their union (no cell dropped or double-counted).
 //!
 //! These are the regression net for Commit 2, which switches the call site onto
-//! `resolve_into`. Commit 1 changes NO behaviour, so they pass against today's tree.
+//! `resolve_into`. Commit 1 changes NO behavior, so they pass against today's tree.
 
 use document::voxel::VoxelProducer;
 use std::collections::BTreeSet;
@@ -40,7 +40,7 @@ fn key_of(voxel: &Voxel) -> OccupancyKey {
 }
 
 /// The integer cell index `floor(world_position)` of an occupied voxel — the corner
-/// the centre `idx + 0.5` sits in. Used to decide window membership.
+/// the center `idx + 0.5` sits in. Used to decide window membership.
 fn cell_index_of(voxel: &Voxel) -> [i64; 3] {
     let position = voxel.world_position();
     [
@@ -90,11 +90,11 @@ fn assert_windowed_subset_contract(
         "{label}: full resolve emitted a duplicate voxel (key collision)"
     );
 
-    // Per-axis split points for interior / face-clipping / centre-straddling windows.
+    // Per-axis split points for interior / face-clipping / center-straddling windows.
     let mid = [fx / 2, fy / 2, fz / 2];
 
     // (a) interior fully inside; (b) clip LOW face on X; (c) clip HIGH face on Z;
-    // (d) straddle the centre; (e) fully OUTSIDE [0,full_dim); plus per-axis
+    // (d) straddle the center; (e) fully OUTSIDE [0,full_dim); plus per-axis
     // half-splits used both as standalone windows and as the tiling halves.
     let windows: Vec<(&str, VoxelAabb)> = vec![
         (
@@ -113,7 +113,7 @@ fn assert_windowed_subset_contract(
             VoxelAabb::new([0, 0, (2 * fz) / 3], [fx, fy, fz + 7]),
         ),
         (
-            "straddle-centre",
+            "straddle-center",
             VoxelAabb::new(
                 [mid[0] - 1, mid[1] - 1, mid[2] - 1],
                 [mid[0] + 2, mid[1] + 2, mid[2] + 2],
@@ -356,12 +356,12 @@ fn large_revolve_resolves_windows_despite_full_grid_cap() {
         big.grid_voxel_count()
     );
 
-    // A small interior window straddling the disc centre (where the solid is dense):
+    // A small interior window straddling the disc center (where the solid is dense):
     // it MUST contain occupied voxels now (was empty before the fix).
-    let centre = [full_x as i64 / 2, full_y as i64 / 2, full_z as i64 / 2];
+    let center = [full_x as i64 / 2, full_y as i64 / 2, full_z as i64 / 2];
     let window = VoxelAabb::new(
-        [centre[0] - 8, centre[1] - 8, centre[2] - 8],
-        [centre[0] + 8, centre[1] + 8, centre[2] + 8],
+        [center[0] - 8, center[1] - 8, center[2] - 8],
+        [center[0] + 8, center[1] + 8, center[2] + 8],
     );
     let windowed = windowed_resolve(&big, 16, window);
     assert!(

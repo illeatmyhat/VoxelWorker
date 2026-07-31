@@ -18,7 +18,7 @@ const SELECTION_CEL_COLOR_HEX: u32 = 0x9c_b4_d8;
 /// emphasis lives in the near-opaque outline ring, not here.
 const SELECTION_CEL_ALPHA: f32 = 0.28;
 
-/// The selection tint as linear `[r, g, b, a]` — the ONE colour the outline+wash
+/// The selection tint as linear `[r, g, b, a]` — the ONE color the outline+wash
 /// composite speaks (the outline reuses the rgb at its own alpha).
 pub fn selection_cel_tint() -> [f32; 4] {
     let [r, g, b] = srgb_hex_to_linear(SELECTION_CEL_COLOR_HEX);

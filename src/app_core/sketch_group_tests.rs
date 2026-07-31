@@ -298,7 +298,7 @@ fn a_net_zero_session_commits_nothing() {
 #[test]
 fn edits_outside_a_group_stay_singleton_main_transactions() {
     // The main stack is unchanged for ordinary edits: each is its own singleton transaction, so
-    // one undo reverses one edit (no behaviour change for the non-sketch path).
+    // one undo reverses one edit (no behavior change for the non-sketch path).
     let mut core = test_core();
     let (mut scene, target) = single_sketch_scene();
     let enter = producer_of(&scene, target);

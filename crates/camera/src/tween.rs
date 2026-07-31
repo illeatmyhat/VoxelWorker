@@ -1,4 +1,4 @@
-//! Eased camera snaps and angle normalisation.
+//! Eased camera snaps and angle normalization.
 //!
 //! A [`SnapTween`] carries the camera's orbit `(theta, phi)` and `roll` from their
 //! current values to a target over a fixed duration, easing the interpolation with
@@ -8,7 +8,7 @@
 //! azimuth's `mod 2π` representative nearest the current one so a snap never spins
 //! the long way round, and [`normalize_roll`] keeps accumulated roll bounded.
 //!
-//! Cite: `easeInOutQuad` is the quadratic ease from the standard easing catalogue
+//! Cite: `easeInOutQuad` is the quadratic ease from the standard easing catalog
 //! (Penner, *Robert Penner's Programming Macromedia Flash MX*, 2002); the
 //! nearest-representative choice is the shortest-arc rule for interpolating on the
 //! circle (Akenine-Möller, Haines & Hoffman, *Real-Time Rendering*).
@@ -59,7 +59,7 @@ pub struct SnapTween {
     ///
     /// Every angle snap holds it (`target_to == target_from`, a no-op lerp) — the point a snap
     /// turns about is the point it was already turning about. Only [`Self::recenter`] moves it,
-    /// which is why it lives on the same tween rather than in a second one: a re-centre and a
+    /// which is why it lives on the same tween rather than in a second one: a re-center and a
     /// snap are both "the camera is being carried somewhere", and two tweens racing to write the
     /// camera is exactly the two-truths bug the type system should not have to catch.
     pub target_from: glam::Vec3,
@@ -115,7 +115,7 @@ impl SnapTween {
         }
     }
 
-    /// Begin a **re-levelling** tween: hold the orbit angles and carry `roll` back to 0.
+    /// Begin a **re-leveling** tween: hold the orbit angles and carry `roll` back to 0.
     ///
     /// This is what a Free Orbit leaves behind. Closing the seam
     /// ([`OrbitCamera::ensure_constrained`]) is view-preserving — the tilted horizon survives as
@@ -130,7 +130,7 @@ impl SnapTween {
             phi_from: camera.orbit_phi,
             theta_to: camera.orbit_theta,
             phi_to: camera.orbit_phi,
-            // Normalised so the twist takes the short way round: a roll of 6 radians is a tenth
+            // Normalized so the twist takes the short way round: a roll of 6 radians is a tenth
             // of a turn back to level, not most of a turn forward.
             roll_from: normalize_roll(camera.roll),
             roll_to: 0.0,
@@ -172,13 +172,13 @@ impl SnapTween {
         }
     }
 
-    /// Begin a **re-centring** tween: hold every angle and carry the orbit `target` to `point`.
+    /// Begin a **re-centering** tween: hold every angle and carry the orbit `target` to `point`.
     ///
     /// The explicit orbit mode's click. It is a pan, not a rotation, so the three angles are held
     /// (`*_to == *_from`) and only the target travels — the view slides until `point` is at the
-    /// centre of the frame, facing the same way it already faced.
+    /// center of the frame, facing the same way it already faced.
     ///
-    /// It ANIMATES for the reason every other camera snap does: a cut straight to the new centre
+    /// It ANIMATES for the reason every other camera snap does: a cut straight to the new center
     /// gives no cue as to which way the view moved, and the whole point of aiming at a feature is
     /// to keep hold of it while the frame comes to it.
     pub fn recenter(camera: &OrbitCamera, point: glam::Vec3) -> Self {
@@ -216,7 +216,7 @@ impl SnapTween {
         camera.target = self.target_from + (self.target_to - self.target_from) * eased;
         let finished = progress >= 1.0;
         if finished {
-            // Normalise the settled roll to (−π, π] so repeated arrow presses never
+            // Normalize the settled roll to (−π, π] so repeated arrow presses never
             // let it grow unbounded (the up vector is 2π-periodic anyway). Only at
             // rest, so the in-flight interpolation stays continuous (no mid-tween jump).
             camera.roll = normalize_roll(camera.roll);
@@ -225,7 +225,7 @@ impl SnapTween {
     }
 }
 
-/// Normalise a roll angle to the half-open interval `(−π, π]`. Keeps accumulated
+/// Normalize a roll angle to the half-open interval `(−π, π]`. Keeps accumulated
 /// roll bounded after repeated arrow presses without affecting the rendered
 /// orientation (the up vector is 2π-periodic in roll).
 pub fn normalize_roll(roll: f32) -> f32 {
@@ -383,7 +383,7 @@ mod tests {
         assert!(approx(camera.orbit_phi, 0.8), "phi moved");
     }
 
-    /// Roll normalises to (−π, π] at rest, so repeated arrow presses never grow it
+    /// Roll normalizes to (−π, π] at rest, so repeated arrow presses never grow it
     /// unbounded. Four Ccw quarter-turns net to ≈0, not 2π.
     #[test]
     fn roll_normalizes_and_does_not_grow_unbounded() {

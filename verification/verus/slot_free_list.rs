@@ -80,8 +80,8 @@ fn free_one(free: &mut Vec<u32>, idx: u32, Ghost(n): Ghost<int>)
         return;
     }
 
-    // Otherwise splice idx in at p: its left neighbour (if any) is < idx (scan), its right
-    // neighbour (the old free[p], if any) is > idx (scan stopped, and it is not == idx).
+    // Otherwise splice idx in at p: its left neighbor (if any) is < idx (scan), its right
+    // neighbor (the old free[p], if any) is > idx (scan stopped, and it is not == idx).
     let ghost prev = free@;
     free.insert(p, idx);
 
@@ -92,12 +92,12 @@ fn free_one(free: &mut Vec<u32>, idx: u32, Ghost(n): Ghost<int>)
             if i + 1 < p {
                 assert(t[i] == prev[i] && t[i + 1] == prev[i + 1]);
             } else if i + 1 == p {
-                // left neighbour prev[p-1] < idx == t[p]
+                // left neighbor prev[p-1] < idx == t[p]
                 assert(t[i] == prev[i]);
                 assert(t[i + 1] == idx);
                 assert(prev[i] < idx);
             } else if i == p {
-                // idx < right neighbour prev[p]
+                // idx < right neighbor prev[p]
                 assert(t[i] == idx);
                 assert(t[i + 1] == prev[p as int]);
                 assert(prev[p as int] >= idx);

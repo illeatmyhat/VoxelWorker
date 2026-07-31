@@ -92,7 +92,7 @@ the half-space requires something `full_dimensions() -> [u32; 3]` structurally c
 
 6. **Cut Groove is sugar over Sweep + Subtract**, and is therefore blocked on the **Sweep**
    lift arm — the third alongside Extrude and Revolve (ADR 0019 Decision 2). Adopting Cut
-   Groove is in practice a decision to prioritise Sweep.
+   Groove is in practice a decision to prioritize Sweep.
 
 7. **Every new `CombineOp` arm must land in both fold implementations.** The fold exists
    twice: over voxel sets (`crates/document/src/scene/producers.rs`, `fold_closed_scope_into`

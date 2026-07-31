@@ -12,18 +12,18 @@ fn bucket_for_test(grid: &VoxelGrid, voxels_per_block: u32) -> Vec<([i32; 3], Vo
 /// Issue #40: an INCREMENTAL rebuild — re-mesh only the apron-dilated dirty subset,
 /// evict vacated chunks, keep every other chunk's buffer — produces a per-chunk
 /// mesh (buffer) set BYTE-IDENTICAL to a wholesale rebuild, for every edit kind
-/// INCLUDING edits at a chunk SEAM (where the 1-voxel apron makes a neighbour's
-/// boundary faces depend on the edited chunk). This is the cuboid analogue of the
+/// INCLUDING edits at a chunk SEAM (where the 1-voxel apron makes a neighbor's
+/// boundary faces depend on the edited chunk). This is the cuboid analog of the
 /// deleted instanced `incremental_rebuild_equals_full_rebuild_for_every_edit_kind`
 /// and the real proof that consuming `cuboid_incremental_plan` is output-preserving.
 ///
 /// Both scenes pin the SAME global bounds with anchor voxels at the extremes (so
-/// `world_offset` is identical — modelling the live `incremental_ok` precondition
+/// `world_offset` is identical — modeling the live `incremental_ok` precondition
 /// that the floating origin did NOT shift; a shift forces a wholesale fall-back).
 /// Edits touch only interior / seam voxels. `evicted_dirty` is set to exactly the
-/// chunks that were resident in A AND changed in B — faithfully modelling
-/// `Store::invalidate_aabb`'s evicted set — so the plan's 26-neighbour dilation is
-/// what must catch any stale neighbour; if the dilation were wrong, a seam edit fails.
+/// chunks that were resident in A AND changed in B — faithfully modeling
+/// `Store::invalidate_aabb`'s evicted set — so the plan's 26-neighbor dilation is
+/// what must catch any stale neighbor; if the dilation were wrong, a seam edit fails.
 #[test]
 fn incremental_cuboid_rebuild_equals_wholesale() {
     // vpb 1 → chunk extent = CHUNK_BLOCKS(4) voxels, so a 12³ grid spans 3 chunks
@@ -53,13 +53,13 @@ fn incremental_cuboid_rebuild_equals_wholesale() {
             v.push([6, 6, 6]);
             v
         }),
-        // Remove a seam voxel → its cross-seam neighbour [3,3,3] re-exposes a face.
+        // Remove a seam voxel → its cross-seam neighbor [3,3,3] re-exposes a face.
         ("remove seam voxel", {
             let mut v = scene_a_interior.clone();
             v.retain(|c| *c != [4, 3, 3]);
             v
         }),
-        // Add a voxel straddling a seam next to an existing one → neighbour chunk
+        // Add a voxel straddling a seam next to an existing one → neighbor chunk
         // boundary faces get culled.
         ("add seam voxel", {
             let mut v = scene_a_interior.clone();
@@ -162,7 +162,7 @@ fn incremental_cuboid_rebuild_equals_wholesale() {
     }
 }
 
-/// The CORE structural guarantee (the analogue of the decomposition round-trip):
+/// The CORE structural guarantee (the analog of the decomposition round-trip):
 /// the per-chunk-with-apron VISIBLE exposed-face SET equals the whole-region
 /// mesher's — and both equal the ground-truth genuinely-exposed set derived
 /// straight from occupancy — for many shapes/sizes INCLUDING shapes spanning
@@ -195,7 +195,7 @@ fn per_chunk_apron_exposed_face_set_equals_whole_region() {
         ShapeKind::Tube,
     ] {
         for &(size, density) in &[
-            ([5u32, 1, 5], 8u32), // the default disc (odd X/Z → recentred cloud)
+            ([5u32, 1, 5], 8u32), // the default disc (odd X/Z → recentered cloud)
             ([3, 3, 3], 8),
             ([8, 2, 8], 8), // 64×16×64 voxels → 2 chunks/axis in X/Z (multi-chunk)
             ([5, 3, 7], 8),

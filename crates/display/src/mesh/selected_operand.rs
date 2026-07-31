@@ -41,7 +41,7 @@ use crate::renderer::{operand_ghost_loud_tint, operand_ghost_quiet_tint, Operand
 /// One ghost body: an operation style plus the body's two-layer covering chunks, ALREADY
 /// in the composed scene's absolute chunk coords (the app_core derivation resolves the
 /// selected subtree standalone but keeps its absolute placement, so meshing with the
-/// COMPOSED scene's recentre lands the ghost exactly on the node's voxels — ADR 0008,
+/// COMPOSED scene's recenter lands the ghost exactly on the node's voxels — ADR 0008,
 /// carry the frame, never re-derive it). A plain selection is one body; a fixture-
 /// instance selection is one body per spliced child (each under its own operation).
 pub struct SelectedOperandGhostBody {
@@ -233,7 +233,7 @@ impl SelectedOperandGhostRenderer {
     /// (Re)build the ghost meshes for a fresh selection derivation. Called ONLY on
     /// selection/geometry change, never per frame. Each body is meshed by the SAME
     /// two-layer cuboid mesher the solid path uses, at the FULL band, against the
-    /// COMPOSED scene's `recentre` — so the ghost lands voxel-exact on the selected
+    /// COMPOSED scene's `recenter` — so the ghost lands voxel-exact on the selected
     /// node's place in the render frame (ADR 0008: the frame is carried in, never
     /// re-derived from the slice). `grid_dimensions` is the composed scene's voxel
     /// extent (the corner-anchoring scalar the shader echoes).
@@ -242,7 +242,7 @@ impl SelectedOperandGhostRenderer {
         device: &wgpu::Device,
         bodies: &[SelectedOperandGhostBody],
         grid_dimensions: [u32; 3],
-        recentre: RecentreVoxels,
+        recenter: RecenterVoxels,
         voxels_per_block: u32,
     ) {
         self.bodies.clear();
@@ -252,7 +252,7 @@ impl SelectedOperandGhostRenderer {
             let meshes = build_two_layer_chunk_meshes(
                 &body.chunks,
                 grid_dimensions,
-                recentre,
+                recenter,
                 voxels_per_block,
                 LayerBand::FULL,
                 None,

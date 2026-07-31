@@ -1,14 +1,14 @@
-//! `slot-center-to-center` — a slot given the distance between its two arc CENTRES.
+//! `slot-center-to-center` — a slot given the distance between its two arc CENTERS.
 //!
 //! The three straight-slot glyphs share one outline and differ only in which three points are
 //! accented, because that is the only thing that differs about the tools. Here the two accented
-//! points are the arc centres, so the typed length excludes the caps.
+//! points are the arc centers, so the typed length excludes the caps.
 
 use super::{Ink, Mark};
 
 const PI: f32 = std::f32::consts::PI;
 
-/// The two cap centres, and the radius the caps turn at.
+/// The two cap centers, and the radius the caps turn at.
 const LEFT: (f32, f32) = (5.5, 6.0);
 const RIGHT: (f32, f32) = (12.5, 6.0);
 const CAP: f32 = 3.0;

@@ -43,12 +43,12 @@ fn renderable_unit_faces(
 }
 
 /// The two-layer mesher's RENDERABLE exposed-face set (every emitted face whose front cell
-/// is air per the dense occupancy), in the recentred-index frame. Unions over every chunk.
+/// is air per the dense occupancy), in the recentered-index frame. Unions over every chunk.
 fn two_layer_renderable_faces(
     scene: &Scene,
     density: u32,
     world_offset: [f32; 3],
-    recentre: RecentreVoxels,
+    recenter: RecenterVoxels,
     grid_dimensions: [u32; 3],
     occupied: &std::collections::HashSet<[i64; 3]>,
 ) -> std::collections::HashSet<UnitFace> {
@@ -57,7 +57,7 @@ fn two_layer_renderable_faces(
     let meshes = build_two_layer_chunk_meshes(
         &chunks,
         grid_dimensions,
-        recentre,
+        recenter,
         density,
         LayerBand::FULL,
         None,
@@ -117,9 +117,9 @@ fn assert_two_layer_face_parity(scene: &Scene, density: u32, label: &str) {
         scene,
         density,
         world_offset,
-        // The dense-oracle grid carries its recentre as a raw triple (raw by rule); mint
+        // The dense-oracle grid carries its recenter as a raw triple (raw by rule); mint
         // the frame newtype at this test boundary.
-        RecentreVoxels::new(dense.recentre_voxels),
+        RecenterVoxels::new(dense.recenter_voxels),
         dense.dimensions,
         &occupancy,
     );
@@ -285,14 +285,14 @@ fn two_layer_chunk_set_renderable_faces(
     chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
     density: u32,
     world_offset: [f32; 3],
-    recentre: RecentreVoxels,
+    recenter: RecenterVoxels,
     grid_dimensions: [u32; 3],
     occupied: &std::collections::HashSet<[i64; 3]>,
 ) -> std::collections::HashSet<UnitFace> {
     let meshes = build_two_layer_chunk_meshes(
         chunks,
         grid_dimensions,
-        recentre,
+        recenter,
         density,
         LayerBand::FULL,
         None,
@@ -412,7 +412,7 @@ fn incremental_two_layer_edit_meshes_identically_to_full_rebuild() {
             &incremental_chunks,
             density,
             world_offset,
-            RecentreVoxels::new(dense.recentre_voxels),
+            RecenterVoxels::new(dense.recenter_voxels),
             dense.dimensions,
             &occupancy,
         );
@@ -427,7 +427,7 @@ fn incremental_two_layer_edit_meshes_identically_to_full_rebuild() {
             &scene_b,
             density,
             world_offset,
-            RecentreVoxels::new(dense.recentre_voxels),
+            RecenterVoxels::new(dense.recenter_voxels),
             dense.dimensions,
             &occupancy,
         );
@@ -471,11 +471,11 @@ fn two_layer_mesh_map(
 ///
 /// 1. **Byte-parity** — the incrementally-updated per-chunk buffer set (kept-buffers ∪
 ///    freshly-meshed rebuild subset, minus evicted) is BYTE-IDENTICAL to a wholesale
-///    two-layer re-mesh of the edited scene. This is the GPU-buffer analogue of the dense
+///    two-layer re-mesh of the edited scene. This is the GPU-buffer analog of the dense
 ///    [`incremental_cuboid_rebuild_equals_wholesale`], and of the face-set
 ///    [`incremental_two_layer_edit_meshes_identically_to_full_rebuild`].
 /// 2. **Only-dirty-remeshed (the perf proof)** — the re-meshed set is the plan's dirty +
-///    26-neighbourhood-dilated rebuild set, STRICTLY smaller than the whole resident set
+///    26-neighborhood-dilated rebuild set, STRICTLY smaller than the whole resident set
 ///    (quantified on a many-chunk scene). Without this the slice is unverified: it is what
 ///    proves per-edit mesh cost scales with the dirty set, not the scene size.
 #[test]
@@ -484,11 +484,11 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
     let density = 16u32;
 
     // Two ANCHOR boxes at fixed extremes PLUS an interior subject box. The anchors are
-    // present in EVERY scene, so the composite bounds — hence the recentre (floating origin)
+    // present in EVERY scene, so the composite bounds — hence the recenter (floating origin)
     // — stay PINNED across each edit. That models the live guard: the two-layer GPU-buffer
-    // incremental only runs when the recentre did NOT shift (a shift re-frames every kept
+    // incremental only runs when the recenter did NOT shift (a shift re-frames every kept
     // buffer's baked vertices → the shell falls back to wholesale, `app_core.rs`). With the
-    // recentre pinned, the incremental path is genuinely exercised, and the subject box sits
+    // recenter pinned, the incremental path is genuinely exercised, and the subject box sits
     // far from the anchors so an edit dirties a strict subset while most chunks stay resident.
     let anchors = || {
         vec![
@@ -530,7 +530,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
         ("recolor", b)
     };
     let resize = {
-        // Shrink the subject box; the anchors keep the bounds pinned so the recentre holds.
+        // Shrink the subject box; the anchors keep the bounds pinned so the recenter holds.
         let mut b = scene_a.clone();
         let replacement =
             two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [4, 2, 2], MC::Wood, density);
@@ -540,7 +540,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
         ("resize", b)
     };
     let move_edit = {
-        // Move the subject WITHIN the anchored bounds (recentre unchanged).
+        // Move the subject WITHIN the anchored bounds (recenter unchanged).
         let mut b = scene_a.clone();
         b.root_node_mut(subject).transform = NodeTransform::from_blocks([6, 2, 2], density);
         ("move", b)
@@ -559,10 +559,10 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
         let chunks_a: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
             cache.resident_two_layer_chunks(&scene_a, density, 0);
         let dims = scene_a.placed_region_dimensions(density);
-        let recentre = scene_a.recentre_voxels_for_resolve(density);
+        let recenter = scene_a.recenter_voxels_for_resolve(density);
         // The renderer's initial (wholesale) buffer set for A.
         let wholesale_a =
-            build_two_layer_chunk_meshes(&chunks_a, dims, recentre, density, LayerBand::FULL, None);
+            build_two_layer_chunk_meshes(&chunks_a, dims, recenter, density, LayerBand::FULL, None);
 
         // The edit: invalidate the dirty AABB (or clear), then re-derive the resident set.
         let index_a = scene_a.build_leaf_spatial_index(density);
@@ -574,24 +574,24 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
                 Vec::new()
             }
         };
-        // These edits are all localisable (a single moved/edited leaf), so the AABB path
-        // must have been taken — the perf claim only holds on the localised path.
+        // These edits are all localizable (a single moved/edited leaf), so the AABB path
+        // must have been taken — the perf claim only holds on the localized path.
         assert!(
             !evicted_dirty.is_empty(),
-            "[{label}] expected a localisable edit (non-empty evicted-dirty set)"
+            "[{label}] expected a localizable edit (non-empty evicted-dirty set)"
         );
         let dims_b = scene_b.placed_region_dimensions(density);
-        let recentre_b = scene_b.recentre_voxels_for_resolve(density);
-        // The anchors pin the bounds, so the recentre must NOT shift — the precondition
+        let recenter_b = scene_b.recenter_voxels_for_resolve(density);
+        // The anchors pin the bounds, so the recenter must NOT shift — the precondition
         // under which the GPU-buffer incremental keeps untouched chunks' baked vertices.
         assert_eq!(
-            recentre_b, recentre,
-            "[{label}] anchors should pin the recentre; a shift would force wholesale fallback"
+            recenter_b, recenter,
+            "[{label}] anchors should pin the recenter; a shift would force wholesale fallback"
         );
         let chunks_b: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
             cache.resident_two_layer_chunks(&scene_b, density, 0);
 
-        // The plan — dilate the dirty set by the 26-neighbourhood, keep only non-empty
+        // The plan — dilate the dirty set by the 26-neighborhood, keep only non-empty
         // chunks — exactly as `incremental_rebuild_from_two_layer_chunks` computes it.
         let resident: Vec<[i32; 3]> = chunks_a.iter().map(|(c, _)| *c).collect();
         let occupied: Vec<[i32; 3]> = chunks_b
@@ -621,7 +621,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
             &chunks_b,
             Some(&rebuild_set),
             dims_b,
-            recentre_b,
+            recenter_b,
             density,
             LayerBand::FULL,
             None,
@@ -631,7 +631,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
         assert!(
             remeshed_coords.is_subset(&rebuild_set),
             "[{label}] the filtered two-layer build meshed a chunk OUTSIDE the dirty-dilated \
-             rebuild set — seam culling must read neighbours but only EMIT the subset"
+             rebuild set — seam culling must read neighbors but only EMIT the subset"
         );
 
         // --- BYTE-PARITY ---
@@ -652,7 +652,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
         let wholesale_b = build_two_layer_chunk_meshes(
             &chunks_b,
             dims_b,
-            recentre_b,
+            recenter_b,
             density,
             LayerBand::FULL,
             None,
@@ -665,10 +665,10 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
     }
 }
 
-/// Band-masked occupancy of a dense grid, keyed in the recentred-index frame the two-layer
-/// mesher emits in (a voxel at recentred index `v` sits at absolute layer `v[2] + half_z`,
+/// Band-masked occupancy of a dense grid, keyed in the recentered-index frame the two-layer
+/// mesher emits in (a voxel at recentered index `v` sits at absolute layer `v[2] + half_z`,
 /// FLOORED half — the SAME map the two-layer band clip inverts). Mirrors the banded-torus
-/// test's masking, restated in the RECENTRED frame so it lines up with `world_offset`.
+/// test's masking, restated in the RECENTERED frame so it lines up with `world_offset`.
 fn banded_occupancy_indices(
     dense: &VoxelGrid,
     band: LayerBand,
@@ -702,7 +702,7 @@ fn banded_occupancy_indices(
 
 /// ADR 0010 #53 GATE: the two-layer BANDED mesher's RENDERABLE face set equals the dense
 /// path's band-masked genuine surface — proving the band reclip (coarse clipped one-box,
-/// microblock cuboid clip, cut-plane cap faces) is a pure optimisation on the data seam,
+/// microblock cuboid clip, cut-plane cap faces) is a pure optimization on the data seam,
 /// identical to `build_cuboid_mesh_banded` on the dense path. Because `renderable_unit_faces`
 /// tests the front cell against the BAND-MASKED occupancy, a cut-plane cap face (front cell
 /// out of band ⇒ air) MUST be emitted, and a spurious over-emit or a hole both fail.
@@ -736,7 +736,7 @@ fn assert_two_layer_banded_face_parity(scene: &Scene, density: u32, band: LayerB
     let meshes = build_two_layer_chunk_meshes(
         &chunks,
         dense.dimensions,
-        RecentreVoxels::new(dense.recentre_voxels),
+        RecenterVoxels::new(dense.recenter_voxels),
         density,
         band,
         None,
@@ -766,7 +766,7 @@ fn assert_two_layer_banded_face_parity(scene: &Scene, density: u32, band: LayerB
     );
 }
 
-/// THE ADR 0010 #53 GATE: the two-layer mesher honours a layer band identically to the dense
+/// THE ADR 0010 #53 GATE: the two-layer mesher honors a layer band identically to the dense
 /// banded path across a matrix of bands — a band that CUTS through coarse-solid interiors (a
 /// large box: the clipped one-box + cut cap face), a band that clips microblock cuboids (a
 /// sphere), a band flush to a block boundary, and a thin single-block band. Multi-chunk at

@@ -1,7 +1,7 @@
 //! `constraint-parallel` — equal direction.
 //!
 //! Two runs at the same slope. Authored on a 36 × 26 canvas because the mark IS wider than tall;
-//! it is centred onto the square glyph grid rather than padded out to fill it, and nothing is
+//! it is centered onto the square glyph grid rather than padded out to fill it, and nothing is
 //! gained by stretching it.
 
 use super::{Ink, Mark};

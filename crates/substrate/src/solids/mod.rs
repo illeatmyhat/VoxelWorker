@@ -1,4 +1,4 @@
-//! Constructive-solid-geometry cell kernels: the black/white/grey cell
+//! Constructive-solid-geometry cell kernels: the black/white/gray cell
 //! classification (linear and scoped), the greedy cuboid decomposition of a cell
 //! grid into boxes, and the culled box meshing that determines exposed faces.
 //! Each module carries its own literature citations.

@@ -12,7 +12,7 @@ Two display paths exist, with a strict seniority between them.
 ## What kind of renderer this is
 
 The renderer sits at a deliberate point in a well-explored design space, and naming
-its neighbours is the fastest way to say what it is:
+its neighbors is the fastest way to say what it is:
 
 - **From the edit-list school** (the lineage of Dreams and Claybook — systems whose
   truth is a list of sculpting operations, not a mesh) it takes its one structural
@@ -60,7 +60,7 @@ Its vocabulary:
   denominated in. A boundary block becomes a **sculpted brick** — its voxel occupancy
   packed into one slot of a pooled 3D texture (the **atlas**). A coarse-solid block
   becomes a **coarse brick** — a marker record with no per-voxel data at all.
-- **Records are surface-only.** A block completely enclosed by solid neighbours can
+- **Records are surface-only.** A block completely enclosed by solid neighbors can
   never be the first thing a ray hits, so it never becomes a record; the interior is
   represented by the chunks it came from, not by display records. Upload cost per
   wholesale rebuild is therefore proportional to the scene's *skin*.
@@ -162,7 +162,7 @@ never co-render, so they can never disagree about what the user is looking at.
 ## The camera and the shell
 
 The camera orbits; explicit actions (home, fit, focus) frame the model. An *edit never
-moves the camera*: the document recentres itself as it grows, and the shell compensates
-the camera target by the recentre shift so the view stays planted. The shell draws
+moves the camera*: the document recenters itself as it grows, and the shell compensates
+the camera target by the recenter shift so the view stays planted. The shell draws
 whatever is current every frame and owns nothing the document or evaluator would
 recognize as state.

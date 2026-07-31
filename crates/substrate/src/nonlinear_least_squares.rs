@@ -356,7 +356,7 @@ fn dog_leg_step(
     columns: usize,
     trust_radius: f64,
 ) -> Vec<f64> {
-    // The steepest-descent step, at the length that minimises the linear model along `−g`:
+    // The steepest-descent step, at the length that minimizes the linear model along `−g`:
     // α = ‖g‖² / ‖Jg‖².
     let jacobian_gradient = times(jacobian_matrix, gradient, rows, columns);
     let denominator = sum_of_squares(&jacobian_gradient);
@@ -651,7 +651,7 @@ mod tests {
         assert!(left[0] < 0.0, "and so did the mirrored guess: {left:?}");
     }
 
-    /// A hard start: Rosenbrock's valley, the standard test for whether an optimiser follows a
+    /// A hard start: Rosenbrock's valley, the standard test for whether an optimizer follows a
     /// curved trough or bounces out of it. Gauss-Newton alone diverges from `(-1.2, 1)`.
     #[test]
     fn the_trust_region_follows_a_curved_valley() {

@@ -30,7 +30,7 @@ fn a_placed_primitive_tilts_to_the_entered_surface_normal() {
     let pick = fixture
         .app_core
         .pick_voxel(cursor, VIEWPORT, &fixture.frame())
-        .expect("the centre cursor hits the Box");
+        .expect("the center cursor hits the Box");
     let face_normal = Vec3::new(
         pick.face_normal[0] as f32,
         pick.face_normal[1] as f32,
@@ -78,7 +78,7 @@ struct Fixture {
     scene: Scene,
     selection: Selection,
     region_dimensions: [u32; 3],
-    recentre_voxels: [i64; 3],
+    recenter_voxels: [i64; 3],
     chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
 }
 
@@ -86,7 +86,7 @@ impl Fixture {
     fn frame(&self) -> PickFrame<'_> {
         PickFrame {
             region_dimensions: self.region_dimensions,
-            recentre_voxels: self.recentre_voxels,
+            recenter_voxels: self.recenter_voxels,
             density: DENSITY,
             chunks: &self.chunks,
             band: LayerBand::FULL,
@@ -102,7 +102,7 @@ impl Fixture {
             panic!("the rebuilt density is in bounds");
         };
         self.region_dimensions = output.region_dimensions;
-        self.recentre_voxels = output.recentre_voxels.voxels();
+        self.recenter_voxels = output.recenter_voxels.voxels();
         self.chunks = output.two_layer_chunks.clone();
     }
 }
@@ -133,7 +133,7 @@ fn placement_fixture(camera: OrbitCamera) -> Fixture {
         selection: selection_of_first_root(&scene),
         scene,
         region_dimensions: output.region_dimensions,
-        recentre_voxels: output.recentre_voxels.voxels(),
+        recenter_voxels: output.recenter_voxels.voxels(),
         chunks: output.two_layer_chunks.clone(),
     }
 }
@@ -158,16 +158,16 @@ fn tool_shape() -> SdfShape {
     SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, DENSITY)
 }
 
-/// **Geometry tier + bottom-centre drop.** A cursor over the existing solid resolves to
+/// **Geometry tier + bottom-center drop.** A cursor over the existing solid resolves to
 /// the OUTER side of the entered face — `absolute_voxel + face_normal` — and the node is
 /// seated FLUSH against that face: anchored along the face's normal axis (its facing
-/// side touches the surface) and centred on the other two. The surface voxel (the cursor
+/// side touches the surface) and centered on the other two. The surface voxel (the cursor
 /// point) always lies inside the placed span `[offset, offset + grid)`, so it is solid
 /// once dropped.
 #[test]
 fn a_cursor_on_geometry_places_a_node_seated_on_the_entered_face() {
     let mut fixture = placement_fixture(OrbitCamera::default());
-    // The default iso view centres the Box under the screen centre, so a centre
+    // The default iso view centers the Box under the screen center, so a center
     // cursor is a guaranteed geometry hit (the picking net proves this framing).
     let cursor = [640.0, 360.0];
 
@@ -177,7 +177,7 @@ fn a_cursor_on_geometry_places_a_node_seated_on_the_entered_face() {
     let pick = fixture
         .app_core
         .pick_voxel(cursor, VIEWPORT, &fixture.frame())
-        .expect("the centre cursor hits the Box");
+        .expect("the center cursor hits the Box");
     let surface_voxel: [i64; 3] =
         std::array::from_fn(|axis| pick.absolute_voxel[axis] + pick.face_normal[axis] as i64);
 
@@ -200,19 +200,19 @@ fn a_cursor_on_geometry_places_a_node_seated_on_the_entered_face() {
     let intent = outcome.intent.expect("a geometry hit produces a PlaceNode");
 
     // Apply the ACTUAL returned intent (rotation and all) and rebuild — the end-to-end
-    // frame check: the seated node must occupy the empty neighbour just outside the entered
+    // frame check: the seated node must occupy the empty neighbor just outside the entered
     // face, proving both the corner-anchored seat and that its `offset_voxels` lines up with
-    // the resident chunks' frame (a wrong seat or a lost recentre term misses this voxel).
+    // the resident chunks' frame (a wrong seat or a lost recenter term misses this voxel).
     fixture.apply_and_rebuild(intent);
     assert!(
         absolute_voxel_is_solid(&fixture.chunks, surface_voxel),
-        "the dropped node must occupy the neighbour voxel just outside the face {surface_voxel:?}"
+        "the dropped node must occupy the neighbor voxel just outside the face {surface_voxel:?}"
     );
 }
 
 /// **`surface_point_absolute` resolves SUB-VOXEL.** Two cursors two pixels apart — less than one
 /// voxel of travel at this framing — must answer two DIFFERENT points, both on the composed
-/// surface. The voxel-centre answer this replaced was constant across a whole cell, which is what
+/// surface. The voxel-center answer this replaced was constant across a whole cell, which is what
 /// made the orbit-center marker jump a cell at a time under the cursor.
 #[test]
 fn the_surface_point_resolves_sub_voxel_cursor_motion() {
@@ -231,7 +231,7 @@ fn the_surface_point_resolves_sub_voxel_cursor_motion() {
     };
     let fixture = placement_fixture(camera);
     let frame = fixture.frame();
-    // Screen centre: straight down onto the Box's top face.
+    // Screen center: straight down onto the Box's top face.
     let cursor = [640.0, 360.0];
     let at = |cursor| {
         fixture
@@ -269,9 +269,9 @@ fn the_surface_point_resolves_sub_voxel_cursor_motion() {
 /// on the ground straddling the clicked point.
 ///
 /// This is the frame-conversion guard: the expected placement is derived
-/// INDEPENDENTLY here (unproject the same cursor, rebase by `recentre_voxels`,
+/// INDEPENDENTLY here (unproject the same cursor, rebase by `recenter_voxels`,
 /// intersect `z = 0`, floor), so a wrong rebase term inside `place_primitive`
-/// (e.g. the shading `recentre − half` instead of the absolute `+ recentre`) shifts
+/// (e.g. the shading `recenter − half` instead of the absolute `+ recenter`) shifts
 /// the ground point by half the region and this assertion fails loudly.
 #[test]
 fn a_cursor_over_the_ground_places_a_node_on_it() {
@@ -289,7 +289,7 @@ fn a_cursor_over_the_ground_places_a_node_on_it() {
         ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
-    // Aim near the right edge: well outside the Box's centred silhouette, so the
+    // Aim near the right edge: well outside the Box's centered silhouette, so the
     // ray misses geometry and falls through to the ground plane.
     let cursor = [1200.0, 360.0];
 
@@ -302,16 +302,16 @@ fn a_cursor_over_the_ground_places_a_node_on_it() {
     let ndc_y = 1.0 - (cursor[1] - VIEWPORT[1]) / VIEWPORT[3] * 2.0;
     let render_ray = unproject_screen_point_to_ray(view_projection, ndc_x, ndc_y)
         .expect("the ortho matrix inverts");
-    let recentre = fixture.recentre_voxels;
+    let recenter = fixture.recenter_voxels;
     let absolute_origin =
-        render_ray.origin + Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
+        render_ray.origin + Vec3::new(recenter[0] as f32, recenter[1] as f32, recenter[2] as f32);
     let direction = render_ray.direction; // already unit
                                           // Intersect the ground plane z = 0 through the origin.
     let t = -absolute_origin.z / direction.z;
     assert!(t > 0.0, "the ground must be in front of the ray (t = {t})");
     let ground_point = absolute_origin + direction * t;
-    // The node drops BOTTOM-CENTRED on the ground point (ADR 0027 continuous seat): the
-    // authoring pivot (base centre) lands on the ground point, so the corner offset is the
+    // The node drops BOTTOM-CENTERED on the ground point (ADR 0027 continuous seat): the
+    // authoring pivot (base center) lands on the ground point, so the corner offset is the
     // pivot minus half the footprint in X/Y, base-aligned in Z — Voxel-snapped to the NEAREST
     // lattice corner (round, not the old floor). The ground point stays inside
     // `[offset, offset + grid)`, so it is solid once dropped.
@@ -353,12 +353,12 @@ fn a_cursor_over_the_ground_places_a_node_on_it() {
     };
     assert_eq!(
         offset_voxels, expected_offset,
-        "the ground placement must be bottom-centred on the independently-derived ground \
-             voxel — a wrong recentre term (or a lost centre offset) fails here"
+        "the ground placement must be bottom-centered on the independently-derived ground \
+             voxel — a wrong recenter term (or a lost center offset) fails here"
     );
 
     // Applying + rebuilding leaves BOTH bodies present: the original Box at the origin
-    // and the new Box standing bottom-centred on the ground point. The voxel CONTAINING the
+    // and the new Box standing bottom-centered on the ground point. The voxel CONTAINING the
     // clicked point (its floor) must be solid — the pivot sits inside the placed footprint.
     let clicked_voxel = [
         ground_point.x.floor() as i64,
@@ -368,7 +368,7 @@ fn a_cursor_over_the_ground_places_a_node_on_it() {
     fixture.apply_and_rebuild(outcome.intent.unwrap());
     assert!(
         absolute_voxel_is_solid(&fixture.chunks, clicked_voxel),
-        "the dropped ground node's bottom-centre occupies the clicked point {clicked_voxel:?}"
+        "the dropped ground node's bottom-center occupies the clicked point {clicked_voxel:?}"
     );
     assert!(
         absolute_voxel_is_solid(&fixture.chunks, [16, 16, 16]),
@@ -397,7 +397,7 @@ fn a_cursor_over_the_ground_of_an_empty_scene_places_a_node() {
         ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
-    // Reuse the fixture's frame geometry (region dims + recentre) but strip the
+    // Reuse the fixture's frame geometry (region dims + recenter) but strip the
     // chunks: the tool is armed on a scene with nothing resident.
     let empty_frame = PickFrame {
         chunks: &[],
@@ -615,10 +615,10 @@ fn the_15deg_joint_solve_lands_a_quantized_normal_on_a_curved_surface() {
 /// **NoSnap + Deg15 keeps the sub-voxel cursor position on a flat face (thread #1, 2026-07-22).**
 /// A flat face's normal is already a 15° multiple, so quantizing it is a no-op — the angle snap
 /// must not disturb the position. Before the fix, `Deg15` seeded its solve from the picked face
-/// CENTRE (`stable_surface`) while `Continuous` seated at the cursor contact, so turning on 15°
-/// snap silently jumped a NoSnap drop to the voxel centre. This pins the two paths to the SAME
+/// CENTER (`stable_surface`) while `Continuous` seated at the cursor contact, so turning on 15°
+/// snap silently jumped a NoSnap drop to the voxel center. This pins the two paths to the SAME
 /// sub-voxel position under NoSnap. Top-down ortho onto the Box's flat +Z face, cursor off the
-/// face centre so the fraction is observable.
+/// face center so the fraction is observable.
 #[test]
 fn nosnap_deg15_keeps_the_sub_voxel_cursor_position_on_a_flat_face() {
     let camera = OrbitCamera {
@@ -632,8 +632,8 @@ fn nosnap_deg15_keeps_the_sub_voxel_cursor_position_on_a_flat_face() {
         ..OrbitCamera::default()
     };
     let fixture = placement_fixture(camera);
-    // Off the screen centre but still over the centred Box, so the ray hits the flat top face
-    // at an off-centre (sub-voxel) point rather than a voxel centre.
+    // Off the screen center but still over the centered Box, so the ray hits the flat top face
+    // at an off-center (sub-voxel) point rather than a voxel center.
     let cursor = [712.0, 404.0];
 
     let seat = |angle| {
@@ -678,7 +678,7 @@ fn nosnap_deg15_keeps_the_sub_voxel_cursor_position_on_a_flat_face() {
     // The drop is genuinely sub-voxel — otherwise the equality below proves nothing.
     assert!(
             continuous_local.iter().any(|f| f.abs() > 1.0e-3),
-            "the off-centre cursor must land sub-voxel, got offset_local {continuous_local:?} — move the cursor"
+            "the off-center cursor must land sub-voxel, got offset_local {continuous_local:?} — move the cursor"
         );
     // 15° snap on a flat face must not move the NoSnap position off the cursor contact.
     let drift: f32 = (0..3)
@@ -775,7 +775,7 @@ fn a_hidden_ground_plane_places_nothing() {
 
 /// **A grazing ray no longer drops a node on an invisible vertical plane.** The two
 /// vertical world planes are never visualized, so a near-horizontal view that used to
-/// fall back to one (dropping a node vertical and centred on a far invisible plane —
+/// fall back to one (dropping a node vertical and centered on a far invisible plane —
 /// the 2026-07-21 bug) now reports `NoSurface`, even with the ground's floor grid on.
 #[test]
 fn a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane() {
@@ -836,7 +836,7 @@ fn a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane() {
 fn a_cursor_at_the_sky_places_nothing() {
     // Eye ABOVE the object looking straight UP (+Z): phi = π gives direction
     // (0,0,−1), so forward = −direction = +Z. Casting from the eye, the ground plane
-    // is behind the ray, and the object sits below the eye so a centre cursor clears
+    // is behind the ray, and the object sits below the eye so a center cursor clears
     // it. (The orthographic counterpart is `an_orthographic_skyward_cursor_places_nothing`,
     // which the directional reachability test now answers correctly too.)
     let camera = OrbitCamera {

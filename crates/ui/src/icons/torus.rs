@@ -2,7 +2,7 @@
 //!
 //! The same construction as the tile twin, and for the same reason: a closed curve drawn
 //! concentrically inside another reads as an EYE at every ratio, so the bore sits ABOVE the
-//! silhouette's centre and its far half recedes. At rail size the risk is worse, not better —
+//! silhouette's center and its far half recedes. At rail size the risk is worse, not better —
 //! a filled disc and a stroked ring are the same three pixels here, so the mark cannot lean
 //! on that difference and has to carry the reading in its construction alone.
 //!

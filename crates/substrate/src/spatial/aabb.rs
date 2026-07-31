@@ -12,7 +12,7 @@
 //!   without double-counting the shared boundary cell — the same reason a grid of
 //!   cells indexed by `floor(position / extent)` partitions cleanly. This is the
 //!   *ownership/broadphase* box: an edit broadphase asking "which boxes share a
-//!   cell" must NOT report neighbours that only abut.
+//!   cell" must NOT report neighbors that only abut.
 //!
 //! * [`RealAabb`] — **f32** corners under the **closed** `[min, max]` convention: a
 //!   continuous region of render/world space with inclusive faces, so two boxes

@@ -2,13 +2,13 @@
 
 use super::*;
 
-/// Block lattice colour `#5fb8a4` (teal patina) at ~0.28 alpha.
+/// Block lattice color `#5fb8a4` (teal patina) at ~0.28 alpha.
 const LATTICE_COLOR_HEX: u32 = 0x5f_b8_a4;
 const LATTICE_ALPHA: f32 = 0.28;
-/// Floor grid colour `#b8a47a` (warm sand) at 0.55 alpha. Issue #29 fix: the
+/// Floor grid color `#b8a47a` (warm sand) at 0.55 alpha. Issue #29 fix: the
 /// floor grid was previously a very dim `#6b5f4a` at 0.16 alpha — coincident with
 /// the model's depth-tested base plane and near-black against the background, so
-/// it read as "nothing" when toggled on. A brighter colour at a lattice-comparable
+/// it read as "nothing" when toggled on. A brighter color at a lattice-comparable
 /// opacity makes the base-plane grid clearly visible (it still hugs the node's
 /// enclosing-block XZ footprint, snapped to the global block lattice).
 const FLOOR_COLOR_HEX: u32 = 0xb8_a4_7a;
@@ -64,7 +64,7 @@ pub struct SceneGridRenderer {
 const FLOOR_DEPTH_BIAS_NDC: f32 = -5.0e-4;
 
 impl SceneGridRenderer {
-    /// Create the renderer for a colour target. The line batches start empty —
+    /// Create the renderer for a color target. The line batches start empty —
     /// the caller fills them each frame via `Self::set_batch` from the visible
     /// nodes' enabled grids.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
@@ -133,7 +133,7 @@ impl SceneGridRenderer {
     /// Rebuild this frame's lattice + floor line batches by walking `scene` (issue
     /// #29 S3). For every visible node whose grids are enabled — the scene-wide
     /// master ANDed with that node's own per-object toggle — the node's
-    /// enclosing-block lattice box ([`Scene::node_block_lattice_box_recentred`]) is
+    /// enclosing-block lattice box ([`Scene::node_block_lattice_box_recentered`]) is
     /// appended to the corresponding batch:
     ///
     /// * `master_block_lattice && node.grids.block_lattice` → block lattice lines.
@@ -222,7 +222,7 @@ impl SceneGridRenderer {
 
 /// The per-object grid boxes for a scene (issue #29 S3), gated CPU-side so the walk
 /// is unit-testable without a GPU. Returns `(lattice_boxes, floor_boxes)` where each
-/// box is the `(min, max)` enclosing-block AABB (recentred voxels) of a node whose
+/// box is the `(min, max)` enclosing-block AABB (recentered voxels) of a node whose
 /// grid is enabled — the scene-wide master ANDed with the node's own per-object
 /// toggle. A node with no intrinsic extent contributes no box. When a master is off,
 /// or a node's flag is off, that node contributes nothing to that batch (gating).
@@ -247,7 +247,8 @@ pub(crate) fn scene_grid_boxes(
         if !want_lattice && !want_floor {
             continue;
         }
-        let Some(node_box) = scene.node_block_lattice_box_recentred(&path, voxels_per_block) else {
+        let Some(node_box) = scene.node_block_lattice_box_recentered(&path, voxels_per_block)
+        else {
             continue;
         };
         if want_lattice {

@@ -5,8 +5,8 @@ use voxel_core::voxel::ShapeKind;
 /// the dump rather than this struct. Most tests below care about what survives a
 /// save/load, not about which type spells the JSON, so they go through here.
 fn save_and_reload(config: &AppConfig) -> AppConfig {
-    let json = config.to_dump_json().expect("serialise");
-    AppConfig::from_dump_json(&json).expect("deserialise")
+    let json = config.to_dump_json().expect("serialize");
+    AppConfig::from_dump_json(&json).expect("deserialize")
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn old_config_with_debug_clouds_field_still_loads() {
     // The flat geometry keys are ignored; only density + material survive.
     assert_eq!(restored.voxels_per_block, 20);
     assert_eq!(restored.material, MaterialChoice::Wood);
-    // An old config has NO `scene` field, so it deserialises to `None`, which now
+    // An old config has NO `scene` field, so it deserializes to `None`, which now
     // loads the default seed scene (the same one a brand-new config gets).
     assert!(
         restored.scene.is_none(),
@@ -531,7 +531,7 @@ fn full_scene_round_trips_through_json() {
 }
 
 /// step 8 (never panic on load): a config whose `scene` value is broken/partial
-/// still loads. A scene object missing its inner fields deserialises to an
+/// still loads. A scene object missing its inner fields deserializes to an
 /// empty-node scene (every scene field is `#[serde(default)]`), which
 /// `to_panel_state` treats as absent → falls back to the one-Tool-node seed.
 #[test]
@@ -607,7 +607,7 @@ fn old_i32_offset_scene_loads_after_widening_to_i64() {
     panel.scene = scene;
     let camera = OrbitCamera::default();
     let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
-    let json = config.to_dump_json().expect("serialise");
+    let json = config.to_dump_json().expect("serialize");
 
     // Sanity: the persisted offset really is a bare JSON integer (no width), the
     // exact condition the widening relies on. Checked against the parsed value rather
@@ -860,7 +860,7 @@ fn unminted_persisted_scene_gets_ids_minted_on_load() {
     // roots-references-sentinel save is not representable/positionally reachable.
     // The surviving, load-path-exercised guarantee is the STALE-COUNTER half: a
     // persisted scene whose nodes already carry ids but whose `next_node_id` was
-    // never advanced past them must be normalised on load so a later edit op mints
+    // never advanced past them must be normalized on load so a later edit op mints
     // a non-colliding id and every row stays selectable. We forge exactly that
     // persisted shape by resetting the counter in the serialized JSON.
     let scene = Scene::from_nodes(vec![make_box("First"), make_box("Second")]);
@@ -869,7 +869,7 @@ fn unminted_persisted_scene_gets_ids_minted_on_load() {
     panel.scene = scene;
     let camera = OrbitCamera::default();
     let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
-    let dump_json = config.to_dump_json().expect("serialise");
+    let dump_json = config.to_dump_json().expect("serialize");
     let mut config_value: serde_json::Value =
         serde_json::from_str(&dump_json).expect("re-parse the dump");
     // Forge a stale counter: the nodes carry real ids, but `next_node_id` sits at 0
@@ -879,8 +879,8 @@ fn unminted_persisted_scene_gets_ids_minted_on_load() {
         .and_then(|s| s.get_mut("next_node_id"))
         .expect("the persisted scene carries a counter") = serde_json::json!(0);
 
-    let json = serde_json::to_string_pretty(&config_value).expect("re-serialise");
-    let restored = AppConfig::from_dump_json(&json).expect("deserialise");
+    let json = serde_json::to_string_pretty(&config_value).expect("re-serialize");
+    let restored = AppConfig::from_dump_json(&json).expect("deserialize");
     let loaded = restored.to_panel_state();
 
     // Every node carries a real id, and the counter now sits past all of them.

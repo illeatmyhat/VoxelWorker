@@ -56,7 +56,7 @@ operators are its ingredients, never assembly citizens on their own; **the scene
    uniforms — band scrubs stay O(1), no second display set, no re-evaluation on mode or selection change. What
    is shown inside the region is the **composed** geometry (carves by later cutters included) — the layers the
    user would actually build. Accepted softness: another object interpenetrating the selected object's AABB
-   clips inside the overlap too (the Fusion section-analysis behaviour). The layer track spans the **selected
+   clips inside the overlap too (the Fusion section-analysis behavior). The layer track spans the **selected
    object's Z extent**, not the scene's.
 
 6. **Show booleans is the #79 walk, selection-scoped.** Every Subtract/Intersect operand body in the selected
@@ -90,7 +90,7 @@ operators are its ingredients, never assembly citizens on their own; **the scene
   which lacks carves later root-scope cutters made on it, i.e. layers that don't match the finished build.
 - **Keeping the scene-wide band clip** and merely gating the ghosts: fails the per-object requirement.
 - **A transparent (non-sealing) grouping folder** as the "part": two nesting concepts with invisibly different
-  fold behaviour; ADR 0017 already rejected composition semantics that depend on container flavour.
+  fold behavior; ADR 0017 already rejected composition semantics that depend on container flavor.
 
 ## Consequences
 

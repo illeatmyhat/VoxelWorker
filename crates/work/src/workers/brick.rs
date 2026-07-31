@@ -46,7 +46,7 @@ use display::brick::{
 };
 use display::brick::{pack_gpu_records, BrickGpuRecord};
 use evaluation::two_layer_store::TwoLayerChunk;
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 
 /// A request to rebuild the brick pipeline WHOLESALE on the worker. Carries the
 /// resolve's covering chunks (`Arc`-shared, `Send`) plus the frame scalars — the same
@@ -60,10 +60,10 @@ pub struct BrickRebuildRequest {
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
-    /// The composite recentre (floating origin, voxels; ADR 0008) the field lands in.
-    /// Carried as [`RecentreVoxels`] through to the result so the install uses the recentre
+    /// The composite recenter (floating origin, voxels; ADR 0008) the field lands in.
+    /// Carried as [`RecenterVoxels`] through to the result so the install uses the recenter
     /// THIS build was resolved at, never a re-derived one (the frame law).
-    pub recentre_voxels: RecentreVoxels,
+    pub recenter_voxels: RecenterVoxels,
     /// Whether to build the DISPLAY artifacts (classify + pyramid + GPU record pack) on
     /// top of the mirror. `true` for every display rebuild (the raymarch consumes them);
     /// `false` asks for the CPU mirror alone.
@@ -118,10 +118,10 @@ pub struct BrickDisplayInstall {
 pub struct BrickRebuildResult {
     /// The generation of the [`BrickRebuildRequest`] this result was built for.
     pub generation: u64,
-    /// The recentre the request carried — the frame the install lands the field in
-    /// (the value travels with the build as [`RecentreVoxels`], never re-derived at install
+    /// The recenter the request carried — the frame the install lands the field in
+    /// (the value travels with the build as [`RecenterVoxels`], never re-derived at install
     /// time).
-    pub recentre_voxels: RecentreVoxels,
+    pub recenter_voxels: RecenterVoxels,
     /// The built artifacts, or `None` if the build PANICKED on the worker (caught via
     /// [`build_catching`] — the worker stays alive, the shell keeps its stale field and
     /// leaves the outstanding flag set so the next edit re-dispatches).
@@ -174,7 +174,7 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
 pub type BrickWorker = Worker<BrickRebuildRequest, BrickRebuildResult>;
 
 /// Spawn the brick-pipeline worker on a dedicated thread. The closure builds via
-/// [`build_brick_rebuild`] and carries the request's recentre through to the result (ADR
+/// [`build_brick_rebuild`] and carries the request's recenter through to the result (ADR
 /// 0008: the frame value travels with the build, never re-derived at install). Like the
 /// geometry worker, the build runs under [`build_catching`] so a build panic is caught and
 /// surfaced as a `None` outcome the shell can react to, keeping the loop alive.
@@ -183,11 +183,11 @@ pub fn spawn_brick_worker() -> BrickWorker {
         "voxel-worker brick rebuild",
         |request: BrickRebuildRequest| {
             let generation = request.generation;
-            let recentre_voxels = request.recentre_voxels;
+            let recenter_voxels = request.recenter_voxels;
             let outcome = build_catching(generation, || build_brick_rebuild(&request));
             BrickRebuildResult {
                 generation,
-                recentre_voxels,
+                recenter_voxels,
                 outcome,
             }
         },
@@ -232,7 +232,7 @@ mod tests {
             generation: 1,
             two_layer_chunks: chunks.clone(),
             density: vpb,
-            recentre_voxels: RecentreVoxels::new([0; 3]),
+            recenter_voxels: RecenterVoxels::new([0; 3]),
             build_display_artifacts: true,
         };
         let BrickRebuildOutcome::Display(install) = build_brick_rebuild(&request) else {
@@ -284,7 +284,7 @@ mod tests {
             generation: 1,
             two_layer_chunks: chunks.clone(),
             density: vpb,
-            recentre_voxels: RecentreVoxels::new([0; 3]),
+            recenter_voxels: RecenterVoxels::new([0; 3]),
             build_display_artifacts: false,
         };
         let BrickRebuildOutcome::MirrorOnly { mirror } = build_brick_rebuild(&request) else {
@@ -301,7 +301,7 @@ mod tests {
             generation: 1,
             two_layer_chunks: Vec::new(),
             density: 4,
-            recentre_voxels: RecentreVoxels::new([0; 3]),
+            recenter_voxels: RecenterVoxels::new([0; 3]),
             build_display_artifacts: true,
         };
         assert!(matches!(

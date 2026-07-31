@@ -67,7 +67,7 @@
 //! - [`rectangle_inside_polygon`] — whether a closed axis-aligned rectangle lies
 //!   wholly inside a polygon. Exact by connectedness: if no polygon edge crosses
 //!   the rectangle it holds no piece of the boundary, so it is wholly in or out,
-//!   and one interior sample (the centre) decides. Conservative on a grazing
+//!   and one interior sample (the center) decides. Conservative on a grazing
 //!   edge (counts as crossing ⇒ not-inside, still exact).
 //!
 //! ## Predicates and measurements
@@ -160,7 +160,7 @@ pub fn segment_intersects_rect(
 /// an odd count is inside. Franklin's PNPOLY / ray-crossing (see module docs).
 ///
 /// No on-boundary tie-breaking is done: callers that need exactness (e.g. voxel
-/// sample centres at half-integer positions against integer vertices) rely on the
+/// sample centers at half-integer positions against integer vertices) rely on the
 /// sample never lying on an edge.
 ///
 /// `f32`, with the rest of the measurement half: this is the boundary authority a WGSL
@@ -197,10 +197,10 @@ pub fn point_in_polygon(polygon: &[[f32; 2]], sample: [f32; 2]) -> bool {
 /// Whether the CLOSED axis-aligned rectangle `[rect_min, rect_max]` lies ENTIRELY
 /// inside the polygon (same space [`point_in_polygon`] samples). Exact by
 /// connectedness: the rectangle is inside iff **no polygon edge intersects it AND
-/// its centre is inside** (see module docs). A rectangle whose edge grazes a
+/// its center is inside** (see module docs). A rectangle whose edge grazes a
 /// polygon edge counts as crossing ⇒ not-inside (conservative, still exact). A
 /// degenerate rectangle (`hi == lo` on an axis: a segment or a point) is handled
-/// directly — the edge tests run against the degenerate box and the centre
+/// directly — the edge tests run against the degenerate box and the center
 /// reduces to its midpoint/point. Returns `false` for a polygon with fewer than
 /// three vertices or an inverted rectangle.
 pub fn rectangle_inside_polygon(
@@ -221,14 +221,14 @@ pub fn rectangle_inside_polygon(
     }
     // The edge tests above are the exactness-critical ones and ran in `f64`: a wrong
     // orientation sign there would let a straddled rectangle through as "inside" and
-    // over-claim solid. The centre test is a different question and is answered in `f32`,
+    // over-claim solid. The center test is a different question and is answered in `f32`,
     // deliberately:
     //
-    // - It is only ever REACHED when no polygon edge meets the rectangle, so the centre
+    // - It is only ever REACHED when no polygon edge meets the rectangle, so the center
     //   is not near the boundary — the case where width would matter has already been
     //   decided by the exact half.
     // - `point_in_polygon` is the same call the per-voxel resolve makes to decide
-    //   occupancy. Answering the centre in `f64` here while the resolve answers it in
+    //   occupancy. Answering the center in `f64` here while the resolve answers it in
     //   `f32` would let the coarse claim and the per-voxel truth disagree on a sample
     //   sitting on an edge — exactly the "same set, different rounding" failure this
     //   classifier is supposed to avoid. Sharing the width makes them agree by
@@ -237,11 +237,11 @@ pub fn rectangle_inside_polygon(
         .iter()
         .map(|point| [point[0] as f32, point[1] as f32])
         .collect();
-    let centre = [
+    let center = [
         ((rect_min[0] + rect_max[0]) * 0.5) as f32,
         ((rect_min[1] + rect_max[1]) * 0.5) as f32,
     ];
-    point_in_polygon(&narrowed, centre)
+    point_in_polygon(&narrowed, center)
 }
 
 /// Which notion of distance a measurement is taken in.
@@ -424,10 +424,10 @@ pub enum RegionEdge {
         /// The head.
         end: [f32; 2],
     },
-    /// A circular arc from `start` to `end`, travelling `sweep_radians` about `centre` —
+    /// A circular arc from `start` to `end`, traveling `sweep_radians` about `center` —
     /// counter-clockwise when the sweep is positive, clockwise when it is negative.
     ///
-    /// The endpoints are carried alongside the centre/radius/angle solve rather than recomputed
+    /// The endpoints are carried alongside the center/radius/angle solve rather than recomputed
     /// from it: an endpoint shared with the next edge must be the SAME value on both sides, or the
     /// crossing parity at that vertex can count twice or not at all.
     Arc {
@@ -435,11 +435,11 @@ pub enum RegionEdge {
         start: [f32; 2],
         /// The head.
         end: [f32; 2],
-        /// The circle's centre.
-        centre: [f32; 2],
+        /// The circle's center.
+        center: [f32; 2],
         /// The circle's radius.
         radius: f32,
-        /// The bearing of `start` from `centre`, in radians.
+        /// The bearing of `start` from `center`, in radians.
         start_radians: f32,
         /// The signed angle travelled from `start` to `end`.
         sweep_radians: f32,
@@ -474,7 +474,7 @@ impl RegionEdge {
         let mut low = [start[0].min(end[0]), start[1].min(end[1])];
         let mut high = [start[0].max(end[0]), start[1].max(end[1])];
         if let RegionEdge::Arc {
-            centre,
+            center,
             radius,
             start_radians,
             sweep_radians,
@@ -488,8 +488,8 @@ impl RegionEdge {
                     continue;
                 }
                 let reach = [
-                    centre[0] + radius * bearing.cos(),
-                    centre[1] + radius * bearing.sin(),
+                    center[0] + radius * bearing.cos(),
+                    center[1] + radius * bearing.sin(),
                 ];
                 for axis in 0..2 {
                     low[axis] = low[axis].min(reach[axis]);
@@ -503,7 +503,7 @@ impl RegionEdge {
     /// Distance from `point` to the edge under `metric`. Never negative; zero exactly on it.
     ///
     /// A segment defers to [`distance_point_to_segment`]. An arc whose bearing from `point` falls
-    /// within the sweep is `‖point − centre‖ − radius` in magnitude under **Euclidean**; otherwise
+    /// within the sweep is `‖point − center‖ − radius` in magnitude under **Euclidean**; otherwise
     /// the nearer endpoint is the closest thing on the curve. **Chebyshev** has no such closed
     /// form and is solved by candidate angles (`chebyshev_distance_to_arc`, private).
     pub fn distance(&self, point: [f32; 2], metric: Metric) -> f32 {
@@ -514,7 +514,7 @@ impl RegionEdge {
             RegionEdge::Arc {
                 start,
                 end,
-                centre,
+                center,
                 radius,
                 start_radians,
                 sweep_radians,
@@ -524,7 +524,7 @@ impl RegionEdge {
                     .min(metric.distance(*end, point));
                 match metric {
                     Metric::Euclidean => {
-                        let offset = [point[0] - centre[0], point[1] - centre[1]];
+                        let offset = [point[0] - center[0], point[1] - center[1]];
                         let bearing = offset[1].atan2(offset[0]);
                         if travel_to_bearing(*start_radians, *sweep_radians, bearing).is_some() {
                             (metric.length(offset) - radius).abs()
@@ -533,7 +533,7 @@ impl RegionEdge {
                         }
                     }
                     Metric::Chebyshev => to_ends.min(chebyshev_distance_to_arc(
-                        *centre,
+                        *center,
                         *radius,
                         *start_radians,
                         *sweep_radians,
@@ -559,7 +559,7 @@ impl RegionEdge {
             RegionEdge::Arc {
                 start,
                 end,
-                centre,
+                center,
                 radius,
                 start_radians,
                 sweep_radians,
@@ -582,8 +582,8 @@ impl RegionEdge {
                 let at = |travel: f32| {
                     let bearing = start_radians + direction * travel;
                     [
-                        centre[0] + radius * bearing.cos(),
-                        centre[1] + radius * bearing.sin(),
+                        center[0] + radius * bearing.cos(),
+                        center[1] + radius * bearing.sin(),
                     ]
                 };
                 let mut crossings = 0;
@@ -600,14 +600,14 @@ impl RegionEdge {
                         continue;
                     }
                     // The piece is monotone, so its half of the circle decides which root of
-                    // `axis0 = centre ± √(r² − dy²)` it crosses at.
-                    let rise = sample[1] - centre[1];
+                    // `axis0 = center ± √(r² − dy²)` it crosses at.
+                    let rise = sample[1] - center[1];
                     let half_chord = (radius * radius - rise * rise).max(0.0).sqrt();
                     let middle = start_radians + direction * (entry + exit) * 0.5;
                     let crossing_0 = if middle.cos() >= 0.0 {
-                        centre[0] + half_chord
+                        center[0] + half_chord
                     } else {
-                        centre[0] - half_chord
+                        center[0] - half_chord
                     };
                     if sample[0] < crossing_0 {
                         crossings += 1;
@@ -636,7 +636,7 @@ fn travel_to_bearing(start_radians: f32, sweep_radians: f32, bearing: f32) -> Op
 /// The Chebyshev (L∞) distance from `point` to the arc's CURVE, ignoring its endpoints (the caller
 /// folds those in).
 ///
-/// Writing the arc as `centre + radius·(cos t, sin t)`, the distance is
+/// Writing the arc as `center + radius·(cos t, sin t)`, the distance is
 ///
 /// ```text
 /// f(t) = max(|gx(t)|, |gy(t)|)   gx(t) = cx + r·cos t − px,  gy(t) = cy + r·sin t − py
@@ -651,13 +651,13 @@ fn travel_to_bearing(start_radians: f32, sweep_radians: f32, bearing: f32) -> Op
 /// CPU-only, like the rest of the Chebyshev branch: it is the lattice metric an outset measures in,
 /// and the WGSL mirror only ever wants the round one.
 fn chebyshev_distance_to_arc(
-    centre: [f32; 2],
+    center: [f32; 2],
     radius: f32,
     start_radians: f32,
     sweep_radians: f32,
     point: [f32; 2],
 ) -> f32 {
-    let offset = [point[0] - centre[0], point[1] - centre[1]];
+    let offset = [point[0] - center[0], point[1] - center[1]];
     let mut nearest = f32::INFINITY;
     let mut consider = |bearing: f32| {
         if travel_to_bearing(start_radians, sweep_radians, bearing).is_none() {
@@ -790,16 +790,16 @@ pub fn signed_distance_to_region(
 ///
 /// Garcia-Castellanos & Lombardo's pole of inaccessibility (2007), by the quadtree refinement
 /// Mapbox's *polylabel* (2016) popularised: cover the bounds in square cells, and repeatedly
-/// subdivide whichever cell has the best *possible* answer left in it — its centre's clearance
+/// subdivide whichever cell has the best *possible* answer left in it — its center's clearance
 /// plus its own half-diagonal, since the field is 1-Lipschitz and cannot climb faster than the
 /// distance travelled. That bound is what makes the search exhaustive rather than lucky: a sliver
-/// no coarse sample lands in still has a cell whose optimistic bound outranks the current best, so
+/// no coarse sample lands in still has a cell whose optimiztic bound outranks the current best, so
 /// it gets subdivided rather than missed. It stops once no cell can beat the best by more than
 /// `precision`.
 ///
 /// Unlike the published algorithm this measures to CURVES, not to a flattened polygon
-/// ([`signed_distance_to_region`] over [`RegionEdge`]s), so a disc's pole is its centre exactly
-/// rather than the centre of a chord approximation. It also takes a REGION and not a single loop,
+/// ([`signed_distance_to_region`] over [`RegionEdge`]s), so a disc's pole is its center exactly
+/// rather than the center of a chord approximation. It also takes a REGION and not a single loop,
 /// for the same reason the identity wants the deepest point in the first place: the pole of a ring
 /// has to be in the ring, not in the hole the ring is drawn around. `loops` is innermost-first,
 /// the order [`point_in_region`] states.
@@ -815,16 +815,16 @@ pub fn deepest_interior_point(
         return None;
     }
     let depth = |point: [f32; 2]| -signed_distance_to_region(loops, point, Metric::Euclidean);
-    // Seed with the bounds' centre so a convex loop is answered before any subdivision, and so
-    // there is always a best to compare optimistic bounds against.
+    // Seed with the bounds' center so a convex loop is answered before any subdivision, and so
+    // there is always a best to compare optimiztic bounds against.
     let mut best = [low[0] + width / 2.0, low[1] + height / 2.0];
     let mut best_depth = depth(best);
-    // Each cell carries the depth at its centre, measured once when it is created — the search
+    // Each cell carries the depth at its center, measured once when it is created — the search
     // spends its whole cost in `depth`, so re-reading it while ranking would square that.
-    let cell = |centre: [f32; 2], half: f32| Cell {
-        centre,
+    let cell = |center: [f32; 2], half: f32| Cell {
+        center,
         half,
-        bound: depth(centre) + half * std::f32::consts::SQRT_2,
+        bound: depth(center) + half * std::f32::consts::SQRT_2,
     };
     let mut queue: std::collections::BinaryHeap<Cell> = std::collections::BinaryHeap::new();
     let mut x = low[0];
@@ -850,14 +850,14 @@ pub fn deepest_interior_point(
         let here = popped.bound - popped.half * std::f32::consts::SQRT_2;
         if here > best_depth {
             best_depth = here;
-            best = popped.centre;
+            best = popped.center;
         }
         let quarter = popped.half / 2.0;
         for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
             queue.push(cell(
                 [
-                    popped.centre[0] + dx * quarter,
-                    popped.centre[1] + dy * quarter,
+                    popped.center[0] + dx * quarter,
+                    popped.center[1] + dy * quarter,
                 ],
                 quarter,
             ));
@@ -867,11 +867,11 @@ pub fn deepest_interior_point(
 }
 
 /// One square of the [`deepest_interior_point`] search, ordered by the best clearance it could
-/// still hold: its centre's, plus how far its corner reaches. That ordering is the whole point —
+/// still hold: its center's, plus how far its corner reaches. That ordering is the whole point —
 /// the search always subdivides the most promising square left, so it is a max-heap of `bound`
 /// and nothing else participates in the comparison.
 struct Cell {
-    centre: [f32; 2],
+    center: [f32; 2],
     half: f32,
     bound: f32,
 }
@@ -963,7 +963,7 @@ pub fn rectangle_inside_region(
 }
 
 /// Whether the closed rectangle touches the polygon's interior or boundary at all — an edge
-/// crossing, or a centre inside it. The negation of "provably disjoint", so a `false` is the
+/// crossing, or a center inside it. The negation of "provably disjoint", so a `false` is the
 /// only answer [`rectangle_inside_region`] is allowed to build a solid claim on.
 fn rectangle_meets_polygon(polygon: &[[f64; 2]], rect_min: [f64; 2], rect_max: [f64; 2]) -> bool {
     let count = polygon.len();
@@ -977,7 +977,7 @@ fn rectangle_meets_polygon(polygon: &[[f64; 2]], rect_min: [f64; 2], rect_max: [
         }
         previous = current;
     }
-    // No edge crosses, so the rectangle is wholly inside or wholly outside: its centre decides,
+    // No edge crosses, so the rectangle is wholly inside or wholly outside: its center decides,
     // in the same `f32` the per-voxel resolve uses (see `rectangle_inside_polygon`).
     let narrowed: Vec<[f32; 2]> = polygon
         .iter()
@@ -1003,7 +1003,7 @@ mod tests {
     const UNIT_SQUARE: [[f64; 2]; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
     const UNIT_SQUARE_MEASURED: [[f32; 2]; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
 
-    /// A 12x12 square with a 4x4 square centred in it — the donut every hole test needs.
+    /// A 12x12 square with a 4x4 square centered in it — the donut every hole test needs.
     const OUTER_MEASURED: [[f32; 2]; 4] = [[0.0, 0.0], [12.0, 0.0], [12.0, 12.0], [0.0, 12.0]];
     const INNER_MEASURED: [[f32; 2]; 4] = [[4.0, 4.0], [8.0, 4.0], [8.0, 8.0], [4.0, 8.0]];
     const OUTER: [[f64; 2]; 4] = [[0.0, 0.0], [12.0, 0.0], [12.0, 12.0], [0.0, 12.0]];
@@ -1021,19 +1021,19 @@ mod tests {
     }
 
     /// A full circle as ONE arc edge — degenerate as a polygon, exact as a curve.
-    fn circle(centre: [f32; 2], radius: f32) -> Vec<RegionEdge> {
-        let seam = [centre[0] + radius, centre[1]];
+    fn circle(center: [f32; 2], radius: f32) -> Vec<RegionEdge> {
+        let seam = [center[0] + radius, center[1]];
         vec![RegionEdge::Arc {
             start: seam,
             end: seam,
-            centre,
+            center,
             radius,
             start_radians: 0.0,
             sweep_radians: std::f32::consts::TAU,
         }]
     }
 
-    /// A hole is carved, not parity-cancelled: the ring is inside and the pocket is not. Loops run
+    /// A hole is carved, not parity-canceled: the ring is inside and the pocket is not. Loops run
     /// innermost-first, so the pocket gets its say before the square it sits in.
     #[test]
     fn a_hole_is_carved_out_of_its_fill() {
@@ -1151,7 +1151,7 @@ mod tests {
         }
         assert!(
             signed_distance_to_region(&region, [0.0, 0.0], Metric::Euclidean) < 0.0,
-            "the centre is inside"
+            "the center is inside"
         );
     }
 
@@ -1161,8 +1161,8 @@ mod tests {
     #[test]
     fn a_curved_loop_classifies_by_the_curve() {
         let region = [(LoopRole::Fill, circle([6.0, 6.0], 4.0))];
-        assert!(point_in_region(&region, [6.0, 6.0]), "the centre");
-        assert!(point_in_region(&region, [9.0, 6.0]), "inside, off-centre");
+        assert!(point_in_region(&region, [6.0, 6.0]), "the center");
+        assert!(point_in_region(&region, [9.0, 6.0]), "inside, off-center");
         assert!(!point_in_region(&region, [11.0, 6.0]), "past the rim");
         assert!(!point_in_region(&region, [6.0, 12.0]), "above it");
         // A ray leaving exactly at the circle's topmost point — the cut the monotone split makes.
@@ -1174,7 +1174,7 @@ mod tests {
                 RegionEdge::Arc {
                     start: [10.0, 6.0],
                     end: [2.0, 6.0],
-                    centre: [6.0, 6.0],
+                    center: [6.0, 6.0],
                     radius: 4.0,
                     start_radians: 0.0,
                     sweep_radians: std::f32::consts::PI,
@@ -1196,7 +1196,7 @@ mod tests {
         let arc = RegionEdge::Arc {
             start: [4.0, 0.0],
             end: [4.0, 0.0],
-            centre: [0.0, 0.0],
+            center: [0.0, 0.0],
             radius: 4.0,
             start_radians: 0.0,
             sweep_radians: std::f32::consts::TAU,
@@ -1213,13 +1213,13 @@ mod tests {
             (diagonal - expected).abs() < 1e-3,
             "on the diagonal expected {expected}, measured {diagonal}"
         );
-        // From the centre, the L∞ ball is a square whose CORNER reaches the circle first, so the
+        // From the center, the L∞ ball is a square whose CORNER reaches the circle first, so the
         // distance is `radius/√2` and not the radius. Getting this wrong is how a Euclidean
         // measurement wearing the Chebyshev name goes unnoticed.
-        let from_centre = arc.distance([0.0, 0.0], Metric::Chebyshev);
+        let from_center = arc.distance([0.0, 0.0], Metric::Chebyshev);
         assert!(
-            (from_centre - 4.0 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,
-            "from the centre, measured {from_centre}"
+            (from_center - 4.0 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,
+            "from the center, measured {from_center}"
         );
     }
 
@@ -1230,7 +1230,7 @@ mod tests {
         let half = RegionEdge::Arc {
             start: [4.0, 0.0],
             end: [-4.0, 0.0],
-            centre: [0.0, 0.0],
+            center: [0.0, 0.0],
             radius: 4.0,
             start_radians: 0.0,
             sweep_radians: std::f32::consts::PI,
@@ -1416,9 +1416,9 @@ mod tests {
     #[test]
     fn polygon_signed_distance_signs_and_values() {
         for metric in [Metric::Euclidean, Metric::Chebyshev] {
-            // Centre of the 4×4 square is 2 from every edge in both metrics.
-            let centre = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [2.0, 2.0], metric);
-            assert!((centre + 2.0).abs() < 1e-9, "{metric:?} centre = {centre}");
+            // Center of the 4×4 square is 2 from every edge in both metrics.
+            let center = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [2.0, 2.0], metric);
+            assert!((center + 2.0).abs() < 1e-9, "{metric:?} center = {center}");
             // On the boundary ⇒ zero.
             let edge = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [4.0, 2.0], metric);
             assert!(edge.abs() < 1e-9, "{metric:?} edge = {edge}");
@@ -1533,9 +1533,9 @@ mod tests {
         vec![(LoopRole::Fill, closed_loop(points))]
     }
 
-    /// The square's pole is its centre, and the clearance is the inradius.
+    /// The square's pole is its center, and the clearance is the inradius.
     #[test]
-    fn a_squares_pole_is_its_centre() {
+    fn a_squares_pole_is_its_center() {
         let (pole, clearance) =
             deepest_interior_point(&fill(&UNIT_SQUARE_MEASURED), 1e-3).expect("a pole");
         assert!(
@@ -1545,7 +1545,7 @@ mod tests {
         assert!((clearance - 2.0).abs() < 1e-2, "{clearance}");
     }
 
-    /// A disc's pole is its centre measured to the CURVE, so the clearance is the radius exactly
+    /// A disc's pole is its center measured to the CURVE, so the clearance is the radius exactly
     /// rather than the apothem of some chord approximation.
     #[test]
     fn a_discs_pole_reads_the_curve_not_a_chord() {
@@ -1553,7 +1553,7 @@ mod tests {
         let circle = vec![RegionEdge::Arc {
             start: [radius, 0.0],
             end: [radius, 0.0],
-            centre: [0.0, 0.0],
+            center: [0.0, 0.0],
             radius,
             start_radians: 0.0,
             sweep_radians: std::f32::consts::TAU,
@@ -1592,7 +1592,7 @@ mod tests {
         );
     }
 
-    /// A sliver no coarse sample lands in is still found — the optimistic bound keeps its cells
+    /// A sliver no coarse sample lands in is still found — the optimiztic bound keeps its cells
     /// alive until they are small enough to sample it.
     #[test]
     fn a_sliver_is_found_not_missed() {

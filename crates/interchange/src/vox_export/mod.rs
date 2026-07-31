@@ -1,6 +1,6 @@
 //! MagicaVoxel `.vox` export (Milestone 8).
 //!
-//! Serialises a resolved [`VoxelGrid`] to a MagicaVoxel
+//! Serializes a resolved [`VoxelGrid`] to a MagicaVoxel
 //! `.vox` file so the result can be ingested by the **Automatic Chiselling
 //! REBORN** Vintage Story mod. The chunked binary is
 //! hand-written (no crate dependency) — it is a `VOX ` magic + version 150
@@ -23,21 +23,21 @@
 //! Typical grids (e.g. 80×16×80) are a single model. The split is documented in
 //! [`VoxExport::model_count`].
 //!
-//! ## Colour (ADR 0003 §3a — block-palette mapping)
+//! ## Color (ADR 0003 §3a — block-palette mapping)
 //!
 //! Each voxel's categorical `block_id` (ADR 0003 §3a) maps through the active block
 //! palette to a `.vox` palette slot: file palette index `block_id + 1` carries that
-//! block's colour, and every voxel references its own block's slot. The palette is
+//! block's color, and every voxel references its own block's slot. The palette is
 //! built over the existing three procedural materials (the categorical CAPABILITY; the
 //! rich VS palette content stays deferred), so a single-material scene (every voxel
 //! `block_id 0`) still references ONE slot and is byte-identical to the old single-
-//! representative-colour export. A multi-material scene now exports each block in its
-//! own palette colour rather than collapsing to one.
+//! representative-color export. A multi-material scene now exports each block in its
+//! own palette color rather than collapsing to one.
 
 use voxel_core::voxel::VoxelGrid;
 
 /// The per-`block_id` RGBA palette the `.vox` export writes (ADR 0003 §3a). Index `i`
-/// is the colour for `block_id == i`; it is written to `.vox` file palette slot `i + 1`
+/// is the color for `block_id == i`; it is written to `.vox` file palette slot `i + 1`
 /// (MagicaVoxel palette is 1-based, 0 = empty). Sized to the procedural material set —
 /// the categorical capability over the existing three materials.
 pub type BlockPaletteColors = [[u8; 4]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
@@ -80,9 +80,9 @@ impl VoxExport {
     /// Build the export from a resolved grid (Z-up, no axis swap) and tiling into
     /// ≤256 models if any dimension exceeds [`VOX_AXIS_MAX`].
     ///
-    /// `palette_colors` maps each `block_id` to its RGBA palette colour (ADR 0003 §3a;
+    /// `palette_colors` maps each `block_id` to its RGBA palette color (ADR 0003 §3a;
     /// build it with `block_palette_from_active` or pass the procedural material
-    /// colours). Each voxel references `block_id + 1` in the `.vox` palette.
+    /// colors). Each voxel references `block_id + 1` in the `.vox` palette.
     pub fn from_grid(grid: &VoxelGrid, palette_colors: BlockPaletteColors) -> Self {
         // One bucketing path: the whole-grid case is the region case with a single
         // grid covering the whole region (issue #20 S6d). Keeping ONE code path
@@ -96,9 +96,9 @@ impl VoxExport {
     }
 
     /// Build a [`BlockPaletteColors`] in which the ACTIVE material's slot carries
-    /// `representative_rgba` and the other procedural materials carry a neutral grey.
+    /// `representative_rgba` and the other procedural materials carry a neutral gray.
     /// This is the categorical seam the single-material `.vox` export used to inline as
-    /// one representative colour (ADR 0003 §3a): a single-material scene (every voxel
+    /// one representative color (ADR 0003 §3a): a single-material scene (every voxel
     /// `block_id == active`) still references one slot, so its file bytes are unchanged.
     pub fn block_palette_from_active(
         active: voxel_core::core_geom::MaterialChoice,
@@ -119,8 +119,8 @@ impl VoxExport {
     /// `region_dimensions` are the region's voxel dimensions (exactly the assembled
     /// monolithic grid's `dimensions`): they define the tiling, the model sizes and
     /// the half-extents used to recover integer grid indices from each voxel's
-    /// centred `world_position`. `chunk_voxels` yields each covering chunk's
-    /// `occupied` slice; the chunks' voxels are in the SAME (recentred) coordinate
+    /// centered `world_position`. `chunk_voxels` yields each covering chunk's
+    /// `occupied` slice; the chunks' voxels are in the SAME (recentered) coordinate
     /// frame the monolithic grid uses.
     ///
     /// ## Why this equals the whole-grid export
@@ -202,7 +202,7 @@ impl VoxExport {
         self.voxel_count
     }
 
-    /// Serialise to the in-memory `.vox` byte stream.
+    /// Serialize to the in-memory `.vox` byte stream.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         // Header: "VOX " + version 150.
@@ -226,7 +226,7 @@ impl VoxExport {
             write_chunk(&mut children, b"SIZE", &size, &[]);
 
             // XYZI chunk: count then (x, y, z, colorIndex) per voxel. The file
-            // colour index is 1-based.
+            // color index is 1-based.
             let mut xyzi = Vec::new();
             write_u32(&mut xyzi, model.voxels.len() as u32);
             for voxel in &model.voxels {
@@ -241,8 +241,8 @@ impl VoxExport {
         // RGBA palette chunk: 256 entries. MagicaVoxel reads palette[i] for file index
         // i+1, so a voxel of `block_id` (which references file index `block_id + 1`)
         // reads array entry `block_id` (ADR 0003 §3a — the categorical block-palette
-        // mapping). The procedural block colours fill the leading slots; the rest are a
-        // neutral grey so the file stays valid.
+        // mapping). The procedural block colors fill the leading slots; the rest are a
+        // neutral gray so the file stays valid.
         let mut rgba = Vec::with_capacity(256 * 4);
         for entry in 0..256 {
             if entry < self.palette_colors.len() {
@@ -258,7 +258,7 @@ impl VoxExport {
         out
     }
 
-    /// Serialise and write the `.vox` to `path`, creating parent dirs.
+    /// Serialize and write the `.vox` to `path`, creating parent dirs.
     ///
     /// **Atomic write (data-loss guard).** The bytes go to a UNIQUE sibling temp file in
     /// the same directory (same filesystem ⇒ the rename is atomic), then the temp is moved
@@ -273,7 +273,7 @@ impl VoxExport {
     /// - **Move via `rename`, with a `copy` fallback.** `rename` is the atomic fast path.
     ///   On Windows it fails when the destination is open WITHOUT delete sharing; the old
     ///   in-place `std::fs::write` overwrote such a file fine (it needs only write sharing),
-    ///   so we fall back to `fs::copy` (an in-place overwrite) to preserve that behaviour.
+    ///   so we fall back to `fs::copy` (an in-place overwrite) to preserve that behavior.
     /// - **On total failure the complete temp is KEPT**, and its path is named in the error
     ///   so the user can recover the export by hand rather than silently losing it.
     pub fn write(&self, path: &std::path::Path) -> std::io::Result<usize> {
@@ -451,8 +451,8 @@ impl VoxExportBuilder {
     /// path used). The block id selects the `.vox` palette slot (ADR 0003 §3a).
     fn ingest_voxel(&mut self, voxel: voxel_core::voxel::Voxel) {
         let [grid_x, grid_y, grid_z] = self.region_dimensions;
-        // Recover non-negative integer grid indices from the world-centred
-        // voxel-centre position: `i = round(world_x + dim_x/2 - 0.5)`.
+        // Recover non-negative integer grid indices from the world-centered
+        // voxel-center position: `i = round(world_x + dim_x/2 - 0.5)`.
         let position = voxel.world_position();
         let i = (position[0] + self.half[0] - 0.5).round();
         let j = (position[1] + self.half[1] - 0.5).round();
@@ -479,7 +479,7 @@ impl VoxExportBuilder {
         };
         // Z-up: vox (x, y, z) = (our i, our j, our k) — no swap. The categorical
         // block id selects the `.vox` palette slot (`block_id + 1`; ADR 0003 §3a),
-        // so a multi-material model exports each block in its own colour. Clamp to
+        // so a multi-material model exports each block in its own color. Clamp to
         // the procedural palette so a stray id stays in range.
         let palette_slot = voxel
             .color_index()

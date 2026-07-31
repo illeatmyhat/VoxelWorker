@@ -1,13 +1,13 @@
-//! `midpoint-line` — a segment placed by its CENTRE and one end.
+//! `midpoint-line` — a segment placed by its CENTER and one end.
 //!
 //! The two tick marks are what separate it from [`line`](super::line): they say the mark is about
-//! a measured middle, not about a run. Both the centre and the end carry the accent because both
+//! a measured middle, not about a run. Both the center and the end carry the accent because both
 //! are clicked; the far end is derived and so stays line art.
 
 use super::{Ink, Mark};
 
-/// The centre the tool is anchored on, and the end the drag defines.
-const CENTRE: (f32, f32) = (9.0, 9.0);
+/// The center the tool is anchored on, and the end the drag defines.
+const CENTER: (f32, f32) = (9.0, 9.0);
 const END: (f32, f32) = (15.0, 15.0);
 
 pub(super) const DRAW: &[Mark] = &[
@@ -30,7 +30,7 @@ pub(super) const DRAW: &[Mark] = &[
         ink: Ink::SOLID,
     },
     Mark::Node {
-        center: CENTRE,
+        center: CENTER,
         size: 2.6,
         ink: Ink::ACCENT,
     },

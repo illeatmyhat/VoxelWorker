@@ -12,7 +12,7 @@ const PITCH: f32 = 9.0;
 const SIZE: f32 = 4.0;
 
 pub(super) const DRAW: &[Mark] = &[
-    // The two pitch bars, floating between the seed and its neighbours.
+    // The two pitch bars, floating between the seed and its neighbors.
     Mark::Line {
         points: &[(7.25, SEED.1), (10.75, SEED.1)],
         ink: Ink::SOLID,

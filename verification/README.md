@@ -123,7 +123,7 @@ run: it is this repo's unit of work, and it fires exactly when the proven code h
 The everyday `cargo` gate keeps its own job — a theorem verifies the mathematics, the gate verifies
 the shipping binary still implements it. The Kani harnesses are `#[cfg(kani)]` and the Verus/Lean
 proofs are models under `verification/`, so **none of them are visible to `cargo test`/`clippy`**;
-the unit tests remain the only always-on regression check and must not be deleted in favour of a
+the unit tests remain the only always-on regression check and must not be deleted in favor of a
 proof that only runs on demand.
 
 When wiring a CI job:
@@ -185,7 +185,7 @@ When wiring a CI job:
   - Scope, stated in the file: one axis (the real fold is componentwise over three independent
     axes and the key packing is a bijection), at the literal edges 8/64/512 (a symbolic edge is
     nonlinear and out of `omega`'s reach — the same scoping `Fold.lean` uses), and `List.dedup` is
-    not in core so the dedup is modelled explicitly and its membership behaviour proved.
+    not in core so the dedup is modelled explicitly and its membership behavior proved.
   - `Fold.lean`'s `same_quotient_same_cell` was **retired** in the same pass: it read
     `h : a / 8 = b / 8 ⊢ a / 8 = b / 8`, a tautology proving nothing. The statement with content is
     the cross-level one, now `Pyramid.lean`'s `same_cell_8_implies_same_cell_64`.

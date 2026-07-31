@@ -1,4 +1,4 @@
-//! The reference sheet's content: the token table, the type specimens, the icon catalogue and
+//! The reference sheet's content: the token table, the type specimens, the icon catalog and
 //! the widget vocabulary — every one of them read from the shipping source rather than restated.
 //!
 //! Layout rules are the design's own: zero corner radius, 1 px hairlines, flat fills, monospace
@@ -27,7 +27,7 @@ const TILE_GLYPH: f32 = 30.0;
 /// How many frames `--scroll` is re-requested for. Two would do; three is cheap insurance.
 const SCROLL_SETTLE_FRAMES: u32 = 3;
 
-/// The sheet's own state: what the pointer is over, so the catalogue can show a live hover
+/// The sheet's own state: what the pointer is over, so the catalog can show a live hover
 /// state rather than a printed swatch of one.
 #[derive(Default)]
 pub struct Sheet {
@@ -83,7 +83,7 @@ impl Sheet {
                     ui.add_space(18.0);
                     self.rules_strip(ui);
                     ui.add_space(22.0);
-                    section(ui, "Palette", "the tokens — meanings live in docs/design/colour-vocabulary.md");
+                    section(ui, "Palette", "the tokens — meanings live in docs/design/color-vocabulary.md");
                     self.palette(ui);
                     ui.add_space(22.0);
                     section(ui, "Type", "monospace throughout; UPPERCASE micro-labels at ~2 px tracking");
@@ -172,7 +172,7 @@ impl Sheet {
     }
 
     /// Every token, with its hex and the meaning it is permitted to carry — iterated straight from
-    /// the [`color_palette::SWATCHES`] registry, so a colour appears here BY CONSTRUCTION: adding a
+    /// the [`color_palette::SWATCHES`] registry, so a color appears here BY CONSTRUCTION: adding a
     /// token to the palette adds its row, and a token can't exist without one (owner 2026-07-23).
     fn palette(&self, ui: &mut Ui) {
         for swatch in color_palette::SWATCHES {
@@ -184,7 +184,7 @@ impl Sheet {
             let painter = ui.painter_at(rect);
             let cell =
                 Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 4.0), Vec2::new(34.0, 14.0));
-            // A mid-grey backing under every swatch so a TRANSPARENT token (the sketch-plane
+            // A mid-gray backing under every swatch so a TRANSPARENT token (the sketch-plane
             // tints) shows its true weight rather than vanishing into the near-black page;
             // an opaque token covers it completely, so the backing is invisible there.
             painter.rect_filled(cell, 0.0, Color32::from_gray(0x40));
@@ -336,7 +336,7 @@ impl Sheet {
         });
     }
 
-    /// The icon catalogue: every glyph at both sizes, with its meaning.
+    /// The icon catalog: every glyph at both sizes, with its meaning.
     fn icons(&mut self, ui: &mut Ui) {
         // `Group::ALL`, never a list of the sheet's own: a shelf the set has and the sheet does
         // not is a shelf nobody can see.
@@ -362,9 +362,9 @@ impl Sheet {
         }
     }
 
-    /// One catalogue row: the glyph at the rail size and the tile size, its name, and what it
+    /// One catalog row: the glyph at the rail size and the tile size, its name, and what it
     /// means. Hovering
-    /// lifts it to the hover colour, so the three states are demonstrated rather than described.
+    /// lifts it to the hover color, so the three states are demonstrated rather than described.
     fn icon_row(&mut self, ui: &mut Ui, icon: Icon) {
         let width = ui.available_width().min(CONTENT_WIDTH);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 40.0), Sense::hover());
@@ -421,7 +421,7 @@ impl Sheet {
         );
     }
 
-    /// The TILE catalogue: every large producer glyph at tile sizes, with its meaning. The tile
+    /// The TILE catalog: every large producer glyph at tile sizes, with its meaning. The tile
     /// family is a SEPARATE drawing of the same noun (26-unit grid), so it earns its own section
     /// rather than being the rail glyph scaled up.
     fn tiles(&mut self, ui: &mut Ui) {
@@ -537,9 +537,9 @@ impl Sheet {
             viewport_stage,
             "orbit mode · targeting reticle",
             "While the explicit orbit mode runs, the left button turns instead of selecting, and \
-             a click re-centres the view on what it hits. The reticle is what makes that flipped \
+             a click re-centers the view on what it hits. The reticle is what makes that flipped \
              verb visible for exactly as long as it holds — a ring most of the viewport tall on \
-             the camera target, which the camera looks at, so it is the frame's centre by \
+             the camera target, which the camera looks at, so it is the frame's center by \
              construction. Neutral GRAY at half alpha, the one mark outside the accent: at this \
              size an accent would repaint the whole frame. It hides while the button is down. \
              Shown here at the specimen stage's scale, so it reads smaller than in the app.",
@@ -646,7 +646,7 @@ impl Sheet {
         self.specimen_row(
             ui,
             "snap indicator · axis",
-            "The vertex aligned to an in-plane axis: a dashed extension line in the AXIS colour \
+            "The vertex aligned to an in-plane axis: a dashed extension line in the AXIS color \
              (X warn · Y green) runs through it — axis-lock as a by-product of the lattice.",
             |p, s| {
                 let c = Pos2::new(s.center().x + 8.0, s.center().y);
@@ -733,7 +733,7 @@ impl Sheet {
             ui,
             "snap-engaged",
             "A candidate snap (grid / vertex / axis) is live: the tick-cross + chip say WHAT it locked \
-             to — the vocabulary a single grey dot would destroy.",
+             to — the vocabulary a single gray dot would destroy.",
             |p, s| {
                 let c = Pos2::new(s.center().x - 12.0, s.center().y);
                 gizmos::axis_guide(p, Pos2::new(s.left() + 16.0, c.y), Pos2::new(s.right() - 16.0, c.y), Axis::Y);
@@ -819,7 +819,7 @@ impl Sheet {
         ui.label(
             RichText::new(
                 "spec: docs/design/viewport-chrome-signal.md · meanings: \
-                 docs/design/colour-vocabulary.md",
+                 docs/design/color-vocabulary.md",
             )
             .font(FontId::monospace(9.0))
             .color(color_palette::TEXT_HINT),

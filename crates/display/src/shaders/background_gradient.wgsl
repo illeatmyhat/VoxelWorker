@@ -7,14 +7,14 @@
 //
 //   radial-gradient(120% 90% at 45% 38%, #1d2023 0%, #141618 62%, #0e0f11 100%)
 //
-// a cool near-black radial biased above-left of centre. The gradient is evaluated in
+// a cool near-black radial biased above-left of center. The gradient is evaluated in
 // sRGB (gamma) space exactly like the CSS mock, then converted to LINEAR for the
 // Rgba8UnormSrgb target (the GPU re-encodes to sRGB on write), so the rendered pixels
 // match the mock's, not merely the hex stops.
 
 struct VsOut {
     @builtin(position) clip_position: vec4<f32>,
-    // Normalised viewport coordinate in [0,1]² (0,0 = top-left of the 3D viewport).
+    // Normalized viewport coordinate in [0,1]² (0,0 = top-left of the 3D viewport).
     @location(0) uv: vec2<f32>,
 };
 
@@ -50,11 +50,11 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
     let stop1 = vec3<f32>(0x14, 0x16, 0x18) / 255.0; // #141618 @ 62%
     let stop2 = vec3<f32>(0x0e, 0x0f, 0x11) / 255.0; // #0e0f11 @ 100%
 
-    // Ellipse: centre 45%/38%, radii 120%/90% of the viewport (CSS `at 45% 38%`,
-    // `120% 90%`). The gradient parameter is the normalised elliptical distance.
-    let centre = vec2<f32>(0.45, 0.38);
+    // Ellipse: center 45%/38%, radii 120%/90% of the viewport (CSS `at 45% 38%`,
+    // `120% 90%`). The gradient parameter is the normalized elliptical distance.
+    let center = vec2<f32>(0.45, 0.38);
     let radii = vec2<f32>(1.20, 0.90);
-    let d = (input.uv - centre) / radii;
+    let d = (input.uv - center) / radii;
     let t = clamp(length(d), 0.0, 1.0);
 
     // Piecewise-linear interpolation in sRGB space (as CSS does), then to linear.

@@ -31,7 +31,7 @@ impl Theme {
         }
     }
 
-    /// This theme's colour swatches — the token registry as this theme resolves it.
+    /// This theme's color swatches — the token registry as this theme resolves it.
     pub fn swatches(self) -> &'static [color_palette::Swatch] {
         match self {
             Theme::Signal => color_palette::SWATCHES,
@@ -39,7 +39,7 @@ impl Theme {
     }
 }
 
-/// The active UI theme — the single seam a colour lookup resolves through. One theme today, so this
+/// The active UI theme — the single seam a color lookup resolves through. One theme today, so this
 /// is [`Theme::Signal`]; when a second lands, this reads the persisted choice instead.
 pub fn active() -> Theme {
     Theme::default()
@@ -48,7 +48,7 @@ pub fn active() -> Theme {
 /// A palette token as LINEAR RGB + its own alpha, for a GPU pass that paints in the viewport.
 ///
 /// Some chrome is painted by a render pipeline rather than by egui — the sketch region wash is a
-/// fragment shader over the plane. Those still take their colour from this registry, converted here,
+/// fragment shader over the plane. Those still take their color from this registry, converted here,
 /// so the 2D and 3D readings of one signal cannot drift apart.
 ///
 /// UNMULTIPLIED, because a pipeline that blends premultiplied does that multiply itself and doing it

@@ -236,7 +236,7 @@ fn intersect_degrades_coarse_blocks_conservatively() {
         [3 * block, 3 * block, 3 * block],
     );
     // The block at blocks [4,5) per axis — inside the mask but ADJACENT to its
-    // +face, where the Lipschitz-centre bound cannot prove the whole block deeply
+    // +face, where the Lipschitz-center bound cannot prove the whole block deeply
     // covered: the conservative verdict degrades to BOUNDARY (never coarse-solid),
     // and the per-voxel resolve finds it full — exact, just unelided.
     let grazed_block = VoxelAabb::new(

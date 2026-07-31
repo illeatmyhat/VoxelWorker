@@ -196,7 +196,7 @@ impl BlockSource for VintageStorySource {
                 self.resolve_texture_path(reference)
             });
         }
-        // No match → uniform fallback (the M6 behaviour).
+        // No match → uniform fallback (the M6 behavior).
         FaceTextures::uniform(chosen_variant.to_path_buf())
     }
 }

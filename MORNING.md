@@ -45,7 +45,7 @@ Expect **47 passed**. Look for `adding_across_dimensions_is_refused` and
 ## Slice B — closed curves · SHIPPED · `376c5a7`
 
 `Circle { center, radius }` as a real entity. A closed curve is its own loop, anchored by a
-centre, with no on-curve vertex (Decision 7).
+center, with no on-curve vertex (Decision 7).
 
 **Check it** (no build — already rendered):
 
@@ -67,8 +67,8 @@ Or (~40 s, after a document build): `cargo test -p document circles` — expect 
    is a `Circle`, so admitting an unsolvable arc would have been sparing a tool one branch at the
    store's expense. The real blocker was `ProfileEdge::interior_points` re-deriving the circle
    from that zero-length chord; that is what I fixed.
-2. A circle's minted centre is `EntityRole::Construction`, so deleting the circle takes the
-   centre with it — unless something else has since drawn to it.
+2. A circle's minted center is `EntityRole::Construction`, so deleting the circle takes the
+   center with it — unless something else has since drawn to it.
 3. A radius is a `SketchLength`, not a bare `f64`, so an authored "1 block" survives a density
    re-target.
 
@@ -122,7 +122,7 @@ It then unpicks the lens, proving the three faces are separately addressable.
 
 1. **The unpick MIGRATES rather than resetting.** Cut an unpicked pocket in two and the carve
    follows whichever half still holds the stored point, instead of both halves reverting to
-   picked. Decision 9 lists this as an accepted failure mode; I have now pinned it as *behaviour*
+   picked. Decision 9 lists this as an accepted failure mode; I have now pinned it as *behavior*
    in a test, which makes it a promise. If you want the old reset semantics this is the place to
    say so.
 2. **A saved unpick from before tonight is lost.** `unpicked` (an origin-set list) is renamed to
@@ -172,7 +172,7 @@ Both ways a sketch is wrong converge, so "solved" says nothing on its own.
 2. **Nothing is wired to Slice E.** There are no constraint entities yet, so the solver core has
    no caller. That is the next slice, not an omission from this one.
 3. **The inspector still reads "Custom profile (N points)"** for a circle — it counts document
-   points, and a circle has one (its centre). Cosmetic; belongs to the tool-suite UI slice.
+   points, and a circle has one (its center). Cosmetic; belongs to the tool-suite UI slice.
 4. `shots/morning/` is **gitignored**, so the three PNGs are on disk only and not in the commits.
 
 ---
@@ -221,7 +221,7 @@ every point sits on the filled boundary — so a line reaching past the fill mov
 not the other, and the whole drawing walked. From your dump: points-min `-42 → -72` while the
 resolve's anchor held at `-42`. Thirty voxels.
 
-Nothing was cancelling it: `anchor_preserving_offset` runs on every profile edit, but it corrects
+Nothing was canceling it: `anchor_preserving_offset` runs on every profile edit, but it corrects
 for a change in the *resolve's* anchor, which had not moved.
 
 The overlay now anchors where the resolve does — one anchor, so a handle is on the solid by
@@ -289,7 +289,7 @@ each glyph adds its row when it lands.
 ## Decisions settled
 
 - **The unpick MIGRATES** when its face is cut in two (your call, 2026-07-30). Already the shipped
-  behaviour and pinned by `cutting_an_unpicked_face_in_two_migrates_the_unpick`; nothing to change.
+  behavior and pinned by `cutting_an_unpicked_face_in_two_migrates_the_unpick`; nothing to change.
 
 ## Slice E has a caller now · SHIPPED · `4c48782`
 
@@ -309,7 +309,7 @@ are `horizontal_levels_a_segment_by_meeting_in_the_middle` and
 Three things worth knowing:
 
 1. **A solve is a nudge, not a rearrangement.** The least-squares solution is the one nearest the
-   guess, and the guess is your drawing — so levelling a slanted line brings both ends to the
+   guess, and the guess is your drawing — so leveling a slanted line brings both ends to the
    middle instead of snapping one to the other. That is asserted, not hoped for.
 2. **Parameters are every point's coordinates**, not just the constrained ones. That is what makes
    `degrees_of_freedom` mean "how many ways can this drawing still move". An unconstrained point is
@@ -360,7 +360,7 @@ with a zero-length chord goes straight through:
 | --- | --- | --- |
 | `interior_points` | re-derived a circle from the chord | walks the solved circle |
 | `signed_area_term` | chord fan | integrates the real sweep — exact πr² at TAU |
-| `measured` | — | hands substrate a centre and a sweep |
+| `measured` | — | hands substrate a center and a sweep |
 
 None of the three carries a full-turn guard. `ProfileEdge::circle` is literally an arc of `TAU`.
 That is the relaxation, and `a_full_turn_profile_edge_is_the_relaxed_closed_case` now pins it
@@ -387,7 +387,7 @@ sweep_degrees.is_finite() && sweep_degrees != 0.0 && sweep_degrees.abs() < 360.0
 
 **And then the part I had missed: the closed case is already relaxed, in the layer that has one.**
 `substrate::curve_intersection::PlanarCurve::circle` IS a full-turn arc — `sweep_radians: TAU` —
-because substrate's form is centre + radius + start + sweep, which has **no pole at the full turn**.
+because substrate's form is center + radius + start + sweep, which has **no pole at the full turn**.
 `split_at` produces one on every single-cut: a tangency cuts a circle at exactly one parameter, and
 one cut re-seams a loop rather than opening it.
 
@@ -396,7 +396,7 @@ So the two layers differ on purpose, and correctly:
 | | form | full turn |
 | --- | --- | --- |
 | the store (`document`) | endpoints + bulge | **refused** — the radius diverges there |
-| the arrangement (`substrate`) | centre + radius + sweep | **legal, and load-bearing** |
+| the arrangement (`substrate`) | center + radius + sweep | **legal, and load-bearing** |
 
 **The call I made:** that clause stays. It is not what slice B was pointing at, and editing it would
 only let a radius of 4e15 into the store. Recording it per your "small calls: decide, and record the

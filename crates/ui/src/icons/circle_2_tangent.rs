@@ -18,7 +18,7 @@ pub(super) const DRAW: &[Mark] = &[
         points: &[(2.0, 16.0), (16.0, 16.0)],
         ink: Ink::ACCENT,
     },
-    // Centred 5.5 off each picked line, so both touches are real.
+    // Centered 5.5 off each picked line, so both touches are real.
     Mark::Circle {
         center: (7.5, 10.5),
         radius: 5.5,

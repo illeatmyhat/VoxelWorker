@@ -48,7 +48,7 @@ use super::{EntityId, EntityRole, ProfileArc, ProfileEdge, Sketch, SketchPoint};
 ///
 /// Two failure modes are accepted rather than defended against. A face that shrinks past its own
 /// sample point resets to picked — the author's carve is forgotten by an edit that made the face
-/// substantially smaller. And a sample point that ends up inside a NEIGHBOURING face migrates the
+/// substantially smaller. And a sample point that ends up inside a NEIGHBORING face migrates the
 /// unpick there. Both are visible immediately and undoable; the alternative is a lineage that
 /// pretends to know more than it does.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -317,7 +317,7 @@ fn drawn_curves(sketch: &Sketch) -> Vec<(EntityId, PlanarCurve)> {
         curves.push((
             arc.origin,
             PlanarCurve::Arc {
-                centre: solved.centre,
+                center: solved.center,
                 radius: solved.radius,
                 start_radians: solved.start_radians,
                 sweep_radians: solved.sweep_radians,
@@ -325,12 +325,12 @@ fn drawn_curves(sketch: &Sketch) -> Vec<(EntityId, PlanarCurve)> {
         ));
     }
     for circle in sketch.circles.iter().filter(|c| c.role == EntityRole::Real) {
-        let Some(centre) = position(circle.center) else {
+        let Some(center) = position(circle.center) else {
             continue;
         };
         curves.push((
             circle.origin,
-            PlanarCurve::circle(centre.in_plane(), circle.radius.value()),
+            PlanarCurve::circle(center.in_plane(), circle.radius.value()),
         ));
     }
     curves
@@ -372,7 +372,7 @@ fn profile_edge(piece: PlanarCurve, from: [f64; 2], to: [f64; 2]) -> ProfileEdge
     match piece {
         PlanarCurve::Segment { .. } => ProfileEdge::straight(ends.0, ends.1),
         PlanarCurve::Arc {
-            centre,
+            center,
             radius,
             start_radians,
             sweep_radians,
@@ -380,7 +380,7 @@ fn profile_edge(piece: PlanarCurve, from: [f64; 2], to: [f64; 2]) -> ProfileEdge
             from: ends.0,
             to: ends.1,
             arc: Some(ProfileArc {
-                centre,
+                center,
                 radius,
                 start_radians,
                 sweep_radians,
@@ -389,7 +389,7 @@ fn profile_edge(piece: PlanarCurve, from: [f64; 2], to: [f64; 2]) -> ProfileEdge
     }
 }
 
-/// Append the two half-edges of one piece — ALWAYS as a pair, so twins are neighbours and
+/// Append the two half-edges of one piece — ALWAYS as a pair, so twins are neighbors and
 /// `index ^ 1` is the twin. The departure angle at each end is the edge's own outgoing tangent
 /// there ([`ProfileEdge::departure_radians`]), taken analytically: it used to be read off the
 /// arc's first tessellated chord, which made the vertex ordering depend on how finely the arc had

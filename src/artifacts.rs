@@ -12,7 +12,7 @@
 //!
 //! * [`DocumentArtifact`] is what the model **is** — today, the scene and nothing else.
 //!   It is the thing that would be shared and reopened, so a preference or a scrubber
-//!   position travelling inside it would impose one person's session on everyone.
+//!   position traveling inside it would impose one person's session on everyone.
 //! * [`SettingsArtifact`] is preference that outlives any one project: the window size,
 //!   the projection, the Home view the user deliberately kept.
 //! * [`ViewArtifact`] is where the author was looking from: the camera pose, the layer
@@ -39,7 +39,7 @@
 //! [`Dump::from_state`] and in [`DocumentArtifact::from_state`] until somebody says
 //! where it goes — `error[E0027]: pattern does not mention field`. The derive proves a
 //! field is *classified*; only this destructuring proves the classification was
-//! *honoured*, which is the distinction ADR 0022's second amendment had to make after
+//! *honored*, which is the distinction ADR 0022's second amendment had to make after
 //! the derive landed alone.
 //!
 //! The document's capture binds the fields it declines with `field_name: _`, rather than
@@ -284,7 +284,7 @@ pub struct SettingsArtifact {
     /// The Home button's saved elevation.
     #[serde(default = "default_phi")]
     pub home_phi: f32,
-    /// The Home button's saved distance, honoured only when [`home_explicit`] is set.
+    /// The Home button's saved distance, honored only when [`home_explicit`] is set.
     ///
     /// [`home_explicit`]: Self::home_explicit
     #[serde(default = "default_distance")]
@@ -376,7 +376,7 @@ pub struct SessionArtifact {
     /// open. Saved whole, per ADR 0022's amendment — all four flags, not a subset.
     #[serde(default = "default_signal_stack", with = "SignalStackStateConfig")]
     pub stack: SignalStackState,
-    /// The face-orientation debug shading (colour by outward normal, cull off).
+    /// The face-orientation debug shading (color by outward normal, cull off).
     #[serde(default)]
     pub debug_face_orientation: bool,
     /// The brick-raymarch grazing-rim diagnostic. A dump taken while chasing a rendering
@@ -758,7 +758,7 @@ impl Default for ViewArtifact {
 }
 
 // The per-field serde defaults. They live here beside the artifacts that use them rather
-// than beside `AppConfig`, because they describe the on-disk format's behaviour for a
+// than beside `AppConfig`, because they describe the on-disk format's behavior for a
 // missing key. The camera ones derive from `OrbitCamera::default()` so a persisted default
 // can never drift from the live one.
 
@@ -894,8 +894,8 @@ mod tests {
     #[test]
     fn a_dump_round_trips_every_field_through_json() {
         let state = distinctive_state();
-        let json = Dump::from_state(&state).to_json().expect("serialise");
-        let restored = Dump::from_json(&json).expect("deserialise");
+        let json = Dump::from_state(&state).to_json().expect("serialize");
+        let restored = Dump::from_json(&json).expect("deserialize");
         assert_eq!(restored.into_state(), state);
     }
 
@@ -907,7 +907,7 @@ mod tests {
     fn the_dump_is_a_flat_json_object() {
         let json = Dump::from_state(&distinctive_state())
             .to_json()
-            .expect("serialise");
+            .expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let object = value.as_object().expect("a JSON object");
         for key in [
@@ -981,7 +981,7 @@ mod tests {
     fn every_dump_classified_field_appears_in_the_written_json() {
         let json = Dump::from_state(&distinctive_state())
             .to_json()
-            .expect("serialise");
+            .expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let object = value.as_object().expect("a JSON object");
         for field in AppConfig::CLASSIFIED_FIELDS {
@@ -1021,7 +1021,7 @@ mod tests {
     fn escape_hatch_state_reaches_no_artifact() {
         let json = Dump::from_state(&distinctive_state())
             .to_json()
-            .expect("serialise");
+            .expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let object = value.as_object().expect("a JSON object");
         for field in AppConfig::CLASSIFIED_FIELDS {

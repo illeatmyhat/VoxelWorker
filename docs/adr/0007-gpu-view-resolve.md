@@ -212,7 +212,7 @@ The P1 spike is **built and green** (`src/gpu_resolve.rs` — the repo's first c
 `src/shaders/gpu_resolve.wgsl`, and the `tests/gpu_parity.rs` A/B net, `--features gpu`). It
 GPU-evaluates each chunk's apron'd occupancy from the streamed compact descriptor (producer params +
 profile) and asserts it **byte-identical** to `build_per_chunk_fog_occupancy` over a shape/size matrix
-resolved through the REAL `Scene::resolve_region` path (the recentred frame the fog actually consumes).
+resolved through the REAL `Scene::resolve_region` path (the recentered frame the fog actually consumes).
 
 **Measured finding: EXACT parity holds across the whole tested matrix — no tolerance needed (yet).**
 Both the SDF tier (sphere/box/cylinder/tube/torus, even/odd parity, multi-chunk seams; f32 both sides)
@@ -263,10 +263,10 @@ GPU atlas path. Decisions taken (grilled against ADR 0006/0008):
    prefix-sum to stay readback-free; held in reserve if a real scene proves the atlas budget bites.
 
 3. **Meta built CPU-side from chunk coords, no densify.** `chunks[i] = [coord[i]·extent −
-   grid.recentre_voxels, i]` (ADR 0008 — carry the recentre, never re-derive); `tiles_per_axis =
+   grid.recenter_voxels, i]` (ADR 0008 — carry the recenter, never re-derive); `tiles_per_axis =
    cbrt(chunk_count)`. Tile order binds to `chunk_coords[]` order because `main_atlas` packs
-   `tile_index = chunk`. In `shot.rs` `recentre_voxels` is read off the already-resolved grid; a
-   resolve-free recentre source (`floor(dim/2)` for a Tool, `[0,0,0]` for a corner-anchored Part) is a
+   `tile_index = chunk`. In `shot.rs` `recenter_voxels` is read off the already-resolved grid; a
+   resolve-free recenter source (`floor(dim/2)` for a Tool, `[0,0,0]` for a corner-anchored Part) is a
    live-app concern, deferred.
 
 4. **Install without readback.** A new no-readback driver method returns the `AtlasResult.texture`

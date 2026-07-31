@@ -1,6 +1,6 @@
 //! The shell's per-edit GPU geometry rebuild: it delegates the headless resolve to
 //! [`AppCore::rebuild`] and consumes the output into the display orchestrator + camera
-//! recentre compensation + layer-band rescale. Split out of `windowed/mod.rs` (ADR 0016).
+//! recenter compensation + layer-band rescale. Split out of `windowed/mod.rs` (ADR 0016).
 
 use super::*;
 
@@ -21,8 +21,8 @@ impl WindowedState {
         let RebuildOutput {
             region_dimensions,
             two_layer_chunks,
-            recentre_voxels,
-            recentre_shift_voxels,
+            recenter_voxels,
+            recenter_shift_voxels,
             incremental_dirty_chunks,
         } = match self.app_core.rebuild(&self.panel_state.scene, density) {
             RebuildOutcome::DensityRejected {
@@ -53,7 +53,7 @@ impl WindowedState {
         self.last_pick_band = clip.band;
         // Map item 2: delegate the display-artifact rebuild (the brick sink + the fallback
         // cuboid mesh + the F1 brick-display handover reconcile) to the orchestrator. The shell
-        // keeps the camera recentre-shift compensation, the layer-band rescale, and the region /
+        // keeps the camera recenter-shift compensation, the layer-band rescale, and the region /
         // measurement bookkeeping below. ADR 0018 Decision 5: the async mesh build region-scopes
         // via `clip.region` (the brick sink's region parity is the next slice #85).
         self.display.rebuild(
@@ -61,7 +61,7 @@ impl WindowedState {
             incremental_dirty_chunks,
             chunkable,
             grid_dimensions,
-            recentre_voxels,
+            recenter_voxels,
             density,
             clip.band,
             clip.region,
@@ -69,21 +69,21 @@ impl WindowedState {
         );
 
         // Camera UX invariant: an edit must NEVER re-frame the view. The composite is
-        // re-centred on the world origin every rebuild, so any extent change (add /
-        // delete / offset) — and any density change, since the recentre is in voxels —
-        // shifts the floating origin by `recentre_shift_voxels`. The camera target is
-        // pinned in that same recentred render frame (voxels), so without compensation
-        // the whole world would slide under the fixed camera (the "jump to centre /
+        // re-centered on the world origin every rebuild, so any extent change (add /
+        // delete / offset) — and any density change, since the recenter is in voxels —
+        // shifts the floating origin by `recenter_shift_voxels`. The camera target is
+        // pinned in that same recentered render frame (voxels), so without compensation
+        // the whole world would slide under the fixed camera (the "jump to center /
         // fit everything" the user reported). Subtract the shift so the target tracks
         // the SAME world point as the origin floats — net zero view motion. The shift
         // is `[0,0,0]` on the first build, and the explicit Fit/Home/Focus actions
         // OVERWRITE the target afterwards (they run on their own paths, not here), so
         // they keep re-framing exactly as before; orbit/pan/zoom are untouched.
-        if recentre_shift_voxels != [0; 3] {
+        if recenter_shift_voxels != [0; 3] {
             self.app_core.camera.target -= glam::Vec3::new(
-                recentre_shift_voxels[0] as f32,
-                recentre_shift_voxels[1] as f32,
-                recentre_shift_voxels[2] as f32,
+                recenter_shift_voxels[0] as f32,
+                recenter_shift_voxels[1] as f32,
+                recenter_shift_voxels[2] as f32,
             );
         }
         // Issue #12: clamp/rescale the layer band to the new grid_z (re-snapping to block
@@ -106,7 +106,7 @@ impl WindowedState {
         // grid-enabled nodes — a per-node toggle needs no scene re-resolve.
 
         self.region_dimensions = region_dimensions;
-        self.recentre_voxels = recentre_voxels;
+        self.recenter_voxels = recenter_voxels;
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
     }
 }

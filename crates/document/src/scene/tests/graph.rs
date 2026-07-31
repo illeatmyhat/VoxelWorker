@@ -82,7 +82,7 @@ fn from_measurements_integer_multiple_density_keeps_voxel_term_exact() {
 }
 
 /// An OLD `NodeTransform` JSON that predates `offset_measurements` still
-/// deserialises (serde default → `None`), and the accessor SYNTHESISES a
+/// deserializes (serde default → `None`), and the accessor SYNTHESISES a
 /// pure-voxel measurement equal to `offset_voxels` per axis — which
 /// re-evaluates back to exactly those voxels at any density (versioning:
 /// shared documents must load forward, ADR 0003 §3f(0)).
@@ -112,8 +112,8 @@ fn transform_serde_round_trips_with_retained_measurements() {
         ],
         16,
     );
-    let json = serde_json::to_string(&transform).expect("serialises");
-    let restored: NodeTransform = serde_json::from_str(&json).expect("deserialises");
+    let json = serde_json::to_string(&transform).expect("serializes");
+    let restored: NodeTransform = serde_json::from_str(&json).expect("deserializes");
     assert_eq!(restored, transform);
     assert_eq!(
         restored.offset_measurements(),
@@ -122,7 +122,7 @@ fn transform_serde_round_trips_with_retained_measurements() {
     assert_eq!(restored.offset_voxels, transform.offset_voxels);
 }
 
-/// The identical-behaviour guarantee (ADR 0001 step 1): a one-node Tool scene
+/// The identical-behavior guarantee (ADR 0001 step 1): a one-node Tool scene
 /// resolved over the node's full extent yields the SAME occupied count as
 /// calling `SdfShape::resolve` directly — and the same grid dimensions.
 #[test]
@@ -187,9 +187,9 @@ fn part_scene_matches_bare_cloud_field() {
 }
 
 /// CORNER-ANCHORING (cloud producer): a PART-ONLY cloud at ODD density drops ZERO
-/// voxels — every occupied centre is a HALF-INTEGER (on the voxel lattice) and
+/// voxels — every occupied center is a HALF-INTEGER (on the voxel lattice) and
 /// every decoded index ∈ [0, dim). This is the case center-emit broke: at an odd
-/// region dim the centred bottom voxel decoded to index −1 and was dropped.
+/// region dim the centered bottom voxel decoded to index −1 and was dropped.
 /// Tested at d=1 and d=5 (odd densities → odd region dims for an odd block size).
 #[test]
 fn part_only_cloud_at_odd_density_drops_no_voxels() {
@@ -212,9 +212,9 @@ fn part_only_cloud_at_odd_density_drops_no_voxels() {
         assert_eq!(monolithic.dimensions, dims, "[{label}] dims = region·d");
         assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty cloud");
 
-        // (a) every centre is a half-integer; (c) every decoded index ∈ [0, dim).
+        // (a) every center is a half-integer; (c) every decoded index ∈ [0, dim).
         // A VoxelBody-only cloud is corner-anchored at the explicit region (low corner 0,
-        // recentre 0), so the decode is `floor(world)`.
+        // recenter 0), so the decode is `floor(world)`.
         let mut decoded = 0usize;
         for voxel in &monolithic.occupied {
             let position = voxel.world_position();
@@ -223,7 +223,7 @@ fn part_only_cloud_at_odd_density_drops_no_voxels() {
                 assert_eq!(
                     pos.fract().abs(),
                     0.5,
-                    "[{label}] centre {pos} axis {axis} must be a half-integer"
+                    "[{label}] center {pos} axis {axis} must be a half-integer"
                 );
                 let index = pos.floor() as i64;
                 assert!(
@@ -281,11 +281,11 @@ fn mixed_tool_and_cloud_resolve_in_one_frame() {
         "region is the Tool's voxel-framed span"
     );
 
-    // Decode in the recentred frame (low corner −floor(dim/2)). EVERY voxel —
+    // Decode in the recentered frame (low corner −floor(dim/2)). EVERY voxel —
     // whether from the Tool or the Cloud — must decode to an index in [0, dim) with
-    // a half-integer centre. If the cloud were still center-emitting it would be
+    // a half-integer center. If the cloud were still center-emitting it would be
     // offset by ~region_dim/2 and a slab would decode out of range.
-    let recentre = scene.recentre_voxels_for_resolve(vpb).voxels();
+    let recenter = scene.recenter_voxels_for_resolve(vpb).voxels();
     for voxel in &grid.occupied {
         let position = voxel.world_position();
         for (axis, &dim) in dims.iter().enumerate() {
@@ -293,7 +293,7 @@ fn mixed_tool_and_cloud_resolve_in_one_frame() {
             assert_eq!(
                 pos.fract().abs(),
                 0.5,
-                "mixed scene: centre {pos} axis {axis} must be a half-integer (same frame)"
+                "mixed scene: center {pos} axis {axis} must be a half-integer (same frame)"
             );
             let half = (dim / 2) as f32;
             let index = (pos + half - 0.5).round() as i64;
@@ -306,13 +306,13 @@ fn mixed_tool_and_cloud_resolve_in_one_frame() {
     }
 
     // The Tool's voxels land EXACTLY where corner-anchored math says: a 3³ box at
-    // offset 0 occupies absolute `[0, 3d)`; recentred, its low corner is
-    // `0 − recentre`. At least one voxel sits at that low corner (the box fully
+    // offset 0 occupies absolute `[0, 3d)`; recentered, its low corner is
+    // `0 − recenter`. At least one voxel sits at that low corner (the box fully
     // fills its AABB). This pins the cloud sharing the Tool's frame, not an offset.
     let expected_low = [
-        (0 - recentre[0]) as f32 + 0.5,
-        (0 - recentre[1]) as f32 + 0.5,
-        (0 - recentre[2]) as f32 + 0.5,
+        (0 - recenter[0]) as f32 + 0.5,
+        (0 - recenter[1]) as f32 + 0.5,
+        (0 - recenter[2]) as f32 + 0.5,
     ];
     let has_box_low_corner = grid.occupied.iter().any(|v| {
         let position = v.world_position();
@@ -322,12 +322,12 @@ fn mixed_tool_and_cloud_resolve_in_one_frame() {
     });
     assert!(
         has_box_low_corner,
-        "the corner-anchored Box must place a voxel at its recentred low corner {expected_low:?}"
+        "the corner-anchored Box must place a voxel at its recentered low corner {expected_low:?}"
     );
 }
 
 /// ADR 0001 step 2: several leaf nodes composite into one region under union.
-/// A 2-node scene (a sphere Tool + a box Tool, both centred at origin) yields
+/// A 2-node scene (a sphere Tool + a box Tool, both centered at origin) yields
 /// the SET-UNION of their occupied voxels: the union count is at least each
 /// node alone, and exactly equals the union of the two single-node sets.
 #[test]
@@ -362,7 +362,7 @@ fn two_node_scene_resolves_to_union() {
     let union = scene.resolve_region(region, voxels_per_block, 0);
 
     // The expected set-union of the two single-node occupied sets, keyed by
-    // integer voxel position (the producers emit voxel-centre world positions).
+    // integer voxel position (the producers emit voxel-center world positions).
     use std::collections::HashSet;
     let key = |grid: &VoxelGrid| -> HashSet<[i64; 3]> {
         grid.occupied
@@ -462,7 +462,7 @@ fn two_material_scene_has_both_material_ids() {
 
 /// Issue #29 S4 (per-object on-face grid): the resolver sets each voxel's
 /// `grid_overlay` attribute **iff** that node's `grids.voxel_grid_on_faces` is
-/// set — and the colour index still round-trips to the real handle (≤2).
+/// set — and the color index still round-trips to the real handle (≤2).
 /// Parametrized over density {1, 15, 16} so the flag survives every density's
 /// chunk bucketing.
 #[test]
@@ -490,7 +490,7 @@ fn voxel_grid_flag_bit_set_iff_node_opts_in() {
         );
         assert!(
             grid.occupied.iter().all(|v| v.color_index() == wood_id),
-            "density {voxels_per_block}: the colour index must round-trip to Wood (≤2)"
+            "density {voxels_per_block}: the color index must round-trip to Wood (≤2)"
         );
 
         // Same node with the flag OFF → no voxel carries the bit (the default).
@@ -620,7 +620,7 @@ fn boxed_block_positions(
 /// its voxels shifted by exactly `N × voxels_per_block` in X versus offset 0.
 ///
 /// A two-node scene (a 1-block box at offset 0 and an identical box at offset
-/// N, far enough apart to be disjoint) shares ONE composite recentre, so the
+/// N, far enough apart to be disjoint) shares ONE composite recenter, so the
 /// only difference between the two boxes' positions is the N-block placement.
 /// The occupied set splits into two equal clusters whose X-spans are exactly
 /// `N × voxels_per_block` apart; shifting one cluster by that amount reproduces
@@ -652,7 +652,7 @@ fn offset_node_shifts_voxels_by_blocks_times_density() {
     let grid = scene.resolve_region(region, voxels_per_block, 0);
 
     // Key each voxel by its EXACT world position (the producers emit voxel-
-    // centre positions; the placement is an exact integer-voxel translation, so
+    // center positions; the placement is an exact integer-voxel translation, so
     // float comparison is safe and exact — no rounding). The boxes are disjoint
     // in X (5 blocks apart, 1 block wide), so the occupied set splits cleanly at
     // the gap between box A's X-run and box B's X-run.
@@ -667,7 +667,7 @@ fn offset_node_shifts_voxels_by_blocks_times_density() {
         ]
     };
 
-    // The composite centre lies between the two boxes; split there.
+    // The composite center lies between the two boxes; split there.
     let mut xs: Vec<f32> = grid
         .occupied
         .iter()
@@ -756,8 +756,8 @@ fn disjoint_offsets_give_summed_occupancy() {
 }
 
 /// ADR 0001 step 3 (c): `full_extent_blocks` grows to encompass an offset node.
-/// A single 2-block box pushed +4 blocks in X spans blocks `[3, 5]` in X (centre
-/// 4, ±1), so the composite X extent is 6 blocks (`0..6` once recentred), while
+/// A single 2-block box pushed +4 blocks in X spans blocks `[3, 5]` in X (center
+/// 4, ±1), so the composite X extent is 6 blocks (`0..6` once recentered), while
 /// Y/Z stay at the box's 2 blocks. (A zero-offset single node would be just the
 /// box's own 2×2×2.)
 #[test]
@@ -774,7 +774,7 @@ fn full_extent_encompasses_offset_node() {
     node.transform = NodeTransform::from_blocks([4, 0, 0], voxels_per_block);
     let scene = Scene::single_node(node);
 
-    // The box centred at block 4 with half-size 1 spans X blocks [3, 5] → its
+    // The box centered at block 4 with half-size 1 spans X blocks [3, 5] → its
     // own size (2) is unchanged but its placement means the bounding box from
     // the origin is wider. `full_extent_blocks` returns the box SIZE of the
     // composite: for a single node that is just the node's own size in every
@@ -840,7 +840,7 @@ fn position_keys(grid: &VoxelGrid) -> std::collections::HashSet<[i64; 3]> {
 /// ADR 0001 step 4 (nested transform composition): a leaf inside a `Group`
 /// offset by `+A` blocks, with the leaf itself offset `+B`, lands at world
 /// `A + B` (× density). We compare the grouped scene against a FLAT scene whose
-/// single node sits directly at `A + B` — same composite, so the recentre is
+/// single node sits directly at `A + B` — same composite, so the recenter is
 /// identical and the voxel sets must match exactly.
 #[test]
 fn nested_group_composes_transforms_down() {
@@ -983,7 +983,7 @@ fn two_instance_village_doubles_occupancy_disjointly() {
         "two disjoint instances of one def → 2× the def's voxel count"
     );
 
-    // Disjoint: split the occupied set at the composite centre; each half is a
+    // Disjoint: split the occupied set at the composite center; each half is a
     // full house, and the two halves share no voxel position.
     let xs: Vec<f32> = grid
         .occupied

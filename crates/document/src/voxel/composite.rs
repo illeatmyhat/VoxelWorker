@@ -92,7 +92,7 @@ impl CompositeProducer {
     ///
     /// * **Inside** the body, the LAST `Union` member containing the point wins — ADR 0017's
     ///   "on overlap the later node wins the material". Keeping this means an outset Part's
-    ///   interior is coloured identically to the same Part at outset zero.
+    ///   interior is colored identically to the same Part at outset zero.
     /// * **Outside** it (the shell the dilation ADDS), the NEAREST `Union` member wins. There
     ///   is no "later" to appeal to out there — no member contains the point — and the shell
     ///   is continuous with the surface it grew from, so it takes that surface's material.
@@ -167,7 +167,7 @@ impl CompositeProducer {
     ///
     /// The two rules are deliberately identical (last containing `Union` member inside the
     /// body, nearest one out in an outset shell), because the pick follows the material: the
-    /// node you select is the node that coloured the voxel you clicked. A nested composite
+    /// node you select is the node that colored the voxel you clicked. A nested composite
     /// answers for itself, so a pick names the innermost authored leaf rather than the Group
     /// enclosing it — ADR 0032 picks the leaf at any depth; only the instance boundary
     /// redirects, and that redirect is already baked into each member's origin by the walk.
@@ -278,8 +278,8 @@ impl VoxelProducer for CompositeProducer {
         for k in low[2]..high[2] {
             for j in low[1]..high[1] {
                 for i in low[0]..high[0] {
-                    let centre = [i as f32 + 0.5, j as f32 + 0.5, k as f32 + 0.5];
-                    let (distance, material) = self.sample(centre, voxels_per_block);
+                    let center = [i as f32 + 0.5, j as f32 + 0.5, k as f32 + 0.5];
+                    let (distance, material) = self.sample(center, voxels_per_block);
                     if distance <= SURFACE_ISOLEVEL {
                         occupied.push(Voxel {
                             local_index: [i as i32, j as i32, k as i32],
@@ -315,7 +315,7 @@ impl VoxelProducer for CompositeProducer {
         Some(super::metric_cell_bracket(
             cell_local_voxels,
             self.metric(),
-            |centre| self.sample(centre, voxels_per_block).0,
+            |center| self.sample(center, voxels_per_block).0,
         ))
     }
 

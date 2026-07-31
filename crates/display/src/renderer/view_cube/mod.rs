@@ -3,10 +3,10 @@
 //!
 //! The cube is a near-black instrument-panel widget in the **top-right** of the 3D
 //! viewport (industry norm): translucent flat face fills within `#10141a`–`#1b2126`,
-//! hairline `#2b3238` slice lines partitioning each face 3×3 at the **68 %** centre
+//! hairline `#2b3238` slice lines partitioning each face 3×3 at the **68 %** center
 //! patch (so the drawn partition IS the pick partition — see
 //! [`raycast::VIEW_CUBE_ZONE_THRESHOLD`]), a `#59636d` silhouette, projected FRONT /
-//! TOP / RIGHT labels, and the three axis-coloured cube edges emanating from the
+//! TOP / RIGHT labels, and the three axis-colored cube edges emanating from the
 //! front-bottom-right corner. Hovering a zone lights every across-the-fold facet of
 //! the 26-element in the `#9cb4d8` accent (computed geometrically in the shader from
 //! the element's [`camera::ViewCubeElement::axis_selectors`]).
@@ -39,7 +39,7 @@ pub const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 /// Both the renderer and the shell's hit-testing derive the cube rect from this ONE
 /// function so the drawn cube and the pick rect always coincide. Returns `None` when
 /// the viewport is smaller than the cube + margin on either axis — the **minimum
-/// on-screen size** rule that keeps the 68 %-centre slice lines' 16 % edge strips
+/// on-screen size** rule that keeps the 68 %-center slice lines' 16 % edge strips
 /// (≈ `0.16 · 144 ≈ 23 px`) comfortably hittable; below it the cube is not drawn.
 pub fn view_cube_corner(viewport: [u32; 4], right_inset_px: u32) -> Option<(u32, u32)> {
     let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
@@ -65,11 +65,11 @@ const FACE_LABEL_TEXTURE_SIZE: u32 = 128;
 // The face-fill (now opaque, issue #91 item 6), the `#2b3238` slice lines (now an SDF)
 // and the `#9cb4d8` hover accent all live in `viewcube.wgsl`; the tokens baked on the
 // CPU (silhouette + axis edges + labels) are below.
-/// Cube silhouette colour `#59636d` (the 9 non-axis edges).
+/// Cube silhouette color `#59636d` (the 9 non-axis edges).
 const SILHOUETTE_HEX: u32 = 0x59_63_6d;
-/// Face-label lettering colour `#aeb9c4` (Signal "text — secondary"), monospace.
+/// Face-label lettering color `#aeb9c4` (Signal "text — secondary"), monospace.
 const FACE_LABEL_HEX: u32 = 0xae_b9_c4;
-/// Axis colours (Signal): X `#d9603f`, Y `#7dba6a`, Z `#9cb4d8`.
+/// Axis colors (Signal): X `#d9603f`, Y `#7dba6a`, Z `#9cb4d8`.
 const AXIS_X_HEX: u32 = 0xd9_60_3f;
 const AXIS_Y_HEX: u32 = 0x7d_ba_6a;
 const AXIS_Z_HEX: u32 = 0x9c_b4_d8;
@@ -86,7 +86,7 @@ pub(crate) struct CubeLabelVertex {
 }
 
 /// One expanded thick-line vertex (issue #91 item 3): the segment's two endpoints (so
-/// the vertex shader can compute the screen-space direction), the line colour, and a
+/// the vertex shader can compute the screen-space direction), the line color, and a
 /// `[side, end]` selector (`side` ∈ {-1,+1} across the width, `end` ∈ {0,1} picks the
 /// endpoint). Six per source segment → a screen-space quad of constant pixel width.
 #[repr(C)]
@@ -115,7 +115,7 @@ const CUBE_LINE_HALF_WIDTH_PX: f32 = 0.7;
 const CUBE_LINE_FEATHER_PX: f32 = 1.0;
 
 /// The corner view cube: a labelled cube mirroring the main camera's orientation, plus
-/// a silhouette + axis-coloured edge wireframe (Signal style, see the module doc).
+/// a silhouette + axis-colored edge wireframe (Signal style, see the module doc).
 /// Rendered into a scissored top-right viewport in its own pass (depth cleared there
 /// first).
 pub struct ViewCubeRenderer {
@@ -137,7 +137,7 @@ pub struct ViewCubeRenderer {
     composite_pipeline: wgpu::RenderPipeline,
     composite_bind_group_layout: wgpu::BindGroupLayout,
     composite_sampler: wgpu::Sampler,
-    /// The colour target format, for building the transient offscreen MSAA + resolve
+    /// The color target format, for building the transient offscreen MSAA + resolve
     /// textures the cube renders into.
     color_format: wgpu::TextureFormat,
     // --- #13 Step 2: screen-space chrome overlay (rotate + roll arrows) ---
@@ -150,7 +150,7 @@ pub struct ViewCubeRenderer {
 }
 
 impl ViewCubeRenderer {
-    /// Create the view-cube renderer for a colour target format.
+    /// Create the view-cube renderer for a color target format.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -489,13 +489,13 @@ impl ViewCubeRenderer {
     }
 
     /// Draw the cube into a scissored corner of `target_view` (its own render pass,
-    /// with a freshly-cleared private depth texture). The colour attachment loads
+    /// with a freshly-cleared private depth texture). The color attachment loads
     /// the already-resolved scene so only the corner is touched.
     ///
     /// Issue #25: the corner is the top-left of the CENTRAL 3D viewport rect
     /// (`viewport_x/y/w/h`, physical pixels), NOT the whole window — so the cube
     /// lines up with the visible 3D area instead of hiding behind the side panel.
-    /// `target_width/height` are the full target dims (the colour + depth
+    /// `target_width/height` are the full target dims (the color + depth
     /// attachments span the whole target; the scissor confines the draw).
     ///
     /// #13 Step 2: `hovered_zone` is the chrome zone currently under the cursor
@@ -523,7 +523,7 @@ impl ViewCubeRenderer {
         // Signal hover: when a face/edge/corner ELEMENT is hovered, upload its per-axis
         // sign selector `[sx, sy, sz, active]` into the cube uniform's `depth_bias`
         // slot (byte offset 64). The shader lights a face fragment at cube position `p`
-        // iff, on every axis, `p` is on the selector's side of the 68 % centre patch —
+        // iff, on every axis, `p` is on the selector's side of the 68 % center patch —
         // which highlights exactly the 1/2/3 across-the-fold facets of the element.
         // `active = 0` for a non-Element hover (arrow/badge) or no hover clears it.
         let highlight = match hovered_zone {

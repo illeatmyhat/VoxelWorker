@@ -64,7 +64,7 @@ const EDGE_ARC: u32 = 1;
 struct RegionEdgeSlot {
     start_point: [f32; 2],
     end_point: [f32; 2],
-    centre: [f32; 2],
+    center: [f32; 2],
     radius: f32,
     start_radians: f32,
     sweep_radians: f32,
@@ -78,7 +78,7 @@ fn pack_edge(edge: &RegionEdge) -> RegionEdgeSlot {
         RegionEdge::Segment { start, end } => RegionEdgeSlot {
             start_point: start,
             end_point: end,
-            centre: [0.0; 2],
+            center: [0.0; 2],
             radius: 0.0,
             start_radians: 0.0,
             sweep_radians: 0.0,
@@ -87,14 +87,14 @@ fn pack_edge(edge: &RegionEdge) -> RegionEdgeSlot {
         RegionEdge::Arc {
             start,
             end,
-            centre,
+            center,
             radius,
             start_radians,
             sweep_radians,
         } => RegionEdgeSlot {
             start_point: start,
             end_point: end,
-            centre,
+            center,
             radius,
             start_radians,
             sweep_radians,
@@ -144,7 +144,7 @@ pub struct SketchRegionRenderer {
 const INITIAL_CAPACITY: usize = 256;
 
 impl SketchRegionRenderer {
-    /// Create the wash renderer for a colour target. It starts DISARMED.
+    /// Create the wash renderer for a color target. It starts DISARMED.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sketch region shader"),
@@ -216,7 +216,7 @@ impl SketchRegionRenderer {
                 entry_point: Some("fragment_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
-                    // The shader outputs PREMULTIPLIED colour (`tint.rgb * alpha`).
+                    // The shader outputs PREMULTIPLIED color (`tint.rgb * alpha`).
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -459,7 +459,7 @@ mod tests {
         let arc = pack_edge(&RegionEdge::Arc {
             start: [1.0, 0.0],
             end: [-1.0, 0.0],
-            centre: [0.0, 0.0],
+            center: [0.0, 0.0],
             radius: 1.0,
             start_radians: 0.0,
             sweep_radians: std::f32::consts::PI,

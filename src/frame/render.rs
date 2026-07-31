@@ -9,14 +9,14 @@ use crate::*;
 /// Render a complete frame into `target_view`.
 ///
 /// This is the render-target-agnostic core (Hard requirement #2): it accepts a
-/// resolved single-sample colour [`wgpu::TextureView`] plus the prepared egui
+/// resolved single-sample color [`wgpu::TextureView`] plus the prepared egui
 /// data and has no knowledge of winit or surfaces. The windowed binary passes
 /// the surface texture's view; the headless binary passes the offscreen capture
 /// texture's view.
 ///
 /// Milestone 4 restructures the frame into two passes:
 ///   1. **3D MSAA pass** — the instanced voxel cubes are drawn into a 4-sample
-///      colour texture (`msaa_color_view`) with a 4-sample depth attachment
+///      color texture (`msaa_color_view`) with a 4-sample depth attachment
 ///      (`depth_view`) and resolved into `target_view` (the single-sample
 ///      surface / capture texture). `material` selects the bound texture and
 ///      `grid_overlay_enabled` was already folded into the uniforms by the
@@ -148,7 +148,7 @@ pub fn upload_scene_scaffold(
 ///
 /// The gizmo uploads ONLY when `gizmo_placement` is `Some` (the selection has an extent); both
 /// paths already gate the gizmo DRAW on the same condition, so skipping the upload on `None` is
-/// the shell's existing behaviour and a harmless no-op for `shot` (which formerly uploaded a
+/// the shell's existing behavior and a harmless no-op for `shot` (which formerly uploaded a
 /// throwaway origin-pivot gizmo it never drew). `view_projection` is the scene matrix
 /// ([`SceneMatrices::view_projection`](camera::SceneMatrices)); `aspect_ratio` sizes the gizmo's
 /// generous depth-off overlay bracket.
@@ -165,7 +165,7 @@ pub fn upload_overlay_uniforms(
     selection_outline: &display::mesh::SelectionOutlineRenderer,
     view_cube: &ViewCubeRenderer,
 ) {
-    // The gizmo FOLLOWS the selection: size it screen-stable to its pivot and bake the recentred
+    // The gizmo FOLLOWS the selection: size it screen-stable to its pivot and bake the recentered
     // pivot into a generous depth-off overlay matrix (the scene's tight near/far would clip a
     // screen-stable gizmo when zoomed far). No selection extent ⇒ nothing to place.
     if let Some((pivot, _extent)) = gizmo_placement {
@@ -229,7 +229,7 @@ pub fn upload_voxel_uniforms(
         return false;
     };
     // ADR 0011 G2: mirror the applied-block state into the shader (solid hits shade from the
-    // block's D2Array); the grazing-rim diagnostic swaps the shade for face-axis colour. Both are
+    // block's D2Array); the grazing-rim diagnostic swaps the shade for face-axis color. Both are
     // per-frame toggles, no rebuild — shot leaves them at their defaults.
     brick.set_loaded_material_active(loaded_material_active);
     brick.set_debug_mode(debug_brick_faces);
@@ -294,7 +294,7 @@ pub fn render_frame(
             label: Some("voxel-worker 3D msaa pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: msaa_color_view,
-                // Resolve the multisampled colour into the single-sample target.
+                // Resolve the multisampled color into the single-sample target.
                 resolve_target: Some(target_view),
                 depth_slice: None,
                 ops: wgpu::Operations {
@@ -321,7 +321,7 @@ pub fn render_frame(
 
         // Issue #25: confine the 3D geometry to the central viewport rect (the
         // window minus the side panel + bottom dock). The MSAA target was still
-        // CLEARED to the workshop colour across the WHOLE target above, so any
+        // CLEARED to the workshop color across the WHOLE target above, so any
         // sliver not covered by egui isn't garbage; only the draws are scissored.
         let [viewport_x, viewport_y, viewport_width, viewport_height] = prepared.viewport_px;
         voxel_pass.set_viewport(
@@ -368,7 +368,7 @@ pub fn render_frame(
 
         // ADR 0012 (H1) — the onion GHOST pass. Immediately after the SOLID band draw,
         // in the SAME MSAA pass, the engaged display path ghosts the voxels in the onion
-        // slabs (recentred-Z outside the band, within ±onion_depth). Depth-tested
+        // slabs (recentered-Z outside the band, within ±onion_depth). Depth-tested
         // `Less` + alpha-blended, with depth WRITE ON so only the nearest ghost surface
         // shows (a builder-independent render); the just-drawn solid still occludes it. The
         // brick ghost is two per-slab raymarches; the mesh ghost is two thin per-slab

@@ -15,12 +15,12 @@ use super::{IconPainter, Stroke};
 
 /// Which of the set's inks a mark is drawn in.
 ///
-/// A glyph does not name colours — it names ROLES, and the painter resolves them against the
-/// colour the host passed plus the theme. That is what lets one glyph be idle, hovered and armed
+/// A glyph does not name colors — it names ROLES, and the painter resolves them against the
+/// color the host passed plus the theme. That is what lets one glyph be idle, hovered and armed
 /// without three copies of it, which is the property the whole set is built on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum InkRole {
-    /// The glyph's line art — whatever colour the host passed. Every mark that is not making a
+    /// The glyph's line art — whatever color the host passed. Every mark that is not making a
     /// point about a pick or a linetype is this.
     #[default]
     LineArt,
@@ -29,7 +29,7 @@ pub enum InkRole {
     Accent,
     /// The sketch construction linetype. Not a state and not a theme step — it QUOTES the ink
     /// construction geometry already has in the viewport, which is the only reason a third
-    /// colour is allowed in this set at all.
+    /// color is allowed in this set at all.
     Construction,
     /// The entity a CONSTRAINT drives. Red, against the reference entity's line art.
     ///
@@ -171,7 +171,7 @@ pub enum Mark {
         radius: f32,
         ink: Ink,
     },
-    /// A filled square centred on a grid point: an authored VERTEX.
+    /// A filled square centered on a grid point: an authored VERTEX.
     ///
     /// The sketch set draws a vertex as a square and never as a disc — a disc is reserved for a
     /// pick that is consumed at creation and never becomes an entity (ADR 0030 §5). Naming the

@@ -7,7 +7,7 @@
 - **Layer:** DISPLAY simplification. **Supersedes the volumetric onion-fog pipeline** (issue #28 per-chunk atlas,
   issue #59 band slabs, ADR 0007's fog resolve, ADR 0011 G5's fog-from-bricks). Governed by
   [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) (GPU is a display shell, never truth) and
-  [ADR 0008](0008-voxel-frame-invariant.md) (the slab uniforms carry the recentred-Z frame the band already uses).
+  [ADR 0008](0008-voxel-frame-invariant.md) (the slab uniforms carry the recentered-Z frame the band already uses).
   Finishes the "no dense state anywhere" retirement of ADR 0010/0011: the per-chunk fog occupancy tiles are the
   last dense-shaped per-chunk volumes in the runtime.
 
@@ -40,7 +40,7 @@ per-frame uniform; the onion region is the same geometry under a different clip 
 
 1. **Onion skin = a ghost pass on the EXISTING display pipelines.** Each frame with onion active, the engaged
    display path (brick raymarch, or the cuboid mesh when the raymarch is disengaged) draws a SECOND pass whose
-   shader-side clip test selects the onion slabs — recentred-Z in `[onion_z_min, band_z_min) ∪ (band_z_max,
+   shader-side clip test selects the onion slabs — recentered-Z in `[onion_z_min, band_z_min) ∪ (band_z_max,
    onion_z_max]`, the SAME frame math `AppCore::onion_fog_params` derives today (floored half, Z-up, depth clamped
    1..8) — and shades hits as a translucent ghost (tint matching the current haze hue). No occupancy is built,
    uploaded, or cached. **As-built (H1) deviation on the cuboid mesh path:** the mesh ghost is NOT a
@@ -56,13 +56,13 @@ per-frame uniform; the onion region is the same geometry under a different clip 
    makes only the NEAREST ghost surface blend at each pixel — an order-independent, builder-independent render that
    matches across display paths — while the solid, drawn first, still occludes the ghost. The read-only variant
    accumulated overlapping translucent ghost surfaces and diverged per builder; the owner accepted the depth-write
-   render as the shipped behaviour.
+   render as the shipped behavior.
 3. **Aesthetic trade, accepted by the owner — then RECOVERED on the brick path (H1.5, `788885a`, owner-approved
    after a live trial):** the brick raymarch's ghost is `fragment_ghost_haze` — the same pyramid-accelerated slab
    DDA, but accumulating the ray's in-solid path length and shading `tint × (1 − exp(−k·thickness))` with the
    retired fog's exact strength (`k = 0.10/voxel`). Thickness is exact DDA (better than the old trilinear tiles);
    coarse/mask interiors accumulate analytically (one add per block), saturation early-outs at optical depth
-   ~5.6, one centre ray per pixel (haze has no hard edges to antialias), depth write OFF (one fragment per slab
+   ~5.6, one center ray per pixel (haze has no hard edges to antialias), depth write OFF (one fragment per slab
    per pixel ⇒ order-independent composite; solid occlusion via first-in-solid `frag_depth`). Zero new memory;
    band scrubs stay uniform-only. The CUBOID-MESH fallback keeps the crisp translucent ghost (rasterized surfaces
    carry no thickness) — the two paths' onion aesthetics intentionally differ, gated per-path.
@@ -98,4 +98,4 @@ per-frame uniform; the onion region is the same geometry under a different clip 
 - The `gpu_resolve` deletion removes the second producer-evaluator implementation — adding a future producer
   (e.g. the reserved Sweep arm) touches ONE evaluator + its parity tests, not two.
 - Risk: the ghost pass inherits the display paths' own gaps — a scene that displays nothing (degenerate Part-only)
-  ghosts nothing; this matches the fog's current behaviour there (empty region ⇒ no fog) and is accepted.
+  ghosts nothing; this matches the fog's current behavior there (empty region ⇒ no fog) and is accepted.

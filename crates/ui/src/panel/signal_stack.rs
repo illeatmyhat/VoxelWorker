@@ -307,12 +307,12 @@ fn build_folded_tabs(ui: &mut egui::Ui, state: &mut PanelState) {
 ///
 /// Issue #91 item 5: the tab box is sized from the ROTATED galley's bounds (a 90° rotation
 /// swaps width/height, so the box is `TAB_WIDTH` wide and `galley_width + 2·pad` tall) and
-/// the galley is positioned so it sits CENTRED INSIDE the box — the old
+/// the galley is positioned so it sits CENTERED INSIDE the box — the old
 /// `with_angle_and_anchor` placement dropped the caption outside its rectangle.
 fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
     let size = if expander { 13.0 } else { 10.0 };
     let spacing = if expander { 0.0 } else { 1.5 };
-    // Measure the caption (galley size is colour-independent) to size the tab box.
+    // Measure the caption (galley size is color-independent) to size the tab box.
     let measured = theme::letter_spaced(ui, caption, TEXT_MUTED, size, spacing);
     let galley_width = measured.size().x;
     let galley_height = measured.size().y;
@@ -329,8 +329,8 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
     let galley = theme::letter_spaced(ui, caption, color, size, spacing);
     // Rotate the pre-laid galley 90° clockwise (egui's `Shape::text` can't letter-space,
     // hence the galley). A TextShape draws the galley from `pos` then rotates it about
-    // `pos`; for +90° the galley's rotated bbox centre lands at `pos + (h/2, -w/2)`, so we
-    // offset `pos` by the inverse to centre the rotated caption exactly in the tab rect.
+    // `pos`; for +90° the galley's rotated bbox center lands at `pos + (h/2, -w/2)`, so we
+    // offset `pos` by the inverse to center the rotated caption exactly in the tab rect.
     let pos = rect.center() + Vec2::new(galley_height * 0.5, -galley_width * 0.5);
     let text_shape =
         egui::epaint::TextShape::new(pos, galley, color).with_angle(std::f32::consts::FRAC_PI_2);
@@ -356,7 +356,7 @@ fn hairline(ui: &egui::Ui, y: f32) {
     );
 }
 
-/// Draw a small collapse chevron centred at `center`: pointing down when `open`, right when
+/// Draw a small collapse chevron centered at `center`: pointing down when `open`, right when
 /// closed (the "rotates when closed" affordance).
 fn chevron(painter: &egui::Painter, center: Pos2, open: bool) {
     let points = if open {

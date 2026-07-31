@@ -91,7 +91,7 @@ pub enum LargeIcon {
 }
 
 impl LargeIcon {
-    /// Every tile glyph, in catalogue order — sketch first, because sketch→volume is the
+    /// Every tile glyph, in catalog order — sketch first, because sketch→volume is the
     /// authoring atom and the primitives are sugar over it.
     pub const ALL: &'static [LargeIcon] = &[
         LargeIcon::Sketch,
@@ -212,10 +212,10 @@ impl LargeIcon {
             }
             LargeIcon::Tube => {
                 "The cylinder's own cap and walls, opened by a bore whose near walls fade as \
-                 they drop — so the two marks read as neighbours and only the hole differs."
+                 they drop — so the two marks read as neighbors and only the hole differs."
             }
             LargeIcon::Torus => {
-                "The bore sits ABOVE centre and its far half recedes. Concentric would read as \
+                "The bore sits ABOVE center and its far half recedes. Concentric would read as \
                  an eye at every ratio, which is the trap orbit fell into eight times; the fix \
                  is the construction, never the radii."
             }

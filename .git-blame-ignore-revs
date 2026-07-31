@@ -1,8 +1,8 @@
 # Revisions git blame should skip: mechanical, repo-wide reformats that carry no
 # authorship. Enabled locally with
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
-# (GitHub honours this file automatically). Add a commit here ONLY when it changes
+# (GitHub honors this file automatically). Add a commit here ONLY when it changes
 # formatting and nothing else.
 
-# style: rustfmt the workspace (the first `cargo fmt`; 239 files, no behaviour change)
+# style: rustfmt the workspace (the first `cargo fmt`; 239 files, no behavior change)
 5157b26ca8e790e89d3d1492cf74e9316333a600

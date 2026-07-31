@@ -11,7 +11,7 @@
 //!     tighter variant. It builds from [`Style::default`] rather than inheriting the app style, so
 //!     the floating stack renders independently of the app-wide restyle around it.
 //!
-//! Every colour comes from [`super::color_palette`] — this is the Signal theme's resolution of
+//! Every color comes from [`super::color_palette`] — this is the Signal theme's resolution of
 //! those tokens; a second theme would apply a different [`Style`] here from the same token names.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, Style, TextStyle, Visuals};
@@ -36,7 +36,7 @@ const HEADING_SIZE: f32 = 15.0;
 /// scoped style. This pins EVERY knob of egui's five-state widget matrix
 /// (`noninteractive`/`inactive`/`hovered`/`active`/`open` × `bg_fill`/`weak_bg_fill`/
 /// `bg_stroke`/`fg_stroke`/`corner_radius`/`expansion`) so NOTHING falls back to egui's
-/// bright grey-white defaults (issue #90 — an unset `open.bg_stroke` or `active.weak_bg_fill`
+/// bright gray-white defaults (issue #90 — an unset `open.bg_stroke` or `active.weak_bg_fill`
 /// leaks a `gray(60)`/`gray(210)` outline onto combos, buttons and text boxes). Zero corner
 /// radius and zero expansion everywhere (flat, aligned cells — no growing-on-hover), hairline
 /// `#2b3238` frames at rest, the accent outline on hover/active, and the accent SELECTION with
@@ -45,7 +45,7 @@ const HEADING_SIZE: f32 = 15.0;
 /// The on-accent contrast lives in [`Selection::stroke`](egui::style::Selection::stroke):
 /// `button_style`/`interact_selectable` paint a selected cell's text (and a checkbox tick) in
 /// `selection.stroke.color`, but ONLY as a galley fallback — so this is effective only because
-/// neither surface sets `override_text_color` (which would bake a light colour into every
+/// neither surface sets `override_text_color` (which would bake a light color into every
 /// galley and defeat the fallback; that was the #89 wash). Idle interactable text is left at
 /// `inactive.fg_stroke` = [`TEXT_MUTED`]; each surface raises it where its own readouts need
 /// the primary tier (see [`apply_app_style`]).
@@ -156,7 +156,7 @@ pub fn apply_app_style(style: &mut Style) {
     v.extreme_bg_color = HOVER_BG; // text-edit / drag-value inset cells
     v.faint_bg_color = HOVER_BG; // striped rows
     apply_widget_visuals(v);
-    // Text tiers. NO `override_text_color` — it would bake a light colour into every galley
+    // Text tiers. NO `override_text_color` — it would bake a light color into every galley
     // and desaturate the dark-on-accent selected text (issue #90). Instead: plain labels ride
     // `noninteractive.fg_stroke` (muted, set in `apply_widget_visuals`); `.weak()` hints ride
     // `weak_text_color`; and the sidebar's idle interactable text (which is where the

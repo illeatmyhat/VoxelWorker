@@ -74,7 +74,7 @@ pub struct PreparedEguiFrame {
     /// palette dock. Derived from egui's post-panel `available_rect` × the frame's
     /// `pixels_per_point`, then clamped into the target. The caller computes the
     /// camera aspect from `w/h` and confines the 3D pass (voxels, gizmo, fog, view
-    /// cube) to this rect, so the model is centred in the VISIBLE 3D area instead
+    /// cube) to this rect, so the model is centered in the VISIBLE 3D area instead
     /// of the whole window (which the panels would otherwise cover).
     pub viewport_px: [u32; 4],
     /// The ViewCube context-menu item chosen this frame (#13 Step 3), if any. The
@@ -122,7 +122,7 @@ pub struct PreparedEguiFrame {
 /// command leaves the column empty rather than inventing a binding, which is what lets the menu
 /// double as the honest list of what IS bound.
 ///
-/// `enabled == false` greys the row and swallows the click, which is how Delete shows that there
+/// `enabled == false` grays the row and swallows the click, which is how Delete shows that there
 /// is nothing picked to delete without vanishing and making the menu twitch between opens.
 fn context_menu_row(
     ui: &mut egui::Ui,
@@ -166,7 +166,7 @@ fn context_menu_row(
     );
     if let Some(shortcut) = shortcuts.display(ui.ctx(), command) {
         // Always the weak tone, even on the warn-tinted row: the binding is a reminder, not a
-        // second thing to act on, and matching the label's colour would make it read as one.
+        // second thing to act on, and matching the label's color would make it read as one.
         ui.painter().text(
             egui::pos2(rect.right() - SHORTCUT_INSET, rect.center().y),
             egui::Align2::RIGHT_CENTER,
@@ -234,7 +234,7 @@ pub fn run_egui_frame(
     // headless `shot` path.
     sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
     // ADR 0035 Decision 15: the constraint badges for THIS frame — each asserted relation's own
-    // glyph at an already-projected centre (egui points), anchored on the geometry the relation
+    // glyph at an already-projected center (egui points), anchored on the geometry the relation
     // names. Drawn OVER the lines and handles: a badge is a claim about the drawing and must not
     // be buried by it. Empty unless a sketch is being edited, always empty on the headless
     // `shot` path.
@@ -284,7 +284,7 @@ pub fn run_egui_frame(
     let mut chrome_rects_points: Vec<egui::Rect> = Vec::new();
     // Issue #25: the central 3D viewport rect, in egui points. `build_panel` shows
     // the right side panel + bottom palette dock INSIDE `ui`; whatever room those
-    // panels leave is the central area where the 3D scene should be centred. We
+    // panels leave is the central area where the 3D scene should be centered. We
     // read it AFTER the panels are laid out (`available_rect`), so a resized panel
     // moves the viewport with it.
     let mut central_rect_points = egui::Rect::from_min_size(
@@ -296,7 +296,7 @@ pub fn run_egui_frame(
     // monospace type and the one accent from `theme`. Applied to both the dark and
     // light context styles so it holds regardless of theme; the floating DISPLAY stack
     // re-scopes its own variant, and the chrome painters (cube/rail/status) are
-    // style-immune (explicit colours), so both stay byte-stable.
+    // style-immune (explicit colors), so both stay byte-stable.
     bridge.context.all_styles_mut(ui::theme::apply_app_style);
     let full_output = bridge.context.run_ui(raw_input, |ui| {
         panel_response = ui::workspace::build_workspace(ui, panel_state, export, palette);
@@ -437,7 +437,7 @@ pub fn run_egui_frame(
                             }
                             return;
                         }
-                        // Delete is the one row that carries a colour of its own: removal is the
+                        // Delete is the one row that carries a color of its own: removal is the
                         // only warn-valent act in the menu.
                         if context_menu_row(
                             ui,
@@ -509,7 +509,7 @@ pub fn run_egui_frame(
                             close = true;
                         }
                         // Always enabled: resetting an unplaced center is a harmless no-op,
-                        // and greying it out would only make the menu twitch between opens.
+                        // and graying it out would only make the menu twitch between opens.
                         if context_menu_row(
                             ui,
                             &shortcuts,
@@ -764,13 +764,13 @@ pub fn run_egui_frame(
 
         // ADR 0032: the explicit orbit mode's targeting reticle, filling the central viewport.
         // Drawn whenever the mode runs and the button is up — it is what says the left button now
-        // turns and re-centres, so hiding it between gestures would leave the flipped verb
+        // turns and re-centers, so hiding it between gestures would leave the flipped verb
         // invisible for most of the mode.
         if orbit_reticle {
             ui::gizmos::orbit_reticle_overlay(ui, central_rect_points);
         }
 
-        // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the
+        // Signal (#86): the faint zone-name readout, centered under the cube but BELOW the
         // icon rail (so the two never overlap). Anchored off the post-panel central rect
         // so it tracks the cube as the side panel resizes. Non-interactive (a pure label);
         // windowed-only (the `shot` path passes `None`).

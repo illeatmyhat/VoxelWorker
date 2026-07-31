@@ -2,7 +2,7 @@
 //!
 //! This crate holds the plain domain *values* every higher layer of the planner is
 //! phrased in: the resolved voxel cell and its sparse grid, the frame-bearing
-//! recentre, the primitive-kind tag and the pure signed-distance functions the
+//! recenter, the primitive-kind tag and the pure signed-distance functions the
 //! producers sample, the categorical block-palette id with its cell-key codec and
 //! procedural-material choice, the absolute-voxel box and the flat leaf spatial
 //! index, and the parametric blocks/voxels measurement core. It is the first
@@ -13,7 +13,7 @@
 //! A component belongs here if and only if it is describable as a domain **value** —
 //! a measurement, a piece of geometry, a coordinate frame, a categorical id — without
 //! naming any *evaluation*, *display*, *wgpu*, or *scene* type. It is vocabulary, not
-//! behaviour: nothing here evaluates the operation stack, resolves a chunk, meshes a
+//! behavior: nothing here evaluates the operation stack, resolves a chunk, meshes a
 //! surface, or touches a GPU. Anything that must name a scene, a producer, a chunk, or
 //! a store is a higher-layer concern and stays out. The dependency edge is one-way:
 //! `substrate ← voxel_core ← the rest of the app`. The only dependencies are `glam`
@@ -37,7 +37,7 @@
 //!   categorical [`core_geom::BlockId`] with its [`core_geom::BlockAttrs`] and the
 //!   render-side [`core_geom::CellKey`] codec.
 //! * [`voxel`] — the resolved-cell value layer: the [`voxel::Voxel`] and its sparse
-//!   [`voxel::VoxelGrid`], the frame-bearing [`voxel::RecentreVoxels`], the
+//!   [`voxel::VoxelGrid`], the frame-bearing [`voxel::RecenterVoxels`], the
 //!   [`voxel::ShapeKind`] primitive tag, and the pure signed-distance functions
 //!   ([`voxel::signed_distance`] and its per-kind arms).
 //! * [`spatial_index`] — the [`spatial_index::VoxelAabb`] absolute-voxel box and its

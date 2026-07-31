@@ -19,7 +19,7 @@
 //! A drag is only as precise as where it lands, and this project's whole premise is exact
 //! voxel counts. Snapping in the same place as the solve keeps "what the cursor points at" and
 //! "what that means on the lattice" in one testable unit — a caller cannot accidentally
-//! commit an unsnapped float. Everything here is in VOXELS: the caller works in the recentred
+//! commit an unsnapped float. Everything here is in VOXELS: the caller works in the recentered
 //! render frame, and a value carries the frame it was authored in rather than having one
 //! re-derived downstream.
 
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pivot_is_honoured_rather_than_assumed_to_be_the_origin() {
+    fn the_pivot_is_honored_rather_than_assumed_to_be_the_origin() {
         let pivot = Vec3::new(100.0, -40.0, 7.0);
         let ray = ray_at(pivot + Vec3::new(4.0, 0.0, 30.0), pivot + Vec3::X * 4.0);
         assert_eq!(pick_gizmo_axis(&ray, pivot, 10.0, 1.0), Some(GizmoAxis::X));

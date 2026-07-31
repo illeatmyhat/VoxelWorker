@@ -21,10 +21,10 @@
 //! instances is visited N times (the village-of-reused-houses case) — see
 //! `Scene::walk_nodes` / `Scene::for_each_leaf`.
 //!
-//! ## Identical-behaviour guarantee
+//! ## Identical-behavior guarantee
 //!
 //! The producer trait (`VoxelProducer`) does **not** change: producers still
-//! emit content centred at the origin. The Scene's new job is **compositing** —
+//! emit content centered at the origin. The Scene's new job is **compositing** —
 //! walk the node tree, resolve each enabled leaf into its own local grid, and
 //! **stamp** it (under the node's transform) into the output grid. For a one-node
 //! scene whose region is the node's full extent with a zero offset, the stamp is
@@ -118,7 +118,7 @@ pub struct Scene {
     pub definitions: Vec<AssemblyDef>,
     /// World-anchored reference Points (issue #29). Always contains exactly one
     /// Origin Point after [`ensure_origin_point`](Self::ensure_origin_point) runs
-    /// on load. An older config without this field deserialises to an empty list,
+    /// on load. An older config without this field deserializes to an empty list,
     /// then gains its Origin on the load path.
     #[serde(default)]
     pub points: Vec<Point>,
@@ -159,7 +159,7 @@ pub struct Scene {
 }
 
 /// The document-level density default (voxels per block) for a fresh or partially
-/// deserialised [`Scene`] — matches [`GeometryParams`](crate::voxel::GeometryParams)
+/// deserialized [`Scene`] — matches [`GeometryParams`](crate::voxel::GeometryParams)
 /// default 16.
 fn default_density() -> u32 {
     16

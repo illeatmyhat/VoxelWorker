@@ -150,7 +150,7 @@ const CARRIED_AS_A_SUBSET: &[(&str, &[&str])] = &[
 /// cannot fail to reach an artifact — that is a compile error. Nothing gives `PanelState`
 /// the same treatment: `AppConfig::capture` reads the panel field by field, by hand,
 /// exactly the way the capture that lost the pan target did. The compiler can only check
-/// that a panel field is *decided*; whether the decision is *honoured* is this test's job,
+/// that a panel field is *decided*; whether the decision is *honored* is this test's job,
 /// and before ADR 0024 nothing did it at all.
 ///
 /// What that cost: `view_mode`, `stack`, `debug_face_orientation` and `debug_brick_faces`

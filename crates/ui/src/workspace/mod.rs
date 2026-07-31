@@ -22,7 +22,7 @@
 //! the shapes, the tools — is a permanent rail the user builds muscle memory against. A set
 //! that grows with the project — materials, saved parts — is summoned and searched, so it
 //! belongs in the drawer rather than on screen forever. Nothing appears in both places; the
-//! pinned favourites are a *projection* of the drawer, not a second copy of it.
+//! pinned favorites are a *projection* of the drawer, not a second copy of it.
 //!
 //! The right column is read top-to-bottom as orientation → verbs → height: the view cube,
 //! then the icon rail beneath it, then the layer ladder. Those float over the viewport and

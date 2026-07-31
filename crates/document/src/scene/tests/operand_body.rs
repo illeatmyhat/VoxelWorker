@@ -96,8 +96,8 @@ fn selected_subtract_cutter_resolves_its_full_body_in_place() {
         lone.resolve_region(RegionBlocks::new([8, 8, 8]), DENSITY, 0)
     };
     assert_eq!(
-        occupied_multiset(&resolved, resolved.recentre_voxels),
-        occupied_multiset(&expected, expected.recentre_voxels),
+        occupied_multiset(&resolved, resolved.recenter_voxels),
+        occupied_multiset(&expected, expected.recenter_voxels),
         "the slice body must be the cutter's own full body at its absolute placement"
     );
 }

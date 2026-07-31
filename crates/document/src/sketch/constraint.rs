@@ -312,7 +312,7 @@ pub(super) struct Frame {
 ///
 /// **The weight is 1 and does not need tuning.** When a rigid motion can satisfy the constraints,
 /// both blocks reach zero at once and there is no trade to weigh. When they genuinely conflict —
-/// levelling one edge of a closed polygon cannot leave the other edges alone — the exactness pass
+/// leveling one edge of a closed polygon cannot leave the other edges alone — the exactness pass
 /// below runs the constraints ALONE afterwards, so rigidity can only ever rank answers that satisfy
 /// the constraints equally well. It is a preference over a null space, never a vote against a
 /// constraint.

@@ -6,7 +6,7 @@ use voxel_core::voxel::ShapeKind;
 // ---- issue #29 (grid rework S3): per-object block lattice box (renderer-follow) ----
 
 /// Build a single-Box-node scene at `offset`, return its
-/// `node_block_lattice_box_recentred` for node 0 at `density`.
+/// `node_block_lattice_box_recentered` for node 0 at `density`.
 fn single_node_lattice_box(
     size_blocks: [u32; 3],
     offset_blocks: [i64; 3],
@@ -23,7 +23,7 @@ fn single_node_lattice_box(
     node.transform = NodeTransform::from_blocks(offset_blocks, density);
     let scene = with_minted_ids(Scene::from_nodes(vec![node]));
     scene
-        .node_block_lattice_box_recentred(&NodePath::root_index(0), density)
+        .node_block_lattice_box_recentered(&NodePath::root_index(0), density)
         .expect("a sized Box node has a lattice box")
 }
 
@@ -32,10 +32,10 @@ fn single_node_lattice_box(
 /// {1, 15, 16} (the explicit user ask).
 ///
 /// The producer-true corner geometry is asserted in
-/// `node_block_aabb_scales_and_centres_across_densities` — in the RECENTRED frame
-/// the box is shifted by the composite recentre, so the recentred corners need not
+/// `node_block_aabb_scales_and_centers_across_densities` — in the RECENTERED frame
+/// the box is shifted by the composite recenter, so the recentered corners need not
 /// be block multiples; the block-aligned STRUCTURE (extent = B·d, planes step d)
-/// is what survives the recentre, and that is what this asserts.
+/// is what survives the recenter, and that is what this asserts.
 #[test]
 fn lattice_box_spans_enclosing_blocks_and_scales_with_density() {
     let size = [5u32, 3, 2];
@@ -74,12 +74,12 @@ fn lattice_box_follows_whole_block_translate_at_each_density() {
     let size = [5u32, 3, 2];
     let base = [3i64, -2, 4];
     for density in [1u32, 15, 16] {
-        // A SECOND, LARGE anchor node (centred at the origin, ±100 blocks on
+        // A SECOND, LARGE anchor node (centered at the origin, ±100 blocks on
         // every axis) dominates the composite AABB on all axes, so the small
-        // moving node never touches a composite corner and the recentre stays
+        // moving node never touches a composite corner and the recenter stays
         // FIXED. Observed in that fixed frame, moving the node by +1 block shifts
         // its box by exactly d — the "lattice follows the object in the global
-        // lattice frame" property. (A lone node would drag its own recentre, so
+        // lattice frame" property. (A lone node would drag its own recenter, so
         // the box would NOT appear to move — see `node_pivot_origin_*`.)
         let make_scene = |offset: [i64; 3]| {
             let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, density);
@@ -101,14 +101,14 @@ fn lattice_box_follows_whole_block_translate_at_each_density() {
             );
             // CORNER-ANCHORING: a leaf spans `[off, off+size)` blocks, so to make
             // the 200³ anchor BRACKET the small moving node on every axis (and so
-            // dominate the composite AABB, fixing the recentre) it must be offset to
+            // dominate the composite AABB, fixing the recenter) it must be offset to
             // `[−100, 100)` blocks, not corner-anchored at the origin.
             anchor.transform = NodeTransform::from_blocks([-100, -100, -100], density);
             with_minted_ids(Scene::from_nodes(vec![moving, anchor]))
         };
         let box_of = |offset: [i64; 3]| {
             make_scene(offset)
-                .node_block_lattice_box_recentred(&NodePath::root_index(0), density)
+                .node_block_lattice_box_recentered(&NodePath::root_index(0), density)
                 .expect("moving node has a lattice box")
         };
         let before = box_of(base);
@@ -139,7 +139,7 @@ fn lattice_box_follows_whole_block_translate_at_each_density() {
 }
 
 /// A size-less node (a VoxelBody with no intrinsic extent — `DebugClouds`) has NO
-/// lattice box: `node_block_lattice_box_recentred` returns `None` (nothing to
+/// lattice box: `node_block_lattice_box_recentered` returns `None` (nothing to
 /// draw), at each density.
 #[test]
 fn sizeless_node_has_no_lattice_box() {
@@ -149,7 +149,7 @@ fn sizeless_node_has_no_lattice_box() {
             NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }),
         ));
         assert_eq!(
-            scene.node_block_lattice_box_recentred(&NodePath::root_index(0), density),
+            scene.node_block_lattice_box_recentered(&NodePath::root_index(0), density),
             None,
             "@ d{density}: a size-less node yields no lattice box"
         );
@@ -527,8 +527,8 @@ fn scene_with_grids_and_points_round_trips() {
         ..Point::default()
     });
 
-    let json = serde_json::to_string_pretty(&scene).expect("serialise");
-    let restored: Scene = serde_json::from_str(&json).expect("deserialise");
+    let json = serde_json::to_string_pretty(&scene).expect("serialize");
+    let restored: Scene = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(scene, restored, "scene with grids + points round-trips");
     assert!(restored.root_node(0).grids.voxel_grid_on_faces);
     assert!(restored.root_node(0).grids.floor_grid);
@@ -541,7 +541,7 @@ fn scene_with_grids_and_points_round_trips() {
 }
 
 /// Back-compat: an OLD serialized scene (no `grids`, no `points`, no masters)
-/// deserialises with the correct defaults — node grids all-off, all three
+/// deserializes with the correct defaults — node grids all-off, all three
 /// masters at their struct default (ON, issue #29 grid-rework fix), empty points.
 #[test]
 fn old_scene_json_loads_with_grid_defaults() {
@@ -557,7 +557,7 @@ fn old_scene_json_loads_with_grid_defaults() {
         },
     );
     let scene = Scene::from_nodes(vec![node]);
-    let mut value = serde_json::to_value(&scene).expect("serialise");
+    let mut value = serde_json::to_value(&scene).expect("serialize");
     let object = value
         .as_object_mut()
         .expect("scene serializes to an object");
@@ -574,7 +574,7 @@ fn old_scene_json_loads_with_grid_defaults() {
             }
         }
     }
-    let old_json = serde_json::to_string(&value).expect("re-serialise trimmed doc");
+    let old_json = serde_json::to_string(&value).expect("re-serialize trimmed doc");
 
     let scene: Scene = serde_json::from_str(&old_json).expect("old scene parses");
     assert_eq!(scene.roots.len(), 1);
@@ -592,7 +592,7 @@ fn old_scene_json_loads_with_grid_defaults() {
 }
 
 /// Issue #29 S2: the transform gizmo's pivot is the target node's block-AABB
-/// centre in the recentred render frame — `block_aabb_centre·d − recentre` —
+/// center in the recentered render frame — `block_aabb_center·d − recenter` —
 /// `None` for a stale id, across densities.
 #[test]
 fn gizmo_placement_follows_its_node() {
@@ -613,7 +613,7 @@ fn gizmo_placement_follows_its_node() {
             node
         };
         // Three even-sized boxes; box B sits +8X, box C sits +6Z. CORNER-ANCHORING:
-        // a 4-block box at offset `off` spans `[off, off+4]` blocks, centre `off+2`.
+        // a 4-block box at offset `off` spans `[off, off+4]` blocks, center `off+2`.
         let mut scene = Scene::from_nodes(vec![
             make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 0]),
             make_tool(ShapeKind::Box, [4, 4, 4], [8, 0, 0]),
@@ -629,22 +629,22 @@ fn gizmo_placement_follows_its_node() {
             "no selection hides the gizmo (vpb={vpb})"
         );
 
-        let recentre = scene.recentre_voxels_for_resolve(vpb).voxels();
+        let recenter = scene.recenter_voxels_for_resolve(vpb).voxels();
         let density = vpb as i64;
 
         // Expected pivot for a 4-block box at block OFFSET `off`: its geometric
-        // centre is `(off + 2)·d` voxels (corner-anchored), minus the recentre.
+        // center is `(off + 2)·d` voxels (corner-anchored), minus the recenter.
         let half_extent_voxels = 2 * density; // half of the 4-block extent
         let expected_pivot = |off_blocks: [i64; 3]| {
             [
-                (off_blocks[0] * density + half_extent_voxels - recentre[0]) as f32,
-                (off_blocks[1] * density + half_extent_voxels - recentre[1]) as f32,
-                (off_blocks[2] * density + half_extent_voxels - recentre[2]) as f32,
+                (off_blocks[0] * density + half_extent_voxels - recenter[0]) as f32,
+                (off_blocks[1] * density + half_extent_voxels - recenter[1]) as f32,
+                (off_blocks[2] * density + half_extent_voxels - recenter[2]) as f32,
             ]
         };
 
         // Select each node in turn; the gizmo pivot tracks it.
-        for (index, centre) in [([0, 0, 0]), ([8, 0, 0]), ([0, 0, 6])]
+        for (index, center) in [([0, 0, 0]), ([8, 0, 0]), ([0, 0, 6])]
             .into_iter()
             .enumerate()
         {
@@ -656,8 +656,8 @@ fn gizmo_placement_follows_its_node() {
                 .expect("the node shows the gizmo");
             assert_eq!(
                 pivot,
-                expected_pivot(centre),
-                "pivot == centre·d − recentre for node {index} (vpb={vpb})"
+                expected_pivot(center),
+                "pivot == center·d − recenter for node {index} (vpb={vpb})"
             );
             // Extent is the node's OWN 4-block AABB (not the whole region).
             assert_eq!(
@@ -669,10 +669,10 @@ fn gizmo_placement_follows_its_node() {
     }
 }
 
-/// Issue #29 S2: a SINGLE selected node recentres onto the origin, so its gizmo
-/// pivot is exactly `[0, 0, 0]` (for an EVEN-sized node, whose block-AABB centre
+/// Issue #29 S2: a SINGLE selected node recenters onto the origin, so its gizmo
+/// pivot is exactly `[0, 0, 0]` (for an EVEN-sized node, whose block-AABB center
 /// lands on an integer voxel). The gizmo only visibly moves with a multi-node
-/// selection. Guards against reading the pivot from absolute (un-recentred) space.
+/// selection. Guards against reading the pivot from absolute (un-recentered) space.
 #[test]
 fn single_even_selected_node_gizmo_sits_at_origin() {
     for vpb in [1u32, 15, 16] {
@@ -692,7 +692,7 @@ fn single_even_selected_node_gizmo_sits_at_origin() {
         assert_eq!(
             pivot,
             [0.0, 0.0, 0.0],
-            "the lone even-sized selected node recentres onto the origin (vpb={vpb})"
+            "the lone even-sized selected node recenters onto the origin (vpb={vpb})"
         );
     }
 }
@@ -701,9 +701,9 @@ fn single_even_selected_node_gizmo_sits_at_origin() {
 /// pivot now sits at WITHIN HALF A VOXEL of the origin for ALL densities —
 /// including the odd-size/odd-density case the old block-lattice shift got wrong
 /// (it left the pivot half a BLOCK off). The gizmo pivot and the composite
-/// recentre are now BOTH derived from the producer-true voxel frame, so a lone
-/// node's centre coincides with the recentre: pivot is exactly 0 for an even voxel
-/// span and ±0.5 voxel for an odd one (the truncation of a half-voxel centre).
+/// recenter are now BOTH derived from the producer-true voxel frame, so a lone
+/// node's center coincides with the recenter: pivot is exactly 0 for an even voxel
+/// span and ±0.5 voxel for an odd one (the truncation of a half-voxel center).
 #[test]
 fn single_odd_selected_node_gizmo_is_at_most_half_voxel_off_origin() {
     // Sizes (3, 1, 5) are all odd. The lone node's pivot stays WITHIN half a voxel
@@ -734,7 +734,7 @@ fn single_odd_selected_node_gizmo_is_at_most_half_voxel_off_origin() {
             assert_eq!(
                 pivot,
                 [0.0, 0.0, 0.0],
-                "even density makes the lone-node recentre exact (vpb={vpb})"
+                "even density makes the lone-node recenter exact (vpb={vpb})"
             );
         }
     }

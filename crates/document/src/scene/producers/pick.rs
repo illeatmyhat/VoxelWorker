@@ -16,7 +16,7 @@ impl Scene {
     /// **The pick follows the material.** This runs ADR 0017's ordered scoped fold over the
     /// ONE cell, carrying "who owns this cell" where the resolvers carry occupancy — so the
     /// node it names is exactly the node whose material the resolve stamped there. Any other
-    /// rule would select a node whose colour the user cannot see at the point they clicked.
+    /// rule would select a node whose color the user cannot see at the point they clicked.
     ///
     /// Running the real fold rather than scanning for a covering body is what makes the
     /// booleans come out right, and they are the whole difficulty:
@@ -33,7 +33,7 @@ impl Scene {
     /// the innermost authored leaf.
     ///
     /// `absolute_voxel` is an integer cell index in the scene's ABSOLUTE voxel frame (ADR
-    /// 0008 — the same frame `resolve_chunk` clips against), NOT a recentred display index.
+    /// 0008 — the same frame `resolve_chunk` clips against), NOT a recentered display index.
     ///
     /// [`VoxelProducer::origin_at`]: crate::voxel::VoxelProducer::origin_at
     pub fn picked_node_at_voxel(
@@ -52,7 +52,7 @@ impl Scene {
             sync_owner_scope_stack(&mut open_scopes, &mut root_owner, &leaf.scope_path);
             let placement = leaf_placement(leaf, voxels_per_block);
             let local = placement
-                .local_of_abs_cell_centre(absolute_voxel)
+                .local_of_abs_cell_center(absolute_voxel)
                 .voxels()
                 .to_array();
             let covered =
@@ -155,7 +155,7 @@ fn fold_owner_into(
     }
 }
 
-/// The origin a hit at `local` (the cell centre in the leaf's own frame) resolves to: the
+/// The origin a hit at `local` (the cell center in the leaf's own frame) resolves to: the
 /// composite member that authored it when the leaf is a pre-composed scope, else the leaf's
 /// own origin.
 fn leaf_origin_at_local_point(
@@ -168,7 +168,7 @@ fn leaf_origin_at_local_point(
         .unwrap_or(leaf.origin)
 }
 
-/// Whether `leaf` occupies `absolute_voxel`, whose centre maps to `local` in the leaf's own
+/// Whether `leaf` occupies `absolute_voxel`, whose center maps to `local` in the leaf's own
 /// frame. Each branch below answers exactly as the emit path that owns that case does — and
 /// crucially, each takes ITS OWN bound, because the two paths are bounded differently.
 ///
@@ -177,11 +177,11 @@ fn leaf_origin_at_local_point(
 /// `gather_placed_field_into_grid` iterates, and the live classifier's
 /// `gather_rotated_leaf_into_region` applies no bound of its own beyond the blocks it is
 /// handed. The local `[0, full_dim)` box is NOT the same bound: a slid or turned body's
-/// outermost cell centre can map exactly onto `full_dim` and still be on the surface, so
+/// outermost cell center can map exactly onto `full_dim` and still be on the surface, so
 /// testing the local box would declare a stamped cell empty — dead clicks along one face of
 /// every sub-voxel-seated body, and a cutter that fails to carve ownership at its own rim.
 ///
-/// **In phase**: a lattice bijection, so the mapped point is an exact cell centre and a
+/// **In phase**: a lattice bijection, so the mapped point is an exact cell center and a
 /// one-cell `resolve_into` window answers as the forward emit does. Here the producer's own
 /// `[0, full_dim)` grid IS the bound, because that is what the forward stamp resolves and
 /// translates. A fieldless out-of-phase body falls through to this rather than being declined,

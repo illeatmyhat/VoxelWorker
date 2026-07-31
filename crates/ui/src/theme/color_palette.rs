@@ -1,4 +1,4 @@
-//! The Signal colour tokens as one registry. Each is a `pub const` defined via `color_token!`,
+//! The Signal color tokens as one registry. Each is a `pub const` defined via `color_token!`,
 //! which also emits its [`SWATCHES`] entry — so the design_reference sheet renders every token by
 //! construction and none can drift. Re-exported at [`crate::theme`] (`theme::ACCENT`). Values are
 //! the Signal (dark) theme; a second theme resolves the same token names differently.
@@ -7,7 +7,7 @@
 
 use egui::Color32;
 
-/// A colour token: its const name, value, and permitted meaning (the sheet's row).
+/// A color token: its const name, value, and permitted meaning (the sheet's row).
 #[derive(Debug, Clone, Copy)]
 pub struct Swatch {
     pub name: &'static str,
@@ -15,14 +15,14 @@ pub struct Swatch {
     pub meaning: &'static str,
 }
 
-/// Emit each Signal colour token as a `pub const` plus its [`SWATCHES`] entry.
+/// Emit each Signal color token as a `pub const` plus its [`SWATCHES`] entry.
 macro_rules! color_token {
     ($( $name:ident = $color:expr, $meaning:literal );* $(;)?) => {
         $(
             #[doc = $meaning]
             pub const $name: Color32 = $color;
         )*
-        /// Every colour token, in declaration order — the registry the design_reference iterates.
+        /// Every color token, in declaration order — the registry the design_reference iterates.
         pub const SWATCHES: &[Swatch] = &[
             $( Swatch { name: stringify!($name), color: $name, meaning: $meaning } ),*
         ];
@@ -50,8 +50,8 @@ color_token! {
     SKETCH_PLANE_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x0f), "sketch working-plane fill — accent at low alpha, so the profile stays primary (ADR 0028)";
     SKETCH_PLANE_GRID = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x24), "sketch plane fine grid lines — accent, quiet";
     SKETCH_PLANE_GRID_BLOCK = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x55), "sketch plane block grid lines — accent, brighter, reads through the fine grid";
-    SKETCH_REGION_FILL = Color32::from_rgba_unmultiplied_const(0x35, 0x6f, 0xc9, 0x8a), "a PICKED sketch region's wash — the 2D read of the 3D selection wash: what resolves as material (ADR 0030 §3). The accent's own hue, driven deep and saturated: over the viewport's near-black the pale accent at wash alpha composites to a grey that reads as nothing, so this one departs from the accent VALUE to keep the accent HUE";
-    SKETCH_CONSTRUCTION = Color32::from_rgb(0xdd, 0xa0, 0x6a), "sketch CONSTRUCTION linetype — geometry that locates but is not part of the shape. Always dashed, and the one ink outside the accent a sketch mark may spend: the Construction tool's icon quotes this colour rather than coding for it, which is what keeps the exception from generalising. Warm, so it never reads as a cooler ACCENT step; distinct from WARN, which means removal";
+    SKETCH_REGION_FILL = Color32::from_rgba_unmultiplied_const(0x35, 0x6f, 0xc9, 0x8a), "a PICKED sketch region's wash — the 2D read of the 3D selection wash: what resolves as material (ADR 0030 §3). The accent's own hue, driven deep and saturated: over the viewport's near-black the pale accent at wash alpha composites to a gray that reads as nothing, so this one departs from the accent VALUE to keep the accent HUE";
+    SKETCH_CONSTRUCTION = Color32::from_rgb(0xdd, 0xa0, 0x6a), "sketch CONSTRUCTION linetype — geometry that locates but is not part of the shape. Always dashed, and the one ink outside the accent a sketch mark may spend: the Construction tool's icon quotes this color rather than coding for it, which is what keeps the exception from generalising. Warm, so it never reads as a cooler ACCENT step; distinct from WARN, which means removal";
     SKETCH_CONSTRAINT = Color32::from_rgb(0xe2, 0x56, 0x4b), "sketch CONSTRAINT — the entity a relation DRIVES. The second ink outside the accent a sketch mark may spend, and it is spent for the same reason the first is: a constraint glyph has to say which of two entities moved, and drawing the driven one in the accent said only 'this one is picked', which is what every other glyph in the set already means by it. Redder and cooler-dark than WARN, which means removal, and than SKETCH_CONSTRUCTION, which is a linetype rather than a role";
     ACCENT_FAINT = Color32::from_rgba_premultiplied(0x2f, 0x37, 0x43, 0x4d), "a faint accent tint — the rail's lit-cell glow / the DISPLAY-stack accent wash (premultiplied)";
     MARQUEE_WINDOW_FILL = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x1e), "marquee WINDOW box fill (drag left→right, fully-enclosed semantic) — the stronger of the pair";

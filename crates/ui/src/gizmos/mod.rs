@@ -26,15 +26,15 @@
 //!
 //! The **working plane itself is NOT here**: it is 3D geometry that foreshortens with the camera,
 //! drawn projected (or by the GPU grid renderers, `SceneGridRenderer` / `InfiniteGridRenderer`),
-//! never as a flat screen-space rectangle. The `design_reference` catalogue draws a flat plane grid
+//! never as a flat screen-space rectangle. The `design_reference` catalog draws a flat plane grid
 //! as a stage backdrop only because the sheet has no camera; that flat grid is reference decoration,
 //! not a reusable gizmo.
 //!
-//! One authoring, two consumers: the live sketch overlay and the `design_reference` catalogue,
+//! One authoring, two consumers: the live sketch overlay and the `design_reference` catalog,
 //! with no second copy to drift. The **second channel is texture, not a second hue**
-//! (`docs/design/colour-vocabulary.md`): dashed = uncommitted / a felt boundary, solid = a real
+//! (`docs/design/color-vocabulary.md`): dashed = uncommitted / a felt boundary, solid = a real
 //! placed entity. Snapping IS the constraint vocabulary (ADR 0028 §5), so a snap indicator names
-//! *why* a point locked — hence the axis-coloured guides and the label chips.
+//! *why* a point locked — hence the axis-colored guides and the label chips.
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
@@ -70,7 +70,7 @@ pub use segment::{
 pub use snap_ticks::snap_ticks;
 pub use vertex_handle::{vertex_handle, HandleState};
 
-/// The spatial axis a snap guide follows — its colour IS the constraint it stands in for (ADR
+/// The spatial axis a snap guide follows — its color IS the constraint it stands in for (ADR
 /// 0028 §5). X = warn-red, Y = green, Z = accent, from the shared token table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Axis {

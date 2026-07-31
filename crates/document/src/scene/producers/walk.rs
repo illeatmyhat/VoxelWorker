@@ -146,7 +146,7 @@ impl Scene {
     /// that cannot participate. A `VoxelBody` is the latter: the cloud field sizes itself
     /// from the region, which a scope has no notion of, and it is fieldless anyway — so a
     /// Part containing one could not be outset even if it were composed (ADR 0020 Decision
-    /// 1). Declining leaves that Part's existing behaviour exactly as it was.
+    /// 1). Declining leaves that Part's existing behavior exactly as it was.
     /// The shared tail of [`composed_scope_leaf`](Self::composed_scope_leaf) and
     /// [`composed_subtree`](Self::composed_subtree): given the collected `members` and a
     /// caller-built `fingerprint`, derive the composite's frame origin as the low corner

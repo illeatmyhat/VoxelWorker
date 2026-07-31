@@ -1,6 +1,6 @@
 //! `snap-block` — the vertex snaps to block boundaries, for clean inter-part mating.
 //!
-//! The node sits on the corner of one coarse cell: quantised to a multiple of density, the
+//! The node sits on the corner of one coarse cell: quantized to a multiple of density, the
 //! coarsest of the three position snaps. The 2D reuse of ADR 0027's snap (ADR 0028 §5).
 
 use super::{Ink, Mark};

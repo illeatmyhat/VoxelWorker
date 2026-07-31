@@ -1,8 +1,8 @@
-//! Headless interchange: serialise the evaluated boundary set to external formats.
+//! Headless interchange: serialize the evaluated boundary set to external formats.
 //!
 //! This crate is the **export sink** — it takes the evaluation layer's classified two-layer
 //! chunks and writes them to formats other tools ingest. Today that is one writer: the
-//! MagicaVoxel [`vox_export`] `.vox` serialiser the Vintage Story mod reads.
+//! MagicaVoxel [`vox_export`] `.vox` serializer the Vintage Story mod reads.
 //!
 //! ## The law: interchange is headless — it never links wgpu
 //!
@@ -11,7 +11,7 @@
 //! correct without any GPU present (`docs/architecture/README.md`). Interchange therefore names
 //! no wgpu device, queue, pipeline, or shader, and carries no dependency that could pull one in.
 //! That is exactly what earns it its own crate rather than a module inside `display`: a
-//! serialiser here *cannot* accidentally depend on a GPU device, because the crate cannot name
+//! serializer here *cannot* accidentally depend on a GPU device, because the crate cannot name
 //! one. A headless build exports the same bytes a windowed build does.
 //!
 //! It reads the SAME classified set every other sink reads — the sixth law, *classified once,

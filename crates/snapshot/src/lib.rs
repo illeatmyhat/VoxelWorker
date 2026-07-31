@@ -61,7 +61,7 @@ pub enum StateCategory {
     /// A user preference that outlives any one project: window size, the projection
     /// mode, whether the view cube is drawn. Reaches the dump (which must reproduce a
     /// scene *completely*, settings included) but never the document, because a
-    /// preference travelling inside a shared file would impose one user's setup on
+    /// preference traveling inside a shared file would impose one user's setup on
     /// everyone who opens it.
     Settings,
     /// What the model **is** — the thing a user saves, shares, and reopens. Reaches
@@ -82,7 +82,7 @@ pub enum StateCategory {
     /// The line against `View` is *what the state is about*: view state answers "where
     /// was the camera", session state answers "what was the workspace doing". The line
     /// against `Settings` is **preference versus circumstance** — a setting is something
-    /// the user chose and would want honoured in every project, whereas session state is
+    /// the user chose and would want honored in every project, whereas session state is
     /// merely where they happened to leave things. Restoring a session is the browser's
     /// bargain (ADR 0024): your tabs come back, and nobody calls that a preference.
     Session,
@@ -151,7 +151,7 @@ pub struct ClassifiedField {
 /// Implemented by `#[derive(Snapshot)]` for a struct whose every field has been
 /// classified.
 ///
-/// The trait carries no capture behaviour on purpose. Splitting `AppConfig` into a
+/// The trait carries no capture behavior on purpose. Splitting `AppConfig` into a
 /// document, a dump and a settings artifact is a separate and much larger job (ADR
 /// 0022's stated largest implementation cost); what this trait provides today is the
 /// classification table those artifacts will be built against, plus the fact that

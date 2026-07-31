@@ -2,7 +2,7 @@
 //!
 //! The live app's WHOLESALE geometry rebuild — two-layer classify + the per-chunk
 //! cuboid mesh's CPU build + GPU buffer upload — is ~3s for a large object on an
-//! initial-create / resize / density / recentre edit. Doing it inline blocks the main
+//! initial-create / resize / density / recenter edit. Doing it inline blocks the main
 //! thread and freezes the UI. This module moves that build onto a background worker so
 //! the UI never stalls: the main thread keeps rendering the CURRENT mesh
 //! (stale-while-rebuilding) until the worker's freshly-built [`CuboidMeshRenderer`]
@@ -18,7 +18,7 @@
 //! [`CuboidMeshRenderer::new_from_two_layer_chunks`] the synchronous path calls, so the
 //! output is byte-identical (the build-equivalence net — see the tests).
 //!
-//! ## Division of labour (what the main thread still does synchronously)
+//! ## Division of labor (what the main thread still does synchronously)
 //! The two-layer resolve/classify (`AppCore::rebuild`) runs on the main thread — it
 //! mutates the resident cache (`&mut AppCore`, the sole document-adjacent writer) and
 //! is comparatively cheap; it produces the OWNED `two_layer_chunks` (`Send`). Only the
@@ -40,7 +40,7 @@ use crate::workers::{build_catching, Worker};
 use display::mesh::CuboidMeshRenderer;
 use display::renderer::{LayerBand, RegionClip};
 use evaluation::two_layer_store::TwoLayerChunk;
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 
 /// A request to build a wholesale cuboid mesh on the worker (issue #60). Carries the
 /// OWNED two-layer chunks the resolve produced plus the frame parameters
@@ -57,11 +57,11 @@ pub struct GeometryRebuildRequest {
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The whole composite grid's voxel dims (the band-clip layer mapping).
     pub grid_dimensions: [u32; 3],
-    /// The composite recentre (floating origin, voxels; ADR 0008) the mesh lands in.
-    /// Carried as [`RecentreVoxels`] (the frame law): the `CuboidMeshRenderer` builder now
+    /// The composite recenter (floating origin, voxels; ADR 0008) the mesh lands in.
+    /// Carried as [`RecenterVoxels`] (the frame law): the `CuboidMeshRenderer` builder now
     /// takes the newtype, so the worker hands the frame value straight through — the unwrap
     /// happens only at the mesher's positional rebase arithmetic.
-    pub recentre_voxels: RecentreVoxels,
+    pub recenter_voxels: RecenterVoxels,
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
     /// The CURRENT layer-clip band at dispatch (issue #60 M2). The worker builds the
@@ -70,7 +70,7 @@ pub struct GeometryRebuildRequest {
     /// #60 removed). During onion-skin scrubbing a clipped band is common, so a swapped-in
     /// FULL-band renderer would otherwise re-mesh every chunk the instant it arrived. If the
     /// band moved between dispatch and swap the per-frame `rebuild_for_band` still corrects
-    /// it — this only optimises the common stable-band case.
+    /// it — this only optimizes the common stable-band case.
     pub band: LayerBand,
     /// The onion-fog region the band is confined to (ADR 0018 Decision 5), or `None` for a
     /// scene-wide band / no clip. Carried alongside `band` so the worker's wholesale build
@@ -148,7 +148,7 @@ pub fn build_geometry(
         color_format,
         &request.two_layer_chunks,
         request.grid_dimensions,
-        request.recentre_voxels,
+        request.recenter_voxels,
         request.density,
         request.band,
         request.region,

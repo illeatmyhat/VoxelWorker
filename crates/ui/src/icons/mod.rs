@@ -5,7 +5,7 @@
 //! `docs/design/viewport-chrome-signal.md` §Icon set. A
 //! glyph is a `&'static [`[`Mark`]`]` — DATA, painted through [`IconPainter::at`] — so the same
 //! source draws at a 15 pt rail button and at a 44 pt palette tile with no second asset and no
-//! resampling. Colour is never baked in: the host passes it, which is what lets one glyph be
+//! resampling. Color is never baked in: the host passes it, which is what lets one glyph be
 //! idle, hovered and accent without three copies.
 //!
 //! Glyphs were once `fn(&IconPainter)`, and the change is not cosmetic: executable glyphs can
@@ -27,7 +27,7 @@
 //! does not exist, so the set cannot grow a shadow member that the reference binary never
 //! shows.
 //!
-//! The catalogue carries a one-line [`Icon::note`] per glyph in the project's own vocabulary
+//! The catalog carries a one-line [`Icon::note`] per glyph in the project's own vocabulary
 //! (ordered fold, composed body, Measurement, later-wins). That note is not decoration: it is
 //! what the `design_reference` binary displays, and it is the difference between an icon sheet
 //! and a set of shapes nobody can assign a meaning to.
@@ -35,8 +35,8 @@
 //! Two glyphs deliberately depart from the harvested sheet, and the reasons are rulings:
 //!
 //!   * there is no `sealed_part` — every part is a sealed scope, so the word carries no
-//!     information in an interface (`docs/design/colour-vocabulary.md` reasons about the same
-//!     scarcity for colour). The glyph that survives is [`Icon::ComposedPart`], which says the
+//!     information in an interface (`docs/design/color-vocabulary.md` reasons about the same
+//!     scarcity for color). The glyph that survives is [`Icon::ComposedPart`], which says the
 //!     thing a user can verify: a part folds in as ONE body.
 //!   * there is no `emboss_ridge`. Emboss moves an accumulated surface within a footprint, and
 //!     a ridge glyph would lie the moment the amount goes negative, so the footprint mark is
@@ -326,7 +326,7 @@ impl<'a> IconPainter<'a> {
         self.fill_with(points, self.stroke.color);
     }
 
-    /// Fill a convex polygon in a given colour.
+    /// Fill a convex polygon in a given color.
     ///
     /// Pair with [`faint`](Self::faint)`(f).color` to shade a face back: several faces of one
     /// solid at descending weights read as a lit body, which is a thing no outline can say.
@@ -456,7 +456,7 @@ impl<'a> IconPainter<'a> {
         }
     }
 
-    /// Stroke a circle centred on a grid point.
+    /// Stroke a circle centered on a grid point.
     pub fn circle(&self, center: (f32, f32), radius: f32) {
         self.circle_with(center, radius, self.stroke);
     }
@@ -471,7 +471,7 @@ impl<'a> IconPainter<'a> {
         self.filled_circle_with(center, radius, self.stroke.color);
     }
 
-    /// A solid disc in a given colour — [`filled_circle`](Self::filled_circle) off the line art.
+    /// A solid disc in a given color — [`filled_circle`](Self::filled_circle) off the line art.
     ///
     /// The constraint set needs it: a pattern's seed and its generated copies are both discs, and
     /// which is which is the entire content of the mark.
@@ -622,7 +622,7 @@ pub enum Group {
 }
 
 impl Group {
-    /// Every shelf, in catalogue order.
+    /// Every shelf, in catalog order.
     ///
     /// The design_reference sheet walks THIS rather than a list of its own. A sheet that kept its
     /// own list is how five shipped shelves stayed off it: the glyphs were authored, gated and
@@ -828,7 +828,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    /// Every glyph, in catalogue order.
+    /// Every glyph, in catalog order.
     pub const ALL: &'static [Icon] = &[
         Icon::Home,
         Icon::Fit,
@@ -1408,7 +1408,7 @@ impl Icon {
                 "A linked instance: edit the definition and every instance follows. \
                  Make-unique is the deliberate way out."
             }
-            Icon::SculptAdd => "Sculpt: a stroke whose radius is a Measurement, quantised to voxels.",
+            Icon::SculptAdd => "Sculpt: a stroke whose radius is a Measurement, quantized to voxels.",
             Icon::Carve => "Sculpt, removing: the same stroke folded under Subtract.",
             Icon::Measure => "Measure: answer a distance in blocks and voxels, exactly.",
             Icon::Probe => {
@@ -1432,13 +1432,13 @@ impl Icon {
                  to it; the seam inherits the run's direction, so the join has no kink."
             }
             Icon::MidpointLine => {
-                "Sketch: a segment placed by its centre and one end. The ticks say the middle is \
+                "Sketch: a segment placed by its center and one end. The ticks say the middle is \
                  measured, not eyeballed."
             }
-            Icon::CircleCenterDiameter => "Sketch: click the centre, drag the radius.",
+            Icon::CircleCenterDiameter => "Sketch: click the center, drag the radius.",
             Icon::Circle2Point => {
                 "Sketch: two points that are the ends of a DIAMETER — the chord runs through the \
-                 centre, which is what separates this from the 3-point circle."
+                 center, which is what separates this from the 3-point circle."
             }
             Icon::Circle3Point => "Sketch: three points the ring passes through. No chord, because there is no diameter relation.",
             Icon::Circle2Tangent => {
@@ -1450,22 +1450,22 @@ impl Icon {
                  so there is no radius to type and no radius line."
             }
             Icon::ArcCenterEndpoints => {
-                "Sketch: centre first, then the two ends. The tool where the centre IS a pick."
+                "Sketch: center first, then the two ends. The tool where the center IS a pick."
             }
             Icon::ArcTangent => {
-                "Sketch: an arc leaving an existing curve along its direction — the centre sits \
+                "Sketch: an arc leaving an existing curve along its direction — the center sits \
                  square to the seam, so the join has no kink."
             }
-            Icon::EllipseSketch => "Sketch: centre, then the two semi-axes.",
-            Icon::SlotCenterToCenter => "Sketch: a slot given the distance between its arc centres — the caps are excluded.",
+            Icon::EllipseSketch => "Sketch: center, then the two semi-axes.",
+            Icon::SlotCenterToCenter => "Sketch: a slot given the distance between its arc centers — the caps are excluded.",
             Icon::SlotOverall => "Sketch: a slot given its full length, caps included.",
             Icon::SlotCenterPoint => "Sketch: a slot grown symmetrically from its own middle.",
             Icon::SlotCenterPointArc => {
-                "Sketch: a curved slot swept about a centre. The dashed radii say the path is a \
+                "Sketch: a curved slot swept about a center. The dashed radii say the path is a \
                  circle, not an arbitrary curve."
             }
             Icon::Slot3PointArc => {
-                "Sketch: a curved slot through two ends and a point between them. The centre is \
+                "Sketch: a curved slot through two ends and a point between them. The center is \
                  solved for, so it is never drawn."
             }
             Icon::SplineFitPoint => "Sketch: a spline through points placed ON it.",
@@ -1481,7 +1481,7 @@ impl Icon {
             Icon::PolygonCircumscribed => "Sketch: a polygon whose EDGES touch the construction circle.",
             Icon::PolygonEdge => {
                 "Sketch: a polygon built from one edge outwards. No construction circle, because \
-                 this is the polygon tool with no centre."
+                 this is the polygon tool with no center."
             }
             Icon::Rectangle3Point => {
                 "Sketch: a rectangle at an arbitrary angle — two clicks set an edge and its \
@@ -1549,7 +1549,7 @@ impl Icon {
                 "Constraint: two segments share one infinite carrier. The gap is what makes them \
                  two."
             }
-            Icon::ConstraintConcentric => "Constraint: shared centre, radii free.",
+            Icon::ConstraintConcentric => "Constraint: shared center, radii free.",
             Icon::ConstraintMidpoint => {
                 "Constraint: a point sits at the parametric middle. The carrier is dashed so this \
                  cannot be read as Horizontal."

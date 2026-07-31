@@ -11,7 +11,7 @@ const RING_DIAMETER_OF_HEIGHT: f32 = 0.72;
 /// Each cardinal tick's length, again against viewport height. The ticks sit OUTSIDE the ring —
 /// they mark the four screen axes, so they must not read as ticks *on* a dial.
 const TICK_OF_HEIGHT: f32 = 0.085;
-/// The centre cross's arm, against viewport height. Small: it marks the target exactly, and a
+/// The center cross's arm, against viewport height. Small: it marks the target exactly, and a
 /// bigger one would hide the very thing being aimed at.
 const CENTER_ARM_OF_HEIGHT: f32 = 0.024;
 /// One hairline. The reticle covers most of the frame, so any more weight would compete with the
@@ -19,19 +19,19 @@ const CENTER_ARM_OF_HEIGHT: f32 = 0.024;
 const STROKE_WIDTH: f32 = 1.0;
 
 /// Draw the **targeting reticle**: a ring most of the viewport tall, four cardinal ticks outside
-/// it, and a small cross on the exact centre.
+/// it, and a small cross on the exact center.
 ///
 /// `viewport` is the live 3D viewport rect (egui points). The camera looks AT `camera.target`, so
-/// the target projects to that rect's centre by construction — the reticle is drawn there directly
+/// the target projects to that rect's center by construction — the reticle is drawn there directly
 /// rather than projected, which also means it cannot lag the camera by a frame.
 ///
 /// This is the mode's legibility affordance, and the whole reason it can flip the left button's
-/// verb without lying — the reticle is what says "left now turns and re-centres", so the flipped
+/// verb without lying — the reticle is what says "left now turns and re-centers", so the flipped
 /// verb is visible for as long as it is in force. It is drawn in a single neutral-gray pass at
 /// half alpha ([`color_palette::RETICLE`]), NOT in the accent and NOT double-struck with a dark
 /// backing the way [`orbit_center`](super::orbit_center()) is: a mark this large has to sit under
 /// the model rather than over it. The shell hides it for the duration of a turn, and only a turn:
-/// a press that might still become the re-centring click keeps it, because that click aims at it.
+/// a press that might still become the re-centering click keeps it, because that click aims at it.
 pub fn orbit_reticle(painter: &Painter, viewport: Rect) {
     let height = viewport.height();
     let center = viewport.center();
@@ -75,6 +75,6 @@ pub fn orbit_reticle_overlay(ui: &egui::Ui, viewport: Rect) {
     orbit_reticle(&painter, viewport);
 }
 
-/// The palette entry this gizmo uses, named so the colour lint sees it as a theme token rather
+/// The palette entry this gizmo uses, named so the color lint sees it as a theme token rather
 /// than as a raw value.
 const _: [Color32; 1] = [color_palette::RETICLE];

@@ -9,7 +9,7 @@ use super::*;
 /// world-block key.
 ///
 /// **O(surface), not O(volume) (the 8000³-freeze fix):** an all-interior chunk (fully
-/// solid, fully-solid face-neighbours) is skipped whole without visiting its blocks, so a
+/// solid, fully-solid face-neighbors) is skipped whole without visiting its blocks, so a
 /// 125M-block solid emits ~1.5M records and the build touches only the ~1-chunk-thick
 /// boundary shell. Every consumer downstream (sort, GPU pack, incremental mirror clone)
 /// inherits the ∝-surface cost. The interior-INCLUSIVE build survives as
@@ -20,7 +20,7 @@ use super::*;
 ///
 /// **Why the classify pass stays SERIAL (measured).** The per-block classify + slot
 /// assignment is coarse-dominated and memory-bound, so a rayon per-chunk split measured NO
-/// net win: the parallel classify gain was cancelled by the extra ordered-merge pass needed
+/// net win: the parallel classify gain was canceled by the extra ordered-merge pass needed
 /// to keep the sculpted atlas-slot numbering byte-identical (slots are assigned in
 /// traversal order — ADR 0011 G3's incremental-atlas contract — so a parallel build must
 /// re-derive that exact order, adding an O(records) merge). Only the final key sort and the
@@ -65,7 +65,7 @@ pub fn build_brick_field_with_tiles(
             "every chunk of one build shares the document density"
         );
         // Interior-chunk fast path (∝ surface, the 8000³-freeze fix): a fully-solid chunk
-        // ringed by fully-solid face-neighbours is all-occluded — emit NOTHING for it
+        // ringed by fully-solid face-neighbors is all-occluded — emit NOTHING for it
         // without visiting a single block. An interior chunk has no microblocks by
         // definition, so no sculpted record is skipped here.
         if oracle.chunk_is_all_interior(*chunk_coord) {
@@ -265,9 +265,9 @@ pub fn build_brick_field_all_blocks(
     }
 }
 
-/// The six face-neighbour chunk offsets — the reach of a block's occlusion verdict at the
-/// chunk granularity (a block's six face-neighbours land in its own chunk or one of these).
-pub(crate) const FACE_NEIGHBOUR_CHUNK_OFFSETS: [[i32; 3]; 6] = [
+/// The six face-neighbor chunk offsets — the reach of a block's occlusion verdict at the
+/// chunk granularity (a block's six face-neighbors land in its own chunk or one of these).
+pub(crate) const FACE_NEIGHBOR_CHUNK_OFFSETS: [[i32; 3]; 6] = [
     [1, 0, 0],
     [-1, 0, 0],
     [0, 1, 0],
@@ -277,8 +277,8 @@ pub(crate) const FACE_NEIGHBOUR_CHUNK_OFFSETS: [[i32; 3]; 6] = [
 ];
 
 /// **The occlusion oracle over a two-layer covering set (ADR 0011 interior elision — the
-/// brick sink's analogue of the mesh's interior-face culling).** Decides which coarse-solid
-/// blocks are FULLY OCCLUDED — all six face-neighbours present AND solid on the shared face
+/// brick sink's analog of the mesh's interior-face culling).** Decides which coarse-solid
+/// blocks are FULLY OCCLUDED — all six face-neighbors present AND solid on the shared face
 /// — so [`build_brick_field`] / [`IncrementalBrickField::apply_dirty_update`] can fuse the
 /// interior elision INTO record emission (the record set is surface-only by construction;
 /// no post-hoc mask pass over an O(volume) record array).
@@ -286,24 +286,24 @@ pub(crate) const FACE_NEIGHBOUR_CHUNK_OFFSETS: [[i32; 3]; 6] = [
 /// A fully-occluded block is never a ray's first hit: the block-DDA
 /// ([`cpu_march_brick_field`]) returns at the
 /// FIRST block carrying a record, and a ray reaching an occluded block must first pass
-/// through the solid neighbour surrounding it (which keeps its record). So never emitting it
+/// through the solid neighbor surrounding it (which keeps its record). So never emitting it
 /// is **hit-identical** — proven against the interior-inclusive oracle build in
 /// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`.
 ///
 /// **Chunk-level fast path ([`Self::chunk_is_all_interior`]):** a chunk that is itself fully
-/// coarse-solid AND whose six FACE-neighbour chunks are all fully coarse-solid has every one
-/// of its blocks occluded (each block's six neighbours land in this chunk or a full
-/// neighbour, all solid) — the builder skips the whole chunk with one set lookup, visiting
+/// coarse-solid AND whose six FACE-neighbor chunks are all fully coarse-solid has every one
+/// of its blocks occluded (each block's six neighbors land in this chunk or a full
+/// neighbor, all solid) — the builder skips the whole chunk with one set lookup, visiting
 /// none of its blocks. Only the ~1-chunk-thick boundary shell (and any chunk carrying
 /// microblocks) does per-block work, so the build is ∝ surface, not volume.
 ///
-/// **Conservative direction:** a neighbour that is ABSENT (air) or only PARTIALLY solid on
+/// **Conservative direction:** a neighbor that is ABSENT (air) or only PARTIALLY solid on
 /// the shared face keeps the block. The emitted set is thus always a superset of the
 /// truly-visible blocks — elision can never drop a block a ray can see.
 pub(crate) struct BrickOcclusionOracle<'a> {
-    /// Every covering chunk by absolute chunk coord (the neighbour-resolution index).
+    /// Every covering chunk by absolute chunk coord (the neighbor-resolution index).
     chunk_by_coord: std::collections::HashMap<[i32; 3], &'a TwoLayerChunk>,
-    /// Chunks that are fully coarse-solid AND ringed by fully coarse-solid face-neighbours —
+    /// Chunks that are fully coarse-solid AND ringed by fully coarse-solid face-neighbors —
     /// every block of these is provably occluded (the bulk fast path).
     interior_chunk: std::collections::HashSet<[i32; 3]>,
 }
@@ -328,7 +328,7 @@ impl<'a> BrickOcclusionOracle<'a> {
         let interior_chunk: std::collections::HashSet<[i32; 3]> = full_solid
             .par_iter()
             .filter(|coord| {
-                FACE_NEIGHBOUR_CHUNK_OFFSETS.iter().all(|d| {
+                FACE_NEIGHBOR_CHUNK_OFFSETS.iter().all(|d| {
                     full_solid.contains(&[coord[0] + d[0], coord[1] + d[1], coord[2] + d[2]])
                 })
             })
@@ -341,22 +341,22 @@ impl<'a> BrickOcclusionOracle<'a> {
     }
 
     /// Whether every block of `chunk_coord` is provably occluded (the bulk fast path): the
-    /// chunk and its six face-neighbours are all fully coarse-solid. The builder emits
+    /// chunk and its six face-neighbors are all fully coarse-solid. The builder emits
     /// nothing for such a chunk without visiting a single block.
     pub(crate) fn chunk_is_all_interior(&self, chunk_coord: [i32; 3]) -> bool {
         self.interior_chunk.contains(&chunk_coord)
     }
 
-    /// The per-chunk occlusion context: this chunk plus its six face-neighbour chunk refs,
-    /// hoisted ONCE per chunk so the per-block six-neighbour test needs no hashing.
+    /// The per-chunk occlusion context: this chunk plus its six face-neighbor chunk refs,
+    /// hoisted ONCE per chunk so the per-block six-neighbor test needs no hashing.
     pub(crate) fn context_for_chunk(
         &self,
         chunk_coord: [i32; 3],
         chunk: &'a TwoLayerChunk,
     ) -> ChunkOcclusionContext<'a> {
-        // [axis][side]: side 0 = the low-face neighbour (coord − 1), side 1 = high (+1).
-        let mut face_neighbours: [[Option<&TwoLayerChunk>; 2]; 3] = [[None; 2]; 3];
-        for (axis, sides) in face_neighbours.iter_mut().enumerate() {
+        // [axis][side]: side 0 = the low-face neighbor (coord − 1), side 1 = high (+1).
+        let mut face_neighbors: [[Option<&TwoLayerChunk>; 2]; 3] = [[None; 2]; 3];
+        for (axis, sides) in face_neighbors.iter_mut().enumerate() {
             for (side, slot) in sides.iter_mut().enumerate() {
                 let mut coord = chunk_coord;
                 coord[axis] += if side == 0 { -1 } else { 1 };
@@ -365,50 +365,50 @@ impl<'a> BrickOcclusionOracle<'a> {
         }
         ChunkOcclusionContext {
             chunk,
-            face_neighbours,
+            face_neighbors,
         }
     }
 }
 
-/// One chunk's occlusion window: the chunk itself + its six face-neighbour chunks (resolved
+/// One chunk's occlusion window: the chunk itself + its six face-neighbor chunks (resolved
 /// once — see [`BrickOcclusionOracle::context_for_chunk`]). Answers the per-block
-/// six-neighbour occlusion test in O(1) chunk resolution (a block's neighbours land in this
+/// six-neighbor occlusion test in O(1) chunk resolution (a block's neighbors land in this
 /// chunk or a face-adjacent one, never farther).
 pub(crate) struct ChunkOcclusionContext<'a> {
     chunk: &'a TwoLayerChunk,
-    /// `[axis][side]`: side 0 = the low-face neighbour chunk, 1 = high. `None` = absent (air).
-    face_neighbours: [[Option<&'a TwoLayerChunk>; 2]; 3],
+    /// `[axis][side]`: side 0 = the low-face neighbor chunk, 1 = high. `None` = absent (air).
+    face_neighbors: [[Option<&'a TwoLayerChunk>; 2]; 3],
 }
 
 impl ChunkOcclusionContext<'_> {
     /// Whether the coarse-solid block at chunk-local `block` is FULLY OCCLUDED: each axis
-    /// capped on BOTH sides — the +1 neighbour's LOW face covers this block's HIGH face, and
-    /// the −1 neighbour's HIGH face covers its LOW. Occluded ⇒ no record is emitted.
+    /// capped on BOTH sides — the +1 neighbor's LOW face covers this block's HIGH face, and
+    /// the −1 neighbor's HIGH face covers its LOW. Occluded ⇒ no record is emitted.
     pub(crate) fn coarse_block_occluded(&self, block: [u32; 3]) -> bool {
         (0..3).all(|axis| {
-            self.neighbour_face_solid(block, axis, 1) && self.neighbour_face_solid(block, axis, -1)
+            self.neighbor_face_solid(block, axis, 1) && self.neighbor_face_solid(block, axis, -1)
         })
     }
 
-    /// Is the neighbour of chunk-local `block` across `(axis, delta)` present AND solid on
-    /// the face it shares with `block`? A coarse-solid neighbour is solid on every face; a
-    /// boundary neighbour consults its per-face seam flag; an air block / absent chunk is
+    /// Is the neighbor of chunk-local `block` across `(axis, delta)` present AND solid on
+    /// the face it shares with `block`? A coarse-solid neighbor is solid on every face; a
+    /// boundary neighbor consults its per-face seam flag; an air block / absent chunk is
     /// not solid (the conservative direction). Semantics identical to resolving through the
     /// absolute-coordinate chunk map — only the chunk lookup is hoisted.
-    fn neighbour_face_solid(&self, block: [u32; 3], axis: usize, delta: i64) -> bool {
-        // The face the NEIGHBOUR shares with `block`: stepping +1 lands on the neighbour's
+    fn neighbor_face_solid(&self, block: [u32; 3], axis: usize, delta: i64) -> bool {
+        // The face the NEIGHBOR shares with `block`: stepping +1 lands on the neighbor's
         // LOW face (side 0); stepping −1 on its HIGH face (side 1).
         let facing_side = if delta > 0 { 0 } else { 1 };
         let stepped = block[axis] as i64 + delta;
         let mut local = block;
-        let neighbour_chunk = if (0..CHUNK_BLOCKS as i64).contains(&stepped) {
+        let neighbor_chunk = if (0..CHUNK_BLOCKS as i64).contains(&stepped) {
             local[axis] = stepped as u32;
             Some(self.chunk)
         } else {
             local[axis] = stepped.rem_euclid(CHUNK_BLOCKS as i64) as u32;
-            self.face_neighbours[axis][if delta > 0 { 1 } else { 0 }]
+            self.face_neighbors[axis][if delta > 0 { 1 } else { 0 }]
         };
-        let Some(chunk) = neighbour_chunk else {
+        let Some(chunk) = neighbor_chunk else {
             return false;
         };
         if chunk.coarse_block(local).is_some() {

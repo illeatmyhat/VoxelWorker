@@ -28,16 +28,16 @@
 // **MSAA parity with the mesh (parity gate clause c):** the fragment runs PER SAMPLE
 // (forced by `@builtin(sample_index)`). Each sample casts its own ray — reproducing
 // the rasterizer's per-sample coverage and per-sample depth — but SHADES at the
-// PIXEL-CENTRE ray's intersection with the hit face's plane, reproducing the
-// rasterizer's non-centroid centre evaluation (including extrapolation). Interior
-// pixels therefore resolve to exactly the mesh's centre-evaluated colour, and
+// PIXEL-CENTER ray's intersection with the hit face's plane, reproducing the
+// rasterizer's non-centroid center evaluation (including extrapolation). Interior
+// pixels therefore resolve to exactly the mesh's center-evaluated color, and
 // silhouette/step edges resolve to the same per-face coverage blend.
 //
 // ## Frames (ADR 0008)
 //
 // The march runs in the SHIFTED render frame `sv = world + grid_half_extent +
 // lattice_shift`: voxel boundaries sit on integers and BLOCK boundaries on
-// multiples of the brick edge (the shift re-aligns a non-block-aligned recentre).
+// multiples of the brick edge (the shift re-aligns a non-block-aligned recenter).
 // Absolute quantities are recovered by INTEGER adds carried in the uniforms
 // (`voxel_bias`, `block_bias`), never re-derived from floats:
 //   absolute voxel  = sv_voxel_cell + voxel_bias
@@ -47,7 +47,7 @@
 
 struct BrickUniforms {
     // The RAY-FRAME matrices (camera::SceneMatrices): eye-anchored under perspective
-    // (a full-matrix per-fragment unprojection melts at a wide-baseline recentre, and
+    // (a full-matrix per-fragment unprojection melts at a wide-baseline recenter, and
     // a scene-bracketed z=0/z=1 pair cancels in the ray direction when the scene is a
     // thin distant slab), the plain render frame under ortho (affine unprojection,
     // no /w — and bit-stable with the CPU mirror). Unproject through the inverse for
@@ -92,7 +92,7 @@ struct BrickUniforms {
     // needed here. Occupies the former `_render_cell_pad2` slot.
     ghost_mode: u32,
     // xyz: the integer lattice shift re-aligning block boundaries in the render
-    // frame ((recentre − half_extent) mod edge); w: the brick edge in voxels.
+    // frame ((recenter − half_extent) mod edge); w: the brick edge in voxels.
     lattice_shift_and_edge: vec4<i32>,
     // xyz: absolute block = sv block cell + this bias; w: atlas tiles per axis.
     block_bias_and_tiles: vec4<i32>,
@@ -229,7 +229,7 @@ var<storage, read> occupancy_cells: array<OccupancyCell>;
 // `cell_key_slot` in a SECOND, independently-pooled cube (its own tile grid, sized from its own
 // slot count — a cell-key slot number is unrelated to an occupancy slot number). The texel is
 // the u16 render-cell key VERBATIM (clean block-palette id + on-face-grid overlay bit), so this
-// is a `texture_3d<u32>` read with `textureLoad`: exact, never filtered, never normalised.
+// is a `texture_3d<u32>` read with `textureLoad`: exact, never filtered, never normalized.
 // Air texels are don't-care (occupancy gates the sample).
 //
 // Sampled by `mixed_voxel_cell_key` for every kind-2 (MIXED) record: the representability gate
@@ -321,7 +321,7 @@ struct Ray {
 // Unproject a framebuffer pixel position through the CAMERA-RELATIVE inverse
 // view-projection into an sv-frame ray. Near/far unprojection handles perspective
 // AND orthographic; the points come out EYE-RELATIVE (small, precise at any
-// recentre) and `eye_sv` — the pre-combined eye + half-extent + shift — carries
+// recenter) and `eye_sv` — the pre-combined eye + half-extent + shift — carries
 // the sv frame's one large term.
 fn camera_ray(pixel: vec2<f32>) -> Ray {
     let ndc_x = (pixel.x - uniforms.viewport.x) / uniforms.viewport.z * 2.0 - 1.0;
@@ -674,7 +674,7 @@ fn mixed_voxel_cell_key(cell_key_slot: u32, brick_local_voxel: vec3<i32>) -> u32
 }
 
 // A ray-march hit: the entry face (axis + facing sign), the plane's sv-frame
-// coordinate on that axis (for the centre-ray shading evaluation), the sample
+// coordinate on that axis (for the center-ray shading evaluation), the sample
 // ray's hit parameter (for per-sample depth), and the hit voxel cell (sv frame).
 struct MarchHit {
     hit: bool,
@@ -685,7 +685,7 @@ struct MarchHit {
     plane_sv: f32,
     hit_t: f32,
     voxel_cell: vec3<i32>,
-    // The hit block's material colour index, decoded from its record (ADR 0011 G2).
+    // The hit block's material color index, decoded from its record (ADR 0011 G2).
     material_id: u32,
     // The hit's on-face-grid overlay bit (0/1): from the record for a coarse/uniform hit, or
     // per-voxel from the cell-key texel for a mixed hit. The shade draws the grid overlay only
@@ -1064,7 +1064,7 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 
 // `absolute` is the cuboid shader's `voxel_absolute_position` (world +
 // grid_half_extent); `world_normal` the face's outward unit normal; `material_id` the
-// hit block's per-record material colour index (ADR 0011 G2); `overlay` the hit's own
+// hit block's per-record material color index (ADR 0011 G2); `overlay` the hit's own
 // on-face-grid overlay bit (0/1) — the grid draws only where the master toggle AND this bit hold.
 // `screen_derivative` is the analytic voxels-per-pixel of the evaluation position on the hit
 // face's plane (the raymarch's stand-in for the mesh path's `fwidth(absolute)` — derivative
@@ -1111,7 +1111,7 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
     if (uniforms.grid_overlay_enabled > 0.5 && overlay != 0u) {
         // Anchor the overlay to the TRUE world block lattice, mirroring the cuboid
         // path's `overlay_world_offset` fix. `absolute` here is the shading-absolute
-        // frame (`world + half`); the true world voxel is `absolute + (recentre − half)`,
+        // frame (`world + half`); the true world voxel is `absolute + (recenter − half)`,
         // whose mod-edge part is the already-packed `lattice_shift` (its block-multiple
         // remainder `voxel_bias` is a no-op for both the voxel and block line periods).
         // Without this the block lines sit at the render-local phase and drift off the
@@ -1144,15 +1144,15 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
 // A pure visualization that answers ONE question: is the terracing a GEOMETRY
 // staircase or a SHADING precision loss? It shows two independent signals at once.
 //
-//   FACE COLOUR — the hit face's outward axis+sign, six saturated hues. A smoothly
-//   curved wall reads as a smooth run of ONE side colour; if the surface is actually
+//   FACE COLOR — the hit face's outward axis+sign, six saturated hues. A smoothly
+//   curved wall reads as a smooth run of ONE side color; if the surface is actually
 //   stepping at block resolution the run breaks into alternating side/riser and +Z
 //   tread (blue) patches — a real geometry staircase you can see face-by-face.
 //
 //   CHECKERBOARD — a 1-voxel checker keyed to the SAME per-face (u,v) the texture
 //   samples (`absolute` on the two in-plane axes). Where `absolute` is precise the
 //   checker is crisp 1-voxel; where the shading evaluation coordinate blew up at
-//   grazing (t_centre extrapolation → huge magnitude → `floor`/`fract` lose bits) the
+//   grazing (t_center extrapolation → huge magnitude → `floor`/`fract` lose bits) the
 //   checker smears and terraces to BLOCK size — the shading-precision fingerprint.
 //
 // Uniform-precise flow (only `absolute`/`world_normal`), so it is legal here.
@@ -1170,7 +1170,7 @@ fn debug_face_shade(absolute: vec3<f32>, world_normal: vec3<f32>) -> vec3<f32> {
         u_value = absolute.x;
         v_value = absolute.z;
     } else {
-        // +Z (top TREAD) bright blue vs −Z (bottom) magenta — the tread colour is the
+        // +Z (top TREAD) bright blue vs −Z (bottom) magenta — the tread color is the
         // one that lights up a real staircase on a nominally-vertical wall.
         base = select(vec3<f32>(1.0, 0.1, 0.9), vec3<f32>(0.15, 0.6, 1.0), world_normal.z > 0.0);
         u_value = absolute.x;
@@ -1194,10 +1194,10 @@ fn fragment_render(
     @builtin(sample_index) sample_index: u32,
 ) -> FragmentOutput {
     // Per-sample execution (forced by sample_index): each sample casts its own
-    // ray for coverage + depth; shading evaluates at the pixel-centre ray's
-    // intersection with the hit face's plane (the rasterizer's centre evaluation).
+    // ray for coverage + depth; shading evaluates at the pixel-center ray's
+    // intersection with the hit face's plane (the rasterizer's center evaluation).
     let pixel_corner = floor(position.xy);
-    let pixel_centre = pixel_corner + vec2<f32>(0.5);
+    let pixel_center = pixel_corner + vec2<f32>(0.5);
     let sample_offset = MSAA_4X_SAMPLE_POSITIONS[min(sample_index, 3u)];
     let sample_position = pixel_corner + sample_offset;
 
@@ -1207,16 +1207,16 @@ fn fragment_render(
         discard;
     }
 
-    // Centre-ray evaluation on the hit face's plane (extrapolation allowed —
+    // Center-ray evaluation on the hit face's plane (extrapolation allowed —
     // matching non-centroid rasterizer interpolation).
-    let centre_ray = camera_ray(pixel_centre);
-    let plane_distance = hit.plane_sv - centre_ray.origin[hit.entry_axis];
-    let t_centre = plane_distance / centre_ray.safe_direction[hit.entry_axis];
+    let center_ray = camera_ray(pixel_center);
+    let plane_distance = hit.plane_sv - center_ray.origin[hit.entry_axis];
+    let t_center = plane_distance / center_ray.safe_direction[hit.entry_axis];
     // The normal-axis coordinate is exactly on the plane by construction. Masked
     // `select`, NOT a dynamic component store — see `axis_component_mask`.
     let entry_axis_mask = axis_component_mask(hit.entry_axis);
     let evaluation_sv = select(
-        centre_ray.origin + centre_ray.direction * t_centre,
+        center_ray.origin + center_ray.direction * t_center,
         vec3<f32>(hit.plane_sv),
         entry_axis_mask,
     );
@@ -1243,7 +1243,7 @@ fn fragment_render(
     if (uniforms.ghost_mode != 0u) {
         output.color = uniforms.ghost_tint;
     } else if (uniforms.band_voxel_sv.w != 0) {
-        // Grazing-rim DIAGNOSTIC (--debug-faces --brick): face-axis colour + UV checker.
+        // Grazing-rim DIAGNOSTIC (--debug-faces --brick): face-axis color + UV checker.
         // Only the MSAA visual entry branches here; the parity identity entries are
         // untouched, and band_voxel_sv.w defaults to 0 so every golden is byte-identical.
         output.color = vec4<f32>(debug_face_shade(absolute, world_normal), 1.0);
@@ -1251,13 +1251,13 @@ fn fragment_render(
         // Analytic screen-step derivative of the evaluation position on the hit
         // face's plane (voxel units per pixel, per axis): a one-pixel-right and a
         // one-pixel-down ray intersected with the SAME plane, differenced against
-        // the centre evaluation. Exact under both projections; feeds the grid
+        // the center evaluation. Exact under both projections; feeds the grid
         // overlay's screen-space line width + tier fade (the mesh path uses
         // `fwidth`, unavailable here in non-uniform control flow). The normal-axis
         // component is 0 by construction; a grazing plane makes `t` explode and the
         // derivative huge, which correctly fades the overlay out there.
-        let right_ray = camera_ray(pixel_centre + vec2<f32>(1.0, 0.0));
-        let down_ray = camera_ray(pixel_centre + vec2<f32>(0.0, 1.0));
+        let right_ray = camera_ray(pixel_center + vec2<f32>(1.0, 0.0));
+        let down_ray = camera_ray(pixel_center + vec2<f32>(0.0, 1.0));
         let t_right = (hit.plane_sv - right_ray.origin[hit.entry_axis])
             / right_ray.safe_direction[hit.entry_axis];
         let t_down = (hit.plane_sv - down_ray.origin[hit.entry_axis])
@@ -1457,17 +1457,17 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
     return result;
 }
 
-// The HAZE ghost entry (ADR 0012 H1.5 spike). ONE march per PIXEL (centre ray —
+// The HAZE ghost entry (ADR 0012 H1.5 spike). ONE march per PIXEL (center ray —
 // a soft haze has no hard edges to antialias, so no per-sample rays: a 4× refund
 // vs the crisp ghost). Opacity is Beer–Lambert over the accumulated in-solid
-// thickness; colour is the ghost tint. `frag_depth` is the slab's FIRST in-solid
+// thickness; color is the ghost tint. `frag_depth` is the slab's FIRST in-solid
 // point so the (read-only) depth test occludes a slab that lies wholly behind
 // the solid band — exact per slab, because z(t) is monotonic so a slab's
 // t-interval sits entirely on one side of any solid-band hit.
 @fragment
 fn fragment_ghost_haze(@builtin(position) position: vec4<f32>) -> FragmentOutput {
-    let pixel_centre = floor(position.xy) + vec2<f32>(0.5);
-    let ray = camera_ray(pixel_centre);
+    let pixel_center = floor(position.xy) + vec2<f32>(0.5);
+    let ray = camera_ray(pixel_center);
     let haze = march_brick_haze(ray);
     if (haze.first_hit_t < 0.0 || haze.accumulated_length <= 0.0) {
         discard;
@@ -1485,12 +1485,12 @@ fn fragment_ghost_haze(@builtin(position) position: vec4<f32>) -> FragmentOutput
 }
 
 // The parity-harness entry (tests/gpu_parity.rs): a single-sample pass that
-// reports the hit voxel's ABSOLUTE coordinate per pixel instead of a colour —
+// reports the hit voxel's ABSOLUTE coordinate per pixel instead of a color —
 // (hit flag, x, y, z) with the i32 coordinates bitcast into u32 lanes.
 @fragment
 fn fragment_hit_identity(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
-    let pixel_centre = floor(position.xy) + vec2<f32>(0.5);
-    let ray = camera_ray(pixel_centre);
+    let pixel_center = floor(position.xy) + vec2<f32>(0.5);
+    let ray = camera_ray(pixel_center);
     let hit = march_brick_field(ray);
     if (!hit.hit) {
         return vec4<u32>(0u, 0u, 0u, 0u);
@@ -1504,28 +1504,28 @@ fn fragment_hit_identity(@builtin(position) position: vec4<f32>) -> @location(0)
     );
 }
 
-// The colour-parity harness entry (tests/gpu_parity.rs): a single-sample pass that
-// SHADES each hit exactly as `fragment_render`'s centre-ray evaluation would (same
-// plane-intersection, same `shade_cuboid_surface`), into a plain colour target. Used
+// The color-parity harness entry (tests/gpu_parity.rs): a single-sample pass that
+// SHADES each hit exactly as `fragment_render`'s center-ray evaluation would (same
+// plane-intersection, same `shade_cuboid_surface`), into a plain color target. Used
 // to gate that a LOADED-material raymarch hit samples the same texel the mesh's
 // lattice rule computes for that voxel face (ADR 0011 G2). Single sample ⇒ the sample
-// ray IS the pixel-centre ray, so no per-sample loop is needed.
+// ray IS the pixel-center ray, so no per-sample loop is needed.
 @fragment
 fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let pixel_centre = floor(position.xy) + vec2<f32>(0.5);
-    let ray = camera_ray(pixel_centre);
+    let pixel_center = floor(position.xy) + vec2<f32>(0.5);
+    let ray = camera_ray(pixel_center);
     let hit = march_brick_field(ray);
     if (!hit.hit) {
         discard;
     }
-    // Centre-ray evaluation on the hit face's plane (mirrors `fragment_render`,
+    // Center-ray evaluation on the hit face's plane (mirrors `fragment_render`,
     // including the masked `select` in place of a dynamic component store — see
     // `axis_component_mask`).
     let plane_distance = hit.plane_sv - ray.origin[hit.entry_axis];
-    let t_centre = plane_distance / ray.safe_direction[hit.entry_axis];
+    let t_center = plane_distance / ray.safe_direction[hit.entry_axis];
     let entry_axis_mask = axis_component_mask(hit.entry_axis);
     let evaluation_sv = select(
-        ray.origin + ray.direction * t_centre,
+        ray.origin + ray.direction * t_center,
         vec3<f32>(hit.plane_sv),
         entry_axis_mask,
     );
@@ -1535,8 +1535,8 @@ fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(
     // Same analytic screen-step derivative as `fragment_render` (one-pixel-right /
     // one-pixel-down rays intersected with the hit plane), so the parity harness
     // shades through the identical overlay path.
-    let right_ray = camera_ray(pixel_centre + vec2<f32>(1.0, 0.0));
-    let down_ray = camera_ray(pixel_centre + vec2<f32>(0.0, 1.0));
+    let right_ray = camera_ray(pixel_center + vec2<f32>(1.0, 0.0));
+    let down_ray = camera_ray(pixel_center + vec2<f32>(0.0, 1.0));
     let t_right = (hit.plane_sv - right_ray.origin[hit.entry_axis])
         / right_ray.safe_direction[hit.entry_axis];
     let t_down = (hit.plane_sv - down_ray.origin[hit.entry_axis])
@@ -1551,14 +1551,14 @@ fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(
 
 // The MATERIAL-parity harness entry (tests/gpu_parity.rs, ADR 0013): a single-sample pass
 // that reports the RESOLVED per-voxel material id of each hit — for a MIXED brick the clean
-// block id of its cell-key texel, else the per-record material — instead of a colour. This
+// block id of its cell-key texel, else the per-record material — instead of a color. This
 // is the direct "shader == CPU-march reference" gate the ADR sets: the CPU reference resolves
 // the same cell-key tile at the same hit voxel, and this pass surfaces exactly what the shader
 // resolved, so the two are compared without reproducing any shading. `(hit flag, material_id)`.
 @fragment
 fn fragment_material_identity(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
-    let pixel_centre = floor(position.xy) + vec2<f32>(0.5);
-    let ray = camera_ray(pixel_centre);
+    let pixel_center = floor(position.xy) + vec2<f32>(0.5);
+    let ray = camera_ray(pixel_center);
     let hit = march_brick_field(ray);
     if (!hit.hit) {
         return vec4<u32>(0u, 0u, 0u, 0u);

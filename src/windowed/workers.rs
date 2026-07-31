@@ -110,11 +110,11 @@ impl WindowedState {
                     // promise is "you won't silently lose the file"; exiting on a failed
                     // write breaks exactly that. Clear the deferral so the exit check below
                     // (top of `RedrawRequested`) doesn't fire, and tell the user the close
-                    // was cancelled so they can react. A success still exits as before.
+                    // was canceled so they can react. A success still exits as before.
                     if self.close_requested_while_exporting {
                         self.close_requested_while_exporting = false;
                         self.export_status = Some(format!(
-                            "export .vox FAILED: {error} — close cancelled so you can see \
+                            "export .vox FAILED: {error} — close canceled so you can see \
                              this; close again to exit"
                         ));
                     } else {

@@ -35,9 +35,9 @@ proof gates in [Proof](05-proof.md) hold them to it.
 
 A bound may come from an exact predicate or from a field, and the evaluator prefers the
 predicate wherever one exists. The reason is the geometry of a cell: a distance bound
-must cover a cube's corners, so it can only decide a cell whose centre is further from
+must cover a cube's corners, so it can only decide a cell whose center is further from
 the boundary than the cell's half-diagonal, while an exact containment predicate decides
-any cell inside the profile however close to an edge. Levelling the two would cost a
+any cell inside the profile however close to an edge. Leveling the two would cost a
 several-voxel shell of interior that currently elides. Where an exact square-metric field
 exists the covering ball *is* the cell, which tightens the bound further — one more
 reason the metric is tracked rather than assumed.
@@ -62,7 +62,7 @@ The evaluator's output for one chunk mirrors the host game's own storage split:
   stored **already decomposed into cuboids** — not a dense per-voxel grid — because
   boundary geometry is overwhelmingly boxy and cuboids are what both the mesher and the
   exporter want;
-- **seam solidity flags** per boundary block face, so a neighbouring chunk can cull the
+- **seam solidity flags** per boundary block face, so a neighboring chunk can cull the
   faces it shares with this one without ever expanding this chunk's voxels.
 
 The two-layer chunk is the lingua franca of the system: the single classified form that
@@ -96,12 +96,12 @@ handed out — which is what makes the concurrency in [Work](04-work.md) safe.
 ## Frames and the floating origin
 
 Scenes are large enough that world coordinates must be wide integers, and rendering
-wants coordinates near zero. The resolution is a **recentre**: an integer voxel offset,
+wants coordinates near zero. The resolution is a **recenter**: an integer voxel offset,
 computed at placement, that every derived artifact is expressed relative to.
 
-The law (Law 5) is that the recentre — like every spatial value — **travels with the
-data it frames**. A chunk is chunk-local and integer; a mesh bakes the recentre into
-its vertices at emit time; a display cache records the recentre it was built at. No
+The law (Law 5) is that the recenter — like every spatial value — **travels with the
+data it frames**. A chunk is chunk-local and integer; a mesh bakes the recenter into
+its vertices at emit time; a display cache records the recenter it was built at. No
 consumer ever re-derives a frame from the scene "because it knows how" — the moment two
 code paths derive the same frame independently is the moment they can disagree, and a
 half-voxel disagreement in a chiseling tool is not a cosmetic bug.

@@ -42,7 +42,7 @@ fn rounded_bottom_solid(height: u32) -> SketchSolid {
 
 #[test]
 fn three_point_solve_recovers_the_signed_sweep() {
-    // Semicircle through the TOP: from (0,0) to (2,0) via (1,1) — centre (1,0), and the
+    // Semicircle through the TOP: from (0,0) to (2,0) via (1,1) — center (1,0), and the
     // top lies on the CLOCKWISE walk, so the sweep is -180°.
     let sweep = included_angle_through_degrees([0.0, 0.0], [2.0, 0.0], [1.0, 1.0])
         .expect("three non-collinear points");
@@ -122,7 +122,7 @@ fn an_arc_closed_profile_extrudes_a_rounded_shape() {
     let mut grid = VoxelGrid::default();
     solid.resolve(&mut grid, 8);
     // Per layer: the 4×3 rectangle plus the half-disc rows below it (4 cells at the
-    // first row down, 2 at the second — cell centres against a radius-2 circle).
+    // first row down, 2 at the second — cell centers against a radius-2 circle).
     assert_eq!(grid.occupied.len(), (12 + 6) * 2);
 }
 
@@ -273,7 +273,7 @@ fn the_full_turn_is_where_the_radius_diverges() {
         );
         assert!(
             center[1].abs() > radius / 2.0,
-            "the centre runs away with it, to {center:?}"
+            "the center runs away with it, to {center:?}"
         );
         previous = radius;
     }
@@ -352,8 +352,8 @@ fn delete_cascades_and_repair_cover_arcs() {
 #[test]
 fn arcs_round_trip_through_serde_and_a_pre_arc_document_loads_clean() {
     let solid = rounded_bottom_solid(2);
-    let json = serde_json::to_string(&solid.sketch).expect("serialise");
-    let restored: Sketch = serde_json::from_str(&json).expect("deserialise");
+    let json = serde_json::to_string(&solid.sketch).expect("serialize");
+    let restored: Sketch = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(restored, solid.sketch, "the arc store round-trips verbatim");
 
     // A pre-#102 document has no `arcs` key: strip it and the sketch still loads, with
@@ -381,7 +381,7 @@ fn quantized_angle_survives_the_float_door() {
     assert_eq!(AngleMeasurement::from_degrees_f64(f64::NAN), None);
 }
 
-/// The `[0,0] → [4,0]` half-turn arc: centre `[2,0]`, radius 2, bulging down.
+/// The `[0,0] → [4,0]` half-turn arc: center `[2,0]`, radius 2, bulging down.
 fn half_turn() -> (Sketch, EntityId, EntityId, EntityId) {
     let mut sketch = Sketch::new(PlaneAxis::Z, vec![]);
     let from = sketch.add_free_point(SketchPoint::new(0, 0));
@@ -392,7 +392,7 @@ fn half_turn() -> (Sketch, EntityId, EntityId, EntityId) {
     (sketch, from, to, arc)
 }
 
-/// A derived centre is a float — the apothem of an exact half turn is `chord / 2 / tan(90°)`,
+/// A derived center is a float — the apothem of an exact half turn is `chord / 2 / tan(90°)`,
 /// which lands a whisker off zero rather than on it. Compare within a thousandth of a voxel.
 fn assert_near(actual: [f64; 2], expected: [f64; 2]) {
     assert!(
@@ -412,11 +412,11 @@ fn center_of(sketch: &Sketch, arc: EntityId) -> Point {
         .points()
         .iter()
         .find(|point| point.id == center)
-        .expect("a reified centre point")
+        .expect("a reified center point")
 }
 
 #[test]
-fn an_arc_reifies_its_centre_as_a_selectable_point() {
+fn an_arc_reifies_its_center_as_a_selectable_point() {
     let (sketch, from, to, arc) = half_turn();
     let center = center_of(&sketch, arc);
 
@@ -424,10 +424,10 @@ fn an_arc_reifies_its_centre_as_a_selectable_point() {
     assert_eq!(center.role, EntityRole::Construction);
     assert!(
         ![from, to].contains(&center.id),
-        "the centre is its own entity, not an endpoint wearing a second hat"
+        "the center is its own entity, not an endpoint wearing a second hat"
     );
     // It rides in `points()` like any other point, which is the whole ask: the overlay places a
-    // handle per point, so the centre gets hover, selection and a drag for free.
+    // handle per point, so the center gets hover, selection and a drag for free.
     assert_eq!(sketch.points().len(), 3);
 
     // Being construction geometry, it bounds nothing: an isolated point is not a face, and the
@@ -436,12 +436,12 @@ fn an_arc_reifies_its_centre_as_a_selectable_point() {
 }
 
 #[test]
-fn dragging_a_centre_changes_the_radius_and_nothing_else() {
+fn dragging_a_center_changes_the_radius_and_nothing_else() {
     let (mut sketch, from, to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
 
-    // The half turn's centre sits ON the chord, its arc bulging DOWN to axis1 = -2. Pushing the
-    // centre up, away from the bulge, makes a shallower arc: apothem 2 with half-chord 2 halves
+    // The half turn's center sits ON the chord, its arc bulging DOWN to axis1 = -2. Pushing the
+    // center up, away from the bulge, makes a shallower arc: apothem 2 with half-chord 2 halves
     // the sweep to 90°.
     assert!(sketch.move_point(center, SketchPoint::new(2, 2)));
 
@@ -459,15 +459,15 @@ fn dragging_a_centre_changes_the_radius_and_nothing_else() {
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, 2.0]);
     assert!(
         (sketch.arcs()[0].bulge.to_degrees_f64() - 90.0).abs() < 1.0e-3,
-        "the sweep follows the centre: {:?}",
+        "the sweep follows the center: {:?}",
         sketch.arcs()[0].bulge
     );
 }
 
-/// A centre has ONE degree of freedom — the chord's perpendicular bisector. A drag with a
+/// A center has ONE degree of freedom — the chord's perpendicular bisector. A drag with a
 /// component along the chord projects onto that line rather than shearing the arc.
 #[test]
-fn a_centre_drag_projects_onto_the_bisector() {
+fn a_center_drag_projects_onto_the_bisector() {
     let (mut sketch, _from, _to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
     // The chord runs along axis 0, so its bisector is the vertical through the midpoint: the
@@ -476,10 +476,10 @@ fn a_centre_drag_projects_onto_the_bisector() {
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
 }
 
-/// Dragging the centre INTO the bulge flips minor to major without reversing the arc: the sweep
+/// Dragging the center INTO the bulge flips minor to major without reversing the arc: the sweep
 /// keeps its sign and grows past 180°.
 #[test]
-fn a_centre_dragged_into_the_bulge_makes_the_major_arc() {
+fn a_center_dragged_into_the_bulge_makes_the_major_arc() {
     let (mut sketch, _from, _to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
     assert!(sketch.move_point(center, SketchPoint::new(2, -2)));
@@ -492,24 +492,24 @@ fn a_centre_dragged_into_the_bulge_makes_the_major_arc() {
 }
 
 #[test]
-fn a_centre_re_derives_when_an_endpoint_moves() {
+fn a_center_re_derives_when_an_endpoint_moves() {
     let (mut sketch, _from, to, arc) = half_turn();
-    // Halving the chord halves the radius, so the centre slides to the new midpoint.
+    // Halving the chord halves the radius, so the center slides to the new midpoint.
     assert!(sketch.move_point(to, SketchPoint::new(2, 0)));
     assert_near(center_of(&sketch, arc).at.in_plane(), [1.0, 0.0]);
 }
 
 #[test]
-fn a_centre_lives_and_dies_with_its_arc() {
+fn a_center_lives_and_dies_with_its_arc() {
     let (mut sketch, from, _to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
 
-    // Deleting the CENTRE takes the arc: there is no arc left for it to be the centre of.
-    let mut by_centre = sketch.clone();
-    by_centre.delete_point_cascade(center);
-    assert!(by_centre.arcs().is_empty());
+    // Deleting the CENTER takes the arc: there is no arc left for it to be the center of.
+    let mut by_center = sketch.clone();
+    by_center.delete_point_cascade(center);
+    assert!(by_center.arcs().is_empty());
     assert_eq!(
-        by_centre.points().len(),
+        by_center.points().len(),
         2,
         "both endpoints survive as free"
     );
@@ -522,7 +522,7 @@ fn a_centre_lives_and_dies_with_its_arc() {
     assert!(sketch.points().is_empty());
     assert!(!sketch.points().iter().any(|point| point.id == from));
 
-    // A centre the author has since drawn TO is referenced geometry, and outlives its arc.
+    // A center the author has since drawn TO is referenced geometry, and outlives its arc.
     let (mut kept, from, _to, arc) = half_turn();
     let center = center_of(&kept, arc).id;
     kept.connect(from, center).expect("a radius line");
@@ -531,10 +531,10 @@ fn a_centre_lives_and_dies_with_its_arc() {
 }
 
 #[test]
-fn a_pre_centre_document_gains_its_centres_on_load() {
+fn a_pre_center_document_gains_its_centers_on_load() {
     let (sketch, _from, _to, arc) = half_turn();
     let mut value = serde_json::to_value(&sketch).expect("a sketch serializes");
-    // Strip every `center` the way a document written before centres existed would have.
+    // Strip every `center` the way a document written before centers existed would have.
     for stored in value["arcs"]
         .as_array_mut()
         .expect("the arcs are an array")
@@ -546,13 +546,13 @@ fn a_pre_centre_document_gains_its_centres_on_load() {
             .remove("center")
             .expect("the key was present");
     }
-    // ... and drop the orphaned centre point too, so the store is exactly the old shape.
+    // ... and drop the orphaned center point too, so the store is exactly the old shape.
     value["points"]
         .as_array_mut()
         .expect("the points are an array")
         .retain(|point| point["role"] != "Construction");
 
-    let mut loaded: Sketch = serde_json::from_value(value).expect("a pre-centre document loads");
+    let mut loaded: Sketch = serde_json::from_value(value).expect("a pre-center document loads");
     assert_eq!(loaded.arcs()[0].center, crate::sketch::ABSENT_CENTER);
     assert_eq!(loaded.repair(), 0, "nothing was structurally invalid");
     assert_near(center_of(&loaded, arc).at.in_plane(), [2.0, 0.0]);
@@ -613,7 +613,7 @@ fn a_curved_face_keeps_its_arc() {
     // The bulge is material, and the field measures it against the CIRCLE: a point one voxel in
     // from the curve reads exactly one voxel deep, which a chord approximation cannot say.
     let field = sketch.region_field_loops();
-    let under_the_bulge = [arc.centre[0] as f32, (arc.centre[1] - 1.0) as f32];
+    let under_the_bulge = [arc.center[0] as f32, (arc.center[1] - 1.0) as f32];
     assert!(
         substrate::geom2d::point_in_region(&field, under_the_bulge),
         "under the bulge at {under_the_bulge:?}"

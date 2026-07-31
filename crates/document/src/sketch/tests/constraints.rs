@@ -47,7 +47,7 @@ fn a_fix_pins_two_freedoms_and_moves_nothing() {
         before,
         "a fix does not move a point"
     );
-    assert_eq!(position(&sketch, head), [10.0, 4.0], "nor its neighbour");
+    assert_eq!(position(&sketch, head), [10.0, 4.0], "nor its neighbor");
 }
 
 /// `Horizontal` levels a segment, and the least-squares solve moves the drawing **as little as it
@@ -519,7 +519,7 @@ fn a_solve_that_collapses_geometry_is_refused() {
     let (mut sketch, tail, head, segment) = slanted();
     let level = sketch
         .add_constraint(ConstraintKind::Horizontal { segment })
-        .expect("levelling a slanted segment is fine");
+        .expect("leveling a slanted segment is fine");
     let levelled = (position(&sketch, head)[0] - position(&sketch, tail)[0]).abs();
     assert!(levelled > 1.0, "still a line, {levelled} across");
 
@@ -589,7 +589,7 @@ fn the_witness_rank_is_read_at_the_drawing_it_is_given() {
         2,
         "a Fix pins both of a point's coordinates"
     );
-    assert_eq!(rank_of(&[pin, level]), 3, "and levelling adds a third");
+    assert_eq!(rank_of(&[pin, level]), 3, "and leveling adds a third");
     assert_eq!(rank_of(&[level]), 1);
 }
 
@@ -1250,7 +1250,7 @@ fn the_smaller_group_travels_to_the_larger_one() {
     );
 }
 
-/// The preference never outranks the assertion. Levelling one edge of a closed quad CANNOT leave
+/// The preference never outranks the assertion. Leveling one edge of a closed quad CANNOT leave
 /// the other three spans alone, and when the two genuinely fight, the constraint wins outright —
 /// the pass that follows the preferred one re-solves the assertions by themselves.
 #[test]
@@ -1274,7 +1274,7 @@ fn a_constraint_that_fights_rigidity_is_still_met_exactly() {
 fn deleting_a_line_takes_the_ends_nothing_else_draws() {
     let (mut sketch, tail, head, segment) = slanted();
     let shared = sketch.add_free_point(SketchPoint::new(30, 30));
-    let neighbour = sketch.connect(head, shared).expect("a second line");
+    let neighbor = sketch.connect(head, shared).expect("a second line");
 
     sketch.delete_segment(segment);
     assert!(
@@ -1290,7 +1290,7 @@ fn deleting_a_line_takes_the_ends_nothing_else_draws() {
         "and so does its far end"
     );
     assert_eq!(sketch.segments().len(), 1, "only the named line went");
-    assert_eq!(sketch.segments()[0].id, neighbour);
+    assert_eq!(sketch.segments()[0].id, neighbor);
 }
 
 /// A constraint is not a reason for a point to outlive the geometry it was drawn for: the line

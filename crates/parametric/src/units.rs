@@ -55,7 +55,7 @@ pub use substrate::interval::Rational as ExactRational;
 /// integer because nothing is finer than a voxel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Measurement {
-    /// Block count as an exact rational (numerator, denominator). Serialised as
+    /// Block count as an exact rational (numerator, denominator). Serialized as
     /// the reduced pair so a persisted document is float-free end to end.
     block_term_numerator: i128,
     block_term_denominator: i128,
@@ -173,7 +173,7 @@ impl Measurement {
 /// never fail. The degree value is a reduced exact rational, mirroring the block term.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AngleMeasurement {
-    /// Degrees as an exact rational (numerator, denominator), serialised reduced.
+    /// Degrees as an exact rational (numerator, denominator), serialized reduced.
     degrees_numerator: i128,
     degrees_denominator: i128,
 }
@@ -218,7 +218,7 @@ impl AngleMeasurement {
     }
 
     /// The degree value evaluated to `f64` — the tessellation/display evaluation, the
-    /// analogue of [`Measurement::to_voxels`]. Angles carry no density, so unlike a length
+    /// analog of [`Measurement::to_voxels`]. Angles carry no density, so unlike a length
     /// the evaluation cannot fail; the float is derived, never stored.
     pub fn to_degrees_f64(self) -> f64 {
         self.degrees_numerator as f64 / self.degrees_denominator as f64
@@ -325,7 +325,7 @@ pub enum MeasurementParseError {
     MissingUnit { number_text: String },
     /// A unit word was found without a preceding number (e.g. `"blocks"`).
     MissingNumber { unit_text: String },
-    /// An unrecognised unit word (not blocks/voxels and not a number).
+    /// An unrecognized unit word (not blocks/voxels and not a number).
     UnknownUnit { unit_text: String },
     /// A token could not be parsed as any known number form.
     InvalidNumber { number_text: String },
@@ -413,7 +413,7 @@ enum UnitKind {
 }
 
 /// Classify a unit word (case-insensitive). `None` for anything that is not a
-/// recognised unit. Accepts the long, short and single-letter spellings.
+/// recognized unit. Accepts the long, short and single-letter spellings.
 fn classify_unit(word: &str) -> Option<UnitKind> {
     match word.to_ascii_lowercase().as_str() {
         "blocks" | "block" | "b" => Some(UnitKind::Blocks),
@@ -572,7 +572,7 @@ fn tokenise(input: &str) -> Vec<String> {
 
 /// Parse a single number token into an exact rational, or `None` when the token
 /// is not a number at all (the caller decides whether that is an unknown unit or
-/// garbage). Recognises integer, decimal and fraction forms. A malformed number
+/// garbage). Recognizes integer, decimal and fraction forms. A malformed number
 /// (e.g. `"3.5.6"`, `"8/"`) is a hard error.
 fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseError> {
     // A token is "number-shaped" if it is only digits, a single dot, a single
@@ -931,8 +931,8 @@ mod tests {
     #[test]
     fn measurement_is_serde_round_trippable() {
         let measurement = parse("3 8/16 blocks 5 voxels").expect("parses");
-        let json = serde_json::to_string(&measurement).expect("serialises");
-        let restored: Measurement = serde_json::from_str(&json).expect("deserialises");
+        let json = serde_json::to_string(&measurement).expect("serializes");
+        let restored: Measurement = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(restored, measurement);
         assert_eq!(
             restored.to_voxels(16).unwrap(),

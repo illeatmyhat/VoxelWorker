@@ -13,7 +13,7 @@ pub const NON_RESIDENT_ATLAS_SLOT: u32 = u32::MAX;
 ///   `BrickGpuRecord.cell_key_slot`, and the record's own material/overlay are don't-care).
 ///   Kinds 1 and 2 traverse identically — both descend into the occupancy atlas slot; only
 ///   the SHADE source differs.
-/// * bits `[SHIFT, SHIFT + BRICK_RECORD_MATERIAL_ID_BITS)` — the block's **material-colour
+/// * bits `[SHIFT, SHIFT + BRICK_RECORD_MATERIAL_ID_BITS)` — the block's **material-color
 ///   index** (per-record shading: a multi-producer scene of distinct per-block materials
 ///   shades each hit from its own record).
 /// * bit `BRICK_RECORD_OVERLAY_SHIFT` — the block's **on-face-grid overlay bit**, the other
@@ -60,7 +60,7 @@ pub(crate) fn record_kind_discriminant(kind: u32) -> u32 {
     kind & BRICK_RECORD_KIND_MASK
 }
 
-/// The block MATERIAL colour index packed above the kind discriminant — the mirror of the WGSL
+/// The block MATERIAL color index packed above the kind discriminant — the mirror of the WGSL
 /// `record_material_id(kind)` (masked to the material field; the overlay bit rides above it). The
 /// per-record shade of a coarse or sculpted-UNIFORM hit.
 pub(crate) fn record_material_id(kind: u32) -> u32 {

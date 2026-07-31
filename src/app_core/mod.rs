@@ -21,7 +21,7 @@ use std::sync::Arc;
 use camera::OrbitCamera;
 use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use voxel_core::spatial_index::LeafSpatialIndex;
-use voxel_core::voxel::RecentreVoxels;
+use voxel_core::voxel::RecenterVoxels;
 
 mod command_stack;
 use command_stack::CommandStack;
@@ -75,12 +75,12 @@ pub struct AppCore {
     /// edit's dirty world-AABB. `None` before the first rebuild (which clears
     /// wholesale).
     previous_leaf_index: Option<LeafSpatialIndex>,
-    /// The composite recentre (floating origin, in voxels) the LAST rebuild resolved
+    /// The composite recenter (floating origin, in voxels) the LAST rebuild resolved
     /// at (issue #20 S6c-2c): the resolve bookkeeping that records whether the
     /// floating origin shifted. `None` before the first rebuild.
-    previous_recentre_voxels: Option<[i64; 3]>,
+    previous_recenter_voxels: Option<[i64; 3]>,
     /// The density the LAST rebuild resolved at (issue #40). A density change re-keys
-    /// every chunk (chunk extent = `CHUNK_BLOCKS × density`), so even when the recentre
+    /// every chunk (chunk extent = `CHUNK_BLOCKS × density`), so even when the recenter
     /// happens to land at `[0,0,0]` at both densities the per-chunk buffers are in a
     /// different frame and the incremental cuboid path is unsafe — this gates it off.
     /// `None` before the first rebuild.
@@ -96,7 +96,7 @@ pub struct AppCore {
 /// ADR 0010 E5). Holds ONLY the **two-layer** covering chunks (owned) the shell meshes
 /// through
 /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks),
-/// plus the region dimensions + recentre the display frame is sized from.
+/// plus the region dimensions + recenter the display frame is sized from.
 ///
 /// **ADR 0011 G5 — the dense grid is gone.** A rebuild NO LONGER assembles a whole-region
 /// `VoxelGrid`. The display meshes from `two_layer_chunks` and the brick sink packs from the
@@ -124,21 +124,21 @@ pub struct RebuildOutput {
     /// on the primary path, so that deep clone was pure waste; sharing an `Arc` per chunk
     /// makes it an O(chunks) refcount bump and composes with the brick readers directly.
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
-    /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
+    /// The composite recenter (floating origin, voxels; ADR 0008) the two-layer mesh
     /// lands its geometry in — the SAME frame the brick sink packs its records in. Carried
-    /// as [`RecentreVoxels`] so the frame value travels compile-checked through the async
+    /// as [`RecenterVoxels`] so the frame value travels compile-checked through the async
     /// display flow, unwrapped only at the point of positional arithmetic (a chunk rebase,
     /// a leaf stamp) and the GPU uniform packing.
-    pub recentre_voxels: RecentreVoxels,
+    pub recenter_voxels: RecenterVoxels,
     /// **The chunk-granular incremental GPU-buffer re-mesh hint (issue #55).** `Some(dirty)`
-    /// when this rebuild LOCALISED — the edit's dirty world-AABB evicted exactly the `dirty`
+    /// when this rebuild LOCALIZED — the edit's dirty world-AABB evicted exactly the `dirty`
     /// chunks (from [`TwoLayerResidentCache::invalidate_aabb`]) and the density did NOT change
-    /// — so the shell can re-mesh + re-upload ONLY `dirty ∪ 26-neighbourhood(dirty) ∩ resident`
+    /// — so the shell can re-mesh + re-upload ONLY `dirty ∪ 26-neighborhood(dirty) ∩ resident`
     /// via [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`], keeping every
-    /// other chunk's GPU buffers in place. `None` when the edit could NOT localise — the first
+    /// other chunk's GPU buffers in place. `None` when the edit could NOT localize — the first
     /// build (no previous index, wholesale [`clear`](TwoLayerResidentCache::clear)), a density
     /// change (re-keys every chunk's voxel extent), or a region-spanning VoxelBody edit (no
-    /// localisable box) — in which case the shell re-meshes WHOLESALE via
+    /// localizable box) — in which case the shell re-meshes WHOLESALE via
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]. This is the same split the resident
     /// cache itself uses (`invalidate_aabb` vs `clear`), surfaced to the GPU-buffer layer.
     ///
@@ -146,16 +146,16 @@ pub struct RebuildOutput {
     /// [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]: display::mesh::CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]: display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks
     pub incremental_dirty_chunks: Option<Vec<[i32; 3]>>,
-    /// How far the floating-origin recentre SHIFTED this rebuild, in render-frame
-    /// voxels (`new_recentre − previous_recentre`; `[0, 0, 0]` on the first build).
-    /// The composite is re-centred on the world origin every rebuild, so when its
-    /// extent (or the density, since the recentre is in voxels) changes the whole
+    /// How far the floating-origin recenter SHIFTED this rebuild, in render-frame
+    /// voxels (`new_recenter − previous_recenter`; `[0, 0, 0]` on the first build).
+    /// The composite is re-centered on the world origin every rebuild, so when its
+    /// extent (or the density, since the recenter is in voxels) changes the whole
     /// resolved world slides by this amount under a fixed camera. The windowed shell
     /// subtracts this from `camera.target` so the view stays locked on the same WORLD
-    /// point across an edit — making the recentre visually inert (the camera moves
+    /// point across an edit — making the recenter visually inert (the camera moves
     /// only on EXPLICIT Fit/Home/Focus/orbit actions). The `shot` path ignores it
     /// (its camera is set per-capture from CLI flags), so goldens are unaffected.
-    pub recentre_shift_voxels: [i64; 3],
+    pub recenter_shift_voxels: [i64; 3],
 }
 
 /// Outcome of [`AppCore::rebuild`]: either the resolve output, or a rejection when
@@ -187,7 +187,7 @@ impl AppCore {
             // Rebuild bookkeeping: what the LAST rebuild resolved from/at, kept so the
             // next one can diff. The next rebuild rewrites all three.
             previous_leaf_index: _,
-            previous_recentre_voxels: _,
+            previous_recenter_voxels: _,
             previous_density: _,
             // Undo history: NEITHER rebuildable nor momentary. Dropped on relaunch as
             // ACCEPTED POLICY — a dump replays the scene, not the edit history — the one
@@ -204,7 +204,7 @@ impl AppCore {
             two_layer_cache: TwoLayerResidentCache::enabled(),
             camera,
             previous_leaf_index: None,
-            previous_recentre_voxels: None,
+            previous_recenter_voxels: None,
             previous_density: None,
             command_stack: CommandStack::new(),
         }

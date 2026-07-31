@@ -6,7 +6,7 @@
   document, as an author-chosen opt-in on Save As. Decision 2's per-scope requirement and its
   side-map storage stand; only "stays out of the document" is reversed, and it survives as ADR
   0025's fallback — an embedded cursor that cannot be resolved drops to the end of its fold, so
-  a document that cannot honour the advice opens complete, exactly as decision 2 required.
+  a document that cannot honor the advice opens complete, exactly as decision 2 required.
   Introduces the rollback cursor as classified view state, and the classification scheme that
   places it.
   Relates to ADR 0017 (the ordered fold this rolls back), ADR 0016 (crate structure — the
@@ -126,7 +126,7 @@ at the field, where a reader will look; the destructuring forces the decision to
 - **A derive macro means a new crate kind.** The workspace has no proc-macro crate
   (ADR 0016 cut it into layer crates, all ordinary libraries). A proc-macro crate is build-time
   and orthogonal to the layer stack, so it does not violate the downward-only flow law, but it
-  is a new kind of member and should be recognised as such rather than appearing by accident.
+  is a new kind of member and should be recognized as such rather than appearing by accident.
   **Exhaustive destructuring alone needs no macro and delivers the completeness guarantee** —
   the macro buys the *classification*, which is reviewability rather than safety. Whether that
   is worth a proc-macro crate is not settled here.
@@ -140,7 +140,7 @@ at the field, where a reader will look; the destructuring forces the decision to
   keys. Harmless for lookup (a missing entry reads as "no rollback"), but it grows without a
   sweep, and it grows inside the dump.
 
-- **Rollback interacts with cost, favourably.** A rollback changes which nodes evaluate, so
+- **Rollback interacts with cost, favorably.** A rollback changes which nodes evaluate, so
   moving it is a document-shaped edit in everything but persistence. Measured per-edit costs
   (`tests/edit_cost_probe.rs`, `tests/remesh_cost_probe.rs`) show the resolve is flat in scene
   size while a wholesale re-mesh is linear in resident chunks — so a cursor drag across many
@@ -245,7 +245,7 @@ Decision 4 reads as a property of classified state generally. It is now a proper
 `PanelState` is equally classified and **nothing captures it exhaustively** —
 `AppConfig::capture` reads it field by field, by hand, in precisely the shape of the
 capture that lost the pan target. So on that seam the compiler still checks only that every
-field is *decided*, never that the decision is *honoured*.
+field is *decided*, never that the decision is *honored*.
 
 That is not hypothetical. Four `PanelState` fields are classified `view` — which the
 derive's own error text defines as reaching the dump — and reach nothing:

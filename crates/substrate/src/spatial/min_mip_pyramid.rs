@@ -25,8 +25,8 @@
 //! hierarchical DDA); Amanatides & Woo 1987, *A fast voxel traversal algorithm* (the per-cell DDA a
 //! consumer runs against a level); Museth 2013, *VDB: high-resolution sparse volumes* (the sparse-
 //! hierarchy prior art). **Deviation:** the levels are **world-fixed** min-mip occupancy sets over
-//! a *sparse* key set — not the camera-centred, dense, toroidally-updated rings of the original
-//! clipmap. There is no clip region and no re-centring; each level is simply the deduplicated fold
+//! a *sparse* key set — not the camera-centered, dense, toroidally-updated rings of the original
+//! clipmap. There is no clip region and no re-centering; each level is simply the deduplicated fold
 //! of the key set at its edge, so its footprint is proportional to the *occupied* cell count, not
 //! to a window size.
 
@@ -278,7 +278,7 @@ mod tests {
         let coordinates = [
             [0i64, 0, 0],
             [7, 7, 7],    // same cell as origin
-            [8, 0, 0],    // neighbouring cell on x
+            [8, 0, 0],    // neighboring cell on x
             [-1, -1, -1], // cell (-1,-1,-1)
             [-8, 0, 0],   // cell (-1,0,0)
             [100, 3, 50],

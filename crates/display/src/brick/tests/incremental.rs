@@ -2,7 +2,7 @@
 //! assertion: an [`IncrementalBrickField`] patched edit-by-edit (only dirty chunks
 //! re-evaluated, slots free-listed) is byte-exact vs a from-scratch [`build_brick_field`]
 //! of the SAME scene, after EVERY step, across explicit block-kind transitions
-//! (air↔sculpted↔coarse) and add / move / recolour / delete edits.
+//! (air↔sculpted↔coarse) and add / move / recolor / delete edits.
 use crate::brick::*;
 use document::scene::{Node, NodeContent, NodeTransform, Scene};
 use document::voxel::SdfShape;
@@ -112,7 +112,7 @@ fn assert_incremental_matches_wholesale(
 }
 
 /// THE parity gate for G3 (issue #69 acceptance): drive a scripted sequence of edits
-/// — recolour, move, shape-swap, delete, re-add — applying each INCREMENTALLY, and
+/// — recolor, move, shape-swap, delete, re-add — applying each INCREMENTALLY, and
 /// after every step assert the incremental field equals a from-scratch wholesale build
 /// of the same scene. Two fixed anchor tools at the extremes pin the covering set so an
 /// incremental edit never grows it (the app's reframe guard — a growth routes wholesale).
@@ -134,7 +134,7 @@ fn incremental_dirty_update_equals_wholesale_after_every_step() {
 
     // The scripted edits (each keeps the anchors, edits the middle) — chosen to force
     // block-kind transitions: add (air→sculpted/coarse), move (sculpted↔air↔coarse),
-    // recolour (sculpted/coarse material change), shape-swap (occupancy change), delete.
+    // recolor (sculpted/coarse material change), shape-swap (occupancy change), delete.
     let scenes = [
         ("initial", scene_with(None)),
         (
@@ -147,7 +147,7 @@ fn incremental_dirty_update_equals_wholesale_after_every_step() {
             ))),
         ),
         (
-            "recolour",
+            "recolor",
             scene_with(Some(tool(
                 ShapeKind::Sphere,
                 [0, 0, 0],
@@ -200,7 +200,7 @@ fn incremental_dirty_update_equals_wholesale_after_every_step() {
     for (label, scene) in &scenes[1..] {
         let new_index = scene.build_leaf_spatial_index(density);
         let edit_aabb = new_index.edit_aabb_since(&previous_index);
-        // Mirror `AppCore::rebuild`: localisable edit → invalidate its chunks; a `None`
+        // Mirror `AppCore::rebuild`: localizable edit → invalidate its chunks; a `None`
         // (wholesale) edit clears. Build the fresh covering set AFTER invalidation.
         let dirty = match &edit_aabb {
             Some(aabb) => cache.invalidate_aabb(aabb, density),
@@ -213,7 +213,7 @@ fn incremental_dirty_update_equals_wholesale_after_every_step() {
         let new_covering: std::collections::BTreeSet<[i32; 3]> =
             fresh.iter().map(|(coord, _)| *coord).collect();
 
-        // Incremental applies only when localisable AND the covering set is invariant
+        // Incremental applies only when localizable AND the covering set is invariant
         // (the app routes a growth/reframe wholesale). Otherwise reset from wholesale.
         if edit_aabb.is_some() && new_covering == covering {
             field.apply_dirty_update(&fresh, &dirty);
@@ -236,7 +236,7 @@ fn incremental_dirty_update_equals_wholesale_after_every_step() {
 
 /// Untouched-slot discipline (issue #69 acceptance): an edit confined to ONE chunk
 /// writes only that chunk's blocks' slots (+ frees), never the whole scene's — the
-/// "per-edit cost ∝ dirty region" claim made testable. A recolour keeps occupancy
+/// "per-edit cost ∝ dirty region" claim made testable. A recolor keeps occupancy
 /// identical, so exactly the dirty chunk's sculpted blocks are freed + rewritten.
 #[test]
 fn one_chunk_edit_writes_only_that_chunks_slots() {
@@ -252,7 +252,7 @@ fn one_chunk_edit_writes_only_that_chunks_slots() {
     let scene_b = Scene::from_nodes(vec![
         anchor_lo,
         anchor_hi,
-        // Same shape/placement, DIFFERENT material — a pure recolour (occupancy fixed).
+        // Same shape/placement, DIFFERENT material — a pure recolor (occupancy fixed).
         tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Plain, density),
     ]);
 
@@ -267,11 +267,11 @@ fn one_chunk_edit_writes_only_that_chunks_slots() {
     let index_b = scene_b.build_leaf_spatial_index(density);
     let edit_aabb = index_b
         .edit_aabb_since(&index_a)
-        .expect("a recolour is a localisable edit");
+        .expect("a recolor is a localizable edit");
     let dirty = cache.invalidate_aabb(&edit_aabb, density);
     let fresh_b = covering_owned(&mut cache, &scene_b, density);
 
-    // Count the sculpted blocks living in the dirty chunks (the recolour re-writes
+    // Count the sculpted blocks living in the dirty chunks (the recolor re-writes
     // exactly these — occupancy is unchanged, only the record material differs).
     let dirty_set: std::collections::BTreeSet<[i32; 3]> = dirty.iter().copied().collect();
     let expected_written: usize = fresh_b
@@ -298,17 +298,17 @@ fn one_chunk_edit_writes_only_that_chunks_slots() {
         update.written_slots.len(),
         total_sculpted
     );
-    // A pure recolour keeps occupancy, so freed == rewritten (slots recycled in place)
+    // A pure recolor keeps occupancy, so freed == rewritten (slots recycled in place)
     // and the atlas does not grow.
     assert_eq!(
         update.freed_slots.len(),
         expected_written,
-        "recolour frees what it rewrites"
+        "recolor frees what it rewrites"
     );
-    assert!(!update.atlas_grew, "a recolour does not grow the atlas");
+    assert!(!update.atlas_grew, "a recolor does not grow the atlas");
     // And the result is still byte-exact vs wholesale.
     let wholesale = build_brick_field(&fresh_b, density);
-    assert_incremental_matches_wholesale(&field.to_build(), &wholesale, "one-chunk-recolour");
+    assert_incremental_matches_wholesale(&field.to_build(), &wholesale, "one-chunk-recolor");
 }
 
 /// **The patch-parity witness (item 9).** The renderer's patch path no longer materialises
@@ -329,7 +329,7 @@ fn patched_slot_bytes_and_geometry_match_to_build_materialisation() {
         anchor_hi.clone(),
         tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Wood, density),
     ]);
-    // A pure recolour (occupancy fixed) — writes the dirty chunk's slots without growing.
+    // A pure recolor (occupancy fixed) — writes the dirty chunk's slots without growing.
     let scene_b = Scene::from_nodes(vec![
         anchor_lo,
         anchor_hi,
@@ -346,14 +346,14 @@ fn patched_slot_bytes_and_geometry_match_to_build_materialisation() {
     let index_b = scene_b.build_leaf_spatial_index(density);
     let edit_aabb = index_b
         .edit_aabb_since(&index_a)
-        .expect("a recolour is a localisable edit");
+        .expect("a recolor is a localizable edit");
     let dirty = cache.invalidate_aabb(&edit_aabb, density);
     let fresh_b = covering_owned(&mut cache, &scene_b, density);
 
     let update = field.apply_dirty_update(&fresh_b, &dirty);
     assert!(
         !update.written_slots.is_empty(),
-        "the recolour must write some slots"
+        "the recolor must write some slots"
     );
 
     // The materialisation the patch path used to build per edit — the witness.
@@ -387,17 +387,17 @@ fn patched_slot_bytes_and_geometry_match_to_build_materialisation() {
 }
 
 /// **The occlusion-dilation seam (ADR 0011 interior elision).** Under the surface-only
-/// record contract, an edit can flip records in NON-dirty neighbour chunks: carving away
+/// record contract, an edit can flip records in NON-dirty neighbor chunks: carving away
 /// a block un-occludes the face-adjacent blocks across the chunk boundary (their records
 /// must APPEAR), and filling it back occludes them again (their records must VANISH).
 /// Two chunk-filling solid boxes abut across a chunk boundary; deleting the second is
 /// the carve, re-adding it the fill. After each step the incrementally-patched field
 /// must equal a from-scratch surface-only wholesale build byte-for-byte — this is what
-/// the 26-neighbourhood ring re-derivation in `apply_dirty_update` exists for. The test
+/// the 26-neighborhood ring re-derivation in `apply_dirty_update` exists for. The test
 /// also asserts the scenario is REAL: the carve changes the record set of a chunk that
 /// was NOT in the dirty set (else the fixture is vacuous).
 #[test]
-fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
+fn incremental_carve_across_chunk_boundary_flips_neighbor_occlusion() {
     let density = 4u32;
     let material = MaterialChoice::Stone;
     let chunk_span = CHUNK_BLOCKS as i64;
@@ -449,7 +449,7 @@ fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
     let index_without_b = scene_without_b.build_leaf_spatial_index(density);
     let carve_aabb = index_without_b
         .edit_aabb_since(&index_with_b)
-        .expect("a node delete is a localisable edit");
+        .expect("a node delete is a localizable edit");
     let carve_dirty = cache.invalidate_aabb(&carve_aabb, density);
     let fresh_without_b = covering_owned(&mut cache, &scene_without_b, density);
     assert_eq!(
@@ -501,7 +501,7 @@ fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
     // --- Step 2: FILL (re-add box B) — re-occludes box A's face blocks.
     let fill_aabb = index_with_b
         .edit_aabb_since(&index_without_b)
-        .expect("a node re-add is a localisable edit");
+        .expect("a node re-add is a localizable edit");
     let fill_dirty = cache.invalidate_aabb(&fill_aabb, density);
     let fresh_refilled = covering_owned(&mut cache, &scene_with_b, density);
     field.apply_dirty_update(&fresh_refilled, &fill_dirty);
@@ -528,7 +528,7 @@ fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
 }
 
 /// Perf probe (issue #69, `#[ignore]`d — run in release): a ~1–2k-block scene, a
-/// one-region recolour, incremental patch vs a full `build_brick_field`. The headless
+/// one-region recolor, incremental patch vs a full `build_brick_field`. The headless
 /// stand-in for the Tracy live latency measurement; numbers go in the commit message.
 /// Run: `cargo test --release incremental_vs_wholesale_perf_probe -- --ignored --nocapture`.
 #[test]
@@ -556,7 +556,7 @@ fn incremental_vs_wholesale_perf_probe() {
     let mut field = IncrementalBrickField::from_wholesale(build_a.clone()).0;
 
     let index_b = scene_b.build_leaf_spatial_index(density);
-    let edit_aabb = index_b.edit_aabb_since(&index_a).expect("localisable");
+    let edit_aabb = index_b.edit_aabb_since(&index_a).expect("localizable");
     let dirty = cache.invalidate_aabb(&edit_aabb, density);
     let fresh_b = covering_owned(&mut cache, &scene_b, density);
 

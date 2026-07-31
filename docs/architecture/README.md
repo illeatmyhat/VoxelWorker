@@ -39,7 +39,7 @@ Everything else in this set is elaboration of these.
    derived display caches and is free to be fast, approximate in cost but never in
    occupancy, and absent (a headless build renders the same voxels). → [Display](03-display.md)
 
-5. **A value carries its frame.** Every spatial quantity — a placement, a recentre, an
+5. **A value carries its frame.** Every spatial quantity — a placement, a recenter, an
    offset — travels with the coordinate frame it was authored in and is consumed in that
    frame. Nothing downstream re-derives a frame from context; re-derivation is how two
    halves of a system come to disagree by half a voxel. → [Evaluation](02-evaluation.md)
