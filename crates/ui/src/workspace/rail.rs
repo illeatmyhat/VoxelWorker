@@ -20,7 +20,9 @@ use voxel_core::voxel::ShapeKind;
 
 use super::{hairline, region_frame, Edge, RAIL_WIDTH};
 use crate::icons::{large::LargeIcon, Icon};
-use crate::panel::{ConstraintVerb, PanelResponse, PanelState, PositionSnap, SketchTool};
+use crate::panel::{
+    ArmedConstraint, ConstraintVerb, PanelResponse, PanelState, PositionSnap, SketchTool,
+};
 use crate::theme;
 
 /// A shape cell: full rail width less the hairline, tall enough for a 26 px tile plus air.
@@ -119,13 +121,12 @@ const SKETCH_SNAPS: &[(Icon, &str, PositionSnap)] = &[
     ),
 ];
 
-/// The constraint verbs on the sketch rail (ADR 0035). Unlike every other cell here these do
-/// not ARM: a constraint reads what is already picked and applies at once, so a cell is live
-/// exactly when the selection can carry it and pressing it can never fail for want of geometry
-/// ([`ConstraintVerb::kinds`](crate::panel::ConstraintVerb)).
+/// The constraint verbs on the sketch rail (ADR 0035 Decision 15). These ARM like the drawing
+/// tools do: the cell lights, and the picks that follow fill the constraint's slots until it is
+/// complete, at which point it applies and the cell goes dark again.
 ///
 /// Three of the constraint shelf's fourteen glyphs. The rest are drawn and named but have no
-/// residual behind them yet, and a cell that asserts nothing is worse than no cell.
+/// residual behind them yet, and an armable verb that asserts nothing is worse than no cell.
 const SKETCH_CONSTRAINTS: &[(Icon, ConstraintVerb)] = &[
     (Icon::ConstraintHorizontal, ConstraintVerb::Horizontal),
     (Icon::ConstraintVertical, ConstraintVerb::Vertical),
@@ -222,28 +223,22 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
         }
     }
     rail_heading(ui, "Constrain");
-    // Applicability is measured against the sketch the cell would constrain, so a cell cannot
-    // be live for geometry that is picked but no longer there.
-    let picked_points: Vec<_> = target
-        .map(|id| state.selection.sketch_points(id).collect())
-        .unwrap_or_default();
-    let picked_segments: Vec<_> = target
-        .map(|id| state.selection.sketch_segments(id).collect())
-        .unwrap_or_default();
     for &(icon, verb) in SKETCH_CONSTRAINTS {
-        let applicable = producer.as_ref().is_some_and(|producer| {
-            !verb
-                .kinds(&producer.sketch, &picked_points, &picked_segments)
-                .is_empty()
-        });
-        if !applicable {
-            sketch_cell(ui, icon, verb.tooltip(), false, true);
-            continue;
-        }
-        // Never "active": a constraint is an act, not a mode, so the cell lights on hover and
-        // goes back to rest the moment the assertion is made.
-        if sketch_tool_cell(ui, icon, verb.tooltip(), false) {
-            response.apply_sketch_constraint = Some(verb);
+        let armed = state
+            .armed_constraint
+            .as_ref()
+            .is_some_and(|armed| armed.verb() == verb);
+        if sketch_tool_cell(ui, icon, verb.tooltip(), armed) {
+            // Pressing the ARMED cell cancels, the way clicking an armed shape cell disarms
+            // placement: the same press that started a command is the obvious way to abandon it.
+            state.armed_constraint = if armed {
+                None
+            } else {
+                Some(ArmedConstraint::new(verb))
+            };
+            // The gesture's picks ARE the selection while it runs, so it starts from empty.
+            // Inheriting whatever was picked before would fill slots the author never aimed at.
+            state.selection.clear_sketch_entities();
         }
     }
     rail_heading(ui, "Op");

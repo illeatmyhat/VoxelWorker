@@ -242,30 +242,61 @@ Minimum feature size and "this arc is too small to survive quantization" are **l
 constraints**. They are properties to check after solving and report; as constraints they would give
 the solver an objective it cannot converge on.
 
-### 15. A constraint is a verb on the selection, not a tool mode
+### 15. A constraint ARMS, then collects the entities it needs
 
-Every other cell on the sketch rail arms: Polyline waits for clicks, Rectangle waits for a drag,
-the snap picker changes what a later click means. A constraint does none of that. It reads what is
-already picked and applies at once, which is what Fusion and Onshape both settle on and what the
-alternative argues itself out of — a modal Horizontal would ask the author to pick the same line a
-second time inside the mode, and the second pick has nothing to add that the first did not say.
+A constraint arms like every other cell on the sketch rail: press it, then pick the geometry it is
+about. It is not a verb applied to whatever happened to be selected first.
 
-This makes applicability a first-class question the rail must answer before the author presses
-anything: *can what is picked right now carry this verb?* A live cell must not be able to fail for
-want of geometry, so the same function decides the cell's enabled state and builds the assertions —
-"the cell was enabled" and "these are the constraints" cannot then drift apart. Refusals that
-survive are geometric only (`Unsatisfiable`), never clerical.
+The two models differ in what the author must know **before** pressing anything. Selection-first
+requires them to already hold each constraint's arity in their head and to have assembled a
+matching selection; the button then either works or sits dead, and a dead button does not say what
+it wanted. Arm-first lets the tool ask — one pick at a time, naming what it is waiting for, and
+turning away a pick that does not fit. The knowledge moves from the author to the tool.
 
-A multi-selection asserts the verb of each member **separately** rather than relating them: two
-segments told Horizontal is two constraints, not one "these agree". The relating verbs — Parallel,
-Equal, Symmetry — are different entries with a different arity, and folding them together here
-would make the number of constraints depend on which button was pressed rather than on what was
-said.
+The typed slot is what makes that work. Each verb declares the entities it wants, in order:
+Horizontal wants a line, Fix wants a point, and the relations will want a specific pair. A pick of
+the wrong kind is a **refusal that leaves the gesture running** — the tool stays armed and keeps
+waiting, because a mis-click is not a decision to abandon the command. The slot list IS the arity,
+so adding a two-entity relation later is an entry in a table rather than a new branch in the
+gesture.
 
-The batch is one commit and one undo step, but each constraint is trialled against the sketch the
-previous ones already moved, not against the original. A refusal stops the batch and keeps what
-landed before it: discarding the accepted ones too would let one impossible member of a five-line
-selection silently undo four assertions the author watched happen.
+Completion disarms. Once the last slot fills there is nothing left to ask, and holding the mode
+open would give every constraint an explicit end the author has no reason to expect.
+
+An armed constraint **overrides** the drawing tool for the duration of its gesture rather than
+joining `SketchTool`'s enum. It hit-tests the same entities Select does but answers a different
+question, and the two cannot run together without drawing geometry mid-assertion. It is also the
+only sketch gesture that ends by itself, which no drawing tool does. Escape unwinds it on the
+established two rungs: the first drops the picks and keeps the constraint armed, the second puts
+the constraint down.
+
+The gesture's picks ride in the ordinary selection, so they light up through the shipped highlight
+path rather than a second one that could disagree with it. They are cleared on completion:
+scaffolding for a question the author asked is not a selection they made, and leaving it lit would
+aim the next Delete at geometry they only pointed at.
+
+### 16. An assertion carries its own mark on the drawing
+
+Every constraint draws a badge beside the geometry it names, in the constraint ink, using the same
+glyph as the rail cell that made it.
+
+This is not decoration. A solve moves the drawing until the assertion holds, after which the only
+evidence of it is a line that *looks* level — and a line drawn nearly level looks exactly the same.
+Without a mark there is no way to tell an asserted horizontal from a coincidence, which means no
+way to predict what a later edit will and will not disturb.
+
+The badge is anchored through the constraint's entity ids, resolved against the same projected
+positions the handles and lines come from, so it cannot drift from its entity: it is placed **by**
+the sketch entity graph, not merely beside it. A line's badge sits off the midpoint along the edge
+normal, the one offset that reads as "about this line" at every angle; a point's sits up and to the
+right, where a lock hangs in every other tool. Badges sharing an anchor step along that offset
+instead of overprinting.
+
+Glyph identity with the rail cell is the mechanism, not a saving: the mark the author pressed is
+the mark they then see standing on the drawing, so the shelf teaches the notation once.
+
+Dimensions are the exception — a `Distance` draws as a dimension gizmo, and the number is already
+the mark. A glyph beside it would say the same thing twice.
 
 ## Consequences
 

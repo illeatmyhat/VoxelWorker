@@ -233,6 +233,12 @@ pub fn run_egui_frame(
     // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
     // headless `shot` path.
     sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
+    // ADR 0035 Decision 15: the constraint badges for THIS frame — each asserted relation's own
+    // glyph at an already-projected centre (egui points), anchored on the geometry the relation
+    // names. Drawn OVER the lines and handles: a badge is a claim about the drawing and must not
+    // be buried by it. Empty unless a sketch is being edited, always empty on the headless
+    // `shot` path.
+    sketch_constraint_badges: &[(egui::Pos2, ui::icons::Icon)],
     // #100: whether the open viewport context menu was raised INSIDE a derived face, and if so
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.
@@ -732,6 +738,12 @@ pub fn run_egui_frame(
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).
             ui::chrome::sketch_vertex_handles(ui, sketch_handles, &mut chrome_rects_points);
+            // ADR 0035 Decision 15: the constraint badges, over the geometry rather than under
+            // it — a badge is what tells the author a level-looking line is level BECAUSE it was
+            // asserted, so a line drawn across it would take the answer away.
+            if !sketch_constraint_badges.is_empty() {
+                ui::chrome::sketch_constraint_badges(ui, sketch_constraint_badges);
+            }
             // ADR 0028 (#95): the add-point insert preview — a diamond on the hovered edge. NOT
             // chrome (a passive marker), so a click passes through to the stationary-release insert.
             if let Some(center) = sketch_insert_preview {

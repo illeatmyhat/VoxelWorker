@@ -188,6 +188,9 @@ impl WindowedState {
                 // ADR 0030 §5 (#102): the committed arc curves, projected last frame — the same
                 // under-layer as the straight edges.
                 &self.sketch_arc_lines,
+                // ADR 0035 Decision 15: the constraint badges, projected last frame — each
+                // asserted relation's glyph beside the geometry it names.
+                &self.sketch_constraint_badges,
                 // #100: the pick state of the region the open menu was raised inside, so the
                 // menu can label its row "carve" or "fill".
                 sketch_face_at_menu,
@@ -379,10 +382,6 @@ impl WindowedState {
         // after.
         if prepared.panel_response.delete_selection {
             self.delete_selection();
-        }
-        // ADR 0035: the rail's constraint verbs, asserted over the sketch selection.
-        if let Some(verb) = prepared.panel_response.apply_sketch_constraint {
-            self.apply_sketch_constraint(verb);
         }
         // #100: the context menu's carve / fill row, acting on the region the press resolved.
         if prepared.panel_response.toggle_sketch_face {
@@ -1726,7 +1725,25 @@ impl WindowedState {
         if self.panel_state.sketch_mode.is_none() {
             return false;
         }
-        let live = self.sketch_chain.is_some()
+        // A constraint holding picks is a half-finished gesture like any other, and Escape puts
+        // the picks back without putting the constraint down — the same rung, the same rule.
+        let constraint_picks = self
+            .panel_state
+            .armed_constraint
+            .as_ref()
+            .is_some_and(|armed| !armed.picked().is_empty());
+        if constraint_picks {
+            let verb = self
+                .panel_state
+                .armed_constraint
+                .as_ref()
+                .map(ui::panel::ArmedConstraint::verb);
+            self.panel_state.armed_constraint = verb.map(ui::panel::ArmedConstraint::new);
+            self.panel_state.selection.clear_sketch_entities();
+            self.panel_state.sketch_constraint_refusal = None;
+        }
+        let live = constraint_picks
+            || self.sketch_chain.is_some()
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
             || self.sketch_arc_gesture.is_some();
@@ -1742,9 +1759,16 @@ impl WindowedState {
     /// actually armed, so Escape on the bare Select tool falls through to the rest of the chain
     /// rather than swallowing the key.
     pub(super) fn disarm_sketch_tool(&mut self) -> bool {
-        if self.panel_state.sketch_mode.is_none()
-            || self.panel_state.sketch_tool == ui::panel::SketchTool::Select
-        {
+        if self.panel_state.sketch_mode.is_none() {
+            return false;
+        }
+        // A constraint is put down FIRST, and on its own: it overrides the drawing tool while it
+        // runs, so the tool underneath is not what the author is trying to escape from.
+        if self.panel_state.armed_constraint.take().is_some() {
+            self.panel_state.sketch_constraint_refusal = None;
+            return true;
+        }
+        if self.panel_state.sketch_tool == ui::panel::SketchTool::Select {
             return false;
         }
         self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
@@ -2101,49 +2125,167 @@ impl WindowedState {
         self.panel_state.selection.clear_sketch_entities();
     }
 
-    /// ADR 0035: assert `verb` over every picked entity it applies to, as ONE edit, and commit
-    /// the drawing the solver leaves behind.
+    /// The constraint badges to draw next frame (ADR 0035 Decision 15): one glyph per asserted
+    /// relation, anchored on the geometry the relation NAMES.
     ///
-    /// The batch is all-or-nothing at the level of the commit but not of the assertion: each
-    /// constraint is trialled in turn against the sketch the previous ones already moved, so a
-    /// second segment told Horizontal is judged against a drawing where the first one already is.
-    /// Judging them all against the original would let a pair through that cannot both hold.
+    /// The anchor comes from the constraint's entity ids resolved through the same projected
+    /// arrays the handles and lines use, so a badge cannot drift from its entity — it is placed
+    /// by the entity graph, not beside it. A segment's badge sits off the midpoint along the
+    /// edge normal (perpendicular is the only offset that reads as "about this line" at every
+    /// angle); a point's sits up and to the right, where a lock hangs in every CAD tool.
     ///
-    /// A refusal stops the batch and commits what was accepted before it. The alternative —
-    /// discarding the accepted ones too — would make one impossible member of a five-line
-    /// selection silently undo four assertions the author watched land.
-    pub(super) fn apply_sketch_constraint(&mut self, verb: ui::panel::ConstraintVerb) {
+    /// Several badges on one anchor step further along that same offset rather than overprinting.
+    /// A constraint naming geometry that is off-screen or behind the camera simply has no badge:
+    /// the drawing is what carries them.
+    fn refresh_sketch_constraint_badges(
+        &mut self,
+        target: document::scene::NodeId,
+        pixels_per_point: f32,
+    ) {
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let at = |index: usize| -> Option<egui::Pos2> {
+            let px = (*self.sketch_vertex_px.get(index)?)?;
+            Some(egui::Pos2::new(
+                px.x / pixels_per_point,
+                px.y / pixels_per_point,
+            ))
+        };
+        let point_index = |id: document::sketch::EntityId| {
+            self.sketch_point_ids.iter().position(|held| *held == id)
+        };
+        // How many badges already stand on this anchor, so the next one steps clear of them.
+        let mut stacked: std::collections::HashMap<[u32; 2], f32> =
+            std::collections::HashMap::new();
+
+        for constraint in producer.sketch.constraints() {
+            let (anchor, direction) = match constraint.kind {
+                document::sketch::ConstraintKind::Horizontal { segment }
+                | document::sketch::ConstraintKind::Vertical { segment } => {
+                    let Some(&(_, a_idx, b_idx)) = self
+                        .sketch_segments
+                        .iter()
+                        .find(|(id, _, _)| *id == segment)
+                    else {
+                        continue;
+                    };
+                    let (Some(a), Some(b)) = (at(a_idx), at(b_idx)) else {
+                        continue;
+                    };
+                    let along = b - a;
+                    let length = along.length();
+                    if length < f32::EPSILON {
+                        continue;
+                    }
+                    let normal = egui::vec2(-along.y, along.x) / length;
+                    (a + along * 0.5, normal)
+                }
+                document::sketch::ConstraintKind::Fix { point, .. } => {
+                    let Some(index) = point_index(point) else {
+                        continue;
+                    };
+                    let Some(position) = at(index) else { continue };
+                    (position, egui::vec2(0.707, -0.707))
+                }
+                // A Distance dimension draws as a dimension gizmo, not a badge — the number IS
+                // the mark, and a glyph beside it would say the same thing twice.
+                document::sketch::ConstraintKind::Distance { .. } => continue,
+            };
+            // Anchors are keyed by their rounded bits so two constraints on the same midpoint
+            // share a stack; f32 has no Hash, and exact equality is what "same anchor" means.
+            let key = [anchor.x.round().to_bits(), anchor.y.round().to_bits()];
+            let step = stacked.entry(key).or_insert(1.0);
+            let center = anchor + direction * (ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * *step);
+            *step += 1.0;
+            self.sketch_constraint_badges
+                .push((center, ui::panel::constraint_icon(constraint.kind)));
+        }
+    }
+
+    /// ADR 0035 Decision 15: feed the entity under the cursor to the armed constraint.
+    ///
+    /// A pick the waiting slot cannot take is refused and the gesture keeps running — a click on
+    /// the wrong kind of thing is a mis-click, not a decision to abandon the command. A pick that
+    /// fills the last slot applies the constraint, commits the solved drawing through the same
+    /// anchor-preserving door every sketch edit uses, and DISARMS: there is nothing left to ask.
+    ///
+    /// Taken picks are mirrored into the selection so the entities the gesture is holding light
+    /// up through the shipped highlight path rather than a second one that could disagree with it.
+    pub(super) fn resolve_sketch_constraint_click(&mut self, cursor_x: f64, cursor_y: f64) {
         let Some(target) = self.panel_state.sketch_mode else {
             return;
         };
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
-        let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
-        let segments: Vec<_> = self.panel_state.selection.sketch_segments(target).collect();
-        let kinds = verb.kinds(&producer.sketch, &points, &segments);
-        if kinds.is_empty() {
+        let Some(mut armed) = self.panel_state.armed_constraint.clone() else {
             return;
-        }
+        };
+        // A vertex beats an edge under the same cursor, the same precedence the Select tool and
+        // the vertex grab both use — the most specific thing under the pointer wins.
+        let candidate = match self.sketch_entity_at(cursor_x, cursor_y) {
+            Some(candidate) => candidate,
+            // A click on empty plane is not a refusal to report; it asks for nothing.
+            None => return,
+        };
 
-        let mut next = producer;
-        let mut refusal = None;
-        let mut accepted = 0_usize;
-        for kind in kinds {
-            match next.with_constraint(kind) {
-                Ok((constrained, _)) => {
-                    next = constrained;
-                    accepted += 1;
-                }
-                Err(why) => {
-                    refusal = Some(refusal_text(why));
-                    break;
+        match armed.offer(candidate, &producer.sketch) {
+            ui::panel::Offer::Refused(why) => {
+                self.panel_state.sketch_constraint_refusal = Some(why);
+            }
+            ui::panel::Offer::Taken => {
+                self.panel_state.sketch_constraint_refusal = None;
+                // `toggle` only ever ADDS here: arming cleared the sketch selection, and `offer`
+                // refuses an entity the gesture already holds, so the remove branch is
+                // unreachable for as long as both of those hold.
+                self.panel_state
+                    .selection
+                    .toggle(selection_target(target, candidate));
+                self.panel_state.armed_constraint = Some(armed);
+            }
+            ui::panel::Offer::Complete => {
+                self.panel_state.sketch_constraint_refusal = None;
+                let Some(kind) = armed.kind(&producer.sketch) else {
+                    return;
+                };
+                match producer.with_constraint(kind) {
+                    Ok((constrained, _)) => {
+                        self.commit_sketch_profile_edit(target, constrained);
+                        // The gesture's picks were scaffolding for the question, not a selection
+                        // the author made; leaving them lit would make the next Delete act on
+                        // geometry they only pointed at.
+                        self.panel_state.selection.clear_sketch_entities();
+                        self.panel_state.armed_constraint = None;
+                    }
+                    // The only refusal that reaches here is geometric — `offer` screened the
+                    // clerical ones. The gesture stays armed so the author can pick a different
+                    // entity rather than re-arm the command they never finished.
+                    Err(why) => {
+                        self.panel_state.sketch_constraint_refusal = Some(refusal_text(why));
+                    }
                 }
             }
         }
-        self.panel_state.sketch_constraint_refusal = refusal;
-        if accepted > 0 {
-            self.commit_sketch_profile_edit(target, next);
+    }
+
+    /// The sketch entity under the physical-px cursor as a constraint names it — vertex first,
+    /// then edge, the same most-specific-thing-under-the-pointer precedence the Select tool uses.
+    ///
+    /// An arc answers `None`, so clicking one reads as clicking nothing. No shipped constraint
+    /// slot accepts an arc; the honest alternative is a refusal naming what arcs *can* carry, and
+    /// nothing can carry them until Tangent and Concentric have residuals.
+    fn sketch_entity_at(&self, cursor_x: f64, cursor_y: f64) -> Option<ui::panel::SketchEntity> {
+        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
+            return self
+                .sketch_point_ids
+                .get(index)
+                .copied()
+                .map(ui::panel::SketchEntity::Point);
+        }
+        match self.nearest_sketch_edge(cursor_x, cursor_y)? {
+            SketchEdgeHit::Segment(id) => Some(ui::panel::SketchEntity::Segment(id)),
+            SketchEdgeHit::Arc(_) => None,
         }
     }
 
@@ -2283,6 +2425,7 @@ impl WindowedState {
         self.sketch_arc_lines.clear();
         self.sketch_arc_chords.clear();
         self.sketch_face_polygons.clear();
+        self.sketch_constraint_badges.clear();
         self.sketch_insert_preview = None;
         self.sketch_draw_preview.clear();
         self.sketch_marquee_band = None;
@@ -2439,6 +2582,8 @@ impl WindowedState {
                 }
             })
         });
+
+        self.refresh_sketch_constraint_badges(target, pixels_per_point);
 
         // The segment LINES to draw next frame: each committed edge between its two projected
         // endpoints, in egui points (ADR 0030 — an open sketch resolves to nothing, so the edges
@@ -2799,9 +2944,25 @@ fn polygon_double_area(boundary: &[egui::Pos2]) -> f32 {
     sum
 }
 
-/// What the top bar says about a refused constraint (ADR 0035). The rail's applicability rule
-/// screens the first two out before a cell is ever live, so in practice the author reads the
-/// third — but a message per variant is what keeps that claim checkable rather than assumed.
+/// The picked entity as the SELECTION names it, so a constraint's in-progress picks light up
+/// through the shipped sketch highlight path rather than a second one that could disagree.
+fn selection_target(
+    sketch: document::scene::NodeId,
+    entity: ui::panel::SketchEntity,
+) -> ui::panel::SelectionTarget {
+    match entity {
+        ui::panel::SketchEntity::Point(id) => {
+            ui::panel::SelectionTarget::SketchPoint { sketch, entity: id }
+        }
+        ui::panel::SketchEntity::Segment(id) => {
+            ui::panel::SelectionTarget::SketchSegment { sketch, entity: id }
+        }
+    }
+}
+
+/// What the top bar says about a refused constraint (ADR 0035). `offer` screens the clerical
+/// refusals before the producer sees them, so in practice the author reads the third — but a
+/// message per variant is what keeps that claim checkable rather than assumed.
 fn refusal_text(why: document::sketch::ConstraintRefusal) -> &'static str {
     match why {
         document::sketch::ConstraintRefusal::UnknownEntity => "names geometry that is gone",

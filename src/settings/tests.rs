@@ -70,6 +70,10 @@ fn config_round_trips_through_json() {
         sketch_mode: Some(document::scene::NodeId(9)),
         // Non-default (not Select) so the round-trip exercises the armed sketch tool (#95).
         sketch_tool: ui::panel::SketchTool::AddPoint,
+        armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
+            ui::panel::ConstraintVerb::Vertical,
+            vec![ui::panel::SketchEntity::Segment(11)],
+        )),
         // Non-default (not Voxel) so the round-trip exercises the sketch snap (#96).
         sketch_snap: ui::panel::PositionSnap::NoSnap,
         selection: SelectionConfig {

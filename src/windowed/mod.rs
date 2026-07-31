@@ -393,6 +393,16 @@ struct WindowedState {
     /// the edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so
     /// a click edits and a drag still rotates the view.
     sketch_edit_press: bool,
+    /// Whether the most recent left-press was a pick for an ARMED CONSTRAINT (ADR 0035 Decision
+    /// 15). A stationary release with this set offers the entity under the cursor to the slot
+    /// that is waiting; a drag leaves it and turns the view instead, like every other sketch
+    /// press flag here.
+    sketch_constraint_press: bool,
+    /// The constraint badges to draw over the sketch (ADR 0035 Decision 15), as
+    /// `(centre in egui points, glyph)` — one per asserted relation, anchored on the geometry it
+    /// names. Rebuilt each frame by the overlay refresh, alongside the vertex handles and the
+    /// segment lines it is projected from.
+    sketch_constraint_badges: Vec<(egui::Pos2, ui::icons::Icon)>,
     /// The open polyline chain (#99) as `(first point id, last point id)`, or `None` when no
     /// chain is being drawn. Each polyline click connects `last → clicked` and advances;
     /// clicking `first` closes the loop and ends the chain; clicking `last` again ends it
@@ -779,6 +789,8 @@ impl WindowedState {
             orbit_center_overlay: None,
             last_ray_unprojection: None,
             sketch_edit_press: false,
+            sketch_constraint_press: false,
+            sketch_constraint_badges: Vec::new(),
             sketch_chain: None,
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
@@ -965,6 +977,8 @@ impl WindowedState {
             viewport_intents: _,
             viewport_transactions: _,
             sketch_edit_press: _,
+            sketch_constraint_press: _,
+            sketch_constraint_badges: _,
             sketch_chain: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,

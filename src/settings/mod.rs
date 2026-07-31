@@ -468,6 +468,14 @@ pub struct AppConfig {
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
 
+    /// The armed constraint gesture and its picks so far (ADR 0035 Decision 15), restored so a
+    /// mid-pick dump re-enters with the same question on screen — the same reason
+    /// [`sketch_tool`](Self::sketch_tool) is carried, applied to the one sketch gesture that
+    /// lives on the panel rather than on the shell. `SessionArtifact` persists it through the
+    /// `ArmedConstraintConfig` shim, `ui` being serde-free.
+    #[snapshot(session)]
+    pub armed_constraint: Option<ui::panel::ArmedConstraint>,
+
     /// The sketch-mode position snap (#96): how a vertex edit quantizes on the sketch plane's
     /// own grid (none / voxel / block). Session state alongside
     /// [`placement_snap`](Self::placement_snap) — durable across edits and relaunch;
@@ -539,6 +547,7 @@ impl Default for AppConfig {
             armed_tool: None,
             sketch_mode: None,
             sketch_tool: SketchTool::default(),
+            armed_constraint: None,
             sketch_snap: PositionSnap::default(),
             default_orbit_type: OrbitType::default(),
             orbit_mode: OrbitMode::default(),
@@ -599,6 +608,7 @@ impl AppConfig {
                 .as_ref()
                 .and_then(ArmedToolConfig::from_armed),
             sketch_tool: panel.sketch_tool,
+            armed_constraint: panel.armed_constraint.clone(),
             sketch_snap: panel.sketch_snap,
             default_orbit_type: panel.default_orbit_type,
             orbit_mode: panel.orbit_mode,
@@ -710,6 +720,8 @@ impl AppConfig {
             // ADR 0028 (#95): restore the armed sketch tool, so a mid-edit repro re-enters with
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
+            // ADR 0035 Decision 15: and the constraint gesture, picks included.
+            armed_constraint: self.armed_constraint.clone(),
             sketch_snap: self.sketch_snap,
             default_orbit_type: self.default_orbit_type,
             orbit_mode: self.orbit_mode,

@@ -136,6 +136,70 @@ enum SketchToolConfig {
     ThreePointArc,
 }
 
+/// The same shim treatment for an armed constraint gesture (ADR 0035 Decision 15) — the verb
+/// and the entities picked for it so far. `ui` carries no serde, and the gesture's fields are
+/// private to it because `offer` is what maintains their agreement, so this mirrors the shape
+/// and converts through the public parts door rather than reaching inside.
+///
+/// A dump naming a verb this build lacks degrades the whole gesture to "nothing armed", which is
+/// the same tolerance the sketch tool gets: an unknown command is better forgotten than guessed.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ArmedConstraintConfig {
+    verb: ConstraintVerbConfig,
+    #[serde(default)]
+    picked: Vec<SketchEntityConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+enum ConstraintVerbConfig {
+    Horizontal,
+    Vertical,
+    Fix,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+enum SketchEntityConfig {
+    Point(document::sketch::EntityId),
+    Segment(document::sketch::EntityId),
+}
+
+impl ArmedConstraintConfig {
+    fn capture(armed: &ui::panel::ArmedConstraint) -> Self {
+        ArmedConstraintConfig {
+            verb: match armed.verb() {
+                ui::panel::ConstraintVerb::Horizontal => ConstraintVerbConfig::Horizontal,
+                ui::panel::ConstraintVerb::Vertical => ConstraintVerbConfig::Vertical,
+                ui::panel::ConstraintVerb::Fix => ConstraintVerbConfig::Fix,
+            },
+            picked: armed
+                .picked()
+                .iter()
+                .map(|entity| match *entity {
+                    ui::panel::SketchEntity::Point(id) => SketchEntityConfig::Point(id),
+                    ui::panel::SketchEntity::Segment(id) => SketchEntityConfig::Segment(id),
+                })
+                .collect(),
+        }
+    }
+
+    fn restore(&self) -> ui::panel::ArmedConstraint {
+        let verb = match self.verb {
+            ConstraintVerbConfig::Horizontal => ui::panel::ConstraintVerb::Horizontal,
+            ConstraintVerbConfig::Vertical => ui::panel::ConstraintVerb::Vertical,
+            ConstraintVerbConfig::Fix => ui::panel::ConstraintVerb::Fix,
+        };
+        let picked = self
+            .picked
+            .iter()
+            .map(|entity| match *entity {
+                SketchEntityConfig::Point(id) => ui::panel::SketchEntity::Point(id),
+                SketchEntityConfig::Segment(id) => ui::panel::SketchEntity::Segment(id),
+            })
+            .collect();
+        ui::panel::ArmedConstraint::from_parts(verb, picked)
+    }
+}
+
 /// And for the Signal display stack's fold state. A struct rather than an enum, which
 /// changes nothing about why the shim is needed: the type lives in a crate that cannot
 /// name serde, and the four flags are what "classified as one object, saved whole" means
@@ -323,6 +387,10 @@ pub struct SessionArtifact {
     /// `Select`.
     #[serde(default, with = "SketchToolConfig")]
     pub sketch_tool: SketchTool,
+    /// The armed constraint gesture and its picks so far (ADR 0035 Decision 15). A pre-field
+    /// dump degrades to `None` — nothing armed.
+    #[serde(default)]
+    pub armed_constraint: Option<ArmedConstraintConfig>,
     /// The sketch-mode position snap (#96). Durable like `placement_snap`; `PositionSnap`
     /// derives its own serde, and a pre-field dump degrades to the default `Voxel`.
     #[serde(default)]
@@ -412,6 +480,9 @@ impl DocumentArtifact {
             sketch_mode: _,
             // Declined — session state. Which sketch tool was armed is where they stopped too.
             sketch_tool: _,
+            // Declined — an unfinished constraint gesture is the very definition of where
+            // somebody stopped.
+            armed_constraint: _,
             // Declined — session state. One person's snap preference must not ride into a
             // shared document (the placement_snap reasoning, in-mode).
             sketch_snap: _,
@@ -481,6 +552,7 @@ impl Dump {
             placement_snap,
             sketch_mode,
             sketch_tool,
+            armed_constraint,
             sketch_snap,
             selection,
             default_orbit_type,
@@ -523,6 +595,9 @@ impl Dump {
                 placement_snap: *placement_snap,
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
+                armed_constraint: armed_constraint
+                    .as_ref()
+                    .map(ArmedConstraintConfig::capture),
                 sketch_snap: *sketch_snap,
                 default_orbit_type: *default_orbit_type,
                 orbit_mode: *orbit_mode,
@@ -575,6 +650,10 @@ impl Dump {
             placement_snap: session.placement_snap,
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
+            armed_constraint: session
+                .armed_constraint
+                .as_ref()
+                .map(ArmedConstraintConfig::restore),
             sketch_snap: session.sketch_snap,
             default_orbit_type: session.default_orbit_type,
             orbit_mode: session.orbit_mode,
@@ -764,6 +843,10 @@ mod tests {
             sketch_mode: Some(document::scene::NodeId(9)),
             // Off its default (AddPoint, not Select) for the same reason (ADR 0028, #95).
             sketch_tool: SketchTool::AddPoint,
+            armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
+                ui::panel::ConstraintVerb::Fix,
+                vec![ui::panel::SketchEntity::Point(7)],
+            )),
             // Off its default (NoSnap, not Voxel) for the same reason (#96).
             sketch_snap: ui::panel::PositionSnap::NoSnap,
             // Off its default (Free, not Constrained) so a capture that dropped it fails the

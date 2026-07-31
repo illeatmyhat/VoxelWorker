@@ -31,8 +31,8 @@
 use camera::{HomeView, OrbitCamera, OrbitType, ProjectionMode};
 use document::scene::{NodeId, PointId, Scene};
 use ui::panel::{
-    AngleSnap, OrbitMode, PlacementPivot, PlacementSnap, PositionSnap, SignalStackState,
-    SketchTool, ViewMode,
+    AngleSnap, ArmedConstraint, ConstraintVerb, OrbitMode, PlacementPivot, PlacementSnap,
+    PositionSnap, SignalStackState, SketchEntity, SketchTool, ViewMode,
 };
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
@@ -220,6 +220,16 @@ fn arbitrary_config(rng: &mut Lcg, scene: Option<Scene>) -> AppConfig {
             SketchTool::Polyline,
             SketchTool::Rectangle,
         ]),
+        armed_constraint: rng.flag().then(|| {
+            ArmedConstraint::from_parts(
+                rng.pick(&[
+                    ConstraintVerb::Horizontal,
+                    ConstraintVerb::Vertical,
+                    ConstraintVerb::Fix,
+                ]),
+                Vec::new(),
+            )
+        }),
         sketch_snap: rng.pick(&[
             PositionSnap::NoSnap,
             PositionSnap::Block,
@@ -343,6 +353,29 @@ fn every_enum_variant_survives_the_full_loop() {
         let mut config = base();
         config.sketch_tool = sketch_tool;
         cases.push((format!("sketch_tool={sketch_tool:?}"), config));
+    }
+    // ADR 0035 Decision 15: each verb, and a gesture holding a pick — the picks are the half of
+    // an armed constraint that a shim mirroring only the verb would silently drop.
+    for verb in [
+        ConstraintVerb::Horizontal,
+        ConstraintVerb::Vertical,
+        ConstraintVerb::Fix,
+    ] {
+        let mut config = base();
+        config.armed_constraint = Some(ArmedConstraint::from_parts(verb, Vec::new()));
+        cases.push((format!("armed_constraint={verb:?}"), config));
+    }
+    for (label, picked) in [
+        ("point", vec![SketchEntity::Point(4)]),
+        ("segment", vec![SketchEntity::Segment(6)]),
+    ] {
+        let mut config = base();
+        let verb = match label {
+            "point" => ConstraintVerb::Fix,
+            _ => ConstraintVerb::Horizontal,
+        };
+        config.armed_constraint = Some(ArmedConstraint::from_parts(verb, picked));
+        cases.push((format!("armed_constraint_pick={label}"), config));
     }
     for orbit_type in [OrbitType::Constrained, OrbitType::Free] {
         let mut config = base();

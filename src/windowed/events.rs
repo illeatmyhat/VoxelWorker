@@ -132,32 +132,42 @@ impl ApplicationHandler for App {
                         && !in_cube
                     {
                         if let Some((cursor_x, cursor_y)) = position {
-                            match state.panel_state.sketch_tool {
-                                ui::panel::SketchTool::Select => {
-                                    // A viewport Select press arms a selection resolve on the
-                                    // stationary release (this arm only runs under `!egui_consumed`,
-                                    // so a press on the context menu never arms it).
-                                    state.sketch_select_press = true;
-                                    state.sketch_drag =
-                                        state.begin_sketch_vertex_drag(cursor_x, cursor_y);
-                                    // An EMPTY-SPACE press may become a marquee past the click
-                                    // threshold; a press on a vertex or edge never does (it
-                                    // clicks / drags that entity instead).
-                                    state.sketch_marquee_anchor = (state.sketch_drag.is_none()
-                                        && state.nearest_sketch_edge(cursor_x, cursor_y).is_none())
-                                    .then_some((cursor_x, cursor_y));
-                                }
-                                // Arm the edit; a stationary release performs it.
-                                ui::panel::SketchTool::AddPoint
-                                | ui::panel::SketchTool::Polyline
-                                | ui::panel::SketchTool::ThreePointArc => {
-                                    state.sketch_edit_press = true;
-                                }
-                                // #99: the rectangle is a press-drag-release gesture — the
-                                // press pins the anchor corner; the release commits.
-                                ui::panel::SketchTool::Rectangle => {
-                                    state.sketch_rect_anchor =
-                                        state.sketch_snapped_point_at(cursor_x, cursor_y);
+                            // ADR 0035 Decision 15: an armed constraint OVERRIDES the drawing
+                            // tool for the duration of its gesture. It hit-tests the same
+                            // entities Select does but answers a different question, and letting
+                            // the two run together would draw geometry mid-assertion.
+                            if state.panel_state.armed_constraint.is_some() {
+                                state.sketch_constraint_press = true;
+                            } else {
+                                match state.panel_state.sketch_tool {
+                                    ui::panel::SketchTool::Select => {
+                                        // A viewport Select press arms a selection resolve on the
+                                        // stationary release (this arm only runs under `!egui_consumed`,
+                                        // so a press on the context menu never arms it).
+                                        state.sketch_select_press = true;
+                                        state.sketch_drag =
+                                            state.begin_sketch_vertex_drag(cursor_x, cursor_y);
+                                        // An EMPTY-SPACE press may become a marquee past the click
+                                        // threshold; a press on a vertex or edge never does (it
+                                        // clicks / drags that entity instead).
+                                        state.sketch_marquee_anchor = (state.sketch_drag.is_none()
+                                            && state
+                                                .nearest_sketch_edge(cursor_x, cursor_y)
+                                                .is_none())
+                                        .then_some((cursor_x, cursor_y));
+                                    }
+                                    // Arm the edit; a stationary release performs it.
+                                    ui::panel::SketchTool::AddPoint
+                                    | ui::panel::SketchTool::Polyline
+                                    | ui::panel::SketchTool::ThreePointArc => {
+                                        state.sketch_edit_press = true;
+                                    }
+                                    // #99: the rectangle is a press-drag-release gesture — the
+                                    // press pins the anchor corner; the release commits.
+                                    ui::panel::SketchTool::Rectangle => {
+                                        state.sketch_rect_anchor =
+                                            state.sketch_snapped_point_at(cursor_x, cursor_y);
+                                    }
                                 }
                             }
                         }
@@ -223,6 +233,23 @@ impl ApplicationHandler for App {
                                 if let Some(intent) = state.pending_placement.take() {
                                     state.viewport_intents.push(intent);
                                 }
+                            }
+                        }
+                    }
+                    // ADR 0035 Decision 15: a STATIONARY release with a constraint armed offers
+                    // the entity under the cursor to the slot that is waiting. Same
+                    // click-vs-drag threshold every other sketch release uses, so a press that
+                    // turned into a camera drag never picks. Runs BEFORE `last_cursor_position`
+                    // is cleared below, since the hit-test needs the release cursor.
+                    if state.sketch_constraint_press {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if stationary {
+                                state.resolve_sketch_constraint_click(up_x, up_y);
                             }
                         }
                     }
@@ -344,6 +371,7 @@ impl ApplicationHandler for App {
                     state.viewport_select_press = false;
                     state.sketch_select_press = false;
                     state.sketch_edit_press = false;
+                    state.sketch_constraint_press = false;
                     state.armed_press = false;
                     state.last_cursor_position = None;
                     state.press_in_view_cube = false;

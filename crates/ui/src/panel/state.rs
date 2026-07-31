@@ -8,6 +8,8 @@ use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::core_geom::MaterialChoice;
 
+use super::ArmedConstraint;
+
 /// The armed-tool **placement ghost** (ADR 0022): the translucent analytic-SDF preview of
 /// where a primitive's voxels will land, drawn without recomposing the scene ("render a
 /// coloured transparent SDF where the voxels will be"). Lives INSIDE [`ArmedTool`] as its
@@ -623,6 +625,19 @@ pub struct PanelState {
     /// with the same tool in hand.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
+    /// The armed **constraint** and the entities picked for it so far (ADR 0035 Decision 15).
+    ///
+    /// Held apart from [`sketch_tool`](Self::sketch_tool) rather than joining its enum, because
+    /// the two arm different things and one does not replace the other: a constraint gesture
+    /// runs *over* the drawing tools' vocabulary — it hit-tests the same entities Select does —
+    /// and folding it in would make every `SketchTool` match arm answer for a mode that draws
+    /// nothing. It also ends on its own, at completion, which no drawing tool does.
+    ///
+    /// **Session** state alongside [`sketch_tool`](Self::sketch_tool): a half-finished gesture
+    /// is where the author left the workspace, and a dump taken mid-pick should re-enter with
+    /// the same question on screen.
+    #[snapshot(session)]
+    pub armed_constraint: Option<ArmedConstraint>,
     /// The sketch-mode **position snap** (#96): how a vertex edit quantizes on the sketch
     /// plane's own grid — sub-voxel continuous ([`PositionSnap::NoSnap`], the fraction rides
     /// the vertex, #101), whole-voxel (the default), or block boundaries. Reuses ADR 0027's
@@ -912,12 +927,6 @@ pub struct PanelResponse {
     /// in is a screen-space hit-test only the shell can answer, and it already answered it to
     /// decide whether to offer the row at all. `false` when the row was not chosen.
     pub toggle_sketch_face: bool,
-    /// The constraint verb the user applied to the sketch selection this frame (ADR 0035) →
-    /// the shell asserts it over what is picked and commits the solved drawing. Routed as a
-    /// request rather than an `Intent` for the same reason `delete_selection` is: the selection
-    /// and the sketch commit path both live on the shell, and the panel cannot name the entities
-    /// without reaching for both. `None` when no constraint button was pressed.
-    pub apply_sketch_constraint: Option<super::ConstraintVerb>,
     /// How the user asked to move the **orbit center** this frame from the general viewport
     /// context menu (`docs/design/tool-modes-and-navigation.md`) — the deliberate act that is
     /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW

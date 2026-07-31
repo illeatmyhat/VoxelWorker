@@ -245,6 +245,7 @@ fn the_session_is_the_workspace_and_nothing_else() {
             // mid-edit relaunch (the same "how the workspace was left" the ghost is).
             "sketch_mode",
             "sketch_tool",
+            "armed_constraint",
             // #96: the sketch position snap — the in-mode sibling of `placement_snap`,
             // durable for the same reason.
             "sketch_snap",

@@ -17,6 +17,13 @@ pub const SKETCH_HANDLE_GRAB_PAD: f32 = 5.0;
 pub const SKETCH_SEGMENT_GRAB_PAD: f32 = 7.0;
 /// The half-extent (egui points) of the add-point insert-preview diamond.
 pub const SKETCH_INSERT_MARKER_HALF: f32 = 4.0;
+/// The side (egui points) of a constraint badge's glyph box. Constant on screen, like every
+/// other sketch mark: a badge says *what is asserted*, and a claim does not get smaller with
+/// distance.
+pub const SKETCH_CONSTRAINT_BADGE: f32 = 13.0;
+/// How far (egui points) a badge sits off the geometry it belongs to, and how far successive
+/// badges on the same anchor step along that offset.
+pub const SKETCH_CONSTRAINT_BADGE_OFFSET: f32 = 12.0;
 
 /// The sketch-mode exit control + immersive border: a faint accent inset border framing the
 /// viewport plus the floating `CANCEL` / `FINISH SKETCH` pair bottom-right; returns the clicked
@@ -112,6 +119,27 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
     ));
     for pair in points.windows(2) {
         gizmos::dashed_segment(&painter, pair[0], pair[1]);
+    }
+}
+
+/// Draw the constraint badges: each asserted relation's own glyph, standing beside the geometry
+/// it names (ADR 0035 Decision 15). Positions are shell-projected, so a badge tracks its entity
+/// through every camera move — the mark belongs to the entity graph, not to the screen.
+///
+/// It is the same glyph as the rail cell that made the constraint, in the constraint ink. That
+/// correspondence is the whole mechanism: a solve moves geometry until the assertion holds, after
+/// which the evidence is a line that merely *looks* level, and only the badge distinguishes
+/// "asserted horizontal" from "drawn nearly horizontal".
+///
+/// Not chrome — passive marks, so a press over one still reaches the geometry underneath.
+pub fn sketch_constraint_badges(ui: &egui::Ui, badges: &[(Pos2, crate::icons::Icon)]) {
+    let painter = ui.ctx().layer_painter(LayerId::new(
+        Order::Foreground,
+        Id::new("sketch_constraint_badges"),
+    ));
+    for &(center, icon) in badges {
+        let box_rect = Rect::from_center_size(center, Vec2::splat(SKETCH_CONSTRAINT_BADGE));
+        icon.draw(&painter, box_rect, theme::SKETCH_CONSTRAINT);
     }
 }
 
