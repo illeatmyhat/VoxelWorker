@@ -310,7 +310,27 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   vocabulary) and an **integer outer loop** in `document` that rounds quantized freedoms, fixes
   them, and re-solves. Both tiers run **live during a drag**. Its rank check yields the
   degree-of-freedom count, so *fully constrained* is measured, not guessed. Floating-point by
-  nature — exactness is a storage and authoring invariant, never a solver one.
+  nature — exactness is a storage and authoring invariant, never a solver one. A solve runs as
+  **two passes**: preferences first, then the constraints alone from that answer. Every verdict is
+  read from the second and from the **residuals**, never from why a search stopped.
+
+- **Piece** — a connected component of a sketch's geometry: the points some chain of edges joins,
+  and the unit the author thinks in (the shape they drew, not the coordinates it is made of). What
+  the solver's preferences are written in terms of — a piece prefers to move whole, and where a
+  constraint joins two, the heavier is **anchored** and the lighter travels. _Avoid_: group (means a
+  selection), part (a scene-graph node), body.
+
+- **Rigidity** — the solver preference that every edge keep the span it had, per axis. Makes a pure
+  translation of a [piece](#piece) free while stretch, rotation and shear are paid for. A
+  *preference*, never an assertion: it is absent from the rank reading, and the pass that follows it
+  re-solves the constraints alone. _Avoid_: calling it a constraint (it is never stored, never
+  selectable, and never refuses anything).
+
+- **Anchor** — the [piece](#piece) a constraint may not move, held out of the parameter vector for
+  the preference pass so the other piece travels the whole way rather than the two meeting between.
+  The heavier piece by point count, with an already-`Fix`ed piece outranking any count, and only ever
+  a strict winner. _Avoid_: **fix** (an authored constraint entity; an anchor is neither authored nor
+  stored).
 
 - **Quantize** — the one voxel-native constraint: this degree of freedom is a whole multiple of a
   **pitch**, at a **phase**. On a position it reads as *on the lattice*; on a distance, as *a whole

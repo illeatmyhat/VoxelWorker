@@ -593,6 +593,11 @@ Decision 11's two stages stand unchanged.
   is shipped behaviour and needs its own tests before the arrangement lands.
 - The parameters panel is the least entangled item in the epic — it touches `crates/parametric` and
   the panel and nothing else — so it lands last and blocks nothing.
+- **The solve's living shape is `docs/architecture/01-document.md` § Constraints**, and the dated
+  reports, measurements and rejected alternatives behind Decisions 11 and 17 are in
+  `docs/design/sketch-constraint-solve.md`. `CONTEXT.md` gains **piece**, **rigidity** and
+  **anchor**. Read this record for what was decided and what it retracted; read those for the shape
+  as it now stands.
 
 ## Alternatives rejected
 

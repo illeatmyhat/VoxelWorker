@@ -133,6 +133,86 @@ operation that would be genuinely infinite, and an unbounded producer under it i
 rejected.** Where a producer is unbounded, the region an edit dirties is computed from
 the accumulator's bounds rather than the producer's.
 
+## Constraints — what holds a sketch in place
+
+A sketch's positions are held by **constraints**: entities in their own right, with stable
+ids, individually selectable and deletable, each asserting a relationship the **solver**
+maintains. A constraint owns the position of every point it names. Snapping decides only
+where a point is *born*; from the first assertion onward a position is an output of the
+solve rather than a stored preference the solver defers to.
+
+Applying a constraint **trial-solves on a copy** before it is kept. Unsatisfiable is refused
+and names what it fights; merely redundant is accepted and flagged, because redundancy is
+sometimes the intent — a symmetry asserted although the geometry already implies it is
+insurance against a later edit. A refusal therefore leaves the drawing exactly where it was
+rather than where a failed search pushed it, the sketch is always solvable, and everything
+downstream assumes solvability instead of defending against it.
+
+**Nothing outlives what it was drawn for.** Deleting an edge takes the ends nothing else
+draws — a line removed from a drawing must not leave behind dots the author never placed —
+and any constraint naming geometry that has gone goes with it. A constraint is not a reason
+for a point to survive: the assertion was about the geometry, and the geometry is what was
+deleted.
+
+**Redundancy is read at the author's drawing, not at the solution.** Rows of the Jacobian
+vanish at an exactly-solved configuration — a distance residual between two points that have
+been brought together has no gradient — so a rank taken there mistakes the solver's success
+for a constraint that says nothing. Taken at the pre-solve drawing, which is a generic
+configuration, the rank means what it says. That same reading yields the degree-of-freedom
+count, which is why *fully constrained* is measured rather than guessed.
+
+**A derived point is read as the function it is, not as the slot it occupies.** Some points
+are not coordinates the solver may choose: an arc's center is whatever its two ends and its
+sweep make it. The residual system reads such a point through that function, so a constraint
+on it is met by moving what determines it — the correction lands on the arc's ends and the
+center follows — rather than by writing a coordinate the next re-derivation overwrites. Its
+slots contribute no freedoms to the count, because nothing can take them up.
+
+**Preference and exactness are two passes, never one weighted system.** A solve is asked for
+two things at once: meet the constraints exactly, and among the many configurations that do,
+choose the one the author would have chosen. Weighing those against each other means
+choosing a number that says how much more one matters, and no principled value exists. So
+they are separated in time instead. The first pass carries the preferences; the second
+re-solves the constraints alone, over the whole drawing, starting from the first pass's
+answer — and every verdict and freedom count is read from the second. Where preference and
+constraint did not disagree the second pass moves nothing; where they did, the constraint
+wins outright.
+
+**A solve moves the drawing as little as it can, and moves it as a piece.** Least travel by
+itself is the wrong objective: bringing one corner of a square to a distant point is
+cheapest by dragging that corner alone, which is the least motion and the most damage. Two
+preferences correct it. **Rigidity** asks every edge to keep the span it had, per axis, so a
+pure translation of a connected piece costs nothing while stretch, rotation and shear are
+paid for. **The anchor** decides which piece is the reference: where a constraint joins two
+connected pieces, the heavier is held out of the parameter vector altogether, so the lighter
+travels the whole way rather than the two meeting between. Weight is a piece's point count,
+with a piece something has already fixed outranking any count, and only a strict winner
+anchors — equal pieces give no reason to prefer either, and equals meet in the middle.
+
+**The assertions hold during the gesture, not only at the moment they were made.** A drag
+re-solves on every move, with the grabbed point held by an ephemeral pull that is never
+stored — a constraint for exactly as long as the hand is on the point. The pull is a
+preference like any other and resolves under the same two passes, so a point free to slide
+along a line follows the cursor as far as that line allows instead of refusing to move at
+all. Rigidity and the anchor sit out the drag: they exist to answer which configuration the
+author would have chosen, and a drag already answers that.
+
+**An assertion carries its own mark.** A solve moves the drawing until the assertion holds,
+after which the only evidence left is a line that *looks* level — and a line merely drawn
+level looks exactly the same. Every constraint therefore draws a badge on the canvas,
+anchored through its own entity ids so it is placed *by* the sketch graph rather than merely
+beside it. Without the mark there is no way to tell an asserted relation from a coincidence,
+which is to say no way to predict what a later edit will and will not disturb. A relation
+with no locus marks each of its members; one with a locus marks the locus — two lines meeting
+square make one right angle, and the corner is what the assertion is about. A dimension is
+its own mark, and a glyph beside the number would say the same thing twice.
+
+The solver is two-tier. The continuous core is domain-free numerics and lives in the
+substrate; the integer loop above it rounds quantized freedoms, fixes them, and re-solves,
+so a quantized point steps cell to cell while the author watches. Both tiers run live.
+Exactness is a storage and authoring invariant, never a solver one — a search is judged on
+its residuals, never on why it stopped.
+
 ## The field — what a node means
 
 Beneath the fold sits a layer worth naming: a node's meaning is a **signed scalar field**,

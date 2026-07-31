@@ -104,7 +104,7 @@ client of the same intent door.
 
 | Document | What it owns |
 | --- | --- |
-| [01 — The Document](01-document.md) | Scene graph, parts, producers, sketches, the field layer, materials, units, intents, undo, persistence |
+| [01 — The Document](01-document.md) | Scene graph, parts, producers, sketches, constraints and the solve, the field layer, materials, units, intents, undo, persistence |
 | [02 — Evaluation](02-evaluation.md) | The evaluator, block classification, two-layer chunks, residency, invalidation, frames |
 | [03 — Display](03-display.md) | The brick field, the pyramid, the mesh understudy, engagement and handover, viewer modes |
 | [04 — Work](04-work.md) | Tempos, the worker pattern, generations, the staleness law |
