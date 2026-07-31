@@ -1,4 +1,4 @@
-# `verification/` — machine-checked construction (ADR 0014 decision 6)
+# `verification/` — machine-checked construction
 
 The proof tier of the doctrine in [`docs/architecture/05-proof.md`](../docs/architecture/05-proof.md)
 §"Construction, types, and machine-checked proof". Three tools, each matched to what it proves;

@@ -7,8 +7,8 @@
   evaluation + boundary-aware chunk residency) into the real chunk store. **Refines [ADR 0003](0003-foundation-rework.md)
   Phase D** (chunk residency becomes boundary-aware; this ADR is where Phase D §3a/§4 actually land) and **sequences on
   ADR 0003 §3a** (the chunk-local-integer + categorical block-palette payload, a prerequisite). It builds the **CPU,
-  exact display + query/export sinks**; the GPU display *brick-field* sink ([ADR 0007](0007-gpu-view-resolve.md)
-  generalized) is the NEXT port, not this one. No new product model — it implements representation ADR 0009 ruled.
+  exact display + query/export sinks**; the GPU display *brick-field* sink is the next port, not this one.
+  No new product model — it implements the representation described above.
 
 ## Context
 
@@ -67,7 +67,7 @@ built **chunk-local-integer from day one**; the legacy `Voxel { world_position: 
 not migrated**. Gated by far-scene goldens first (ADR 0003 Phase D0).
 
 **6. Coexist behind a capability with dense fallback; retire the dense path last.** The new evaluator/two-layer path engages
-for the producers + scenes it supports; the dense `VoxelGrid` path stays as **fallback** (exactly how the ADR 0007 GPU fog
+for the producers + scenes it supports; the dense `VoxelGrid` path stays as **fallback** (the same coexistence rule used by the earlier GPU fog
 coexists with CPU fallback — unboundable clouds already fall back). Every commit stays green; **goldens cross-check
 new-vs-old** each slice; the dense path is retired only once the new path covers everything.
 
@@ -113,7 +113,7 @@ optimization** on the data seam, never an observable change.
   consumes a `VoxelGrid`, so the evaluator STREAMS it (coarse fast-fill + boundary per-voxel) rather than caching a
   dense interior — this is not the retired dense `resolve_region`, and the fog will drop it when the GPU brick-field
   display sink (below) lands.
-- The **GPU brick-field display sink** (ADR 0007 generalized: 8³ bricks, clip-map LOD) is the **next** port and gets its own
+- The **GPU brick-field display sink** (8³ bricks, clip-map LOD) is the **next** port and gets its own
   ADR — it consumes this evaluator's boundary set; the shipped fog atlas is already a brick map, so it is a short step.
 - **Incremental edit** reuses today's chunk-granular `invalidate_aabb` first (re-evaluate a dirty chunk's blocks);
   block-granular dirty-brick recompute (the prior-art incremental path) is a later optimization, not slice 1.

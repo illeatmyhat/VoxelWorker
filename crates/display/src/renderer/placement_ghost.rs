@@ -282,7 +282,7 @@ mod tests {
     /// The Rust twin's size is a multiple of 16 bytes (std140 uniform alignment) and
     /// matches the blocks the WGSL struct declares: two mat4 (128) + six vec4 (ray_eye,
     /// viewport, center_and_kind, semi_axes_and_wall, tint, params = 96) + a mat3x3 (three padded
-    /// vec4 columns = 48, the ADR 0026 inverse orientation) = 272 bytes.
+    /// vec4 columns = 48, the inverse orientation) = 272 bytes.
     #[test]
     fn uniform_layout_is_std140_sized() {
         assert_eq!(std::mem::size_of::<PlacementGhostUniforms>(), 272);

@@ -53,7 +53,7 @@ struct PlacementGhostUniforms {
     // surface, 0 when it is the value probe. z: the value-probe plane's constant
     // coordinate. w: the value-probe world extent per axis.
     params: vec4<f32>,
-    // The INVERSE lattice orientation (ADR 0026): maps a world sample (relative to the field
+    // The inverse lattice orientation: maps a world sample (relative to the field
     // center) back into the shape's UN-TURNED local SDF frame. Identity for an upright drop; a
     // signed axis permutation for a side/bottom-face drop, so the ghost lies the way the node
     // will land. The `value_main` probe ignores it (it samples the un-turned field for parity).
@@ -145,7 +145,7 @@ fn signed_distance(kind: u32, point: vec3<f32>, semi_axes: vec3<f32>, wall_voxel
     return signed_distance_box(point, semi_axes);
 }
 
-// The field in the shader's own sample frame: world point -> producer sample point. ADR 0026:
+// The field in the shader's own sample frame: world point -> producer sample point.
 // un-turn the world offset from the field center into the shape's local SDF frame, so an
 // oriented node's ghost traces the turned shape (the semi-axes stay un-turned — only the
 // sample point turns, exactly as the classifier un-turns a query cell).
@@ -204,7 +204,7 @@ fn camera_ray(pixel: vec2<f32>) -> Ray {
 // frame. Returns (t_enter, t_exit); a miss has t_enter > t_exit.
 fn bounds_interval(ray: Ray) -> vec2<f32> {
     let half = uniforms.semi_axes_and_wall.xyz + vec3<f32>(2.0);
-    // ADR 0026: test the ray against the shape's UN-TURNED local box by un-turning the ray
+    // Test the ray against the shape's unturned local box by unturning the ray
     // into the local frame. The inverse orientation is a rotation, so `t` is preserved (the
     // direction stays unit) and matches the world `t` `field_at_world` re-derives at.
     let origin = uniforms.orientation_inverse * (ray.origin - uniforms.center_and_kind.xyz);

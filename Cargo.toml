@@ -136,7 +136,7 @@ winit = "0.30.13"
 wgpu = "29.0.3"
 # `serde` so the keyboard-shortcut settings persist `egui::KeyboardShortcut` itself rather than a
 # hand-written mirror of the key enum. Enabled from the SHELL, not from `ui` — feature unification
-# hands the impls to every crate, so `ui` keeps a serde-free manifest (ADR 0016).
+# hands the impls to every crate, so `ui` keeps a serde-free manifest.
 egui = { version = "0.34.3", features = ["serde"] }
 egui-wgpu = "0.34.3"
 egui-winit = "0.34.3"

@@ -988,7 +988,7 @@ fn brick_golden_multi_material_matches_mesh() {
     );
 }
 
-/// Material atlas / ADR 0013 — the MIXED-material golden: the proof the mesh cliff is dead.
+/// Mixed-material atlas golden: the proof the mesh cliff is dead.
 /// `--demo-mixed-material` offsets its second (Wood) box by a SUB-BLOCK voxel amount, so a block
 /// STRADDLES the boundary and its microblocks MIX Stone + Wood. This is the case the deleted
 /// representability gate routed to the mesh; now it engages the brick sink and shades each voxel

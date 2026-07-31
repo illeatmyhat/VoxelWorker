@@ -104,7 +104,7 @@ impl Sheet {
                     section(ui, "Sketch gizmos", "on-canvas manipulators over the 3D plane — screen-space billboards at projected vertices (ADR 0028)");
                     self.sketch_gizmos(ui);
                     ui.add_space(22.0);
-                    section(ui, "Dimension gizmos", "authored quantities on the canvas (ADR 0029) — a layout, not a shape: what is drawn depends on whether it fits");
+                    section(ui, "Dimension gizmos", "authored quantities on the canvas — a layout, not a shape: what is drawn depends on whether it fits");
                     self.dimension_gizmos(ui);
                     ui.add_space(22.0);
                     section(ui, "Sketch cursors", "the pointer's feedback while a sketch tool tracks — four distinct states");

@@ -9,7 +9,7 @@ edition = "2021"
 # library; this is the same split serde/serde_derive and thiserror/thiserror-impl use.
 # Depending on this crate is depending on a vocabulary, not on a layer: it names no
 # scene, no producer and no GPU handle, so it sits beside `substrate` at the bottom of
-# the stack and every layer above may import it without bending ADR 0016's
+# the stack and every layer above may import it without bending the
 # downward-only flow law.
 [dependencies]
 snapshot_derive = { path = "../snapshot_derive" }

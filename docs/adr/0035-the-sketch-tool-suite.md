@@ -8,10 +8,10 @@
   [ADR 0030 §5](0030-sketch-as-entity-collection.md)'s "no solver in v1" and one-shot tangency;
   [ADR 0030 §6](0030-sketch-as-entity-collection.md)'s "deleting an edge removes only the edge"
   (Decision 3 below — an edge now takes the ends nothing else draws).
-- **Relates to:** [ADR 0029](0029-measurement-as-authored-quantity.md) (`Measurement` grows a
-  dimension and moves to a crate), [ADR 0034](0034-curves-stay-curves.md) (the curve-native region
+- **Relates to:** the authored-quantity rule (`Measurement` grows a
+  dimension and moves to a crate), the curve-native region
   this builds on), [ADR 0017](0017-csg-composition.md) (the no-operand-targeting law that cuts
-  three tools), [ADR 0014](0014-substrate-crate.md) (where the continuous solver lives),
+  three tools), the substrate layer (where the continuous solver lives),
   [ADR 0022](0022-document-dump-and-state-classification.md) (what a solve writes).
 
 ## Context
@@ -50,13 +50,13 @@ constraints produces an over-constrained system whose origin the author cannot s
 wants lattice alignment *asserted* says so — with `Fix`, `Horizontal`/`Vertical`, or `Quantize`.
 
 Sub-voxel sketch geometry is not a compromise: occupancy samples the exact field and quantizes at
-resolve (ADR 0034). Rounding solver output to the lattice would make tangency unreachable, since a
+resolve. Rounding solver output to the lattice would make tangency unreachable, since a
 circle tangent to two lines lands on the lattice essentially never.
 
 ### 2. The solver is two-tier: a continuous core, an integer loop above it
 
 `substrate` gets a **pure continuous** geometric constraint solver — residuals, Jacobian, no
-density and no lattice vocabulary, so it stays provable (ADR 0014) and free of domain knowledge.
+density and no lattice vocabulary, so it stays provable and free of domain knowledge.
 
 The **integer outer loop** lives in `document`, where density and block pitch are known: solve
 continuously, round the quantized degrees of freedom, fix them, re-solve the remainder, repeat until
@@ -188,7 +188,7 @@ mistake), Coincident (already free — shared point identity, not a constraint),
 immovability by accident is the worst failure mode), Symmetry and Curvature.
 
 The inference tolerance is **in pixels**. It is a pick question, answered at the cursor, and it
-never reaches the document — the one shape of tolerance ADR 0034 permits. In voxels it would be a
+never reaches the document — the one shape of tolerance the curve-native field permits. In voxels it would be a
 bug.
 
 **The relations ship as explicit verbs first** (2026-07-30): Coincident, Parallel, Perpendicular,
@@ -354,7 +354,7 @@ assertion.
 
 **`crates/parametric`** holds the quantity and expression layer: it absorbs today's
 `voxel_core::units`, and depends on `substrate` only for `Rational`, keeping domain vocabulary out
-of `substrate` (ADR 0014) and giving the units model somewhere to grow.
+of `substrate` and giving the units model somewhere to grow.
 
 **Dimensions are an exponent pair `(length, angle)`.** Addition requires equal exponents;
 multiplication adds them; division subtracts. So `wall + gap` is a Length, `wall / gap` is
@@ -367,7 +367,7 @@ a Length by the ordinary rule.
 `Length`, an angle dimension takes an `Angle`, and mixing them does not compile. The **expression
 evaluator is dynamic**, on `Quantity { value, dimension }`, because `wall / gap` has a type only at
 eval time. The boundary evaluates, checks the resulting exponents against the field's static type,
-then stores or reports. ADR 0029's umbrella type is not reversed — it becomes the eval-layer
+then stores or reports. The umbrella type is not reversed — it becomes the eval-layer
 quantity, with static wrappers above it.
 
 **Exactness is a storage and authoring invariant, not a solver invariant.** The expression language
@@ -587,7 +587,7 @@ Decision 11's two stages stand unchanged.
 - 16 of the 25 creation tools emit only points, segments and arcs — Line, Midpoint Line, the three
   Rectangles, the three Arcs, the three Polygons, the five Slots, Point. They are input state
   machines, not geometry. Only Ellipse and the two Splines need new `RegionEdge` variants, in the
-  slot ADR 0034 already sized for Bézier.
+slot already sized for Bézier.
 - `Arc`'s `|sweep| < 360°` validity check relaxes for the closed case.
 - Face identity, the face walk, and `unpicked`'s container all change together; unpick-survives-edit
   is shipped behavior and needs its own tests before the arrangement lands.

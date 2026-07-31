@@ -17,13 +17,13 @@
   pyramid + classify) runs **asynchronously** on a dedicated worker with generation
   supersede (stale-while-rebuilding). The fog-from-bricks consumer named above was
   retired with the volumetric fog subsystem by ADR 0012. **Amended-by
-  [ADR 0013](0013-per-voxel-material-side-atlas.md) (2026-07-13):** the G2 limit "the atlas is
+  the material-atlas rule in `docs/architecture/03-display.md`:** the G2 limit "the atlas is
   occupancy-only, material is per-record, mixed-material scenes fall back to the mesh path" is
   superseded — mixed bricks gain a sparse R16 cell-key side atlas and the representability gate is
   deleted. Living shape: `docs/architecture/03-display.md` / `04-work.md`.
 - **Date:** 2026-07-01
 - **Layer:** PRODUCTION PORT of the **GPU display sink** — the next port after [ADR 0010](0010-boundary-residency-two-layer-store.md).
-  **Generalizes [ADR 0007](0007-gpu-view-resolve.md)** (the shipped per-chunk R8 fog atlas is already a brick map;
+  **Generalizes the retired per-chunk fog atlas** (the shipped R8 fog atlas was already a brick map;
   this ADR turns each per-chunk occupancy tile into an 8³ brick allocated from a texture-atlas pool and adds the
   broadphase + LOD that make it scale). **Consumes [ADR 0010](0010-boundary-residency-two-layer-store.md)**'s
   two-layer evaluator (the `TwoLayerChunk` coarse/microblock/seam-flag boundary set is the sink's input).
@@ -46,7 +46,7 @@ parity/golden oracle. But ADR 0010 §Consequences named the debt it left standin
 
 So there are still **two per-edit densify-shaped costs on the display path**: the CPU-side fog `VoxelGrid` stream, and
 the CPU cuboid **mesh** rebuild — both regenerated for display, both scaling with occupied-voxel count, not with edit
-size. This is the exact waste ADR 0007 measured (fog rebuild ≈ 592 ms/edit via Tracy) and ADR 0009 diagnosed at the
+size. This is the exact waste the retired fog implementation measured (fog rebuild ≈ 592 ms/edit via Tracy) and ADR 0009 diagnosed at the
 architecture level ("we materialize every interior voxel of a solid that was never chiseled").
 
 ADR 0009 already **decided the fix** and benchmarked it. Its `experimental/sdf_bench` raced three display techniques on
@@ -59,12 +59,12 @@ store** as the GPU display sink, takes a position on each sub-decision ADR 0009 
 for recompute, not render, because the world is dynamic.* Evaluate the op-stack **once per edit** into cached bricks
 (boundary blocks only), then **per frame raymarch the cache, not the field** — so per-frame cost is independent of
 op-stack complexity, and per-edit cost is proportional to the dirty region, not the scene. That is the same
-"recompute-cheap, render-from-cache" shape ADR 0007's incremental atlas already reaches for.
+"recompute-cheap, render-from-cache" shape the earlier incremental atlas already reached for.
 
 ## Decisions (proposed)
 
 **1. The brick-field is the GPU display sink; it GENERALIZES the shipped fog atlas. [DECIDED-0009 direction; port confirmed by grill 2026-07-05]**
-ADR 0007 ships a per-chunk R8 occupancy tile packed into a 3D texture atlas via `copy_buffer_to_texture`, keyed by
+The retired fog path packed a per-chunk R8 occupancy tile into a 3D texture atlas via `copy_buffer_to_texture`, keyed by
 world-origin. The brick-field is that same mechanic with a finer, sparser, boundary-only granule:
 - A **brick** is one **block's** cube of voxels cached in one atlas slot. **[DECIDED-grill 2026-07-05] Brick granule =
   one block, denominated in BLOCK units: brick edge = `voxels_per_block`**, whatever the document's density is. The
@@ -79,7 +79,7 @@ world-origin. The brick-field is that same mechanic with a finer, sparser, bound
   bricks** (e.g. (density/2)³ halves, with their evenness constraint + sub-block indexing layer) are a measured
   follow-up with an explicit trigger: build them only if a real scene shows (a) atlas memory dominated by
   mostly-uniform sculpted bricks, or (b) raymarch time dominated by in-brick DDA over empty voxels.
-- Bricks are allocated from a **texture-atlas pool** (the ADR 0007 atlas layout, `ATLAS_TILES_PER_AXIS³` slots; the
+- Bricks are allocated from a **texture-atlas pool** (`ATLAS_TILES_PER_AXIS³` slots; the
   benchmark used 32³ = 32768 slots of a 512³ R8 texture ≈ 128 MB). Only **boundary** bricks consume a slot.
 - The GPU **raymarches the cache per frame** (texture fetches + a block-DDA + a residency lookup), **never the analytic
   SDF**. Per-frame cost ≈ O(occupied blocks the ray crosses + log LOD levels), independent of scene complexity — the
@@ -94,11 +94,11 @@ The sink maps that partition onto brick kinds one-to-one:
   solid block-cube, **no atlas slot, no per-voxel data** (the benchmark's coarse kind). This is the interior-elision win
   carried onto the GPU: a solid interior costs one record, not 16³ bytes.
 - **boundary block** (a `microblocks` entry) → a **sculpted brick**: `BrickRecord{kind: 1, atlas_slot}` whose 16³ (or 8³)
-  R8 occupancy is packed into an atlas slot. The microblock's cuboids rasterize into the brick exactly as ADR 0007's
+  R8 occupancy is packed into an atlas slot. The microblock's cuboids rasterize into the brick using the same packing rule as the earlier
   `main_atlas` packs a tile — the sculpted voxels ARE the brick payload.
 - **per-face seam-solidity flags** (`SeamSolidity`) carry across unchanged: they let the block-DDA cull a face against a
   fully-solid neighbor without expanding it — the coarse-vs-microblock analog of the fog apron (CONTEXT.md "Seam
-  solidity"), and the brick-field's equivalent of ADR 0007's C′ apron-zeroing.
+  solidity"), and the brick-field's equivalent of the earlier apron-zeroing.
 
 > **Amendment (2026-07, the 8000³-freeze fix): the record set is SURFACE-ONLY.** "One coarse record per solid block"
 > still made the CPU pipeline O(all blocks): a 500³-block solid emitted 125M records, and every downstream stage
@@ -123,7 +123,7 @@ record set instead of a covering-box tile grid, and (iii) the broadphase + LOD b
 Per ADR 0009 §5 and ADR 0006, there is **no shared GPU evaluator that is truth**. The CPU two-layer evaluator (ADR 0010)
 is authoritative; the GPU sink is a display derivation fed the **boundary set** (records + atlas bytes + clip-map keys),
 kept honest by an A/B parity net (§Parity gate). Headless `AppCore` (agents, CI, `shot`, goldens) never needs the GPU
-sink — it reads the CPU exact seam. The brick-field is a shell-only accelerator (ADR 0007 §5 invariants restated).
+sink — it reads the CPU exact seam. The brick-field is a shell-only accelerator.
 
 **4. Broadphase + LOD — a position on each ADR 0009 open sub-decision:**
 
@@ -170,13 +170,13 @@ sink — it reads the CPU exact seam. The brick-field is a shell-only accelerato
   rebuildable cache** of the boundary set — never the edit store. ADR 0009's "HashDAG as delta counts grow" is a
   compaction target for the *export/display cache*, still deferred and not on this port's path.
 
-**5. Correctness: the A/B parity net mirrors ADR 0007's `gpu_parity`; display may approximate, the net keeps it honest.
-[DECIDED-0007 discipline]** ADR 0007 established GPU-vs-CPU byte-exact parity (`tests/gpu_parity.rs`, `--features gpu`)
+**5. Correctness: the A/B parity net keeps display honest.** The earlier GPU-vs-CPU parity gate established
+byte-exact comparison between display data and CPU truth.
 and it held bit-exact across the whole matrix. The brick-field extends it: for a gated scene, the **GPU brick raymarch's
 resolved occupancy** is checked against the **CPU exact evaluator's** occupancy (ADR 0010's streamed exact set, the
 reference oracle). Two tiers, honestly separated:
 - **The brick BUILD is exact.** Packing a boundary block's cuboids into an atlas brick, and marking a coarse-solid block,
-  are integer operations — the atlas bytes must be **byte-identical** to the CPU boundary set (exactly ADR 0007's
+  are integer operations — the atlas bytes must be **byte-identical** to the CPU boundary set (the same
   `main_atlas` parity, now over the two-layer boundary set instead of the covering box).
 - **The brick RENDER may approximate.** LOD level selection, clip-map min-mip, and float ray/DDA math are display
   approximations ADR 0009 §4 explicitly allows on the display seam. The net asserts **the finest-LOD raymarch hits the
@@ -185,9 +185,9 @@ reference oracle). Two tiers, honestly separated:
   not a parity failure.
 
 **6. Coexist behind a capability; the CPU mesh is KEPT PERMANENTLY, pinned at exactness-not-feature-parity. [DECIDED-grill 2026-07-05]**
-Exactly ADR 0010 §6 / ADR 0007's coexistence: the brick-field engages for the producers + scenes it supports (all ADR 0007
+Exactly ADR 0010 §6's coexistence rule: the brick-field engages for the producers and scenes it supports
 P1 producers already port); the CPU two-layer mesh (`new_from_two_layer_chunks`) stays as the **headless / no-GPU
-fallback and the A/B reference** (ADR 0007 §3 kept the CPU cuboid mesher for exactly this). The grill noted this is
+fallback and the A/B reference** (the CPU cuboid mesher remains the exact reference). The grill noted this is
 mostly *constitutionally forced*: ADR 0006 ("GPU never required") demands a CPU display path for headless `AppCore`
 (agents, CI, `shot`, goldens), and the parity gate needs a CPU-rendered oracle forever — so "retire entirely" was never
 live. **The ruling with teeth is the TERMS: the CPU mesh owes correct geometry at finest detail (the exactness the
@@ -202,7 +202,7 @@ flagged) is retired only once the brick-field covers everything it did — and t
 ## The parity gate (non-negotiable, mirrors the existing nets)
 
 A **brick-vs-evaluator parity test** extending `tests/gpu_parity.rs`, gating every slice before live wiring (spike-first,
-as ADR 0007 P1 was): for every gated scene, **(a)** each boundary block's packed atlas brick is byte-identical to the CPU
+as the earlier parity gate was): for every gated scene, **(a)** each boundary block's packed atlas brick is byte-identical to the CPU
 two-layer boundary set's occupancy for that block, and each coarse-solid block emits exactly one coarse record (no atlas
 slot); **(b)** the finest-LOD GPU brick raymarch's hit-voxel set equals the CPU exact evaluator's surface set for the
 gated views, and each coarser clip-map level is **conservative** (its "any-brick-inside" set is a superset of the true
@@ -218,27 +218,26 @@ path retired last.
 
 - **G0 — brick-build parity harness (no render).** Extend `gpu_parity`: pack ADR 0010's `TwoLayerChunk` boundary set into
   a sorted `BrickRecord` array + R8 atlas (coarse records for coarse-solid, sculpted bricks for `microblocks`), assert
-  **(a)** byte-identical to the CPU boundary occupancy. Wired to nothing yet (mirrors ADR 0007's atlas-mechanic-proven
-  step and ADR 0010's E1 standalone parity). Reuses ADR 0007's `main_atlas` packing.
+  **(a)** byte-identical to the CPU boundary occupancy. Wired to nothing yet; it reuses the established atlas packing.
 - **G1 — minimal brick raymarch, single ported producer, finest LOD only.** Port `t3_brick.wgsl`'s brick-DDA +
-  resident-record binary search (no clip-map yet); a scene of one ADR 0007-ported producer sources display from the brick
+  resident-record binary search (no clip-map yet); a supported producer sources display from the brick
   atlas. **Design requirement (4a ruling): the residency-miss contract is baked in here — a lookup miss on a boundary
   block renders its coarse form, never asserts/skips.** **Design requirement (grill Q5): the raymarch pass writes
   ray-hit DEPTH and composites correctly with the existing rasterized overlays (origin gizmo, fog, view cube, egui) —
   the one integration point the benchmark never exercised; verified by the existing goldens plus one overlay-inclusive
   shot.** Parity **(b)/(c)**: hit set == CPU surface; the sphere/revolve
-  goldens render brick-path pixel-identical. This is the ADR 0007 live-swap analog, now brick-granular. Kills the CPU
+  goldens render brick-path pixel-identical. This is the earlier live-swap behavior, now brick-granular. Kills the CPU
   fog `VoxelGrid` stream (ADR 0010's flagged debt) for single-producer scenes.
 - **G2 — clip-map LOD (the scattered-ceiling fix).** Emit the L1/L2 occupancy pyramid + hierarchical DDA (4a);
   multi-producer + scattered scenes engage. Parity: each level conservative; finest-LOD goldens still pixel-identical.
   This is the port of ADR 0009's *measured* 160→10240 lift — the slice that makes the sink scale.
-- **G3 — GPU-side incremental atlas updates (recompute-cheap edits).** The `AppCore` dirty-set (ADR 0007 §Open;
+- **G3 — GPU-side incremental atlas updates (recompute-cheap edits).** The `AppCore` dirty-set
   `invalidate_aabb`, ADR 0010 §Consequences) re-evaluates **only dirty blocks** into their bricks in a **persistent** atlas
-  (no full rebuild, no readback of occupancy — only the compact resize readback ADR 0007 proved unavoidable). This is
+  (no full rebuild and no occupancy readback). This is
   where the **edit-broadphase BVH** (4b) lands: dirty AABB → overlapping producers → dirty bricks. Per 4b's ruling the
   BVH also **replaces** `bucket_leaves_into_chunks` on the wholesale build path in this slice (or a small precursor
   slice), gated by the existing two-layer parity tests — one edit broadphase, not two. The per-edit win ADR 0009
-  promised ("~3× lower edit latency") lands here; Tracy-measured live, as ADR 0007 §6 established the incremental
+  promised ("~3× lower edit latency") lands here; Tracy-measured live, as the earlier incremental
   path can't be golden-tested headless.
 - **G4 — more LOD levels + off-screen residency (scale polish).** Add a 3rd/4th clip-map level (ADR 0009: closes most of
   the mesh gap); if a real off-screen scene proves the resident brick budget bites, add camera-centered residency rings
@@ -246,7 +245,7 @@ path retired last.
   contract already gave it its hole. Engineering, not architecture.
 - **G5 — retire the CPU display densify.** Once the brick-field covers every producer/scene the two-layer mesh does, drop
   the CPU fog `VoxelGrid` stream from the runtime display path (ADR 0010's last dense-shaped display consumer). Keep the
-  CPU two-layer mesh as the **headless/no-GPU fallback + A/B reference** (ADR 0007 §3 precedent) — the exact CPU
+  CPU two-layer mesh as the **headless/no-GPU fallback + A/B reference** — the exact CPU
   export/query/golden seam is never touched. **[DECIDED-grill 2026-07-05] keep-both, permanently, on Decision 6's
   terms: the CPU mesh is pinned at exactness (correct geometry, finest detail), owes no feature parity, no sunset.**
 
@@ -255,7 +254,7 @@ path retired last.
 - The last per-edit densify-shaped display cost (ADR 0010's flagged fog `VoxelGrid` stream + the CPU cuboid mesh) leaves
   the hot path; per-edit display work collapses to "re-evaluate dirty bricks → patch the persistent atlas," proportional
   to the dirty region, not the scene. Per-frame cost becomes independent of op-stack complexity (raymarch the cache).
-- **A third GPU derivation to keep in lockstep with CPU truth.** After the ADR 0007 fog atlas, this is more WGSL that can
+- **A third GPU derivation to keep in lockstep with CPU truth.** After the retired fog atlas, this is more WGSL that can
   silently drift — the parity net (§gate) is the mandatory, spike-first police, exactly as ADR 0006 demands. This is the
   standing cost the sink pays.
 - **Two broadphases, made explicit:** the clip-map occupancy pyramid (render broadphase) and the edit BVH (dirty-brick
@@ -265,7 +264,7 @@ path retired last.
 - **Interior elision reaches the GPU:** a solid interior costs one coarse `BrickRecord`, not 16³ atlas bytes — the
   coarse-until-chiseled win (ADR 0009's ~3× on the dominant cost) now holds on the display sink too, not just the CPU
   store.
-- **The fog and the mesh converge onto one sink.** ADR 0007's fog atlas and the cuboid mesh were separate display
+- **The fog and the mesh converge onto one sink.** The earlier fog atlas and the cuboid mesh were separate display
   artifacts; the brick-field is the single "raymarch the cached boundary set" derivation that subsumes both for display —
   ADR 0009's "one evaluator, many sinks" finally has its GPU sink singular.
 - **Rotated baked-voxel parts stay deferred** (ADR 0009 §Consequences / ADR 0010): the brick lattice is world-axis-aligned
@@ -290,8 +289,8 @@ path retired last.
 - **Display brick-field before the CPU exact seam** (port the GPU fog atlas into a brick-field before ADR 0010's CPU
   seam). This was ADR 0010's own rejected alternative — build the exact CPU seam first, then generalize to the GPU sink.
   ADR 0010 landed; this ADR is the "then generalize" half, correctly sequenced.
-- **Keep the ADR 0007 covering-box tile atlas as the display path** (don't go sparse/boundary-record). Covering tiles work
-  for a single producer but re-grow the atlas budget at multi-producer scale (ADR 0007's own "covering set > MAX_FOG_CHUNKS
+- **Keep the boundary-record brick atlas as the display path**. Covering tiles work
+  for a single producer but re-grow the atlas budget at multi-producer scale (the earlier "covering set > MAX_FOG_CHUNKS
   → CPU fallback" finding); the sparse boundary-record + clip-map set is what scales past that, which is why ADR 0009
   benchmarked *sparse* bricks, not covering tiles.
 - **Fixed-voxel brick granule (ADR 0009's "8³")**. Finer culling, smaller dirty units — but a granule denominated in
@@ -306,7 +305,7 @@ path retired last.
   2026) — ADR 0009's primary citation. Scene as an ordered list of SDF edits (truth); a **sparse grid storing only cells
   crossing the zero level set** (boundary residency); **cached distances interpolated per frame rather than raymarching
   the field** ("optimize for recompute, not render"); a **BVH of edits** (shared CPU/GPU) for broadphase + dirty-brick
-  incremental recompute; **clip-map LOD** for draw distance. Our ADR 0007 fog atlas is already this brick map; this port
+  incremental recompute; **clip-map LOD** for draw distance. The retired fog atlas was an earlier brick map; this port
   is the short step ADR 0009 named. (Caveat, honest: the HN text confirms the sparse-boundary-grid + cache-not-field +
   BVH + Jolt-physics claims; the deeper brick/LOD specifics are in the video, which ADR 0009 already digested.)
 - **Geometry clipmaps** — Losasso & Hoppe, *"Geometry clipmaps: terrain rendering using nested regular grids"* (ACM

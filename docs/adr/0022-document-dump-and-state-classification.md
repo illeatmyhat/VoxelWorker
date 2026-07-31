@@ -9,7 +9,7 @@
   a document that cannot honor the advice opens complete, exactly as decision 2 required.
   Introduces the rollback cursor as classified view state, and the classification scheme that
   places it.
-  Relates to ADR 0017 (the ordered fold this rolls back), ADR 0016 (crate structure — the
+  Relates to ADR 0017 (the ordered fold this rolls back), the crate structure — the
   derive would be a new crate kind), and ADR 0018 (viewer modes, the existing precedent for
   display state that never enters the document).
 - **Date:** 2026-07-20
@@ -124,7 +124,7 @@ at the field, where a reader will look; the destructuring forces the decision to
   depends on review, not on the type system.
 
 - **A derive macro means a new crate kind.** The workspace has no proc-macro crate
-  (ADR 0016 cut it into layer crates, all ordinary libraries). A proc-macro crate is build-time
+  (the layer split cut it into ordinary libraries). A proc-macro crate is build-time
   and orthogonal to the layer stack, so it does not violate the downward-only flow law, but it
   is a new kind of member and should be recognized as such rather than appearing by accident.
   **Exhaustive destructuring alone needs no macro and delivers the completeness guarantee** —
@@ -197,7 +197,7 @@ Two consequences of the shape it took, neither surprising but both worth recordi
 * **It is two crates, and that is forced.** A proc-macro crate can export nothing but macros,
   so the trait and category enum the generated code refers to cannot live inside it — the same
   split `serde`/`serde_derive` uses. `crates/snapshot_derive` is build-time and orthogonal to
-  the layer stack (no data flows through it at all), so ADR 0016's downward-only law has
+  the layer stack (no data flows through it at all), so the downward-only law has
   nothing to say about it; `crates/snapshot` is a true leaf beside `substrate`, naming no
   domain type, so any layer may import it.
 * **Every unclassified field reports in one build**, not one per recompile. Retrofitting onto a

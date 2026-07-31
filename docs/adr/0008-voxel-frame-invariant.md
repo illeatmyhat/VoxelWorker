@@ -4,8 +4,7 @@
   "Amendment 2026-07-18" at the foot)
 - **Date:** 2026-06-29
 - **Relates to:** [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) (the single Intent door is the
-  enforcement point), [ADR 0007](0007-gpu-view-resolve.md) (the GPU resolve already carries its frame
-  as an explicit `local_offset` — this ADR pulls the same discipline back onto the CPU side), and
+  enforcement point), and
   [ADR 0003](0003-foundation-rework.md) (the integer-indexed compact representation is the structural
   end-state where the invariant holds by construction).
 
@@ -96,8 +95,8 @@ in the position — and is left as is; the invariant is satisfied either way, ne
   is unchanged.
 - **Where it pays off next:** the **sculpt-delta Intent** (ADR 0003 §3e, not yet built) carries sparse
   integer force-on/off addresses. Designing them as (a) "always producer-local integer" or (b)
-  "carry their chunk/origin" — rather than letting the CPU apply and the GPU compositor (ADR 0007 P3)
-  each re-guess — avoids re-running exactly this debugging session in a harder, sparser setting.
+  "carry their chunk/origin" — rather than letting CPU and GPU code re-guess — avoids re-running
+  exactly this debugging session in a harder, sparser setting.
 - **End-state:** once occupancy is the ADR 0003 integer-indexed compact representation rather than a
   float `world_position` everyone round-trips through a guessed decode, option (c) becomes
   *unrepresentable* — which is the real goal; this ADR is the convention that holds until then.

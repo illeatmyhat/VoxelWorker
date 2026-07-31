@@ -6,18 +6,18 @@
   origin-set `FaceKey` (identity is an interior sample point), and §5's "no solver in v1, tangency
   one-shot" (there is a solver, and tangency is a maintained constraint). §1 (entities with stable
   ids), §4's `Fill`/`Hole` CSG algebra, §6 (faces derived, delete cascades) and §7 (coordinates)
-  all stand — and §4's *loops* became curve-bearing in [ADR 0034](0034-curves-stay-curves.md).
+  all stand — and §4's *loops* became curve-bearing in the curve-native field model.
 - **Date:** 2026-07-23
 - **Supersedes:** the profile representation of [ADR 0028](0028-sketch-mode.md) (a sketch as a single
   hand-maintained closed polygon `Vec<SketchPoint>`). ADR 0028's mode shell, undo group, fused
   sketch-plus-operation, and snap-as-constraint-stand-in are all retained; only "the profile *is* an
   ordered vertex list" is replaced.
-- **Relates to:** [ADR 0029](0029-measurement-as-authored-quantity.md) (every coordinate is a
+- **Relates to:** the authored-quantity rule (every coordinate is a
   `Measurement`), [ADR 0017](0017-csg-composition.md) (the field algebra the flattened profile now
   reuses in 2D; the no-cross-node-operand-targeting law region-picking is checked against),
   [ADR 0022](0022-document-dump-and-state-classification.md) (faces are `Derived`; picks are
-  document intent), [ADR 0019](0019-the-field-layer.md) (the flattened profile is the field's
-  meaning), [ADR 0027](0027-placement-continuity.md) (the wandering-origin coordinate split a
+  document intent), the field layer (the profile is the field's
+  meaning), the continuous-placement rule (the wandering-origin coordinate split a
   `SketchPoint` now carries).
 
 ## Context
@@ -48,7 +48,7 @@ A **sketch dimension** is reserved as a further entity kind: an annotation that 
 visible on the canvas (an arc's radius, a point-to-element distance, an angle) and — with the solver —
 *drives* it. **Display-only** dimensions (render the measured value) are solver-free and can ship
 earlier; **driving** dimensions (edit the value → geometry moves) need the solver. Both are the UI
-face of the ADR 0029 measurement substrate.
+face of the authored-quantity substrate.
 
 ### 2. A region is a bounded face of the point-segment graph — crossings need a snapped point
 
@@ -95,7 +95,7 @@ evaluates it in `(radius, axial)` — a holed revolve is a hollow vase. One `Ske
 ### 5. Arcs: one canonical representation, many creation methods as sugar
 
 The canonical stored arc is **two endpoint points + one included-angle `Measurement` of kind
-`Angle`** (ADR 0029) — unambiguous, compact, fully parametric; center and radius are derived.
+`Angle`** — unambiguous, compact, fully parametric; center and radius are derived.
 Creation tools — **3-point**, **center-point**, **tangent** — all compute and store that canonical
 form; their extra inputs (the through-point, the center) are consumed at creation, never persisted.
 Tangency is a **one-shot at creation, not a maintained constraint** (no solver in v1); re-invoke the
@@ -114,7 +114,7 @@ leaving its endpoints as free points.
 
 ### 7. Coordinates: a `SketchPoint` mirrors a node position
 
-A `SketchPoint` is a position, so it mirrors `NodeTransform` (ADR 0027 + ADR 0029):
+A `SketchPoint` is a position, so it mirrors `NodeTransform` and the authored-quantity model:
 `offset_voxels: [i64;2]` (integer wandering origin, voxel-at-density) + `offset_local_voxels: [f32;2]`
 (sub-voxel remainder, written by `snap = None`) + `offset_measurements: Option<[Measurement;2]>`
 (retained `Length` expression, `None` for a plain snapped point). `SetDensity` re-evaluates the
@@ -143,7 +143,7 @@ retained expression, so a profile does not warp under a density re-target.
   per edit; cheap at sketch scale (tens of entities).
 - **`resolve_extrude` / `resolve_revolve` generalize** from one loop to the tagged-loop 2D CSG; the
   revolve field's `signed_distance_to_polygon` becomes a multi-loop region distance.
-- **The constraint-solver door is open** (ADR 0029): stable entity ids receive constraints,
+- **The constraint-solver door is open**: stable entity ids receive constraints,
   `Measurement`s receive driven dimensions, `role: Construction` receives construction lines — all
   deferred, none foreclosed.
 - **New tools/verbs** (add point / add segment / add arc / delete-any / pick-unpick region) supersede

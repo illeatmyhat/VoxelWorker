@@ -21,7 +21,7 @@ symbol table, and `parametric::units::parse` reads a single measurement literal.
 panel, which is what would give a user somewhere to type it.
 
 **Kani harnesses for `curve_intersection` and `deepest_interior_point`.** Both are plausible
-bounded targets under ADR 0014's rule; the float solver beside them is not, which is why it was
+bounded targets under the substrate's machine-checking rule; the float solver beside them is not, which is why it was
 never on this list. `substrate::geom2d::deepest_interior_point` and the curve-intersection
 module carry tests and no proof.
 

@@ -162,7 +162,7 @@ constant.
 
 - **`ui` still cannot name serde**, so `ViewMode` and `SignalStackState` persist through remote
   derive shims in `src/artifacts.rs`, exactly as `ProjectionMode` does. The crate boundary law
-  (ADR 0016) is unchanged; the cost is one shim per persisted type from a domain crate, which is
+  the downward-only crate flow is unchanged; the cost is one shim per persisted type from a domain crate, which is
   the price already being paid.
 
 - **The classification's healthiest signal still holds.** Two `derived`, zero `transient`, after

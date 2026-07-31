@@ -745,7 +745,7 @@ impl WindowedState {
                         rotation_quaternion,
                         ..
                     }) => {
-                        // ADR 0027: the ghost previews the node as it WILL land — tilted to the
+                        // The ghost previews the node as it will land — tilted to the
                         // surface normal AND at the exact sub-voxel offset — so carry the same
                         // continuous rotation AND `offset_local` the intent would apply (placement
                         // writes the whole tilt into the quaternion, so a `None` is an upright drop;
@@ -2726,7 +2726,7 @@ impl WindowedState {
         // every zoom and draws as a visible polygon once a voxel is worth more than a few pixels.
         // The projected radius says what a voxel is currently worth — one number that already
         // carries the zoom, the foreshortening and the plane's tilt — and the tolerance follows
-        // from it. Only the pinned resolve tolerance is the profile's MEANING (ADR 0019); this is
+        // from it. Only the pinned resolve tolerance is the profile's meaning; this is
         // the same curve, drawn smoothly. A behind-camera chord vertex culls the whole arc,
         // matching the segment rule: a partially-projected curve would fold across the viewport.
         let to_viewport_px = |coord: [f64; 2]| {

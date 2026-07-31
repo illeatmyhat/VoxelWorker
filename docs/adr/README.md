@@ -50,34 +50,22 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0004](0004-agent-authoring-stack.md) | The agent-authoring and generative building stack | **Proposed, unimplemented.** Sits above the intent door, deliberately outside the core architecture set |
 | [0005](0005-architecture-completeness.md) | Pattern producer, space and nav graphs, terrain, decay, diagnostics | **Proposed, unimplemented.** A feature backlog, not a foundation decision |
 | [0006](0006-authoring-truth-and-gpu-boundary.md) | The CPU owns truth; the GPU is a display and optional input shell | Accepted. This is Law 4 |
-| [0007](0007-gpu-view-resolve.md) | Stream the tree and voxelize on the GPU for display | **Retired** by 0012 — its last consumer died with the fog |
 | [0008](0008-voxel-frame-invariant.md) | A spatial value carries its frame; nothing re-derives one | Accepted — the carry half binds; the decode authority is retired |
 | [0009](0009-op-stack-truth-evaluator-and-sinks.md) | The operation stack is truth; one evaluator, many sinks, no resident dense grid | Accepted and implemented |
 | [0010](0010-boundary-residency-two-layer-store.md) | Boundary-aware residency: the two-layer chunk store | Accepted and shipped — the sole runtime display path |
 | [0011](0011-gpu-brick-field-display-sink.md) | The GPU brick field: raymarch a cached brick atlas under a clip-map pyramid | Accepted and shipped |
 | [0012](0012-onion-ghost-clip-slabs.md) | Onion skin as ghost-shaded clip slabs; delete the volumetric fog | Accepted and shipped |
-| [0013](0013-per-voxel-material-side-atlas.md) | Per-voxel materials as a sparse cell-key side atlas | Accepted and shipped |
-| [0014](0014-substrate-crate.md) | The substrate library: pure computer science, compile-enforced | Accepted and shipped |
-| [0015](0015-graphics-math-crates.md) | Graphics math as its own libraries; the library is the shader's readable spec | Accepted and shipped |
-| [0016](0016-per-layer-crates.md) | Every architecture layer becomes a compile-enforced library boundary | Accepted and executed |
 | [0017](0017-composition-beyond-union.md) | Composition beyond union: the ordered fold, sealed scopes, fixtures | Accepted and shipped. Supersedes parts of 0003 |
 | [0018](0018-viewer-modes-and-the-root-part.md) | Exclusive viewer modes and the reified root part | Accepted and shipped; decision 3's persistence half superseded by 0024 |
-| [0019](0019-the-field-layer.md) | The field layer: profiles, metrics, outset as a combinator | Accepted and shipped; **decision 2 superseded** by 0034 |
-| [0020](0020-field-trait-half-spaces-and-emboss.md) | The field trait, half-space cutters, and emboss | Accepted and shipped; decision 1's premise corrected by 0021 |
-| [0021](0021-noise-as-a-bounded-field-operation.md) | Noise as a bounded field operation — boundable is not metric | Accepted and shipped |
 | [0022](0022-document-dump-and-state-classification.md) | The document, the dump, and classified state | Accepted, **partially implemented**; decision 2 superseded by 0025 |
 | [0023](0023-rollback-cache-deltas-and-keyframes.md) | The rollback cache: deltas with periodic keyframes | Accepted, **unimplemented** |
 | [0024](0024-session-state.md) | Session state: the workspace comes back | Accepted and implemented; supersedes 0018 decision 3's persistence half |
 | [0025](0025-embedded-session-on-save-as.md) | The author's view travels in the document, opt in on Save As | Accepted, **unimplemented**; supersedes 0022 decision 2 |
-| [0026](0026-placement-orientation-on-the-transform.md) | Placement orientation as a lattice-exact turn on the transform | **Superseded** by 0027, except its *home* ruling |
-| [0027](0027-placement-continuity.md) | Continuous rotation and float position, with snap as quantization | Accepted and shipped |
 | [0028](0028-sketch-mode.md) | A sketch is a scene object you enter, editing real entities in a sealed scope | Accepted; §4's nested undo **superseded** by 0035 decision 13 |
-| [0029](0029-measurement-as-authored-quantity.md) | `Measurement` is the authored-quantity type; occupancy carries none | Accepted; extended by 0035 decision 12 |
 | [0030](0030-sketch-as-entity-collection.md) | A sketch is an entity collection; the profile is derived from picked faces | Accepted; **three decisions superseded** by 0035 |
 | [0031](0031-frame-phases-and-scene-draw.md) | The viewport render is ordered frame phases of one scene draw | Accepted |
 | [0032](0032-selection-as-workspace-state.md) | Selection is workspace state, unified across target kinds | Accepted |
 | [0033](0033-selection-is-not-undo-state.md) | Selection is view state, not undo state | Accepted |
-| [0034](0034-curves-stay-curves.md) | Curves stay curves; flattening is a consumer, not a stage | Accepted. Supersedes 0019 decision 2 |
 | [0035](0035-the-sketch-tool-suite.md) | The sketch tool suite: a constraint solver, a geometric arrangement, a parametric library | Accepted; being built |
 
 ## Records that quote documents no longer in the repo

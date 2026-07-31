@@ -11,7 +11,7 @@ edition = "2021"
 # It sits between `substrate` (from which it takes only `Rational`) and `voxel_core`,
 # so the units vocabulary has somewhere to grow that is not the middle of the value
 # crate, and so `substrate` stays free of domain words like "block" and "voxel"
-# (ADR 0014). The dependency edge is one-way: `substrate <- parametric <- voxel_core
+# The dependency edge is one-way: `substrate <- parametric <- voxel_core
 # <- the rest of the app`.
 #
 # The invariant that shapes every type here: **exactness is a storage and authoring

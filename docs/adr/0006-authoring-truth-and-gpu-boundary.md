@@ -138,14 +138,8 @@ goldens. Recorded near-term items, in order, that do NOT require any GPU-authori
 - **Next (CPU, on the existing trajectory):** the fog occupancy upload + the monolithic `resolve_region`
   grid assembly still run wholesale every edit (the cuboid path no longer needs the monolithic grid) —
   Tracy-measure the post-#40 per-edit profile first; then per-chunk async resolve on a worker.
-- **Then (GPU display derivation, gated as above) — now specified concretely in
-  [ADR 0007](0007-gpu-view-resolve.md) (the GPU view-resolve):** stream the **compact tree** (producers +
-  later sculpt deltas), not expanded voxels, to a **chunked** GPU resolver that voxelizes → fog-slices →
-  meshes → instances for display, while the CPU authoritative resolve goes **on-demand**. (This supersedes
-  the earlier sketch here of "compute-scatter the occupied voxel list into the R8 texture" — that still
-  ships *expanded* voxels, the very cost the view-resolve removes; see ADR 0007 Alternatives.) P1 = the
-  SDF tier (primitives + `SketchSolid`) → GPU per-chunk fog field; P3 (sculpt compositing) waits for the
-  ADR 0003 §3e foundation; the GPU sculpt brush as a human input transducer is later still.
+- **Then (GPU display derivation, gated as above):** the live display derives from the compact
+  evaluator output through the brick field described in `docs/architecture/03-display.md`.
 
 ## Consequences
 

@@ -24,19 +24,19 @@ whole-scene operations are expressed by selecting a thing, never by the absence 
 selection — a background misclick cannot silently retarget an operation from an object
 to the world.
 
-Every node carries a placement (an integer offset on the voxel lattice, plus a lattice
-orientation), a material choice, and per-node display toggles (grids, visibility). The
-graph is small — proportional to the user's design decisions, never to the voxels those
-decisions imply.
+Every node carries a placement, a material choice, and per-node display toggles (grids,
+visibility). Field placement is continuous: a node carries a float position and arbitrary
+rotation, while evaluation quantizes occupancy onto integer voxel cells. Snap modes are
+quantization policies, not the stored representation. Authored dimensions use exact
+`Measurement` expressions; their resolved voxel values are derived at the document's current
+density and can be recomputed without changing the authored quantity. The graph is small —
+proportional to the user's design decisions, never to the voxels those decisions imply.
 
-**Reuse is lossless by construction.** An instance places its definition at an integer
-lattice offset in one of the twenty-four axis-aligned orientations — the proper
-rotations of the cube, the full symmetry the block lattice admits. Every such
-orientation is an exact permutation of voxel indices, so an instance is
-voxel-for-voxel its definition: rotating a carved gargoyle can never resample,
-blur, or drift it. Transforms outside that group are not placements; they are
-authoring operations (a producer's own parameters), where losslessness is defined
-by the producer, not by the lattice.
+**Reuse is lossless by construction.** A static body instance places its definition at an
+integer lattice offset in one of the twenty-four axis-aligned orientations — the proper
+rotations of the cube. Every such orientation is an exact permutation of voxel indices.
+Parametric fields may instead carry arbitrary rotation and are evaluated after that rotation;
+they are not resampled static arrays. The node kind determines which placement law applies.
 
 ## Composition
 
@@ -115,15 +115,12 @@ evaluation there. Boundedness is a performance contract, exactness is a correctn
 contract, and the two are never traded against each other.
 
 A drawn profile is a closed path of lines, arcs and curves in continuous coordinates,
-never required to meet the lattice. It flattens to a polygon at a **fixed tolerance of
-1/256 block**, and *that polygon is what the document means* — not an approximation of a
-truer meaning hiding in the control points. The tolerance is deliberately
-density-independent, which is what lets a density change re-voxelize without moving
-geometry; because the polygon is the meaning, the flattening rule is versioned document
-semantics rather than an implementation detail. The lifts are extrusion and revolution,
-with sweep along a path reserved as the third. Control points survive as live editable
-input, so parametric editability is kept without adopting a spline representation the
-lattice would quantize away regardless.
+never required to meet the lattice. The profile remains a field over those curve primitives;
+flattening is a terminal adapter for consumers that need polygons, not a change to document
+meaning. The field exposes conservative bounds and metrics for classification, outset, and
+emboss. The lifts are extrusion and revolution, with sweep along a path reserved as the third.
+Control points survive as live editable input, so parametric editability is preserved without
+making a lossy polygon the document's source of truth.
 
 A producer may be **unbounded** — a half-space is the simplest field there is, and it
 replaces a whole trimming tool with "plane, subtracted". Unboundedness is legal only

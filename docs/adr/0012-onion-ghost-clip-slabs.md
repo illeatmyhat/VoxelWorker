@@ -1,11 +1,11 @@
 # ADR 0012 — Onion skin as ghost-shaded clip slabs on the display passes; retire the volumetric fog subsystem
 
 - **Status:** **Accepted & shipped (2026-07-11)** — both slices landed: H1 (ghost passes live on both display paths,
-  fog machinery dark but compiling) and H2 (deleted the volumetric fog subsystem + retired ADR 0007's `gpu_resolve`
+  fog machinery dark but compiling) and H2 (deleted the volumetric fog subsystem and its `gpu_resolve`
   evaluator, whose last live consumer died with it).
 - **Date:** 2026-07-11
 - **Layer:** DISPLAY simplification. **Supersedes the volumetric onion-fog pipeline** (issue #28 per-chunk atlas,
-  issue #59 band slabs, ADR 0007's fog resolve, ADR 0011 G5's fog-from-bricks). Governed by
+  issue #59 band slabs, the earlier fog resolve, and ADR 0011 G5's fog-from-bricks). Governed by
   [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) (GPU is a display shell, never truth) and
   [ADR 0008](0008-voxel-frame-invariant.md) (the slab uniforms carry the recentered-Z frame the band already uses).
   Finishes the "no dense state anywhere" retirement of ADR 0010/0011: the per-chunk fog occupancy tiles are the
@@ -18,7 +18,7 @@ keeps spatial context while scrubbing. Today it is implemented as a **second, pa
 R8 occupancy tile per resident chunk in the band's Z-slab (`(chunk_extent+2)³` bytes, 1-voxel apron for seam-smooth
 trilinear sampling), packed into a 3D atlas, raymarched by `OnionFogRenderer` into a soft accumulating haze.
 
-That design predates the brick field — the fog atlas was the FIRST GPU occupancy sink (ADR 0007 built the GPU
+That design predates the brick field — the fog atlas was the first GPU occupancy sink (the earlier GPU
 resolver to feed it), and ADR 0011 later observed "the shipped per-chunk R8 fog atlas is already a brick map."
 After ADR 0011 the GPU already holds the scene's full occupancy (surface brick records + sculpted atlas + clip-map
 pyramid + the band-clip block-occupancy masks). The fog atlas is now a dense re-encoding of information the display
@@ -72,7 +72,7 @@ per-frame uniform; the onion region is the same geometry under a different clip 
    `fog_brick_field` + its startup seeding, the fog dirty/covering-range tracking in the shell, the transient
    Part-only fog densify, and `FogMode`. Their parity oracles retire with them (the ghost pass is gated by
    display-path goldens instead).
-5. **ADR 0007's GPU resolver retires with it.** `try_install_gpu_per_chunk_fog` / `resolve_single_producer_fog_atlas`
+5. **The GPU resolver retires with it.** `try_install_gpu_per_chunk_fog` / `resolve_single_producer_fog_atlas`
    is the LAST live consumer of `gpu_resolve.rs` / `gpu_resolve.wgsl`; with the fog gone, the whole producer-mirror
    evaluator and its parity suite are deleted. This leaves exactly ONE GPU-side producer surface (the brick
    pipeline consuming the CPU-classified boundary set) — the consolidation the 2026-07-11 architecture audit

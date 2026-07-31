@@ -90,7 +90,7 @@ separate microblock entities). A solid interior is never voxelized.
 ## GPU brick-field display sink (the cached-brick raymarch)
 
 The GPU display derivation that raymarches a **cached** copy of the boundary set instead of the
-op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
+op-stack field (see `docs/architecture/03-display.md`).
 
 - **Brick** — **one block's** cube of voxels cached in one **atlas slot** (a slice of a 3D
   texture pool). The granule is denominated in **blocks**, never a fixed voxel count: brick edge =

@@ -144,7 +144,7 @@ impl ArmedToolConfig {
                 .map(|offset_voxels| PlacementGhost {
                     shape: shape.clone(),
                     offset_voxels,
-                    // The config does not carry the sub-voxel remainder or rotation (ADR 0027); an
+                    // The config does not carry the sub-voxel remainder or rotation; an
                     // F9 repro of an armed tilted / off-block drop previews it upright and
                     // voxel-aligned until the first cursor motion re-resolves it. The placed nodes
                     // it captures keep their full transform in the scene tree.
@@ -408,7 +408,7 @@ pub struct AppConfig {
     #[snapshot(settings)]
     pub window_size: [u32; 2],
 
-    // --- session: how the workspace was left (ADR 0024) ---
+    // --- session: how the workspace was left ---
     // These four were classified on `PanelState` as reaching the dump and reached
     // nothing: `to_panel_state` hard-coded every one of them to a default, and no field
     // here carried them. That is the pan-target bug exactly — a decision recorded at the
@@ -421,7 +421,7 @@ pub struct AppConfig {
     // the user stopped, and a preference is something you would want honored in every
     // project.
     /// The viewer's exclusive rendering mode. ADR 0018 decision 3 ruled it out of the
-    /// document, which stands; ADR 0024 supersedes the part where that was implemented as
+    /// document, which stands; session state remains separate from the document.
     /// out of persistence altogether.
     #[snapshot(session)]
     pub view_mode: ViewMode,
@@ -439,7 +439,7 @@ pub struct AppConfig {
     /// The armed tool (ADR 0022) with its pending drop nested inside, `None` when no tool
     /// is armed. Session state on the same footing as [`view_mode`](Self::view_mode): an
     /// armed tool is how the workspace was left, so a mid-gesture dump re-arms and replays
-    /// it. Named `armed_tool` to match the [`PanelState`] field it routes to (the ADR 0024
+    /// it. Named `armed_tool` to match the [`PanelState`] field it routes to (the
     /// seam guard keys on the name).
     #[snapshot(session)]
     pub armed_tool: Option<ArmedToolConfig>,
@@ -593,7 +593,7 @@ impl AppConfig {
             home_distance: home_view.distance,
             home_explicit: home_view.explicitly_set,
             window_size,
-            // ADR 0024: the session fields. Read straight off the panel, which is all
+            // The session fields are read straight off the panel, which is all
             // they ever needed — the omission was never subtle, it was simply never
             // forced to be noticed.
             view_mode: panel.view_mode,
@@ -669,7 +669,7 @@ impl AppConfig {
             projection_mode: self.projection_mode,
             material: self.material,
             axes_on_top: self.axes_on_top,
-            // ADR 0024: the debug verification modes are session state and are restored,
+            // The debug verification modes are session state and are restored,
             // not reset. They used to be hard-coded to `false` here while classified as
             // reaching the dump — a category promising one thing and the code doing
             // another, which is the failure mode the classification exists to make
@@ -691,7 +691,7 @@ impl AppConfig {
                 onion_skin: self.onion_skin,
                 onion_depth: self.onion_depth.clamp(1, 8),
             },
-            // ADR 0024, superseding ADR 0018 decision 3: the viewer mode stays out of the
+            // The viewer mode stays out of the
             // document and is restored across relaunch. Decision 3 said "not saved with
             // the scene"; this always honored that, and the reset was the wider claim
             // nobody made.

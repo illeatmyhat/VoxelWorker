@@ -6,7 +6,7 @@ edition = "2021"
 # The workspace's first proc-macro crate (ADR 0022 named this as a consequence).
 # It is a BUILD-TIME crate: it runs in the compiler, produces tokens, and links into
 # no binary, so it is orthogonal to the eight-layer stack rather than a member of it.
-# That orthogonality is why it does not violate ADR 0016's downward-only flow law —
+# That orthogonality preserves the downward-only flow law —
 # there is no data flow through it at all.
 [lib]
 proc-macro = true

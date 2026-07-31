@@ -163,7 +163,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.material = restored.material;
         panel_state.projection_mode = config.projection_mode;
         panel_state.applied_block_label = restored.applied_block_label;
-        // ADR 0024: the session state a dump now carries. A repro that replays the scene
+        // The dump carries session state so a repro that replays the scene
         // and the camera but resets the viewer mode renders a different picture than the
         // one the fault was reported in, which is the whole failure this category was
         // added to end. The CLI still wins where it spoke: `--view-mode` when actually
@@ -357,9 +357,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             shape: shape.clone(),
             offset_voxels: options.ghost_offset,
             // The headless verification places on whole-voxel `--ghost-offset`, so no sub-voxel
-            // remainder (ADR 0027 `NoSnap`); the coincidence check runs at integer offsets.
+            // remainder (`NoSnap`); the coincidence check runs at integer offsets.
             offset_local: [0.0, 0.0, 0.0],
-            // ADR 0027: `--ghost-face N` tilts the ghost against that face (local +Z → N) as the
+            // `--ghost-face N` tilts the ghost against that face (local +Z → N) as the
             // continuous rotation the classifier resolves; absent, the upright identity of a
             // world-plane / +Z-face drop. The lattice turn is bridged to a `Quat` by
             // `quat_from_lattice` — the same discrete→continuous map the leaf composes.
@@ -627,7 +627,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
 
     // ADR 0011 G2: `--brick` sources the voxel display from the brick raymarch. The
     // gate mirrors the live app's: a chunkable procedural scene
-    // (SDF / SketchSolid — the ADR 0007-ported set; DebugClouds is VoxelBody-only, so the
+    // (SDF / SketchSolid — the supported field set; DebugClouds is VoxelBody-only, so the
     // two-layer store has no boundary set for it), brick-representable (every rendered
     // block single-material + uniform overlay — per-record ids carry per-block materials,
     // so multi-producer distinct-material scenes engage; the R8 atlas is occupancy-only,
@@ -730,7 +730,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         )
     } else if !options.dense && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
         // ADR 0010 E3 / #50: mesh THROUGH the two-layer path — now the DEFAULT (the live-app
-        // path), so a headless render matches the window, INCLUDING the ADR 0027 continuous
+        // path), so a headless render matches the window, including the continuous
         // rotation the dense oracle drops. `--dense` opts back to the parity oracle below. Build
         // each covering chunk's [`evaluation::two_layer_store::TwoLayerChunk`]
         // `TwoLayerChunk` (coarse one-box + microblock cuboids + seam flags) and mesh from

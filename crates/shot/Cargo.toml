@@ -32,7 +32,7 @@ edition = "2021"
 # algebra, and the exact-rational expression language (ADR 0035).
 parametric = { path = "../parametric" }
 # The pure CS/math substrate: LatticeOrientation, to orient the placement ghost from a
-# `--ghost-face` normal (ADR 0026 headless verification).
+# `--ghost-face` normal for headless verification.
 substrate = { path = "../substrate" }
 # The app crate: `shot` drives the real thing rather than a parallel harness —
 # `build_brick_field`, `pack_gpu_records`, `default_replay_seed_scene` and

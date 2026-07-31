@@ -12,8 +12,8 @@
   the **no-operand-targeting** owner law this decision upholds), [ADR 0022](0022-document-dump-and-classified-state.md)
   (mode + undo state are non-document, classified as view/derived), [ADR 0018](0018-viewer-modes.md)
   (sketch mode is an *editing* mode, a different axis from the exclusive *viewer* render modes),
-  [ADR 0019](0019-the-field-layer.md) (the flattened profile is the field's meaning), and
-  [ADR 0027](0027-placement-continuity.md) (its position-snap `{None | Voxel | Block}` is reused for
+  the field layer (the profile is the field's meaning), and
+  the continuous-placement rule (its position-snap `{None | Voxel | Block}` is reused for
   profile vertices).
 
 ## Context — the engine exists, the authoring does not
@@ -90,7 +90,7 @@ machinery.
 
 ### 5. Position snap is reused; lattice snapping stands in for a constraint solver
 
-Profile vertices reuse ADR 0027's **position snap** `{None | Voxel | Block}` — the same quantization,
+Profile vertices reuse the **position snap** `{None | Voxel | Block}` — the same quantization,
 now in the plane's two in-plane axes. Following the glossary's **Lattice snapping**, the voxel grid
 **stands in for a constraint solver**: snapping to grid, vertices, and axes delivers axis-alignment,
 equal lengths, and coincidence as a by-product of quantization. The sketch layer therefore carries
