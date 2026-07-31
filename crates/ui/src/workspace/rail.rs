@@ -25,14 +25,15 @@ use crate::panel::{
 };
 use crate::theme;
 
-/// A shape cell: full rail width less the hairline, tall enough for a 26 px tile plus air.
-const CELL_HEIGHT: f32 = 37.0;
-/// A tool cell — rail glyphs at 19 px, so the cell is shorter.
-const TOOL_CELL_HEIGHT: f32 = 30.0;
+/// A shape cell: full rail width less the hairline, tall enough for the tile plus air.
+const CELL_HEIGHT: f32 = 44.0;
+/// A tool cell. The same height as a shape cell now that both carry a 32 px glyph — the two used
+/// to differ only because the glyphs did.
+const TOOL_CELL_HEIGHT: f32 = 44.0;
 /// The tile glyph's box inside a shape cell.
-const TILE_GLYPH: f32 = 26.0;
-/// The rail glyph's box inside a tool cell.
-const TOOL_GLYPH: f32 = 19.0;
+const TILE_GLYPH: f32 = 32.0;
+/// The rail glyph's box inside a tool cell (owner 2026-07-30 — 19 px read as small).
+const TOOL_GLYPH: f32 = 32.0;
 /// Opacity of a reserved cell — present, legible, plainly not yet clickable.
 const RESERVED_DIM: f32 = 0.35;
 

@@ -7,7 +7,7 @@
 //!
 //! | | rail ([`Icon`]) | tile (here) |
 //! |---|---|---|
-//! | grid / stroke | 18 units · 1.25 | 26 units · 1.1 (proportionally lighter) |
+//! | grid / stroke | 18 units · 0.75 | 26 units · 1.083 — the same [`super::STROKE_RATIO`] |
 //! | depth | flat silhouette | drawn in projection |
 //! | opacity | none — at 15 pt a faded stroke reads as a *gap* | a third ink: solid = front, faded = behind |
 //! | fills | none — a filled region at rail size is a blob | allowed, where the subject IS a region |
@@ -45,9 +45,10 @@ mod tube;
 /// The authoring grid every tile glyph is traced on: 26 × 26 units.
 pub const GRID: f32 = 26.0;
 
-/// The tile stroke, in design points — proportionally about half the rail weight, because a
-/// large mark carries its weight through construction rather than through ink.
-pub const STROKE_WIDTH: f32 = 1.1;
+/// The tile stroke, in design points — [`GRID`] at the house [`super::STROKE_RATIO`], the same
+/// relative weight the rail family carries. It was hand-set to 1.1, which is what the ratio
+/// yields to two decimal places; the rail family is the one that was off the rule.
+pub const STROKE_WIDTH: f32 = GRID / super::STROKE_RATIO;
 
 /// A mark drawn at tile size.
 ///

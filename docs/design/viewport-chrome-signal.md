@@ -93,7 +93,16 @@ with accent border. Steppers/segments: bordered cells separated by hairlines.
 
 ## Icon set
 
-18-unit grid, 1.25 px stroke, square joints, no rounding. Glyphs: home, fit (corner
+18-unit grid, square joints, no rounding.
+
+**The house stroke rule: a glyph's stroke is its own authoring grid divided by 24.** Stated once
+so the families cannot drift: 0.75 on the 18-unit rail grid, 1.083 on the 26-unit tile grid, 1.5
+on the 36-unit SVG design sheets. `ui::icons::STROKE_RATIO` is the number, and both Rust families
+derive their width from it rather than carrying a hand-set constant. The rail set was traced at
+1.25 (1:14.4) against the tile set's 1:23.6 for long enough that nobody saw it, because at a 19 pt
+glyph box either ratio is a hairline; a 32 pt box scaled the difference into view.
+
+Glyphs: home, fit (corner
 brackets + square), mode-normal (solid cube), mode-onion (lifted layer slices), 
 mode-booleans (solid ∩ dashed squares), part (container cube), root part (container over
 a ground line), fold chevron. Idle `#78828c`, hover `#c7d3e0`, active accent.

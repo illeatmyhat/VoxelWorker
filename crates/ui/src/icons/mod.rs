@@ -1,7 +1,8 @@
 //! The **Signal** icon set, painted with `egui` strokes rather than shipped as textures.
 //!
-//! Every glyph is authored on an **18-unit grid** at a **1.25 pt stroke**, square caps, miter
-//! joins, zero rounding — the rules in `docs/design/viewport-chrome-signal.md` §Icon set. A
+//! Every glyph is authored on an **18-unit grid** at a stroke of one [`STROKE_RATIO`]th of that
+//! grid, square caps, miter joins, zero rounding — the rules in
+//! `docs/design/viewport-chrome-signal.md` §Icon set. A
 //! glyph is a `&'static [`[`Mark`]`]` — DATA, painted through [`IconPainter::at`] — so the same
 //! source draws at a 15 pt rail button and at a 44 pt palette tile with no second asset and no
 //! resampling. Colour is never baked in: the host passes it, which is what lets one glyph be
@@ -177,16 +178,32 @@ pub use mark::{Ink, InkRole, Mark};
 /// ([`large`]) is traced on its own coarser grid — see [`large::GRID`].
 pub const GRID: f32 = 18.0;
 
-/// The Signal glyph stroke, in design points.
-pub const STROKE_WIDTH: f32 = 1.25;
+/// **The house stroke rule**: a glyph's stroke is its authoring grid divided by this, so every
+/// family in the set — rail, tile, and the SVG design sheets — draws at one weight relative to
+/// its own drawing, and the number is stated once instead of being re-picked per family.
+///
+/// It exists because the families had drifted apart and nobody could see it: the rail set was
+/// traced at 1.25 on 18 units (1:14.4) and the tile set at 1.1 on 26 (1:23.6), a 60% difference
+/// in relative weight that read as "the small icons are heavy". It stayed invisible while the
+/// rail glyph box was 19 pt, because the stroke scales with the box and 1.25 × (19/18) is a
+/// hairline either way. Taking the box to 32 pt scaled the same ratio to 2.2 px and the drift
+/// became the first thing you notice (owner 2026-07-30).
+///
+/// 24 is the tile family's existing weight, which was the one that read correctly. The rail
+/// family moves to match it; the tile family barely moves at all.
+pub const STROKE_RATIO: f32 = 24.0;
+
+/// The Signal rail glyph stroke, in design points — [`GRID`] at the house ratio.
+pub const STROKE_WIDTH: f32 = GRID / STROKE_RATIO;
 
 /// Painting kit handed to a glyph: it owns the mapping from the authoring grid onto the
 /// on-screen box, so an icon file never does arithmetic on `Rect`s and cannot drift off the
 /// grid.
 ///
 /// The grid is per-painter rather than a constant, because the two glyph families are drawn
-/// at different resolutions: the rail set on 18 units at a 1.25 stroke, the tile set on 26 at
-/// 1.1. They are separate DRAWINGS of the same nouns, not one asset scaled — so the kit has
+/// at different resolutions: the rail set on 18 units, the tile set on 26, each stroked at the
+/// house [`STROKE_RATIO`]. They are separate DRAWINGS of the same nouns, not one asset scaled — so
+/// the kit has
 /// to be told which grid it is on.
 pub struct IconPainter<'a> {
     painter: &'a Painter,

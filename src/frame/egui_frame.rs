@@ -703,25 +703,14 @@ pub fn run_egui_frame(
             }
         }
 
-        // Signal: the bottom-left slot — normally the status line (mode · dims · density), taken
-        // by a standing constraint refusal while there is one (ADR 0035 Decision 15). Draws on
-        // BOTH paths; dims + density are read from the panel's scene each frame.
-        match panel_state
+        // Signal: the viewport's bottom-left corner, which a standing constraint refusal takes
+        // and nothing else does (ADR 0035 Decision 15). The persistent mode · dims · density
+        // status line that used to live here is gone — see `ui::chrome`. Draws on BOTH paths.
+        if let Some(why) = panel_state
             .sketch_mode
             .and(panel_state.sketch_constraint_refusal)
         {
-            Some(why) => ui::chrome::viewport_notice(ui, central_rect_points, why),
-            None => {
-                let density = panel_state.scene.voxels_per_block;
-                let dims = panel_state.scene.placed_region_dimensions(density);
-                ui::chrome::status_line(
-                    ui,
-                    central_rect_points,
-                    panel_state.view_mode,
-                    dims,
-                    density,
-                );
-            }
+            ui::chrome::viewport_notice(ui, central_rect_points, why);
         }
 
         // ADR 0028: while a sketch is being edited, the immersive accent viewport border + the

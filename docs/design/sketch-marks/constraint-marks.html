@@ -77,7 +77,8 @@
   const R = '#e2564b';   // constraint red — the driven entity
   const W = '#f2f6fa';   // white — the reference entity
   const B = '#9cb4d8';   // tool blue — generators and modes
-  const SW = 2.0;        // stroke on the 36-unit canvas: 18:1, ~2px at 36, ~0.9px at 16
+  const SW = 36 / 24;    // the HOUSE STROKE RULE: grid / 24, the one weight every family draws
+                         // at relative to its own canvas (ui::icons::STROKE_RATIO). 1.5 on 36.
 
   const ln = (pts, ink, dash) =>
     `<path d="M ${pts.map(p => p.join(' ')).join(' L ')}" stroke="${ink}" stroke-width="${SW}" ` +

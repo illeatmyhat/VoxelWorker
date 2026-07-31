@@ -20,10 +20,11 @@ pub const SKETCH_INSERT_MARKER_HALF: f32 = 4.0;
 /// The side (egui points) of a constraint badge's glyph box. Constant on screen, like every
 /// other sketch mark: a badge says *what is asserted*, and a claim does not get smaller with
 /// distance.
-pub const SKETCH_CONSTRAINT_BADGE: f32 = 13.0;
+pub const SKETCH_CONSTRAINT_BADGE: f32 = 32.0;
 /// How far (egui points) a badge sits off the geometry it belongs to, and how far successive
-/// badges on the same anchor step along that offset.
-pub const SKETCH_CONSTRAINT_BADGE_OFFSET: f32 = 12.0;
+/// badges on the same anchor step along that offset. Scaled with the box, so the arrangement
+/// reads the same at any badge size.
+pub const SKETCH_CONSTRAINT_BADGE_OFFSET: f32 = 30.0;
 
 /// The sketch-mode exit control + immersive border: a faint accent inset border framing the
 /// viewport plus the floating `CANCEL` / `FINISH SKETCH` pair bottom-right; returns the clicked
@@ -168,11 +169,11 @@ pub fn sketch_constraint_badges(ui: &egui::Ui, badges: &[ConstraintBadge]) {
             theme::SKETCH_CONSTRAINT
         };
         if badge.picked {
-            let plate = box_rect.expand(2.0);
-            painter.rect_filled(plate, 2.0, theme::ACCENT_FAINT);
+            let plate = box_rect.expand(4.0);
+            painter.rect_filled(plate, 3.0, theme::ACCENT_FAINT);
             painter.rect_stroke(
                 plate,
-                2.0,
+                3.0,
                 Stroke::new(1.0_f32, theme::ACCENT),
                 StrokeKind::Inside,
             );

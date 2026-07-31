@@ -9,16 +9,15 @@ const PAD_X: f32 = 9.0;
 const PAD_Y: f32 = 6.0;
 const INSET: f32 = 10.0;
 
-/// Draw `REFUSED · <why>` as a bordered box in the viewport's bottom-left, taking the slot
-/// [`status_line`](super::status_line) otherwise holds.
+/// Draw `REFUSED · <why>` as a bordered box in the viewport's bottom-left.
 ///
-/// **It replaces the status line rather than sitting beside it.** A refusal is the only thing on
-/// screen the author has to act on, and the mode · dims · density readout is the least urgent —
-/// so the urgent thing takes the established slot instead of opening a second one competing for
-/// the same glance (owner 2026-07-30). The readout comes back the moment the refusal clears.
+/// It took that corner from the persistent status line and then outlived it: a refusal is the one
+/// thing on screen the author has to act on, and it belongs where they are looking rather than in
+/// the top bar beside the passive readouts, where it went unread (owner 2026-07-30). Nothing else
+/// stands there now, so the corner is empty until something has to be said.
 ///
 /// `viewport_rect` is the central 3D rect in egui points. Foreground `layer_painter` at an
-/// absolute position, so it renders on `shot` like the line it stands in for.
+/// absolute position, so it renders on `shot`.
 pub fn viewport_notice(ui: &egui::Ui, viewport_rect: Rect, why: &str) {
     let mono = FontId::monospace(10.0);
     let format_with = |color: Color32| TextFormat {
