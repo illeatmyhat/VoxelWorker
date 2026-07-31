@@ -31,6 +31,16 @@ pub enum InkRole {
     /// construction geometry already has in the viewport, which is the only reason a third
     /// colour is allowed in this set at all.
     Construction,
+    /// The entity a CONSTRAINT drives. Red, against the reference entity's line art.
+    ///
+    /// This one was collapsed into [`Accent`](Self::Accent) when the constraint shelf was first
+    /// transposed, on the argument that the Signal language has exactly one accent. That was the
+    /// wrong reading of the sheet (owner, 2026-07-30). A constraint glyph's whole content is
+    /// which of two entities MOVED, and the accent already means "picked" everywhere else in the
+    /// set — so drawing the driven entity in it said nothing the reference entity did not also
+    /// say. The role is what the sheet drew, and it is not a second accent: nothing is ever
+    /// selected in this ink, and it appears on no glyph outside the constraint shelf.
+    Constraint,
 }
 
 /// How a mark is inked: which ink, whether it dashes, and how far it is faded back.
@@ -74,6 +84,21 @@ impl Ink {
     /// viewport or here, so there is deliberately no solid form of it to reach for.
     pub const CONSTRUCTION: Ink = Ink {
         role: InkRole::Construction,
+        dashed: true,
+        opacity: 1.0,
+    };
+
+    /// The constraint ink, solid: the entity the relation drives.
+    pub const CONSTRAINT: Ink = Ink {
+        role: InkRole::Constraint,
+        dashed: false,
+        opacity: 1.0,
+    };
+
+    /// The constraint ink, dashed — a driven entity shown in the position it is being MOVED to,
+    /// which several relations need beside the position it is in.
+    pub const CONSTRAINT_DASHED: Ink = Ink {
+        role: InkRole::Constraint,
         dashed: true,
         opacity: 1.0,
     };

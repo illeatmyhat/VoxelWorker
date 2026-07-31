@@ -36,7 +36,7 @@ pub(super) const DRAW: &[Mark] = &[
     Mark::Rect {
         a: (5.5, LID),
         b: (12.5, 15.5),
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
     Mark::Node {
         center: (9.0, 12.75),

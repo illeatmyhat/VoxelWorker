@@ -17,7 +17,7 @@ pub(super) const DRAW: &[Mark] = &[
     },
     Mark::Line {
         points: &[CORNER, (15.0, 7.0)],
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
     Mark::Line {
         points: &[(6.7, 11.85), (9.0, 9.7), (11.3, 11.85)],

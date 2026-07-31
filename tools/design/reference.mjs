@@ -78,33 +78,38 @@ const IDS = {
   'Text|profile from glyphs': 'sketch-text',
   'Construction|role toggle': 'construction-toggle',
 
-  // Drawn on the sheet under names the shipped glyphs predate — transposing these RE-DRAWS an
-  // existing icon, so each needs its own look before it can join the gate.
+  // Four the sheet re-draws. Each of these shipped under an older drawing, so transposing it
+  // REPLACES a glyph rather than adding one — held back until the owner ruled the sheet's
+  // version the one to keep (2026-07-30).
+  'Select|entity pick': 'select-vertex',
+  'Add point|free vertex': 'add-point',
+  'Rectangle|2-point': 'rectangle',
+  'Three-point arc|ends + through': 'three-point-arc',
+
+  // The one mark still outside the gate. Its geometry IS transposed; only its ink is not, so
+  // there is nothing here to compare. The sheet draws snap-voxel entirely in tool blue, where
+  // blue means "this is a mode" — but the rail says that with an armed button, so an all-accent
+  // glyph reads as permanently lit while its two siblings are line art. See `snap_voxel.rs`.
   // 'Snap to voxel|modal': 'snap-voxel',
-  // 'Select|entity pick': 'select-entity',
-  // 'Add point|free vertex': 'add-point',
-  // 'Rectangle|2-point': 'rectangle-2-point',
-  // 'Three-point arc|ends + through': 'three-point-arc',
 };
 
 const SCALE = 0.5;                       // the sheet draws on 36 units, the glyph grid is 18
 
-// The sheets draw in four colours; `Mark` has three ink ROLES. The collapse is deliberate and it
-// is lossless, because no single mark uses both of the two that merge:
+// The sheets draw in four colours and `Mark` now has four ink ROLES, one for one:
 //
 //   #f2f6fa  white       the reference entity          -> LineArt
 //   #9cb4d8  tool blue   a generator, or a mode        -> Accent
-//   #e2564b  constraint  the DRIVEN entity             -> Accent
+//   #e2564b  constraint  the DRIVEN entity             -> Constraint
 //   #dda06a  amber       construction geometry         -> Construction
 //
-// Blue appears only on the operators and red only on the constraints, so within a glyph the two
-// never have to be told apart. Keeping them apart in the rail would mean a fourth ink role and a
-// second accent, which the Signal language does not have — the reading that survives, and the one
-// the sheets actually argue for, is "line art is the reference, the accent is what moves".
+// Red and blue were collapsed onto Accent when the constraint shelf first landed, on the argument
+// that no glyph uses both so the merge is lossless and the Signal language has one accent. Lossless
+// per glyph, but not per SET: the accent means "picked" on every other shelf, so a constraint drawn
+// in it said nothing its white reference entity did not also say. Ruled back out 2026-07-30.
 const INK = {
   '#f2f6fa': 'LineArt',
   '#9cb4d8': 'Accent',
-  '#e2564b': 'Accent',
+  '#e2564b': 'Constraint',
   '#dda06a': 'Construction',
 };
 
@@ -250,10 +255,17 @@ const f = (v) => {
 };
 const rad = (v) => v.toFixed(6);
 const pts = (ps) => '&[' + ps.map(p => `(${f(p[0])}, ${f(p[1])})`).join(', ') + ']';
+// One arm per role, and a throw rather than a fallthrough: the fallthrough used to hand back
+// CONSTRUCTION for anything it did not recognise, so adding the Constraint role silently emitted
+// every red mark as amber and the parity gate compared two copies of the same mistake.
 const ink = (i) => {
-  if (i.role === 'LineArt') return i.dashed ? 'Ink::DASHED' : 'Ink::SOLID';
-  if (i.role === 'Accent') return 'Ink::ACCENT';
-  return 'Ink::CONSTRUCTION';
+  switch (i.role) {
+    case 'LineArt': return i.dashed ? 'Ink::DASHED' : 'Ink::SOLID';
+    case 'Accent': return 'Ink::ACCENT';
+    case 'Constraint': return i.dashed ? 'Ink::CONSTRAINT_DASHED' : 'Ink::CONSTRAINT';
+    case 'Construction': return 'Ink::CONSTRUCTION';
+    default: throw new Error(`no Ink const for role ${i.role}`);
+  }
 };
 
 function emit(p) {

@@ -18,6 +18,6 @@ pub(super) const DRAW: &[Mark] = &[
     Mark::Circle {
         center: CENTRE,
         radius: 3.25,
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
 ];

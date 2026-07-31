@@ -194,6 +194,7 @@ pub struct IconPainter<'a> {
     grid: f32,
     accent: Color32,
     construction: Color32,
+    constraint: Color32,
 }
 
 impl<'a> IconPainter<'a> {
@@ -234,6 +235,7 @@ impl<'a> IconPainter<'a> {
                 theme::ACCENT
             },
             construction: theme::SKETCH_CONSTRUCTION,
+            constraint: theme::SKETCH_CONSTRAINT,
         }
     }
 
@@ -243,6 +245,7 @@ impl<'a> IconPainter<'a> {
             mark::InkRole::LineArt => self.stroke.color,
             mark::InkRole::Accent => self.accent,
             mark::InkRole::Construction => self.construction,
+            mark::InkRole::Constraint => self.constraint,
         };
         Stroke::new(
             self.stroke.width,
@@ -657,7 +660,7 @@ impl Group {
             Group::SketchCreate => "adds an entity: the picks carry the accent, so a glyph says what it will ask you for",
             Group::SketchModify => "changes what is already drawn — each one needs curve–curve intersection",
             Group::SketchOperator => "reads a selection and emits more of it: the glyph has to show source AND copies",
-            Group::SketchConstraint =>"what the solver is told; a constraint produces no geometry of its own",
+            Group::SketchConstraint => "what the solver is told; a constraint produces no geometry of its own — white is the reference entity, RED is the one it drives",
             Group::SketchDimension => "authored quantities (ADR 0029) — the parametric handles a solver drives",
             Group::Chrome => "furniture: disclosure, commit, drawer, search",
         }
@@ -770,7 +773,7 @@ pub enum Icon {
     SketchScale,
     BlendCurve,
     ConstructionToggle,
-    // Sketch · constraints. Line art is the reference, the accent is what moves.
+    // Sketch · constraints. Line art is the reference, the constraint red is what moves.
     ConstraintCoincident,
     ConstraintCollinear,
     ConstraintConcentric,

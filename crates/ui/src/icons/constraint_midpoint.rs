@@ -19,6 +19,6 @@ pub(super) const DRAW: &[Mark] = &[
     Mark::Node {
         center: ((FROM.0 + TO.0) / 2.0, FROM.1),
         size: 2.6,
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
 ];

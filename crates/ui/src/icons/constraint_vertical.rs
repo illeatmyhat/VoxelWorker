@@ -14,7 +14,7 @@ const TO: (f32, f32) = (9.0, 14.5);
 pub(super) const DRAW: &[Mark] = &[
     Mark::Line {
         points: &[FROM, TO],
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
     Mark::Node {
         center: FROM,

@@ -18,6 +18,6 @@ pub(super) const DRAW: &[Mark] = &[
     // Resumed 2.5 units along the same carrier — the break that makes them two.
     Mark::Line {
         points: &[(10.25, 7.75), (15.0, 3.0)],
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
 ];

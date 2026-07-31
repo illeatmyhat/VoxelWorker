@@ -4,8 +4,8 @@
 //! "assistive while dragging"; this is persistent and the solver can see it.
 //!
 //! That is exactly the split from [`snap_voxel`](super::snap_voxel), which is modal and leaves no
-//! record. ADR 0035 D1 insists on the distinction, and here the accent enforces it: the quantized
-//! vertex is driven, the lattice around it is only a reference.
+//! record. ADR 0035 D1 insists on the distinction, and here the ink enforces it: the quantized
+//! vertex is driven and takes the constraint red, the lattice around it is only a reference.
 //!
 //! The centre of the lattice is left to the node — a ninth dot under a square is mush at 16 px.
 
@@ -58,6 +58,6 @@ pub(super) const DRAW: &[Mark] = &[
     Mark::Node {
         center: VERTEX,
         size: 2.6,
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
 ];

@@ -1,8 +1,8 @@
 //! `constraint-symmetry` — two entities mirrored about an axis.
 //!
 //! The axis is line art because it is the REFERENCE; both mirrored entities are driven, so both
-//! carry the accent. That is the one place in the set where the accent appears twice, and it is
-//! correct: symmetry has no privileged side.
+//! carry the constraint ink. That is the one place in the set where the red appears twice, and it
+//! is correct: symmetry has no privileged side.
 //!
 //! Near-identical to [`mirror`](super::mirror), and safely so — Mirror GENERATES entities, this
 //! asserts a relation between entities that already exist. Onshape's warning applies: symmetry
@@ -20,10 +20,10 @@ pub(super) const DRAW: &[Mark] = &[
     },
     Mark::Line {
         points: &[(5.5, 5.5), (3.0, 9.0), (5.5, 12.5)],
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
     Mark::Line {
         points: &[(12.5, 5.5), (15.0, 9.0), (12.5, 12.5)],
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
 ];

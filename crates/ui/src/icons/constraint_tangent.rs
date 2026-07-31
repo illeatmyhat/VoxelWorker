@@ -14,7 +14,7 @@ pub(super) const DRAW: &[Mark] = &[
     Mark::Circle {
         center: CENTRE,
         radius: RADIUS,
-        ink: Ink::ACCENT,
+        ink: Ink::CONSTRAINT,
     },
     Mark::Line {
         points: &[(2.0, TOUCH), (16.0, TOUCH)],
