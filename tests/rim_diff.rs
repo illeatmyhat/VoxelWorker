@@ -1,8 +1,8 @@
-//! Grazing-rim brick-raymarch regression (bug fixed 2026-07-17). At a GRAZING ortho view
-//! of the tube — the pose the head-on `gpu_parity` case never sampled — the brick raymarch
-//! block-stepped the top rim into a +Z terraced staircase: the inner voxel-DDA seed floored
-//! a max-face grazing entry one voxel PAST the block, so the per-block clip skipped the block
-//! holding the true surface (see `VoxelDda::seed_in_box`). This three-way triage pins the fix:
+//! Grazing-rim brick-raymarch regression. At a GRAZING ortho view of the tube — a pose the
+//! head-on `gpu_parity` cases do not sample — the top rim is where the inner voxel-DDA seed
+//! can floor a max-face grazing entry one voxel PAST the block, making the per-block clip
+//! skip the block holding the true surface and terracing the rim into a +Z staircase (see
+//! `VoxelDda::seed_in_box`). This three-way triage pins the correct behavior:
 //! GPU hit-identity == CPU exact evaluator (truth) == CPU brick-field march (the shader's f32
 //! mirror) on EVERY pixel. The split (algo vs shader) is retained so a regression is triaged
 //! at a glance: gpu==cpu_brick but != exact ⇒ raycast algorithm; gpu != cpu_brick ⇒ WGSL only.
@@ -186,10 +186,9 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
         gpu_hits > 0,
         "zero brick hits — the grazing camera missed the tube"
     );
-    // The regression: at this grazing view the brick raymarch — CPU mirror AND GPU shader —
-    // must match the exact evaluator on EVERY pixel. Before the `seed_in_box` fix (2026-07-17)
-    // this diverged on ~1800 rim pixels (the +Z tread staircase); the head-on parity case in
-    // gpu_parity.rs never sampled a grazing rim, so it missed the bug entirely.
+    // At this grazing view the brick raymarch — CPU mirror AND GPU shader — must match the
+    // exact evaluator on EVERY pixel. The failure mode is a band of rim pixels along the +Z
+    // tread, which the head-on parity cases in gpu_parity.rs cannot reach.
     let report = examples.join("\n");
     assert_eq!(
         brick_vs_exact_disagree, 0,
@@ -201,11 +200,10 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
     );
 }
 
-/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+/// Runtime GPU-availability probe.
 ///
-/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
-/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
-/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+/// These tests always compile and skip loudly here on a machine with no adapter. Compiling
+/// them out instead would not skip them, it would LOSE them — a vacuous pass.
 fn skip_without_gpu(test: &str) -> bool {
     static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {

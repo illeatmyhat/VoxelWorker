@@ -1,5 +1,5 @@
-//! Headless coverage of the ASYNC brick-pipeline worker loop (perf follow-up to epic
-//! #64, on the issue #60 stale-while-rebuilding pattern).
+//! Headless coverage of the ASYNC brick-pipeline worker loop — the stale-while-rebuilding
+//! pattern.
 //!
 //! The worker's load-bearing guarantees are LIVE-APP-only in `WindowedState` — a window
 //! poll loop over a background thread + channel + supersede — so, like
@@ -16,8 +16,8 @@
 //!    [`BrickRebuildOutcome::Empty`]) and the worker survives to service the next
 //!    normal request.
 //!
-//! The brick pipeline is pure CPU (no GPU handles cross the channel), so this file runs
-//! on BOTH feature sets — no `gpu` gate, no offscreen device.
+//! The brick pipeline is pure CPU (no GPU handles cross the channel), so this file needs
+//! no adapter and no offscreen device.
 //!
 //! Run: `cargo test --test brick_worker_async`
 
@@ -67,8 +67,8 @@ fn large_request(generation: u64) -> BrickRebuildRequest {
 
 /// Dispatching a LARGE wholesale brick rebuild returns PROMPTLY (the ~2s-class build runs
 /// on the worker thread, not inline — the "the UI never freezes" guarantee), and the
-/// arrived result carries the dispatched generation + recenter and artifacts equal to the
-/// synchronous calls the pre-async shell made (the build-equivalence net).
+/// arrived result carries the dispatched generation + recenter and artifacts equal to a
+/// synchronous build over the same covering set (the build-equivalence net).
 #[test]
 fn dispatch_is_non_blocking_and_result_matches_sync_build() {
     let worker = spawn_brick_worker();
@@ -100,7 +100,7 @@ fn dispatch_is_non_blocking_and_result_matches_sync_build() {
     assert_eq!(result.generation, generation);
     assert_eq!(
         result.recenter_voxels, recenter,
-        "the recenter travels with the build (ADR 0008 — never re-derived at install)"
+        "the recenter travels with the build — never re-derived at install"
     );
     let outcome = result.outcome.expect("a normal build returns Some outcome");
     let BrickRebuildOutcome::Display(install) = outcome else {

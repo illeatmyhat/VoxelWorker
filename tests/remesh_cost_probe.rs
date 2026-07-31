@@ -1,9 +1,9 @@
 //! **The other half of what one edit costs.** `tests/edit_cost_probe.rs` times
-//! [`AppCore::rebuild`] — the headless resolve — and its third probe closes by refuting its
-//! own hypothesis: an origin-shifting drag is not more expensive to RESOLVE, because forcing
-//! `incremental_dirty_chunks` to `None` is a branch, not work. The expense a `None` buys is
-//! entirely DOWNSTREAM, at the shell, and `rebuild` returns before any of it happens. Every
-//! number in that file is therefore a lower bound. This file measures the surplus.
+//! [`AppCore::rebuild`] — the headless resolve — which is not where an origin-shifting drag
+//! gets expensive: forcing `incremental_dirty_chunks` to `None` is a branch, not work. The
+//! expense a `None` buys is entirely DOWNSTREAM, at the shell, and `rebuild` returns before any
+//! of it happens. Every number in that file is therefore a lower bound. This file measures the
+//! surplus.
 //!
 //! The contrast, on one scene, from one rebuild's output:
 //!
@@ -50,7 +50,7 @@
 use ui::panel::{Selection, SelectionTarget};
 
 /// The workspace selection a fixture arrives with: its first top-level node picked
-/// (ADR 0032 — selection is workspace state, so a probe seeds it explicitly).
+/// (selection is workspace state, so a probe seeds it explicitly).
 fn selection_of_first_root(scene: &document::scene::Scene) -> Selection {
     Selection::from_targets(scene.roots.first().copied().map(SelectionTarget::Node))
 }
@@ -150,22 +150,17 @@ fn move_dragged_node(
 /// chunk set, so `whole - setup` is the part that is genuinely proportional to the scene while
 /// `setup` is the fixed renderer-construction toll. Do not quote `whole` without it.
 ///
-/// **The expectation holds, and it holds hard.** Unlike the resolve, the re-mesh diverges
-/// exactly as the shape of the two calls predicts: wholesale tracks the resident chunk count
-/// almost linearly (~0.13 ms per chunk once `setup` is subtracted) while incremental tracks the
-/// edit's footprint and is FLAT in scene size. At 3125 chunks that is ~390 ms against ~1.3 ms —
-/// a ratio near 300×, and a number that is not a dropped frame but a visible stall. So the
-/// answer `edit_cost_probe.rs` left open is settled: what makes a big scene expensive to edit
-/// is not resolving it, it is re-meshing it, and a `None` from `rebuild` is the whole bill.
+/// **The two arms diverge as the shape of the calls predicts.** Wholesale tracks the resident
+/// chunk count almost linearly once `setup` is subtracted, while incremental tracks the edit's
+/// footprint and is FLAT in scene size. What makes a big scene expensive to edit is therefore
+/// not resolving it, it is re-meshing it, and a `None` from `rebuild` is the whole bill.
 ///
-/// **The incremental column is not monotonic, and that is the more interesting half.** It peaks
-/// on the MEDIUM backdrop and then falls as the scene grows. Nothing is anomalous about it: the
-/// incremental re-meshes the dirty set dilated by its 26-neighborhood, so its cost is the cost
-/// of ~27 chunks of geometry, and how expensive a chunk is depends on how much surface runs
-/// through it. The medium cylinder is small enough that the dragged node's neighborhood is a
-/// large slice of a dense body; the large and huge backdrops are thin-walled Tubes whose
+/// **The incremental column need not be monotonic in scene size.** It re-meshes the dirty set
+/// dilated by its 26-neighborhood, so its cost is the cost of ~27 chunks of geometry, and how
+/// expensive a chunk is depends on how much surface runs through it. A small dense cylinder puts
+/// the dragged node's neighborhood inside a large slice of solid body; a thin-walled Tube's
 /// interior — where the node is parked — is mostly empty, so the same 27 chunks carry far fewer
-/// faces. This is the same lesson the locality probe reached from the other side: at this layer
+/// faces. This is the same lesson the locality probe reaches from the other side: at this layer
 /// cost tracks the neighborhood's OCCUPANCY, not the scene's extent.
 ///
 /// The probe deliberately keeps the dragged node INSIDE the backdrop so every rebuild localizes
@@ -180,7 +175,7 @@ fn remesh_cost_incremental_versus_wholesale_by_scene_size() {
         println!(
             "\nSKIPPED: no GPU adapter. Both entry points under test take a `wgpu::Device`, and\n\
              the two-layer CPU mesher is `pub(crate)` to `display`, so there is nothing to\n\
-             measure without one. A software rasteriser would answer, but its buffer-creation\n\
+             measure without one. A software rasterizer would answer, but its buffer-creation\n\
              cost is not this machine's, so the probe declines rather than report a fiction.\n"
         );
         return;

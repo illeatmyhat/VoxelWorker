@@ -1,13 +1,10 @@
-//! GPU brick-field parity net (ADR 0011) — the CPU↔GPU A/B equivalence suite for the
+//! GPU brick-field parity net — the CPU↔GPU A/B equivalence suite for the
 //! brick display pipeline.
 //!
 //! For each gated scene, the brick field is built on the CPU (records + R8 sculpted
 //! atlas), uploaded, and the GPU raymarch's hit set / atlas bytes are asserted
 //! **byte-identical** to the CPU exact evaluator. The clip-map pyramid, interior
 //! elision, incremental patch, residency-miss, and onion-ghost slabs are each pinned.
-//!
-//! (ADR 0012 retired the ADR 0007 gpu_resolve fog A/B tier that once lived here; the
-//! brick tier below is the surviving GPU parity net.)
 //!
 //! Run: `cargo test --test gpu_parity` (skips loudly without a GPU adapter)
 
@@ -157,7 +154,7 @@ impl SketchCase {
 }
 
 // ===========================================================================
-// Brick-field build tier (ADR 0011 G0) — records + R8 atlas vs the boundary set
+// Brick-field build tier — records + R8 atlas vs the boundary set
 // ===========================================================================
 
 /// Extract one brick slot's `edge³` bytes (block-local x-fastest) out of a dense
@@ -189,7 +186,7 @@ fn brick_slot_bytes(
     brick_bytes
 }
 
-/// **The ADR 0011 parity gate, clause (a)** — the G0 brick-build harness, wired to
+/// **The parity gate, build clause** — the brick-build harness, wired to
 /// nothing: for each gated scene, pack the two-layer boundary set into the sorted
 /// `BrickRecord` array + the R8 sculpted-brick atlas, land the atlas in the texture,
 /// read it back, and assert:
@@ -204,7 +201,7 @@ fn brick_slot_bytes(
 /// * the granule is ONE BLOCK: brick edge == `voxels_per_block` at every density in the
 ///   matrix (d16 AND non-16 — nothing may hard-code 16);
 /// * atlas slots are dense `0..sculpted_count` and every padding slot reads back zero.
-// NOTE (ADR 0011 surface-only record contract): this gate runs on the interior-INCLUSIVE
+// NOTE (the surface-only record contract): this gate runs on the interior-INCLUSIVE
 // oracle build (`build_brick_field_all_blocks`) — it asserts the one-to-one partition
 // mapping + atlas byte-exactness, which the surface-only live build shares (identical
 // classifier, identical sculpted set + slot numbering; only occluded coarse records are
@@ -490,16 +487,16 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
 
     assert!(
         failures.is_empty(),
-        "brick-field build != CPU two-layer boundary set (ADR 0011 gate (a)):\n{}",
+        "brick-field build != CPU two-layer boundary set (build clause):\n{}",
         failures.join("\n")
     );
 }
 
 // ===========================================================================
-// Issue #60 — async geometry-rebuild build-equivalence net
+// Async geometry-rebuild build-equivalence net
 // ===========================================================================
 
-/// The build-equivalence net (issue #60): a mesh built via the geometry WORKER's build
+/// The build-equivalence net: a mesh built via the geometry WORKER's build
 /// entry (`workers::geometry::build_geometry`) must be BYTE-IDENTICAL to a synchronous build
 /// (`CuboidMeshRenderer::new_from_two_layer_chunks`) for the same large scene. Both call
 /// the exact same builder, so this guards that the worker's request→build path feeds it the
@@ -601,8 +598,8 @@ fn worker_build_matches_sync_build_for_large_scene() {
 }
 
 // ===========================================================================
-// Brick-field RENDER tier (ADR 0011 G1) — the parity gate clause (b) + the
-// residency-miss contract. The G0 tier above proved the BUILD (records + atlas)
+// Brick-field RENDER tier — the parity gate's render clause + the
+// residency-miss contract. The build tier above proved the BUILD (records + atlas)
 // byte-exact; this tier proves the finest-LOD RAYMARCH hits the same surface the
 // CPU exact evaluator reports, and that a forced residency miss renders the
 // degraded-but-correct coarse form (never a miss/skip).
@@ -617,7 +614,7 @@ struct BrickRenderCase {
 
 /// Build the gated render matrix: a coarse-heavy sphere at d16, the sculpted-heavy
 /// revolved vase at d4 (sketch tier), an odd-extent box at a NON-16 density (the
-/// block-denominated granule — nothing may assume 16), and — the G2 scale slice —
+/// block-denominated granule — nothing may assume 16), and — for scale —
 /// two SCATTERED many-object scenes (a dozen small shapes far apart, the scenes the
 /// clip-map LOD targets) plus a MULTI-PRODUCER union with DISTINCT materials (the
 /// hit set is occupancy-only, so distinct materials still exercise the traversal).
@@ -747,7 +744,7 @@ fn exact_occupancy_set(
     occupied
 }
 
-/// **ADR 0011 parity gate, clause (b).** For each gated scene, install the G0 brick
+/// **The parity gate, render clause.** For each gated scene, install the built brick
 /// field on the GPU, render the single-sample hit-identity image, and assert every
 /// pixel's (hit flag + absolute hit voxel) is IDENTICAL to the CPU exact evaluator's
 /// per-pixel voxel DDA over the same frame — the finest-LOD raymarch resolves exactly
@@ -755,15 +752,15 @@ fn exact_occupancy_set(
 /// (the f32 mirror of the shader): agreeing with it but not the exact set isolates a
 /// BUILD/frame bug; disagreeing with it isolates a SHADER bug.
 ///
-/// **The silhouette concession (ADR 0009 §4).** A driver is free to contract the
-/// unprojection arithmetic (fma), so at a knife-edge grazing ray its hit voxel can
-/// legitimately differ from the CPU mirror by one ulp of ray direction — observed as
-/// exactly one sphere-rim pixel on lavapipe/llvmpipe (CI's software adapter) after the
-/// eye-anchored perspective ray frame (`a06d215`); NVIDIA hardware agrees with the CPU
-/// at the same pixel. A mismatch is therefore CONCEDED iff the exact evaluator is
-/// itself unstable within the pixel (quarter-pixel jitters do not all agree) AND the
-/// GPU's answer is one of those jitter-reachable answers, capped at
-/// [`SILHOUETTE_CONCESSION_MAX`] pixels per case. Stable-pixel divergence stays at
+/// **The silhouette concession.** A driver is free to contract the unprojection
+/// arithmetic (fma), so at a knife-edge grazing ray its hit voxel can legitimately
+/// differ from the CPU mirror by one ulp of ray direction — a software adapter
+/// (lavapipe/llvmpipe) does this on a sphere-rim pixel under the eye-anchored
+/// perspective ray frame where hardware agrees with the CPU. A mismatch is therefore
+/// CONCEDED iff the exact evaluator is itself unstable within the pixel (quarter-pixel
+/// jitters do not all agree) AND the GPU's answer is one of those jitter-reachable
+/// answers, capped at [`SILHOUETTE_CONCESSION_MAX`] pixels per case. Stable-pixel
+/// divergence stays at
 /// ZERO tolerance, so a build/frame bug (which diverges across whole faces) still
 /// fails the gate.
 #[test]
@@ -790,7 +787,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         // excluded from the EXACT-vs-truth tier: at a few silhouette pixels between
         // two far-apart spheres the GPU flat-DDA and the CPU exact march pick
         // different grazed surfaces by f32 rounding (a display-approximation at
-        // silhouettes ADR 0009 §4 allows, ~0.02% of pixels, INDEPENDENT of the
+        // silhouettes, ~0.02% of pixels, INDEPENDENT of the
         // pyramid — proven by `brick_raymarch_pyramid_on_equals_off`, which passes
         // byte-identical on this same scene). Its clip-map correctness is gated
         // there and in the residency tier; scattered-d4 covers scattered EXACTNESS.
@@ -811,7 +808,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
             case.name
         );
         // The hit-identity image is occupancy-only, so material never enters the hit set;
-        // a distinct-material union is brick-representable at G2 (each block single-material)
+        // a distinct-material union is brick-representable (each block single-material)
         // and still exercises the traversal. `unwrap_or(false)` keeps the overlay off.
         let recenter = case.scene.recenter_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
@@ -947,14 +944,14 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
 
     assert!(
         failures.is_empty(),
-        "brick raymarch hit set != CPU exact evaluator (ADR 0011 gate (b)):\n{}",
+        "brick raymarch hit set != CPU exact evaluator (render clause):\n{}",
         failures.join("\n")
     );
 }
 
-/// **ADR 0011 G2 — a LOADED-material raymarch hit samples the same texel the mesh's
-/// lattice rule computes for that voxel face.** A loaded VS block no longer disengages the
-/// brick display; instead the raymarch shades each solid hit per-face from the block's
+/// **A LOADED-material raymarch hit samples the same texel the mesh's lattice rule
+/// computes for that voxel face.** A loaded block does not disengage the brick
+/// display: the raymarch shades each solid hit per-face from the block's
 /// 6-layer D2Array by `face_layer` + per-face UV + `fract` — copied verbatim from
 /// `cuboid_loaded.wgsl`. This gates that copy END-TO-END on the GPU: bind a synthetic
 /// per-face material of six DISTINCT SOLID colors (so the texel is UV-independent — no
@@ -1055,7 +1052,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     );
 
     // A synthetic per-face material: six distinct solid colors, one per D2Array layer
-    // (the mesh path's own headless fixture — no VS assets needed). 2×2 so `fract` tiling
+    // (the mesh path's own headless fixture — no game assets needed). 2×2 so `fract` tiling
     // is exercised even though every texel of a layer is identical.
     let layer_colors: [[u8; 4]; 6] = [
         [200, 50, 50, 255],
@@ -1159,7 +1156,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         texel_mismatches,
         0,
         "loaded-material raymarch hit sampled the WRONG texel for {texel_mismatches}/{compared} \
-         interior pixels (ADR 0011 G2 lattice rule):\n{}",
+         interior pixels (the lattice rule):\n{}",
         first_report.unwrap_or_default()
     );
     // The silhouette budget is generous: only the 1-px outline can disagree.
@@ -1175,7 +1172,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     );
 }
 
-/// **ADR 0011 interior elision — the SURFACE-ONLY build renders identically to the
+/// **Interior elision — the SURFACE-ONLY build renders identically to the
 /// interior-INCLUSIVE oracle build.** For every brick render case, install the field from
 /// the oracle build ([`build_brick_field_all_blocks`] — one record per non-air block) and
 /// again from the live surface-only build ([`build_brick_field`] — occluded coarse
@@ -1295,12 +1292,12 @@ fn brick_surface_elision_hit_set_unchanged() {
     );
     assert!(
         failures.is_empty(),
-        "surface-only build != interior-inclusive oracle build (ADR 0011 interior elision):\n{}",
+        "surface-only build != interior-inclusive oracle build (interior elision):\n{}",
         failures.join("\n")
     );
 }
 
-/// **ADR 0011 band-clip interior fix — a LAYER BAND slicing a solid renders the elided
+/// **Band-clip interior — a LAYER BAND slicing a solid renders the elided
 /// interior identically to the full-record oracle.** The sibling `..._hit_set_unchanged`
 /// proves surface==full under a FULL band (a ray reaches an interior only through a surface
 /// record that stops it first). A band CUT PLANE breaks that: it can start a ray INSIDE the
@@ -1421,16 +1418,16 @@ fn brick_surface_elision_band_clip_renders_interior() {
     );
     assert!(
         failures.is_empty(),
-        "band-clip interior fallback != interior-inclusive oracle (ADR 0011):\n{}",
+        "band-clip interior fallback != interior-inclusive oracle:\n{}",
         failures.join("\n")
     );
 }
 
-/// **ADR 0011 slice G3 — incremental patch render == wholesale install render.** Drive a
+/// **Incremental patch render == wholesale install render.** Drive a
 /// scene through the LIVE incremental path (install scene A → apply a localized occupancy
 /// edit → `patch_brick_field` writing ONLY the dirty slots), render its hit-identity
 /// image, and assert it is PIXEL-IDENTICAL to a from-scratch `install_brick_field` of the
-/// same final scene B. This gates the whole G3 machinery THROUGH the render (not just the
+/// same final scene B. This gates the whole incremental machinery THROUGH the render (not just the
 /// CPU data comparison in `brick_field`'s unit tests): the free-listed slot layout + the
 /// per-slot `write_texture` patch must render exactly as a dense wholesale install.
 #[test]
@@ -1609,7 +1606,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     );
 }
 
-/// **ADR 0011 interior elision × G3 — the CARVE seam through the render.** Under the
+/// **Interior elision × the incremental path — the CARVE seam through the render.** Under the
 /// surface-only record contract, deleting a solid that abutted another across a CHUNK
 /// boundary un-occludes the neighbor chunk's face blocks: their records must APPEAR even
 /// though their chunk is NOT in the edit's dirty set (the `apply_dirty_update`
@@ -1813,13 +1810,12 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     );
 }
 
-/// **ADR 0011 residency-miss contract (decided at G1).** Forcing every sculpted
-/// record non-resident (`pack_gpu_records(.., |_| true)`) must render each such block
-/// as its COARSE form — a solid block-cube — never a miss/skip. A coarse cube is a
-/// superset of the sculpted occupancy it replaces, so the forced-miss silhouette must
-/// CONTAIN the all-resident silhouette pixel-for-pixel (and the pass must complete —
-/// proving the branch is taken, never an assert). This is the hole G4's eviction rings
-/// plug into.
+/// **The residency-miss contract.** Forcing every sculpted record non-resident
+/// (`pack_gpu_records(.., |_| true)`) must render each such block as its COARSE form —
+/// a solid block-cube — never a miss/skip. A coarse cube is a superset of the sculpted
+/// occupancy it replaces, so the forced-miss silhouette must CONTAIN the all-resident
+/// silhouette pixel-for-pixel (and the pass must complete — proving the branch is
+/// taken, never an assert).
 #[test]
 fn brick_raymarch_residency_miss_renders_coarse_form() {
     if skip_without_gpu("brick_raymarch_residency_miss_renders_coarse_form") {
@@ -1942,13 +1938,13 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
 
     assert!(
         failures.is_empty(),
-        "brick residency-miss contract violated (ADR 0011 4a):\n{}",
+        "brick residency-miss contract violated:\n{}",
         failures.join("\n")
     );
 }
 
 // ===========================================================================
-// Brick-field CLIP-MAP tier (ADR 0011 G2) — the hierarchical DDA must be a pure
+// Brick-field CLIP-MAP tier — the hierarchical DDA must be a pure
 // empty-space accelerator: enabling the pyramid may only SKIP empty space, never
 // change a hit. The load-bearing assertion is `pyramid-on == pyramid-off` (it
 // catches the stride-overshoot / off-by-epsilon bugs the conservative-coverage
@@ -1956,11 +1952,11 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
 // `brick::tests::field_tests::clipmap_pyramid_is_conservative_and_sorted`.
 // ===========================================================================
 
-/// **ADR 0011 parity gate, coarse tier (the load-bearing G2 assertion).** For each
+/// **The parity gate, coarse tier (the load-bearing clip-map assertion).** For each
 /// gated scene — including the scattered many-object and distinct-material
 /// multi-producer scenes — the finest-LOD hit-identity image rendered WITH the
 /// clip-map pyramid enabled must be BYTE-IDENTICAL to the image rendered with it
-/// disabled (an empty pyramid = the flat G1 block-DDA). The pyramid may only stride
+/// disabled (an empty pyramid = the flat block-DDA). The pyramid may only stride
 /// through provably-empty cells, so any hit it changes is a stride-overshoot bug.
 #[test]
 fn brick_raymarch_pyramid_on_equals_off() {
@@ -1987,10 +1983,10 @@ fn brick_raymarch_pyramid_on_equals_off() {
             case.name
         );
         // The LIVE pyramid constructor (chunk-derived, interiors included) — this A/B is
-        // the rendering-equivalence proof for the chunk-sourced pyramid (ADR 0011).
+        // the rendering-equivalence proof for the chunk-sourced pyramid.
         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
         // Every level must carry cells, else "on == off" is vacuous (the L3 skip is
-        // exercised too — G4).
+        // exercised too).
         assert!(
             !pyramid.level_1.cell_keys.is_empty()
                 && !pyramid.level_2.cell_keys.is_empty()
@@ -2083,17 +2079,17 @@ fn brick_raymarch_pyramid_on_equals_off() {
 
     assert!(
         failures.is_empty(),
-        "brick clip-map changed the hit set (ADR 0011 gate coarse tier — pyramid must \
+        "brick clip-map changed the hit set (coarse tier — the pyramid must \
          only skip empty space):\n{}",
         failures.join("\n")
     );
 }
 
-/// **ADR 0011 G2/G4 perf probe (acceptance criterion).** The WIDE-scatter
-/// empty-space-skipping lift across clip-map depth: shapes spread over a
-/// ~2000-block extent with fully-empty L3 cells between them, marched at four level
-/// configs — OFF (flat DDA) / L1+L2 (the G2 two-level baseline) / +L3 (G4) / +L4
-/// (a hypothetical 4096-block level, EVALUATED here, not shipped) — reported as
+/// **Clip-map perf probe.** The WIDE-scatter empty-space-skipping lift across
+/// clip-map depth: shapes spread over a ~2000-block extent with fully-empty L3 cells
+/// between them, marched at four level configs — OFF (flat DDA) / L1+L2 (the
+/// two-level baseline) / +L3 / +L4 (a hypothetical 4096-block level, EVALUATED
+/// here, not shipped) — reported as
 /// mean block-DDA steps per hitting ray (the CPU march's counted loop iterations,
 /// the same traversal the shader runs). `#[ignore]`d (measurement, not a gate); run
 /// with `cargo test --release -- --ignored
@@ -2175,8 +2171,8 @@ fn clipmap_scattered_scene_skips_empty_space() {
     let level_4 = ClipmapLevel::from_records(&build.brick_records, CLIPMAP_LEVEL_4_BLOCKS_PER_CELL);
     let configs: [(&str, Vec<&ClipmapLevel>); 4] = [
         ("OFF (flat)", Vec::new()),
-        ("L1+L2 (G2)", vec![&level_2, &level_1]),
-        ("+L3 (G4)", vec![&level_3, &level_2, &level_1]),
+        ("L1+L2", vec![&level_2, &level_1]),
+        ("+L3", vec![&level_3, &level_2, &level_1]),
         ("+L4 (eval)", vec![&level_4, &level_3, &level_2, &level_1]),
     ];
 
@@ -2266,7 +2262,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     }
 
     // Gate: each coarser level is a monotone win (never more steps), the two-level
-    // pyramid beats flat, and G4's L3 strictly beats the L1+L2 baseline on this
+    // pyramid beats flat, and L3 strictly beats the L1+L2 baseline on this
     // empty-L3-cell scene (the acceptance criterion — a measured ceiling improvement).
     assert!(
         sums[1] < sums[0],
@@ -2276,7 +2272,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     );
     assert!(
         sums[2] < sums[1],
-        "G4 +L3 must strictly reduce block-steps vs the L1+L2 baseline on a wide scatter \
+        "+L3 must strictly reduce block-steps vs the L1+L2 baseline on a wide scatter \
          with empty L3 cells (+L3 {} vs L1+L2 {})",
         sums[2],
         sums[1]
@@ -2289,13 +2285,13 @@ fn clipmap_scattered_scene_skips_empty_space() {
     );
 }
 
-/// **ADR 0012 (H1) — the onion GHOST pass marches ONLY the onion slabs.** The brick ghost
+/// **The onion GHOST pass marches ONLY the onion slabs.** The brick ghost
 /// draws two per-slab raymarches, each clamped to ONE onion slab (`update_ghost_uniforms`
 /// clamps the traversal AABB to the slab's band). This gates that confinement through the
 /// hit-identity harness at each slab band: (a) the LOWER slab's hits all sit strictly BELOW
 /// the solid band, (b) the UPPER slab's hits all sit strictly ABOVE it — so the ghost never
 /// draws INSIDE the band — and (c) both slabs actually draw on a tall solid (nonempty). It
-/// also gates the "band scrub = uniform-only on the brick path" promise (ADR 0012): rebinding
+/// also gates the "band scrub = uniform-only on the brick path" promise: rebinding
 /// the ghost uniforms for two different bands leaves the installed field (record count)
 /// untouched — no re-mesh, no atlas re-upload.
 #[test]
@@ -2419,7 +2415,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         upper_zs.iter().min().unwrap()
     );
 
-    // Uniform-only (ADR 0012): rebinding the ghost slabs for two different bands must NOT
+    // Uniform-only: rebinding the ghost slabs for two different bands must NOT
     // touch the installed field — no re-mesh / atlas re-upload on a brick-path band scrub.
     let record_count_before = renderer.record_count();
     renderer.update_ghost_uniforms(
@@ -2454,7 +2450,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     );
 }
 
-/// **ADR 0018 Decision 5 (S5) — the brick raymarch's onion clip is REGION-SCOPED: the layer
+/// **The brick raymarch's onion clip is REGION-SCOPED: the layer
 /// band bites ONLY inside the selected object's placed AABB; everything outside renders
 /// finished/full-Z.** The two paths' onion AESTHETICS legitimately differ (haze vs crisp), so
 /// this gate — the brick-path twin of the mesh path's region behavior — asserts on the clip
@@ -2462,15 +2458,15 @@ fn onion_ghost_marches_only_the_onion_slabs() {
 /// gate's style). The region is the +X half of the tall sphere in the recentered voxel frame
 /// (`x >= 0`); the band is a mid-Z slab. Three SOLID hit-identity renders are compared:
 ///  - `full`   — `LayerBand::FULL`, no region (the no-onion render).
-///  - `banded` — the mid slab, no region (the pre-S5 SCENE-WIDE band).
+///  - `banded` — the mid slab, no region (a SCENE-WIDE band).
 ///  - `region` — the mid slab, confined to the AABB (ConfineBand).
 ///
 /// The invariants (each unconditionally true of the region-scoped predicate):
 ///  1. OUTSIDE the AABB the render is FULL: for every pixel whose `full` hit is outside the
 ///     region, `region` hits the SAME voxel — because the full render's hit is the FIRST
 ///     occupied voxel along the ray (nothing occupied precedes it), and an outside-region
-///     voxel is always meshed, so the region march cannot diverge. This is the task's "pixels
-///     outside the selected AABB identical to a no-onion brick render", pixel-exact.
+///     voxel is always meshed, so the region march cannot diverge — pixels outside the
+///     selected AABB are identical to a no-onion brick render, pixel-exact.
 ///  2. INSIDE the AABB the band bites: every `region` hit inside the AABB lands within the
 ///     absolute-Z span the `banded` render occupies (the same band, observed empirically so
 ///     the assert is frame-agnostic).
@@ -2664,11 +2660,11 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
 }
 
 // ===========================================================================
-// ADR 0013 — per-voxel MIXED-brick material parity (shader == CPU-march reference)
+// Per-voxel MIXED-brick material parity (shader == CPU-march reference)
 // ===========================================================================
 
-/// **ADR 0013 correctness bar — a MIXED brick shades each voxel from its cell-key side atlas,
-/// and the shader's resolved material equals the CPU-march reference's.** The runtime
+/// **A MIXED brick shades each voxel from its cell-key side atlas, and the shader's
+/// resolved material equals the CPU-march reference's.** The runtime
 /// representability gate still routes any mixed scene to the mesh path, so this drives the
 /// install seam directly (the gate governs ROUTING, not the install API): it hand-authors a
 /// solid 3×3×3-block field whose every block is MIXED (its left X-half is one cell key, its
@@ -2676,7 +2672,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
 /// occupancy atlas and the cell-key side atlas via `install_brick_field_with_cell_keys`, and
 /// renders the material-identity image (the shader's resolved per-voxel material id per pixel).
 /// For every interior pixel where the GPU and the CPU brick march agree on the hit voxel, the
-/// GPU material must equal `cpu_brick_hit_material` at that voxel — the ADR's shader == reference
+/// GPU material must equal `cpu_brick_hit_material` at that voxel — the shader == reference
 /// bar. A face that straddles the X-split shows BOTH materials, so a per-RECORD (single-material)
 /// shade would mismatch: the test proves the shade is genuinely per-voxel.
 #[test]
@@ -2849,7 +2845,7 @@ fn brick_mixed_material_matches_cpu_reference() {
         mismatches,
         0,
         "shader per-voxel material != CPU-march reference for {mismatches}/{compared} interior \
-         pixels (ADR 0013 shader == reference):\n{}",
+         pixels (shader == reference):\n{}",
         first_report.unwrap_or_default()
     );
     let outline_budget = (width + height) as usize * 4;
@@ -2865,11 +2861,10 @@ fn brick_mixed_material_matches_cpu_reference() {
     );
 }
 
-/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+/// Runtime GPU-availability probe.
 ///
-/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
-/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
-/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+/// These tests always compile and skip loudly here on a machine with no adapter. Compiling
+/// them out instead would not skip them, it would LOSE them — a vacuous pass.
 fn skip_without_gpu(test: &str) -> bool {
     static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
@@ -2880,7 +2875,7 @@ fn skip_without_gpu(test: &str) -> bool {
 }
 
 // ===========================================================================
-// Sketch region wash tier (ADR 0030 §3) — the WGSL region field vs geom2d
+// Sketch region wash tier — the WGSL region field vs geom2d
 // ===========================================================================
 
 /// Render the wash pass ALONE over a transparent target and resolve it, returning the RGBA bytes.
@@ -3062,13 +3057,13 @@ const WASH_PLANE: display::renderer::SketchPlaneFrame = display::renderer::Sketc
     normal: [0.0, 0.0, 1.0],
 };
 
-/// **ADR 0030 §3 — the WGSL region field agrees with `substrate::geom2d` about what is material.**
+/// **The WGSL region field agrees with `substrate::geom2d` about what is material.**
 ///
 /// The wash is a hand-written mirror of `signed_distance_to_region`, so this renders it over a known
 /// plane and asserts the resolved alpha against the CPU predicate, pixel by pixel: full tint alpha
 /// well inside the material, nothing at all well outside it or inside a void. The fixture is the
-/// nesting the mesh wash got wrong — a picked region, an unpicked void carved in it, and a picked
-/// island standing inside that void, all three of which the loop ORDER resolves.
+/// nesting that the loop ORDER resolves — a picked region, an unpicked void carved in it, and a
+/// picked island standing inside that void.
 ///
 /// Only pixels FAR from any boundary are asserted (further than one antialiasing band plus the MSAA
 /// sample spread); the edge band is the shader's own smoothstep, which has no byte-exact CPU twin.
@@ -3196,11 +3191,11 @@ fn nested_picked_regions_wash_to_one_alpha() {
     assert_eq!(nested, one, "the nested fill changed the wash");
 }
 
-/// **A curved boundary is shaded as a CURVE.** The wash used to fold a chord polygon, so a circle
-/// came out a visible fan of triangles whose edge fell short of its own smooth outline by the
-/// sagitta. The region now carries the arc, and this asserts the consequence at the pixel level:
-/// every pixel the GPU calls material is inside the true circle, and every pixel it calls air is
-/// outside it, with only the antialiasing band excused.
+/// **A curved boundary is shaded as a CURVE.** The region carries the arc rather than a folded
+/// chord polygon, which would come out a visible fan of triangles whose edge falls short of the
+/// smooth outline by the sagitta. This asserts the consequence at the pixel level: every pixel
+/// the GPU calls material is inside the true circle, and every pixel it calls air is outside it,
+/// with only the antialiasing band excused.
 ///
 /// A chord approximation cannot pass this. Midway between two chords the polygon's boundary sits a
 /// full sagitta inside the circle, which at this scale is several pixels wide — far outside the

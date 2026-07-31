@@ -1,22 +1,18 @@
-//! The classification scheme (ADR 0022) as it stands on the REAL state structs, not on a
-//! fixture. `crates/snapshot` proves the derive works; this file pins what the derive was
-//! pointed at, which is the part that can drift silently.
+//! The classification scheme (`docs/architecture/01-document.md`) as it stands on the REAL
+//! state structs, not on a fixture. `crates/snapshot` proves the derive works; this file pins
+//! what the derive was pointed at, which is the part that can drift silently.
 //!
-//! Two things are worth a test rather than a reading. First, that the document set is
-//! exactly the scene — the whole force of ADR 0022's decision 1 is that a shared project
-//! file carries what the model IS and nothing about where somebody was working, and a
-//! field quietly acquiring `#[snapshot(document)]` is how that erodes. Second, that the
-//! escape hatches stay countable: `transient` and `derived` are the two ways to make the
-//! compiler stop complaining without deciding anything, and ADR 0022 says plainly that
-//! whether they stay honest depends on review. A test that names each one by hand is how
-//! a new one gets noticed — adding an escape hatch should cost a deliberate edit here.
+//! Three things are worth a test rather than a reading. First, that the document set is
+//! exactly the scene — a shared project file carries what the model IS and nothing about
+//! where somebody was working, and a field quietly acquiring `#[snapshot(document)]` is how
+//! that erodes. Second, that the escape hatches stay countable: `transient` and `derived` are
+//! the two ways to make the compiler stop complaining without deciding anything, and whether
+//! they stay honest depends on review. A test that names each one by hand is how a new one
+//! gets noticed — adding an escape hatch should cost a deliberate edit here.
 //!
-//! Since ADR 0024 there is a third, and it is the one with a scar behind it: that every
-//! field classified as reaching the dump has an actual route into it. The compiler
-//! delivers that on `AppConfig`, whose captures destructure exhaustively, and cannot
-//! deliver it on `PanelState`, which is read by hand — so four panel fields spent a
-//! release promising the dump and reaching nothing. That gap is now a test rather than an
-//! amendment describing a gap.
+//! Third, that every field classified as reaching the dump has an actual route into it. The
+//! compiler delivers that on `AppConfig`, whose captures destructure exhaustively, and cannot
+//! deliver it on `PanelState`, which is read by hand — so that half is a test.
 
 use snapshot::{Snapshot, StateCategory};
 use ui::panel::PanelState;
@@ -44,8 +40,8 @@ fn the_document_carries_the_scene_and_nothing_else() {
 
 #[test]
 fn the_dump_reaches_every_field_that_is_not_an_escape_hatch() {
-    // The dump's law (ADR 0022 decision 1): a scene must be completely reproducible from
-    // it. Concretely that means every field except the ones explicitly excused.
+    // The dump's law: a scene must be completely reproducible from it. Concretely that
+    // means every field except the ones explicitly excused.
     for state in [AppConfig::CLASSIFIED_FIELDS, PanelState::CLASSIFIED_FIELDS] {
         for field in state {
             let excused = matches!(
@@ -85,11 +81,9 @@ fn the_escape_hatches_are_exactly_these() {
         [
             // A function of the scene and its density, recomputed at every rebuild.
             ("voxel_cap_warning_millions", StateCategory::Derived),
-            // A function of the last edit's outcome, re-latched at every apply. Added by
-            // `443e789` (the ±1M-block coordinate envelope) without reaching this list, so
-            // this test failed from that commit until ADR 0032 slice 4 ran it again.
+            // A function of the last edit's outcome, re-latched at every apply.
             ("coordinate_limit_warning", StateCategory::Derived),
-            // Why the last constraint was refused (ADR 0035), re-latched at every apply.
+            // Why the last constraint was refused, re-latched at every apply.
             ("sketch_constraint_refusal", StateCategory::Derived),
             // The camera target, rounded to whole blocks, refreshed each frame.
             ("point_add_position_blocks", StateCategory::Derived),
@@ -144,23 +138,22 @@ const CARRIED_AS_A_SUBSET: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// **The seam that lost four fields for a release.**
+/// **The seam the compiler cannot check.**
 ///
 /// `src/artifacts.rs` destructures `AppConfig` exhaustively, so a classified field there
 /// cannot fail to reach an artifact — that is a compile error. Nothing gives `PanelState`
 /// the same treatment: `AppConfig::capture` reads the panel field by field, by hand,
 /// exactly the way the capture that lost the pan target did. The compiler can only check
-/// that a panel field is *decided*; whether the decision is *honored* is this test's job,
-/// and before ADR 0024 nothing did it at all.
+/// that a panel field is *decided*; whether the decision is *honored* is this test's job.
 ///
-/// What that cost: `view_mode`, `stack`, `debug_face_orientation` and `debug_brick_faces`
-/// were classified `view` — which by the derive's own error text means they reach the dump
-/// — and were hard-coded to defaults in `to_panel_state`, captured by nobody. A category
-/// promising one thing while the code did another, silently, because no test asked.
+/// The failure mode: a panel field classified `view` — which by the derive's own error text
+/// means it reaches the dump — hard-coded to a default in `to_panel_state` and captured by
+/// nobody. A category promising one thing while the code does another, silently, because no
+/// test asks.
 ///
 /// So this asks. Every `PanelState` field whose category reaches the dump must have a
 /// route there: a same-named `AppConfig` field, or membership in
-/// [`CARRIED_AS_A_SUBSET`] above. Adding a dump-reaching panel field without one now fails
+/// [`CARRIED_AS_A_SUBSET`] above. Adding a dump-reaching panel field without one fails
 /// here rather than in somebody's unreproducible repro.
 #[test]
 fn every_dump_reaching_panel_field_has_a_route_into_the_dump() {
@@ -186,7 +179,7 @@ fn every_dump_reaching_panel_field_has_a_route_into_the_dump() {
             AppConfig::category_of(field.name).is_some(),
             "`{}` is classified {:?}, which reaches the dump, but `AppConfig` carries no \
              field of that name and it is not declared as carried in a subset. This is the \
-             defect ADR 0024 closed, recurring: either route the field, or declare the \
+             defect this test exists to catch: either route the field, or declare the \
              subset in `CARRIED_AS_A_SUBSET`, or classify it as something that does not \
              claim to persist",
             field.name,
@@ -213,13 +206,11 @@ fn a_field_carried_across_the_seam_keeps_its_category() {
     }
 }
 
-/// The session category (ADR 0024), pinned the way the document set is: by naming its
-/// membership, so that a field joining or leaving it costs a deliberate edit here.
+/// The session category, pinned the way the document set is: by naming its membership, so
+/// that a field joining or leaving it costs a deliberate edit here.
 ///
-/// The first of these are the ones ADR 0018 decision 3 and issue #88 kept out of persistence
-/// entirely, on a reading of "not document state" that the owner has since narrowed back to
-/// what it says; the armed-tool and sketch-mode fields (ADR 0022/0028) joined later. They are
-/// all in the dump and out of the document — the browser's bargain, which is the whole content
+/// Every member is in the dump and out of the document: it survives a relaunch on this
+/// machine and never travels inside a shared project file. That bargain is the whole content
 /// of the category.
 #[test]
 fn the_session_is_the_workspace_and_nothing_else() {
@@ -235,29 +226,28 @@ fn the_session_is_the_workspace_and_nothing_else() {
             "stack",
             "debug_face_orientation",
             "debug_brick_faces",
-            // ADR 0022: the armed tool — WITH its pending drop nested inside, so the
-            // authority and the ghost survive a mid-gesture relaunch together or not at
-            // all (the F9 mirror-without-authority bug, closed by construction).
+            // The armed tool — WITH its pending drop nested inside, so the authority and
+            // the ghost survive a mid-gesture relaunch together or not at all.
             "armed_tool",
-            // ADR 0024/0026: the armed-tool snap settings persist across adds and relaunch.
+            // The armed-tool snap settings persist across adds and relaunch.
             "placement_snap",
-            // ADR 0028: the sketch under edit, and the tool armed in it, re-enter on a
+            // The sketch under edit, and the tool armed in it, re-enter on a
             // mid-edit relaunch (the same "how the workspace was left" the ghost is).
             "sketch_mode",
             "sketch_tool",
             "armed_constraint",
-            // #96: the sketch position snap — the in-mode sibling of `placement_snap`,
-            // durable for the same reason.
+            // The sketch position snap — the in-mode sibling of `placement_snap`, durable
+            // for the same reason.
             "sketch_snap",
-            // ADR 0032: the workspace selection. It left the DOCUMENT — where undo used to
-            // restore it and a shared file used to carry it — and joined the session on the
-            // sketch selection's law: selecting is not an edit.
+            // The workspace selection: session and not document, on the sketch selection's
+            // law — selecting is not an edit, so undo does not restore it and a shared file
+            // does not carry it.
             "selection",
             // The DEFAULT orbit type — how the author was last steering the view. Session and
             // not settings: it is a most-recently-used working state written by using the tool,
             // not a preference anybody sat down and chose.
             "default_orbit_type",
-            // ADR 0032 slice D: whether the explicit orbit mode is running, and at which type.
+            // Whether the explicit orbit mode is running, and at which type.
             // Session for the same reason `sketch_mode` is — a mode is how the workspace was
             // left — and recorded apart from the default because a NAMED override lives and
             // dies with the mode without ever writing it.
@@ -282,8 +272,8 @@ fn the_session_is_the_workspace_and_nothing_else() {
 /// Session state reaches the dump and never the document. Stated against the category
 /// itself rather than against the field list, because this is the property that makes it a
 /// sibling of `view` rather than of `document` — a viewer mode inside a shared project file
-/// would impose one person's session on everyone who opened it, which is precisely what
-/// ADR 0018 decision 3 was protecting and what ADR 0024 leaves untouched.
+/// would impose one person's session on everyone who opened it, which is precisely what this
+/// boundary protects.
 #[test]
 fn session_state_is_dumped_and_never_documented() {
     assert!(StateCategory::Session.reaches_dump());

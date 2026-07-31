@@ -1,4 +1,4 @@
-//! Regression guard for the windowed palette-click apply path (BUG 2).
+//! Regression guard for the windowed palette-click apply path.
 //!
 //! This whole test requires a real wgpu device (it builds GPU-backed palette
 //! tiles), so it probes for an adapter at runtime and skips loudly without one.
@@ -151,11 +151,10 @@ fn windowed_palette_tile_click_reaches_apply_path() {
     );
 }
 
-/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+/// Runtime GPU-availability probe.
 ///
-/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
-/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
-/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+/// These tests always compile and skip loudly here on a machine with no adapter. Compiling
+/// them out instead would not skip them, it would LOSE them — a vacuous pass.
 fn skip_without_gpu(test: &str) -> bool {
     static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {

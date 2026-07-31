@@ -1,6 +1,5 @@
 //! What one edit costs — the number that decides whether a manipulator drag can move a
-//! COMMITTED node live under the cursor, or has to preview as a ghost and commit on release
-//! (`docs/design/direct-manipulation.md`, the open question).
+//! COMMITTED node live under the cursor, or has to preview as a ghost and commit on release.
 //!
 //! `AppCore::rebuild` is the blocking half of an edit: it builds the new leaf spatial index,
 //! diffs it for the dirty world-AABB, evicts only the chunks that AABB touches, and
@@ -16,7 +15,7 @@
 use ui::panel::{Selection, SelectionTarget};
 
 /// The workspace selection a fixture arrives with: its first top-level node picked
-/// (ADR 0032 — selection is workspace state, so a probe seeds it explicitly).
+/// (selection is workspace state, so a probe seeds it explicitly).
 fn selection_of_first_root(scene: &document::scene::Scene) -> Selection {
     Selection::from_targets(scene.roots.first().copied().map(SelectionTarget::Node))
 }
@@ -263,7 +262,7 @@ fn one_edit_rebuild_cost_by_edit_locality() {
 /// story. When a node passes the composite's current bound it grows the extent, which moves
 /// `recenter_voxels_for_resolve` — the floating origin — and `rebuild` then forces
 /// `incremental_dirty_chunks` to `None` even though the edit localized perfectly well. The
-/// resident two-layer CACHE survives the shift (a chunk is chunk-local-integer, ADR 0008);
+/// resident two-layer CACHE survives the shift (a chunk is chunk-local-integer);
 /// what does not survive is the baked vertex buffers, because the mesher folds the recenter
 /// into each vertex's world position. So the hypothesis under test is narrow: the surplus is a
 /// wholesale RE-MESH forced by the origin move, not extra classification work.
@@ -278,19 +277,16 @@ fn one_edit_rebuild_cost_by_edit_locality() {
 /// gesture, on the same scene, differing in exactly one bit: did the origin move. Every step in
 /// both sets grows the region, so region growth is held constant and cannot explain a gap.
 ///
-/// **The hypothesis is REFUTED at this seam, and the refutation is the point.** `grow=` and
-/// `grow+` come out indistinguishable — the origin shift costs `rebuild` nothing measurable.
-/// That is not a surprise once stated: forcing `incremental_dirty_chunks` to `None` is a branch,
-/// not work. `rebuild` still localizes the invalidation (the cache is frame-independent), still
-/// re-classifies the same handful of chunks, and then hands the shell a flag. The whole expense
-/// of a reframe is DOWNSTREAM — the shell re-meshing every resident chunk and re-uploading its
-/// buffers — and `rebuild` is headless, so none of it is inside these timings. So the honest
-/// reading is: an extent-growing drag is not more expensive to RESOLVE, and the wholesale
-/// re-mesh it forces has to be measured where it actually happens, at the shell. Every number
-/// in the last two columns is a LOWER bound on what such a step costs the user.
+/// **What these timings can and cannot show.** Forcing `incremental_dirty_chunks` to `None` is
+/// a branch, not work: `rebuild` still localizes the invalidation (the cache is
+/// frame-independent), still re-classifies the same handful of chunks, and then hands the shell
+/// a flag. The whole expense of a reframe is DOWNSTREAM — the shell re-meshing every resident
+/// chunk and re-uploading its buffers — and `rebuild` is headless, so none of it is inside
+/// these timings. The wholesale re-mesh an origin shift forces has to be measured where it
+/// happens, at the shell; every number in the last two columns is a LOWER bound on what such a
+/// step costs the user.
 ///
-/// The second thing the table says, less expectedly: the outward steps often beat the inside
-/// ones. A node dragged out past the backdrop sits in empty neighborhood, so its dirty AABB
+/// A node dragged out past the backdrop also sits in an empty neighborhood, so its dirty AABB
 /// touches fewer occupied chunks than the same node nudged through the middle of dense
 /// geometry. Locality, not extent, is what this layer's cost tracks.
 #[test]

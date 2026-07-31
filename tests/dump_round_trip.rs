@@ -1,4 +1,4 @@
-//! The dump round-trip gate (ADR 0022/0024): serialize → deserialize → apply → capture
+//! The dump round-trip gate: serialize → deserialize → apply → capture
 //! must be the identity on [`AppConfig`], not just for one hand-picked fixture but across
 //! the state space — every enum variant, the numeric boundaries, and seeded fills.
 //!
@@ -10,8 +10,8 @@
 //!   variant collapsing, a swapped field pair, float precision loss.
 //! * **Apply/capture identity** — the format loop continued through
 //!   `to_panel_state`/`apply_camera`/`home_view` and back out via `AppConfig::capture`.
-//!   This is the seam where fields historically died (ADR 0024: four session fields
-//!   classified as reaching the dump and hard-coded to defaults on restore). It runs on
+//!   This is the seam where fields die: classified as reaching the dump, and hard-coded to
+//!   a default on restore. It runs on
 //!   the space of states the application can actually be in, because the load path
 //!   deliberately normalizes outside it — each such seam is pinned by its own test below
 //!   rather than silently excused:
@@ -23,7 +23,7 @@
 //!   - `Shortcuts::bind` steals a chord held elsewhere and the override map dedupes and
 //!     re-sorts rows, so only distinct non-builtin chords in command order are identity.
 //!
-//! Deterministic by decision (the fable consult, 2026-07-28): per-variant sweeps plus a
+//! Deterministic by decision: per-variant sweeps plus a
 //! fixed-seed LCG, no proptest — a failure names its case and replays exactly. Non-finite
 //! floats are out of scope: `serde_json` cannot represent them and `to_json` errors, and
 //! no live path produces them.
@@ -350,7 +350,7 @@ fn every_enum_variant_survives_the_full_loop() {
         config.sketch_tool = sketch_tool;
         cases.push((format!("sketch_tool={sketch_tool:?}"), config));
     }
-    // ADR 0035 Decision 15: each verb, and a gesture holding a pick — the picks are the half of
+    // Each verb, and a gesture holding a pick — the picks are the half of
     // an armed constraint that a shim mirroring only the verb would silently drop.
     for verb in [ConstraintVerb::HorizontalOrVertical, ConstraintVerb::Fix] {
         let mut config = base();
@@ -603,7 +603,7 @@ fn onion_depth_outside_the_scrubber_range_clamps_on_load() {
 }
 
 /// An implicit home ignores whatever angles a prior session persisted, so a changed code
-/// default reaches existing configs (#13). The stored values are deliberately lost.
+/// default reaches existing configs. The stored values are deliberately lost.
 #[test]
 fn an_implicit_home_collapses_to_the_current_default_on_capture() {
     let scene = seed_scene();
@@ -646,7 +646,7 @@ fn an_absent_or_empty_scene_loads_the_default_seed() {
 }
 
 /// A restored `sketch_mode` pointing at an id that is not a live sketch node clears to
-/// `None`, so a stale id cannot trap the mode (ADR 0028).
+/// `None`, so a stale id cannot trap the mode.
 #[test]
 fn a_stale_sketch_mode_clears_on_load() {
     let scene = seed_scene();

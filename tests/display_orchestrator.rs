@@ -1,12 +1,10 @@
-//! Headless coverage of the `DisplayOrchestrator` state machine (map item 2).
+//! Headless coverage of the `DisplayOrchestrator` state machine.
 //!
-//! The orchestrator owns the two display pipelines (the cuboid fallback mesh + the ADR 0011
-//! brick raymarch), both async rebuild workers, and all the per-edit display bookkeeping that
-//! decides WHICH pipeline draws. That state machine used to live diffusely on the winit shell
-//! and could only be reasoned about by hand (the last change to it shipped three transition
-//! bugs a multi-agent review caught). Extracted window-free, it is now drivable on an offscreen
-//! wgpu device — no window, no surface — so these tests assert the transitions directly through
-//! the public API (`first_build` / `rebuild` / the polls / `ensure_display_mesh_current` and the
+//! The orchestrator owns the two display pipelines (the cuboid fallback mesh + the brick
+//! raymarch), both async rebuild workers, and all the per-edit display bookkeeping that decides
+//! WHICH pipeline draws. It is window-free, so it drives on an offscreen wgpu device — no
+//! window, no surface — and these tests assert the transitions directly through the public API
+//! (`first_build` / `rebuild` / the polls / `ensure_display_mesh_current` and the
 //! accessor-observable state: brick engagement, renderer presence, cuboid face count, poll
 //! return values).
 //!
@@ -91,7 +89,7 @@ impl Fixture {
 }
 
 // ===========================================================================
-// Case 1 — small representable box: brick engaged (inline), mesh skipped
+// Small representable box: brick engaged (inline), mesh skipped
 // ===========================================================================
 
 /// `first_build` on a small representable box engages the brick display INLINE and SKIPS the
@@ -127,7 +125,7 @@ fn first_build_small_engages_brick_and_skips_mesh() {
 }
 
 // ===========================================================================
-// Case 2 — large box: async dispatch, engagement predicted, install on poll
+// Large box: async dispatch, engagement predicted, install on poll
 // ===========================================================================
 
 /// `first_build` on a large box (covering set > threshold) DISPATCHES the brick build async: no
@@ -188,7 +186,7 @@ fn first_build_large_dispatches_async_then_installs_on_poll() {
 }
 
 // ===========================================================================
-// Case 4 — a rebuild while the brick is engaged keeps the mesh skipped
+// A rebuild while the brick is engaged keeps the mesh skipped
 // ===========================================================================
 
 /// A `rebuild` whose scene stays brick-representable re-engages the brick display, so the mesh
@@ -230,7 +228,7 @@ fn rebuild_keeps_brick_engaged_and_skips_mesh() {
 }
 
 // ===========================================================================
-// Case 5 — ensure_display_mesh_current: no-op while engaged, builds on
+// ensure_display_mesh_current: no-op while engaged, builds on
 // debug-face; waits while a brick build is outstanding
 // ===========================================================================
 
@@ -338,11 +336,10 @@ fn poll_geometry_worker_installs_async_fallback_mesh() {
     );
 }
 
-/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+/// Runtime GPU-availability probe.
 ///
-/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
-/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
-/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+/// These tests always compile and skip loudly here on a machine with no adapter. Compiling
+/// them out instead would not skip them, it would LOSE them — a vacuous pass.
 fn skip_without_gpu(test: &str) -> bool {
     static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {

@@ -1,8 +1,8 @@
-//! Regression guards for the C4a panel→`Intent` routing (ADR 0003 Phase C).
+//! Regression guards for the panel→`Intent` routing.
 //!
-//! Slice C4a flips the windowed panel from MUTATING `PanelState.scene` directly to
-//! DESCRIBING each mutation as an [`Intent`] in [`PanelResponse::intents`], which the
-//! loop applies through `AppCore::apply_intent`. These tests drive the SHARED
+//! The windowed panel never MUTATES `PanelState.scene` directly; it DESCRIBES each
+//! mutation as an [`Intent`] in [`PanelResponse::intents`], which the loop applies
+//! through `AppCore::apply_intent`. These tests drive the SHARED
 //! [`voxel_worker::build_panel`] headlessly (a bare egui `Context` — `build_panel`
 //! itself needs no GPU; only palette tiles do, and we pass an empty palette) and
 //! assert the routing invariants that protect the goldens + the live app:
@@ -78,6 +78,6 @@ fn panel_never_mutates_scene_in_place() {
     let _ = run_frame(&mut state, raw_input);
     assert_eq!(
         state.scene, scene_before,
-        "build_panel must not mutate state.scene in place (C4a routes through intents)"
+        "build_panel must not mutate state.scene in place — mutations route through intents"
     );
 }

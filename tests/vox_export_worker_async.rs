@@ -1,8 +1,8 @@
-//! Headless coverage of the ASYNC `.vox` export worker (slow-paths item 2).
+//! Headless coverage of the ASYNC `.vox` export worker.
 //!
-//! The export build + file write used to run inline on the event-loop thread, freezing
-//! the UI for the whole multi-second export. It now runs on the shared background
-//! [`Worker`](voxel_worker::Worker) via [`spawn_vox_export_worker`]. Unlike the display
+//! The export build + file write run on the shared background
+//! [`Worker`](voxel_worker::Worker) via [`spawn_vox_export_worker`], never inline on the
+//! event-loop thread — a multi-second export there would freeze the UI. Unlike the display
 //! workers it carries NO supersede generation — a `.vox` is a user-chosen file, so the
 //! shell serializes exports rather than draining to the latest.
 //!

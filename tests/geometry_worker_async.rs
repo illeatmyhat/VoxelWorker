@@ -1,4 +1,4 @@
-//! Headless coverage of the ASYNC geometry-rebuild worker loop (issue #60).
+//! Headless coverage of the ASYNC geometry-rebuild worker loop.
 //!
 //! The worker's load-bearing guarantees are LIVE-APP-only in `WindowedState` — the
 //! synchronous `shot` goldens can't exercise a background thread + channel + supersede.
@@ -14,17 +14,15 @@
 //!    requests collapses to exactly ONE accepted result (the newest); every stale result
 //!    is discarded — driving the actual worker + channel + `GenerationTracker`, exactly as
 //!    `WindowedState::poll_geometry_worker` does.
-//! 4. **Bad / empty request**: an empty scene (zero covering chunks) does not hang the
+//! 3. **Bad / empty request**: an empty scene (zero covering chunks) does not hang the
 //!    worker; it returns a valid (empty) renderer tagged with the request generation.
 //!
-//! (Build-equivalence — a worker-built renderer matching a synchronous build — is test #3,
-//! already covered by `worker_build_matches_sync_build_for_large_scene` in `gpu_parity`;
-//! not duplicated here.)
+//! Build-equivalence — a worker-built renderer matching a synchronous build — lives in
+//! `worker_build_matches_sync_build_for_large_scene` in `gpu_parity`; not duplicated here.
 //!
 //! The accept/discard decision the shell makes on each poll is the PUBLIC
 //! `GenerationTracker::accepts` (the shell's `poll_geometry_worker` is a thin wrapper over
-//! it), so these tests reproduce the shell's exact decision without touching the window —
-//! no testability refactor was needed.
+//! it), so these tests reproduce the shell's exact decision without touching the window.
 //!
 //! Run: `cargo test --test geometry_worker_async` (skips loudly without a GPU adapter)
 
@@ -82,7 +80,7 @@ fn large_request(generation: u64) -> GeometryRebuildRequest {
 }
 
 // ===========================================================================
-// Test 1 — non-blocking dispatch
+// Non-blocking dispatch
 // ===========================================================================
 
 /// Dispatching a LARGE rebuild returns PROMPTLY (the build runs on the worker thread, not
@@ -146,7 +144,7 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
 }
 
 // ===========================================================================
-// Test 2 — supersede / newest-wins under REAL threading
+// Supersede / newest-wins under REAL threading
 // ===========================================================================
 
 /// A burst of increasing-generation dispatches drives the REAL worker + channel +
@@ -240,7 +238,7 @@ fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
 }
 
 // ===========================================================================
-// Test 4 — bad / empty request does not hang the worker
+// Bad / empty request does not hang the worker
 // ===========================================================================
 
 /// An empty scene (zero covering chunks) must NOT hang the worker: it drains, builds an
@@ -299,7 +297,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
 }
 
 // ===========================================================================
-// C1 — the outstanding-build interlock: no Frankenstein mesh
+// The outstanding-build interlock: no Frankenstein mesh
 // ===========================================================================
 
 /// Synchronously build a full renderer for a scene's covering set — the ground truth a
@@ -316,33 +314,33 @@ fn sync_full_build(gpu: &GpuContext, request: &GeometryRebuildRequest) -> Cuboid
     )
 }
 
-/// C1 regression (integration): reproduce the exact stale-patch sequence and assert the
-/// finally-installed renderer equals a FULL rebuild of the LATEST scene — no Frankenstein.
+/// The interlock, end to end: drive the stale-patch sequence and assert the finally-installed
+/// renderer equals a FULL rebuild of the LATEST scene — no Frankenstein.
 ///
-/// The bug: a large edit dispatches an async wholesale build (gen 1, scene S1); the INSTALLED
-/// renderer is still S0 while the worker builds S1. Before S1 arrives the user makes another
-/// edit whose resolve returns `incremental_dirty_chunks = Some(..)`. The OLD code inline-
-/// patched the STALE S0 renderer (keeping every non-dirty S0 chunk) and bumped the generation
-/// → the gen-1 S1 result was discarded → chunks that differed S0→S1 but weren't in the new
-/// dirty set stayed at S0 forever (old geometry + one fresh patch).
+/// The hazard: a large edit dispatches an async wholesale build (gen 1, scene S1); the
+/// INSTALLED renderer is still S0 while the worker builds S1. Before S1 arrives the user makes
+/// another edit whose resolve returns `incremental_dirty_chunks = Some(..)`. Inline-patching
+/// the STALE S0 renderer (keeping every non-dirty S0 chunk) and bumping the generation would
+/// discard the gen-1 S1 result → chunks that differ S0→S1 but are absent from the new dirty
+/// set stay at S0 forever (stale geometry + one fresh patch).
 ///
-/// The fix: while an async build is OUTSTANDING, `route_geometry_rebuild` routes EVERY edit —
-/// even an incremental one — to a fresh WHOLESALE-async dispatch from the CURRENT full
+/// The interlock: while an async build is OUTSTANDING, `route_geometry_rebuild` routes EVERY
+/// edit — even an incremental one — to a fresh WHOLESALE-async dispatch from the CURRENT full
 /// covering set. So the install is a full wholesale of the latest scene, never a patch of a
 /// stale one. This test drives the SAME decision + the REAL worker + the REAL tracker the
 /// shell uses (`WindowedState::rebuild_geometry` / `poll_geometry_worker`); only the window-
-/// coupled swap is modelled by a local `installed` renderer (see the honesty note at the
+/// coupled swap is modeled by a local `installed` renderer (see the honesty note at the
 /// bottom).
 #[test]
-fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
-    if skip_without_gpu("c1_outstanding_edit_reroutes_wholesale_no_frankenstein") {
+fn outstanding_edit_reroutes_wholesale_no_frankenstein() {
+    if skip_without_gpu("outstanding_edit_reroutes_wholesale_no_frankenstein") {
         return;
     }
     let gpu = common::shared_gpu();
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     // The shell's state we model: the installed renderer (S0), the generation tracker, and
-    // the C1 outstanding flag — exactly the fields `WindowedState` holds.
+    // the outstanding flag — exactly the fields `WindowedState` holds.
     let mut tracker = GenerationTracker::new();
     let mut async_outstanding = false;
 
@@ -368,7 +366,7 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
     let mut installed = sync_full_build(gpu, &s0);
     assert_eq!(installed.face_count(), s0_face);
 
-    // --- Edit 1: a large wholesale edit → S1 dispatched async (the #60 case). ---
+    // --- Edit 1: a large wholesale edit → S1 dispatched async. ---
     let route = route_geometry_rebuild(
         async_outstanding,
         EditShape::Wholesale {
@@ -384,7 +382,7 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
     worker.dispatch(s1_dispatch);
 
     // --- Edit 2: BEFORE S1's result is polled, a small (incremental-shaped) edit to the
-    // LATEST scene S2. This is the exact C1 trigger. The resident cache is already S2. ---
+    // LATEST scene S2. This is the exact trigger. The resident cache is already S2. ---
     let route = route_geometry_rebuild(
         async_outstanding, // still true — S1 has NOT been installed
         EditShape::Incremental,
@@ -393,7 +391,7 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
     assert_eq!(
         route,
         RebuildRoute::WholesaleAsync,
-        "C1 interlock: an incremental edit while a build is outstanding must re-dispatch \
+        "the interlock: an incremental edit while a build is outstanding must re-dispatch \
          wholesale (from the CURRENT resident cache), NOT inline-patch the stale S0 renderer"
     );
     let gen2 = tracker.next_generation();
@@ -428,16 +426,16 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
             }
         }
         if !installed_newest && Instant::now() >= deadline {
-            panic!("C1: the newest (S2) result never arrived — the worker loop hung");
+            panic!("the newest (S2) result never arrived — the worker loop hung");
         }
         if !installed_newest {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
 
-    // THE C1 ASSERTION: the finally-installed renderer is a FULL rebuild of the LATEST scene
-    // (S2) — NOT a patch of the stale S0 (which would have a different face set). The old
-    // inline-patch bug would have left an S0-derived Frankenstein here.
+    // THE ASSERTION: the finally-installed renderer is a FULL rebuild of the LATEST scene
+    // (S2) — NOT a patch of the stale S0, which would leave an S0-derived Frankenstein with a
+    // different face set.
     assert!(
         !async_outstanding,
         "installing the newest clears the outstanding flag"
@@ -445,7 +443,7 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
     assert_eq!(
         installed.face_count(),
         s2_truth,
-        "C1: the installed renderer must equal a full rebuild of the LATEST scene (no \
+        "the installed renderer must equal a full rebuild of the LATEST scene (no \
          Frankenstein). Got {} faces, expected S2's {} (S0 was {})",
         installed.face_count(),
         s2_truth,
@@ -454,7 +452,7 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
 }
 
 // ===========================================================================
-// C1 (brick analog, ADR 0011 G3) — the brick field follows the same
+// The brick analog — the brick field follows the same
 // stale-while-rebuilding discipline: no incremental patch while async outstanding
 // ===========================================================================
 
@@ -465,21 +463,20 @@ fn brick_build(blocks: u32, vpb: u32) -> BrickFieldBuild {
     build_brick_field(&two_layer_chunks, vpb)
 }
 
-/// C1 for the G3 brick sink: while an async WHOLESALE mesh build is OUTSTANDING, an
-/// incremental-shaped edit must NOT incrementally PATCH the brick field — it rebuilds the
-/// field WHOLESALE from the CURRENT scene, exactly as `route_geometry_rebuild` sends the
-/// mesh to a fresh wholesale-async dispatch. This proves the brick sink can never install a
-/// patch derived from a state the mesh path treats as stale (the C1 lesson, ported to the
-/// atlas). The finally-resident field equals a from-scratch build of the LATEST scene (S2),
-/// never S1/S0.
+/// The brick sink's half of the interlock: while an async WHOLESALE mesh build is
+/// OUTSTANDING, an incremental-shaped edit must NOT incrementally PATCH the brick field — it
+/// rebuilds the field WHOLESALE from the CURRENT scene, exactly as `route_geometry_rebuild`
+/// sends the mesh to a fresh wholesale-async dispatch. This proves the brick sink can never
+/// install a patch derived from a state the mesh path treats as stale. The finally-resident
+/// field equals a from-scratch build of the LATEST scene (S2), never S1/S0.
 ///
 /// The decision is driven by the SAME pure `route_geometry_rebuild` + the SAME brick
 /// `patch_in_place = matches!(route, InlineIncremental) && field.is_some()` predicate the
 /// shell (`WindowedState::rebuild_geometry`) applies; only the window-coupled swap itself is
-/// modelled locally (see the honesty note at the bottom of this file).
+/// modeled locally (see the honesty note at the bottom of this file).
 #[test]
-fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
-    if skip_without_gpu("c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch") {
+fn brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
+    if skip_without_gpu("brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch") {
         return;
     }
     let vpb = 4u32;
@@ -492,7 +489,7 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
         "the fixtures must differ so a stale (S0/S1-derived) field would be DETECTABLE"
     );
 
-    // The shell's persistent brick state (starts == S0) + the C1 outstanding flag.
+    // The shell's persistent brick state (starts == S0) + the outstanding flag.
     let (mut field, _) = IncrementalBrickField::from_wholesale(s0.clone());
     assert_eq!(
         field.to_build(),
@@ -506,7 +503,7 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
     let brick_patches_in_place =
         |route: RebuildRoute| matches!(route, RebuildRoute::InlineIncremental);
 
-    // --- Edit 1: a LARGE wholesale edit → S1, dispatched async (the #60 case). ---
+    // --- Edit 1: a LARGE wholesale edit → S1, dispatched async. ---
     let route1 = route_geometry_rebuild(
         async_outstanding,
         EditShape::Wholesale {
@@ -536,11 +533,11 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
     assert_eq!(
         route2,
         RebuildRoute::WholesaleAsync,
-        "C1: an incremental edit while a build is outstanding routes wholesale"
+        "an incremental edit while a build is outstanding routes wholesale"
     );
     assert!(
         !brick_patches_in_place(route2),
-        "C1: the brick field must NOT incrementally patch while an async build is outstanding \
+        "the brick field must NOT incrementally patch while an async build is outstanding \
          (that would install a patch of a state the mesh path treats as stale)"
     );
     // The interlock: rebuild the brick field WHOLESALE from the CURRENT scene (S2).
@@ -551,15 +548,15 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
     let resident = field.to_build();
     assert_eq!(
         resident, s2,
-        "C1: the resident brick field must equal a wholesale build of the LATEST scene (S2)"
+        "the resident brick field must equal a wholesale build of the LATEST scene (S2)"
     );
     assert_ne!(resident, s1, "not the mid-flight scene S1");
     assert_ne!(resident, s0, "not the stale baseline S0");
 }
 
-// HONESTY NOTE (C1 headless coverage): the ROUTING decision (the actual fix — the outstanding
-// interlock that keeps an incremental edit from patching a stale renderer) is driven exactly
-// as the shell drives it (`route_geometry_rebuild` + the real `GenerationTracker` + the real
+// HONESTY NOTE (headless coverage): the ROUTING decision — the outstanding interlock that
+// keeps an incremental edit from patching a stale renderer — is driven exactly as the shell
+// drives it (`route_geometry_rebuild` + the real `GenerationTracker` + the real
 // threaded `GeometryWorker`). What is NOT driven headlessly is the window-coupled SWAP itself
 // (`WindowedState`'s `cuboid_mesh_renderer` field + `request_redraw`): that lives inside a
 // live winit event loop with a surface, which these offscreen tests cannot spin up. So this
@@ -569,11 +566,10 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
 // table exhaustively; this integration test proves the decision + worker + tracker compose
 // into a non-Frankenstein install.
 
-/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+/// Runtime GPU-availability probe.
 ///
-/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
-/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
-/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+/// These tests always compile and skip loudly here on a machine with no adapter. Compiling
+/// them out instead would not skip them, it would LOSE them — a vacuous pass.
 fn skip_without_gpu(test: &str) -> bool {
     static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
