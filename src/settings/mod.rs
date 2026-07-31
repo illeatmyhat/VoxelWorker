@@ -101,7 +101,8 @@ impl SelectionConfig {
                     }
                     SelectionTarget::SketchPoint { .. }
                     | SelectionTarget::SketchSegment { .. }
-                    | SelectionTarget::SketchArc { .. } => None,
+                    | SelectionTarget::SketchArc { .. }
+                    | SelectionTarget::SketchConstraint { .. } => None,
                 })
                 .collect(),
         }

@@ -54,6 +54,16 @@ pub enum SelectionTarget {
         /// The arc's id within that sketch.
         entity: EntityId,
     },
+    /// A CONSTRAINT on a sketch (ADR 0035 Decision 3). It draws no geometry, but it is an
+    /// entity in the same id space as the rest and it is picked the same way — by clicking the
+    /// badge that stands for it. Being selectable is what makes it deletable one at a time,
+    /// which is the only way to release one assertion without releasing the drawing's others.
+    SketchConstraint {
+        /// The sketch node that owns the entity counter this id came from.
+        sketch: NodeId,
+        /// The constraint's id within that sketch.
+        entity: EntityId,
+    },
 }
 
 impl SelectionTarget {
@@ -64,8 +74,30 @@ impl SelectionTarget {
         match self {
             SelectionTarget::SketchPoint { sketch, .. }
             | SelectionTarget::SketchSegment { sketch, .. }
-            | SelectionTarget::SketchArc { sketch, .. } => Some(sketch),
+            | SelectionTarget::SketchArc { sketch, .. }
+            | SelectionTarget::SketchConstraint { sketch, .. } => Some(sketch),
             SelectionTarget::Node(_) | SelectionTarget::ReferencePoint(_) => None,
+        }
+    }
+
+    /// Whether this target has a **position** — something a translate, a scale or a rotate
+    /// could act on.
+    ///
+    /// A constraint does not, and that is not an omission to fill in later: it draws no
+    /// geometry, and its badge is a label for an assertion rather than a place the assertion
+    /// lives. Moving one would have to mean moving the badge, which changes nothing about what
+    /// is asserted — so a transform simply skips it, the same way it skips nothing else.
+    ///
+    /// Every transform over a sketch selection filters on this rather than matching the variants
+    /// itself, so a future entity kind decides the question once, here.
+    pub fn is_positional(self) -> bool {
+        match self {
+            SelectionTarget::Node(_)
+            | SelectionTarget::ReferencePoint(_)
+            | SelectionTarget::SketchPoint { .. }
+            | SelectionTarget::SketchSegment { .. }
+            | SelectionTarget::SketchArc { .. } => true,
+            SelectionTarget::SketchConstraint { .. } => false,
         }
     }
 }
@@ -237,6 +269,17 @@ impl Selection {
         })
     }
 
+    /// The picked CONSTRAINT ids of `sketch`, in pick order (ADR 0035 Decision 3).
+    pub fn sketch_constraints(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
+        self.targets.iter().filter_map(move |target| match *target {
+            SelectionTarget::SketchConstraint {
+                sketch: owner,
+                entity,
+            } if owner == sketch => Some(entity),
+            _ => None,
+        })
+    }
+
     /// Is anything inside `sketch` picked? What the context menu's Delete is gated on while a
     /// sketch is open.
     pub fn holds_sketch_entities(&self, sketch: NodeId) -> bool {
@@ -269,6 +312,8 @@ impl Selection {
                 .is_some_and(|s| s.segments().iter().any(|segment| segment.id == entity)),
             SelectionTarget::SketchArc { sketch, entity } => sketch_of(scene, sketch)
                 .is_some_and(|s| s.arcs().iter().any(|arc| arc.id == entity)),
+            SelectionTarget::SketchConstraint { sketch, entity } => sketch_of(scene, sketch)
+                .is_some_and(|s| s.constraints().iter().any(|held| held.id == entity)),
         });
         self.targets.len() != before
     }
@@ -416,6 +461,58 @@ mod tests {
             selection.sketch_segments(SKETCH).collect::<Vec<_>>(),
             vec![7]
         );
+    }
+
+    /// A constraint of the fixture sketch.
+    fn assertion(entity: EntityId) -> SelectionTarget {
+        SelectionTarget::SketchConstraint {
+            sketch: SKETCH,
+            entity,
+        }
+    }
+
+    /// ADR 0035 Decision 3: a constraint is a sketch entity in the same id space as the geometry,
+    /// so the same id is a FOURTH distinct target and answers only its own query. This is what
+    /// makes a constraint deletable one at a time rather than only as a side effect of deleting
+    /// what it names.
+    #[test]
+    fn a_constraint_is_its_own_kind() {
+        let mut selection = Selection::default();
+        selection.toggle(vertex(7));
+        selection.toggle(edge(7));
+        selection.toggle(curve(7));
+        selection.toggle(assertion(7));
+        assert_eq!(selection.len(), 4);
+        assert_eq!(
+            selection.sketch_constraints(SKETCH).collect::<Vec<_>>(),
+            vec![7]
+        );
+        assert_eq!(selection.sketch_arcs(SKETCH).collect::<Vec<_>>(), vec![7]);
+    }
+
+    /// The owner's rule, as a property of the target rather than of any one tool: geometry has a
+    /// place a transform can act on and a constraint does not. Every translate, rotate and scale
+    /// over a sketch selection filters on this, so the answer is decided once.
+    #[test]
+    fn only_geometry_has_a_position_a_transform_could_move() {
+        for target in [FIRST, POINT, vertex(1), edge(2), curve(3)] {
+            assert!(target.is_positional(), "{target:?} should be movable");
+        }
+        assert!(!assertion(4).is_positional());
+    }
+
+    /// A constraint leaves with the rest of the sketch side — it belongs to the sketch, so
+    /// entering or leaving the mode drops it the same way it drops a picked vertex.
+    #[test]
+    fn a_constraint_is_a_sketch_entity_for_clearing_too() {
+        let mut selection = Selection::default();
+        selection.toggle(FIRST);
+        selection.toggle(assertion(9));
+        assert!(selection.holds_sketch_entities(SKETCH));
+
+        selection.clear_sketch_entities();
+        assert!(!selection.holds_sketch_entities(SKETCH));
+        assert_eq!(selection.len(), 1);
     }
 
     /// The whole point of tagging: the SAME entity id in two different sketches is two

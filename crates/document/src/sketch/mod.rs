@@ -678,6 +678,12 @@ pub struct Circle {
 /// of the range can never collide with a live entity.
 pub const ABSENT_CENTER: EntityId = EntityId::MAX;
 
+/// A span the drawing needs — a segment's length, an arc's chord or its radius — that closes to
+/// less than this (in-plane voxels) has collapsed: the entity is no longer what the store calls
+/// it. Far below the 1/256-block granularity a polygon is flattened at (ADR 0019), so nothing an
+/// author draws can land under it by accident.
+const COLLAPSED_SPAN: f64 = 1e-6;
+
 fn absent_center() -> EntityId {
     ABSENT_CENTER
 }
@@ -1202,6 +1208,7 @@ impl Sketch {
     /// where a failed solve pushed it.
     pub fn add_constraint(&mut self, kind: ConstraintKind) -> Result<EntityId, ConstraintRefusal> {
         self.check_names_live_geometry(kind)?;
+        self.check_is_not_already_asserted(kind)?;
         // The id is minted only once the trial has passed, so a refusal leaves the id space
         // untouched rather than burning a number nothing will ever name.
         let candidate = Constraint {
@@ -1216,6 +1223,9 @@ impl Sketch {
         let report = constraint::solve_in_place(&mut trial, &self.segment_ends(), &with_candidate)
             .expect("a constraint was just pushed, so the system is not empty");
         if report.outcome != SolveOutcome::Converged {
+            return Err(ConstraintRefusal::Unsatisfiable);
+        }
+        if self.collapses_geometry(&trial) {
             return Err(ConstraintRefusal::Unsatisfiable);
         }
 
@@ -1233,6 +1243,69 @@ impl Sketch {
         });
         self.points = trial;
         Ok(id)
+    }
+
+    /// **One constraint of a kind per entity set** (ADR 0035 Decision 4).
+    ///
+    /// Stacking `Horizontal` on a segment that is already asserted horizontal adds a residual that
+    /// says exactly what another residual already says. The rank test below would catch it and
+    /// flag it `redundant`, but flagging is for redundancy that carries INTENT — symmetry asserted
+    /// although the geometry already implies it, kept as insurance against a later edit. A literal
+    /// second copy of the same claim carries none: it cannot be told from the first, deleting
+    /// either leaves the drawing identically constrained, and two badges would stand on one
+    /// anchor saying one thing. So it is refused, and the author already has what they asked for.
+    ///
+    /// The comparison is on the KIND and the geometry, never the value: a second `Fix` on a fixed
+    /// point is refused whether or not it names the same place, because "fix this here, and also
+    /// there" is a re-fix — delete the first, assert the second — rather than two live claims.
+    fn check_is_not_already_asserted(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
+        let stands = self
+            .constraints
+            .iter()
+            .any(|held| held.kind.is_about_the_same_as(kind));
+        if stands {
+            return Err(ConstraintRefusal::AlreadyAsserted);
+        }
+        Ok(())
+    }
+
+    /// Whether the trial solve COLLAPSED geometry that had extent before it ran.
+    ///
+    /// **A singularity solves everything.** Almost every residual in the set is a difference
+    /// between two coordinates, so putting every point in one place drives them all to zero: it is
+    /// a trivial solution, available to nearly any system, and the solver will happily converge on
+    /// it. `Horizontal` and `Vertical` on one segment is the smallest instance — the zero-length
+    /// segment satisfies both exactly — but the shape of the failure is general, so the test is
+    /// too. A drawing that met its assertions by deleting the thing they name has not met them.
+    ///
+    /// Checked as a property of the RESULT rather than as a table of forbidden pairs, so it covers
+    /// combinations the residual set does not have yet. What must stay open is every span the
+    /// drawing needs to still be itself: a segment's two ends, an arc's two ends, and an arc's
+    /// radius.
+    ///
+    /// Geometry that was ALREADY degenerate is not this test's business — an unrelated assertion
+    /// elsewhere should not be refused for a collapse that predates it.
+    fn collapses_geometry(&self, trial: &[Point]) -> bool {
+        let span = |points: &[Point], from: EntityId, to: EntityId| -> Option<f64> {
+            let at = |id: EntityId| points.iter().find(|point| point.id == id).map(|p| p.at);
+            let (a, b) = (at(from)?.in_plane(), at(to)?.in_plane());
+            Some(((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt())
+        };
+        let mut open: Vec<(EntityId, EntityId)> =
+            self.segments.iter().map(|seg| (seg.from, seg.to)).collect();
+        for arc in &self.arcs {
+            open.push((arc.from, arc.to));
+            if arc.center != ABSENT_CENTER {
+                open.push((arc.center, arc.from));
+            }
+        }
+        open.into_iter().any(|(from, to)| {
+            let (Some(before), Some(after)) = (span(&self.points, from, to), span(trial, from, to))
+            else {
+                return false;
+            };
+            before > COLLAPSED_SPAN && after <= COLLAPSED_SPAN
+        })
     }
 
     /// Whether every entity `kind` names is in the store, and its own terms are meetable.

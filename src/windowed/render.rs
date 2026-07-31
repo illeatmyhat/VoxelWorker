@@ -67,6 +67,7 @@ impl WindowedState {
 
         let raw_input = self.egui_winit_state.take_egui_input(&self.window);
         let pixels_per_point = self.egui_winit_state.egui_ctx().pixels_per_point();
+        self.last_pixels_per_point = pixels_per_point;
 
         // Issue #12/#20 S6c-1: the layer scrubber's vertical extent comes from the
         // SCENE's region dimensions, not the assembled grid object — identical to
@@ -1571,6 +1572,12 @@ impl WindowedState {
     /// accumulates into the set; a plain marquee replaces the sketch-entity selection (an empty
     /// box therefore clears, like a plain empty click). A behind-camera endpoint culls its
     /// entity, matching the overlay cull. Pure selection-state mutation — no document edit.
+    ///
+    /// Constraint badges are swept too, on the point rule: a badge is a small square mark, so
+    /// window takes it when its CENTRE is inside and crossing when the box touches its box. A
+    /// constraint has no position of its own, but the badge does — and the badge is the whole of
+    /// how a constraint is on screen, so a box drawn around it has named it as plainly as a box
+    /// drawn around a vertex names that.
     pub(super) fn resolve_sketch_marquee(&mut self, up_x: f64, up_y: f64) {
         let Some((down_x, down_y)) = self.sketch_marquee_anchor.take() else {
             return;
@@ -1620,6 +1627,27 @@ impl WindowedState {
                 picked.push(ui::panel::SelectionTarget::SketchArc {
                     sketch,
                     entity: *entity,
+                });
+            }
+        }
+        // The badges are laid out in egui points; the box is in physical pixels, like every other
+        // array here.
+        let scale = self.last_pixels_per_point;
+        let half = ui::chrome::SKETCH_CONSTRAINT_BADGE * 0.5 * scale;
+        for badge in &self.sketch_constraint_badges {
+            let center = egui::Pos2::new(badge.center.x * scale, badge.center.y * scale);
+            let hit = if window {
+                rect.contains(center)
+            } else {
+                rect.intersects(egui::Rect::from_center_size(
+                    center,
+                    egui::Vec2::splat(half * 2.0),
+                ))
+            };
+            if hit {
+                picked.push(ui::panel::SelectionTarget::SketchConstraint {
+                    sketch,
+                    entity: badge.constraint,
                 });
             }
         }
@@ -2009,6 +2037,12 @@ impl WindowedState {
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<ui::panel::SelectionTarget> {
+        // A badge beats the geometry under it, because it is drawn over it: badges paint last,
+        // in the foreground layer, so anything else winning here would mean picking something the
+        // cursor cannot see (ADR 0035 Decision 3).
+        if let Some(entity) = self.sketch_constraint_at(cursor_x, cursor_y) {
+            return Some(ui::panel::SelectionTarget::SketchConstraint { sketch, entity });
+        }
         if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
             if let Some(&entity) = self.sketch_point_ids.get(index) {
                 return Some(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
@@ -2032,6 +2066,7 @@ impl WindowedState {
     pub(super) fn cursor_over_sketch_entity(&self, cursor_x: f64, cursor_y: f64) -> bool {
         self.sketch_vertex_at(cursor_x, cursor_y).is_some()
             || self.nearest_sketch_edge(cursor_x, cursor_y).is_some()
+            || self.sketch_constraint_at(cursor_x, cursor_y).is_some()
     }
 
     /// ADR 0030: a right-click over a sketch entity selects it (Fusion: right-clicking an entity
@@ -2098,6 +2133,12 @@ impl WindowedState {
     /// ([`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit)), then the selection is
     /// cleared. No-op when nothing is picked or no sketch is being edited. Invoked by the general
     /// viewport context menu's Delete.
+    ///
+    /// Constraints go LAST, and that ordering is the whole subtlety: deleting a point cascades
+    /// into the constraints that named it, so a constraint picked alongside its own geometry is
+    /// already gone by the time its turn comes. `with_constraint_deleted` is a no-op on an id that
+    /// no longer resolves, which is what lets one pass cover both cases without asking which
+    /// happened.
     pub(super) fn delete_sketch_selection(&mut self) {
         let Some(target) = self.panel_state.sketch_mode else {
             return;
@@ -2111,6 +2152,11 @@ impl WindowedState {
         let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
         let segments: Vec<_> = self.panel_state.selection.sketch_segments(target).collect();
         let arcs: Vec<_> = self.panel_state.selection.sketch_arcs(target).collect();
+        let constraints: Vec<_> = self
+            .panel_state
+            .selection
+            .sketch_constraints(target)
+            .collect();
         let mut next = producer;
         for point_id in points {
             next = next.with_point_deleted(point_id);
@@ -2120,6 +2166,9 @@ impl WindowedState {
         }
         for arc_id in arcs {
             next = next.with_arc_deleted(arc_id);
+        }
+        for constraint_id in constraints {
+            next = next.with_constraint_deleted(constraint_id);
         }
         self.commit_sketch_profile_edit(target, next);
         self.panel_state.selection.clear_sketch_entities();
@@ -2199,8 +2248,44 @@ impl WindowedState {
             let center = anchor + direction * (ui::chrome::SKETCH_CONSTRAINT_BADGE_OFFSET * *step);
             *step += 1.0;
             self.sketch_constraint_badges
-                .push((center, ui::panel::constraint_icon(constraint.kind)));
+                .push(ui::chrome::ConstraintBadge {
+                    center,
+                    icon: ui::panel::constraint_icon(constraint.kind),
+                    constraint: constraint.id,
+                    picked: self.panel_state.selection.contains(
+                        ui::panel::SelectionTarget::SketchConstraint {
+                            sketch: target,
+                            entity: constraint.id,
+                        },
+                    ),
+                });
         }
+    }
+
+    /// The constraint whose badge is under the cursor, in PHYSICAL pixels — the shell's hit-test
+    /// for the one sketch entity that has no geometry to hit.
+    ///
+    /// It reads the badges the last overlay refresh laid out rather than recomputing anchors, so
+    /// what is clickable is exactly what is drawn: a constraint whose geometry went off-screen has
+    /// no badge and therefore no target, which is the same rule the drawing itself follows.
+    fn sketch_constraint_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<document::sketch::EntityId> {
+        let scale = self.last_pixels_per_point;
+        let cursor = egui::Pos2::new(cursor_x as f32 / scale, cursor_y as f32 / scale);
+        let half = ui::chrome::SKETCH_CONSTRAINT_BADGE * 0.5;
+        // Last drawn wins: badges stack along one offset, and the later ones paint over the
+        // earlier, so the pick must agree with what is on top.
+        self.sketch_constraint_badges
+            .iter()
+            .rev()
+            .find(|badge| {
+                egui::Rect::from_center_size(badge.center, egui::Vec2::splat(half * 2.0))
+                    .contains(cursor)
+            })
+            .map(|badge| badge.constraint)
     }
 
     /// ADR 0035 Decision 15: feed the entity under the cursor to the armed constraint.
@@ -2259,10 +2344,14 @@ impl WindowedState {
                         self.panel_state.armed_constraint = None;
                     }
                     // The only refusal that reaches here is geometric — `offer` screened the
-                    // clerical ones. The gesture stays armed so the author can pick a different
-                    // entity rather than re-arm the command they never finished.
+                    // clerical ones. The gesture stays armed but gives its picks BACK, because a
+                    // full slot list answers every further click with "already complete": the
+                    // author would be holding a command that can no longer be told anything.
                     Err(why) => {
                         self.panel_state.sketch_constraint_refusal = Some(refusal_text(why));
+                        self.panel_state.armed_constraint =
+                            Some(ui::panel::ArmedConstraint::new(armed.verb()));
+                        self.panel_state.selection.clear_sketch_entities();
                     }
                 }
             }
@@ -2391,6 +2480,16 @@ impl WindowedState {
         cursor_y: f64,
     ) -> Option<SketchVertexDrag> {
         let target = self.panel_state.sketch_mode?;
+        // A constraint badge takes the press it is drawn over, and MOVING one means nothing: a
+        // constraint has no position, so there is nothing for a drag to change (ADR 0035
+        // Decision 3). Asked through `is_positional` rather than by matching the variant, so the
+        // next entity kind that has no place answers here without a second edit.
+        if self
+            .sketch_entity_target_at(target, cursor_x, cursor_y)
+            .is_some_and(|hit| !hit.is_positional())
+        {
+            return None;
+        }
         let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
         let point_id = *self.sketch_point_ids.get(index)?;
         let node = self.panel_state.scene.node_by_id(target)?;
@@ -2968,6 +3067,7 @@ fn refusal_text(why: document::sketch::ConstraintRefusal) -> &'static str {
         document::sketch::ConstraintRefusal::UnknownEntity => "names geometry that is gone",
         document::sketch::ConstraintRefusal::Impossible => "no drawing can meet it",
         document::sketch::ConstraintRefusal::Unsatisfiable => "fights a constraint already set",
+        document::sketch::ConstraintRefusal::AlreadyAsserted => "already asserted there",
     }
 }
 

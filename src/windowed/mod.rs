@@ -273,6 +273,12 @@ struct WindowedState {
     /// hit-testing (run in mouse events, outside `render`) offsets the cube corner by the
     /// SAME amount `run_egui_frame` drew it with. Kept beside `last_viewport_px`.
     last_cube_right_inset: u32,
+    /// The scale factor the most recent frame drew at, cached for the same reason
+    /// `last_viewport_px` is: overlay positions are laid out in egui POINTS, while the pointer
+    /// arrives in physical pixels, and the hit-tests run outside `render` where the egui context
+    /// is not at hand. Only the constraint badges need it so far — every other sketch hit-test
+    /// compares against arrays already kept in physical px.
+    last_pixels_per_point: f32,
     /// The Signal chrome hit-rects (`[x, y, w, h]`, physical px) from the most recent
     /// rendered frame: the floating display stack + the icon rail. The camera gate
     /// (orbit / pan / wheel-zoom, run in mouse events) treats pointer input inside them
@@ -398,11 +404,14 @@ struct WindowedState {
     /// that is waiting; a drag leaves it and turns the view instead, like every other sketch
     /// press flag here.
     sketch_constraint_press: bool,
-    /// The constraint badges to draw over the sketch (ADR 0035 Decision 15), as
-    /// `(centre in egui points, glyph)` — one per asserted relation, anchored on the geometry it
-    /// names. Rebuilt each frame by the overlay refresh, alongside the vertex handles and the
-    /// segment lines it is projected from.
-    sketch_constraint_badges: Vec<(egui::Pos2, ui::icons::Icon)>,
+    /// The constraint badges to draw over the sketch (ADR 0035 Decision 16) — one per asserted
+    /// relation, anchored on the geometry it names. Rebuilt each frame by the overlay refresh,
+    /// alongside the vertex handles and the segment lines it is projected from.
+    ///
+    /// Also the shell's hit-test set: a constraint is picked by clicking its badge, and this is
+    /// the only record of where one is, so what is drawn and what is clickable are one list
+    /// (ADR 0035 Decision 3).
+    sketch_constraint_badges: Vec<ui::chrome::ConstraintBadge>,
     /// The open polyline chain (#99) as `(first point id, last point id)`, or `None` when no
     /// chain is being drawn. Each polyline click connects `last → clicked` and advances;
     /// clicking `first` closes the loop and ends the chain; clicking `last` again ends it
@@ -758,6 +767,8 @@ impl WindowedState {
             last_viewport_px: [0, 0, width, height],
             // Issue #88: the expanded stack's inset until the first frame refreshes it.
             last_cube_right_inset: crate::cube_right_inset_points(false).round() as u32,
+            // 1:1 until the first frame reports the real scale factor.
+            last_pixels_per_point: 1.0,
             // Empty until the first frame fills it in (no chrome to reserve yet).
             last_chrome_rects_px: Vec::new(),
             context_menu_open_at: None,
@@ -924,6 +935,7 @@ impl WindowedState {
             last_frame_time: _,
             last_viewport_px: _,
             last_cube_right_inset: _,
+            last_pixels_per_point: _,
             last_chrome_rects_px: _,
             last_ray_unprojection: _,
             sketch_overlay_points: _,

@@ -53,6 +53,33 @@ impl ConstraintKind {
         }
     }
 
+    /// Whether two constraints make the SAME claim about the SAME geometry — the test behind the
+    /// one-of-a-kind-per-entity-set rule (ADR 0035 Decision 4).
+    ///
+    /// Same claim means same variant, compared through the discriminant so that a variant added
+    /// later is covered without an edit here. Same geometry comes from [`Self::subject`], which
+    /// every variant answers by construction. The stored VALUES — where a `Fix` fixes to, how far
+    /// a `Distance` stands — deliberately play no part: two constraints of one kind on one entity
+    /// set are the same assertion whether or not they agree, and if they disagree the answer is
+    /// still to replace the first rather than to hold both.
+    pub fn is_about_the_same_as(&self, other: ConstraintKind) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(&other)
+            && self.subject() == other.subject()
+    }
+
+    /// The geometry this constraint is ABOUT, as a comparable pair — a single entity repeated when
+    /// it names one, and the pair in a canonical order when it names two (a distance from A to B
+    /// is the distance from B to A).
+    fn subject(&self) -> [EntityId; 2] {
+        match *self {
+            ConstraintKind::Fix { point, .. } => [point, point],
+            ConstraintKind::Horizontal { segment } | ConstraintKind::Vertical { segment } => {
+                [segment, segment]
+            }
+            ConstraintKind::Distance { from, to, .. } => [from.min(to), from.max(to)],
+        }
+    }
+
     /// The segment id this constraint names, if it names one.
     pub(super) fn segment(&self) -> Option<EntityId> {
         match *self {
@@ -99,6 +126,11 @@ pub enum ConstraintRefusal {
     /// constraint it fights is not named yet; that is the tool layer's job once constraints are
     /// selectable in the UI.
     Unsatisfiable,
+    /// The same kind of assertion already stands on the same geometry. One constraint of a kind
+    /// per entity set: a second `Horizontal` on a segment that is already asserted horizontal says
+    /// nothing the first did not, and a second `Fix` on a fixed point is a re-fix, which is a
+    /// delete and an add rather than two claims about one place.
+    AlreadyAsserted,
 }
 
 /// The sketch's points flattened into a parameter vector, with one entry per constraint residual.

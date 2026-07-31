@@ -238,7 +238,7 @@ pub fn run_egui_frame(
     // names. Drawn OVER the lines and handles: a badge is a claim about the drawing and must not
     // be buried by it. Empty unless a sketch is being edited, always empty on the headless
     // `shot` path.
-    sketch_constraint_badges: &[(egui::Pos2, ui::icons::Icon)],
+    sketch_constraint_badges: &[ui::chrome::ConstraintBadge],
     // #100: whether the open viewport context menu was raised INSIDE a derived face, and if so
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.

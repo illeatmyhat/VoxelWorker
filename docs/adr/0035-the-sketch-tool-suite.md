@@ -70,6 +70,19 @@ Constraints join points, segments and arcs in the stable-id space (ADR 0030 §1)
 selectable, individually deletable, individually undoable, and delete-cascade reaches them when a
 referenced entity dies. A side table without ids would reindex on every delete and break undo.
 
+**Being selectable, for a thing that draws no geometry, means being picked by its badge**
+(Decision 16). The badge is the only place a constraint is on screen, so it is the hit target, and
+it beats the geometry under it because it is drawn over it. Delete then reaches a constraint the
+same way it reaches a segment. Two limits follow from a constraint having no position at all:
+
+- **A transform skips it.** Translate, rotate and scale act on what has a place; moving a badge
+  would change where a label sits and nothing about what is asserted. `SelectionTarget` answers
+  this once, as a predicate, rather than each tool matching the variants itself.
+- **A marquee sweeps it, on the point rule.** The badge is a small square mark: window takes it
+  when its centre is inside the box, crossing when the box touches it. A constraint has no place
+  of its own, but its badge does, and that badge is the whole of how it is on screen — so a box
+  drawn around it names it as plainly as a box drawn around a vertex names that.
+
 **Solved positions stay authored state, not `Derived`** (ADR 0022). The solver reads positions as
 its initial guess and writes them back — they are both input and output. `Derived` is for what is
 recomputed from nothing, and an under-constrained sketch has free degrees of freedom that only the
@@ -85,6 +98,23 @@ implies it is insurance against a later edit.
 The system is therefore **always solvable**, which every downstream feature gets to assume rather
 than defend against. The rank check that separates the two cases also yields the degree-of-freedom
 count, so "fully constrained" is a real indicator rather than a guess.
+
+Two refusals sit alongside it, because convergence alone is not enough of a test:
+
+**One constraint of a kind per entity set.** A literal second copy of a claim — `Horizontal` on a
+segment already asserted horizontal — is refused, not flagged. Flagging is for redundancy that
+carries intent, which a duplicate cannot: the two are indistinguishable, deleting either leaves the
+drawing identically constrained, and two badges would stand on one anchor saying one thing. The
+comparison is on kind and geometry, never on the stored value, so a second `Fix` on a fixed point
+is refused whether or not it names the same place — "fix it here, and also there" is a re-fix,
+which is a delete and an add.
+
+**A converged solve that COLLAPSED geometry is unsatisfiable.** `Horizontal` and `Vertical` on one
+segment have a solution: the zero-length segment, where both residuals are exactly zero. The
+solver converges and reports success, and the drawing has been destroyed rather than constrained.
+So the trial also asks whether any segment that had length lost it, and refuses if one did. Stated
+as a property of the result rather than as a table of forbidden pairs, it covers every combination
+meetable only by deleting what it names — including the ones the residual set does not have yet.
 
 ### 5. Inference is Shift-gated and curated
 

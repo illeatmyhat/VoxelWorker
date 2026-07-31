@@ -122,8 +122,26 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
     }
 }
 
+/// One constraint badge, as the overlay draws it and as the shell's hit-test reads it
+/// (ADR 0035 Decisions 3 and 16).
+///
+/// The id travels WITH the position rather than beside it in a parallel array, because the badge
+/// is how a constraint gets picked: a click resolves to a `constraint`, and nothing about that
+/// should depend on two vectors staying the same length.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConstraintBadge {
+    /// Where the badge's box is centred, in egui points, already projected by the shell.
+    pub center: Pos2,
+    /// The glyph — the same mark the rail cell that made this constraint carries.
+    pub icon: crate::icons::Icon,
+    /// The constraint this badge stands for, so a click on it names an entity.
+    pub constraint: document::sketch::EntityId,
+    /// Whether that constraint is in the selection.
+    pub picked: bool,
+}
+
 /// Draw the constraint badges: each asserted relation's own glyph, standing beside the geometry
-/// it names (ADR 0035 Decision 15). Positions are shell-projected, so a badge tracks its entity
+/// it names (ADR 0035 Decision 16). Positions are shell-projected, so a badge tracks its entity
 /// through every camera move — the mark belongs to the entity graph, not to the screen.
 ///
 /// It is the same glyph as the rail cell that made the constraint, in the constraint ink. That
@@ -131,15 +149,35 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
 /// which the evidence is a line that merely *looks* level, and only the badge distinguishes
 /// "asserted horizontal" from "drawn nearly horizontal".
 ///
-/// Not chrome — passive marks, so a press over one still reaches the geometry underneath.
-pub fn sketch_constraint_badges(ui: &egui::Ui, badges: &[(Pos2, crate::icons::Icon)]) {
+/// A PICKED badge switches to the accent, giving up its role colour for as long as it is held.
+/// The role says what the mark is and the accent says you have hold of it, and on every other
+/// surface in the workspace the second reading wins while it applies.
+///
+/// Not chrome — a press over a badge is resolved by the shell's own hit-test, which needs the
+/// click rather than having egui swallow it.
+pub fn sketch_constraint_badges(ui: &egui::Ui, badges: &[ConstraintBadge]) {
     let painter = ui.ctx().layer_painter(LayerId::new(
         Order::Foreground,
         Id::new("sketch_constraint_badges"),
     ));
-    for &(center, icon) in badges {
-        let box_rect = Rect::from_center_size(center, Vec2::splat(SKETCH_CONSTRAINT_BADGE));
-        icon.draw(&painter, box_rect, theme::SKETCH_CONSTRAINT);
+    for badge in badges {
+        let box_rect = Rect::from_center_size(badge.center, Vec2::splat(SKETCH_CONSTRAINT_BADGE));
+        let ink = if badge.picked {
+            theme::ACCENT
+        } else {
+            theme::SKETCH_CONSTRAINT
+        };
+        if badge.picked {
+            let plate = box_rect.expand(2.0);
+            painter.rect_filled(plate, 2.0, theme::ACCENT_FAINT);
+            painter.rect_stroke(
+                plate,
+                2.0,
+                Stroke::new(1.0_f32, theme::ACCENT),
+                StrokeKind::Inside,
+            );
+        }
+        badge.icon.draw(&painter, box_rect, ink);
     }
 }
 

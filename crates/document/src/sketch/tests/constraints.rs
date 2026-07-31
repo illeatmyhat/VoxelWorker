@@ -120,18 +120,31 @@ fn a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone() {
     assert_eq!(before, after, "nor did the failed trial move anything");
 }
 
-/// Decision 4's second half: **redundant is accepted and flagged.** Saying the same thing twice is
-/// sometimes the intent — an assertion the geometry already implies is insurance against a later
-/// edit — so it is marked rather than refused.
+/// Decision 4's second half: **redundant is accepted and flagged.** An assertion the geometry
+/// already implies is insurance against a later edit, so it is marked rather than refused.
+///
+/// Redundant is not the same as DUPLICATE, and the difference is exactly what this fixture shows:
+/// two pinned endpoints already put the segment level, so `Horizontal` adds no information — but
+/// it is a different claim, made about different entities, and it survives a later edit that
+/// releases a pin. A literal second `Horizontal` would be refused instead.
 #[test]
 fn a_redundant_constraint_is_kept_and_flagged() {
-    let (mut sketch, _, _, segment) = slanted();
-    let first = sketch
+    let (mut sketch, tail, head, segment) = slanted();
+    let pinned_tail = sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::new(0, 0),
+        })
+        .expect("the first pin");
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: head,
+            at: SketchPoint::new(10, 0),
+        })
+        .expect("the second pin, level with the first");
+    let implied = sketch
         .add_constraint(ConstraintKind::Horizontal { segment })
-        .expect("the first one says something");
-    let second = sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
-        .expect("the second is redundant, not refused");
+        .expect("already true, so redundant rather than refused");
 
     let flagged = |id: EntityId| {
         sketch
@@ -141,12 +154,12 @@ fn a_redundant_constraint_is_kept_and_flagged() {
             .expect("the constraint")
             .redundant
     };
-    assert!(!flagged(first), "the first raised the rank");
-    assert!(flagged(second), "the second added no information");
+    assert!(!flagged(pinned_tail), "the first raised the rank");
+    assert!(flagged(implied), "the last added no information");
     assert_eq!(
         sketch.degrees_of_freedom(),
-        3,
-        "and it took no freedom away, which is what redundant MEANS"
+        0,
+        "and it took no freedom away, which is what redundant MEANS — the pins took them all"
     );
 }
 
@@ -306,4 +319,133 @@ fn the_producer_door_refuses_without_a_partial_result() {
         Some(ConstraintRefusal::UnknownEntity)
     );
     assert_eq!(solid.sketch.constraints().len(), 1, "unchanged");
+}
+
+/// The law the shell's multi-delete leans on: deleting a point CASCADES into the constraints that
+/// named it, and deleting an already-gone constraint id is a no-op. Together those let one pass
+/// delete a mixed selection — geometry first, assertions after — without asking which of the two
+/// took each constraint.
+#[test]
+fn deleting_geometry_takes_its_constraints_and_the_id_stays_safe_to_delete() {
+    let (sketch, tail, _, segment) = slanted();
+    let before = SketchSolid::extrude(sketch, 3);
+    let (asserted, id) = before
+        .with_constraint(ConstraintKind::Horizontal { segment })
+        .expect("nothing else is asserted");
+
+    let cascaded = asserted.with_point_deleted(tail);
+    assert!(
+        cascaded.sketch.segments().is_empty(),
+        "the segment went with its endpoint"
+    );
+    assert!(
+        cascaded.sketch.constraints().is_empty(),
+        "and the assertion went with the segment"
+    );
+
+    let twice = cascaded.with_constraint_deleted(id);
+    assert_eq!(
+        twice, cascaded,
+        "deleting a gone constraint changes nothing"
+    );
+}
+
+/// One constraint of a kind per entity set (Decision 4). The second `Horizontal` on a segment
+/// already asserted horizontal says nothing the first did not, so it is refused rather than kept
+/// and flagged — and the store is left holding exactly one.
+#[test]
+fn the_same_assertion_twice_on_one_segment_is_refused() {
+    let (mut sketch, _, _, segment) = slanted();
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment })
+        .expect("the first assertion");
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Horizontal { segment }),
+        Err(ConstraintRefusal::AlreadyAsserted)
+    );
+    assert_eq!(sketch.constraints().len(), 1);
+}
+
+/// The comparison is on kind and geometry, never on the VALUE: a second `Fix` on a fixed point is
+/// a re-fix — delete the first, assert the second — and not two live claims about one place.
+#[test]
+fn refixing_a_fixed_point_somewhere_else_is_still_a_duplicate() {
+    let (mut sketch, tail, _, _) = slanted();
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::new(0, 0),
+        })
+        .expect("the first assertion");
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::new(7, 7),
+        }),
+        Err(ConstraintRefusal::AlreadyAsserted),
+        "a different place is still the same claim about the same point"
+    );
+}
+
+/// A distance names an unordered PAIR, so asserting it the other way round is the same assertion.
+#[test]
+fn a_distance_is_the_same_assertion_in_either_direction() {
+    let (mut sketch, tail, head, _) = slanted();
+    let apart = |value: f64| ConstraintKind::Distance {
+        from: tail,
+        to: head,
+        length: SketchLength::from_continuous(value),
+    };
+    sketch.add_constraint(apart(9.0)).expect("the first");
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Distance {
+            from: head,
+            to: tail,
+            length: SketchLength::from_continuous(4.0),
+        }),
+        Err(ConstraintRefusal::AlreadyAsserted)
+    );
+}
+
+/// **The case convergence cannot report.** `Horizontal` and `Vertical` on one segment DO have a
+/// solution — the zero-length segment, where both residuals are exactly zero — so the solver
+/// converges and calls it satisfied. The drawing has been destroyed rather than constrained, so
+/// the trial refuses it and the segment keeps the length the first assertion left it.
+#[test]
+fn a_solve_that_collapses_geometry_is_refused() {
+    let (mut sketch, tail, head, segment) = slanted();
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment })
+        .expect("levelling a slanted segment is fine");
+    let levelled = (position(&sketch, head)[0] - position(&sketch, tail)[0]).abs();
+    assert!(levelled > 1.0, "still a line, {levelled} across");
+
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Vertical { segment }),
+        Err(ConstraintRefusal::Unsatisfiable),
+        "level AND plumb is only meetable by deleting the segment"
+    );
+    assert_eq!(sketch.constraints().len(), 1, "the refusal kept nothing");
+    assert_eq!(
+        (position(&sketch, head)[0] - position(&sketch, tail)[0]).abs(),
+        levelled,
+        "and moved nothing"
+    );
+}
+
+/// The collapse test is about what the NEW assertion did. A segment already standing at zero
+/// length does not veto an unrelated assertion elsewhere in the drawing.
+#[test]
+fn already_collapsed_geometry_does_not_veto_the_rest() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(0, 0));
+    let stub = sketch.connect(tail, head).expect("a zero-length segment");
+    let far = sketch.add_free_point(SketchPoint::new(10, 4));
+    let real = sketch.connect(head, far).expect("a segment with length");
+
+    assert!(sketch.segments().iter().any(|seg| seg.id == stub));
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment: real })
+        .expect("the collapsed stub is not this assertion's doing");
 }
