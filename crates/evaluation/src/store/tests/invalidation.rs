@@ -1,6 +1,6 @@
 use super::*;
 
-// ===== Issue #27 S3: targeted edit-AABB invalidation ========================
+// ===== Targeted edit-AABB invalidation =======================================
 
 /// The set of chunk coords currently resident in the cache (for assertions).
 fn resident_coords(cache: &Store) -> std::collections::BTreeSet<[i32; 3]> {
@@ -131,7 +131,7 @@ fn empty_edit_aabb_evicts_nothing() {
     );
 }
 
-/// **S6c-2a: the evicted-set return.** `invalidate_aabb` returns exactly the
+/// **The evicted-set return.** `invalidate_aabb` returns exactly the
 /// coords spanned by the edit AABB's `covering_chunk_range` that were resident —
 /// the same set the cache actually drops — so the GPU cache can evict in lockstep.
 #[test]

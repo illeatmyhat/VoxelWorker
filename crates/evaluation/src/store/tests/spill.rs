@@ -1,6 +1,6 @@
 use super::*;
 
-// ===== Issue #20 Step 3: out-of-core spill to DiskChunkStore ==================
+// ===== Out-of-core spill to DiskChunkStore ===================================
 
 /// A unique temp directory under the system temp dir, removed on drop so no spill
 /// test leaves disk litter (mirrors the disk-store tests' RAII guard).

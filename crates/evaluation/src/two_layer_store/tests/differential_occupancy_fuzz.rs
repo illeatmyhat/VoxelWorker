@@ -1,16 +1,14 @@
-//! Differential occupancy fuzz — the automatic safety net for the ADR 0027 sub-voxel /
-//! off-block / rotated placement bug **class**.
+//! Differential occupancy fuzz — the automatic safety net for the sub-voxel / off-block /
+//! rotated placement bug **class**.
 //!
-//! ADR 0027 continuous placement drops a leaf at a fractional
+//! Continuous placement drops a leaf at a fractional
 //! [`offset_local_voxels`](document::scene::LeafProducer::offset_local_voxels) (e.g.
 //! `[0.5, 0.5, 0.0]`) and at an off-block integer
 //! [`world_offset_voxels`](document::scene::LeafProducer::world_offset_voxels) (e.g. `-33`
-//! at density 16 — not a whole multiple of the block). Older code assumed block / integer
-//! alignment, so the SAME leaf's occupancy computed by two code paths could silently drift
-//! apart at exactly those placements — the whole class of bugs a full session was spent
-//! fixing (`memory/off-block-placement-frame-bugs`, fix 7d3d99e). A single test that
-//! asserts the paths agree over a deterministic spread of placements catches that class,
-//! once, and every future regression of it.
+//! at density 16 — not a whole multiple of the block). Code that assumes block / integer
+//! alignment lets the SAME leaf's occupancy computed by two code paths silently drift apart
+//! at exactly those placements. A single test that asserts the paths agree over a
+//! deterministic spread of placements catches that class, once, and every regression of it.
 //!
 //! ## Two differentials
 //!
@@ -18,20 +16,18 @@
 //!    The two-layer store's interval **elision** ([`classify_chunk_block`] → AIR /
 //!    COARSE-SOLID / BOUNDARY) must produce the identical occupied-cell set as the same
 //!    store's **forced** per-voxel resolve ([`resolve_boundary_block`] on *every* block,
-//!    trusting no elision) over the same window. Both routes read the ADR 0027 affine
+//!    trusting no elision) over the same window. Both routes read the same affine
 //!    (`leaf_affine`), so both are rotation- and fraction-aware — they must agree for
 //!    integer, off-block, fractional AND rotated placements alike. A disagreement means the
 //!    conservative classifier called a block AIR/COARSE where the per-voxel truth differs:
-//!    exactly the "occupancy drifts at a sub-voxel/off-block/rotated seat" bug. This is the
-//!    GREEN net that would have caught the classifier-vs-resolve half of the session's bugs.
+//!    exactly the "occupancy drifts at a sub-voxel/off-block/rotated seat" bug.
 //!
 //! 2. **Two-layer vs the dense oracle**. Where the two agree — integer offsets (block-aligned
 //!    AND off-block), identity rotation, zero local slide — a normal green test
 //!    ([`two_layer_matches_dense_for_integer_placements`]) pins it. The rotated / fractional
-//!    comparison ([`two_layer_matches_dense_for_rotated_and_fractional_placements`]) was once
-//!    parked `#[ignore]`d as a red-in-waiting, because the dense oracle dropped rotation and
-//!    `offset_local_voxels` outright; ADR 0027 "Step 2" taught it the affine (both routes now
-//!    fold through the shared `LeafPlacement`), so that test runs green and unignored.
+//!    comparison ([`two_layer_matches_dense_for_rotated_and_fractional_placements`]) covers
+//!    the rest: both routes fold through the shared `LeafPlacement`, so the dense oracle
+//!    honors rotation and `offset_local_voxels` too.
 //!
 //!    One narrower blindness survives and nothing here covers it: an AXIS-ALIGNED turn on a
 //!    whole-voxel seat is classified IN PHASE (`substrate::spatial::is_in_phase`), so
@@ -207,7 +203,7 @@ fn assert_classify_matches_forced(leaves: &[&LeafProducer], density: u32, label:
         "[{label}] the two-layer interval-elision occupancy (classify → coarse-fill + \
          boundary-resolve) must equal the forced per-voxel resolve over the SAME window — a \
          mismatch is the classifier drifting from the resolve at a sub-voxel / off-block / \
-         rotated seat (the ADR 0027 bug class)"
+         rotated seat"
     );
     forced.len()
 }
@@ -216,7 +212,7 @@ fn assert_classify_matches_forced(leaves: &[&LeafProducer], density: u32, label:
 /// off-block integer offsets, zero AND fractional `offset_local_voxels`, identity AND genuine
 /// quaternion rotations, three primitive shapes, densities 8 / 16 / 64 (all within the 1..=64
 /// bound) — the two-layer classifier's elided occupancy is IDENTICAL to the forced per-voxel
-/// resolve. Both paths read the ADR 0027 affine, so both are fraction- and rotation-aware and
+/// resolve. Both paths read the same affine, so both are fraction- and rotation-aware and
 /// must agree; a regression that makes either blind to a sub-voxel or off-block seat parts
 /// them here.
 ///
@@ -236,7 +232,7 @@ fn classify_agrees_with_forced_per_voxel_resolve() {
         let block = density as i64;
         // (label, integer world offset, fractional local slide, rotation). The offsets mix
         // block-aligned (`k·d`) with off-block (`-33`, `-31`, `d+5` — none a whole multiple
-        // of 8 or 16), and the local slides mix zero with the ADR 0027 quarter/half seats.
+        // of 8 or 16), and the local slides mix zero with quarter/half seats.
         let placements: [(&str, [i64; 3], [f32; 3], Quat); 6] = [
             (
                 "block-aligned",
@@ -370,20 +366,19 @@ fn two_layer_matches_dense_for_integer_placements() {
     }
 }
 
-/// **GREEN — two-layer vs the dense oracle over rotated / sub-voxel seats (Step 2 landed).**
-/// For a fractional `offset_local_voxels` seat and for a genuine rotation, BOTH paths now fold
-/// through substrate's ONE placement affine (`substrate::spatial::LeafPlacement`): the two-layer
+/// **Two-layer vs the dense oracle over rotated / sub-voxel seats.** For a fractional
+/// `offset_local_voxels` seat and for a genuine rotation, BOTH paths fold through
+/// substrate's ONE placement affine (`substrate::spatial::LeafPlacement`): the two-layer
 /// classifier resamples an out-of-phase leaf by inverse gather, and the dense oracle
-/// (`Scene::resolve_region` / `resolve_chunk_rebased`) applies the SAME affine + inverse gather
-/// (`document`'s `gather_placed_field_into_grid`) instead of the old translation-only stamp. So
-/// the occupied cell sets agree, and this is a permanent green differential — a regression that
-/// makes the dense oracle rotation- or fraction-blind again parts them here.
+/// (`Scene::resolve_region` / `resolve_chunk_rebased`) applies the SAME affine + inverse
+/// gather (`document`'s `gather_placed_field_into_grid`) rather than a translation-only
+/// stamp. So the occupied cell sets agree — a regression that makes the dense oracle
+/// rotation- or fraction-blind parts them here.
 #[test]
 fn two_layer_matches_dense_for_rotated_and_fractional_placements() {
     let density = 16u32;
 
-    // (1) A fractional sub-voxel seat: the two-layer path resamples half a voxel over, the
-    // dense oracle does not — so the occupied cell sets differ.
+    // (1) A fractional sub-voxel seat: both paths resample half a voxel over.
     let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, density);
     let mut node = Node::new(
         "Box",
@@ -396,8 +391,7 @@ fn two_layer_matches_dense_for_rotated_and_fractional_placements() {
     let scene = Scene::from_nodes(vec![node]);
     super::core::assert_two_layer_round_trip_matches_dense(&scene, density, "fractional-local");
 
-    // (2) A genuine off-axis rotation: the two-layer path turns the cylinder, the dense
-    // oracle leaves it upright — so the occupied cell sets differ.
+    // (2) A genuine off-axis rotation: both paths turn the cylinder.
     let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [2, 2, 4], 1, density);
     let mut node = Node::new(
         "Cyl",

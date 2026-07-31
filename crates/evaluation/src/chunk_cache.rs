@@ -1,10 +1,9 @@
-//! Relocated to [`crate::store`] in slice A2b. This module is now a thin
-//! re-export shim so existing `chunk_cache::*` call sites keep compiling
-//! until later slices migrate them. New code should use `crate::store`.
+//! A re-export shim for call sites that predate the move to [`crate::store`].
+//! New code should use `crate::store`.
 pub use crate::store::{ChunkCacheKey, ChunkResolveCache, Store};
 
-// ADR 0016 Phase 2: these two scene↔cache equivalence proofs were relocated here from
-// the document crate's `scene::tests` module. Each compares the dense
+// These two scene↔cache equivalence proofs live here rather than in the document
+// crate's `scene::tests`. Each compares the dense
 // `Scene::resolve_region` oracle (which lives DOWN in the document/truth layer) against
 // the `ChunkResolveCache` reassembly (which lives HERE, in the evaluation layer) — so it
 // straddles the crate boundary and cannot compile inside the truth crate, whose law
@@ -47,7 +46,7 @@ mod scene_cache_equivalence_tests {
         with_minted_ids(Scene::from_nodes(vec![node_a, node_b]))
     }
 
-    /// **Issue #20 S6c-1 equivalence proof.** `placed_region_dimensions(density)`
+    /// **The region-dimension equivalence proof.** `placed_region_dimensions(density)`
     /// is exactly the size the assembled render grid takes — both the monolithic
     /// `resolve_region` and the chunk-cache reassembly seed their output to it. So
     /// the camera / gizmo / lattice / floor-grid / layer-scrubber may read the
@@ -167,11 +166,11 @@ mod scene_cache_equivalence_tests {
 
     /// THE BUG-CLASS MATRIX (corner-anchoring): across size ∈ {1,2,3,5,6} ×
     /// density ∈ {1,2,5,15,16}, for BOTH a single shape AND a 2-leaf mixed-parity
-    /// composite, assert the four invariants that the old center-emit broke:
+    /// composite, assert the four invariants a center-emit would break:
     ///
     /// (a) every occupied voxel CENTER is a HALF-INTEGER (`fract()==0.5`) — on the
-    ///     voxel lattice, inside a cell, for ANY size·d parity (the win: odd grids no
-    ///     longer land on integers and straddle cell boundaries);
+    ///     voxel lattice, inside a cell, for ANY size·d parity (so an odd grid never
+    ///     lands on integers and straddles cell boundaries);
     /// (b) ZERO voxels dropped — occupied count == the expected filled-cell count;
     /// (c) every DECODED index is in `[0, dim)` (no clipped slab, none at `== dim`),
     ///     using the production decode `round(world + floor(dim/2) − 0.5)`;

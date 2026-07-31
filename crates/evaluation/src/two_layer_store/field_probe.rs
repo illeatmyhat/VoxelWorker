@@ -1,7 +1,7 @@
-//! The composed-field **point-eval** (ADR 0027 §5): the scene's composed signed distance
+//! The composed-field **point-eval**: the scene's composed signed distance
 //! at a single world point.
 //!
-//! The continuous-placement surface-raycast (a separate ADR 0027 §5 slice) marches the
+//! The continuous-placement surface-raycast marches the
 //! scene's composed signed-distance field along the eye ray; it needs the field VALUE at a
 //! world point, and this is that value. [`composed_field_at`] folds the SAME scoped ordered
 //! CSG composition [`classify_chunk_block`](super::classify_chunk_block) folds — reusing
@@ -46,7 +46,7 @@ fn fold_operand(accumulator: f32, operand: f32, operation: CombineOp) -> f32 {
         CombineOp::Subtract => accumulator.max(-operand),
         CombineOp::Intersect => accumulator.max(operand),
         // An Emboss scope is pre-composed into a single `Composed` leaf BEFORE
-        // classification (ADR 0020 Decision 7 — the same absorption `classify_chunk_block`
+        // classification (the same absorption `classify_chunk_block`
         // relies on), so a raw `Emboss` step never reaches this fold over raw leaves. If
         // one ever did, Union is the safe fallback: `min` can only enlarge the composed
         // body (never wrongly carve a placement surface away), matching the classifier's
@@ -58,19 +58,19 @@ fn fold_operand(accumulator: f32, operand: f32, operation: CombineOp) -> f32 {
 /// The scene's **composed signed distance** at `world_point` (in ABSOLUTE voxel
 /// coordinates): negative inside the composed body, positive outside, `~0` on the surface,
 /// and [`f32::INFINITY`] where nothing is present (an empty scene, or one whose every leaf
-/// is fieldless). ADR 0027 §5 — the field-value half of the CPU continuous-placement
+/// is fieldless). The field-value half of the CPU continuous-placement
 /// surface-raycast.
 ///
 /// `leaves` MUST be a document-order [`Scene::leaf_producers`](document::scene::Scene::leaf_producers)
 /// subsequence (the same precondition [`scoped_leaf_steps`]
 /// carries). The fold is the SAME scoped ordered CSG composition
-/// [`classify_chunk_block`](super::classify_chunk_block) uses (ADR 0017 Decision 3), on
+/// [`classify_chunk_block`](super::classify_chunk_block) uses, on
 /// FIELD VALUES rather than occupancy intervals, so `composed_field_at(point) <= 0` agrees
 /// with the classifier's occupancy at `point` (Union = `min`, Subtract = `max(·, −v)`,
 /// Intersect = `max` — see the module docs for the sign-equivalence).
 ///
 /// Each `Leaf` contributes its producer's [`Field::signed_distance`](document::voxel::Field::signed_distance)
-/// at the point mapped into the producer's own local voxel frame by the ADR 0027 inverse
+/// at the point mapped into the producer's own local voxel frame by the inverse
 /// [`LeafAffine`](super::LeafAffine) — the exact frame map the classifier folds through
 /// (never re-derived here). A **fieldless** leaf
 /// ([`as_field`](document::voxel::VoxelProducer::as_field)` == None`, e.g. a cloud /
@@ -102,12 +102,12 @@ pub fn composed_field_at(
             }
             ScopedLeafStep::Leaf(leaf) => {
                 // A fieldless leaf (cloud / VoxelBody) contributes NOTHING to the field —
-                // it is never a placement surface (ADR 0027 §5).
+                // it is never a placement surface.
                 let Some(field) = leaf.producer.as_field() else {
                     continue;
                 };
                 // Map the absolute world point into THIS leaf's producer-local voxel frame
-                // via the classifier's own inverse affine (ADR 0027 — the frame is carried,
+                // via the classifier's own inverse affine (the frame is carried,
                 // never re-derived), then read the producer's signed distance there.
                 let affine = leaf_affine(leaf, voxels_per_block);
                 let local = affine
@@ -159,7 +159,7 @@ mod tests {
     /// The scene's resolved occupancy as a set of ABSOLUTE voxel indices — the INDEPENDENT
     /// oracle the composed field is held against. `resolve_region` yields voxels in its
     /// recentered frame (`local_index`), so each is rebased to absolute by adding the grid's
-    /// carried `recenter_voxels` (ADR 0008: absolute = local + recenter).
+    /// carried `recenter_voxels` (absolute = local + recenter).
     fn resolved_occupancy_abs(scene: &Scene, density: u32) -> BTreeSet<[i64; 3]> {
         let dense = scene.resolve_region(scene.full_extent_blocks(density), density, 0);
         let recenter = dense.recenter_voxels;

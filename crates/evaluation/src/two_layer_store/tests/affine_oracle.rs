@@ -1,4 +1,4 @@
-//! ADR 0027 affine oracle tests. The unified affine has NO golden of its own for the GATHER
+//! Affine oracle tests. The unified affine has NO golden of its own for the GATHER
 //! path (a genuine rotation resamples where nothing did before), so these build oracles: the
 //! gather must reproduce the exact permutation for an axis-aligned turn, an isotropic sphere
 //! must survive rotation, and the affine's inverse must round-trip.
@@ -38,14 +38,14 @@ fn single_leaf(kind: ShapeKind, size_voxels: [u32; 3]) -> LeafProducer {
         .expect("the single-geometry scene has one leaf")
 }
 
-/// **Regression (ADR 0027): the builder broadphase box must equal the classifier's rotated
-/// box.** `builder::leaf_world_aabb` once computed its extent from the discrete lattice
-/// `orientation.turn_extent`, blind to the continuous quaternion — so a leaf with an IDENTITY
-/// lattice orientation but a non-identity `rotation` (a tube seated on a curved surface)
-/// reserved an UPRIGHT box. The edit broadphase then dropped that leaf from every chunk its
-/// tilted body occupied beyond the upright box, classifying them to air and TRUNCATING the
-/// tube (the "tubes render upright" bug). The two extents share ONE definition now; this pins
-/// that they never diverge under a genuine (lattice-identity) rotation, and that the box
+/// **Regression: the builder broadphase box must equal the classifier's rotated box.**
+/// An extent computed from the discrete lattice `orientation.turn_extent` is blind to the
+/// continuous quaternion — a leaf with an IDENTITY lattice orientation but a non-identity
+/// `rotation` (a tube seated on a curved surface) would reserve an UPRIGHT box, the edit
+/// broadphase would drop it from every chunk its tilted body occupies beyond that box,
+/// classifying them to air and TRUNCATING the tube. The two extents share ONE definition;
+/// this pins that they never diverge under a genuine (lattice-identity) rotation, and that
+/// the box
 /// actually reflects the tilt rather than staying the axis-aligned lattice box.
 #[test]
 fn the_broadphase_box_equals_the_rotated_classifier_box() {
@@ -59,9 +59,9 @@ fn the_broadphase_box_equals_the_rotated_classifier_box() {
         broadphase, classifier,
         "the broadphase AABB must enclose the SAME rotated box the classifier folds through"
     );
-    // And it must NOT be the upright axis-aligned box the old lattice path returned: a 48-tall
-    // cylinder tilted about X spreads in Y and shrinks in Z, so its extent differs from the
-    // untilted [16,16,48].
+    // And it must NOT be the upright axis-aligned box a lattice-only extent returns: a
+    // 48-tall cylinder tilted about X spreads in Y and shrinks in Z, so its extent differs
+    // from the untilted [16,16,48].
     let extent = [
         classifier.max[0] - classifier.min[0],
         classifier.max[1] - classifier.min[1],

@@ -21,7 +21,7 @@ mod spill;
 /// regardless of voxel emission ORDER but **byte-for-byte** on each `f32`
 /// position. Keying on the raw `f32` bits (`to_bits`) — not a rounded integer —
 /// means this asserts the bytes the renderer/mesher/fog consume are IDENTICAL,
-/// the S2 bit-identical-output guarantee (not merely the same rounded voxel
+/// the bit-identical-output guarantee (not merely the same rounded voxel
 /// set). A sub-ULP shift in any position fails the comparison.
 pub(super) fn occupied_multiset(
     grid: &VoxelGrid,

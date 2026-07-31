@@ -35,9 +35,7 @@
 //! These are the nouns and verbs of the architecture's evaluation layer — see
 //! `docs/architecture/02-evaluation.md` (block classification by interval bound, the
 //! two-layer chunk, residency and targeted invalidation, frames and the floating origin)
-//! for the timeless statement, and
-//! `docs/design/per-layer-crates-extraction-map.md` (the evaluation row) for the dated
-//! provenance of each module.
+//! for the statement over the whole layer.
 //!
 //! ## Modules
 //!
@@ -66,7 +64,7 @@ pub mod disk_chunk_store;
 pub mod store;
 pub mod two_layer_store;
 
-/// The composed-field point-eval (ADR 0027 §5): the scene's composed signed distance at a
+/// The composed-field point-eval: the scene's composed signed distance at a
 /// world point, for the CPU continuous-placement surface-raycast. Re-exported at the crate
 /// root so the app crate calls `evaluation::composed_field_at`.
 pub use two_layer_store::composed_field_at;

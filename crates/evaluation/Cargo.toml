@@ -16,12 +16,11 @@ edition = "2021"
 # the evaluator imports no display/work/shell, so an upward `use` (renderer, cuboid_mesh,
 # brick_*, texture_atlas, block_palette, assets, vox_export, workers, app_core, panel,
 # settings, gpu) fails to compile. See docs/architecture/02-evaluation.md for the layer
-# this crate realises and docs/design/per-layer-crates-extraction-map.md (the evaluation
-# row) for provenance.
+# this crate realizes.
 
 [dependencies]
 # The authored-quantity layer: the blocks/voxels `Measurement`, the dimension
-# algebra, and the exact-rational expression language (ADR 0035).
+# algebra, and the exact-rational expression language.
 parametric = { path = "../parametric" }
 # The authored-TRUTH layer (one layer down): the scene graph the evaluator resolves, the
 # producers whose conservative interval bound drives block classification, and the
@@ -35,7 +34,7 @@ voxel_core = { path = "../voxel_core" }
 # black/white/gray cell-classification kernel, and the greedy cuboid decomposition the
 # boundary geometry is stored as.
 substrate = { path = "../substrate" }
-# The vector/quaternion algebra the ADR 0027 continuous-rotation classifier maps voxels
+# The vector/quaternion algebra the continuous-rotation classifier maps voxels
 # through (the leaf's `glam::Quat` rotation + the inverse-affine gather resample); matched
 # to the workspace version so a `Quat`/`Vec3` crosses the document boundary without conversion.
 glam = "0.33.1"

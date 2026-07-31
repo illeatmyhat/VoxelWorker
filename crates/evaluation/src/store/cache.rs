@@ -1,13 +1,13 @@
 //! The residency + per-chunk resolve cache — the store proper.
 //!
-//! A per-chunk resolve cache (ADR 0002 Decision 3, issue #27 S2): a cache keyed by
+//! A per-chunk resolve cache: a cache keyed by
 //! `(chunk_coord, lod)` that resolves a chunk **on demand** (lazily) and stores the
 //! result, so a second request for the same chunk is a map lookup instead of a
 //! re-resolve. `Store::resolve_region` (the dense whole-region oracle, compile-gated
 //! behind the `oracle` feature) rebuilds the recentered monolithic grid from cached
 //! chunks; [`Store::invalidate_aabb`] evicts exactly the chunks an edit's world-AABB
 //! intersects (whole-chunk dirty granularity), and [`Store::clear`] is the wholesale
-//! fallback. Out-of-core spill (issue #20 Step 3) moves least-recently-used resident
+//! fallback. Out-of-core spill moves least-recently-used resident
 //! chunks to the backing [`DiskChunkStore`].
 
 use std::collections::HashMap;
@@ -29,33 +29,32 @@ use super::ChunkCacheKey;
 /// therefore [`clear`](Self::clear)s and re-binds the cache (see
 /// `resolve_region`).
 ///
-/// **S3 seam:** invalidation is currently all-or-nothing
-/// ([`clear`](Self::clear)) plus a single-chunk drop
-/// ([`invalidate_chunk`](Self::invalidate_chunk)); neither tracks WHICH edit
-/// touched WHICH chunk. S3 (#27) adds edit-world-AABB → dirty-chunk invalidation
-/// on top of this seam.
+/// **The invalidation seam:** [`clear`](Self::clear) is all-or-nothing and
+/// [`invalidate_chunk`](Self::invalidate_chunk) drops one chunk; neither tracks WHICH
+/// edit touched WHICH chunk. [`invalidate_aabb`](Self::invalidate_aabb) sits on top of
+/// this seam and maps an edit's world-AABB to its dirty chunks.
 #[derive(Debug, Default)]
 pub struct Store {
     /// The resolved per-chunk grids, in coordinates **rebased to the bound floating
-    /// origin** (ADR 0002 Decision 2, S4b). With the default floating origin
-    /// `[0, 0, 0]` these are absolute composite coordinates (the S0 contract); the
+    /// origin**. With the default floating origin
+    /// `[0, 0, 0]` these are absolute composite coordinates; the
     /// render path binds the origin to the composite recenter so the chunks come out
     /// already rebased (and far chunks keep f32 precision — the subtraction is done in
     /// i64 inside [`Scene::resolve_chunk_rebased`], not in f32 here).
-    // `pub(crate)` so the sibling `tests` submodule (split out of this module by ADR 0016
-    // Phase 3) can inspect resident chunk coords; not part of the public API.
+    // `pub(crate)` so the sibling `tests` submodule can inspect resident chunk coords;
+    // not part of the public API.
     pub(crate) chunks: HashMap<ChunkCacheKey, VoxelGrid>,
     /// The density every cached chunk was resolved at, set on first use. `None`
     /// until the first resolve. A request at a different density clears the cache
     /// and re-binds to the new density (a chunk's voxel extent depends on density).
     bound_density: Option<u32>,
     /// The floating origin (in absolute voxels) every cached chunk was rebased
-    /// around (ADR 0002 S4b). `[0, 0, 0]` until bound otherwise. A request at a
+    /// around. `[0, 0, 0]` until bound otherwise. A request at a
     /// different origin clears + re-binds (every cached chunk's stored positions are
     /// relative to it). `resolve_region` binds it to the composite recenter.
     bound_floating_origin: [i64; 3],
 
-    // ===== Out-of-core spill (issue #20 Step 3) ==============================
+    // ===== Out-of-core spill ==============================
     /// The maximum number of resolved chunks that may stay **resident** in RAM at
     /// once. `None` (the default, [`new`](Self::new)) means UNBOUNDED — the cache
     /// never spills and behaves exactly as before this step (every existing caller,
@@ -69,7 +68,7 @@ pub struct Store {
     /// is set). Keyed by [`ChunkCacheKey`] in the cache's CURRENT density+origin
     /// binding: a [`rebind_if_changed`](Self::rebind_if_changed) (density / origin
     /// change) clears BOTH the resident map and this store, so a reloaded chunk can
-    /// never carry a stale binding (the S6c wiring note's correctness condition).
+    /// never carry a stale binding.
     disk_store: Option<DiskChunkStore>,
     /// Per-resident-chunk last-use tick, for least-recently-used spill selection.
     /// A monotonically increasing logical clock ([`access_clock`](Self::access_clock))
@@ -91,13 +90,13 @@ pub struct Store {
 impl Store {
     /// A fresh, empty cache that NEVER spills (unbounded resident set). This is the
     /// behavior every existing caller relies on (the renderer, `shot`, `vox_export`,
-    /// every golden and parity test) — identical to before issue #20 Step 3.
+    /// every golden and parity test).
     pub fn new() -> Self {
         Self::default()
     }
 
     /// A fresh, empty cache that keeps at most `max_resident_chunks` resolved chunks
-    /// resident in RAM, **spilling the least-recently-used to disk** (issue #20 Step 3)
+    /// resident in RAM, **spilling the least-recently-used to disk**
     /// under `disk_store_directory` and reloading them transparently on the next
     /// access. The public chunk-fetch API and the data returned are UNCHANGED — a
     /// chunk fetched after a spill+reload is byte-identical to one that stayed
@@ -136,7 +135,7 @@ impl Store {
         self.chunks.len()
     }
 
-    /// Lifetime count of chunks spilled from RAM to disk (issue #20 Step 3). Always
+    /// Lifetime count of chunks spilled from RAM to disk. Always
     /// `0` for an unbounded cache.
     pub fn spill_count(&self) -> u64 {
         self.spill_count
@@ -208,7 +207,7 @@ impl Store {
     /// access for LRU and (when a resident cap is set) spilling the least-recently-used
     /// OTHER resident chunk to disk if the insert would breach the cap.
     ///
-    /// The three lookup tiers (issue #20 Step 3):
+    /// The three lookup tiers:
     /// 1. **Resident hit** — already in RAM. Just refresh its LRU tick.
     /// 2. **Disk hit** — spilled earlier: decompress it back to a [`VoxelGrid`] and
     ///    promote it to resident (counts as `disk_reload`).
@@ -297,7 +296,7 @@ impl Store {
     }
 
     /// Rebuild the SAME recentered monolithic [`VoxelGrid`] the renderer, mesher and
-    /// onion fog consume today — but assembled by pulling each covering chunk from
+    /// onion fog consume — but assembled by pulling each covering chunk from
     /// the cache (resolving misses on demand) instead of stamping every leaf into
     /// one grid in a single pass.
     ///
@@ -310,7 +309,7 @@ impl Store {
     ///
     /// 1. Pull each covering chunk from the cache. A cached chunk holds voxels in
     ///    **absolute** composite coordinates (`producer_local + world_offset ×
-    ///    density`), the exact value [`Scene::resolve_chunk`] emits — and, by the S0
+    ///    density`), the exact value [`Scene::resolve_chunk`] emits — and, by the
     ///    equivalence proof, the union of all covering chunks is the exact occupied
     ///    SET of [`Scene::resolve_region`] **before** its recenter.
     /// 2. Apply the SAME recenter offset [`Scene::resolve_region`] uses, subtracting
@@ -318,7 +317,7 @@ impl Store {
     ///
     /// For every scene whose occupied voxels sit at coordinates exactly
     /// representable in `f32` (all near-origin scenes — every golden, and every
-    /// scene in the S2 parity tests: sphere/cylinder/torus/village/demo), the
+    /// scene in the parity tests: sphere/cylinder/torus/village/demo), the
     /// recenter subtraction is exact, so the reassembled grid's `(position,
     /// material_id)` set is **bit-identical** to [`Scene::resolve_region`]'s. The
     /// parity tests assert this equality directly; if a scene ever moved the
@@ -326,8 +325,8 @@ impl Store {
     ///
     /// (Far-offset scenes — voxels at ~1e6 — lose `f32` precision INSIDE the
     /// absolute chunk before the subtraction, so the two frames can differ there.
-    /// That is the very precision problem S4's camera-relative rebasing exists to
-    /// solve; it is out of scope for S2 and is NOT a golden.)
+    /// That is the precision problem camera-relative rebasing exists to solve, and it
+    /// is NOT a golden.)
     ///
     /// **Oracle — compile-gated.** This is the dense reference resolver the sparse
     /// runtime path is cross-checked against (and the `shot` golden tool renders from);
@@ -336,24 +335,23 @@ impl Store {
     /// chapter's "Oracles" section (`docs/architecture/05-proof.md`).
     #[cfg(any(test, feature = "oracle"))]
     pub fn resolve_region(&mut self, scene: &Scene, voxels_per_block: u32, lod: u32) -> VoxelGrid {
-        debug_assert_eq!(lod, 0, "S2 only resolves full resolution (lod 0)");
+        debug_assert_eq!(lod, 0, "only full resolution (lod 0) resolves");
 
-        // Thin wrapper over the [`bind_region`](Self::bind_region) primitive (A2c):
-        // bind the cache to the composite recenter/floating origin (ADR 0002
-        // Decision 2 / S4b) and make every covering chunk resident — the only step
+        // Thin wrapper over the [`bind_region`](Self::bind_region) primitive: bind the
+        // cache to the composite recenter/floating origin
+        // and make every covering chunk resident — the only step
         // needing `&mut self` — then assemble the union of the resident chunks'
         // voxels. Each chunk comes out ALREADY rebased by `resolve_chunk_rebased`,
         // with the recenter subtracted in i64 BEFORE the f32 downcast, so a
-        // far-placed scene keeps full f32 precision (the S1 speckle is gone). For a
-        // near scene this is bit-identical to the previous direct f32 subtract (the
-        // recenter is integer-block-aligned and positions are small), so the goldens
-        // are unchanged. The covering chunks are visited in the same z,y,x order the
+        // far-placed scene keeps full f32 precision. For a near scene this is
+        // bit-identical to a direct f32 subtract (the recenter is integer-block-aligned
+        // and positions are small). The covering chunks are visited in the same z,y,x order the
         // bind resolved them in, so the assembled voxel order is identical too.
         let region_dimensions = self.bind_region(scene, voxels_per_block, lod);
         let mut output = VoxelGrid::new(region_dimensions);
-        // ADR 0008: carry the recenter the chunks were rebased by, so the fog (and any
-        // other consumer) decodes `world → index` without re-deriving `floor(dim/2)`. This
-        // matches `Scene::resolve_region`'s output exactly (the S2 identical-output net).
+        // Carry the recenter the chunks were rebased by, so a consumer decodes
+        // `world → index` without re-deriving `floor(dim/2)`. This matches
+        // `Scene::resolve_region`'s output exactly.
         output.recenter_voxels = scene.recenter_voxels_for_resolve(voxels_per_block).voxels();
         for grid in self.covering_chunk_grids(scene, voxels_per_block, lod) {
             // The cached chunk is already rebased to the floating origin
@@ -363,7 +361,7 @@ impl Store {
         output
     }
 
-    /// **Per-chunk render accessor (issue #20 S6c step 4).** Bind the cache to the
+    /// **Per-chunk render accessor.** Bind the cache to the
     /// composite recenter/floating-origin for `(scene, density, lod)` EXACTLY as
     /// `resolve_region` does, then return every covering
     /// chunk as `([i32; 3] absolute_chunk_coord, &VoxelGrid rebased_grid)`.
@@ -420,7 +418,7 @@ impl Store {
         rendered
     }
 
-    /// **Region-scoped diameter readout (issue #20 S6d).** Compute the widest
+    /// **Region-scoped diameter readout.** Compute the widest
     /// occupied run in the layer band `[band_min, band_max]` (the scrubber/diameter
     /// readout) from the scene's per-chunk grids, WITHOUT assembling a monolithic
     /// grid — returning the SAME value
@@ -452,7 +450,7 @@ impl Store {
         )
     }
 
-    /// **Bound-region read primitive (ADR 0003 store seam; issue #20 S6d).** Bind
+    /// **Bound-region read primitive.** Bind
     /// the cache to the scene's ACTIVE region (recenter + density, as
     /// `resolve_region` does), ensure every covering chunk
     /// is resolved + resident, and return the region's voxel dimensions alongside
@@ -460,9 +458,9 @@ impl Store {
     /// monolithic grid. This is the cache/export-agnostic primitive the `.vox`
     /// export is a thin wrapper over; the export glue itself lives at the call
     /// site over `VoxExport::from_region_voxels` (up in the interchange layer),
-    /// so the cache no longer depends on the export module. The union of the
-    /// returned occupied slices is exactly the monolithic region grid's occupied
-    /// set (the S2 cache-assembly equivalence proof).
+    /// so the cache does not depend on the export module. The union of the returned
+    /// occupied slices is exactly the monolithic region grid's occupied set — the
+    /// cache-assembly equivalence proof.
     pub fn bound_region_occupied(
         &mut self,
         scene: &Scene,
@@ -477,7 +475,7 @@ impl Store {
         (region_dimensions, occupied)
     }
 
-    /// **The bound-region primitive (ADR 0003 store seam).** Bind the cache to the
+    /// **The bound-region primitive.** Bind the cache to the
     /// composite recenter/floating origin + density for `(scene, voxels_per_block)`
     /// and ensure every covering chunk is resolved + resident, returning the
     /// region's voxel dimensions. This is the shared `&mut self` step the four
@@ -544,7 +542,7 @@ impl Store {
         self.bound_density = None;
         self.bound_floating_origin = [0, 0, 0];
         // Purge spilled chunks + LRU state too, so a stale spilled chunk can never
-        // resurface across a clear (issue #20 Step 3).
+        // resurface across a clear.
         self.last_used_tick.clear();
         if let Some(store) = self.disk_store.as_mut() {
             store
@@ -555,7 +553,7 @@ impl Store {
 
     /// Drop a single cached chunk across all LODs (a finer-grained seam) — from BOTH
     /// the resident set AND the disk store, so an edit can never let a stale spilled
-    /// chunk resurface (issue #20 Step 3).
+    /// chunk resurface.
     ///
     /// [`invalidate_aabb`](Self::invalidate_aabb) calls this for each chunk an edit's
     /// world-AABB intersects.
@@ -565,7 +563,7 @@ impl Store {
 
     /// Purge every cached entry (resident, spilled, and LRU bookkeeping) for
     /// `chunk_coord` across all LODs. The disk-store purge is what stops a stale
-    /// spilled chunk from reloading after an edit (issue #20 Step 3).
+    /// spilled chunk from reloading after an edit.
     fn evict_coord_everywhere(&mut self, chunk_coord: [i32; 3]) {
         // Gather the keys at this coord BEFORE mutating (a coord can hold several LODs).
         let purged: Vec<ChunkCacheKey> = self
@@ -581,8 +579,8 @@ impl Store {
             // The disk store may hold this coord at LODs not currently resident, so
             // purge the resident-derived keys AND defensively re-derive nothing extra:
             // a chunk is only ever spilled under the same key it was resident at, and
-            // the only LOD in use today is 0, so the resident-key sweep covers it. Purge
-            // each known key, plus lod 0 unconditionally (the parked LOD seam).
+            // the only LOD in use is 0, so the resident-key sweep covers it. Purge
+            // each known key, plus lod 0 unconditionally (the LOD seam).
             for key in &purged {
                 store.remove(*key).expect("disk store remove must not fail");
             }
@@ -592,10 +590,10 @@ impl Store {
         }
     }
 
-    /// **Targeted invalidation (issue #27 S3).** Drop exactly the cached chunks whose
+    /// **Targeted invalidation.** Drop exactly the cached chunks whose
     /// half-open box intersects the edit world-AABB `edit_aabb` (in absolute voxels,
-    /// the producer-true frame), at `voxels_per_block` — ADR 0002 Decision 3's
-    /// whole-chunk dirty granularity. Every other cached chunk stays resident
+    /// the producer-true frame), at `voxels_per_block` — whole-chunk dirty
+    /// granularity. Every other cached chunk stays resident
     /// untouched.
     ///
     /// `edit_aabb` is what
@@ -611,7 +609,7 @@ impl Store {
     /// density change, so this path is belt-and-braces.
     ///
     /// **Returns the set of chunk-coords actually evicted** (those that were
-    /// resident AND intersected the edit AABB), so the GPU cache (issue #20 S6c) can
+    /// resident AND intersected the edit AABB), so the GPU cache can
     /// later evict exactly those coords in lockstep with this resolve cache. The
     /// belt-and-braces density-mismatch path returns every coord that was resident
     /// before the clear. An empty edit AABB (or a clear of an empty cache) returns an
@@ -652,7 +650,7 @@ impl Store {
             !(0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis])
         });
         // Purge spilled chunks across the edit range too, so an evicted-then-spilled
-        // chunk cannot reload stale after an edit (issue #20 Step 3). A spilled chunk
+        // chunk cannot reload stale after an edit. A spilled chunk
         // is NOT in `self.chunks`, so it does not appear in `evicted` (the reported
         // resident set is unchanged), but it must still be dropped from disk. The store
         // exposes no key iterator, so purge by walking the (bounded) edit coord range.
@@ -673,7 +671,7 @@ impl Store {
     /// Clear + re-bind the cache when the requested density OR floating origin differs
     /// from the one the resident chunks were resolved at. A chunk's voxel extent
     /// depends on density, and its stored positions are relative to the floating
-    /// origin (ADR 0002 S4b), so a change in either invalidates every cached chunk.
+    /// origin, so a change in either invalidates every cached chunk.
     fn rebind_if_changed(&mut self, voxels_per_block: u32, floating_origin: [i64; 3]) {
         let density_matches = self.bound_density == Some(voxels_per_block);
         let origin_matches = self.bound_floating_origin == floating_origin;
@@ -683,8 +681,8 @@ impl Store {
         if self.bound_density.is_some() && !(density_matches && origin_matches) {
             // Re-binding from a previous binding: drop the now-stale chunks from RAM,
             // disk and LRU state. A spilled chunk is keyed/serialized in the OLD
-            // binding, so it must not survive a rebind (the S6c wiring-note correctness
-            // condition — otherwise a far chunk would reload mis-placed; issue #20 Step 3).
+            // binding, so it must not survive a rebind — otherwise a far chunk would
+            // reload mis-placed.
             self.chunks.clear();
             self.last_used_tick.clear();
             if let Some(store) = self.disk_store.as_mut() {

@@ -1,6 +1,6 @@
 use super::*;
 
-// ===== Issue #20 S6c-2c: incremental dirty-chunk rebuild ======================
+// ===== Incremental dirty-chunk rebuild =======================================
 
 /// A per-chunk GPU instance cache, MODELLED on CPU as `coord → that chunk's
 /// occupied multiset` (the multiset is the byte-identical proxy for the GPU
@@ -100,7 +100,7 @@ fn tool_node(kind: ShapeKind, size: [u32; 3], offset: [i64; 3], material: Materi
     node
 }
 
-/// **The key S6c-2c correctness test.** For a sequence of localized edits, the
+/// **The key incremental-rebuild correctness test.** For a sequence of localized edits, the
 /// render cache built INCREMENTALLY (rebuild only dirty/new chunks, evict
 /// vacated) is IDENTICAL — coord set AND every chunk's instance multiset — to a
 /// full wholesale rebuild of the post-edit scene. Proves no stale chunk survives

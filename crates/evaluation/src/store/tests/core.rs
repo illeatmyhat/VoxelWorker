@@ -78,10 +78,10 @@ fn cache_region_matches_monolithic_for_all_shapes() {
 }
 
 /// FLAT / odd-sized shapes (e.g. a 5×1×5 cylinder — the app default) are the
-/// regression case for the S0 covering-range bug S2 fixed: the producer centers
-/// its grid on the origin, so a 1-block (odd) axis straddles two chunks, but the
-/// old block-AABB covering range (`floor(size/2)` per block) missed one of them
-/// and dropped half the voxels. This pins that the cache covers the
+/// regression case for the covering-range bug: the producer centers its grid on the
+/// origin, so a 1-block (odd) axis straddles two chunks, and a block-AABB covering
+/// range (`floor(size/2)` per block) misses one of them and drops half the voxels.
+/// This pins that the cache covers the
 /// producer-true voxel extent and reassembles bit-identically.
 #[test]
 fn cache_region_matches_monolithic_for_flat_and_odd_shapes() {
@@ -176,7 +176,7 @@ fn density_change_rebinds_cache() {
     );
 }
 
-/// `clear` empties the cache (the S3 invalidation seam).
+/// `clear` empties the cache — the coarsest end of the invalidation seam.
 #[test]
 fn clear_empties_cache() {
     let scene = shape_scene(ShapeKind::Sphere, 16);
@@ -187,22 +187,22 @@ fn clear_empties_cache() {
     assert_eq!(cache.resident_chunk_count(), 0, "clear drops every chunk");
 }
 
-/// (c) A synthetic scene whose TOTAL voxel count exceeds the old 6M whole-region
-/// cap, but whose individual chunks are each small, resolves successfully under
-/// the new PER-CHUNK bound — proving total scene size is no longer capped at 6M.
+/// (c) A synthetic scene whose TOTAL voxel count exceeds the 6M whole-region cap, but
+/// whose individual chunks are each small, resolves successfully under the PER-CHUNK
+/// bound — so total scene size is not capped at 6M.
 ///
 /// The scene is two small boxes pushed to opposite corners of a cube spaced 16
 /// blocks apart on EVERY axis. The composite AABB is a 17³-block cube → at
-/// density 16 that is `(17·16)³ ≈ 20M` whole-region voxels (well past the old 6M
+/// density 16 that is `(17·16)³ ≈ 20M` whole-region voxels (well past the 6M
 /// total cap), yet only the two corner chunks hold any voxels and each holds one
 /// tiny box — far under the per-chunk bound.
 ///
 /// (Spreading the boxes DIAGONALLY rather than in a long row keeps the same
 /// "total ≫ 6M, chunks tiny" coverage while the covering-chunk grid stays a small
-/// ~5³ cube — the row-of-64 form this replaced spanned ~500 chunks on one axis
-/// and dominated the lib-test wall-time. See issue #27 S3.)
+/// ~5³ cube. A row-of-64 form spans ~500 chunks on one axis and dominates the
+/// lib-test wall-time.)
 #[test]
-fn scene_exceeding_old_total_cap_resolves_under_per_chunk_bound() {
+fn scene_exceeding_the_whole_region_cap_resolves_under_per_chunk_bound() {
     let voxels_per_block = 16u32;
     // Two 1-block stone cubes at opposite corners of a 16-block cube, so the
     // composite spans a huge cubic extent while each chunk holds at most one box.

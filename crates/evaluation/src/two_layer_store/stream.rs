@@ -21,7 +21,7 @@ use super::*;
 /// a chunk-local voxel `l` sits at absolute `chunk_min + l`, and the recentered frame
 /// subtracts `recenter_voxels`, so the offset is `chunk_coord·chunk_extent − recenter`
 /// (i64, before the i32 downcast — the same `chunk_min − recenter` rebase
-/// `resolve_chunk_rebased` applies, ADR 0008). One source of truth for the "same z,y,x
+/// `resolve_chunk_rebased` applies). One source of truth for the "same z,y,x
 /// order as the dense store" rebase several call sites depend on.
 fn chunk_index_offset(
     chunk_coord: [i32; 3],
@@ -35,7 +35,7 @@ fn chunk_index_offset(
 
 /// Stream a whole scene's two-layer chunks back to one recentered [`VoxelGrid`], in the
 /// EXACT frame the dense [`Store::resolve_region`](crate::store::Store::resolve_region)
-/// assembles — the parity gate's "two-layer round-trip" (ADR 0010 parity (a)). Builds
+/// assembles — the parity gate's "two-layer round-trip". Builds
 /// each covering chunk via the capability, expands it (coarse fast-fill + boundary
 /// per-voxel), and rebases by `chunk_min_voxels − recenter` so the occupied SET matches
 /// the dense path bit-for-bit (position + block id).
@@ -59,11 +59,11 @@ pub fn resolve_region_two_layer(
     if !store.is_enabled() {
         return None;
     }
-    debug_assert_eq!(lod, 0, "E2 only resolves full resolution (lod 0)");
+    debug_assert_eq!(lod, 0, "only full resolution (lod 0) resolves");
 
     let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
     let mut output = VoxelGrid::new(region_dimensions);
-    // ADR 0008: carry the recenter so consumers decode world→index without re-deriving it
+    // Carry the recenter so consumers decode world→index without re-deriving it
     // — the same value the dense `resolve_region` stamps (the parity gate compares it).
     let recenter = scene.recenter_voxels_for_resolve(voxels_per_block);
     output.recenter_voxels = recenter.voxels();
@@ -100,25 +100,24 @@ pub fn resolve_region_two_layer(
     Some(output)
 }
 
-/// Expand an already-resident two-layer chunk set (ADR 0010 E5 — the
-/// [`TwoLayerResidentCache`] display path) into one recentered [`VoxelGrid`], in the
-/// EXACT frame the retired dense `Store::resolve_region` assembled. Unlike
+/// Expand an already-resident two-layer chunk set (the [`TwoLayerResidentCache`] display
+/// path) into one recentered [`VoxelGrid`], in the EXACT frame the dense
+/// `Store::resolve_region` oracle assembles. Unlike
 /// [`resolve_region_two_layer`] (which re-classifies each chunk from the scene via a
 /// stateless [`TwoLayerStore`]), this reuses the caller's ALREADY-BUILT resident chunks.
 ///
 /// `chunks` is `(absolute_chunk_coord, Arc<TwoLayerChunk>)` per covering chunk (the
 /// [`TwoLayerResidentCache::resident_two_layer_chunks`] output); `region_dimensions` is
 /// the composite voxel extent ([`Scene::placed_region_dimensions`]); `recenter`
-/// is the composite recenter frame (ADR 0008). The occupied SET is bit-identical to
-/// [`resolve_region_two_layer`]'s (the E2 round-trip parity gate proves the shared expand
-/// path).
+/// is the composite recenter frame. The occupied SET is bit-identical to
+/// [`resolve_region_two_layer`]'s — the round-trip parity gate proves the shared expand
+/// path.
 ///
-/// **ADR 0011 G5 — demoted to a TEST-ONLY oracle (`#[cfg(test)]`).** With the fog
-/// `VoxelGrid` stream retired, no runtime path expands the resident set into a dense grid;
-/// this survives only so parity tests (the brick-vs-densify fog nets, the render-frame
-/// coordinate guard, the grid-overlay invalidation test) can materialise the same occupancy
-/// the retired stream produced, and assert against it. A runtime caller reappearing here would
-/// be the O(volume) densify coming back.
+/// **A TEST-ONLY oracle (`#[cfg(test)]`).** No runtime path expands the resident set into
+/// a dense grid; this exists so parity tests (the brick-vs-densify nets, the render-frame
+/// coordinate guard, the grid-overlay invalidation test) can materialise that occupancy
+/// and assert against it. A runtime caller reappearing here would be the O(volume)
+/// densify coming back.
 ///
 /// It ships only in TEST builds: `cfg(test)` inside this crate, and the `test-support`
 /// feature for downstream crates' tests (the app crate's `AppCore` grid-overlay test
@@ -140,19 +139,18 @@ pub fn expand_resident_chunks_into_grid(
         // Rebase chunk-local indices into the recentered frame: a voxel at chunk-local
         // index `l` sits at absolute `chunk_min + l`, and the recentered frame subtracts
         // the recenter — the SAME `chunk_min − recenter` offset `resolve_region_two_layer`
-        // applies (ADR 0008).
+        // applies.
         let index_offset = chunk_index_offset(*chunk_coord, chunk_extent_voxels, recenter_voxels);
         chunk.expand_occupancy_into(&mut output.occupied, index_offset);
     }
     output
 }
 
-// ===== ADR 0010 E4 — the cacheless STREAMING exact sinks =====================
+// ===== The cacheless STREAMING exact sinks ==================================
 //
-// The display sink (E3) CACHES the two layers; the exact sinks (`.vox` export and
-// the diameter/widest-run query) read the SAME evaluator region-scoped, cacheless,
-// streaming (ADR 0010 Decision 3 — "many sinks by policy"). They drive the E2
-// classifier ([`classify_chunk_block`]) block-by-block and NEVER assemble a dense
+// The display sink CACHES the two layers; the exact sinks (`.vox` export and the
+// diameter/widest-run query) read the SAME evaluator region-scoped, cacheless, streaming.
+// They drive the classifier ([`classify_chunk_block`]) block-by-block and NEVER assemble a dense
 // whole-region `VoxelGrid`: a coarse-solid block is a fast `d³` fill (export) or an
 // analytic run contribution (query: `run += d`, no per-voxel expansion); a boundary
 // block is per-voxel field eval. This is why the `.vox` 6M whole-region cap
@@ -189,7 +187,7 @@ pub(crate) fn stream_chunk_recentered(
     Some(output)
 }
 
-/// **Cacheless `.vox` streaming source (ADR 0010 E4).** Stream the scene's exact
+/// **Cacheless `.vox` streaming source.** Stream the scene's exact
 /// occupancy region-scoped, ONE covering chunk at a time, in the recentered frame the
 /// dense path produces, invoking `sink` with each chunk's freshly-expanded
 /// `Vec<Voxel>` (coarse `d³` fast-fill + boundary per-voxel) before dropping it. The
@@ -235,7 +233,7 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
     Some(region_dimensions)
 }
 
-/// **Cacheless diameter / widest-run query (ADR 0010 E4).** Compute the widest
+/// **Cacheless diameter / widest-run query.** Compute the widest
 /// occupied run in the layer band `[band_min, band_max]` (Z-slices, Z-up) by
 /// streaming the classifier block-by-block — accounting a **coarse-solid block
 /// ANALYTICALLY** (a fully-solid block sets a contiguous `density`-long X span in
@@ -248,7 +246,7 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
 /// Returns `None` when the capability is OFF (the caller falls back to the dense
 /// path).
 ///
-/// ## Frame / decode (identical to the dense readout, ADR 0008)
+/// ## Frame / decode (identical to the dense readout)
 ///
 /// The shared per-`(y, z)` occupancy rows are keyed by the GLOBAL X index the dense
 /// [`VoxelGrid::widest_run_in_band`](voxel_core::voxel::VoxelGrid::widest_run_in_band) computes
@@ -294,7 +292,7 @@ pub fn streamed_widest_run_in_band(
     let band_min_i = band_min as i64;
     let band_max_i = band_max as i64;
 
-    // ADR 0010 E5 — BLOCK-ROW DEDUP (the O(volume)→O(total blocks) diameter fix).
+    // BLOCK-ROW DEDUP — the O(volume)→O(total blocks) diameter fold.
     //
     // The widest run is folded one **(chunk_z, chunk_y) band at a time**: every global
     // (z, y) row maps to EXACTLY ONE band (the recentered z/y ranges partition disjointly),

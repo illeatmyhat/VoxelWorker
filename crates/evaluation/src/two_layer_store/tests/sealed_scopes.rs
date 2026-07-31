@@ -5,12 +5,12 @@ use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-// ---- ADR 0017 Decision 3 (#74): sealed scopes through the CLASSIFIER ----
+// ---- Sealed scopes through the CLASSIFIER ----
 //
 // The dense oracle's sealed-scope semantics are pinned in the document crate
 // (`scene::tests::sealed_scopes`); these tests hold the two-layer SCOPED interval
-// classification + scoped boundary resolve against that oracle (the ADR 0010
-// parity pattern), and pin the sealing at the interval level: a cutter inside a
+// classification + scoped boundary resolve against that oracle (the parity
+// pattern), and pin the sealing at the interval level: a cutter inside a
 // scope must never degrade — let alone carve — a block outside its scope.
 
 const DENSITY: u32 = 8;
@@ -29,7 +29,7 @@ fn box_tool(
     node
 }
 
-/// THE GATE for the sealed-scope slice (issue #74 acceptance): the two-layer
+/// THE GATE for sealed scopes: the two-layer
 /// classification + boundary resolve for scoped scenes is occupancy-IDENTICAL to
 /// the dense brute-force oracle, across the scope shapes the resolver must honor:
 /// a cutter sealed inside a group (with an overlapping outside bystander), a root
@@ -233,8 +233,8 @@ fn sealed_cutter_does_not_degrade_blocks_outside_its_scope() {
     );
 }
 
-/// ADR 0017 / #76 (reusable cutter definitions): the two-layer classification for
-/// a scene whose cutters are DEFINITION INSTANCES placed under Subtract is
+/// Reusable cutter definitions: the two-layer classification for a scene whose
+/// cutters are DEFINITION INSTANCES placed under Subtract is
 /// occupancy-identical to the dense oracle — one definition, two placements, each
 /// carving its own separated host at its own transform (the golden's shape), plus
 /// the ordering no-op (a Subtract instance before its host carves nothing).

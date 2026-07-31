@@ -7,12 +7,12 @@
 //! per-voxel render-cell keys (`u16`), a [`VoxelBox`] is one single-material cuboid, and
 //! [`decompose_into_boxes`] runs the substrate decomposition over them.
 //!
-//! Vintage Story renders a chiseled block not as one instanced cube per voxel but by
-//! merging its solid voxels into a small set of axis-aligned, single-material cuboids
-//! (`BlockEntityMicroBlock.GenShape`); see the cuboid mesher in
-//! `docs/architecture/03-display.md`. The decomposition step is domain-free — its only
-//! project-facing piece is the `u16` render-cell key payload. Densifying a voxel set INTO a
-//! region is the caller's job and lives with the caller: the cuboid mesher does it in
+//! A chiseled block is rendered not as one instanced cube per voxel but by merging its
+//! solid voxels into a small set of axis-aligned, single-material cuboids; see the
+//! cuboid mesher in `docs/architecture/03-display.md`. The decomposition step is
+//! domain-free — its only project-facing piece is the `u16` render-cell key payload.
+//! Densifying a voxel set INTO a region is the caller's job and lives with the caller:
+//! the cuboid mesher does it in
 //! `display::mesh::builder::region_from_voxel_cloud`, which anchors on the cloud's own
 //! minimum voxel and is therefore shift-invariant.
 
@@ -63,13 +63,12 @@ pub fn decompose_into_boxes(region: &VoxelRegion) -> Vec<VoxelBox> {
     GreedyCuboidDecomposition::decompose(region)
 }
 
-// `region_from_voxel_grid` was DEMOTED to a test helper 2026-07-18 (it is now
-// `tests::region_from_voxel_grid` below). It was `pub`, and its doc called it "the per-chunk
-// adapter the cuboid mesher calls" — but that had been false since the mesher moved to
-// `display::mesh::builder::region_from_voxel_cloud`, which superseded it precisely because
-// this one's fixed `dim/2`-anchored convention lost ~55% of a cylinder's voxels. Its only
-// remaining callers were its own tests, so it lives there now; the tests it carries are kept
-// because one of them is real coverage of `decompose_into_boxes` over the SDF shapes.
+// `region_from_voxel_grid` is a test helper (`tests::region_from_voxel_grid` below), not the
+// per-chunk adapter the cuboid mesher calls: that is
+// `display::mesh::builder::region_from_voxel_cloud`, which does not carry this one's fixed
+// `dim/2`-anchored convention — a convention that loses ~55% of a cylinder's voxels. The tests
+// it carries stay because one of them is real coverage of `decompose_into_boxes` over the SDF
+// shapes.
 
 #[cfg(test)]
 fn region_from_voxel_grid(
@@ -84,8 +83,7 @@ fn region_from_voxel_grid(
     }
     // Corner-anchoring: the grid's index space is `[0, dim)` with voxel centers at
     // `idx + 0.5`, so `idx = floor(world)` — exact for any parity (centers are
-    // half-integers). (Was `round(world + dim/2 − 0.5)` for the retired origin-centered
-    // grid, which broke for odd dim.)
+    // half-integers).
     for voxel in &grid.occupied {
         let i = voxel.local_index[0] as i64;
         let j = voxel.local_index[1] as i64;

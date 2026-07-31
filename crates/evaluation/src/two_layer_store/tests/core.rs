@@ -2,7 +2,7 @@ use super::*;
 
 /// Canonicalise an occupied set into the **resolved occupancy SET**: a map from each
 /// bit-exact voxel position to the block id of the LAST (document-order) writer at that
-/// position. This is the ADR 0010 parity-gate canonical form (the resolved occupancy
+/// position. This is the parity-gate canonical form (the resolved occupancy
 /// SET keyed by position+block_id) — it differs from the dense store's
 /// `cache_region_matches_monolithic_*` MULTISET only at positions where leaves overlap.
 ///
@@ -109,7 +109,7 @@ fn round_trip_matches_dense_for_all_shapes() {
     eprintln!("two-layer parity (all shapes): {total_chunks} chunks, {total_cells} block cells");
 }
 
-/// FLAT / odd-sized shapes — the S0 covering-range regression case (a 1-block axis
+/// FLAT / odd-sized shapes — the covering-range regression case (a 1-block axis
 /// straddles two chunks). The classifier must cover the producer-true voxel extent
 /// and round-trip bit-identically, just as the dense net pins.
 #[test]
@@ -187,7 +187,7 @@ fn round_trip_matches_dense_for_demo_village() {
 }
 
 /// A sketch-revolve solid (the 800×800-revolve CLASS that stressed the dense cap): the
-/// interior now ELIDES to coarse-solid blocks (ADR 0010 rollout) while the round-trip
+/// interior ELIDES to coarse-solid blocks while the round-trip
 /// stays bit-identical to the dense store — pinning the coarse + boundary composition
 /// exact.
 #[test]
@@ -208,7 +208,7 @@ fn round_trip_matches_dense_for_sketch_revolve() {
 }
 
 /// A PARTIAL-turn revolve with an AXIS-STRADDLING profile (radial spans negative→positive,
-/// so the resolve's mirrored `−radius` union is live) — the ADR 0010 partial-sweep coarse
+/// so the resolve's mirrored `−radius` union is live) — the partial-sweep coarse
 /// test must round-trip bit-identically to the dense oracle: interior blocks inside the
 /// swept arc elide to coarse, the excluded wedge stays boundary/air, and the mirrored
 /// occupancy is reproduced exactly.
@@ -337,8 +337,8 @@ fn large_solid_box_stores_zero_interior_voxels() {
     );
 }
 
-/// INTERIOR ELISION for the SKETCH producer — the completion of the ADR 0010 rollout.
-/// A SOLID extrude box and a full 360° revolve now classify their interiors
+/// INTERIOR ELISION for the SKETCH producer. A SOLID extrude box and a full 360°
+/// revolve classify their interiors
 /// COARSE-SOLID (dominating the surface-only boundary shell), and a CONCAVE L extrude
 /// elides its interior while keeping the reflex-corner block BOUNDARY and the removed
 /// quadrant AIR (proving the polygon test, not just axis-aligned rectangles). Every
@@ -524,11 +524,11 @@ fn sketch_interior_elides_to_coarse_solid() {
     assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-triangle-extrude");
 
     // (5) PARTIAL 270° revolve (a fat cylinder WEDGE, radial 6 blocks × axial 4 blocks):
-    // closing the ADR 0010 deferral — a partial sweep now elides its interior via the
-    // angular-containment coarse test. Before this fix `revolve_cell_is_solid` returned
-    // false for every partial-turn cell, so a wedge densified its WHOLE interior (0 coarse
-    // blocks); now interior blocks fully inside the [0°, 270°] arc AND the radial/axial
-    // profile classify coarse-solid, while the excluded fourth quadrant (270°–360°) stays
+    // a partial sweep elides its interior via the angular-containment coarse test. A
+    // `revolve_cell_is_solid` that returned false for every partial-turn cell would densify
+    // a wedge's WHOLE interior (0 coarse blocks); interior blocks fully inside the
+    // [0°, 270°] arc AND the radial/axial profile classify coarse-solid, while the excluded
+    // fourth quadrant (270°–360°) stays
     // boundary/air. The round-trip stays bit-identical to the dense oracle.
     let wedge = SketchSolid::revolve(
         Sketch::rectangle(PlaneAxis::X, 6 * density as i64, 4 * density as i64),
@@ -544,10 +544,10 @@ fn sketch_interior_elides_to_coarse_solid() {
     )]);
     let (coarse, boundary) = classify_scene(&scene);
     assert!(
-            coarse > 0,
-            "a PARTIAL 270° revolve wedge must now elide interior blocks to coarse-solid \
-             (the ADR 0010 partial-sweep deferral is closed), got {coarse} coarse / {boundary} boundary"
-        );
+        coarse > 0,
+        "a PARTIAL 270° revolve wedge must elide interior blocks to coarse-solid, \
+             got {coarse} coarse / {boundary} boundary"
+    );
     assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-revolve-wedge");
 }
 
@@ -618,7 +618,7 @@ fn overlapping_leaves_force_boundary() {
     );
 }
 
-/// **CHUNK-GRANULAR FAST-PATH BYTE-IDENTITY (ADR 0010 Decision 2).** Over every covering
+/// **CHUNK-GRANULAR FAST-PATH BYTE-IDENTITY.** Over every covering
 /// chunk of a battery of mixed scenes, the whole-chunk interval fast path
 /// ([`build_two_layer_chunk_from_leaves`]) produces a `TwoLayerChunk` BYTE-IDENTICAL to
 /// the forced per-block sweep ([`build_two_layer_chunk_per_block`]) — coarse layer +
@@ -883,13 +883,13 @@ fn capability_off_by_default_returns_none() {
     assert!(!store.is_enabled());
     assert!(store.build_chunk([0, 0, 0], &scene, 16, 0).is_none());
     assert!(resolve_region_two_layer(&store, &scene, 16, 0).is_none());
-    // E4 exact sinks also return None when the capability is OFF (dense fallback).
+    // The exact sinks also return None when the capability is OFF (dense fallback).
     assert!(streamed_widest_run_in_band(&store, &scene, 16, 0, 0).is_none());
     assert!(stream_vox_occupancy(&store, &scene, 16, |_| {}).is_none());
 }
 
 /// **The scope-outset parity gate**: the two-layer classifier must agree with the dense
-/// resolve for a Part carrying an outset (ADR 0019 Decision 7, ADR 0020 Decision 7).
+/// resolve for a Part carrying an outset.
 ///
 /// This is the composed-scope analog of the per-leaf outset gate. The two paths reach
 /// the dilated Part by different routes — the dense one resolves the composed field's
@@ -942,11 +942,11 @@ fn an_outset_part_classifies_as_the_dense_resolve_does() {
     }
 }
 
-/// **The emboss parity gate** (ADR 0020 Decision 7): the two-layer classifier must agree
-/// with the dense resolve for a scene containing an `Emboss` node.
+/// **The emboss parity gate**: the two-layer classifier must agree with the dense resolve
+/// for a scene containing an `Emboss` node.
 ///
-/// The ADR requires every new `CombineOp` arm to land in BOTH folds or they diverge
-/// silently. Emboss satisfies that by being absorbed BEFORE either fold: `A − N` is only
+/// Every new `CombineOp` arm must land in BOTH folds or they diverge silently. Emboss
+/// satisfies that by being absorbed BEFORE either fold: `A − N` is only
 /// meaningful on a field, and the voxel-set fold's accumulator is a set, so a scope
 /// containing an emboss is pre-composed into one `CompositeProducer` and both folds see a
 /// single ordinary leaf. This test is what proves the absorption is real — if an emboss

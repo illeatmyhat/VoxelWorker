@@ -4,9 +4,8 @@
 /// The residency decision an incremental edit forces on a per-chunk render cache:
 /// which chunks' buffers to (re)build, and which to drop. This is the store's
 /// pure, GPU-free residency planner — set-difference glue over three coord sets,
-/// with the eviction semantics (below) as the domain content. Relocated from the
-/// renderer by ADR 0016 (retiring the store → renderer edge); it originated as
-/// issue #20 S6c-2c.
+/// with the eviction semantics (below) as the domain content. It lives here rather than
+/// in the renderer: the store has no edge to the display layer.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct IncrementalRebuildPlan {
     /// Covering coords whose buffer must be (re)built: DIRTY (evicted by this edit)

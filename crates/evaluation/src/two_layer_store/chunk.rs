@@ -9,7 +9,7 @@ use voxel_core::voxel::Voxel;
 #[allow(unused_imports)]
 use super::*;
 
-/// The coarse verdict for a single BLOCK of a chunk (ADR 0010 Decision 2). Distinct from
+/// The coarse verdict for a single BLOCK of a chunk. Distinct from
 /// [`FieldClassification`](document::voxel::FieldClassification) (the per-producer interval verdict) because the BLOCK verdict
 /// is the COMPOSED result over the whole op-stack plus the sculpt-touched override:
 /// any block a sculpt delta touches is forced [`BlockClassification::Boundary`], and an
@@ -29,9 +29,9 @@ pub enum BlockClassification {
 }
 
 /// Per-face solidity flags for a boundary block — the coarse/microblock analog of the
-/// dense-fog **apron** (CONTEXT.md "Seam solidity"; VS `sideAlmostSolid`). Each face flag
+/// dense **apron**. Each face flag
 /// is `true` iff that whole face of the block is solid (every voxel of the `density²`
-/// face cells is occupied), so E3's mesher can cull a seam face against a fully-solid
+/// face cells is occupied), so the mesher can cull a seam face against a fully-solid
 /// neighbor face without expanding the neighbor's voxels.
 ///
 /// Faces are indexed by `(axis, side)`: axis 0/1/2 = X/Y/Z (Z-up), side
@@ -49,7 +49,7 @@ impl SeamSolidity {
     }
 }
 
-/// The geometry of one boundary block (CONTEXT.md "Microblock layer"): its sub-block
+/// The geometry of one boundary block — the microblock layer: its sub-block
 /// voxels already decomposed to cuboids, plus its per-face seam-solidity flags.
 ///
 /// The [`VoxelBox`]es are in **block-local voxel** indices `[0, density)` per axis (the
@@ -61,22 +61,22 @@ pub struct MicroblockGeometry {
     /// (block-local voxel indices `[0, density)`). Empty when the block resolved to no
     /// voxels (a boundary verdict the per-voxel pass found empty — still exact).
     ///
-    /// Each cuboid's `material_id` is the cuboid mesher's **render-cell key** (ADR 0003
-    /// §3c): the clean categorical `block_id` in the low bits, the transient on-face-grid
+    /// Each cuboid's `material_id` is the cuboid mesher's **render-cell key**:
+    /// the clean categorical `block_id` in the low bits, the transient on-face-grid
     /// overlay marker in the high bit (see [`voxel_core::core_geom::CellKey`]). The decomposition
     /// therefore splits a box across differing overlay states exactly like the dense
-    /// mesher, and E3's mesher reads the box's clean id + overlay back out of this key
+    /// mesher, and the mesher reads the box's clean id + overlay back out of this key
     /// without the render flag ever entering the categorical cell. Consumers that want the
-    /// clean id (E2 occupancy expansion) mask the overlay bit off.
+    /// clean id (occupancy expansion) mask the overlay bit off.
     pub cuboids: Vec<VoxelBox>,
     /// Per-face solidity flags (the seam apron analog) for this block.
     pub seam_solidity: SeamSolidity,
 }
 
-/// The boundary-aware two-layer representation of ONE chunk (ADR 0010 Decision 1).
+/// The boundary-aware two-layer representation of ONE chunk.
 ///
 /// * `coarse` — a per-BLOCK [`Option<BlockId>`] grid over the chunk's `CHUNK_BLOCKS³`
-///   blocks (chunk-local integer, ADR 0008). `Some(id)` is a coarse-solid block (id, no
+///   blocks (chunk-local integer). `Some(id)` is a coarse-solid block (id, no
 ///   voxels); `None` is air OR a boundary block (boundary geometry lives in `microblocks`).
 /// * `microblocks` — a SPARSE map of boundary blocks (keyed by chunk-local block index)
 ///   to their [`MicroblockGeometry`]. Only surface blocks appear.
@@ -84,7 +84,7 @@ pub struct MicroblockGeometry {
 /// A coarse-solid block stores ZERO voxels (interior elision); only boundary blocks carry
 /// per-voxel geometry, and even those are stored as cuboids, never a dense `density³` grid.
 ///
-/// Derives [`PartialEq`]/[`Eq`] so the incremental-vs-full parity gate (ADR 0010 #54) can
+/// Derives [`PartialEq`]/[`Eq`] so the incremental-vs-full parity gate can
 /// assert an incrementally-rebuilt chunk is IDENTICAL — coarse layer + overlay + microblock
 /// map + seam flags — to a full from-scratch rebuild of the same chunk.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -96,9 +96,9 @@ pub struct TwoLayerChunk {
     /// Per-block coarse layer, row-major over the chunk's `CHUNK_BLOCKS³` blocks
     /// (X fastest, then Y, then Z): `Some(id)` = coarse-solid, `None` = air or boundary.
     pub coarse: Vec<Option<BlockId>>,
-    /// Per-block on-face-grid overlay marker (ADR 0003 §3c), parallel to `coarse`: `true`
+    /// Per-block on-face-grid overlay marker, parallel to `coarse`: `true`
     /// iff the coarse-solid block's single owning leaf had `grid_overlay` set. Meaningful
-    /// only where `coarse[i].is_some()`; the E3 mesher reads it to flag a coarse block's
+    /// only where `coarse[i].is_some()`; the mesher reads it to flag a coarse block's
     /// one-box draw. A RENDER hint only — never part of the categorical id / occupancy.
     pub coarse_overlay: Vec<bool>,
     /// Sparse boundary-block geometry, keyed by chunk-local block index `[bx, by, bz]`
@@ -131,7 +131,7 @@ impl TwoLayerChunk {
         self.coarse[coarse_flat_index(block)]
     }
 
-    /// The on-face-grid overlay marker (ADR 0003 §3c) of the coarse-solid block at
+    /// The on-face-grid overlay marker of the coarse-solid block at
     /// `block` — `true` iff that block's owning leaf had `grid_overlay` set. Only
     /// meaningful when [`coarse_block`](Self::coarse_block) is `Some`.
     pub fn coarse_block_overlay(&self, block: [u32; 3]) -> bool {
@@ -141,7 +141,7 @@ impl TwoLayerChunk {
     /// Whether this chunk holds ANY geometry (at least one coarse-solid block OR one
     /// boundary block) — i.e. it would produce a mesh / occupancy. An all-air chunk returns
     /// `false`. The two-layer analog of the dense `!grid.occupied.is_empty()` the cuboid
-    /// incremental plan keys "occupied" off (issue #55): only non-empty chunks are meshed,
+    /// incremental plan keys "occupied" off: only non-empty chunks are meshed,
     /// so a chunk that an edit turned all-air drops out of the rebuild set and is evicted.
     pub fn has_geometry(&self) -> bool {
         self.coarse.iter().any(Option::is_some) || !self.microblocks.is_empty()
@@ -154,14 +154,14 @@ impl TwoLayerChunk {
     /// boundary block tests its cuboids, of which there are a handful. Neither path
     /// materialises a voxel.
     ///
-    /// This is the query a **cursor pick** runs (`docs/design/direct-manipulation.md`): the
-    /// march needs `occupied(voxel)` thousands of times along one ray, and the only existing
-    /// occupancy surface was [`expand_occupancy_into`](Self::expand_occupancy_into), which
-    /// streams the whole chunk. Expanding a chunk to learn one bit would cost the volume per
+    /// This is the query a **cursor pick** runs: the march needs `occupied(voxel)`
+    /// thousands of times along one ray, and the other occupancy surface,
+    /// [`expand_occupancy_into`](Self::expand_occupancy_into), streams the whole chunk.
+    /// Expanding a chunk to learn one bit would cost the volume per
     /// step and rebuild the dense grid the architecture exists to avoid — so picking gets a
     /// point query rather than the ray getting a grid.
     ///
-    /// `voxel` is in the chunk's own `[0, CHUNK_BLOCKS * voxels_per_block)` frame (ADR 0008);
+    /// `voxel` is in the chunk's own `[0, CHUNK_BLOCKS * voxels_per_block)` frame;
     /// out-of-range coordinates read as air rather than panicking, because a march clipped to
     /// a traversal box still probes cells at the boundary.
     pub fn voxel_occupied(&self, voxel: [u32; 3]) -> bool {
@@ -191,7 +191,7 @@ impl TwoLayerChunk {
 
     /// The TOTAL voxel count this chunk STORES — the sum of every boundary block's
     /// decomposed cuboid voxels. A coarse-solid block contributes ZERO (interior
-    /// elision); this is the measured "surface-only" residency the ADR demands (an
+    /// elision); this is the measured "surface-only" residency (an
     /// 800×800 revolve's interior holds no voxels here, unlike the dense path).
     pub fn stored_voxel_count(&self) -> u64 {
         self.microblocks
@@ -201,8 +201,8 @@ impl TwoLayerChunk {
             .sum()
     }
 
-    /// Stream this chunk back to full occupancy into `output` (ADR 0010 Decision 3 /
-    /// parity gate (a)): a coarse-solid block is a fast `density³` fill at its block id;
+    /// Stream this chunk back to full occupancy into `output`: a coarse-solid block is a
+    /// fast `density³` fill at its block id;
     /// a boundary block expands its cuboids per-voxel. Each voxel is stamped at its
     /// CHUNK-LOCAL voxel index (the chunk's own `[0, chunk_extent_voxels)` frame) +
     /// `index_offset`, so the caller can rebase the whole chunk into the recentered /
@@ -227,9 +227,9 @@ impl TwoLayerChunk {
                     ];
                     if let Some(block_id) = self.coarse_block(block) {
                         // Coarse-solid: fast d³ fill at the single block id, carrying the
-                        // block's on-face-grid overlay marker (ADR 0003 §3c) so the
+                        // block's on-face-grid overlay marker so the
                         // expanded grid matches the dense resolve's `grid_overlay` bit
-                        // (E5 — the fog grid + the grid-overlay parity read).
+                        // read by the grid-overlay parity check.
                         Self::fill_solid_block(
                             output,
                             block_low_voxels,
@@ -254,7 +254,7 @@ impl TwoLayerChunk {
     }
 
     /// Fast-fill a coarse-solid block: every `density³` voxel at `block_id`, all carrying
-    /// the block's `grid_overlay` render marker (ADR 0003 §3c).
+    /// the block's `grid_overlay` render marker.
     fn fill_solid_block(
         output: &mut Vec<Voxel>,
         block_low_voxels: [i64; 3],
@@ -285,10 +285,10 @@ impl TwoLayerChunk {
     ) {
         for cuboid in &geometry.cuboids {
             // The cuboid's `material_id` is the render-cell key (block_id | overlay<<15);
-            // occupancy is the CLEAN categorical id, so mask the overlay bit off (ADR
-            // 0003 §3c — the overlay never enters the occupancy / categorical cell) but
-            // carry it onto the expanded voxel's `grid_overlay` render marker (E5 — so
-            // the grid matches the dense resolve's per-voxel overlay bit).
+            // occupancy is the CLEAN categorical id, so mask the overlay bit off — the
+            // overlay never enters the occupancy / categorical cell — but carry it onto the
+            // expanded voxel's `grid_overlay` render marker, so the grid matches the dense
+            // resolve's per-voxel overlay bit.
             let block_id = BlockId(CellKey::from_raw(cuboid.material_id()).block_id());
             let grid_overlay = CellKey::from_raw(cuboid.material_id()).has_overlay();
             emit_voxel_box(
@@ -339,9 +339,9 @@ fn emit_voxel_box(
 }
 
 /// Build one [`Voxel`] at chunk-local voxel index `chunk_local + index_offset` (i64 add
-/// before the i32 downcast, ADR 0008), with `block_local_coord`, `block_id`, and the
-/// `grid_overlay` render marker (ADR 0003 §3c — carried through so the expanded grid
-/// matches the dense resolve's per-voxel overlay bit; E5).
+/// before the i32 downcast), with `block_local_coord`, `block_id`, and the
+/// `grid_overlay` render marker, carried through so the expanded grid matches the dense
+/// resolve's per-voxel overlay bit.
 #[inline]
 pub(crate) fn stamped_voxel(
     chunk_local: [i64; 3],

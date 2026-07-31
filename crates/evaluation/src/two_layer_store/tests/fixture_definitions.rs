@@ -2,11 +2,11 @@ use super::core::assert_two_layer_round_trip_matches_dense;
 use super::*;
 use document::scene::{CombineOp, NodeBuilder};
 
-// ---- ADR 0017 Decision 4 (#77): fixture definitions through the CLASSIFIER ----
+// ---- Fixture definitions through the CLASSIFIER ----
 //
 // The dense oracle's fixture-splice semantics are pinned in the document crate
 // (`scene::tests::fixture_definitions`); these tests hold the two-layer interval
-// classification + boundary resolve against that oracle (the ADR 0010 parity
+// classification + boundary resolve against that oracle (the parity
 // pattern). No classifier machinery is fixture-specific: a fixture's leaves
 // arrive carrying the HOSTING scope's path plus their own operations (the walk
 // pushes no frame for a fixture expansion), so its Subtract child is exactly a
@@ -69,7 +69,7 @@ fn wall(offset_blocks: [i64; 3]) -> Node {
     )
 }
 
-/// THE GATE for the fixture slice (issue #77 acceptance): the two-layer
+/// THE GATE for fixtures: the two-layer
 /// classification + boundary resolve for fixture scenes is occupancy-IDENTICAL
 /// to the dense brute-force oracle, across the splice shapes the resolver must
 /// honor: the window golden (a root-scope splice — the spliced cutter is a
@@ -108,7 +108,7 @@ fn round_trip_matches_dense_for_fixture_scenes() {
     assert_two_layer_round_trip_matches_dense(&scene, DENSITY, "fixture-before-wall");
 
     // (4) Two placements over separated walls: each splice enters the root fold
-    // under its own instance transform (ADR 0008 carried frames).
+    // under its own instance transform (carried frames).
     let mut scene = Scene::from_nodes(vec![
         wall([0, 0, 0]),
         wall([16, 0, 0]),

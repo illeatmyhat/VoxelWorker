@@ -27,7 +27,7 @@ impl Lcg {
 
 /// Canonicalise a grid's occupied set into a sorted multiset of
 /// `(local_index, block_local_coord, block_id)`. The index is now stored EXACTLY
-/// (ADR 0003 §3a), so the round-trip assertion is byte-for-byte on the integer index
+/// so the round-trip assertion is byte-for-byte on the integer index
 /// (no f32 ULP comparison needed); `block_local_coord` + the categorical `block_id`
 /// keep the intra-block coordinate and the block in the losslessness guarantee.
 /// Order-independent (the resolve path treats the occupied vec as a set).

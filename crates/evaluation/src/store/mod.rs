@@ -1,6 +1,4 @@
-//! ADR 0003 (foundation rework) data layer — the store.
-//!
-//! A per-chunk resolve cache (ADR 0002 Decision 3, issue #27 S2): a cache keyed by
+//! The store — a per-chunk resolve cache keyed by
 //! `(chunk_coord, lod)` that resolves a chunk **on demand** (lazily) and stores the
 //! result, so a second request for the same chunk is a map lookup instead of a
 //! re-resolve.
@@ -13,15 +11,15 @@
 //!   a miss.
 //! * **Per-chunk voxel bound.** The whole-region `MAX_GRID_VOXELS` guard is a *per-chunk*
 //!   bound (a single chunk can't exceed it), so a scene whose TOTAL voxel count is far
-//!   beyond the old 6M ceiling resolves fine as long as every individual chunk is small.
+//!   beyond the 6M whole-region ceiling resolves fine as long as every chunk is small.
 //!   See [`voxel_core::voxel::MAX_CHUNK_VOXELS`].
 //! * **Identical render output.** The dense whole-region `Store::resolve_region` oracle
 //!   rebuilds the SAME recentered monolithic grid the mesher/exporter consume — but
 //!   assembled from cached chunks. It is compile-gated behind the `oracle` feature.
 //!
-//! **Smart invalidation** (#27 S3) sits on this seam: [`Store::invalidate_aabb`] evicts
-//! exactly the chunks an edit's world-AABB intersects (whole-chunk dirty granularity, ADR
-//! 0002 Decision 3). The edit AABB is computed by
+//! **Smart invalidation** sits on this seam: [`Store::invalidate_aabb`] evicts exactly
+//! the chunks an edit's world-AABB intersects, at whole-chunk dirty granularity. The edit
+//! AABB is computed by
 //! [`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since)
 //! (diffing the scene's leaf spatial index before vs after the edit); [`Store::clear`]
 //! remains the fallback for edits that can't be localized (a density change or a

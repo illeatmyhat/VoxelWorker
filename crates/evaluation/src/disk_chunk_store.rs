@@ -1,7 +1,7 @@
-//! Disk-backed chunk store with bounded-RAM LRU eviction (issue #20 S6b).
+//! Disk-backed chunk store with bounded-RAM LRU eviction.
 //!
-//! S6a ([`crate::chunk_storage`]) gave us a compact, serde-serializable on-disk
-//! form for one resolved chunk grid ([`CompressedChunk`]). This module is the
+//! [`crate::chunk_storage`] gives a compact, serde-serializable on-disk form for one
+//! resolved chunk grid ([`CompressedChunk`]). This module is the
 //! **store** that uses it to bound RAM: it keeps at most a configured number of
 //! chunks resident in memory and, when a [`put`](DiskChunkStore::put) would push
 //! the resident set over that capacity, it **evicts the least-recently-used**
@@ -14,16 +14,15 @@
 //! This is a self-contained, thoroughly-tested component, and it IS wired into the
 //! live resolve/render path: `Store::with_resident_cap` (in `crate::store::cache`)
 //! constructs one as the backing cold storage for its least-recently-used spill
-//! (issue #20 Step 3). The public chunk-fetch API and the data returned are
-//! unchanged by spilling — a chunk fetched after a spill+reload is byte-identical to
-//! one that stayed resident — so the goldens are unaffected even though the
-//! resident set is now bounded.
+//! The public chunk-fetch API and the data returned are unchanged by spilling — a chunk
+//! fetched after a spill+reload is byte-identical to one that stayed resident — so a
+//! bounded resident set leaves the goldens alone.
 //!
 //! ## Capacity model: resident chunk COUNT (not a byte budget)
 //!
 //! The cap is a maximum number of **resident chunks**, not a byte budget. The
 //! rationale: the store's job is to decouple scene size from RAM, and the natural
-//! unit the future caller ([`crate::chunk_cache::ChunkResolveCache`]) thinks in is
+//! unit the caller ([`crate::chunk_cache::ChunkResolveCache`]) thinks in is
 //! "how many chunks may I hold". A byte budget would force a per-chunk size
 //! estimate (a `CompressedChunk` has no cheap exact in-RAM byte size) and make the
 //! bounded-RAM invariant fuzzy ("≤ budget ± one chunk"). A count cap gives a crisp,
@@ -34,11 +33,10 @@
 //!
 //! ## Serialization format: `serde_json` (an existing dependency)
 //!
-//! Chunks are written as `serde_json` (already a dependency; `CompressedChunk` is
-//! already serde-round-trip tested through JSON in S6a). No new dependency is
-//! added. JSON is not the most compact on-disk form — a binary `bincode` would be
-//! smaller — but adding a binary codec is out of scope for this standalone step
-//! and noted for S6c. The store is format-agnostic behind two private helpers
+//! Chunks are written as `serde_json`, already a dependency and already the codec
+//! `CompressedChunk`'s round-trip test drives. JSON is not the most compact on-disk form —
+//! a binary `bincode` would be smaller. The store is format-agnostic behind two private
+//! helpers
 //! ([`write_chunk_file`] / [`read_chunk_file`]), so swapping the codec later is a
 //! two-function change.
 //!
@@ -164,8 +162,7 @@ impl DiskChunkStore {
 
     /// Forget `key` entirely — drop it from RAM and delete its on-disk file if it was
     /// spilled. Idempotent (a no-op for a key the store never held). Used by the cache
-    /// to purge a chunk on invalidation so a stale spilled copy can never resurface
-    /// (issue #20 Step 3).
+    /// to purge a chunk on invalidation so a stale spilled copy can never resurface.
     ///
     /// # Errors
     /// Returns an I/O error if deleting the stale disk file fails.
@@ -179,7 +176,7 @@ impl DiskChunkStore {
 
     /// Forget EVERY key — drop all resident chunks and delete every on-disk file,
     /// leaving the store empty (the directory itself is kept). Used by the cache on a
-    /// rebind / full clear so no spilled chunk outlives its binding (issue #20 Step 3).
+    /// rebind / full clear so no spilled chunk outlives its binding.
     ///
     /// # Errors
     /// Returns an I/O error if deleting a stale disk file fails.

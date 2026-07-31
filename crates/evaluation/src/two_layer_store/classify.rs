@@ -14,7 +14,7 @@ use voxel_core::voxel::{VoxelGrid, SURFACE_ISOLEVEL};
 #[allow(unused_imports)]
 use super::*;
 
-/// One step of the depth-first **scoped ordered fold** (ADR 0017 Decision 3, issue #74)
+/// One step of the depth-first **scoped ordered fold**
 /// over a document-order leaf subsequence: the scope-open / scope-close markers of the
 /// push/pop evaluation, reconstructed from each leaf's carried
 /// [`scope_path`](LeafProducer::scope_path) by [`scoped_leaf_steps`].
@@ -41,7 +41,7 @@ pub(crate) enum ScopedLeafStep<'leaf> {
 /// the filters above guarantee it cannot, because every leaf inside such a scope is
 /// Intersect-influence ([`LeafProducer::masks_beyond_bounds`]) and is never dropped.
 ///
-/// FIXTURE definitions (ADR 0017 Decision 4, issue #77) need no machinery here: a
+/// FIXTURE definitions need no machinery here: a
 /// fixture's expansion contributes NO scope frame, so its leaves arrive carrying the
 /// HOSTING scope's path plus their own operations — to this fold (and to every
 /// conservative fast path reasoning over `operation` + `scope_path`) a fixture's
@@ -64,7 +64,7 @@ pub(crate) fn scoped_leaf_steps<'leaf>(
             common += 1;
         }
         // Close the scopes the leaf is no longer inside, innermost first (each close
-        // carries the SCOPE's own operation, ADR 0017 Decision 3).
+        // carries the SCOPE's own operation).
         while open_frames.len() > common {
             let frame = open_frames
                 .pop()
@@ -100,7 +100,7 @@ fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
 }
 
 /// Classify ONE block (the absolute-voxel box `block_abs_voxels`) against the scene's
-/// leaves (ADR 0010 Decision 2), composing each boundable leaf's field interval by CSG
+/// leaves, composing each boundable leaf's field interval by CSG
 /// interval arithmetic and overriding to BOUNDARY for any unboundable leaf.
 ///
 /// `block_abs_voxels` is the block's half-open `[min, max)` box in the SCENE's ABSOLUTE
@@ -110,7 +110,7 @@ fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
 /// subtracting the leaf's `world_offset_voxels` (the same map
 /// `stamp_producer_into_chunk` (document crate) uses for its resolve window).
 ///
-/// The fold is SCOPED (ADR 0017 Decision 3, issue #74): each leaf's interval folds into
+/// The fold is SCOPED: each leaf's interval folds into
 /// its innermost enclosing Group / definition-body scope, and a closing scope's composed
 /// interval folds into its parent under the SCOPE's own operation — so a boolean inside a
 /// scope can never affect the verdict outside it.
@@ -121,8 +121,8 @@ fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
 ///   carves it whole; no leaf unboundable) — the conservative interval guarantees brute
 ///   force finds zero voxels.
 /// * [`BlockClassification::CoarseSolid`] iff a single purely-additive leaf provably
-///   fills the WHOLE block solid AND the fold (which carries every boolean's intervals,
-///   ADR 0017) still proves solidity — every voxel occupied, one material.
+///   fills the WHOLE block solid AND the fold (which carries every boolean's intervals)
+///   still proves solidity — every voxel occupied, one material.
 /// * [`BlockClassification::Boundary`] otherwise (straddling, multi-additive overlap that
 ///   can't be proven uniformly solid, or any unboundable leaf) — the always-safe verdict.
 ///
@@ -139,7 +139,7 @@ pub(crate) fn classify_chunk_block(
     // Subtract carves none, and a scope whose leaves are all dropped never opens).
     // A leaf's absolute span is `[off, off + grid)` (corner-anchored).
     //
-    // ADR 0017 (#75): an Intersect-INFLUENCE leaf (its own operation is Intersect, or
+    // An Intersect-INFLUENCE leaf (its own operation is Intersect, or
     // any enclosing scope closes under Intersect) is NEVER dropped: its mask kills
     // cells OUTSIDE its body, so a block its box misses is exactly where it still
     // applies (dropping it would err toward SOLID — never conservative). Keeping it
@@ -157,15 +157,15 @@ pub(crate) fn classify_chunk_block(
         })
         .collect();
 
-    // Occupancy at the root can only be CREATED by a purely additive leaf (ADR 0017:
-    // booleans — Subtract and Intersect, at any scope depth — only ever remove). No
+    // Occupancy at the root can only be CREATED by a purely additive leaf: booleans —
+    // Subtract and Intersect, at any scope depth — only ever remove. No
     // overlapping purely-additive leaf ⇒ provably empty.
     if !overlapping.iter().any(|leaf| leaf.is_purely_additive()) {
         return BlockClassification::Air;
     }
 
     // Fold the per-leaf conservative field intervals through the substrate SCOPED
-    // black/white/gray classifier (`ScopedCellClassification`, issue #74): each leaf's
+    // black/white/gray classifier (`ScopedCellClassification`): each leaf's
     // interval folds into its innermost open scope under the leaf's CSG role (Union =
     // min-of-fields, Subtract = the conservative difference `max(running, −operand)`
     // — Duff 1992 interval arithmetic), and a closing scope folds its composed
@@ -187,8 +187,8 @@ pub(crate) fn classify_chunk_block(
                 }
                 ScopedLeafStep::Leaf(leaf) => {
                     // Map the absolute block box into THIS leaf's producer-local voxel-index
-                    // frame `[0, full)` via the inverse affine (ADR 0027) — the exact frame
-                    // `cell_field_interval` expects (ADR 0008: the frame is carried, never
+                    // frame `[0, full)` via the inverse affine — the exact frame
+                    // `cell_field_interval` expects (the frame is carried, never
                     // re-derived). Exact for the axis-aligned leaves; a conservative enclosing
                     // box for a genuine rotation (the isometry keeps the interval bound sound).
                     let cell_local =
@@ -217,8 +217,8 @@ pub(crate) fn classify_chunk_block(
             // PURELY ADDITIVE leaf overlaps the block: with two additive leaves the
             // per-voxel MATERIAL is "later wins on overlap", which the composed
             // interval cannot resolve (it proves geometric solidity, not which id
-            // each voxel takes). Under ADR 0017 no boolean ever stamps material —
-            // not a Subtract leaf, not an Intersect mask (#75), nor a Union leaf
+            // each voxel takes). No boolean ever stamps material —
+            // not a Subtract leaf, not an Intersect mask, nor a Union leaf
             // whose scope folds under a boolean (its body only ever removes /
             // preserves parent cells) — so overlapping boolean-influence leaves do
             // NOT disqualify the elision: the scoped fold already carried their
@@ -243,12 +243,12 @@ pub(crate) fn classify_chunk_block(
     }
 }
 
-/// The ADR 0027 continuous placement affine — [`substrate::spatial::LeafPlacement`], the world↔
+/// The continuous placement affine — [`substrate::spatial::LeafPlacement`], the world↔
 /// producer-local map every classify / resolve / broadphase function in this module routes
-/// through. It generalizes the ADR 0026 discrete
+/// through. It generalizes the discrete
 /// [`LatticeOrientation`](substrate::spatial::LatticeOrientation) permutation to an arbitrary
-/// `Quat` rotation plus a float offset; for an axis-aligned rotation it reproduces the pre-0027
-/// lattice `turn_point_in_box + offset` EXACTLY (ADR 0027 §4 — a rotation is an isometry, so
+/// `Quat` rotation plus a float offset; for an axis-aligned rotation it reproduces the discrete
+/// lattice `turn_point_in_box + offset` EXACTLY (a rotation is an isometry, so
 /// per-voxel occupancy stays exact). Hoisted to substrate so the dense reference oracle
 /// (`document`) builds the identical map instead of a divergent translation-only copy. Construct
 /// it for a leaf with [`leaf_affine`].
@@ -257,7 +257,7 @@ pub(crate) type LeafAffine = substrate::spatial::LeafPlacement;
 /// Build the placement [`LeafAffine`] for `leaf` at the document's `voxels_per_block` — the
 /// evaluation-layer adapter that reads the leaf's producer dimensions, continuous rotation and
 /// integer-plus-float world offset and hands them to the substrate constructor. The composed-field
-/// point-eval ([`super::composed_field_at`], ADR 0027 §5) and the dense reference oracle build the
+/// point-eval ([`super::composed_field_at`]) and the dense reference oracle build the
 /// SAME [`LeafAffine`] from the same components, so no path re-derives the map.
 pub(crate) fn leaf_affine(leaf: &LeafProducer, voxels_per_block: u32) -> LeafAffine {
     let full_dimensions = leaf.producer.full_dimensions(voxels_per_block);
@@ -266,9 +266,9 @@ pub(crate) fn leaf_affine(leaf: &LeafProducer, voxels_per_block: u32) -> LeafAff
         full_dimensions[1] as f32,
         full_dimensions[2] as f32,
     );
-    // ADR 0027 §1 wandering origin: keep the integer `world_offset_voxels` and the fractional
+    // Wandering origin: keep the integer `world_offset_voxels` and the fractional
     // `offset_local_voxels` SPLIT into substrate, so a far-out leaf's translation stays exact in
-    // i64 rather than collapsing to a precision-losing f32 sum here (the ADR 0008 (c)-violation).
+    // i64 rather than collapsing to a precision-losing f32 sum here.
     LeafAffine::from_origin_and_local(
         leaf.rotation,
         full,
@@ -279,7 +279,7 @@ pub(crate) fn leaf_affine(leaf: &LeafProducer, voxels_per_block: u32) -> LeafAff
 
 /// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`,
 /// rotated by `rotation`, so its local CENTER `full/2` lands at world `target_center` under the
-/// SAME corner-anchored [`LeafAffine`] the classifier folds through (ADR 0027 §5 placement).
+/// SAME corner-anchored [`LeafAffine`] the classifier folds through.
 ///
 /// It is the inverse of `leaf_affine(..).world_of(full/2) == target_center`: placement picks a
 /// rotation and a surface contact, and this returns the `world_offset` (⇒ a node's `offset_voxels`
@@ -292,31 +292,31 @@ pub fn seat_center_at(rotation: Quat, full: Vec3, target_center: Vec3) -> Vec3 {
 }
 
 /// The leaf's grid AABB in the SCENE's absolute voxel frame — the integer enclosing box of the
-/// [`LeafAffine`] applied to the 8 corners of the producer's local `[0, full]` box (ADR 0027).
+/// [`LeafAffine`] applied to the 8 corners of the producer's local `[0, full]` box.
 /// The single box construction shared by the classify / overlap / whole-chunk paths (they must
 /// all test the SAME leaf extent).
 ///
-/// For an AXIS-ALIGNED rotation this equals the pre-0027 `[off, off + turn_extent(full))`
+/// For an AXIS-ALIGNED rotation this equals the discrete `[off, off + turn_extent(full))`
 /// EXACTLY: the affine sends the corners to integer world positions, so rounding to nearest
 /// recovers them bit-for-bit (the `an_oriented_leaf_occupies_the_turned_cells_of_the_upright_one`
 /// golden pins it). For a genuine rotation the corners land off-lattice, so the min is FLOORED and
 /// the max CEILED to conservatively enclose the rotated box (SOUND: the true occupied set ⊆ this
-/// AABB, ADR 0027 §4).
+/// AABB).
 pub(crate) fn leaf_world_box(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
     let (min, max) = leaf_affine(leaf, voxels_per_block).world_aabb();
     VoxelAabb::new(min, max)
 }
 
 /// Map an absolute voxel box into the leaf's **producer-local** `[0, full)` frame — the integer
-/// enclosing box of the inverse [`LeafAffine::local_of`] applied to the 8 corners of `abs` (ADR
-/// 0027). This is the frame `cell_field_interval` / `resolve_into` expect (the producer never
+/// enclosing box of the inverse [`LeafAffine::local_of`] applied to the 8 corners of `abs`.
+/// This is the frame `cell_field_interval` / `resolve_into` expect (the producer never
 /// learns the leaf is turned).
 ///
-/// For an AXIS-ALIGNED rotation this equals the pre-0027 `unturn_box` EXACTLY (the corners map to
+/// For an AXIS-ALIGNED rotation this equals a discrete `unturn_box` EXACTLY (the corners map to
 /// integer local coordinates, recovered by rounding to nearest). For a genuine rotation the mapped
 /// box is a ROTATED box in the local frame; flooring the min and ceiling the max conservatively
 /// encloses it — SOUND because the true region ⊆ this AABB, so `cell_field_interval` over it still
-/// brackets the field (the isometry keeps the cell radius invariant, ADR 0027 §4). The box may
+/// brackets the field (a rotation is an isometry, so the cell radius is invariant). The box may
 /// fall partly outside `[0, full)` (a block straddling the leaf edge); the producer bounds/clamps
 /// it exactly as before.
 pub(crate) fn abs_box_to_producer_local(
@@ -328,7 +328,7 @@ pub(crate) fn abs_box_to_producer_local(
     VoxelAabb::new(min, max)
 }
 
-/// Map a **producer-local** voxel index to its absolute voxel index (ADR 0027): the absolute
+/// Map a **producer-local** voxel index to its absolute voxel index: the absolute
 /// cell the local cell's CENTER lands in, `world_of(index + 0.5).floor()`. The inverse of
 /// [`abs_box_to_producer_local`] for a single cell — the forward-emit direction.
 ///
@@ -337,14 +337,14 @@ pub(crate) fn abs_box_to_producer_local(
 /// local + offset`. For a NEGATED axis the corner-anchored affine gives `full − local + offset`
 /// while the lattice `turn_point_in_box` gives `full − 1 − local + offset`; the center sample makes
 /// the affine value `full − local − 0.5 + offset`, whose `floor` is `full − 1 − local + offset` —
-/// exactly the lattice. So every axis-aligned turn emits into the identical absolute cells the ADR
-/// 0026 permutation did, and the half-unit margin absorbs the `Quat` round-off.
+/// exactly the lattice. So every axis-aligned turn emits into the identical absolute cells the
+/// discrete lattice permutation does, and the half-unit margin absorbs the `Quat` round-off.
 pub(crate) fn producer_local_voxel_to_abs(
     leaf: &LeafProducer,
     local_index: [i32; 3],
     voxels_per_block: u32,
 ) -> [i64; 3] {
-    // ADR 0027 §1 wandering origin: `world_cell_of_local_center` re-adds the integer origin in i64
+    // Wandering origin: `world_cell_of_local_center` re-adds the integer origin in i64
     // after flooring the small origin-relative image, so a far-out leaf's cells stay exact.
     leaf_affine(leaf, voxels_per_block).world_cell_of_local_center(local_index)
 }
@@ -353,7 +353,7 @@ pub(crate) fn producer_local_voxel_to_abs(
 /// overlaps `block_abs_voxels`, or `None` if none does. The overlap test mirrors
 /// [`classify_chunk_block`]'s exactly, so the same leaf is found. A coarse-solid block is
 /// owned by exactly one purely additive leaf (the classifier forces any multi-additive
-/// overlap to boundary, and no boolean — at any scope depth — ever stamps, ADR 0017), so
+/// overlap to boundary, and no boolean — at any scope depth — ever stamps), so
 /// for a coarse verdict this first additive hit IS the single owning leaf.
 pub(crate) fn single_overlapping_leaf<'a>(
     leaves: &[&'a LeafProducer],
@@ -367,7 +367,7 @@ pub(crate) fn single_overlapping_leaf<'a>(
         .find(|leaf| leaf_world_box(leaf, voxels_per_block).intersects(&block_abs_voxels))
 }
 
-/// The on-face-grid overlay (ADR 0003 §3c) of the SINGLE purely additive leaf overlapping
+/// The on-face-grid overlay of the SINGLE purely additive leaf overlapping
 /// `block_abs_voxels`, or `false` if none overlaps (an unreachable case for a coarse-solid
 /// verdict — guarded defensively).
 pub(crate) fn single_overlapping_leaf_overlay(
@@ -379,7 +379,7 @@ pub(crate) fn single_overlapping_leaf_overlay(
         .is_some_and(|leaf| leaf.grid_overlay)
 }
 
-/// The whole-CHUNK fast-path verdict (ADR 0010 Decision 2 — chunk-granular interval
+/// The whole-CHUNK fast-path verdict (chunk-granular interval
 /// elision). Evaluating the composed field interval ONCE at the whole-chunk cell can
 /// decide the ENTIRE chunk without the 64 per-block calls, but only when the chunk verdict
 /// PROVABLY implies the identical per-block outcome (CONSERVATIVE-NEVER-NARROW).
@@ -396,7 +396,7 @@ pub(crate) enum WholeChunkVerdict {
     PerBlock,
 }
 
-/// Classify a whole chunk from ONE composed interval at the chunk cell (ADR 0010 Decision 2).
+/// Classify a whole chunk from ONE composed interval at the chunk cell.
 ///
 /// **Why the chunk verdict is byte-identical to the per-block sweep.** The composed field
 /// interval is *inclusion-monotone*: for a sub-block box `B ⊆ chunk` every operand's bound
@@ -423,7 +423,7 @@ pub(crate) fn classify_whole_chunk(
     chunk_abs_voxels: VoxelAabb,
     voxels_per_block: u32,
 ) -> WholeChunkVerdict {
-    // ADR 0017 (#75): the whole-chunk TRANSFER arguments below were proven WITHOUT
+    // The whole-chunk TRANSFER arguments below were proven WITHOUT
     // Intersect masks in the fold, and a mask breaks their shared premise — that a
     // sub-block dropping an operand from its fold can only become MORE solid (true for
     // a dropped cutter, false for a mask, which is precisely never dropped). Rather
@@ -448,7 +448,7 @@ pub(crate) fn classify_whole_chunk(
             WholeChunkVerdict::AllAir
         };
     }
-    // ADR 0017 Decision 3 (issue #74): the chunk-verdict→per-block TRANSFER arguments
+    // The chunk-verdict→per-block TRANSFER arguments
     // below were proven for the FLAT fold of the sibling-level slice. They carry over
     // verbatim exactly when the scoped fold over this chunk's overlapping leaves is
     // occupancy-equivalent to that flat fold, i.e. when every overlapping
@@ -465,7 +465,7 @@ pub(crate) fn classify_whole_chunk(
     }
     match classify_chunk_block(leaves, chunk_abs_voxels, voxels_per_block) {
         BlockClassification::Air => {
-            // ADR 0017: a chunk-level AIR verdict can lean on a SUBTRACT operand (a
+            // A chunk-level AIR verdict can lean on a SUBTRACT operand (a
             // cutter provably carving the whole chunk pushes the fold's minimum
             // above the isolevel). That proof only transfers to every sub-block if
             // the cutter stays IN each sub-block's own fold — i.e. its grid AABB
@@ -541,7 +541,7 @@ fn chunk_fold_is_scope_transparent(
 
 /// Whether every SUBTRACTIVE-influence leaf (any leaf that is not purely additive) whose
 /// grid AABB overlaps `chunk_abs_voxels` also CONTAINS it — the defensive containment
-/// guard the whole-chunk AIR fast path requires under ADR 0017 (see
+/// guard the whole-chunk AIR fast path requires (see
 /// [`classify_whole_chunk`]): only a cutter present in EVERY sub-block's fold transfers a
 /// chunk-level carved-to-air proof to each sub-block. Vacuously true with no overlapping
 /// cutters (the pure-Union case, where AIR was proven by the additive intervals alone and
@@ -566,7 +566,7 @@ fn subtractive_leaves_contain_chunk(
 ///
 /// Per-voxel resolution reuses each overlapping leaf's `VoxelProducer::resolve_into`
 /// over the block window, composed by the SAME scoped ordered-fold semantics the dense
-/// path uses (ADR 0017 / issue #74: within a scope, a Union leaf stamps later-wins on
+/// path uses (within a scope, a Union leaf stamps later-wins on
 /// overlap and a Subtract leaf CLEARS the cells its body covers; a closing scope's
 /// composed body folds into its parent as a unit under the SCOPE's operation) — so the
 /// materialised block is bit-identical to the dense store's voxels for that block.
@@ -590,8 +590,8 @@ pub(crate) fn resolve_boundary_block(
     // Only the leaves whose grid AABB overlaps this block can touch its cells; dropping
     // the rest cannot change the fold (a dropped Union adds nothing here, a dropped
     // Subtract carves nothing here, and a scope whose leaves are all dropped never
-    // opens — see `scoped_leaf_steps`) — EXCEPT an Intersect-influence leaf (ADR 0017
-    // #75), which is never dropped: its mask kills cells outside its body (a box miss
+    // opens — see `scoped_leaf_steps`) — EXCEPT an Intersect-influence leaf, which is
+    // never dropped: its mask kills cells outside its body (a box miss
     // means its window resolves EMPTY here and everything accumulated in its scope
     // dies), and keeping it guarantees every Intersect-closing scope opens.
     let overlapping: Vec<&LeafProducer> = leaves
@@ -639,9 +639,9 @@ pub(crate) fn resolve_boundary_block(
 /// innermost open scope's block-local accumulator) under the LEAF's own operation: a
 /// Union leaf stamps its render key (later document-order write wins — a plain overwrite
 /// reproduces the dense Union), a Subtract leaf CLEARS every cell its body covers, and an
-/// Intersect leaf (#75) KEEPS ONLY the cells its body covers — clearing every other cell
+/// Intersect leaf KEEPS ONLY the cells its body covers — clearing every other cell
 /// of the accumulator, including the whole block when its body misses it (`A ∩ ∅ = ∅`).
-/// Both booleans are occupancy-only (ADR 0017 Decision 1 — they never write a render key,
+/// Both booleans are occupancy-only (they never write a render key,
 /// so the material of every surviving cell is untouched).
 /// Clear every accumulator cell in the block-local `[0, density)³` extent that the
 /// mask's `body_covers` set MISSES — the Intersect clearing sweep shared by
@@ -671,17 +671,17 @@ pub(crate) fn compose_leaf_into_region(
     density: u32,
     voxels_per_block: u32,
 ) {
-    // ADR 0027: a FIELD producer whose producer-local lattice is OUT OF PHASE with the abs
+    // A FIELD producer whose producer-local lattice is OUT OF PHASE with the abs
     // lattice cannot be emitted by the forward affine (its `[0, full)` cells no longer land
     // one-per-abs-cell), so resample it by INVERSE GATHER instead. Two things throw it out of
     // phase: a genuine rotation, OR a fractional `offset_local_voxels` (a sub-voxel seat under
-    // ADR 0027 continuous placement). A fractional TRANSLATION dephases the lattice exactly like
+    // continuous placement). A fractional TRANSLATION dephases the lattice exactly like
     // a rotation — `abs_box_to_producer_local`'s round-to-nearest then disagrees with the
     // floor-based per-cell emit and drops the boundary-voxel layer at every block seam (a
     // one-block-thick tube wall grids into fragments). Every whole-phase leaf (integer offset,
     // no rotation — most placements) and every fieldless producer (cloud / VoxelBody, which is
     // NEVER continuously rotated) takes the exact forward-emit path below — byte-identical to
-    // ADR 0026.
+    // the discrete lattice permutation.
     let in_phase = substrate::spatial::is_in_phase(leaf.rotation, leaf.offset_local_voxels);
     if !in_phase && leaf.producer.as_field().is_some() {
         gather_rotated_leaf_into_region(region, leaf, block_min_abs, density, voxels_per_block);
@@ -690,11 +690,11 @@ pub(crate) fn compose_leaf_into_region(
     debug_assert!(
         in_phase,
         "an out-of-phase (rotated or sub-voxel-seated) fieldless producer cannot reach the \
-         forward-emit path (ADR 0027)"
+         forward-emit path"
     );
 
     // Resolve JUST this block's window in the leaf's producer-local voxel-index frame
-    // (ADR 0027: the inverse affine `abs_box_to_producer_local`, exact for the axis-aligned
+    // (the inverse affine `abs_box_to_producer_local`, exact for the axis-aligned
     // leaves that reach here).
     let block_abs = VoxelAabb::new(
         block_min_abs,
@@ -709,7 +709,7 @@ pub(crate) fn compose_leaf_into_region(
     leaf.producer
         .resolve_into(&mut local, voxels_per_block, window_local);
 
-    // ADR 0017 (#75): an Intersect leaf keeps ONLY the accumulator cells its body also
+    // An Intersect leaf keeps ONLY the accumulator cells its body also
     // covers in this block. Collect the body's block-local cells, then sweep the whole
     // block-local extent clearing every occupied cell the body misses — surviving cells
     // keep the render key they already carry (the mask never stamps). A body whose box
@@ -719,7 +719,7 @@ pub(crate) fn compose_leaf_into_region(
         let mut body_covers: std::collections::HashSet<[u32; 3]> =
             std::collections::HashSet::with_capacity(local.occupied.len());
         for voxel in &local.occupied {
-            // ADR 0027: the voxel's index is in the producer's local frame; map it to absolute
+            // The voxel's index is in the producer's local frame; map it to absolute
             // via the forward affine (exact for an axis-aligned leaf) before rebasing to block-local.
             let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
             let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
@@ -737,14 +737,14 @@ pub(crate) fn compose_leaf_into_region(
     // local index is in the LEAF's frame, so shift back to block-local by adding the
     // leaf offset and subtracting the block's absolute low corner.
     for voxel in &local.occupied {
-        // ADR 0027: map the producer-local index into absolute via the forward affine, then
-        // rebase to block-local. Identity leaves reproduce the old `index + offset − block`.
+        // Map the producer-local index into absolute via the forward affine, then rebase
+        // to block-local. An identity leaf reproduces a plain `index + offset − block`.
         let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
         let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
         if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
             continue; // Outside this block (the window clamps, but guard anyway).
         }
-        // ADR 0017: a Subtract leaf is an occupancy-only mask — every cell its
+        // A Subtract leaf is an occupancy-only mask — every cell its
         // body covers is CLEARED from the result accumulated so far in ITS scope.
         if leaf.operation == CombineOp::Subtract {
             region.set(
@@ -759,7 +759,7 @@ pub(crate) fn compose_leaf_into_region(
             Some(id) => id.0,
             None => voxel.block_id.0,
         };
-        // Stamp the cuboid mesher's RENDER-CELL key (ADR 0003 §3c): the clean
+        // Stamp the cuboid mesher's RENDER-CELL key: the clean
         // categorical id in the low bits, this leaf's on-face-grid overlay in the
         // dedicated bit. So `decompose_into_boxes` splits a box across differing
         // overlay states exactly like the dense mesher, and the E3 mesher reads the
@@ -777,14 +777,14 @@ pub(crate) fn compose_leaf_into_region(
     }
 }
 
-/// The ADR 0027 **inverse-resample gather** for a genuinely-rotated field producer: for each
+/// The **inverse-resample gather** for a genuinely-rotated field producer: for each
 /// absolute voxel in the block window, inverse-map its CENTER into the producer-local frame and
 /// test the field, applying the SAME per-operation logic the forward emit does (Union stamps,
 /// Subtract clears, Intersect keeps-only-covered). Only a FIELD producer (an SDF Tool, a sketch
-/// solid, a composed Part) reaches here — a fieldless producer is never continuously rotated
-/// (ADR 0027), so [`compose_leaf_into_region`] routes it to the forward-emit path.
+/// solid, a composed Part) reaches here — a fieldless producer is never continuously rotated,
+/// so [`compose_leaf_into_region`] routes it to the forward-emit path.
 ///
-/// Occupancy is exact per voxel (a rotation is an isometry, ADR 0027 §4): `local_if_covered`
+/// Occupancy is exact per voxel (a rotation is an isometry): `local_if_covered`
 /// samples the field the producer resolves, so the gathered set equals the forward-emitted turn
 /// wherever the rotation IS axis-aligned (proven by the gather-vs-permutation oracle test) and
 /// extends it smoothly to off-axis rotations.
@@ -799,13 +799,13 @@ pub(crate) fn gather_rotated_leaf_into_region(
     let field = leaf
         .producer
         .as_field()
-        .expect("the caller gathers only field producers (ADR 0027)");
+        .expect("the caller gathers only field producers");
 
     // The producer-local coordinate of a block-local voxel's CENTER, returned only when the
     // field classifies that center inside-or-on the surface. The `[f32; 3]` is handed to
     // `material_at` for a per-voxel-material producer.
     let local_if_covered = |x: u32, y: u32, z: u32| -> Option<[f32; 3]> {
-        // ADR 0027 §1 wandering origin: rebase the absolute cell against the leaf origin in i64
+        // Wandering origin: rebase the absolute cell against the leaf origin in i64
         // before the inverse rotation, so a far-out block keeps full sub-voxel precision.
         let abs_cell = [
             block_min_abs[0] + x as i64,
@@ -819,7 +819,7 @@ pub(crate) fn gather_rotated_leaf_into_region(
         (field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL).then_some(local)
     };
 
-    // ADR 0017 (#75): an Intersect leaf keeps ONLY the accumulator cells its body also covers.
+    // An Intersect leaf keeps ONLY the accumulator cells its body also covers.
     // Build the body-covers set from the gather, then reuse the exact clearing sweep the forward
     // path uses (surviving cells keep their render key; the mask never stamps). A body that
     // covers nothing clears the whole block — the block-local reading of `A ∩ ∅ = ∅`.
@@ -844,7 +844,7 @@ pub(crate) fn gather_rotated_leaf_into_region(
                 let Some(local) = local_if_covered(x, y, z) else {
                     continue;
                 };
-                // ADR 0017: a Subtract leaf is an occupancy-only mask — clear every covered cell.
+                // A Subtract leaf is an occupancy-only mask — clear every covered cell.
                 if leaf.operation == CombineOp::Subtract {
                     region.set(x, y, z, None);
                     continue;
@@ -868,7 +868,7 @@ pub(crate) fn gather_rotated_leaf_into_region(
 }
 
 /// Fold one CLOSED scope's composed block-local body into its parent accumulator under
-/// the scope's own operation (ADR 0017 Decision 3) — the [`VoxelRegion`] mirror of the
+/// the scope's own operation — the [`VoxelRegion`] mirror of the
 /// dense path's `fold_closed_scope_into`:
 ///
 /// * `Union` — every occupied cell of the body OVERWRITES the parent's cell (the body
@@ -876,7 +876,7 @@ pub(crate) fn gather_rotated_leaf_into_region(
 ///   overwrite is exactly the later-wins rule of the flat fold).
 /// * `Subtract` — every occupied cell of the body CLEARS the parent's cell
 ///   (occupancy-only; the body's render keys never enter the parent).
-/// * `Intersect` (#75) — the parent KEEPS ONLY the cells the body also occupies: every
+/// * `Intersect` — the parent KEEPS ONLY the cells the body also occupies: every
 ///   parent cell the body does NOT cover is cleared (occupancy-only; surviving cells
 ///   keep their parent render key). A body that composed to EMPTY clears the whole
 ///   parent — `A ∩ ∅ = ∅`, the ∅ identity of the substrate kernel.
@@ -911,9 +911,9 @@ fn fold_closed_scope_into_region(
 
 /// Whether EVERY cell on the face of `region` where axis `axis` (0=x/1=y/2=z) equals
 /// `fixed` is occupied. Sweeps the other two axes over their full extent, assembling
-/// each `(x, y, z)` so `cell_at`'s argument order is preserved exactly — the shared
-/// scan the three per-axis face checks used to open-code (the sweep ORDER is
-/// immaterial: "all cells occupied" is order-independent, the early return just prunes).
+/// each `(x, y, z)` so `cell_at`'s argument order is preserved exactly — the ONE scan the
+/// three per-axis face checks share (the sweep ORDER is immaterial: "all cells occupied"
+/// is order-independent, the early return just prunes).
 fn face_is_solid(region: &VoxelRegion, axis: usize, fixed: u32) -> bool {
     let extent = region.extent;
     let swept_a = (axis + 1) % 3;

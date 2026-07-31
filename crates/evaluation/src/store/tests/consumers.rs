@@ -1,14 +1,14 @@
 use super::*;
 
-// ===== Issue #20 S6c step 4: per-chunk render accessor ========================
+// ===== Per-chunk render accessor =============================================
 
-/// (S6c-2a parity) The union of `resident_render_chunks` (occupied cells +
+/// The union of `resident_render_chunks` (occupied cells +
 /// material_id, in each chunk's rebased frame) equals `resolve_region`'s
 /// assembled grid BYTE-FOR-BYTE, AND each returned coord is the absolute chunk
 /// coord that owns its grid's voxels, AND the coord set equals the scene's
 /// `covering_chunk_range`.
 fn assert_render_chunks_match_resolve_region(scene: &Scene, voxels_per_block: u32, label: &str) {
-    // The truth: the assembled monolithic grid the renderer consumes today.
+    // The truth: the assembled monolithic grid the renderer consumes.
     let mut region_cache = Store::new();
     let assembled = region_cache.resolve_region(scene, voxels_per_block, 0);
 
@@ -146,7 +146,7 @@ fn render_chunks_empty_for_part_only_scene() {
     );
 }
 
-/// **ADR 0002 S4b — origin-rebased rendering, far-offset precision.** A box
+/// **Origin-rebased rendering, far-offset precision.** A box
 /// placed a HUGE distance from the origin must resolve to a grid whose voxel
 /// positions are **byte-identical** to the SAME box at the origin — because the
 /// render frame is rebased to the floating origin (= the composite recenter) in
@@ -154,12 +154,11 @@ fn render_chunks_empty_for_part_only_scene() {
 /// data.
 ///
 /// The offset is **1_000_000 blocks** = 16_000_000 voxels at density 16, PAST the
-/// f32 exact-integer ceiling (2²⁴ ≈ 16.7M). Under the OLD recenter-AFTER-f32-add
-/// path the absolute position `local + 1.6e7` lost the voxel-center `.5` on EVERY
-/// voxel (the S1 far-lands jitter — verified at ~13% of the 3D viewport in the
-/// headless render). This test is the durable CPU regression guard that the
-/// rebased path keeps far == near to the LAST BIT (replacing S1's degraded
-/// far-offset behavior). The bit-exact key (`f32::to_bits`) fails on any sub-ULP
+/// f32 exact-integer ceiling (2²⁴ ≈ 16.7M). A recenter-AFTER-f32-add would put the
+/// absolute position `local + 1.6e7` past that ceiling and lose the voxel-center `.5`
+/// on EVERY voxel — far-lands jitter across ~13% of the 3D viewport. This test is the
+/// durable CPU regression guard that the rebased path keeps far == near to the LAST
+/// BIT. The bit-exact key (`f32::to_bits`) fails on any sub-ULP
 /// shift, so it would catch a regression that a rounded-voxel comparison misses.
 #[test]
 fn far_offset_resolves_byte_identical_to_near_after_rebase() {
@@ -186,7 +185,7 @@ fn far_offset_resolves_byte_identical_to_near_after_rebase() {
     assert_eq!(near.occupied_count(), far.occupied_count(), "same shape");
     assert!(near.occupied_count() > 0, "the box must resolve to voxels");
     // Every voxel-center `.5` fraction must survive the rebase (would be lost to
-    // f32 rounding at 1.6e7 under the old subtract-AFTER-f32 path).
+    // f32 rounding at 1.6e7 under a subtract-AFTER-f32 path).
     for voxel in &far.occupied {
         let position = voxel.world_position();
         for axis in 0..3 {
@@ -224,7 +223,7 @@ fn part_only_scene_resolves_empty_through_cache() {
     assert_eq!(assembled.occupied_count(), 0);
 }
 
-// ===== Issue #20 S6d: region-scoped consumers =================================
+// ===== Region-scoped consumers ===============================================
 
 /// The whole-grid diameter readout for a scene's full active region — the
 /// reference value the region-scoped variants must reproduce.
@@ -242,7 +241,7 @@ fn assert_region_widest_run_matches_whole_grid(scene: &Scene, vpb: u32, label: &
     // Z-up: layers are Z-slices, so the band spans the Z dimension (index 2).
     let grid_z = dims[2];
     // A spread of bands: the whole stack, the bottom layer, the top layer, the
-    // exact mid-Z layer (the old slice), a thin interior band, and an
+    // exact mid-Z layer, a thin interior band, and an
     // out-of-range band (above the grid → empty).
     let mid = grid_z.saturating_sub(1) / 2;
     let bands = [
@@ -264,7 +263,7 @@ fn assert_region_widest_run_matches_whole_grid(scene: &Scene, vpb: u32, label: &
     }
 }
 
-/// **Far-offset diameter (issue #20 Step 2).** Two 3-block boxes 20,000 blocks
+/// **Far-offset diameter.** Two 3-block boxes 20,000 blocks
 /// apart on X: the composite is centered ~10,000 blocks out, so each box sits
 /// ~160,000 voxels from the recentered origin — far beyond any object the camera
 /// frames, while keeping the whole-grid reference cheap. The live diameter readout

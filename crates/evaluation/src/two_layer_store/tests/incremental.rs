@@ -1,6 +1,6 @@
 use super::*;
 
-// ===== ADR 0010 #54: chunk-granular INCREMENTAL edits on the two-layer path ======
+// ===== Chunk-granular INCREMENTAL edits on the two-layer path ==================
 //
 // Mirrors `store.rs::incremental_rebuild_equals_full_rebuild_for_every_edit_kind`:
 // for every edit kind, the two-layer resident cache after an INCREMENTAL edit
@@ -165,7 +165,7 @@ fn incremental_two_layer_equals_full_rebuild_for_every_edit_kind() {
         ("remove", b)
     };
     let operation_flip = {
-        // ADR 0017 (#73): flip the subject Union→Subtract — it becomes a cutter
+        // Flip the subject Union→Subtract — it becomes a cutter
         // (here carving nothing, so its own chunks empty out). The flip must be
         // localizable (the operation is part of the leaf fingerprint, so the diff
         // dirties exactly the leaf's AABB) and the dirtied chunks must
@@ -219,10 +219,10 @@ fn incremental_two_layer_equals_full_rebuild_for_every_edit_kind() {
 }
 
 /// Perf probe (block-row-dedup regression guard): the full-band diameter re-measure —
-/// the query that fires when the layer band or grid changes. Before the ADR 0010 E5
-/// block-row dedup this was O(volume) (a coarse block stamped all `d²` of its voxel rows):
-/// 130ms @800³ → 127s @8000³, freezing the main thread. After, it is O(total blocks) and
-/// runs on the background diameter worker (never the UI thread). Reports wall-clock across
+/// the query that fires when the layer band or grid changes. Without the block-row dedup
+/// this is O(volume) (a coarse block stamps all `d²` of its voxel rows): 130ms @800³ →
+/// 127s @8000³, freezing the main thread. With it, the query is O(total blocks) and runs on
+/// the background diameter worker (never the UI thread). Reports wall-clock across
 /// four solid-cube edge lengths. Run:
 /// `cargo test --release widest_run_scaling_probe -- --ignored --nocapture`.
 #[test]

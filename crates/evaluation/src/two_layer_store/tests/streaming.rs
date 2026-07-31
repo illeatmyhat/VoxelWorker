@@ -1,8 +1,8 @@
 use super::*;
 
-// ===== ADR 0010 E4: cacheless STREAMING diameter / widest-run query ===========
+// ===== Cacheless STREAMING diameter / widest-run query =======================
 
-/// The whole-grid diameter readout — today's reference value the streamed query
+/// The whole-grid diameter readout — the reference value the streamed query
 /// must reproduce (same as `store.rs::whole_grid_widest_run`).
 fn whole_grid_widest_run(scene: &Scene, vpb: u32, band: (u32, u32)) -> u32 {
     let region = scene.full_extent_blocks(vpb);
@@ -10,8 +10,8 @@ fn whole_grid_widest_run(scene: &Scene, vpb: u32, band: (u32, u32)) -> u32 {
     grid.widest_run_in_band(band.0, band.1)
 }
 
-/// **THE E4 diameter PARITY GATE:** the STREAMED widest-run (coarse blocks accounted
-/// ANALYTICALLY, boundary per-voxel) equals today's dense
+/// **THE diameter PARITY GATE:** the STREAMED widest-run (coarse blocks accounted
+/// ANALYTICALLY, boundary per-voxel) equals the dense
 /// `VoxelGrid::widest_run_in_band` for the gated scene, across a spread of bands.
 /// Mirrors `store.rs::assert_region_widest_run_matches_whole_grid`.
 fn assert_streamed_widest_run_matches_dense(scene: &Scene, vpb: u32, label: &str) {
@@ -259,7 +259,7 @@ fn streamed_widest_run_dissolves_6m_cap_with_analytic_coarse() {
              boundary {boundary_blocks})"
     );
     eprintln!(
-        "E4 analytic diameter: {coarse_blocks} coarse blocks (accounted run += d, \
+        "analytic diameter: {coarse_blocks} coarse blocks (accounted run += d, \
              {analytic_cells_elided} per-voxel cells ELIDED) vs {boundary_blocks} boundary \
              blocks (per-voxel); dense path would densify all {} region voxels",
         (blocks as u64 * density as u64).pow(3)

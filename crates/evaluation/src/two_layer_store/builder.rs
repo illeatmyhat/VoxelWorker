@@ -11,12 +11,11 @@ use voxel_core::spatial_index::{EditBroadphaseBvh, VoxelAabb};
 #[allow(unused_imports)]
 use super::*;
 
-/// The capability that builds the [`TwoLayerChunk`] display cache from the one evaluator
-/// (ADR 0010 Decision 3 / 6). Every live caller constructs it via [`enabled`](Self::enabled)
-/// — E3's mesher, the export/diameter workers, and `shot` — because ADR 0010 E5 landed the
-/// two-layer path as the SOLE runtime display path; the dense [`crate::store::Store`] path
-/// is retired to a test-and-golden oracle (see the module docs' "Status" section). The
-/// `Default`-constructed, disabled instance survives for the tests that pin the
+/// The capability that builds the [`TwoLayerChunk`] display cache from the one
+/// evaluator. Every live caller — the mesher, the export/diameter workers, and `shot` —
+/// constructs it via [`enabled`](Self::enabled), because the two-layer path is the SOLE
+/// runtime display path and the dense [`crate::store::Store`] path is a test-and-golden
+/// oracle. The `Default`-constructed, disabled instance exists for the tests that pin the
 /// off-behavior ([`build_chunk`](Self::build_chunk) returning `None`).
 ///
 /// It is a thin, stateless builder (no resident cache of its own — every call
@@ -24,7 +23,7 @@ use super::*;
 /// resident cache built on top); a chunk is built on demand from the scene.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TwoLayerStore {
-    /// The capability flag (ADR 0010 Decision 6). `false` (the default) means the
+    /// The capability flag. `false` (the default) means the
     /// two-layer path is OFF and [`build_chunk`](Self::build_chunk) returns `None`, so a
     /// caller falls back to the dense path; `true` engages the boundary-aware build.
     enabled: bool,
@@ -42,7 +41,7 @@ impl TwoLayerStore {
         self.enabled
     }
 
-    /// Build the [`TwoLayerChunk`] for EVERY covering chunk of `scene` (ADR 0010 E3): the
+    /// Build the [`TwoLayerChunk`] for EVERY covering chunk of `scene`: the
     /// `(absolute_chunk_coord, chunk)` list the two-layer mesher
     /// (`CuboidMeshRenderer::new_from_two_layer_chunks`, up in the display layer) consumes,
     /// visited in the SAME z,y,x order the dense store assembles. Returns an empty list when
@@ -61,18 +60,18 @@ impl TwoLayerStore {
         let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
             return Vec::new();
         };
-        debug_assert_eq!(lod, 0, "E2 only builds full resolution (lod 0)");
-        // #63: HOIST the leaf list out of the per-chunk build — compute it ONCE (re-walking
-        // the node tree + cloning every producer per covering chunk was the O(objects²) sink)
-        // and share the read-only slice across the parallel build. Then the EDIT BROADPHASE
-        // (#66, ADR 0011 Decision 4b): a stateless per-build BVH over the leaf world-AABBs;
+        debug_assert_eq!(lod, 0, "only full resolution (lod 0) builds");
+        // HOIST the leaf list out of the per-chunk build — compute it ONCE (re-walking the
+        // node tree + cloning every producer per covering chunk is an O(objects²) sink) and
+        // share the read-only slice across the parallel build. Then the EDIT BROADPHASE:
+        // a stateless per-build BVH over the leaf world-AABBs;
         // each chunk queries its own box and is classified against only the overlapping
         // candidates, keeping the build ~O(chunks × (log leaves + candidates)).
         // Each covering chunk is built independently from the (read-only, `Sync`) leaf
-        // slice + broadphase (#57), enumerated in the SAME z,y,x order the dense store
+        // slice + broadphase, enumerated in the SAME z,y,x order the dense store
         // assembles. The `Arc`-wrapped chunks hand to the mesh / brick / fog readers and
         // move into the async `GeometryRebuildRequest` with O(1) refcount bumps — never a
-        // deep `TwoLayerChunk` copy (ADR 0011 G3).
+        // deep `TwoLayerChunk` copy.
         let leaves = scene.leaf_producers(voxels_per_block);
         let broadphase = leaf_edit_broadphase(&leaves, voxels_per_block);
         let coords = enumerate_covering_chunk_coords(min_chunk, max_chunk);
@@ -84,7 +83,7 @@ impl TwoLayerStore {
     /// returned chunk is in chunk-local frame; [`TwoLayerChunk::expand_occupancy_into`]
     /// rebases it to match the dense store.
     ///
-    /// `lod` is the parked LOD seam (always `0`), kept for call-site symmetry with the
+    /// `lod` is the LOD seam (always `0`), kept for call-site symmetry with the
     /// dense store.
     pub fn build_chunk(
         &self,
@@ -93,7 +92,7 @@ impl TwoLayerStore {
         voxels_per_block: u32,
         lod: u32,
     ) -> Option<TwoLayerChunk> {
-        debug_assert_eq!(lod, 0, "E2 only builds full resolution (lod 0)");
+        debug_assert_eq!(lod, 0, "only full resolution (lod 0) builds");
         if !self.enabled {
             return None;
         }
@@ -103,7 +102,7 @@ impl TwoLayerStore {
 
 /// Enumerate every covering chunk coord in the inclusive `[min_chunk, max_chunk]` range,
 /// in the SAME z,y,x order (X fastest, then Y, then Z) the dense store assembles them. This
-/// materialises the coords into a `Vec` so the wholesale build (#57) can `into_par_iter()`
+/// materialises the coords into a `Vec` so the wholesale build can `into_par_iter()`
 /// them and `.collect()` back into an identically-ordered result.
 pub(crate) fn enumerate_covering_chunk_coords(
     min_chunk: [i32; 3],
@@ -121,7 +120,7 @@ pub(crate) fn enumerate_covering_chunk_coords(
 }
 
 /// Build `coords` into `(coord, Arc<chunk>)` pairs in parallel from the read-only,
-/// `Sync` leaf slice + edit broadphase (#57 / #63 / #66): each coord queries its own
+/// `Sync` leaf slice + edit broadphase: each coord queries its own
 /// candidate leaves and is classified against only those. A parallel `.collect()`
 /// preserves ordering, so the result is byte-identical to a serial build regardless of
 /// thread count. Shared by the wholesale builder ([`TwoLayerStore::build_covering_chunks`])
@@ -147,21 +146,21 @@ pub(crate) fn build_chunks_parallel(
 /// region-spanning VoxelBody (the cloud field) reports its composite-region `full_dimensions`, so
 /// its box correctly spans every chunk it fills.
 ///
-/// ADR 0027: an oriented leaf's world extent must enclose its **continuously rotated** grid, not
-/// just the discrete lattice turn — so this delegates to [`leaf_world_box`],
-/// the ONE rotation-aware extent the classifier folds through. (It formerly used the lattice
-/// `orientation.turn_extent`, which is blind to the ADR 0027 quaternion: a leaf with an identity
-/// lattice orientation but a non-identity continuous rotation — a tube seated on a curved surface —
-/// reserved an UPRIGHT box, so the edit broadphase dropped it from every chunk its tilted body
-/// occupied beyond that box, truncating the tube. The two must agree box-for-box, and now do.)
+/// An oriented leaf's world extent must enclose its **continuously rotated** grid, not just
+/// the discrete lattice turn, so this delegates to [`leaf_world_box`] — the ONE
+/// rotation-aware extent the classifier folds through. The lattice `orientation.turn_extent`
+/// is blind to the quaternion: a leaf with an identity lattice orientation but a non-identity
+/// continuous rotation — a tube seated on a curved surface — would reserve an UPRIGHT box, and
+/// the edit broadphase would drop it from every chunk its tilted body occupies beyond that box,
+/// truncating the tube. The two must agree box-for-box.
 pub(crate) fn leaf_world_aabb(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
     super::classify::leaf_world_box(leaf, voxels_per_block)
 }
 
-/// **The edit broadphase over a scene's leaves (#66, ADR 0011 Decision 4b).** Build the
+/// **The edit broadphase over a scene's leaves.** Build the
 /// stateless per-build [`EditBroadphaseBvh`] over every leaf's world AABB, indexed by the
 /// leaf's position in `leaves` (document order). Rebuilt from scratch on every wholesale
-/// build / edit — never persisted across edits (no invalidation obligation, the C1 lesson).
+/// build / edit — never persisted across edits, so there is no invalidation obligation.
 pub(crate) fn leaf_edit_broadphase(
     leaves: &[LeafProducer],
     voxels_per_block: u32,
@@ -201,8 +200,8 @@ pub(crate) fn chunk_world_voxel_aabb(chunk_coord: [i32; 3], voxels_per_block: u3
 /// block in it, so a chunk classified against only its overlapping candidates is
 /// byte-identical to one classified against all leaves (the per-block AABB tests inside the
 /// classifier already narrow further per block — the broadphase just hands them a smaller
-/// exact-superset set). An INTERSECT-influence leaf (ADR 0017 #75,
-/// [`LeafProducer::masks_beyond_bounds`]) breaks that argument — its mask kills cells
+/// exact-superset set). An INTERSECT-influence leaf
+/// ([`LeafProducer::masks_beyond_bounds`]) breaks that argument — its mask kills cells
 /// anywhere OUTSIDE its box — so every such leaf is kept in EVERY chunk's candidate set
 /// regardless of overlap (merged back in at its document-order position; the per-block
 /// filters downstream apply the same keep rule).
@@ -232,13 +231,13 @@ pub(crate) fn chunk_candidate_leaves<'leaf_slice>(
 }
 
 /// Build one chunk's two-layer representation by classifying every block and resolving the
-/// boundary blocks per-voxel (the evaluator → display-cache step, ADR 0010 Decision 3).
+/// boundary blocks per-voxel — the evaluator → display-cache step.
 ///
 /// Stateless single-chunk entry (tests, incremental single-chunk rebuild): it computes the
 /// scene's leaf list itself, then delegates to [`build_two_layer_chunk_from_leaves`]. The
 /// BULK paths ([`TwoLayerStore::build_covering_chunks`],
 /// [`TwoLayerResidentCache::resident_two_layer_chunks`]) hoist `leaf_producers` out of the
-/// per-chunk loop (#63) and pass a pre-filtered candidate slice into
+/// per-chunk loop and pass a pre-filtered candidate slice into
 /// [`build_two_layer_chunk_from_leaves`] directly — so the O(chunks) tree-walk + producer
 /// clone never happens per chunk there.
 pub(crate) fn build_two_layer_chunk(
@@ -252,12 +251,12 @@ pub(crate) fn build_two_layer_chunk(
 }
 
 /// Build one chunk's two-layer representation from a pre-computed leaf candidate slice — the
-/// hoisted core of [`build_two_layer_chunk`] (#63).
+/// hoisted core of [`build_two_layer_chunk`].
 ///
 /// `leaves` MUST be a document-order subsequence of `scene.leaf_producers(voxels_per_block)`
 /// (a filter, never a reorder) that INCLUDES every leaf whose world AABB overlaps this chunk
-/// AND every Intersect-influence leaf regardless of overlap (ADR 0017 #75,
-/// [`LeafProducer::masks_beyond_bounds`] — a mask affects cells outside its own box). The
+/// AND every Intersect-influence leaf regardless of overlap
+/// ([`LeafProducer::masks_beyond_bounds`] — a mask affects cells outside its own box). The
 /// edit broadphase ([`chunk_candidate_leaves`]) guarantees exactly that: a Union/Subtract
 /// leaf whose AABB does NOT overlap the chunk cannot affect ANY block in it (the per-block
 /// AABB tests inside [`classify_chunk_block`] / [`resolve_boundary_block`] would skip it
@@ -276,7 +275,7 @@ pub(crate) fn build_two_layer_chunk_from_leaves(
         chunk_coord[2] as i64 * chunk_extent_voxels,
     ];
 
-    // CHUNK-GRANULAR INTERVAL FAST PATH (ADR 0010 Decision 2): decide the whole chunk from
+    // CHUNK-GRANULAR INTERVAL FAST PATH: decide the whole chunk from
     // ONE composed interval at the chunk cell. A solid interior chunk is 1 interval call
     // instead of 64 per-block calls — the O(volume) → O(surface) win for large solids.
     // Only a verdict that PROVABLY implies the identical per-block outcome short-circuits;
@@ -346,7 +345,7 @@ pub(crate) fn build_two_layer_chunk_per_block(
                         chunk.coarse[flat] = Some(block_id);
                         // A coarse-solid block is owned by EXACTLY ONE leaf (the classifier
                         // forces multi-leaf overlaps to boundary), so its on-face-grid
-                        // overlay (ADR 0003 §3c) is that single leaf's `grid_overlay`.
+                        // overlay is that single leaf's `grid_overlay`.
                         chunk.coarse_overlay[flat] =
                             single_overlapping_leaf_overlay(leaves, block_abs, voxels_per_block);
                     }

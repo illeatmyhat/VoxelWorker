@@ -5,11 +5,11 @@ use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-// ---- ADR 0017 (#73): the ordered fold's Subtract role through the CLASSIFIER ----
+// ---- The ordered fold's Subtract role through the CLASSIFIER ----
 //
 // The dense oracle's subtract semantics are pinned in the document crate
 // (`scene::tests::subtract`); these tests hold the two-layer interval
-// classification + boundary resolve against that oracle (the ADR 0010 parity
+// classification + boundary resolve against that oracle (the parity
 // pattern), and pin the conservative re-classification a cutter forces: a
 // coarse-solid block under a Subtract must degrade to boundary or air, never
 // over-claim.
@@ -45,7 +45,7 @@ fn sphere_tool(
     node
 }
 
-/// THE GATE for the subtract slice (issue #73 acceptance): the two-layer
+/// THE GATE for subtract: the two-layer
 /// classification + boundary resolve after a subtract is occupancy-IDENTICAL to
 /// the dense brute-force oracle, across the carve geometries that stress each
 /// classifier path (coarse→boundary degradation, whole-block carve to air, a
@@ -70,9 +70,8 @@ fn round_trip_matches_dense_for_subtract_scenes() {
     ]);
     assert_two_layer_round_trip_matches_dense(&scene, DENSITY, "subtract-corner");
 
-    // (2) Interior cavity — the cutter is wholly INSIDE the body, so previously
-    // coarse-solid interior blocks must re-classify (a carve the mesh alone
-    // could never show without re-classification).
+    // (2) Interior cavity — the cutter is wholly INSIDE the body, so coarse-solid interior
+    // blocks must re-classify (a carve the mesh alone could never show).
     let scene = Scene::from_nodes(vec![
         box_tool(
             [4, 4, 4],
@@ -145,7 +144,7 @@ fn round_trip_matches_dense_for_subtract_scenes() {
     assert_two_layer_round_trip_matches_dense(&scene, DENSITY, "subtract-before-noop");
 }
 
-/// Conservative RE-classification (ADR 0017 Decision 6): under a cutter, a block
+/// Conservative RE-classification: under a cutter, a block
 /// that classified coarse-solid must degrade toward boundary/air — and a block
 /// only a cutter overlaps is provably air (nothing accumulated to carve).
 #[test]

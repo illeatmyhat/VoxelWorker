@@ -5,12 +5,12 @@ use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-// ---- ADR 0017 (#75): the ordered fold's Intersect role through the CLASSIFIER ----
+// ---- The ordered fold's Intersect role through the CLASSIFIER ----
 //
 // The dense oracle's intersect semantics are pinned in the document crate
 // (`scene::tests::intersect`); these tests hold the two-layer interval
-// classification + boundary resolve against that oracle (the ADR 0010 parity
-// pattern), and pin the conservative bound algebra of ADR 0017 Decision 6: a mask
+// classification + boundary resolve against that oracle (the parity
+// pattern), and pin the conservative bound algebra: a mask
 // may keep a coarse-solid verdict only where solidity is PROVEN, degrades grazed
 // blocks to boundary, and kills blocks outside its body — including blocks its own
 // AABB never touches (the never-dropped-mask rule).
@@ -46,7 +46,7 @@ fn sphere_tool(
     node
 }
 
-/// THE GATE for the intersect slice (issue #75 acceptance): the two-layer
+/// THE GATE for intersect: the two-layer
 /// classification + boundary resolve after an intersect is occupancy-IDENTICAL to
 /// the dense brute-force oracle, across the mask geometries that stress each
 /// classifier path (the plain overlap, a curved mask, a mask whose AABB misses
@@ -198,7 +198,7 @@ fn round_trip_matches_dense_for_intersect_scenes() {
     assert_two_layer_round_trip_matches_dense(&scene, DENSITY, "sealed-intersect");
 }
 
-/// Conservative bound algebra (ADR 0017 Decision 6): under a mask, a coarse-solid
+/// Conservative bound algebra: under a mask, a coarse-solid
 /// block may STAY coarse only where the fold PROVES both bodies deeply solid; a
 /// block the mask's surface grazes must degrade (boundary — never over-claim), and
 /// a block outside the mask's body is provably air — even when the mask's own AABB

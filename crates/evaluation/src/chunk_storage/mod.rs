@@ -1,6 +1,6 @@
-//! Lossless compressed storage for a single resolved chunk grid (issue #20 S6a).
+//! Lossless compressed storage for a single resolved chunk grid.
 //!
-//! The out-of-core store (#20) needs a compact, serializable on-disk form for a
+//! The out-of-core store needs a compact, serializable on-disk form for a
 //! resolved per-chunk [`VoxelGrid`] (the grids [`crate::chunk_cache`] resolves and
 //! caches). A resolved chunk is almost always **mostly air** with only a handful of
 //! distinct materials, so the dense `dimensions³ × (position + material)` form a
@@ -12,13 +12,13 @@
 //! `decompress` on the next access. The round-trip is lossless, so no golden is
 //! affected by a chunk having spilled and reloaded.
 //!
-//! ## Why this is lossless (ADR 0003 §3a — the payload is already integer)
+//! ## Why this is lossless: the payload is already integer
 //!
-//! Since ADR 0003 §3a the per-voxel payload stores the voxel's INTEGER index
-//! (`Voxel::local_index`) directly — the f32 center is only ever reconstructed at
-//! consumption as `index + 0.5` ([`voxel_core::voxel::Voxel::world_position`]). This codec
-//! therefore consumes the stored integer DIRECTLY (it no longer reverse-engineers an
-//! index out of an f32 via `floor()` + a uniform fractional-part debug-assert). We store
+//! The per-voxel payload stores the voxel's INTEGER index (`Voxel::local_index`)
+//! directly — the f32 center is only ever reconstructed at consumption as `index + 0.5`
+//! ([`voxel_core::voxel::Voxel::world_position`]). This codec therefore consumes the
+//! stored integer DIRECTLY rather than reverse-engineering an index out of an f32 via
+//! `floor()`. We store
 //! the integer index relative to the chunk's min corner (in i64 so a far-placed chunk
 //! keeps full precision) and rebuild `local_index` as `min_corner + local`, the exact
 //! inverse. The `center_fraction` field is retained for on-disk-format stability and is
@@ -116,7 +116,7 @@ pub struct CompressedChunk {
     /// chunk.
     pub min_corner_voxels: [i64; 3],
     /// The shared fractional part of every occupied voxel center, per axis. Since the
-    /// payload is integer (ADR 0003 §3a) every reconstructed center is `index + 0.5`, so
+    /// payload is integer every reconstructed center is `index + 0.5`, so
     /// this is the constant `0.5` for a non-empty chunk (retained for on-disk-format
     /// stability). `[0.0; 3]` for an empty chunk.
     pub center_fraction: [f32; 3],
@@ -125,7 +125,7 @@ pub struct CompressedChunk {
     /// is row-major over these spans.
     pub box_spans: [u32; 3],
     /// The distinct categorical `block_id`s present (as `u16`), in first-seen scan order,
-    /// no duplicates (ADR 0003 §3a — the block palette, not a 3-value material).
+    /// no duplicates — the block palette, not a 3-value material.
     pub material_palette: Vec<u16>,
     /// The occupancy payload (sparse or dense — whichever is smaller).
     pub occupancy: Occupancy,
@@ -165,7 +165,7 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
         };
     }
 
-    // ADR 0003 §3a: every resolved voxel center is `index + 0.5` (the payload now stores
+    // Every resolved voxel center is `index + 0.5` (the payload stores
     // the integer `local_index` directly), so the shared per-axis fractional offset is a
     // constant `0.5` — there is nothing to reverse-engineer out of an f32 any more. Kept
     // as a stored field so the on-disk format is stable and `decompress` rebuilds the
@@ -173,7 +173,7 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
     let center_fraction = [0.5f32; 3];
 
     // 1) Occupied bounding box in the grid's integer index space (read DIRECTLY from the
-    //    stored `local_index`, no f32 round-trip — ADR 0003 §3a: the codec consumes the
+    //    stored `local_index`, no f32 round-trip: the codec consumes the
     //    integer rather than recovering it from a position).
     let mut min_corner = [i64::MAX; 3];
     let mut max_corner = [i64::MIN; 3];
@@ -191,7 +191,7 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
     ];
 
     // 2) Block palette: distinct categorical block ids, first-seen order, de-duplicated
-    //    (ADR 0003 §3a — the palette indexes the categorical cell, not a 3-value material).
+    //    (the palette indexes the categorical cell, not a 3-value material).
     let mut material_palette: Vec<u16> = Vec::new();
     for voxel in &grid.occupied {
         if !material_palette.contains(&voxel.block_id.0) {
@@ -328,9 +328,9 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
     let span_xy = span_x as u64 * span_y as u64;
     let min_corner = compressed.min_corner_voxels;
 
-    // Rebuild the INTEGER index of a cell at row-major local index `linear` (ADR 0003
-    // §3a: the payload stores the integer directly, so the codec restores it directly —
-    // `world_position()` reconstructs the `index + 0.5` center at consumption). The
+    // Rebuild the INTEGER index of a cell at row-major local index `linear`. The payload
+    // stores the integer directly, so the codec restores it directly, and
+    // `world_position()` reconstructs the `index + 0.5` center at consumption. The
     // stored `center_fraction` is the constant 0.5 and is asserted, not used to rebuild.
     debug_assert!(
         compressed
