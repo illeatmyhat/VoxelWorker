@@ -1,4 +1,4 @@
-//! The authored expression tree and its evaluator (ADR 0035 Decision 12).
+//! The authored expression tree and its evaluator.
 //!
 //! An expression is what the author *typed*, retained rather than collapsed to a number, so
 //! that `height = width * 2` survives as a relationship instead of decaying into two numbers

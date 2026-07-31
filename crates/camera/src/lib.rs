@@ -2,10 +2,10 @@
 //!
 //! This crate holds the graphics **mathematics** of the viewer: the orbit camera
 //! rig and its control math, the perspective/orthographic projection matrices, the
-//! Autodesk ViewCube orientation model with its chrome and eased snaps, framing
-//! fit, screen-point → world ray unprojection, and Gribb–Hartmann frustum culling.
+//! view-cube orientation model with its chrome and eased snaps, framing fit,
+//! screen-point → world ray unprojection, and Gribb–Hartmann frustum culling.
 //! It is a sibling of `substrate` — a read-first library of well-known concepts
-//! under their literature names — but graphics-specific rather than pure CS.
+//! under the names they are known by — but graphics-specific rather than pure CS.
 //!
 //! ## The graphics-crate boundary law
 //!
@@ -31,11 +31,11 @@
 //!   (Shoemake, "ARCBALL", *Graphics Interface* 1992, lineage), pole-continuous up
 //!   and roll, and bounding-box framing fit.
 //! * [`projection`] — look-at + perspective/orthographic projection and inverse-VP
-//!   unprojection (Akenine-Möller, Haines & Hoffman, *Real-Time Rendering*).
-//! * [`view_cube`] — the Autodesk ViewCube 26-orientation model, its screen chrome,
+//!   unprojection.
+//! * [`view_cube`] — the 26-orientation view-cube model, its screen chrome,
 //!   and the pure zone→action dispatch.
 //! * [`tween`] — eased angle interpolation (`easeInOutQuad`) and angle normalization.
-//! * [`frustum`] — Gribb–Hartmann plane extraction (2001) + Ericson positive-vertex
+//! * [`frustum`] — Gribb–Hartmann plane extraction + the positive-vertex
 //!   AABB culling (2005), over substrate's closed continuous [`substrate::spatial::RealAabb`]
 //!   (co-located there beside its half-open integer twin [`substrate::spatial::LatticeAabb`]).
 

@@ -9,22 +9,21 @@
 //! two). This module holds that geometry; the app maps the axes and signs to its
 //! ViewCube face vocabulary.
 //!
-//! ## Zone proportion (Signal spec)
+//! ## Zone proportion
 //!
-//! The center patch spans **68 %** of each face (16 % edge strips on either side) — the
-//! `docs/design/viewport-chrome-signal.md` proportion. The pick threshold and the
-//! renderer's drawn slice lines are BOTH derived from [`VIEW_CUBE_CENTER_PATCH_FRACTION`]
+//! The center patch spans **68 %** of each face, leaving 16 % edge strips on either side.
+//! The pick threshold and the renderer's drawn slice lines are BOTH derived from
+//! [`VIEW_CUBE_CENTER_PATCH_FRACTION`]
 //! so the picture is the hit-map: a fragment on a face is in the central zone exactly
 //! when its in-plane coordinate is within `±(0.68·half)` (the drawn 16 %/84 % slice
 //! lines sit on those same planes).
 //!
-//! ## Literature
+//! ## The intersection
 //!
-//! The intersection is the same **slab method** as [`substrate::spatial::Ray::intersect_box_slab`]
-//! (Kay & Kajiya 1986; Ericson 2005), but retained here in the variant that also reports
-//! the entered face's *axis and sign* — which the box-interval primitive does not surface
-//! — and that uses the picker's own `1e-6` parallel-axis guard. The cube itself is the
-//! Autodesk ViewCube widget (its orientation model lives in the `camera` crate).
+//! It is the same **slab method** as [`substrate::spatial::Ray::intersect_box_slab`]
+//! but retained here in the variant that also reports the entered face's *axis and sign*
+//! — which the box-interval primitive does not surface — and that uses the picker's own
+//! `1e-6` parallel-axis guard. The cube's orientation model lives in the `camera` crate.
 
 use glam::Vec3;
 use substrate::spatial::Ray;

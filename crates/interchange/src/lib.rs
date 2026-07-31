@@ -1,8 +1,8 @@
 //! Headless interchange: serialize the evaluated boundary set to external formats.
 //!
 //! This crate is the **export sink** — it takes the evaluation layer's classified two-layer
-//! chunks and writes them to formats other tools ingest. Today that is one writer: the
-//! MagicaVoxel [`vox_export`] `.vox` serializer the Vintage Story mod reads.
+//! chunks and writes them to formats other tools ingest — one writer so far, the
+//! MagicaVoxel [`vox_export`] `.vox` serializer.
 //!
 //! ## The law: interchange is headless — it never links wgpu
 //!
@@ -16,9 +16,8 @@
 //!
 //! It reads the SAME classified set every other sink reads — the sixth law, *classified once,
 //! consumed everywhere*: the mesh, the brick field, and this exporter all consume one evaluator's
-//! output, so the export can never disagree with what is drawn. See the Derivations layer in
-//! `docs/architecture/README.md` and `docs/design/per-layer-crates-extraction-map.md` (the
-//! interchange row) for provenance.
+//! output, so the export can never disagree with what is drawn. See the Derivations layer
+//! in `docs/architecture/README.md`.
 //!
 //! The dependency edge is one-way — `evaluation <- interchange <- {work, shell}` — and
 //! compile-enforced: interchange imports no display / work / shell / wgpu type.

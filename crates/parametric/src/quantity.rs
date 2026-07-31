@@ -1,5 +1,5 @@
 //! [`Quantity`] — an exact value that carries its own [`Dimension`], and the arithmetic the
-//! expression evaluator performs on it (ADR 0035 Decision 12).
+//! expression evaluator performs on it.
 //!
 //! This is the **dynamically typed** half of the quantity model. The statically typed half
 //! lives in [`units`](crate::units): a [`Measurement`] is always a

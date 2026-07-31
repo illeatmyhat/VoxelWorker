@@ -97,7 +97,7 @@ impl VoxelDda {
     /// zero, sign intact ([`substrate::spatial::guarded_direction`]). It is the ONLY
     /// direction the cursor sees: both the per-axis step sign and the boundary parameters
     /// come from it, so the two cannot disagree about which way an axis runs. Passing the
-    /// raw direction alongside it — as this used to — is what allowed that disagreement.
+    /// raw direction alongside it is what would allow that disagreement.
     ///
     /// `entry_point` and `entry_t` locate the ray's ENTRY into this lattice: the starting
     /// cell is `floor(entry_point / cell_edge)` and `t_cell_enter` starts at `entry_t`.
@@ -138,7 +138,7 @@ impl VoxelDda {
     /// MAX faces lands exactly on that face, so `floor(entry)` falls one cell PAST the box on
     /// that axis. A per-box-confined march (the brick's inner voxel DDA, whose bounds check
     /// then reads the seed as already-exited) would skip the box entirely — the grazing-rim
-    /// bug (2026-07-17). Because the ray genuinely occupies the clamped cell at `entry_t`, the
+    /// hazard. Because the ray genuinely occupies the clamped cell at `entry_t`, the
     /// clamp is always sound; `t_max` derives from the clamped cell so an empty seed steps on
     /// correctly. MUST stay mirrored by the WGSL inner voxel-DDA seed (`gpu_parity`).
     #[allow(clippy::too_many_arguments)]
@@ -275,7 +275,7 @@ impl VoxelDda {
 }
 
 /// Kani bounded-model-checking proofs of the box-entry invariant behind
-/// [`VoxelDda::seed_in_box`] (the grazing-rim fix, 2026-07-17). Unlike the differential
+/// [`VoxelDda::seed_in_box`]. Unlike the differential
 /// render / the deterministic sweep (which only catch the bug on the scenes they happen to
 /// sample), these verify the postcondition over the WHOLE bounded input space — every finite
 /// direction and entry point — so the guarantee does not depend on luck. `#[cfg(kani)]` keeps
@@ -620,12 +620,12 @@ mod tests {
             && cell.z <= hi_inclusive.z
     }
 
-    /// **The box-entry invariant behind [`VoxelDda::seed_in_box`]** (the grazing-rim fix,
-    /// 2026-07-17). A ray entering a box lands its FIRST in-box voxel at the SAME cell whether
+    /// **The box-entry invariant behind [`VoxelDda::seed_in_box`].**
+    /// A ray entering a box lands its FIRST in-box voxel at the SAME cell whether
     /// seeded box-confined or traversed by the unconfined flat DDA skipped forward into the box.
     /// A plain `floor(entry)` seed falls one cell PAST a MAX face at grazing (the entry
     /// coordinate sits exactly on the integer face), which a per-box-confined march then reads
-    /// as already-exited — the bug that block-stepped the tube rim. This sweeps the failure
+    /// as already-exited, which block-steps a tube rim. This sweeps the failure
     /// class DETERMINISTICALLY: every one of the six faces, entered at grazing incidence from a
     /// dense grid of directions and positions — so the guard does NOT depend on a differential
     /// render happening to sample a lucky scene+camera (which is how the head-on parity case

@@ -6,7 +6,7 @@
 //! and NEVER on the producer half — no `SdfShape`, no `VoxelProducer`, no
 //! `GeometryParams` (those live in the app-crate `voxel` module). That ⊥ is
 //! load-bearing: `voxel_core` cannot import the document layer, and the crate
-//! boundary now compile-enforces it.
+//! boundary compile-enforces it.
 //!
 //! Every value here obeys the project-wide Z-up coordinate convention (vertical = +Z,
 //! array index 2; ground = XY; front = −Y) — see `docs/architecture/01-document.md`.
@@ -14,26 +14,20 @@
 use glam::Vec3;
 
 /// CPU-only iso-surface threshold. A voxel is kept when its signed distance is
-/// at or below this level. NOT a uniform and NOT a UI slider (DEV_NOTES).
+/// at or below this level. NOT a uniform and NOT a UI slider.
 pub const SURFACE_ISOLEVEL: f32 = 0.0;
 
-/// Stability cap on the sampling grid volume. If
+/// Stability cap on a single shape's sampling grid volume. If
 /// `grid_x * grid_y * grid_z` exceeds this, the 3D rebuild is skipped (the panel
 /// shows a warning) so dragging a sphere to 16×16×16 @32 can't freeze the app.
 ///
-/// **Issue #27 S2 — no longer a whole-scene total cap.** The resolve is now
-/// chunked + lazy (see the app-crate `chunk_cache`), so the guard moved to a *per-chunk*
-/// bound: [`MAX_CHUNK_VOXELS`]. A scene whose TOTAL voxel count is far beyond this
-/// 6M figure now resolves fine, as long as each individual chunk is small. This
-/// constant is retained because the single-shape `exceeds_voxel_cap` guard still
-/// uses it (a lone shape resolved outside the chunk path), and the S2 tests
-/// reference it as the OLD total ceiling.
+/// This bounds a lone shape resolved outside the chunk path (`exceeds_voxel_cap`); the
+/// chunked resolve is bounded per chunk instead, by [`MAX_CHUNK_VOXELS`].
 pub const MAX_GRID_VOXELS: u64 = 6_000_000;
 
-/// Per-chunk voxel bound (ADR 0002 Decision 3, issue #27 S2): the most voxels a
-/// SINGLE chunk may hold. The deep chunked resolve (the app-crate `chunk_cache`) caps
-/// each chunk, not the whole scene — so total scene size is bounded only by how
-/// many chunks resolve, not by one 6M ceiling.
+/// Per-chunk voxel bound: the most voxels a SINGLE chunk may hold. The deep chunked
+/// resolve (the app-crate `chunk_cache`) caps each chunk, not the whole scene — so total
+/// scene size is bounded only by how many chunks resolve.
 ///
 /// One chunk's voxel CAPACITY is `(CHUNK_BLOCKS × voxels_per_block)³`: at the app
 /// default density 16 that is `64³ = 262_144` voxels, comfortably under this bound.
@@ -43,7 +37,7 @@ pub const MAX_CHUNK_VOXELS: u64 = 6_000_000;
 
 /// Whether one chunk's voxel CAPACITY at `voxels_per_block`
 /// (`(CHUNK_BLOCKS × voxels_per_block)³`) exceeds the per-chunk bound
-/// [`MAX_CHUNK_VOXELS`] (issue #27 S2). The chunked-resolve call sites reject a
+/// [`MAX_CHUNK_VOXELS`]. The chunked-resolve call sites reject a
 /// density this large (a single chunk alone would exceed the bound) instead of
 /// resolving it.
 pub fn chunk_extent_exceeds_bound(voxels_per_block: u32) -> bool {
@@ -52,9 +46,6 @@ pub fn chunk_extent_exceeds_bound(voxels_per_block: u32) -> bool {
 }
 
 /// The parametric primitive kinds (the shape dispatcher).
-///
-/// Milestone 2 only renders [`ShapeKind::Cylinder`], but the full set is
-/// implemented now because M3 needs them and the cost is trivial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ShapeKind {
     Cylinder,
@@ -88,64 +79,46 @@ impl ShapeKind {
 pub use crate::core_geom::{BlockAttrs, BlockId};
 
 /// The composite floating-origin recenter, in voxels — the frame value every display artifact of
-/// one rebuild is resolved in. **Now a substrate frame primitive** (co-located with the other
-/// coordinate-frame newtypes — [`TrueWorldVoxelPoint`](substrate::spatial::TrueWorldVoxelPoint) and
-/// friends — so the recenter point-crossings live in ONE audited place); re-exported here so the
-/// long-standing `voxel_core::voxel::RecenterVoxels` path keeps resolving.
+/// one rebuild is resolved in. A substrate frame primitive, co-located with the other
+/// coordinate-frame newtypes ([`TrueWorldVoxelPoint`](substrate::spatial::TrueWorldVoxelPoint) and
+/// friends) so the recenter point-crossings live in ONE audited place.
 pub use substrate::spatial::RecenterVoxels;
 
-/// One occupied voxel in the resolved grid (ADR 0003 §3a — the chunk-local integer +
-/// categorical block-palette cell).
+/// One occupied voxel in the resolved grid: the chunk-local integer index plus the
+/// categorical block-palette cell.
 ///
-/// **The per-voxel record carries an INTEGER index, never an f32 position.** ADR 0003
-/// §3a / ADR 0008 (the voxel-frame invariant): the absolute i64 origin lives ONLY in
-/// the grid's carried frame (the chunk key / `recenter_voxels`), and each cell stores
-/// its voxel index `[i, j, k]` *within that frame*. f32 is produced ONLY at consumption
-/// via [`world_position`](Voxel::world_position) (`index + 0.5`), reproducing exactly
-/// the half-integer voxel center the old f32 payload stored — but exactly, with no f32
-/// magnitude loss for a far-placed (origin-rebased) chunk. The stamp keeps the integer
-/// in i64 right up to the downcast to the field, so a far scene is exact rather than
-/// merely "exact for near scenes".
-///
-/// `block_local_coord` is `(i % voxels_per_block, …)` — the voxel's position *within*
-/// its block, needed by the M4 texture-slice shader. `block_id` is the categorical
-/// block-palette index (replacing the old 3-value `material_id` enum); `attrs` is the
-/// minimal forward-compat [`BlockAttrs`] placeholder (the typed stair-facing /
-/// connection schema of ADR 0003 §3a-bis stays deferred). The `GRID_OVERLAY_BIT`
-/// render flag is **no longer in this payload** — it is a per-draw / per-box render
-/// attribute (ADR 0003 §3c).
+/// **The per-voxel record carries an INTEGER index, never an f32 position.** The absolute
+/// i64 origin lives ONLY in the grid's carried frame (the chunk key / `recenter_voxels`),
+/// and each cell stores its voxel index `[i, j, k]` *within that frame*. f32 is produced
+/// ONLY at consumption via [`world_position`](Voxel::world_position) (`index + 0.5`). The
+/// stamp keeps the integer in i64 right up to the downcast to the field, so a far-placed
+/// chunk is exact rather than merely "exact for near scenes".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Voxel {
-    /// Voxel index within the grid's CARRIED frame (ADR 0008): the absolute origin
+    /// Voxel index within the grid's CARRIED frame: the absolute origin
     /// (chunk key / `recenter_voxels`) lives on the grid, this is the local integer
     /// index. `i32` carries any region-scoped index (recentered grids place index 0 at
     /// a negative position) with full precision and no f32 rounding.
     pub local_index: [i32; 3],
     /// Coordinate within the owning block: `(i % d, j % d, k % d)`.
     pub block_local_coord: [u8; 3],
-    /// Categorical block-palette id (ADR 0003 §3a). For the three procedural materials
-    /// this is the old `material_id` value (Stone/Wood/Plain ⇒ 0/1/2), so existing
-    /// scenes resolve byte-identically; the rich VS palette content stays deferred.
+    /// Categorical block-palette id. The three procedural materials are Stone/Wood/Plain
+    /// ⇒ 0/1/2.
     pub block_id: BlockId,
-    /// Typed per-`block_id` attributes (ADR 0003 §3a-bis). A minimal forward-compat
-    /// placeholder here; the orientation / variant / connection schema is deferred.
+    /// Typed per-`block_id` attributes.
     pub attrs: BlockAttrs,
-    /// **Transient render marker — NOT part of the categorical cell** (ADR 0003 §3c).
+    /// **Transient render marker — NOT part of the categorical cell.**
     /// The owning node's `grids.voxel_grid_on_faces` flag, carried so the cuboid mesher
-    /// can split a box on it and the draw can enable the on-face grid overlay. This is
-    /// the per-node render concern §3c removed from `block_id` (where the old
-    /// `GRID_OVERLAY_BIT` jammed it): it never rides the chunk-storage codec, the `.vox`
-    /// export, or the categorical id — it is a resolve→mesh render hint only, surfaced
-    /// to the shader as a dedicated overlay attribute, never masked out of the material.
+    /// can split a box on it and the draw can enable the on-face grid overlay. It never
+    /// rides the chunk-storage codec, the `.vox` export, or the categorical id — it is a
+    /// resolve→mesh render hint only, surfaced to the shader as a dedicated overlay
+    /// attribute, never masked out of the material.
     pub grid_overlay: bool,
 }
 
 impl Voxel {
-    /// The voxel center as an f32 position in the grid's carried frame — `index + 0.5`,
-    /// EXACTLY the half-integer center the retired `world_position: [f32; 3]` field
-    /// stored (ADR 0003 §3a: f32 produced only at consumption). Every consumer that
-    /// decoded the old f32 back to an integer (`floor`, `round(world + half − 0.5)`, …)
-    /// keeps working byte-identically because this reproduces the same `index + 0.5`.
+    /// The voxel center as an f32 position in the grid's carried frame — `index + 0.5`.
+    /// This is the only place f32 is produced; the stored index stays integer.
     #[inline]
     pub fn world_position(&self) -> [f32; 3] {
         [
@@ -156,16 +129,15 @@ impl Voxel {
     }
 
     /// The categorical block id as the color / atlas index the renderer + `.vox`
-    /// export use (today the 3-value palette maps 1:1 to the color index). Replaces
-    /// the old `material_id_color_index` mask now that the render flag is gone.
+    /// export use — the 3-value palette maps 1:1 to the color index.
     #[inline]
     pub fn color_index(&self) -> u16 {
         self.block_id.0
     }
 
     /// Compose this voxel's cuboid region-cell key: the clean categorical color index
-    /// in the low bits, the transient on-face-grid overlay marker in the high bit (ADR
-    /// 0003 §3c). The overlay bit lives ONLY in this render-side key — never in the
+    /// in the low bits, the transient on-face-grid overlay marker in the high bit.
+    /// The overlay bit lives ONLY in this render-side key — never in the
     /// persistent [`Voxel`] payload, the chunk-storage codec, or the `.vox` export. The
     /// cuboid mesher and every region builder decompose against this [`CellKey`], so a
     /// box splits across differing overlay flags without a render flag entering the
@@ -191,12 +163,12 @@ pub struct VoxelGrid {
     pub dimensions: [u32; 3],
     /// The integer voxel offset this grid's world positions were RECENTERED by
     /// (`Scene::resolve_region` subtracts it from
-    /// every voxel). **ADR 0008 — the carried frame.** A placed composite is recentered by
+    /// every voxel) — **the carried frame**. A placed composite is recentered by
     /// `(min+max)/2` (= `floor(dim/2)` for a lone producer); a VoxelBody-only / bare-producer
     /// grid is corner-anchored, so this is `[0,0,0]`. Carrying it lets every consumer
-    /// decode `world → index` correctly WITHOUT re-deriving the centering (the assumption
-    /// that, hard-coded as `floor(dim/2)`, made the fog drop a corner-anchored cloud
-    /// field). Default `[0,0,0]` is correct for any un-recentered grid.
+    /// decode `world → index` correctly WITHOUT re-deriving the centering, which a
+    /// hard-coded `floor(dim/2)` gets wrong for a corner-anchored grid. Default
+    /// `[0,0,0]` is correct for any un-recentered grid.
     pub recenter_voxels: [i64; 3],
     /// The occupied voxels (sparse).
     pub occupied: Vec<Voxel>,
@@ -218,26 +190,17 @@ impl VoxelGrid {
         self.occupied.len()
     }
 
-    // `voxel_index_of` — ADR 0008's world→index decode authority — was DELETED 2026-07-18.
-    // Its last consumer was the per-chunk volumetric fog, which ADR 0012 removed along with
-    // the rest of the fog subsystem; a survey found zero callers left in the tree, not even
-    // a test. The half of ADR 0008 that still binds is the CARRY half: `recenter_voxels`
-    // below travels with the grid, and the two-layer expansion applies it (see
-    // `core_geom::max_supported_block_offset` for the range over which that rebase is
-    // lossless). Nothing decodes world→index any more, because nothing holds a world
-    // position to decode — `Voxel` stores an integer `local_index` (ADR 0003 §3a) and f32 is
-    // produced only at consumption. Restore from git history if a consumer reappears; do not
-    // re-inline a `round(world + floor(dim/2) − 0.5)` at a call site, which is the (c)
-    // re-derive ADR 0008 forbids.
+    // Nothing decodes world→index, because nothing holds a world position to decode:
+    // `Voxel` stores an integer `local_index` and f32 is produced only at consumption. Do
+    // not re-inline a `round(world + floor(dim/2) − 0.5)` at a call site — that is the
+    // frame re-derivation `recenter_voxels` exists to prevent.
 
-    /// Measure the widest occupied voxel run (the diameter readout, issue #12),
+    /// Measure the widest occupied voxel run (the diameter readout),
     /// restricted to the layers `[band_min, band_max]` (inclusive) along Z (Z-up:
     /// layers are Z-slices). The "widest run" is the longest contiguous span of
-    /// occupied voxels along X within any single `(z, y)` row of the band — the same
-    /// measure the old 2D slice reported, but taken over the active band instead of
-    /// the mid-vertical layer.
+    /// occupied voxels along X within any single `(z, y)` row of the band.
     ///
-    /// Reads the RESOLVED grid — NOT the SDF — per `docs/adr/0006-authoring-truth-and-gpu-boundary.md`. Cheap: one
+    /// Reads the RESOLVED grid — NOT the SDF. Cheap: one
     /// pass over the sparse occupied list bucketed into per-(z,y)-row bitsets (the
     /// shared [`widest_run_over`] kernel, fed this grid's own `occupied` list).
     pub fn widest_run_in_band(&self, band_min: u32, band_max: u32) -> u32 {
@@ -245,7 +208,7 @@ impl VoxelGrid {
     }
 }
 
-/// Shared kernel for the two diameter readouts (issue #12 / #20 S6d): bucket every
+/// Shared kernel for the two diameter readouts: bucket every
 /// voxel in `voxels` into ONE occupancy row per `(z, y)`, keyed by its GLOBAL X index
 /// so a run crossing a chunk seam stays a single contiguous span in the same bitset,
 /// then return the widest contiguous X run within the Z-band `[band_min, band_max]`
@@ -309,19 +272,17 @@ fn widest_run_over<'voxel>(
     widest
 }
 
-/// **Region-scoped diameter readout (issue #20 S6d).** Compute the SAME value as
+/// **Region-scoped diameter readout.** Compute the SAME value as
 /// [`VoxelGrid::widest_run_in_band`] would return for the whole region, but from a
-/// SET of per-chunk grids instead of one assembled monolithic grid — so the
-/// scrubber/diameter consumer no longer needs the whole grid materialised once the
-/// S6c monolithic bridge is gone.
+/// SET of per-chunk grids instead of one assembled monolithic grid, so no consumer
+/// needs the whole grid materialized.
 ///
 /// `region_dimensions` are the region's voxel dimensions (`[grid_x, grid_y,
-/// grid_z]`), exactly what the assembled monolithic grid's `dimensions` would be —
-/// they define the X-axis width of each scan row and the half-extents used to
-/// recover integer grid indices from a voxel's centered `world_position`. The
+/// grid_z]`) — they define the X-axis width of each scan row and the half-extents used
+/// to recover integer grid indices from a voxel's centered `world_position`. The
 /// `chunk_grids` iterator yields each covering per-chunk grid whose voxels are in
-/// the SAME (recentered) coordinate frame the monolithic grid uses; only their
-/// `occupied` lists are read (each chunk's own `dimensions` are irrelevant here).
+/// the SAME (recentered) coordinate frame; only their `occupied` lists are read (each
+/// chunk's own `dimensions` are irrelevant here).
 ///
 /// ## How runs are stitched across chunk seams (the subtle part)
 ///
@@ -359,16 +320,13 @@ pub fn widest_run_in_band_over_chunks<'grid>(
 }
 
 /// Signed distance to an axis-aligned box with half-extents `box_half`.
-///
-/// `sdBox`, with descriptive names.
 pub fn signed_distance_box(point: Vec3, box_half: Vec3) -> f32 {
     let q = point.abs() - box_half;
     q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0)
 }
 
-/// Signed distance to an inscribed ellipsoid (IQ approximation).
-///
-/// `sdEllipsoid`.
+/// Signed distance to an inscribed ellipsoid — the standard gradient-normalized
+/// approximation, which is bounded but not exact.
 pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
     let scaled = point / semi_axes;
     let distance_to_unit = scaled.length();
@@ -382,9 +340,9 @@ pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
 
 /// Signed distance to an elliptical cylinder with its axis along Z (Z-up).
 ///
-/// `sdCylE(p, ax, ay, az)`: `semi_axis_x`/`semi_axis_y`
-/// are the cross-section radii (the cylinder's circular cross-section lies in the
-/// XY ground plane), `half_height` is the Z (vertical) half-extent.
+/// `semi_axis_x`/`semi_axis_y` are the cross-section radii (the cylinder's circular
+/// cross-section lies in the XY ground plane), `half_height` is the Z (vertical)
+/// half-extent.
 pub fn signed_distance_elliptical_cylinder(
     point: Vec3,
     semi_axis_x: f32,
@@ -397,7 +355,7 @@ pub fn signed_distance_elliptical_cylinder(
     radial.max(vertical).min(0.0) + glam::Vec2::new(radial.max(0.0), vertical.max(0.0)).length()
 }
 
-/// Dispatch to the right SDF for a shape kind (the `sdf(p)` dispatcher).
+/// Dispatch to the right SDF for a shape kind.
 ///
 /// `semi_axes` are the inscribed half-extents `(AX, AY, AZ)`; `wall_voxels` is
 /// `wall * density` (Tube only).
@@ -475,10 +433,8 @@ mod default_size_tests {
 mod categorical_block_id_tests {
     use super::*;
 
-    /// ADR 0003 §3a/§3c: the per-voxel cell carries the categorical `block_id` ONLY —
-    /// the color index IS the block id (no render flag sharing the field, no mask). The
-    /// three procedural materials keep their old ids (Stone/Wood/Plain ⇒ 0/1/2), so an
-    /// existing scene resolves byte-identically.
+    /// The per-voxel cell carries the categorical `block_id` ONLY — the color index IS
+    /// the block id, with no render flag sharing the field and no mask.
     #[test]
     fn color_index_is_the_block_id_no_flag_in_the_field() {
         for id in 0u16..=2 {
@@ -501,8 +457,8 @@ mod categorical_block_id_tests {
         }
     }
 
-    /// The reconstructed f32 center is exactly `index + 0.5` (ADR 0003 §3a: f32 produced
-    /// only at consumption), so `floor` recovers the stored integer index losslessly.
+    /// The reconstructed f32 center is exactly `index + 0.5`, so `floor` recovers the
+    /// stored integer index losslessly.
     #[test]
     fn world_position_reconstructs_index_plus_half() {
         for index in [[0, 0, 0], [3, 5, 7], [-4, -1, -9], [1234, -5678, 9012]] {

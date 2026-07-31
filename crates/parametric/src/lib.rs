@@ -2,7 +2,7 @@
 //!
 //! Everything the author *types* and the document *retains as an expression* rather than
 //! as a number. It is the substrate the constraint solver drives and the parameters panel
-//! edits (ADR 0029, ADR 0035 Decision 12).
+//! edits.
 //!
 //! ## The three layers
 //!
@@ -17,8 +17,8 @@
 //!
 //! The seam between the last two is the whole design: evaluate an expression, get a
 //! `Quantity`, check its dimension against the destination field's static type, then store
-//! or report. ADR 0029's one umbrella type is not withdrawn — it *is* the `Quantity`, with
-//! the static wrappers above it.
+//! or report. There is one umbrella quantity type — the `Quantity` — with the static
+//! wrappers above it.
 //!
 //! ## Exactness is a storage property, not a solver property
 //!
@@ -29,12 +29,11 @@
 //!
 //! This deliberately does **not** extend to the constraint solver above, which is
 //! floating-point by nature — Newton on transcendental residuals — and whose output lands
-//! back on an exactly representable value only where a `Quantize` constraint says it must
-//! (ADR 0035 Decisions 2 and 14).
+//! back on an exactly representable value only where a `Quantize` constraint says it must.
 //!
 //! ## Why it is its own crate
 //!
-//! `substrate` may not name a block or a voxel (ADR 0014), and `voxel_core` is the crate of
+//! `substrate` may not name a block or a voxel, and `voxel_core` is the crate of
 //! plain resolved *values* — a quantity that carries an unevaluated expression, a symbol
 //! table and a type system is not that. So this sits between them:
 //! `substrate ← parametric ← voxel_core ← the rest of the app`.

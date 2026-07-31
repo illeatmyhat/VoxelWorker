@@ -26,9 +26,7 @@
 //! ## The chapter it serves
 //!
 //! These values are the nouns the architecture's document layer is written in — see
-//! `docs/architecture/01-document.md` (producers, materials, units) for the timeless
-//! statement, and `docs/design/per-layer-crates-extraction-map.md` (the voxel_core
-//! row) for the dated provenance of each module.
+//! `docs/architecture/01-document.md` for producers, materials and units.
 //!
 //! ## Modules
 //!

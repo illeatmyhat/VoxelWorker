@@ -1,4 +1,4 @@
-//! Custom-folder block source — the user-action fallback (Milestone 6).
+//! Custom-folder block source — the user-action fallback.
 //!
 //! When auto-detection finds nothing (or the user wants a texture pack / a folder
 //! the detectors don't know), the "Connect folder…" button opens the OS folder

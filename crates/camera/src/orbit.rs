@@ -32,13 +32,13 @@ use crate::view_cube::{CubeFace, CUBE_FACES};
 pub(crate) const PERSPECTIVE_FOV_Y: f32 = std::f32::consts::FRAC_PI_4; // 45°
 
 /// Historical pole epsilon. **No longer used by the camera math** — the snaps and
-/// the drag clamp now reach the EXACT poles (`0` / `π`) and rely on
-/// [`OrbitCamera::up_vector`] for a true singular-frame up instead of nudging `phi`
-/// a hair short. Retained as a public constant for back-compat.
+/// the drag clamp reach the EXACT poles (`0` / `π`) and rely on
+/// [`OrbitCamera::up_vector`] for a true singular-frame up rather than nudging `phi`
+/// a hair short.
 pub const POLE_EPSILON: f32 = 0.0001;
 
-/// Drag clamp for `orbit_phi`. The drag now reaches the EXACT poles (`0.0` / `π`)
-/// and stops there: the view matrix no longer degenerates at the pole because
+/// Drag clamp for `orbit_phi`. The drag reaches the EXACT poles (`0.0` / `π`) and stops
+/// there: the view matrix does not degenerate at the pole, because
 /// [`OrbitCamera::up_vector`] supplies a true singular-frame up.
 const PHI_MIN: f32 = 0.0;
 const PHI_MAX: f32 = std::f32::consts::PI;
@@ -59,10 +59,9 @@ const UP_BLEND_BAND: f32 = 0.05;
 /// pole IS rotation about world Z, squarely inside the constrained family). The damping was
 /// forbidding the one motion the constraint permits.
 ///
-/// This is a Jacobian regularisation: the screen-drag → parameter map genuinely degenerates in
+/// This is a Jacobian regularization: the screen-drag → parameter map genuinely degenerates in
 /// `phi`/`theta` coordinates, and the floor papers over it. It is LOAD-BEARING, not scaffolding —
-/// constrained orbit keeps integrating in this chart by design (see the Orbit type entry in
-/// `docs/design/tool-modes-and-navigation.md`), so nothing later deletes it. Tune it by feel.
+/// constrained orbit integrates in this chart by design. Tune it by feel.
 const AZIMUTH_DAMPING_FLOOR: f32 = 0.3;
 
 /// Orthographic half-height factor relative to `orbit_distance` (`vh = distance *
@@ -86,11 +85,10 @@ pub enum ProjectionMode {
     Orthographic,
 }
 
-/// **How** the camera turns — Fusion's two orbit types.
+/// **How** the camera turns.
 ///
 /// Orthogonal to the pivot (*what* it turns around): all four combinations are meaningful, and
-/// `docs/design/tool-modes-and-navigation.md` keeps the two axes apart deliberately. This one
-/// says nothing about which point the rotation is anchored at.
+/// this one says nothing about which point the rotation is anchored at.
 ///
 /// Serialized at the application seam like [`ProjectionMode`] (this crate carries no serde).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -300,8 +298,8 @@ impl OrbitCamera {
 
     /// Is the view currently **constrained to a single face** (looking nearly
     /// head-on at one of the 6 faces, upright)? The ViewCube rotate arrows are a
-    /// face-relative 90°-step affordance, so — matching Fusion — they are only
-    /// offered when the view is face-on. An edge/corner/arbitrary-orbit view returns
+    /// face-relative 90°-step affordance, so they are only offered when the view is
+    /// face-on. An edge/corner/arbitrary-orbit view returns
     /// `false` (no rotate arrows). The test: the eye direction is within ~8° of the
     /// nearest face's outward normal AND the view is roughly upright (roll ≈ 0), so
     /// the four screen-aligned arrows map cleanly to the face's four neighbors.
@@ -405,9 +403,8 @@ impl OrbitCamera {
     }
 
     /// Orbit by a screen-space drag delta (left-drag): `phi -= dy * 0.01`, with
-    /// `phi` clamped to `[0, π]` — the drag reaches the EXACT poles and stops there
-    /// (Fusion "Constrained Orbit"). No degeneracy: [`Self::up_vector`] supplies a
-    /// true singular-frame up at the pole.
+    /// `phi` clamped to `[0, π]` — the drag reaches the EXACT poles and stops there.
+    /// No degeneracy: [`Self::up_vector`] supplies a true singular-frame up at the pole.
     ///
     /// Azimuth (`theta`) is damped by `sin(phi)` so the view doesn't "whip" sideways
     /// as it approaches a pole: the same horizontal drag sweeps a smaller arc the
@@ -441,7 +438,7 @@ impl OrbitCamera {
     /// **The guarantee, and it is exact.** Let `R` be the basis change the drag produced.
     /// Setting `target ← pivot + R·(target − pivot)` puts the eye at `pivot + R·(eye −
     /// pivot)`, because the eye is `target + direction·distance` and `R` is precisely what
-    /// carries the old view direction to the new one. The pivot's position *in camera
+    /// carries the prior view direction to the new one. The pivot's position *in camera
     /// coordinates* is then `Bᵀ(pivot − eye)` both before and after — the `R`s cancel — so
     /// the grabbed point does not move on screen, under either projection. That is the
     /// property the gesture is judged by: the surface under the cursor stays put and the
@@ -659,8 +656,8 @@ mod tests {
 
     #[test]
     fn drag_clamp_reaches_exact_poles() {
-        // Dragging straight up from near-pole should clamp to the EXACT top pole
-        // (phi = 0), not POLE_EPSILON and not the old 0.05 floor.
+        // Dragging straight up from near-pole clamps to the EXACT top pole (phi = 0),
+        // not to POLE_EPSILON.
         let mut camera = OrbitCamera {
             orbit_phi: 0.2,
             ..OrbitCamera::default()

@@ -1,9 +1,6 @@
-//! A spatial index over leaf nodes' world-AABBs (issue #27 S3).
-//!
-//! S2 made resolve chunk-addressable + cached, but invalidation stayed
-//! all-or-nothing: every edit `clear()`s the whole cache. S3 narrows that to
-//! **whole-chunk dirty invalidation** (ADR 0002 Decision 3): an edit dirties only
-//! the chunks whose AABB its world-AABB intersects.
+//! A spatial index over leaf nodes' world-AABBs, the basis of **whole-chunk dirty
+//! invalidation**: an edit dirties only the chunks whose AABB its world-AABB
+//! intersects.
 //!
 //! The domain seam for the substrate spatial primitives lives here:
 //!
@@ -12,9 +9,8 @@
 //!   chunk ownership (`floor(position / chunk_extent)`) live in. [`ChunkCoverage`] adds the domain-only
 //!   reading (a box → the chunk coordinates it touches) that substrate's pure box omits.
 //! * [`EditBroadphaseBvh`] — the domain name for substrate's `Bvh` used as THE edit
-//!   broadphase (ADR 0011 Decision 4b, #66): a per-build BVH over producer world-AABBs
-//!   answering "which producers overlap this box" for the two-layer wholesale build
-//!   (and, later, G3's dirty-AABB → producers query).
+//!   broadphase: a per-build BVH over producer world-AABBs answering "which producers
+//!   overlap this box" for the two-layer wholesale build.
 //! * [`LeafSpatialIndex`] — the genuinely domain-shaped piece (it must equal the
 //!   `for_each_leaf` walk, by design): a flat list of `(leaf_world_aabb, fingerprint)`
 //!   built by one walk of the scene. It answers "which leaves' world-AABBs intersect a
@@ -24,15 +20,14 @@
 //! ## Why a flat list (not an octree / grid)
 //!
 //! The index must return the **same** leaf set a full `for_each_leaf` walk filtered
-//! by AABB returns — that is the correctness contract S3 must prove. The simplest
-//! structure that *is* exactly that walk, filtered, is a flat `Vec` of the walk's
-//! per-leaf AABBs scanned linearly. Leaf counts are small (tens for the demo
-//! scene, low hundreds for `--demo-village`'s instanced houses), so a linear scan
-//! per chunk is cheap and obviously correct; a fancier acceleration structure (a
-//! uniform grid or loose octree) would add a divergence risk (a leaf dropped or
-//! double-counted by a bucketing bug) for no measurable win at v1 scene sizes. We
-//! keep it flat and provably-equal-to-the-walk; if scenes ever grow to where the
-//! linear scan dominates, the structure can be swapped behind this same API.
+//! by AABB returns — that is its correctness contract. The simplest structure that *is*
+//! exactly that walk, filtered, is a flat `Vec` of the walk's per-leaf AABBs scanned
+//! linearly. Leaf counts are small (tens for the demo scene, low hundreds for
+//! `--demo-village`'s instanced houses), so a linear scan per chunk is cheap and
+//! obviously correct; a uniform grid or loose octree would add a divergence risk (a leaf
+//! dropped or double-counted by a bucketing bug) for no measurable win at these scene
+//! sizes. The structure can be swapped behind this same API if the linear scan ever
+//! dominates.
 
 use crate::core_geom::CHUNK_BLOCKS;
 
@@ -46,16 +41,16 @@ use crate::core_geom::CHUNK_BLOCKS;
 /// at every call site.
 /// The corners are `i64` (64-bit world addressing): absolute voxels = block offset ×
 /// density, so a far-placed leaf (±10⁹ blocks × density) overflows i32; the derived
-/// CHUNK coordinate stays i32 (see [`ChunkCoverage::covering_chunk_range`]). See
-/// `docs/architecture/data-structures.md` (the Substrate section) for the box itself.
+/// CHUNK coordinate stays i32 (see [`ChunkCoverage::covering_chunk_range`]). The box
+/// itself is described in `docs/architecture/data-structures.md`.
 pub use substrate::spatial::LatticeAabb as VoxelAabb;
 
-/// The domain name for the substrate [`substrate::spatial::Bvh`] used as **THE edit broadphase**
-/// (ADR 0011 Decision 4b, #66): a bounding-volume hierarchy over producer world-AABBs
-/// answering "which producers overlap this chunk box", rebuilt per wholesale build /
-/// edit and never persisted (the C1 stale-cache lesson). The domain construction and
-/// per-chunk query live at the seam in `two_layer_store` (`leaf_edit_broadphase`,
-/// `chunk_candidate_leaves`); see `docs/architecture/02-evaluation.md`.
+/// The domain name for the substrate [`substrate::spatial::Bvh`] used as **THE edit
+/// broadphase**: a bounding-volume hierarchy over producer world-AABBs answering "which
+/// producers overlap this chunk box", rebuilt per wholesale build / edit and never
+/// persisted, so it cannot go stale. The domain construction and per-chunk query live at
+/// the seam in `two_layer_store` (`leaf_edit_broadphase`, `chunk_candidate_leaves`); see
+/// `docs/architecture/02-evaluation.md`.
 pub use substrate::spatial::Bvh as EditBroadphaseBvh;
 
 /// The domain reading of a [`VoxelAabb`]: the inclusive chunk-coordinate range
@@ -77,7 +72,7 @@ impl ChunkCoverage for VoxelAabb {
         }
         // Voxel corners are i64 (a far-placed leaf); the chunk extent is small, so
         // the division happens in i64 and the chunk-coord QUOTIENT narrows to i32
-        // safely (≤ ±2.5×10⁸ for offsets up to ±10⁹ blocks — S4a).
+        // safely (≤ ±2.5×10⁸ for offsets up to ±10⁹ blocks).
         let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
@@ -107,14 +102,13 @@ pub enum LeafFingerprint {
     /// resolved content so a same-box content change is still detected.
     Bounded(String),
     /// A leaf with a concrete world-AABB whose EDITS nevertheless cannot be localized
-    /// to that box (ADR 0017 issue #75): an `Intersect`-influence leaf — its own
+    /// to that box: an `Intersect`-influence leaf — its own
     /// operation is `Intersect`, or an enclosing scope folds under `Intersect`. Such a
     /// mask removes occupancy anywhere OUTSIDE its body, so a change involving it
     /// dirties, in the worst case, its whole enclosing scope's extent — which this
     /// index does not track. Its world-AABB stays real (overlap queries still work);
     /// only its presence in an edit DIFF forces a wholesale clear, like
-    /// [`RegionSpanning`](Self::RegionSpanning). Narrowing the dirty region to the
-    /// enclosing scope's AABB is a recorded follow-up, not this slice.
+    /// [`RegionSpanning`](Self::RegionSpanning).
     MasksBeyondItsBox(String),
     /// A leaf with no intrinsic AABB (region-spanning), e.g. a VoxelBody. Carries its
     /// content bytes so a VoxelBody edit is still seen as a change, but its presence in a
@@ -164,11 +158,9 @@ impl LeafSpatialIndex {
             .collect()
     }
 
-    // `bounding_aabb` (the union of every leaf world-AABB) was DELETED 2026-07-18 with zero
-    // callers. The scene's whole occupied box is derived from the scene extent instead
-    // (`Scene::placed_extent_voxels`), not by folding the leaf index; this index exists to
-    // answer INTERSECTION queries (`leaves_intersecting`, `edit_aabb_since`), which is what
-    // every live caller wants.
+    // This index answers INTERSECTION queries only (`leaves_intersecting`,
+    // `edit_aabb_since`). The scene's whole occupied box comes from the scene extent
+    // (`Scene::placed_extent_voxels`), not from folding the leaf index.
 
     /// The world-AABB an edit dirtied, computed by diffing this index (the scene
     /// AFTER the edit) against `previous` (the scene BEFORE it).
@@ -193,7 +185,7 @@ impl LeafSpatialIndex {
     ///   densities (every chunk's voxel extent changed), (b) a **region-spanning**
     ///   leaf (a VoxelBody) was added, removed, or edited — it has no localizable box, so
     ///   its dirty region is "everywhere" — or (c) an **Intersect-influence** leaf
-    ///   ([`LeafFingerprint::MasksBeyondItsBox`], ADR 0017 #75) appears in the diff:
+    ///   ([`LeafFingerprint::MasksBeyondItsBox`]) appears in the diff:
     ///   its mask effect reaches beyond its box, so the box union under-dirties.
     pub fn edit_aabb_since(&self, previous: &LeafSpatialIndex) -> Option<VoxelAabb> {
         if self.voxels_per_block != previous.voxels_per_block {
@@ -230,7 +222,7 @@ impl LeafSpatialIndex {
                     return None;
                 }
                 LeafFingerprint::MasksBeyondItsBox(_) => {
-                    // ADR 0017 (#75): an Intersect-influence leaf changed (added /
+                    // An Intersect-influence leaf changed (added /
                     // removed / edited / moved, or a flip to/from Intersect — the flip
                     // puts old and new entries in the diff and at least one carries
                     // this kind). Its mask effect reaches cells outside its box (the
@@ -256,9 +248,8 @@ struct VoxelAabbKey {
 }
 
 /// Narrow an `i64` chunk coordinate to `i32` (the cache-key / chunk-index width).
-/// See the audit note on the app-crate `Scene::covering_chunk_range`: the
-/// absolute-voxel math is i64, but the chunk coordinate stays well inside i32 for
-/// the supported offset range (S4a).
+/// The absolute-voxel math is i64, but the chunk coordinate stays well inside i32 for
+/// the supported offset range — see `core_geom::max_supported_block_offset`.
 fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
     debug_assert!(
         chunk_coord >= i32::MIN as i64 && chunk_coord <= i32::MAX as i64,

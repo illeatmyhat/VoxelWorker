@@ -33,12 +33,10 @@
 //! rule is display-*independent* only in the sense that it fixes an assumption rather than
 //! measuring one.
 //!
-//! And **0.3° is a chosen floor, not a derived one**. It is ~14 CSS pixels — below every
-//! published accessibility minimum (WCAG 2.5.8 is 24 CSS px ≈ 0.51°, i.e. 1/50 of viewport
-//! height) and about six times above the ~3 arcminute point where mouse pointing measurably
-//! degrades (Hourcade & Bullock-Rest, CHI 2012). It is defensible as "you can still author
-//! against this", not as "this is comfortable". If a citable number is ever wanted instead,
-//! WCAG's 1/50 is the one to take. See `docs/design/placement-prior-art.md`.
+//! And **0.3° is a chosen floor, not a derived one**. It is ~14 CSS pixels — below the
+//! 24 CSS px (≈ 0.51°, 1/50 of viewport height) accessibility minimum, and about six times
+//! above the ~3 arcminute point where mouse pointing measurably degrades. It is defensible
+//! as "you can still author against this", not as "this is comfortable".
 //!
 //! ## One rule covers both projections
 //!

@@ -6,11 +6,9 @@
 //! **secondary** representation — a quaternion in [`OrbitCamera::free_orientation`], authoritative
 //! only while Free Orbit is the active type.
 //!
-//! The design and the reasons live in `docs/design/tool-modes-and-navigation.md` (camera
-//! representation, owner-resolved 2026-07-27, reversing the quaternion-primary line). The short
-//! version: quaternion-primary would force every `theta`/`phi` reader — `HomeView`, `SnapTween`,
-//! the view-cube snap tables, `is_face_constrained`, persistence, `shot`'s CLI — to convert on day
-//! one, and that migration is the expensive part of this work, not the integrator.
+//! The chart is primary because every `theta`/`phi` reader — `HomeView`, `SnapTween`, the
+//! view-cube snap tables, `is_face_constrained`, persistence, `shot`'s CLI — would otherwise
+//! have to convert. See `docs/architecture/06-authoring.md` for the two orbit types.
 //!
 //! **One authority at a time.** `free_orientation.is_some()` IS the authority bit; there is no
 //! separate flag that could disagree with the data it describes. While it is `Some`, the chart is

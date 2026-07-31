@@ -306,7 +306,7 @@ where
                             // the block through a MAX face lands `voxel_entry` exactly on that
                             // face, so a plain floor seeds one voxel PAST the block and the bound
                             // check below would break before testing a single voxel — skipping the
-                            // block that holds the surface (the grazing-rim bug, 2026-07-17).
+                            // block that holds the surface.
                             let mut voxel_dda = VoxelDda::seed_in_box(
                                 origin,
                                 safe,

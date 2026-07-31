@@ -1,12 +1,11 @@
-//! The **Autodesk ViewCube** orientation model and its on-screen chrome.
+//! The view-cube orientation model and its on-screen chrome.
 //!
-//! A ViewCube addresses any of the 26 canonical orientations of a cube — 6 faces,
+//! The cube addresses any of the 26 canonical orientations of a cube — 6 faces,
 //! 12 edges, 8 corners — as a single [`ViewCubeElement`], and maps each to the
-//! orbit `(theta, phi)` the camera should snap to. On top of the cube body sit the
-//! screen affordances Autodesk's widget is known for: rotate arrows that step the
-//! view 90° to an adjacent face along a great circle ([`adjacent_face`]) and roll
-//! arrows. (Home/Fit moved to the Signal icon rail — ADR 0018 Decision 8 — so the cube
-//! no longer carries badge zones.) [`classify_cube_point`] is the pure screen-space
+//! orbit `(theta, phi)` the camera should snap to. On top of the cube body sit two
+//! screen affordances: rotate arrows that step the view 90° to an adjacent face along
+//! a great circle ([`adjacent_face`]), and roll arrows. Home and Fit are the icon
+//! rail's, not the cube's. [`classify_cube_point`] is the pure screen-space
 //! hit-test over that layout, and [`chrome_zone_left_click_action`] is the pure
 //! zone→action dispatch (it never mutates the camera; the windowed caller executes
 //! the returned [`ChromeClickAction`]).
@@ -27,8 +26,8 @@ use crate::tween::SnapTween;
 
 /// The six view-cube faces, in `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z).
 ///
-/// Index order matches the prototype's `CUBELABELS` / `FACE_VIEW` arrays so a
-/// raycast hit's material index maps straight to a [`CubeFace`].
+/// Index order matches the cube mesh's material order, so a raycast hit's material
+/// index maps straight to a [`CubeFace`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CubeFace {
     /// +X — RIGHT.
@@ -90,8 +89,8 @@ impl CubeFace {
 }
 
 /// A clickable element of the view cube: a single **face** (1 normal), an **edge**
-/// (2 adjacent face normals) or a **corner** (3 face normals). The standard
-/// Autodesk ViewCube hot-zone model divides each face into a 3×3 grid — the center
+/// (2 adjacent face normals) or a **corner** (3 face normals). The hot-zone model
+/// divides each face into a 3×3 grid — the center
 /// zone is the face, the 4 edge zones are edges (45° edge-on views shared with the
 /// neighbor) and the 4 corner zones are corners (isometric 3-face views).
 ///
@@ -181,9 +180,9 @@ impl ViewCubeElement {
     /// Unified spherical conversion (Z-up) `phi = acos(dir.z)`, `theta =
     /// atan2(dir.y, dir.x)` — works for faces, edges AND corners. The pure poles
     /// (dir = ±Z) special-case theta (undefined there) and snap phi to the EXACT
-    /// pole (`0` / `π`): the view matrix no longer degenerates there because
-    /// [`OrbitCamera::up_vector`] supplies a true singular-frame up. Theta keeps
-    /// the historical TOP/BOTTOM convention (`−π/2`) so the pole-up limit
+    /// pole (`0` / `π`): the view matrix does not degenerate there, because
+    /// [`OrbitCamera::up_vector`] supplies a true singular-frame up. Theta takes
+    /// the TOP/BOTTOM convention (`−π/2`) so the pole-up limit
     /// `(−cos θ, −sin θ, 0)` lands on a stable screen orientation.
     pub fn snap_angles(&self) -> (f32, f32) {
         use std::f32::consts::{FRAC_PI_2, PI};
@@ -246,11 +245,10 @@ pub enum RollDir {
 /// Up/Down reach TOP/BOTTOM, and TOP/BOTTOM's Left/Right reach the LEFT/RIGHT
 /// equatorial faces (a spin about the vertical axis). Full table:
 ///
-/// Conventions differ by axis (owner ruling, 2026-07-17): **Up/Down orbit the
-/// camera** (Up shows the TOP — you climb over the cube), while **Left/Right spin
-/// the cube** (the arrow is the direction the visible face slides, so the face on
-/// the arrow's OPPOSITE side rotates into view: from FRONT, Right shows LEFT).
-/// The previous all-camera-orbit mapping read as yaw-inverted in use.
+/// Conventions differ by axis: **Up/Down orbit the camera** (Up shows the TOP — you
+/// climb over the cube), while **Left/Right spin the cube** (the arrow is the direction
+/// the visible face slides, so the face on the arrow's OPPOSITE side rotates into view:
+/// from FRONT, Right shows LEFT). Mapping both to a camera orbit reads as yaw-inverted.
 ///
 ///   * FRONT (−Y): Up→Top,  Down→Bottom, Left→Right, Right→Left
 ///   * BACK (+Y):  Up→Bottom, Down→Top,  Left→Left,  Right→Right
@@ -351,8 +349,7 @@ fn face_label(face: CubeFace) -> &'static str {
 /// The dot-joined zone name for a hovered chrome `zone`, e.g. `TOP·FRONT` (edge) or
 /// `TOP·FRONT·RIGHT` (corner), or a single face name. Returns `None` for the
 /// non-element chrome zones (arrows / badges), which have no cube-zone readout. Used
-/// by the Signal view cube's faint readout line under the cube (`ADR 0018` Decision 8
-/// / `docs/design/viewport-chrome-signal.md`). Faces are ordered vertical → depth →
+/// by the faint readout line under the cube. Faces are ordered vertical → depth →
 /// horizontal so the label reads TOP·FRONT·RIGHT regardless of pick order.
 pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
     let CubeChromeZone::Element(element) = zone else {
@@ -393,8 +390,7 @@ pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
 /// resolve to their zone instead of a suppressed off-face rotate arrow; a true margin
 /// hover misses the ray and falls through to the arrows. A point inside `rect` matching
 /// no zone (ray missed, not a gutter) yields `None`; a point outside `rect` is `None`.
-/// (Home/Fit left the cube for the Signal icon rail — ADR 0018 Decision 8 — so the
-/// top-left badge zones are gone; every other zone's geometry is unchanged.)
+/// The cube carries no Home/Fit badge zones — the icon rail owns those actions.
 ///
 /// `body_picker` is the caller's raycast; it is invoked only for the central body
 /// region. In tests a stub picker stands in, keeping this function fully headless.
@@ -474,9 +470,8 @@ pub fn classify_cube_point(
 ///     angles are held.
 ///
 /// The [`Home`](ChromeClickAction::Home) / [`Fit`](ChromeClickAction::Fit) actions are
-/// no longer produced here — they left the cube for the Signal icon rail (ADR 0018
-/// Decision 8), which constructs them directly and runs them through the same
-/// `run_chrome_action`.
+/// not produced here: the icon rail constructs them directly and runs them through the
+/// same `run_chrome_action`.
 #[derive(Debug, Clone, Copy)]
 pub enum ChromeClickAction {
     /// Start this eased snap tween (face / element / roll).
@@ -740,10 +735,9 @@ mod tests {
     }
 
     #[test]
-    fn classify_top_left_corner_is_no_longer_a_badge_zone() {
-        // ADR 0018 Decision 8: Home/Fit left the cube for the Signal icon rail, so the
-        // former top-left badge region now classifies as no chrome zone (a stationary
-        // click there is a no-op — the rail owns those actions).
+    fn classify_top_left_corner_is_not_a_badge_zone() {
+        // Home/Fit belong to the icon rail, so the top-left region classifies as no
+        // chrome zone and a stationary click there is a no-op.
         let rect = test_cube_rect();
         for (u, v) in [(0.05, 0.06), (0.18, 0.06)] {
             let (x, y) = at(rect, u, v);
@@ -950,9 +944,8 @@ mod tests {
         assert!(approx(tween.phi_to, reference.phi_to));
     }
 
-    /// A roll arrow maps to a real roll tween. (Home/Fit are no longer cube zones —
-    /// they moved to the Signal icon rail, ADR 0018 Decision 8 — but `ChromeClickAction`
-    /// keeps its `Home`/`Fit` variants, which the rail constructs directly.)
+    /// A roll arrow maps to a real roll tween. `ChromeClickAction` keeps its
+    /// `Home`/`Fit` variants for the icon rail, which constructs them directly.
     #[test]
     fn roll_zone_maps_to_roll_action() {
         let camera = OrbitCamera::default();

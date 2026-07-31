@@ -1,8 +1,7 @@
-//! Source registry — runs every known detector and aggregates results (M6).
+//! Source registry — runs every known detector and aggregates results.
 //!
 //! This is the single entry point the app uses for auto-detection: it owns the
-//! list of [`SourceDetector`]s (currently just Vintage Story; another game's
-//! detector would slot in here) and returns the union of every [`BlockSource`]
+//! list of [`SourceDetector`]s and returns the union of every [`BlockSource`]
 //! they find, with no user action.
 
 use super::{vintage_story::VintageStoryDetector, BlockSource, SourceDetector};

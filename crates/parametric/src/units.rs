@@ -1,11 +1,9 @@
-//! ADR 0003 §3f(0) units layer: the parametric blocks/voxels measurement core.
+//! The units layer: the parametric blocks/voxels measurement core.
 //!
 //! Placement, sizes and radii are stored as **canonical voxels** at the
 //! document's density `d` (`blocks · d = voxels`). A user-facing measurement is
-//! a *unit expression* parsed onto that canonical store and formatted back —
-//! exactly Fusion's model (it stores one canonical unit internally and lets you
-//! type measurements in any unit). The two grid-native units are **blocks** and
-//! **voxels**.
+//! a *unit expression* parsed onto that canonical store and formatted back. The
+//! two grid-native units are **blocks** and **voxels**.
 //!
 //! A [`Measurement`] RETAINS its authored expression (parametric): it is a sum of
 //! a BLOCK term (an exact rational — blocks may be integer, decimal, fraction or
@@ -15,19 +13,18 @@
 //! SAME measurement re-evaluates at a new `d` — the lossless refine for
 //! integer-ratio re-targets (`"3.5 blocks"` → 56 at d16, 112 at d32).
 //!
-//! Parser policy is STRICT (ADR 0003 §3f(0), 2026-06-28): measurements evaluate
+//! Parser policy is STRICT: measurements evaluate
 //! as EXACT RATIONALS (no floats), fractions/decimals are allowed on block-terms
 //! only, a voxel-term must be an integer, and a block-fraction that does not land
 //! on a whole voxel at the current `d` is rejected with the nearest representable
 //! values reported — never silently rounded.
 //!
 //! This module is pure logic: it has no UI wiring and depends on nothing else in
-//! the crate. It feeds `SetOffset` (the placement Intent, now landed as
-//! `NodeTransform::from_measurements`) and sketch profile points
-//! (`SketchPoint.offset_measurements`, #101), both re-evaluated on `SetDensity`.
+//! the crate. It feeds `NodeTransform::from_measurements` and sketch profile points
+//! (`SketchPoint.offset_measurements`), both re-evaluated on `SetDensity`.
 //!
-//! [`AngleMeasurement`] is the family's second kind (ADR 0029): an authored angle in
-//! exact degrees, density-free, first consumed by the sketch arc bulge (#102).
+//! [`AngleMeasurement`] is the family's second kind: an authored angle in exact
+//! degrees, density-free, consumed by the sketch arc bulge.
 
 use std::fmt;
 
@@ -42,13 +39,13 @@ use std::fmt;
 /// intent layers. See `docs/architecture/01-document.md` (the units/measurement core).
 pub use substrate::interval::Rational as ExactRational;
 
-/// A parametric blocks + voxels measurement (ADR 0003 §3f(0)).
+/// A parametric blocks + voxels measurement.
 ///
 /// This is the STORED, authored expression — `block_term · d + voxel_term`
 /// voxels at a density `d` supplied at eval time. It is serde-serializable
-/// because it is persisted alongside the document later (the placement Intents
-/// carry the expression, not just the derived voxel count, so replay/undo
-/// preserve authored intent).
+/// because it is persisted alongside the document: the placement Intents carry the
+/// expression, not just the derived voxel count, so replay and undo preserve
+/// authored intent.
 ///
 /// The block term is an exact rational so `"3.5 blocks"`, `"8/16 blocks"` and
 /// `"3 8/16 blocks"` are all retained losslessly; the voxel term is a plain
@@ -162,10 +159,9 @@ impl Measurement {
     }
 }
 
-/// A parametric ANGLE measurement in degrees — ADR 0029's `Angle` kind, first consumed by
-/// the sketch arc bulge (ADR 0030 §5, #102).
+/// A parametric ANGLE measurement in degrees.
 ///
-/// The authored-quantity family's second kind, realised as its own type rather than a
+/// The authored-quantity family's second kind, realized as its own type rather than a
 /// runtime tag on [`Measurement`]: an angle and a length share retention semantics (the
 /// stored expression is the truth, exact rationals, float-free persistence) but none of the
 /// arithmetic — an angle has no block term, no density, and no voxel evaluation, so a
@@ -201,8 +197,8 @@ impl AngleMeasurement {
     }
 
     /// Quantize a solved continuous degree value onto the exact store at 1/3600°
-    /// (arc-second) resolution — the entry for creation tools whose inputs are floats
-    /// (the 3-point arc solve, #102). Exact thereafter. `None` for a non-finite input.
+    /// (arc-second) resolution — the entry for creation tools whose inputs are floats,
+    /// such as the 3-point arc solve. Exact thereafter. `None` for a non-finite input.
     pub fn from_degrees_f64(degrees: f64) -> Option<Self> {
         if !degrees.is_finite() {
             return None;
@@ -225,8 +221,8 @@ impl AngleMeasurement {
     }
 }
 
-/// A unit a [`Measurement`] / voxel count can be FORMATTED into (the display
-/// side of the units layer; ADR 0003 §3f(0)).
+/// A unit a [`Measurement`] / voxel count can be FORMATTED into — the display side of
+/// the units layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayUnit {
     /// Decimal blocks: `"3.5 blocks"`.
@@ -422,7 +418,7 @@ fn classify_unit(word: &str) -> Option<UnitKind> {
     }
 }
 
-/// Parse a units expression into a [`Measurement`] (STRICT; ADR 0003 §3f(0)).
+/// Parse a units expression into a [`Measurement`] (STRICT).
 ///
 /// Grammar: a sum of terms. A BLOCK term is a block-number + a block unit; a
 /// VOXEL term is an integer + a voxel unit. Block-number forms: integer (`"3"`),

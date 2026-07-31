@@ -112,13 +112,13 @@ pub struct VintageStorySource {
     block_dir: PathBuf,
     /// The install's `assets` root (parent of every domain), derived from
     /// `block_dir` (`<assets>/<domain>/textures/block`). Used to find blocktype
-    /// JSONs and to resolve `domain:path` texture references (M7).
+    /// JSONs and to resolve `domain:path` texture references.
     assets_root: PathBuf,
     /// The block's own asset domain (`survival`/`game`/`creative`): the first
-    /// domain a bare texture reference is resolved against (M7).
+    /// domain a bare texture reference is resolved against.
     domain: String,
     display_name: String,
-    /// Lazily-built blocktype index (M7): texture-stem directory → parsed
+    /// Lazily-built blocktype index: texture-stem directory → parsed
     /// blocktypes that reference it. Walking + parsing every blocktype is done
     /// once on the first `resolve_faces` call and cached here.
     blocktype_index: OnceLock<BlockTypeIndex>,
@@ -144,8 +144,8 @@ impl VintageStorySource {
 
     /// Resolve a texture reference (`domain:path` or bare `path`) to an absolute
     /// PNG that actually exists. Tries the reference's domain (if prefixed), then
-    /// the block's own domain, then `game`, then `survival` (M7 §3). The leading
-    /// slash / `block/` prefix inconsistency (learned in M6) is tolerated.
+    /// the block's own domain, then `game`, then `survival`. References are
+    /// inconsistent about a leading slash and a `block/` prefix; both are tolerated.
     fn resolve_texture_path(&self, reference: &str) -> Option<PathBuf> {
         let (domain_opt, path) = split_domain(reference);
         // `textures/<path>.png` under each candidate domain, in priority order.
@@ -196,7 +196,7 @@ impl BlockSource for VintageStorySource {
                 self.resolve_texture_path(reference)
             });
         }
-        // No match → uniform fallback (the M6 behavior).
+        // No match → the same texture on all six faces.
         FaceTextures::uniform(chosen_variant.to_path_buf())
     }
 }
@@ -224,7 +224,7 @@ struct BlockTypeIndex {
 }
 
 impl BlockTypeIndex {
-    /// Walk every domain's `blocktypes/**.json`, parse what M7 needs, and index
+    /// Walk every domain's `blocktypes/**.json`, parse what face resolution needs, and index
     /// each block by the directories its texture `base` entries reference.
     fn build(assets_root: &Path, primary_domain: &str) -> Self {
         let mut blocks: Vec<ParsedBlockType> = Vec::new();
@@ -364,9 +364,9 @@ fn directory_of_reference(reference: &str) -> Option<String> {
     }
 }
 
-/// Recursively walk a `textures/block` directory and collect the chiselable PNGs
-/// (prototype `scanBlocks` walk). The `relative_path` is forward-slashed and
-/// taken below `block_dir` so the substring filter behaves like the prototype.
+/// Recursively walk a `textures/block` directory and collect the chiselable PNGs. The
+/// `relative_path` is forward-slashed and taken below `block_dir`, which is the form
+/// [`super::is_chiselable`]'s substring filter expects.
 pub(super) fn scan_block_dir(block_dir: &Path) -> Vec<ScannedTexture> {
     let mut textures = Vec::new();
     let mut walked = 0usize;

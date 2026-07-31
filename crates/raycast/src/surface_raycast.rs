@@ -1,23 +1,21 @@
 //! **Sliding a contact on a composed signed-distance surface** — the CPU counterpart of the
 //! GPU placement ghost's sphere-trace (`crates/display/src/shaders/placement_ghost.wgsl`,
-//! `fn trace`), and the continuous-placement solver ADR 0027 §5 calls for.
+//! `fn trace`), and the solver continuous placement runs on.
 //!
-//! Continuous placement (ADR 0027) needs three answers off a surface the caller composes at
+//! Continuous placement needs three answers off a surface the caller composes at
 //! runtime — the **contact point**, its **normal**, and where a wanted normal **slides the
 //! contact to** — and it must get them off the *composed* field (a boolean / `Part` result),
 //! not a single analytic primitive. So the whole module speaks one abstraction: a
 //! caller-supplied **signed-distance closure** `field: impl Fn(Vec3) -> f32`, negative inside,
 //! positive outside, zero on the surface, evaluated at a world point. This crate never
-//! constructs that closure — it consumes it — which keeps `raycast` below the domain layer
-//! (the graphics-crate boundary law, ADR 0015): no `document` / `evaluation` / `voxel_core`
-//! field type crosses the edge, only a `Fn`.
+//! constructs that closure — it consumes it — which keeps `raycast` below the domain layer:
+//! no `document` / `evaluation` / `voxel_core` field type crosses the edge, only a `Fn`.
 //!
 //! ## One mechanism: gradient + damped Newton
 //!
-//! ADR 0027 §5's ruling is that *one* predicate serves the hit, the normal, the contact
-//! projection, the voxel-snap re-projection, and the angle-to-position slide — sliding on the
-//! composed field via `p -= field(p) * gradient / |gradient|^2`. This module is that predicate,
-//! spelled out:
+//! *One* predicate serves the hit, the normal, the contact projection, the voxel-snap
+//! re-projection, and the angle-to-position slide — sliding on the composed field via
+//! `p -= field(p) * gradient / |gradient|^2`. This module is that predicate, spelled out:
 //!
 //! * [`raymarch`] — sphere-trace the closure from a ray to the first surface crossing.
 //! * [`gradient_normal`] — the central-difference gradient, normalized: the surface normal.
@@ -52,7 +50,7 @@
 //! ## The frame
 //!
 //! Every point and direction here is in the **one world frame the caller already works in** and
-//! travels as a value in that frame (ADR 0008) — the closure is evaluated at world points, the
+//! travels as a value in that frame — the closure is evaluated at world points, the
 //! hit and slide come back in world points.
 
 use glam::Vec3;
@@ -202,7 +200,7 @@ pub fn project_to_surface(point: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
     current
 }
 
-/// **The angle-to-position slide** (ADR 0027 §2, position-dominant precedence): given a `seat`
+/// **The angle-to-position slide**, under position-dominant precedence: given a `seat`
 /// point on the surface and a wanted `target_normal` direction, slide the contact *along* the
 /// surface to where the surface normal best matches `target_normal`, and return that seated
 /// point.
@@ -215,9 +213,9 @@ pub fn project_to_surface(point: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
 ///
 /// If `target_normal` is unreachable on this surface — a flat face exposes only one normal, and
 /// the exact antipode of the current normal has no tangential direction — the slide makes no
-/// progress and returns the best-effort point (the nearest reachable contact / the seat), per
-/// ADR 0027 §5. It works on any composed field (sphere, cylinder, their booleans) because it
-/// only calls the closure.
+/// progress and returns the best-effort point — the nearest reachable contact, or the seat.
+/// It works on any composed field (sphere, cylinder, their booleans) because it only calls
+/// the closure.
 pub fn snap_slide_to_normal(seat: Vec3, target_normal: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
     let target = {
         let length = target_normal.length();
@@ -257,8 +255,7 @@ pub fn snap_slide_to_normal(seat: Vec3, target_normal: Vec3, field: impl Fn(Vec3
 }
 
 /// Quantize a surface `normal` to the nearest direction whose **seated rotation** lands on the
-/// **15°** angle lattice (ADR 0027 §2 — the 15° angle-snap granularity the placement spine seats
-/// to).
+/// **15°** angle lattice — the angle-snap granularity the placement spine seats to.
 ///
 /// The seated rotation is `Quat::from_rotation_arc(+Z, normal)`, which carries no in-plane
 /// **twist**, so the two live angular DOFs are the **tilt** off vertical (the arc angle) and the
@@ -295,7 +292,7 @@ pub fn quantize_normal_to_15deg(normal: Vec3) -> Vec3 {
 }
 
 /// Round `hit_point` to the nearest multiple of `lattice_step` on every axis, then
-/// [`project_to_surface`] so it stays seated — the position Voxel / Block snap of ADR 0027 §2.
+/// [`project_to_surface`] so it stays seated — the position Voxel / Block snap.
 ///
 /// `lattice_step` is a caller-supplied granule (one voxel or one block, in world units). A
 /// non-positive step is a no-op guard: the raw point is projected and returned. Rounding pulls
@@ -620,8 +617,8 @@ mod tests {
     }
 }
 
-/// A cheap Kani invariant (ADR 0027 says one is welcome, not required): [`project_to_surface`]'s
-/// output seats onto a sphere — its field magnitude is within tolerance. Runs only under
+/// A cheap Kani invariant: [`project_to_surface`]'s output seats onto a sphere — its field
+/// magnitude is within tolerance. Runs only under
 /// `cargo kani`, never in `cargo test`.
 #[cfg(kani)]
 mod proofs {

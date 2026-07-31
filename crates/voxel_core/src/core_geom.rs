@@ -1,7 +1,7 @@
-//! ADR 0003 bottom layer: dependency-free geometry primitives + the streaming
-//! quantum; depends on nothing in the crate.
+//! Dependency-free geometry primitives and the streaming quantum; depends on
+//! nothing else in the crate.
 
-/// Edge length of a render chunk, in BLOCKS (ADR 0002 Decision 3, part of #19).
+/// Edge length of a render chunk, in BLOCKS.
 /// A chunk therefore spans `CHUNK_BLOCKS * voxels_per_block` voxels per axis
 /// (e.g. 4 blocks × density 16 = 64 voxels/axis). Chosen as a small whole-block
 /// multiple so a chunk stays a phase-aligned, frustum-cullable unit while the
@@ -12,21 +12,19 @@ pub const CHUNK_BLOCKS: u32 = 4;
 
 /// The largest absolute voxel index a resolved [`crate::voxel::Voxel::local_index`] can
 /// carry — it is an `i32`, and the two-layer expansion stamps it with an unchecked
-/// `as i32` after rebasing in `i64` (`two_layer_store::chunk::stamped_voxel`, ADR 0008).
+/// `as i32` after rebasing in `i64` (`two_layer_store::chunk::stamped_voxel`).
 pub const MAX_LOCAL_VOXEL_INDEX: i64 = i32::MAX as i64;
 
 /// The furthest block offset from the resolve frame's origin whose voxels still fit
 /// [`MAX_LOCAL_VOXEL_INDEX`], at `voxels_per_block`. **This is the real supported
 /// placement range of the resolve/expand path**, and it is much smaller than the
-/// ±~8×10⁹-block range the `narrow_chunk_coord` audit (S4a, ADR 0002 Decision 2) states.
+/// ±~8×10⁹-block range `narrow_chunk_coord` is bounded over.
 ///
-/// The two are not in conflict by accident — the S4a audit is correct about what it
-/// actually bounds, and the gap is a step it does not take. It proves the CHUNK
-/// COORDINATE fits `i32`, which it does precisely because a chunk coordinate is a voxel
-/// index DIVIDED by the chunk extent. The expansion then multiplies back by that same
-/// extent to rebase each voxel, so the quantity finally stored is `chunk_extent` times
-/// larger than the one proved safe. Bounding a quotient says nothing about the product
-/// it came from.
+/// The two are not in conflict. `narrow_chunk_coord` bounds the CHUNK COORDINATE, which
+/// fits `i32` precisely because a chunk coordinate is a voxel index DIVIDED by the chunk
+/// extent. The expansion then multiplies back by that same extent to rebase each voxel,
+/// so the quantity finally stored is `chunk_extent` times larger than the one bounded.
+/// Bounding a quotient says nothing about the product it came from.
 ///
 /// Concretely, at the stated ±8×10⁹ blocks the absolute voxel index overruns `i32` by
 /// **4× at density 1 and 238× at density 64**, and the `as i32` wraps rather than
@@ -49,7 +47,7 @@ pub fn local_voxel_index_fits(absolute_voxel_index: i64) -> bool {
     absolute_voxel_index >= i32::MIN as i64 && absolute_voxel_index <= MAX_LOCAL_VOXEL_INDEX
 }
 
-/// Bounded model checking of the frame-rebase cast (ADR 0008): the expansion rebases a
+/// Bounded model checking of the frame-rebase cast: the expansion rebases a
 /// chunk-local voxel into the recentered frame in `i64`, then stamps it into an `i32`
 /// `local_index` with an unchecked `as`. These harnesses establish exactly where that is
 /// lossless and exactly where it stops being so.
@@ -181,18 +179,16 @@ mod frame_envelope_tests {
         }
     }
 
-    /// The gap this bound was written to record: the S4a audit's ±8×10⁹-block figure is a
-    /// bound on the chunk COORDINATE, and the expansion multiplies back by the chunk extent.
-    /// If someone ever widens `local_index` past `i32`, this test is the reminder to revisit
-    /// ADR 0008's amendment and `narrow_chunk_coord`'s correction note.
+    /// The gap this bound records: `narrow_chunk_coord`'s ±8×10⁹-block figure bounds the
+    /// chunk COORDINATE, and the expansion multiplies back by the chunk extent.
     #[test]
-    fn the_s4a_stated_range_does_not_fit_the_local_index() {
-        let s4a_stated_blocks: i64 = 8_000_000_000;
+    fn the_chunk_coordinate_range_does_not_fit_the_local_index() {
+        let chunk_coord_range_blocks: i64 = 8_000_000_000;
         for (density, expected_overrun) in [(1u32, 3), (64u32, 238)] {
-            let voxel_index = s4a_stated_blocks * density as i64;
+            let voxel_index = chunk_coord_range_blocks * density as i64;
             assert!(
                 !local_voxel_index_fits(voxel_index),
-                "density {density}: the stated S4a range must NOT fit local_index"
+                "density {density}: the chunk-coordinate range must NOT fit local_index"
             );
             assert!(
                 voxel_index / MAX_LOCAL_VOXEL_INDEX >= expected_overrun,
@@ -203,7 +199,7 @@ mod frame_envelope_tests {
 }
 
 /// Procedural material choice. Selects which procedural texture (Stone/Wood/
-/// Plain) binds in the M4 texture-slice shader.
+/// Plain) the renderer binds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum MaterialChoice {
     #[default]
@@ -218,8 +214,8 @@ impl MaterialChoice {
     /// `material_id` is always `< MATERIAL_COUNT`.
     pub const MATERIAL_COUNT: usize = 3;
 
-    /// The per-voxel `material_id` this choice stamps onto its voxels (ADR 0001
-    /// step 3 "Materials"). Stable, dense (`0..MATERIAL_COUNT`), so it indexes both
+    /// The per-voxel `material_id` this choice stamps onto its voxels.
+    /// Stable, dense (`0..MATERIAL_COUNT`), so it indexes both
     /// the renderer's base-color uniform array and the procedural-texture table.
     /// Stone = 0, Wood = 1, Plain = 2.
     pub fn material_id(self) -> u16 {
@@ -241,55 +237,48 @@ impl MaterialChoice {
         }
     }
 
-    /// The categorical [`BlockId`] this material maps to in the block palette (ADR 0003
-    /// §3a). Today the three procedural materials ARE the palette, so the id is the same
-    /// dense `0..MATERIAL_COUNT` value [`material_id`](Self::material_id) returns — the
-    /// categorical capability over the existing three materials, no rich content yet.
+    /// The categorical [`BlockId`] this material maps to in the block palette. The three
+    /// procedural materials ARE the palette, so the id is the same dense
+    /// `0..MATERIAL_COUNT` value [`material_id`](Self::material_id) returns.
     pub fn block_id(self) -> BlockId {
         BlockId(self.material_id())
     }
 }
 
-/// A categorical block-palette id (ADR 0003 §3a — the per-voxel cell's block handle).
+/// A categorical block-palette id — the per-voxel cell's block handle.
 ///
-/// This replaces the old 3-value `material_id` enum jammed into a `u16` (with a render
-/// flag in its high bit). It is an OPAQUE palette index that rides through the store,
-/// the chunk-storage codec and meshing; the active block palette (`block_palette`)
-/// maps it to a color / texture, and `.vox` export maps it
-/// through that same palette. The three procedural materials occupy ids `0..3`
-/// (Stone/Wood/Plain), so existing scenes resolve byte-identically; the rich VS palette
-/// CONTENT (hundreds of named blocks) is the deferred part — this is only the
-/// categorical CAPABILITY.
+/// An OPAQUE palette index that rides through the store, the chunk-storage codec and
+/// meshing; the active block palette (`block_palette`) maps it to a color / texture, and
+/// `.vox` export maps it through that same palette. The three procedural materials
+/// occupy ids `0..3` (Stone/Wood/Plain).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct BlockId(pub u16);
 
 impl BlockId {
-    /// The default block id a bare producer emits before a Tool overrides it (the old
-    /// `material_id: 0` default — Stone in the procedural palette).
+    /// The default block id a bare producer emits before a Tool overrides it — Stone in
+    /// the procedural palette.
     pub const DEFAULT: BlockId = BlockId(0);
 
-    /// The color / atlas index the renderer + `.vox` export use for this id. Today the
-    /// palette is the three procedural materials, so the index IS the id; a clamp keeps
-    /// it inside the shader's `[0, MATERIAL_COUNT)` color range for any stray id.
+    /// The color / atlas index the renderer + `.vox` export use for this id. The palette
+    /// is the three procedural materials, so the index IS the id; a clamp keeps it inside
+    /// the shader's `[0, MATERIAL_COUNT)` color range for any stray id.
     pub fn color_index(self) -> u16 {
         self.0
     }
 }
 
-/// A cuboid-decomposition / region-cell key (ADR 0003 §3c): a clean categorical
-/// [`BlockId`] in the low 15 bits + a transient on-face-grid overlay marker in the high
-/// bit, packed into one `u16`.
+/// A cuboid-decomposition / region-cell key: a clean categorical [`BlockId`] in the low
+/// 15 bits + a transient on-face-grid overlay marker in the high bit, packed into one
+/// `u16`.
 ///
-/// The overlay bit is the flag the **cuboid mesher** folds into its region-cell key. It is
-/// NOT the retired per-voxel `GRID_OVERLAY_BIT` — that flag is gone from the persistent
-/// categorical cell. Instead a *local* decomposition key `block_id | (overlay << 15)` is
-/// composed from each voxel's clean `block_id` + its transient `grid_overlay` marker, so
-/// `decompose_into_boxes` (which stays representation-agnostic) refuses to merge a box
-/// across differing overlay flags — exactly the old per-box split — without ever seeing a
-/// render flag inside the material. The mesher then splits the key back into the clean
-/// `block_id` ([`block_id`](Self::block_id)) and the per-box overlay
+/// The overlay bit is the flag the **cuboid mesher** folds into its region-cell key. The
+/// key `block_id | (overlay << 15)` is composed from each voxel's clean `block_id` + its
+/// transient `grid_overlay` marker, so `decompose_into_boxes` (which stays
+/// representation-agnostic) refuses to merge a box across differing overlay flags without
+/// ever seeing a render flag inside the material. The mesher then splits the key back
+/// into the clean `block_id` ([`block_id`](Self::block_id)) and the per-box overlay
 /// ([`has_overlay`](Self::has_overlay)), writing the overlay into a DEDICATED render channel
 /// so the shader reads it separately and never masks it out of the material.
 ///
@@ -299,8 +288,8 @@ impl BlockId {
 pub struct CellKey(u16);
 
 impl CellKey {
-    /// The high bit that marks the transient on-face-grid overlay (ADR 0003 §3c). Private
-    /// to the type: consumers compose/inspect through the methods, never touch the bit.
+    /// The high bit that marks the transient on-face-grid overlay. Private to the type:
+    /// consumers compose/inspect through the methods, never touch the bit.
     const OVERLAY_BIT: u16 = 1 << 15;
 
     /// Compose a key from a clean categorical `block_id` (low 15 bits) and a transient
@@ -343,16 +332,11 @@ impl CellKey {
     }
 }
 
-/// Typed per-`block_id` attributes (ADR 0003 §3a-bis).
+/// Typed per-`block_id` attributes.
 ///
-/// **Minimal forward-compat placeholder.** ADR 0003 §3a-bis pins `BlockAttrs` as a typed
-/// schema (orientation in the order-48 group + variant flags + neighbor-connection
-/// bits) so a rotated stateful block re-composes its facing and VS schematic export is
-/// not lossy. That whole schema — and the connection-resolve pass and block-entity
-/// side-table — is **explicitly out of scope** for this slice (it is ADR 0003 §3a-bis /
-/// ADR 0005). This zero-sized placeholder reserves the per-voxel field so the payload's
-/// shape is forward-compatible: the schema is filled in later without touching the
-/// payload's call sites again.
+/// Zero-sized: it reserves the per-voxel field so the schema a rotated stateful block
+/// needs (orientation, variant flags, neighbor-connection bits) can be filled in without
+/// touching the payload's call sites.
 #[derive(
     Debug,
     Clone,

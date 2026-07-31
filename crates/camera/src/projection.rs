@@ -93,10 +93,10 @@ impl OrbitCamera {
     /// (`scene_center` + `scene_radius`, render-frame units) so no in-scene geometry
     /// is ever depth-clipped.
     ///
-    /// The old near/far keyed only off `orbit_distance` (`near = distance·0.01`).
-    /// That clipped the moment another object sat closer to the eye than the
-    /// auto-framed target — e.g. Focus shrinks `orbit_distance` to fit one node, so
-    /// a second node 15 blocks toward the camera fell in front of the near plane.
+    /// Keying near/far off `orbit_distance` alone (`near = distance·0.01`) clips the
+    /// moment another object sits closer to the eye than the auto-framed target: Focus
+    /// shrinks `orbit_distance` to fit one node, so a second node 15 blocks toward the
+    /// camera falls in front of the near plane.
     /// Instead, project the bounding-sphere center onto the view axis and place the
     /// planes a sphere-radius (plus a small margin) either side: the WHOLE scene is
     /// then always within `[near, far]`, making near-plane clipping of scene
@@ -240,8 +240,7 @@ impl OrbitCamera {
         // MUST share the main camera's up (`up_vector`) or the cube and the scene
         // desync at the pole — same singular-frame up, same orientation.
         let view = Mat4::look_at_rh(eye, Vec3::ZERO, self.up_vector());
-        // Half-extent 1.35 frames a cube of side 1.4 with a little margin
-        // (prototype `OrthographicCamera(-1.35, 1.35, 1.35, -1.35, …)`).
+        // Half-extent 1.35 frames a cube of side 1.4 with a little margin.
         let projection = Mat4::orthographic_rh(-1.35, 1.35, -1.35, 1.35, 0.1, 100.0);
         projection * view
     }
@@ -279,12 +278,11 @@ mod tests {
 
     #[test]
     fn orthographic_near_far_enclose_the_whole_scene_sphere() {
-        // The Focus near-clip bug: a small orbit_distance (eye close to the target)
-        // with a scene far larger than that distance — a second object 15+ blocks
-        // toward the camera fell in front of the old `orbit_distance·0.01` near
-        // plane. Orthographic tolerates a near plane BEHIND the eye, so the entire
-        // bounding sphere must now land inside the depth frustum: near-plane
-        // clipping of scene geometry is unrepresentable.
+        // A small orbit_distance (eye close to the target) with a scene far larger
+        // than that distance: an `orbit_distance·0.01` near plane would sit in front
+        // of a second object 15+ blocks toward the camera. Orthographic tolerates a
+        // near plane BEHIND the eye, so the entire bounding sphere lands inside the
+        // depth frustum and near-plane clipping of scene geometry is unrepresentable.
         let radius = 30.0;
         let camera = OrbitCamera {
             orbit_distance: 2.0, // eye very close to the target, deep inside the sphere
@@ -308,8 +306,7 @@ mod tests {
         }
     }
 
-    /// Both view matrices are all-finite (no NaN/inf) at the exact poles — the
-    /// old degeneracy is gone.
+    /// Both view matrices are all-finite (no NaN/inf) at the exact poles.
     #[test]
     fn view_matrices_finite_at_exact_poles() {
         for &phi in &[0.0f32, PI] {

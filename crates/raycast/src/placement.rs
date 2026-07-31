@@ -1,6 +1,5 @@
 //! **Where an armed tool would drop its node** — the picked point, its orientation, and the
-//! answers a viewport has to be able to give (`docs/design/direct-manipulation.md`,
-//! `docs/design/placement-prior-art.md`).
+//! answers a viewport has to be able to give.
 //!
 //! ## Position and orientation are two questions
 //!
@@ -9,15 +8,12 @@
 //! * *Orientation* — **which way does it face?** A geometry face and a user-created plane set it;
 //!   the built-in world planes do **not** (see below).
 //!
-//! Blender ships this separation and names it — `Depth: Surface | Cursor Plane` and
-//! `Orientation: Surface | Default` are independent dropdowns.
+//! The two are independent: either can be answered by a surface without the other being.
 //!
-//! ## The three world planes, ground privileged (2026-07-20)
+//! ## The three world planes, ground privileged
 //!
-//! The fixed infinite ground plane was abandoned for a view-aligned plane, then that in turn was
-//! replaced — the reasoning and prior art are in `placement-prior-art.md`. This app authors
-//! architectural assets *for worlds that have a ground*, so a ground plane is authoring in
-//! context; the view-aligned plane's wandering normal was the part that felt unpredictable.
+//! This app authors architectural assets *for worlds that have a ground*, so a ground plane is
+//! authoring in context. A view-aligned plane's wandering normal is unpredictable by comparison.
 //!
 //! When the ray hits no geometry it is intersected with one of **three axis-aligned planes through
 //! the world origin** — the ground (`z = 0`, normal `+Z`; we are Z-up) and two verticals. The
@@ -27,24 +23,23 @@
 //! elsewhere makes their own reference plane.
 //!
 //! **This cannot graze.** A unit ray direction cannot have all three components small, so the
-//! best-faced of three orthogonal planes always has a healthy denominator — the totality the
-//! wandering view-aligned normal used to provide, now from three *fixed* normals and a selection
-//! (invariant swept in the tests). No horizon flight, nothing to clamp.
+//! best-faced of three orthogonal planes always has a healthy denominator, so the answer is
+//! total — three *fixed* normals and a selection among them (invariant swept in the tests).
+//! No horizon flight, nothing to clamp.
 //!
 //! ## The built-in planes position but never orient — verticality is preserved
 //!
 //! A node located via any world plane keeps its **world-vertical** orientation. The vertical
 //! fallback that catches a grazing ground ray is a *positioning* device; it never tips what is
 //! placed. Only a geometry face ([`PlacementTarget::OnSurface`]) or a user-created plane sets
-//! orientation. This is Blender's `Orientation: Default` for the built-ins.
+//! orientation.
 //!
 //! ## Looking away from all of them
 //!
 //! Point at the sky and the selected world plane can sit *behind* the ray — there is nothing in
 //! front to place on. That is reported as [`PlacementTarget::NoSurface`] ("point toward the
-//! ground"), the honest answer, rather than inventing a depth. It is reachable again here where the
-//! view-aligned plane had made it unreachable — the deliberate cost of a fixed ground plane, and a
-//! rare one, since the geometry path covers you the moment anything is built.
+//! ground"), the honest answer, rather than inventing a depth. That is the deliberate cost of
+//! fixed planes, and a rare one, since the geometry path covers you the moment anything is built.
 //!
 //! ## How far is too far
 //!
@@ -57,7 +52,7 @@
 //! ## The frame
 //!
 //! Every position and direction here is in the **one render/world frame the caller is already
-//! working in**, and travels as a value in that frame rather than being re-derived (ADR 0008).
+//! working in**, and travels as a value in that frame rather than being re-derived.
 
 use glam::Vec3;
 use substrate::spatial::Ray;
@@ -381,8 +376,7 @@ mod tests {
 
     /// **The distinction the viewport hangs on.** `NoSurface` ("point toward the ground") and
     /// `TooFar` ("zoom in") name different corrective actions, so they must be different values —
-    /// and both differ from a placement. The pair the old view-aligned plane had made unreachable
-    /// (`NoSurface`) is reachable again under the fixed ground plane.
+    /// and both differ from a placement.
     #[test]
     fn the_three_negative_and_placed_answers_are_all_distinct() {
         let skyward = ray([0.0, 0.0, 10.0], [0.0, 0.0, 1.0]);

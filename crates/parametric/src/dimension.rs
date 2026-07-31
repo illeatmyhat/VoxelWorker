@@ -1,5 +1,4 @@
-//! The dimension algebra: what keeps a length from being added to an angle (ADR 0035
-//! Decision 12).
+//! The dimension algebra: what keeps a length from being added to an angle.
 //!
 //! A dimension is a pair of exponents, one over **length** and one over **angle**.
 //! Addition requires equal exponents, multiplication adds them, division subtracts them.

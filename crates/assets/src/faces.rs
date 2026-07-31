@@ -1,13 +1,11 @@
-//! Per-face block texture resolution (Milestone 7).
+//! Per-face block texture resolution.
 //!
-//! The web prototype (and M6) put one texture on all six faces. Vintage Story
-//! blocks can texture faces differently — a log shows end-grain on top/bottom and
-//! bark on the sides; soil shows grass on top — and that per-face mapping lives in
-//! the block's `assets/<domain>/blocktypes/**.json`.
+//! Vintage Story blocks can texture faces differently — a log shows end-grain on
+//! top/bottom and bark on the sides; soil shows grass on top — and that per-face
+//! mapping lives in the block's `assets/<domain>/blocktypes/**.json`.
 //!
 //! This module resolves a scanned [`BlockGroup`](super::BlockGroup) to a
-//! [`FaceTextures`]: a PNG path for each of the six cube faces. It is the
-//! native-only upgrade that is the main reason the port exists.
+//! [`FaceTextures`]: a PNG path for each of the six cube faces.
 //!
 //! ## What is handled
 //!
@@ -19,14 +17,14 @@
 //!     key overrides a group key overrides `all`.
 //!   * `domain:path` → `assets/<domain>/textures/<path>.png`; a bare `path` is
 //!     resolved against the block's own domain, then `game`, then `survival`,
-//!     until a file exists (leading-slash tolerated like M6).
+//!     until a file exists (a leading slash is tolerated).
 //!
-//! ## What falls back to uniform (the M6 behavior)
+//! ## What falls back to one texture on all six faces
 //!
 //!   * No matching blocktype, or a parse failure (VS JSON is lenient — unquoted
 //!     keys / trailing commas — and we pre-normalize it, but anything that still
 //!     won't parse falls back).
-//!   * `overlays` / tints / `rotation` (ignored for v1 — only `base` is read).
+//!   * `overlays` / tints / `rotation` — only `base` is read.
 //!   * Unknown face keys (e.g. `inside-*` cut faces) are ignored.
 //!   * Any face left unresolved inherits the group's own chosen variant PNG, so
 //!     the result is always a complete six-face mapping.
@@ -97,7 +95,7 @@ pub struct FaceTextures {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FaceProvenance {
     /// No blocktype matched (or it failed to parse / had no usable keys): every
-    /// face is the group's own chosen variant PNG (the M6 single-texture path).
+    /// face is the group's own chosen variant PNG.
     UniformFallback,
     /// Resolved from a blocktype's `textures` map.
     Textures { block_code: String },
@@ -109,7 +107,7 @@ pub enum FaceProvenance {
 }
 
 impl FaceTextures {
-    /// A uniform mapping: the same `path` on all six faces (M6 behavior).
+    /// A uniform mapping: the same `path` on all six faces.
     pub fn uniform(path: PathBuf) -> Self {
         Self {
             paths: [
@@ -153,7 +151,7 @@ struct TextureEntry {
 /// A `textures` / one-variant-of-`texturesByType` map: face-key → entry.
 type TextureMap = BTreeMap<String, TextureEntry>;
 
-/// A parsed blocktype, reduced to only what M7 needs: its `code`, an optional
+/// A parsed blocktype, reduced to what face resolution needs: its `code`, an optional
 /// `textures` map, and an optional `texturesByType` (variant-key → map).
 #[derive(Debug, Clone)]
 pub struct ParsedBlockType {

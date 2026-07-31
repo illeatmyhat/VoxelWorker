@@ -1,4 +1,4 @@
-//! Pluggable block-texture sources (Milestone 6).
+//! Pluggable block-texture sources.
 //!
 //! The whole reason the native port exists: read the *real* Vintage Story
 //! install, scan it for chiselable block textures, and surface them as a palette
@@ -9,8 +9,8 @@
 //!   * [`BlockGroup`] — one logical block (e.g. "Granite") with its grouped
 //!     texture variants (`granite1.png`, `granite2.png`, …).
 //!   * [`BlockSource`] — a scanned game install / texture pack. `scan` returns its
-//!     [`BlockGroup`]s. (Milestone 7 will add `resolve_faces` here, mapping a
-//!     group to its per-face textures via the block JSON.)
+//!     [`BlockGroup`]s and `resolve_faces` maps a group to its per-face textures
+//!     via the block JSON.
 //!   * [`SourceDetector`] — locates installs of *one* game on this OS with no user
 //!     action (the auto-detect path). Returns boxed [`BlockSource`]s.
 //!   * [`registry`] runs every known detector and aggregates the sources.
@@ -23,11 +23,10 @@
 //! only in filesystem paths, byte buffers, and decoded RGBA pixels; display, work, and the
 //! shell sit above it and import downward.
 //!
-//! The chiselable filter + variant grouping (the ALLOW / EXCLUDE lists, the
-//! "anything under a `/rock/` segment" accept, the trailing-digit group key and
-//! Title-Case label) are transcribed from the browser prototype's
-//! `isChiselable` / `scanBlocks` / `prettify` into
-//! [`is_chiselable`] / [`group_block_textures`] / [`prettify_label`] below.
+//! The chiselable filter and variant grouping — the ALLOW / EXCLUDE lists, the
+//! "anything under a `/rock/` segment" accept, the trailing-digit group key and the
+//! Title-Case label — are [`is_chiselable`], [`group_block_textures`] and
+//! [`prettify_label`] below.
 
 // A public item's doc may link to a private helper to explain how the two relate; that
 // cross-reference stays a navigable link under `--document-private-items`. The CI doc gate
@@ -45,7 +44,7 @@ pub mod vintage_story;
 pub use decode::{decode_rgba, DecodedRgba};
 pub use faces::{CubeFaceSlot, FaceProvenance, FaceTextures};
 
-/// Safety cap on the number of PNGs walked per source (prototype `n>8000`).
+/// Safety cap on the number of PNGs walked per source.
 pub const MAX_TEXTURES_WALKED: usize = 8000;
 
 /// One logical chiselable block and its grouped texture variants.
@@ -57,17 +56,13 @@ pub struct BlockGroup {
     /// Title-Case display label (last path segment, `-`/`_` → space).
     pub label: String,
     /// Group key: the texture path without `.png`, trailing digits stripped.
-    /// Stable identity used to de-duplicate and (M7) resolve the block JSON.
+    /// Stable identity used to de-duplicate and to resolve the block JSON.
     pub key: String,
     /// Absolute paths to every texture variant in this group (≥ 1).
     pub variants: Vec<PathBuf>,
 }
 
 /// A scanned source of chiselable block textures (a game install or texture pack).
-///
-/// Milestone 7 will extend this with `resolve_faces(&self, group) ->
-/// FaceTextures` so a block can be drawn with different top/side textures instead
-/// of one texture on all six faces.
 pub trait BlockSource: Send {
     /// Human-readable source name shown in the status line (e.g.
     /// "Vintage Story (survival)").
@@ -77,14 +72,14 @@ pub trait BlockSource: Send {
     /// label-sorted).
     fn scan(&self) -> Vec<BlockGroup>;
 
-    /// Resolve a group's per-face textures (Milestone 7).
+    /// Resolve a group's per-face textures.
     ///
     /// `chosen_variant` is the specific PNG the palette picked for this apply
     /// (so `{rock}`/`{wood}` placeholders resolve to the right material and any
     /// face the blocktype doesn't cover falls back to it). Implementations look
     /// up the matching blocktype JSON and map each cube face to a PNG; the
-    /// default returns a uniform mapping (the M6 single-texture behavior), which
-    /// is also the graceful fallback when no blocktype matches.
+    /// default returns a uniform mapping, which is also the graceful fallback when
+    /// no blocktype matches.
     fn resolve_faces(&self, _group: &BlockGroup, chosen_variant: &std::path::Path) -> FaceTextures {
         FaceTextures::uniform(chosen_variant.to_path_buf())
     }
@@ -100,8 +95,7 @@ pub trait SourceDetector {
 }
 
 /// The chiselable ALLOW list — lowercase substrings matched against the texture
-/// path (the prototype's `CHISEL_NAMES` list).
-/// All vanilla rock types plus the worked-stone / plank families.
+/// path. All vanilla rock types plus the worked-stone / plank families.
 pub const ALLOW_SUBSTRINGS: &[&str] = &[
     "granite",
     "andesite",
@@ -140,16 +134,14 @@ pub const ALLOW_SUBSTRINGS: &[&str] = &[
 ];
 
 /// The EXCLUDE list — lowercase substrings that disqualify a path *before* the
-/// ALLOW / `/rock/` checks (prototype `EXCLUDE`).
+/// ALLOW / `/rock/` checks.
 ///
-/// The prototype tokens (`/ore`, `gravel`, `overlay`, `/soil`, `crack`,
-/// `_n.png`, `-n.png`, `glow`) drop ores, gravel, decals, soil, cracked
-/// overlays, normal-maps and glow maps. Two tokens are ADDED after testing
-/// against the real VS 1.22.3 tree (see the M6 report): `metal/` (the `chalk`
-/// ALLOW substring matches `molybdochalkos` ingots/lanterns — not chiselable
-/// rock) and `painting/` (`painting/caveart/chalk`). They cleanly remove the
-/// only non-stone/non-wood junk the scan otherwise pulls. (No leading slash:
-/// these are top-level segments of the path *relative to* `textures/block`.)
+/// `/ore`, `gravel`, `overlay`, `/soil`, `crack`, `_n.png`, `-n.png` and `glow` drop
+/// ores, gravel, decals, soil, cracked overlays, normal maps and glow maps. `metal/`
+/// and `painting/` remove the two things the ALLOW list otherwise pulls in: the `chalk`
+/// substring matches `molybdochalkos` ingots and lanterns, and `painting/caveart/chalk`
+/// is a painting. (No leading slash: these are top-level segments of the path *relative
+/// to* `textures/block`.)
 pub const EXCLUDE_SUBSTRINGS: &[&str] = &[
     "/ore",
     "gravel",
@@ -163,7 +155,7 @@ pub const EXCLUDE_SUBSTRINGS: &[&str] = &[
     "painting/",
 ];
 
-/// Is the texture at `relative_path` a chiselable block? (prototype `isChiselable`)
+/// Is the texture at `relative_path` a chiselable block?
 ///
 /// `relative_path` is the path *below* the `textures/block` directory, using
 /// forward slashes (so the `/rock/` and `/ore` segment tests work regardless of
@@ -188,7 +180,7 @@ pub fn is_chiselable(relative_path: &str) -> bool {
 }
 
 /// Strip the `.png` extension and any trailing digits from a forward-slash
-/// relative path, yielding the group key (prototype `key` in `scanBlocks`).
+/// relative path, yielding the group key.
 fn group_key_for(relative_path: &str) -> String {
     let without_extension = relative_path
         .strip_suffix(".png")
@@ -198,7 +190,7 @@ fn group_key_for(relative_path: &str) -> String {
     trimmed.to_string()
 }
 
-/// Title-Case the last path segment, with `-`/`_` → space (prototype `prettify`).
+/// Title-Case the last path segment, with `-`/`_` → space.
 pub fn prettify_label(group_key: &str) -> String {
     let last_segment = group_key.rsplit('/').next().unwrap_or(group_key);
     let spaced: String = last_segment
@@ -235,8 +227,7 @@ pub struct ScannedTexture {
     pub relative_path: String,
 }
 
-/// Group scanned chiselable textures into [`BlockGroup`]s, faithfully following
-/// the prototype `scanBlocks` grouping — no artificial cap, no label de-dup.
+/// Group scanned chiselable textures into [`BlockGroup`]s — no cap, no label de-dup.
 ///
 /// GROUP KEY = relative texture path without `.png`, trailing digits stripped, so
 /// each distinct texture-set is ONE tile and numbered variants of the same stem
@@ -245,16 +236,14 @@ pub struct ScannedTexture {
 /// returned; the result is key-sorted (stable, deterministic) so the palette
 /// order is reproducible across runs.
 ///
-/// Earlier builds de-duplicated by LABEL and capped the result at 90 groups to
-/// keep the palette small; that hid most of the chiselable blocks (two distinct
-/// texture-sets that prettify to the same label were merged, and everything past
-/// the 90th label was dropped). Both the cap and the label de-dup are gone: the
-/// real VS tree yields a few hundred groups and the palette shows them all.
+/// Neither a cap nor a label de-dup belongs here: two distinct texture-sets can
+/// prettify to the same label, and the real VS tree yields a few hundred groups the
+/// palette shows in full.
 pub fn group_block_textures(textures: Vec<ScannedTexture>) -> Vec<BlockGroup> {
     use std::collections::BTreeMap;
 
-    // Accumulate variants per full-path key (the faithful prototype key): one
-    // group per distinct texture-set, numbered variants of a stem merged in.
+    // Accumulate variants per full-path key: one group per distinct texture-set,
+    // numbered variants of a stem merged in.
     let mut by_key: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for texture in textures {
         let key = group_key_for(&texture.relative_path);
@@ -293,7 +282,7 @@ mod tests {
     fn exclude_wins_over_allow_and_rock() {
         // EXCLUDE runs first: ores/soil/gravel/overlays/normal-maps/glow are out
         // even under /rock/ or with an ALLOW token.
-        // "/ore" matches a path segment, not a filename suffix (prototype token).
+        // "/ore" matches a path segment, not a filename suffix.
         assert!(!is_chiselable("stone/ore/granite.png"));
         assert!(!is_chiselable("overlay/rock/cracked1.png"));
         assert!(!is_chiselable("stone/rock/granite_n.png"));
@@ -352,7 +341,7 @@ mod tests {
 
     #[test]
     fn grouping_has_no_artificial_cap() {
-        // 200 distinct texture-sets must all survive (the old code capped at 90).
+        // 200 distinct texture-sets must all survive — the grouping has no cap.
         // Use distinct non-numeric stems so trailing-digit stripping keeps them
         // separate (numbered variants of one stem would correctly merge).
         let textures: Vec<ScannedTexture> = (0..200)

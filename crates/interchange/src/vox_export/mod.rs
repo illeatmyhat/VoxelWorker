@@ -1,19 +1,15 @@
-//! MagicaVoxel `.vox` export (Milestone 8).
+//! MagicaVoxel `.vox` export.
 //!
-//! Serializes a resolved [`VoxelGrid`] to a MagicaVoxel
-//! `.vox` file so the result can be ingested by the **Automatic Chiselling
-//! REBORN** Vintage Story mod. The chunked binary is
-//! hand-written (no crate dependency) — it is a `VOX ` magic + version 150
-//! header followed by one `MAIN` chunk that contains, per model, a `SIZE` and an
-//! `XYZI` chunk, plus a single trailing `RGBA` palette chunk.
+//! Serializes a resolved [`VoxelGrid`] to a MagicaVoxel `.vox` file. The chunked binary
+//! is hand-written (no crate dependency) — it is a `VOX ` magic + version 150 header
+//! followed by one `MAIN` chunk that contains, per model, a `SIZE` and an `XYZI` chunk,
+//! plus a single trailing `RGBA` palette chunk.
 //!
 //! ## Axis convention (documented, the bit that bites)
 //!
 //! MagicaVoxel uses a **Z-up** right-handed coordinate system; our world is **also
 //! Z-up** (vertical = +Z, index 2). So our grid index `(i, j, k)` maps DIRECTLY to
-//! a vox coordinate `(x, y, z) = (i, j, k)` — **no axis swap**. (Before the Z-up
-//! reorientation our world was Y-up and this path swapped Y/Z to stand the model
-//! upright; now the model is already Z-up so the swap is gone.)
+//! a vox coordinate `(x, y, z) = (i, j, k)` — **no axis swap**.
 //!
 //! ## 256 limit
 //!
@@ -23,23 +19,19 @@
 //! Typical grids (e.g. 80×16×80) are a single model. The split is documented in
 //! [`VoxExport::model_count`].
 //!
-//! ## Color (ADR 0003 §3a — block-palette mapping)
+//! ## Color
 //!
-//! Each voxel's categorical `block_id` (ADR 0003 §3a) maps through the active block
-//! palette to a `.vox` palette slot: file palette index `block_id + 1` carries that
-//! block's color, and every voxel references its own block's slot. The palette is
-//! built over the existing three procedural materials (the categorical CAPABILITY; the
-//! rich VS palette content stays deferred), so a single-material scene (every voxel
-//! `block_id 0`) still references ONE slot and is byte-identical to the old single-
-//! representative-color export. A multi-material scene now exports each block in its
-//! own palette color rather than collapsing to one.
+//! Each voxel's categorical `block_id` maps through the active block palette to a `.vox`
+//! palette slot: file palette index `block_id + 1` carries that block's color, and every
+//! voxel references its own block's slot. The palette is built over the three procedural
+//! materials, so a single-material scene references ONE slot and a multi-material scene
+//! exports each block in its own color rather than collapsing them.
 
 use voxel_core::voxel::VoxelGrid;
 
-/// The per-`block_id` RGBA palette the `.vox` export writes (ADR 0003 §3a). Index `i`
-/// is the color for `block_id == i`; it is written to `.vox` file palette slot `i + 1`
-/// (MagicaVoxel palette is 1-based, 0 = empty). Sized to the procedural material set —
-/// the categorical capability over the existing three materials.
+/// The per-`block_id` RGBA palette the `.vox` export writes. Index `i` is the color for
+/// `block_id == i`; it is written to `.vox` file palette slot `i + 1` (MagicaVoxel
+/// palette is 1-based, 0 = empty). Sized to the procedural material set.
 pub type BlockPaletteColors = [[u8; 4]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
 
 /// MagicaVoxel per-axis maximum (coordinates are stored as `u8`, 0..=255).
@@ -69,7 +61,7 @@ struct VoxModel {
 /// [`VoxExport::to_bytes`] or [`VoxExport::write`].
 pub struct VoxExport {
     models: Vec<VoxModel>,
-    /// Per-`block_id` RGBA palette (ADR 0003 §3a): slot `block_id` written to `.vox`
+    /// Per-`block_id` RGBA palette: slot `block_id` written to `.vox`
     /// file palette index `block_id + 1`, which each voxel of that block references.
     palette_colors: BlockPaletteColors,
     /// Total occupied voxels written across all models (== grid.occupied.len()).
@@ -80,14 +72,13 @@ impl VoxExport {
     /// Build the export from a resolved grid (Z-up, no axis swap) and tiling into
     /// ≤256 models if any dimension exceeds [`VOX_AXIS_MAX`].
     ///
-    /// `palette_colors` maps each `block_id` to its RGBA palette color (ADR 0003 §3a;
-    /// build it with `block_palette_from_active` or pass the procedural material
-    /// colors). Each voxel references `block_id + 1` in the `.vox` palette.
+    /// `palette_colors` maps each `block_id` to its RGBA palette color — build it with
+    /// `block_palette_from_active` or pass the procedural material colors. Each voxel
+    /// references `block_id + 1` in the `.vox` palette.
     pub fn from_grid(grid: &VoxelGrid, palette_colors: BlockPaletteColors) -> Self {
         // One bucketing path: the whole-grid case is the region case with a single
-        // grid covering the whole region (issue #20 S6d). Keeping ONE code path
-        // guarantees the region-scoped export can never drift from the whole-grid
-        // export — they are literally the same function.
+        // grid covering the whole region, so the region-scoped export cannot drift
+        // from the whole-grid export.
         Self::from_region_voxels(
             grid.dimensions,
             std::iter::once(&grid.occupied[..]),
@@ -97,9 +88,8 @@ impl VoxExport {
 
     /// Build a [`BlockPaletteColors`] in which the ACTIVE material's slot carries
     /// `representative_rgba` and the other procedural materials carry a neutral gray.
-    /// This is the categorical seam the single-material `.vox` export used to inline as
-    /// one representative color (ADR 0003 §3a): a single-material scene (every voxel
-    /// `block_id == active`) still references one slot, so its file bytes are unchanged.
+    /// A single-material scene (every voxel `block_id == active`) therefore references
+    /// exactly one slot.
     pub fn block_palette_from_active(
         active: voxel_core::core_geom::MaterialChoice,
         representative_rgba: [u8; 4],
@@ -110,11 +100,10 @@ impl VoxExport {
         palette
     }
 
-    /// **Region-scoped `.vox` export (issue #20 S6d).** Build the SAME export
+    /// **Region-scoped `.vox` export.** Build the SAME export
     /// [`from_grid`](Self::from_grid) would build for the assembled monolithic
-    /// region grid, but from a SET of per-chunk voxel slices — so the export
-    /// consumer no longer needs the whole grid materialised once the S6c
-    /// monolithic bridge is gone.
+    /// region grid, but from a SET of per-chunk voxel slices, so no consumer needs the
+    /// whole grid materialized.
     ///
     /// `region_dimensions` are the region's voxel dimensions (exactly the assembled
     /// monolithic grid's `dimensions`): they define the tiling, the model sizes and
@@ -126,7 +115,7 @@ impl VoxExport {
     /// ## Why this equals the whole-grid export
     ///
     /// The union of the per-chunk occupied slices is EXACTLY the monolithic region
-    /// grid's occupied set (the S2 cache-assembly equivalence proof), and every
+    /// grid's occupied set, and every
     /// voxel is bucketed by the identical `i = round(world_x + grid_x/2 − 0.5)`
     /// arithmetic [`from_grid`](Self::from_grid) uses, against the same
     /// `region_dimensions`. Each voxel therefore lands in the same model at the same
@@ -147,7 +136,7 @@ impl VoxExport {
         )
     }
 
-    /// **Cacheless STREAMING `.vox` export (ADR 0010 E4).** Build the SAME export
+    /// **Cacheless STREAMING `.vox` export.** Build the SAME export
     /// [`from_region_voxels`](Self::from_region_voxels) would build, but from a stream
     /// of OWNED per-chunk voxel `Vec`s — each chunk buffer is bucketed then DROPPED, so
     /// no whole-region dense grid is ever assembled. This is the seam the export button
@@ -159,7 +148,7 @@ impl VoxExport {
     /// The bucketing is the SAME core `from_region_voxels` uses (same
     /// `i = round(world + floor(dim/2) − 0.5)` decode, same 256-tiling), so a streamed
     /// export is model-set-identical to the dense-path region export for any scene that
-    /// fits the dense path — the E4 parity gate.
+    /// fits the dense path.
     pub fn from_region_voxel_chunks(
         region_dimensions: [u32; 3],
         chunk_voxels: impl IntoIterator<Item = Vec<voxel_core::voxel::Voxel>>,
@@ -240,9 +229,8 @@ impl VoxExport {
 
         // RGBA palette chunk: 256 entries. MagicaVoxel reads palette[i] for file index
         // i+1, so a voxel of `block_id` (which references file index `block_id + 1`)
-        // reads array entry `block_id` (ADR 0003 §3a — the categorical block-palette
-        // mapping). The procedural block colors fill the leading slots; the rest are a
-        // neutral gray so the file stays valid.
+        // reads array entry `block_id`. The procedural block colors fill the leading
+        // slots; the rest are a neutral gray so the file stays valid.
         let mut rgba = Vec::with_capacity(256 * 4);
         for entry in 0..256 {
             if entry < self.palette_colors.len() {
@@ -339,21 +327,18 @@ impl VoxExport {
     }
 }
 
-/// **Incremental streaming `.vox` builder (ADR 0010 E4).** Buckets a stream of occupied
-/// voxels into the `.vox` 256-tile model set ONE chunk (or one voxel) at a time, so the
-/// export never holds more than a single streamed chunk's voxels plus the per-model
-/// output buffers — the inherent `.vox` output cost. This is the seam the live export
-/// button drives over [`evaluation::two_layer_store::stream_vox_occupancy`]: each covering
-/// chunk's freshly-expanded `Vec<Voxel>` is ingested then DROPPED, so peak transient
-/// memory is O(one chunk + the output buffers), never O(all occupied voxels). It
-/// dissolves the `Vec<Vec<Voxel>>` accumulate-then-convert intermediate the button used
-/// to materialise before calling [`VoxExport::from_region_voxel_chunks`] — the owner's
-/// peak-memory law: no O(volume) accumulation on any path.
+/// **Incremental streaming `.vox` builder.** Buckets a stream of occupied voxels into
+/// the `.vox` 256-tile model set ONE chunk (or one voxel) at a time, so the export never
+/// holds more than a single streamed chunk's voxels plus the per-model output buffers —
+/// the inherent `.vox` output cost. This is the seam the export button drives over
+/// [`evaluation::two_layer_store::stream_vox_occupancy`]: each covering chunk's
+/// freshly-expanded `Vec<Voxel>` is ingested then DROPPED, so peak transient memory is
+/// O(one chunk + the output buffers) and no path accumulates O(volume).
 ///
 /// ## Why the model set can be pre-created (single pass, no bounds pre-scan)
 ///
 /// The model COUNT and SIZES are a pure function of `region_dimensions` (the 256-tiling),
-/// and the palette is supplied explicitly (ADR 0003 §3a) — neither depends on scanning the
+/// and the palette is supplied explicitly — neither depends on scanning the
 /// occupancy. So [`new`](Self::new) builds the full (empty) model set up front and every
 /// voxel lands in its model by the SAME corner-anchored decode
 /// [`VoxExport::from_region_voxels`] uses. One streaming pass suffices; the format never
@@ -438,8 +423,8 @@ impl VoxExportBuilder {
     }
 
     /// Bucket every voxel in one STREAMED chunk into its model, so the caller can DROP
-    /// the chunk buffer afterward (ADR 0010 E4): only one chunk's voxels are ever
-    /// resident. This is the sink [`evaluation::two_layer_store::stream_vox_occupancy`] drives.
+    /// the chunk buffer afterward: only one chunk's voxels are ever resident. This is
+    /// the sink [`evaluation::two_layer_store::stream_vox_occupancy`] drives.
     pub fn ingest_chunk(&mut self, chunk_voxels: &[voxel_core::voxel::Voxel]) {
         for voxel in chunk_voxels {
             self.ingest_voxel(*voxel);
@@ -447,8 +432,8 @@ impl VoxExportBuilder {
     }
 
     /// Decode one voxel's corner-anchored grid index, tile it, and push it into its
-    /// model (dropping it if it falls outside the region — the same guard the dense
-    /// path used). The block id selects the `.vox` palette slot (ADR 0003 §3a).
+    /// model, dropping it if it falls outside the region. The block id selects the
+    /// `.vox` palette slot.
     fn ingest_voxel(&mut self, voxel: voxel_core::voxel::Voxel) {
         let [grid_x, grid_y, grid_z] = self.region_dimensions;
         // Recover non-negative integer grid indices from the world-centered
@@ -478,7 +463,7 @@ impl VoxExportBuilder {
             return;
         };
         // Z-up: vox (x, y, z) = (our i, our j, our k) — no swap. The categorical
-        // block id selects the `.vox` palette slot (`block_id + 1`; ADR 0003 §3a),
+        // block id selects the `.vox` palette slot (`block_id + 1`),
         // so a multi-material model exports each block in its own color. Clamp to
         // the procedural palette so a stray id stays in range.
         let palette_slot = voxel

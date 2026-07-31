@@ -185,7 +185,7 @@ fn vox_splits_models_over_256() {
     }
 }
 
-// ===== Issue #20 S6d: region-scoped `.vox` export ============================
+// ===== Region-scoped `.vox` export ===========================================
 
 use document::scene::{Node, NodeContent, Scene};
 use document::voxel::GeometryParams;
@@ -222,8 +222,8 @@ fn parsed_model_sets(bytes: &[u8]) -> ModelSets {
 /// cell (Union later-wins resolved). Reducing both to last-writer-per-coord compares
 /// the TRUE resolved file: for every non-overlapping scene each coord has one writer,
 /// so this is identical to [`parsed_model_sets`]; only genuine overlap differs, and
-/// there the last-writer map is the correct comparison (ADR 0010 parity-gate canonical
-/// form, mirroring `two_layer_store.rs::resolved_occupancy_set`).
+/// there the last-writer map is the correct comparison, mirroring
+/// `two_layer_store.rs::resolved_occupancy_set`.
 type ModelLastWriter = std::collections::BTreeMap<(u8, u8, u8), u8>;
 type ModelLastWriterSets = std::collections::BTreeSet<([u32; 3], Vec<((u8, u8, u8), u8)>)>;
 fn parsed_model_last_writer_sets(bytes: &[u8]) -> ModelLastWriterSets {
@@ -333,7 +333,7 @@ fn region_vox_export_equals_whole_grid_for_demo_scene() {
     assert_region_vox_export_equals_whole_grid(&scene, vpb, "demo-scene");
 }
 
-// ===== Issue #20 Step 2: far-offset export ===================================
+// ===== Far-offset export =====================================================
 
 /// Build a two-node scene whose composite is centered FAR from the world origin:
 /// one node at the origin and one node `offset_blocks` away on X. The composite
@@ -355,24 +355,18 @@ fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
     scene
 }
 
-/// **The rewired export is behavior-equivalent to the old monolithic export, far
-/// from the origin (issue #20 Step 2).** The live export button now routes through
-/// `ChunkResolveCache::vox_export` instead of a dense whole-region resolve + `from_grid`. This
-/// proves the rewiring is safe at far offset: for a scene whose composite is
-/// centered ~250,000 blocks out (4e6 voxels — well into the f32 large-magnitude
-/// regime), the region-scoped export's model SET (sizes + per-model voxels) equals
-/// the old whole-grid export's, AND both keep the full voxel count (the per-chunk
-/// ground truth). So the wiring change is a true no-op on the written file.
+/// **The region-scoped export equals the whole-grid export far from the origin.** For a
+/// scene whose composite is centered ~250,000 blocks out (4e6 voxels — well into the f32
+/// large-magnitude regime), `ChunkResolveCache::vox_export`'s model SET (sizes +
+/// per-model voxels) equals a dense whole-region resolve + `from_grid`, and both keep the
+/// full voxel count.
 ///
-/// NOTE (finding, issue #20 Low #1): routing through `vox_export` does NOT make a
-/// genuinely region-WIDE far scene more accurate than the monolithic path. Both
-/// bucket into the region-relative `[0, grid_x)` frame, so both add `half_x` (≈ the
-/// region half-width) in f32; once the region exceeds ~2^24 voxels on an axis the
-/// voxel-center `.5` is unrepresentable and BOTH paths collapse identically (the
-/// exports stay model-set-equal). The f32-`.5` loss is inherent to the f32
-/// `world_position` at large magnitude, not to which assembly path is used. The
-/// rewiring's value is the Step-4 decoupling from the monolithic grid, not a
-/// far-offset accuracy gain.
+/// Neither path is more accurate than the other at that magnitude: both bucket into the
+/// region-relative `[0, grid_x)` frame, so both add `half_x` (≈ the region half-width) in
+/// f32, and once the region exceeds ~2^24 voxels on an axis the voxel-center `.5` is
+/// unrepresentable and both collapse identically. That loss is inherent to the f32
+/// `world_position`, not to the assembly path. What the region path buys is independence
+/// from the monolithic grid.
 #[test]
 fn far_offset_region_export_equals_monolithic() {
     let vpb = 16u32;
@@ -453,13 +447,13 @@ fn far_offset_region_export_round_trips_full_voxel_set() {
     );
 }
 
-// ===== ADR 0010 E4: cacheless STREAMING `.vox` export ========================
+// ===== Cacheless STREAMING `.vox` export =====================================
 
 use evaluation::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
 use voxel_core::core_geom::MaterialChoice as Mat;
 
 /// Build the `.vox` export by STREAMING the cacheless two-layer evaluator (coarse
-/// `d³` fast-fill + boundary per-voxel) — the E4 path the export button drives.
+/// `d³` fast-fill + boundary per-voxel) — the path the export button drives.
 fn streamed_vox_export(scene: &Scene, vpb: u32, rgba: BlockPaletteColors) -> VoxExport {
     let store = TwoLayerStore::enabled();
     let mut chunks: Vec<Vec<voxel_core::voxel::Voxel>> = Vec::new();
@@ -468,19 +462,19 @@ fn streamed_vox_export(scene: &Scene, vpb: u32, rgba: BlockPaletteColors) -> Vox
     VoxExport::from_region_voxel_chunks(dims, chunks, rgba)
 }
 
-/// **THE E4 `.vox` PARITY GATE:** the streamed export's written `.vox` (model set =
-/// sizes + per-voxel `(x, y, z, color)`) is IDENTICAL to today's dense-path region
-/// export, for the gated scene. Mirrors
+/// **The `.vox` parity gate:** the streamed export's written `.vox` (model set =
+/// sizes + per-voxel `(x, y, z, color)`) is IDENTICAL to the dense-path region export
+/// for the gated scene. Mirrors
 /// `assert_region_vox_export_equals_whole_grid` on the streaming path.
 fn assert_streamed_vox_export_equals_dense(scene: &Scene, vpb: u32, label: &str) {
     let rgba = VoxExport::block_palette_from_active(Mat::Stone, [132, 126, 118, 255]);
 
-    // Dense path (today's export): per-chunk `bound_region_occupied` → `from_region_voxels`.
+    // Dense path: per-chunk `bound_region_occupied` → `from_region_voxels`.
     let mut cache = ChunkResolveCache::new();
     let (dims, occupied) = cache.bound_region_occupied(scene, vpb, 0);
     let dense_export = VoxExport::from_region_voxels(dims, occupied, rgba);
 
-    // Streamed path (E4): the cacheless two-layer evaluator.
+    // Streamed path: the cacheless two-layer evaluator.
     let streamed_export = streamed_vox_export(scene, vpb, rgba);
 
     assert_eq!(
@@ -493,7 +487,7 @@ fn assert_streamed_vox_export_equals_dense(scene: &Scene, vpb: u32, label: &str)
     // non-overlapping scene each coord has one writer, so this is bit-identical to
     // the raw per-voxel set; only genuine leaf overlap differs (the dense file keeps
     // duplicate entries there, the streamed file is resolved), and the last-writer
-    // map is the correct comparison (ADR 0010 parity-gate canonical form).
+    // map is the correct comparison.
     let streamed_bytes = streamed_export.to_bytes();
     let dense_bytes = dense_export.to_bytes();
     assert_eq!(
@@ -517,15 +511,14 @@ fn assert_streamed_vox_export_equals_dense(scene: &Scene, vpb: u32, label: &str)
     );
 }
 
-/// **THE STREAMED-SINK PEAK-MEMORY PROOF (ADR 0010 E4).** The live export button now
-/// buckets each streamed chunk DIRECTLY into a [`VoxExportBuilder`] then drops it
-/// (peak = O(one chunk + output buffers)), instead of accumulating every chunk into a
-/// `Vec<Vec<Voxel>>` before one `from_region_voxel_chunks` conversion (peak =
-/// O(all voxels)). This asserts the two produce a BYTE-IDENTICAL `.vox` for a
-/// multi-chunk scene: both drive the SAME `stream_vox_occupancy` (identical chunk
-/// order), and the incremental builder IS the core `from_region_voxel_chunks` flattens
-/// into — so the memory fix is a pure no-op on the written file, down to voxel emission
-/// order and palette bytes. The accumulate-then-convert path is kept here as the oracle.
+/// **The streamed-sink peak-memory proof.** The export button buckets each streamed
+/// chunk DIRECTLY into a [`VoxExportBuilder`] then drops it, so peak memory is O(one
+/// chunk + output buffers) rather than the O(all voxels) an accumulate-then-convert path
+/// costs. This asserts the two produce a BYTE-IDENTICAL `.vox` for a multi-chunk scene:
+/// both drive the SAME `stream_vox_occupancy` (identical chunk order), and the
+/// incremental builder IS the core `from_region_voxel_chunks` flattens into, so the
+/// bounded-memory path is a no-op on the written file down to voxel emission order and
+/// palette bytes. The accumulate-then-convert path is the oracle here.
 fn assert_streamed_builder_matches_accumulated(scene: &Scene, vpb: u32, label: &str) {
     let rgba = VoxExport::block_palette_from_active(Mat::Stone, [132, 126, 118, 255]);
     let store = TwoLayerStore::enabled();
@@ -711,11 +704,11 @@ fn streamed_vox_export_equals_dense_for_overlap_multi_material() {
     assert_streamed_vox_export_equals_dense(&scene, vpb, "overlap-multi-material");
 }
 
-/// **6M-CAP DISSOLUTION (the E4 headline):** an 800×800-revolve-class solid box —
-/// 50³ blocks @ d16 = 800³ voxels, whose dense whole-region count (~5.1e8) blows the
-/// 6M `MAX_GRID_VOXELS` cap — EXPORTS SUCCESSFULLY via the streaming path. We assert
-/// (a) the dense single-shape guard WOULD reject it, and (b) the streamed export
-/// produces the full surface+interior occupancy without a whole-region densify.
+/// **The streaming path has no whole-region cap:** a 50³-block solid box at d16 is 800³
+/// voxels, whose dense whole-region count (~5.1e8) blows the 6M `MAX_GRID_VOXELS` cap,
+/// and it exports successfully. Asserts (a) the dense single-shape guard WOULD reject it,
+/// and (b) the streamed export produces the full surface+interior occupancy without a
+/// whole-region densify.
 #[test]
 fn streamed_vox_export_dissolves_6m_cap_on_large_solid() {
     let vpb = 16u32;
