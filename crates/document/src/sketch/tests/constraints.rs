@@ -911,3 +911,97 @@ fn the_relations_hold_through_a_drag() {
         "the hand still holds its point: {held:?}"
     );
 }
+
+/// An arc, and the id of the centre point the sketch derives for it.
+fn arc_with_centre() -> (Sketch, EntityId, EntityId) {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(20, 0));
+    sketch
+        .connect_arc(tail, head, AngleMeasurement::from_degrees(90))
+        .expect("a quarter turn");
+    let centre = sketch.arcs()[0].center;
+    let loose = sketch.add_free_point(SketchPoint::new(40, 17));
+    (sketch, centre, loose)
+}
+
+/// **A constraint cannot name a point the drawing derives.** An arc's centre is owned by
+/// `sync_arc_centers`, so an assertion about it would be honoured by the solve and then erased by
+/// the next edit — a badge on the drawing claiming something the drawing does not do.
+///
+/// This is the owner's report of 2026-07-31: a `Coincident` placed on what looked like a circle's
+/// centre "didn't work". It was an arc's centre, and it took silently.
+#[test]
+fn an_arcs_centre_cannot_carry_a_constraint() {
+    let (mut sketch, centre, loose) = arc_with_centre();
+    assert!(sketch.is_derived_point(centre));
+    assert!(
+        !sketch.is_derived_point(loose),
+        "a free point is the author's"
+    );
+
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Coincident {
+            first: centre,
+            second: loose,
+        }),
+        Err(ConstraintRefusal::Derived { point: centre }),
+    );
+    // The order of the naming is not what makes it derived.
+    assert_eq!(
+        sketch.add_constraint(ConstraintKind::Coincident {
+            first: loose,
+            second: centre,
+        }),
+        Err(ConstraintRefusal::Derived { point: centre }),
+    );
+    assert!(sketch.constraints().is_empty(), "nothing was recorded");
+}
+
+/// The refusal is a property of the POINT, not of one verb — every kind with a point slot inherits
+/// it, because the check runs over `ConstraintKind::points()` rather than per variant.
+#[test]
+fn every_kind_with_a_point_slot_refuses_a_derived_point() {
+    let (mut sketch, centre, loose) = arc_with_centre();
+    let far = sketch.add_free_point(SketchPoint::new(-30, 6));
+    let segment = sketch.connect(loose, far).expect("a fresh segment");
+    let at = sketch
+        .points()
+        .iter()
+        .find(|point| point.id == centre)
+        .expect("the centre")
+        .at;
+
+    for kind in [
+        ConstraintKind::Fix { point: centre, at },
+        ConstraintKind::Distance {
+            from: centre,
+            to: loose,
+            length: SketchLength::new(12),
+        },
+        ConstraintKind::Midpoint {
+            point: centre,
+            segment,
+        },
+    ] {
+        assert_eq!(
+            sketch.add_constraint(kind),
+            Err(ConstraintRefusal::Derived { point: centre }),
+            "{kind:?} named a derived point",
+        );
+    }
+}
+
+/// The refusal is narrow: it is about the centre, not about arcs. A relation between two ordinary
+/// points still lands on a sketch that happens to hold an arc.
+#[test]
+fn an_arc_in_the_drawing_does_not_refuse_ordinary_points() {
+    let (mut sketch, _centre, loose) = arc_with_centre();
+    let other = sketch.add_free_point(SketchPoint::new(41, 18));
+    assert!(sketch
+        .add_constraint(ConstraintKind::Coincident {
+            first: loose,
+            second: other,
+        })
+        .is_ok());
+}

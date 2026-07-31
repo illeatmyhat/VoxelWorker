@@ -238,9 +238,15 @@ impl ArmedConstraint {
 
     /// Offer `candidate` to the slot that is waiting.
     ///
-    /// Three things can refuse it: the wrong kind of entity, an entity already picked for an
-    /// earlier slot, and geometry the sketch does not hold (a selection that went stale between
-    /// the hit-test and here). All three leave the gesture exactly as it was.
+    /// Four things can refuse it: the wrong kind of entity, an entity already picked for an
+    /// earlier slot, geometry the sketch does not hold (a selection that went stale between the
+    /// hit-test and here), and a point the drawing DERIVES rather than the author places. All four
+    /// leave the gesture exactly as it was.
+    ///
+    /// The derived case is caught here and not only at `Sketch::add_constraint` because the
+    /// document's refusal arrives after the last slot fills — the author would pick two points and
+    /// then be told the first one was never eligible. Refusing at the pick keeps the gesture
+    /// running and asks again.
     pub fn offer(&mut self, candidate: SketchEntity, sketch: &Sketch) -> Offer {
         let Some(slot) = self.wants() else {
             return Offer::Refused("already complete");
@@ -256,6 +262,11 @@ impl ArmedConstraint {
         }
         if !holds(sketch, candidate) {
             return Offer::Refused("that geometry is gone");
+        }
+        if let SketchEntity::Point(id) = candidate {
+            if sketch.is_derived_point(id) {
+                return Offer::Refused("an arc's centre follows its ends — constrain those");
+            }
         }
         self.picked.push(candidate);
         match self.wants() {
@@ -370,6 +381,7 @@ fn holds(sketch: &Sketch, entity: SketchEntity) -> bool {
 mod tests {
     use super::*;
     use document::sketch::{PlaneAxis, SketchPoint};
+    use parametric::units::AngleMeasurement;
 
     /// Two points joined by one segment.
     fn one_segment() -> (Sketch, EntityId, EntityId, EntityId) {
@@ -474,6 +486,34 @@ mod tests {
         let (sketch, _, _, _) = one_segment();
         let armed = ArmedConstraint::new(ConstraintVerb::Fix);
         assert_eq!(armed.kind(&sketch), None);
+    }
+
+    /// An arc's centre is a point the DRAWING owns — it is re-derived after every edit that moves
+    /// the arc — so offering it to a point slot is refused at the pick, while the gesture is still
+    /// asking. Waiting for `Sketch::add_constraint` to refuse would make the author fill every
+    /// slot before hearing that the first pick was never eligible (owner 2026-07-31).
+    #[test]
+    fn an_arcs_centre_is_refused_at_the_pick() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let tail = sketch.add_free_point(SketchPoint::from_continuous(0.0, 0.0));
+        let head = sketch.add_free_point(SketchPoint::from_continuous(20.0, 0.0));
+        sketch
+            .connect_arc(tail, head, AngleMeasurement::from_degrees(90))
+            .expect("a quarter turn");
+        let centre = sketch.arcs()[0].center;
+        let loose = sketch.add_free_point(SketchPoint::from_continuous(40.0, 17.0));
+
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Coincident);
+        assert_eq!(
+            armed.offer(SketchEntity::Point(centre), &sketch),
+            Offer::Refused("an arc's centre follows its ends — constrain those")
+        );
+        assert!(armed.picked().is_empty(), "nothing was taken");
+        assert_eq!(
+            armed.offer(SketchEntity::Point(loose), &sketch),
+            Offer::Taken,
+            "still armed, and an ordinary point still lands"
+        );
     }
 
     /// A verb that asserts exactly one kind leaves its own glyph on the drawing, so pressing a

@@ -1496,6 +1496,16 @@ impl Sketch {
     fn check_names_live_geometry(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
         let known_point = |id: EntityId| self.points.iter().any(|point| point.id == id);
         let live_segment = |id: EntityId| self.segments.iter().find(|seg| seg.id == id);
+        // Asked once for every point slot rather than per variant: a derived point is refused
+        // whatever is being said about it, so a kind added later inherits the rule. See
+        // [`ConstraintRefusal::Derived`] for why it is a refusal and not an assertion.
+        if let Some(&point) = kind
+            .points()
+            .iter()
+            .find(|&&named| self.is_derived_point(named))
+        {
+            return Err(ConstraintRefusal::Derived { point });
+        }
         match kind {
             ConstraintKind::Fix { point, .. } => {
                 if !known_point(point) {
@@ -1777,6 +1787,19 @@ impl Sketch {
     pub fn delete_circle(&mut self, circle_id: EntityId) {
         self.circles.retain(|circle| circle.id != circle_id);
         self.prune_orphan_centers();
+    }
+
+    /// Whether the drawing OWNS this point's coordinates — today, whether it is an arc's centre,
+    /// which [`sync_arc_centers`](Self::sync_arc_centers) rewrites after every edit that can move
+    /// the arc. A derived point is selectable, draggable and snappable like any other; what it
+    /// cannot do is carry a constraint, because the next re-derivation would overwrite the answer
+    /// (see [`ConstraintRefusal::Derived`]).
+    ///
+    /// Only DIRECT naming is covered. A segment drawn to an arc's centre can still be asserted
+    /// level, and the re-derivation will still win — the honest answer to that is arcs entering
+    /// the parameter vector, not a wider refusal that would take away drawing to a centre at all.
+    pub fn is_derived_point(&self, id: EntityId) -> bool {
+        self.arcs.iter().any(|arc| arc.center == id)
     }
 
     /// Re-derive every arc's centre point from its endpoints and bulge (ADR 0030 §5), minting

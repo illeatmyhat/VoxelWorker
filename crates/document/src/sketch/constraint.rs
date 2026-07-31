@@ -202,6 +202,22 @@ pub enum ConstraintRefusal {
     /// Its own terms cannot be met by any drawing — a negative distance, a `Horizontal` on a
     /// segment whose ends are the same point. Nothing to blame but the request.
     Impossible,
+    /// It names a point the drawing OWNS rather than one the author places: an arc's centre,
+    /// which `Sketch::sync_arc_centers` re-derives from the arc's ends and its sweep after every
+    /// edit that can move it.
+    ///
+    /// Refused rather than accepted-and-overwritten. The solve would honour it — the centre is an
+    /// ordinary parameter — and then the next edit would re-derive the centre and put it back,
+    /// leaving a badge on the drawing asserting something the drawing does not do. A constraint
+    /// that silently stops holding is worse than one that was never allowed.
+    ///
+    /// The way to constrain an arc's centre is to constrain the arc's ENDS, which is what puts the
+    /// centre where it goes. Constraining the centre directly waits on arcs entering the parameter
+    /// vector in their own right (ADR 0035 Decision 5, still-unbacked: Concentric, Tangent).
+    Derived {
+        /// The derived point that was named.
+        point: EntityId,
+    },
     /// The system it would join has no solution: it fights what is already asserted.
     Unsatisfiable {
         /// The standing constraints it cannot coexist with, found by leave-one-out (see
@@ -243,7 +259,9 @@ impl ConstraintRefusal {
     /// the refusal has no culprit or none could be isolated.
     pub fn culprits(&self) -> Vec<EntityId> {
         match self {
-            ConstraintRefusal::UnknownEntity | ConstraintRefusal::Impossible => Vec::new(),
+            ConstraintRefusal::UnknownEntity
+            | ConstraintRefusal::Impossible
+            | ConstraintRefusal::Derived { .. } => Vec::new(),
             ConstraintRefusal::Unsatisfiable { fights } => fights.clone(),
             ConstraintRefusal::WouldCollapse { implicated, .. } => implicated.clone(),
             ConstraintRefusal::AlreadyAsserted { existing } => vec![*existing],

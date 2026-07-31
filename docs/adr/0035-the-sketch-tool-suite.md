@@ -193,6 +193,19 @@ asked as **two distances** — how far each of the second segment's ends stands 
 infinite line — rather than as an angle plus an offset, so the solver never has to weigh a radian
 against a voxel.
 
+**No constraint may name a derived point, and saying so is a refusal.** An arc's centre is a real,
+selectable, draggable point, but its coordinates are OWNED by `Sketch::sync_arc_centers`, which
+re-derives them from the arc's ends and its sweep after every edit that can move the arc. A
+constraint naming it would be honoured by the solve and then erased by the next edit, leaving a
+badge on the drawing asserting something the drawing does not do — the same silent-violation class
+of bug as the drag that never re-solved. So `add_constraint` refuses it outright, and the arming
+gesture refuses the PICK, before the author has filled the other slots. The way to hold an arc's
+centre is to hold the arc's ends, which is what puts the centre where it goes; holding it directly
+waits on the parameter-vector work below. Only DIRECT naming is refused: a segment drawn to a
+centre can still be asserted level, and the re-derivation will still win — the honest answer to
+that is the same parameter-vector work, not a wider refusal that would take away drawing to a
+centre at all (owner report, 2026-07-31).
+
 **Still unbacked:** Concentric, Tangent and Curvature, which need arcs and circles inside the
 parameter vector (an arc's centre is derived from its ends and its sweep, so nothing can name it
 until the sweep is a parameter too); Symmetry; and `Quantize`, which is Decision 14's integer tier.
@@ -451,6 +464,15 @@ the mark they then see standing on the drawing, so the shelf teaches the notatio
 
 Dimensions are the exception — a `Distance` draws as a dimension gizmo, and the number is already
 the mark. A glyph beside it would say the same thing twice.
+
+**A relation with no locus marks every member; one with a locus marks the locus.** Parallel, Equal
+and Collinear are claims about each segment wherever the segments happen to be, so a single badge
+would leave the other member looking free — they get one badge each, sharing the constraint id so a
+click on either picks the one relation. Perpendicular is different: two lines meeting square make
+ONE right angle, and that corner is what the assertion is about. Its badge stands inside the angle,
+where it names the corner it squared; two badges at two midpoints say the same thing twice and
+neither of them says where. Two perpendicular segments that do not meet have no angle to stand in,
+so those fall back to the per-member placement (owner, 2026-07-31).
 
 ## Consequences
 

@@ -2227,9 +2227,39 @@ impl WindowedState {
         let beside_point = |id: document::sketch::EntityId| {
             Some((at(point_index(id)?)?, egui::vec2(0.707, -0.707)))
         };
+        let ends_of = |segment: document::sketch::EntityId| {
+            self.sketch_segments
+                .iter()
+                .find(|(id, _, _)| *id == segment)
+                .map(|&(_, from, to)| (from, to))
+        };
+        // Where two segments MEET, offset into the angle they make — the square that the mark
+        // asserts is the one the badge is sitting in. `None` when they share no endpoint.
+        let inside_the_corner = |first, second| {
+            let (first_from, first_to) = ends_of(first)?;
+            let (second_from, second_to) = ends_of(second)?;
+            let corner = [first_from, first_to]
+                .into_iter()
+                .find(|end| *end == second_from || *end == second_to)?;
+            let here = at(corner)?;
+            let arm = |(from, to): (usize, usize)| {
+                let away = at(if from == corner { to } else { from })? - here;
+                let length = away.length();
+                (length > f32::EPSILON).then_some(away / length)
+            };
+            let bisector = arm((first_from, first_to))? + arm((second_from, second_to))?;
+            let length = bisector.length();
+            // Doubling back means the two arms run along one line, which nothing perpendicular
+            // can look like — fall back to the point convention rather than to a zero vector.
+            Some(if length < f32::EPSILON {
+                (here, egui::vec2(0.707, -0.707))
+            } else {
+                (here, bisector / length)
+            })
+        };
 
         for constraint in producer.sketch.constraints() {
-            // **A relation gets a badge on EVERY member.** One badge on a two-segment relation
+            // **A relation with no locus gets a badge on EVERY member.** One badge on a two-segment relation
             // would read as belonging to whichever segment it stood beside, and the whole job of
             // the mark is to say which geometry is bound to which — a single mark on one member
             // leaves the other looking free. They share the constraint id, so a click on either
@@ -2252,8 +2282,21 @@ impl WindowedState {
                 document::sketch::ConstraintKind::Midpoint { point, .. } => {
                     beside_point(point).into_iter().collect()
                 }
+                // Perpendicular has a LOCUS, and the rule above does not apply to it: two lines
+                // meeting square make ONE right angle, and the mark belongs in it. Two badges at
+                // two midpoints say the same thing twice and neither says where the corner is
+                // (owner 2026-07-31). Segments that never meet keep the per-member placement —
+                // there is no angle to stand in, and the relation still binds both.
+                document::sketch::ConstraintKind::Perpendicular { first, second } => {
+                    match inside_the_corner(first, second) {
+                        Some(corner) => vec![corner],
+                        None => [first, second]
+                            .into_iter()
+                            .filter_map(beside_segment)
+                            .collect(),
+                    }
+                }
                 document::sketch::ConstraintKind::Parallel { first, second }
-                | document::sketch::ConstraintKind::Perpendicular { first, second }
                 | document::sketch::ConstraintKind::Equal { first, second }
                 | document::sketch::ConstraintKind::Collinear { first, second } => [first, second]
                     .into_iter()
@@ -3129,6 +3172,7 @@ fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
     match why {
         ConstraintRefusal::UnknownEntity => "names geometry that is gone",
         ConstraintRefusal::Impossible => "no drawing can meet it",
+        ConstraintRefusal::Derived { .. } => "an arc's centre follows its ends — constrain those",
         // Whether a culprit was isolated changes what the sentence can honestly promise: with one
         // selected, "this" points at a lit badge; without, the author is on their own and the
         // message must not imply otherwise.
