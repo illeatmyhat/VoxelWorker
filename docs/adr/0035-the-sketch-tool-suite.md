@@ -99,6 +99,17 @@ The system is therefore **always solvable**, which every downstream feature gets
 than defend against. The rank check that separates the two cases also yields the degree-of-freedom
 count, so "fully constrained" is a real indicator rather than a guess.
 
+**"Unsatisfiable" is read off the residuals, never off the solver's own outcome flag.** The two
+are different questions — the outcome says why the *search* stopped, the residual norm says
+whether the *answer* is one — and confusing them shipped a bug that made the constraint tools look
+dead (owner, 2026-07-30). The solver's residual tolerance is absolute while its step tolerance is
+relative to the length of the whole parameter vector, so free geometry elsewhere in the drawing —
+contributing nothing to the residual and everything to that length — makes the step test fire
+first. It then reports `Stalled` with the constraint satisfied to about 1e-10 voxels, and
+`Stalled` was being refused as a conflict. **Two** unrelated free points were enough to trigger
+it. The trial now asks only whether the residuals are met, at the same scale a span has to close
+to before the drawing calls it collapsed.
+
 Two refusals sit alongside it, because convergence alone is not enough of a test:
 
 **One constraint of a kind per entity set.** A literal second copy of a claim — `Horizontal` on a

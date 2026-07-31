@@ -69,6 +69,37 @@ fn horizontal_levels_a_segment_by_meeting_in_the_middle() {
     assert_eq!(sketch.degrees_of_freedom(), 3, "one assertion, one freedom");
 }
 
+/// **Geometry the constraint does not name must not be able to break it.** A lone segment gets
+/// levelled the same whether it is alone on the plane or surrounded by a drawing.
+///
+/// This is the regression for the bug that made the constraint tools read as simply not working
+/// (owner 2026-07-30). The verdict was taken from the solver's `SolveOutcome` rather than from its
+/// residuals; that flag's residual test is absolute while its step test is relative to the size of
+/// the whole parameter vector, so free points elsewhere in the sketch — contributing nothing to
+/// the residual and everything to the vector's length — made the step test fire first. It reported
+/// `Stalled` with the constraint satisfied to about 1e-10 voxels, and `Stalled` was refused as
+/// unsatisfiable. **Two** unrelated points were enough, which is to say every real drawing.
+#[test]
+fn free_geometry_the_constraint_never_names_cannot_refuse_it() {
+    for bystanders in 0..6 {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        for index in 0..bystanders {
+            sketch.add_free_point(SketchPoint::new(37 * (index + 1), 53 * (index + 1)));
+        }
+        let tail = sketch.add_free_point(SketchPoint::new(28, 0));
+        let head = sketch.add_free_point(SketchPoint::new(78, 6));
+        let segment = sketch.connect(tail, head).expect("a fresh segment");
+        assert!(
+            sketch
+                .add_constraint(ConstraintKind::Horizontal { segment })
+                .is_ok(),
+            "{bystanders} unrelated free point(s) refused a lone level"
+        );
+        let (a, b) = (position(&sketch, tail), position(&sketch, head));
+        assert!((a[1] - b[1]).abs() < 1e-6, "level: {a:?} to {b:?}");
+    }
+}
+
 /// A distance dimension is met exactly, and the pair moves symmetrically for the same reason.
 #[test]
 fn a_distance_dimension_is_met() {

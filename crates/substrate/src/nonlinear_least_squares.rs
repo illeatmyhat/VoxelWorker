@@ -71,6 +71,15 @@ pub enum SolveOutcome {
     /// where it started, and it is the least-squares COMPROMISE rather than a solution, which is
     /// what a sketch with contradictory constraints settles into. Read
     /// [`residual_norm`](SolveReport::residual_norm) to see how far from satisfied they are.
+    ///
+    /// **This is not the test for whether the constraints hold, and using it as one is a trap.**
+    /// [`residual_tolerance`](SolveSettings::residual_tolerance) is absolute while
+    /// [`step_tolerance`](SolveSettings::step_tolerance) is relative to the length of the
+    /// parameter vector, so on a large system the step test can fire first — stopping with the
+    /// residuals far under anything the caller's units can express, and reporting this. The
+    /// outcome says why the SEARCH stopped; only `residual_norm` says whether the ANSWER is one.
+    /// A caller that knows what "satisfied" means in its own units should ask that question of
+    /// the norm and treat the outcome as diagnosis (`document::sketch`'s trial solve does).
     Stalled,
     /// The iteration budget ran out with the residuals still shrinking. Not a failure: it means
     /// the answer is somewhere ahead and the caller decides whether to spend more.

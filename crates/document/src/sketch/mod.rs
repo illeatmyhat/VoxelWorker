@@ -684,6 +684,23 @@ pub const ABSENT_CENTER: EntityId = EntityId::MAX;
 /// author draws can land under it by accident.
 const COLLAPSED_SPAN: f64 = 1e-6;
 
+/// A trial solve whose residuals close to under this (the Euclidean norm, in in-plane voxels) has
+/// **met the constraints**, whatever stopped the search.
+///
+/// The solver's own `Converged` flag is not the test, and reading it as one was a real bug. Its
+/// residual tolerance is absolute while its step tolerance is relative to the size of the
+/// parameter vector, so on a drawing with enough geometry in it the step test fires first: the
+/// search stops with the residuals at, say, 1.7e-10 voxels — satisfied by any measure this
+/// document can express — and reports `Stalled`, which read as "unsatisfiable" and refused the
+/// constraint. Two unrelated free points elsewhere in the sketch were enough to trigger it, which
+/// is to say it fired on nearly every real drawing (owner 2026-07-30).
+///
+/// So the question asked here is the one that is actually about the answer: are the residuals
+/// met? `SolveOutcome` says why the search stopped, which is a fact about the search. The same
+/// scale as [`COLLAPSED_SPAN`], and for the same reason — it is four orders below the 1/256-block
+/// granularity a profile is flattened at, so a residual under it cannot move a single voxel.
+const SATISFIED_RESIDUAL: f64 = 1e-6;
+
 /// One trial solve on a copy of the drawing: what it produced, and whether that is acceptable.
 struct Trial {
     points: Vec<Point>,
@@ -1334,13 +1351,17 @@ impl Sketch {
 
     /// Solve `constraints` on a COPY of the drawing and judge the result. The copy is what lets a
     /// refusal leave the sketch exactly where it was rather than where a failed solve pushed it.
+    ///
+    /// The judgement is on the RESIDUALS, not on why the search stopped — see
+    /// [`SATISFIED_RESIDUAL`], which is where that distinction is argued and where the bug that
+    /// came of confusing the two is recorded.
     fn trial(&self, constraints: &[Constraint]) -> Trial {
         let mut points = self.points.clone();
         let report = constraint::solve_in_place(&mut points, &self.segment_ends(), constraints);
         let verdict = match report {
             // Nothing to solve is not a failure: an empty system is met by the drawing as it is.
             None => TrialVerdict::Solved,
-            Some(report) if report.outcome != SolveOutcome::Converged => TrialVerdict::Diverged,
+            Some(report) if report.residual_norm > SATISFIED_RESIDUAL => TrialVerdict::Diverged,
             Some(_) => match self.collapsed_by(&points) {
                 Some(entity) => TrialVerdict::Collapsed(entity),
                 None => TrialVerdict::Solved,
