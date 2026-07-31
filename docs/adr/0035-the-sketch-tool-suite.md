@@ -522,6 +522,48 @@ where it names the corner it squared; two badges at two midpoints say the same t
 neither of them says where. Two perpendicular segments that do not meet have no angle to stand in,
 so those fall back to the per-member placement (owner, 2026-07-31).
 
+### 17. A constraint prefers to move untouched geometry as a piece
+
+Asserting a constraint should have a **small blast radius**: geometry the constraint does not name
+moves as little as it can, and when it must move, it moves as a piece rather than deforming
+(owner, 2026-07-31).
+
+Minimum displacement alone does the opposite of what that asks. Bringing one corner of a square to a
+point across the drawing is cheapest by dragging that corner alone and leaving the other three — the
+least travel, and the most damage. The author sees a square turn into a wedge, and nothing they drew
+survives except the thing they named.
+
+So the assertion path carries a **rigidity regularizer**: one row per edge and axis, asking that the
+edge's span come out of the solve as it went in. Length, orientation and area are what the rows are
+written in terms of, so they are what gets preserved, and a pure TRANSLATION of a connected group
+scores zero on every one of them. Per axis rather than as one length, because a length row leaves a
+group free to rotate about anything the constraints do not pin, and a drawing that spins to meet a
+constraint has moved far more than one that slides.
+
+**Weight 1, and no number to tune.** Where a rigid motion satisfies the constraint, both blocks reach
+zero at once and there is nothing to trade. Where they genuinely conflict — levelling one edge of a
+closed quad cannot leave the other three spans alone — the same two-stage shape as Decision 11
+settles it: stage one solves with rigidity preferred, stage two re-solves the constraints ALONE from
+that answer and is what the verdict and the freedom count are read from. Rigidity can therefore only
+ever rank answers that satisfy the constraints equally well. It is a preference over a null space,
+never a vote against an assertion.
+
+The rank reading is taken with rigidity off for the same reason. Rows that say "stay where you are"
+would saturate the Jacobian and read every real constraint as redundant.
+
+**The heavier group holds and the lighter one comes to it, for free.** Rigidity makes each connected
+group move as one piece; "as little as it can" is summed over points; so translating a group of `n`
+costs `n` times what translating a lone point costs, and joining two groups splits the gap in inverse
+proportion to their sizes. That is the Fusion behavior the owner asked for — a massive object does
+not move for a less massive one — arrived at without a mass term, a grouping pass, or a heuristic to
+maintain. A four-corner quad meeting a two-point stick travels exactly half as far as the stick.
+
+**Not during a drag.** Rigidity answers "where should the drawing go now that this is true?", and a
+drag already has an answer to that: the hand. Its reference would be wrong there in any case, since
+`move_point` has put the grabbed point at the cursor before the settle runs, so every span through it
+reads as already stretched — measured against that, rigidity resists the author's own gesture.
+Decision 11's two stages stand unchanged.
+
 ## Consequences
 
 - **Text is deferred to its own epic.** It is a font subsystem — face loading, glyph outline

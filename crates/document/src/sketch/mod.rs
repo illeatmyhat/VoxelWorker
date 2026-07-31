@@ -1194,17 +1194,25 @@ impl Sketch {
         if self.constraints.is_empty() {
             return true;
         }
-        let ends = self.segment_ends();
-        let centers = self.arc_centers();
         let mut pulled = self.constraints.clone();
         pulled.push(Constraint {
             id: self.next_id,
             kind: ConstraintKind::Fix { point: held, at },
             redundant: false,
         });
+        let frame = self.frame();
         let mut points = self.points.clone();
-        constraint::solve_in_place(&mut points, &ends, &centers, &pulled);
-        let report = constraint::solve_in_place(&mut points, &ends, &centers, &self.constraints);
+        // No rigidity here, unlike `trial` — see [`constraint::Rigidity`]. Rigidity answers "where
+        // should the drawing go now that this is true?", and a drag already has an answer: the
+        // hand. Its reference would be wrong anyway, since `move_point` has already put the grabbed
+        // point at the cursor by the time this runs, so every span through it reads as stretched.
+        constraint::solve_in_place(&mut points, &frame, &pulled, constraint::Rigidity::Ignored);
+        let report = constraint::solve_in_place(
+            &mut points,
+            &frame,
+            &self.constraints,
+            constraint::Rigidity::Ignored,
+        );
         // Judged on the RESIDUALS, never on why the search stopped — see [`SATISFIED_RESIDUAL`].
         if report.is_some_and(|report| report.residual_norm > SATISFIED_RESIDUAL) {
             return false;
@@ -1332,6 +1340,16 @@ impl Sketch {
             .collect()
     }
 
+    /// The drawing as the residual system reads it: which points each edge joins, and which points
+    /// some arc derives. One value, because a solve given one half without the other would be
+    /// solving a different sketch.
+    fn frame(&self) -> constraint::Frame {
+        constraint::Frame {
+            segments: self.segment_ends(),
+            arc_centers: self.arc_centers(),
+        }
+    }
+
     /// Add a constraint, trial-solving before it is kept (ADR 0035 Decision 4).
     ///
     /// **Unsatisfiable is refused** and nothing changes, so the system is always solvable and every
@@ -1375,10 +1393,9 @@ impl Sketch {
         // not raise it, everything it says was already being said. Both readings are taken at the
         // author's PRE-solve drawing (`constraint::witness_rank`) rather than at each system's own
         // solution, which is what keeps a vanishing Jacobian row from reading as redundancy.
-        let ends = self.segment_ends();
-        let centers = self.arc_centers();
+        let frame = self.frame();
         let witness = |constraints: &[Constraint]| {
-            constraint::witness_rank(&self.points, &ends, &centers, constraints)
+            constraint::witness_rank(&self.points, &frame, constraints)
         };
         let redundant = witness(&with_candidate) <= witness(&self.constraints);
         let id = self.alloc_id();
@@ -1460,12 +1477,8 @@ impl Sketch {
     /// came of confusing the two is recorded.
     fn trial(&self, constraints: &[Constraint]) -> Trial {
         let mut points = self.points.clone();
-        let report = constraint::solve_in_place(
-            &mut points,
-            &self.segment_ends(),
-            &self.arc_centers(),
-            constraints,
-        );
+        let report =
+            constraint::settle_in_place(&mut points, &self.frame(), constraints, constraints);
         let verdict = match report {
             // Nothing to solve is not a failure: an empty system is met by the drawing as it is.
             None => TrialVerdict::Solved,
@@ -1638,19 +1651,22 @@ impl Sketch {
     /// `Derived` (Decision 3): they are the solver's input as well as its output, and an
     /// under-constrained sketch has freedoms only the stored position remembers.
     pub fn solve(&mut self) -> Option<SolveReport> {
-        let ends = self.segment_ends();
-        let centers = self.arc_centers();
-        constraint::solve_in_place(&mut self.points, &ends, &centers, &self.constraints)
+        let frame = self.frame();
+        let constraints = self.constraints.clone();
+        constraint::settle_in_place(&mut self.points, &frame, &constraints, &constraints)
     }
 
     /// What a solve WOULD report, without moving anything.
+    ///
+    /// Read with the constraints alone — rigidity is a preference and has no place in a rank or a
+    /// residual the caller is about to judge the drawing by.
     pub fn solve_report(&self) -> Option<SolveReport> {
         let mut trial = self.points.clone();
         constraint::solve_in_place(
             &mut trial,
-            &self.segment_ends(),
-            &self.arc_centers(),
+            &self.frame(),
             &self.constraints,
+            constraint::Rigidity::Ignored,
         )
     }
 

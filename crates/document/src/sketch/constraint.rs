@@ -268,6 +268,8 @@ pub(super) struct SketchResiduals<'a> {
     /// The arc each slot's point is the DERIVED center of, indexed by slot. `None` for an
     /// ordinary point, which is nearly all of them.
     derived: Vec<Option<ArcSlots>>,
+    /// Every edge's span as the author drew it, or empty under [`Rigidity::Ignored`].
+    rigidity: Vec<EdgeSpan>,
 }
 
 /// One arc's derived center as the residual system needs it: the point the arc owns, the two ends
@@ -277,6 +279,60 @@ pub(super) struct ArcCenter {
     pub from: EntityId,
     pub to: EntityId,
     pub sweep_degrees: f64,
+}
+
+/// Everything about the drawing the residual system reads that is not a constraint: which points
+/// each edge joins, and which points some arc derives. Bundled because they always travel together
+/// and a solve that saw one without the other would be reading a different drawing.
+pub(super) struct Frame {
+    /// Each segment as `(segment id, from, to)`.
+    pub segments: Vec<(EntityId, EntityId, EntityId)>,
+    pub arc_centers: Vec<ArcCenter>,
+}
+
+/// Whether the system carries the **rigidity regularizer**: one row per edge and axis asking that
+/// the edge's span come out of the solve as it went in.
+///
+/// A constraint should have a small blast radius — geometry it does not name should move as little
+/// as it can, and when it must move, it should move as a piece (owner, 2026-07-31). Minimizing each
+/// point's displacement does the OPPOSITE: the cheapest way to bring one corner of a polygon to a
+/// far point is to drag that corner alone and leave the rest, which is the maximum deformation for
+/// the minimum travel. Asking instead that every edge keep its span makes a pure TRANSLATION of a
+/// connected group free — every span is unchanged — while any stretch, rotation or shear is paid
+/// for. Length, orientation and area are what the rows are written in terms of, so they are what
+/// gets preserved.
+///
+/// **The weight is 1 and does not need tuning.** When a rigid motion can satisfy the constraints,
+/// both blocks reach zero at once and there is no trade to weigh. When they genuinely conflict —
+/// levelling one edge of a closed polygon cannot leave the other edges alone — the exactness pass
+/// below runs the constraints ALONE afterwards, so rigidity can only ever rank answers that satisfy
+/// the constraints equally well. It is a preference over a null space, never a vote against a
+/// constraint.
+///
+/// **The heavier group holds and the lighter one comes to it, at no extra cost.** These rows make
+/// each connected group move as one piece, and "as little as it can" is summed over POINTS, so
+/// translating a group of `n` costs `n` times what translating a lone point costs. Joining two
+/// groups splits the gap in inverse proportion to their sizes — mass by another name, and the
+/// Fusion behavior the owner asked for, with no mass term and no grouping pass to maintain.
+///
+/// **Not during a drag**; see [`Sketch::settle_under_the_hand`] for why.
+///
+/// [`Sketch::settle_under_the_hand`]: super::Sketch::settle_under_the_hand
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Rigidity {
+    /// Constraint rows only — what a rank reading needs, and what the pass that restores exactness
+    /// after a preference pass needs.
+    Ignored,
+    /// Constraint rows, then one span-preserving row per edge and axis.
+    Preferred,
+}
+
+/// One edge's span in the author's pre-solve drawing, resolved to slots.
+#[derive(Debug, Clone, Copy)]
+struct EdgeSpan {
+    from: usize,
+    to: usize,
+    span: [f64; 2],
 }
 
 /// [`ArcCenter`] with its endpoints resolved to parameter slots.
@@ -403,9 +459,9 @@ impl<'a> SketchResiduals<'a> {
     /// Build the system, or `None` if the sketch holds no points to move.
     pub(super) fn new(
         points: &[Point],
-        segments: &[(EntityId, EntityId, EntityId)],
-        arc_centers: &[ArcCenter],
+        frame: &Frame,
         constraints: &'a [Constraint],
+        rigidity: Rigidity,
     ) -> Option<Self> {
         if points.is_empty() {
             return None;
@@ -413,7 +469,7 @@ impl<'a> SketchResiduals<'a> {
         let order: Vec<EntityId> = points.iter().map(|point| point.id).collect();
         let slot = |id: EntityId| order.iter().position(|other| *other == id);
         let mut derived: Vec<Option<ArcSlots>> = vec![None; order.len()];
-        for arc in arc_centers {
+        for arc in &frame.arc_centers {
             let (Some(center), Some(from), Some(to)) =
                 (slot(arc.center), slot(arc.from), slot(arc.to))
             else {
@@ -426,7 +482,8 @@ impl<'a> SketchResiduals<'a> {
             });
         }
         let ends = |segment: EntityId| {
-            segments
+            frame
+                .segments
                 .iter()
                 .find(|(id, _, _)| *id == segment)
                 .and_then(|(_, from, to)| Some((slot(*from)?, slot(*to)?)))
@@ -481,11 +538,40 @@ impl<'a> SketchResiduals<'a> {
                     .unwrap_or(Resolved::Dangling { residuals: 2 }),
             })
             .collect();
+        let rigidity = match rigidity {
+            Rigidity::Ignored => Vec::new(),
+            Rigidity::Preferred => {
+                let mut start = vec![0.0; order.len() * 2];
+                for (index, point) in points.iter().enumerate() {
+                    let at = point.at.in_plane();
+                    start[index * 2] = at[0];
+                    start[index * 2 + 1] = at[1];
+                }
+                let at = |slot: usize| position_of(&derived, &start, slot);
+                let chords = frame.arc_centers.iter().map(|arc| (arc.from, arc.to));
+                frame
+                    .segments
+                    .iter()
+                    .map(|(_, from, to)| (*from, *to))
+                    .chain(chords)
+                    .filter_map(|(from, to)| {
+                        let (from, to) = (slot(from)?, slot(to)?);
+                        let (tail, head) = (at(from), at(to));
+                        Some(EdgeSpan {
+                            from,
+                            to,
+                            span: [head[0] - tail[0], head[1] - tail[1]],
+                        })
+                    })
+                    .collect()
+            }
+        };
         Some(SketchResiduals {
             order,
             constraints,
             resolved,
             derived,
+            rigidity,
         })
     }
 
@@ -514,10 +600,12 @@ impl ResidualSystem for SketchResiduals<'_> {
     }
 
     fn residual_count(&self) -> usize {
-        self.constraints
+        let asserted: usize = self
+            .constraints
             .iter()
             .map(|constraint| constraint.kind.residual_count())
-            .sum()
+            .sum();
+        asserted + self.rigidity.len() * 2
     }
 
     fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
@@ -593,6 +681,16 @@ impl ResidualSystem for SketchResiduals<'_> {
                 }
             }
         }
+        // The blast-radius rows — see [`Rigidity`]. Written per axis rather than as one length,
+        // because a length row would leave a group free to ROTATE about anything the constraints
+        // do not pin, and a drawing that spins to meet a constraint has moved far more than one
+        // that slides. Weight is 1: the pass that follows this one settles any real conflict.
+        for edge in &self.rigidity {
+            let (tail, head) = (at(edge.from), at(edge.to));
+            into[row] = (head[0] - tail[0]) - edge.span[0];
+            into[row + 1] = (head[1] - tail[1]) - edge.span[1];
+            row += 2;
+        }
     }
 }
 
@@ -608,13 +706,10 @@ impl ResidualSystem for SketchResiduals<'_> {
 /// configuration, which is exactly what a witness is for.
 ///
 /// Zero for a system with no points or no constraints, which is the right answer for both.
-pub(super) fn witness_rank(
-    points: &[Point],
-    segments: &[(EntityId, EntityId, EntityId)],
-    arc_centers: &[ArcCenter],
-    constraints: &[Constraint],
-) -> usize {
-    let Some(system) = SketchResiduals::new(points, segments, arc_centers, constraints) else {
+/// Read with [`Rigidity::Ignored`]: rigidity is a preference, not an assertion, and rows that say
+/// "stay where you are" would saturate the rank and read every real constraint as redundant.
+pub(super) fn witness_rank(points: &[Point], frame: &Frame, constraints: &[Constraint]) -> usize {
+    let Some(system) = SketchResiduals::new(points, frame, constraints, Rigidity::Ignored) else {
         return 0;
     };
     let at = system.guess(points);
@@ -629,14 +724,14 @@ pub(super) fn witness_rank(
 /// wants the degree-of-freedom count for an unconstrained sketch can read it off the point count.
 pub(super) fn solve_in_place(
     points: &mut [Point],
-    segments: &[(EntityId, EntityId, EntityId)],
-    arc_centers: &[ArcCenter],
+    frame: &Frame,
     constraints: &[Constraint],
+    rigidity: Rigidity,
 ) -> Option<SolveReport> {
     if constraints.is_empty() {
         return None;
     }
-    let system = SketchResiduals::new(points, segments, arc_centers, constraints)?;
+    let system = SketchResiduals::new(points, frame, constraints, rigidity)?;
     let mut parameters = system.guess(points);
     let report = solve(&system, &mut parameters, SolveSettings::default());
     let order: Vec<EntityId> = system.order().to_vec();
@@ -649,4 +744,26 @@ pub(super) fn solve_in_place(
         }
     }
     Some(report)
+}
+
+/// Move the drawing to meet `toward` in the way that disturbs it least, then re-solve `standing`
+/// alone from that answer and report on THAT.
+///
+/// **Two passes, not one weighted system.** The first pass carries preferences — [`Rigidity`], and
+/// for a drag the hand's own pull — which say which of many answers to prefer. The second says the
+/// standing constraints must be met *exactly*, not merely more strongly, and a second solve says
+/// that without anyone having to choose how much more strongly. It starts from the preferred answer,
+/// so it keeps that answer wherever the preferences and the constraints did not disagree, and the
+/// report it returns is a reading of the constraints alone — which is what a degree-of-freedom count
+/// and a satisfied/diverged verdict both have to be.
+///
+/// Pass the same list twice when there is nothing extra to pull toward.
+pub(super) fn settle_in_place(
+    points: &mut [Point],
+    frame: &Frame,
+    toward: &[Constraint],
+    standing: &[Constraint],
+) -> Option<SolveReport> {
+    solve_in_place(points, frame, toward, Rigidity::Preferred);
+    solve_in_place(points, frame, standing, Rigidity::Ignored)
 }

@@ -569,7 +569,7 @@ fn already_collapsed_geometry_does_not_veto_the_rest() {
 #[test]
 fn the_witness_rank_is_read_at_the_drawing_it_is_given() {
     let (sketch, tail, _, segment) = slanted();
-    let ends = sketch.segment_ends();
+    let frame = sketch.frame();
     let held = |kind| Constraint {
         id: 99,
         kind,
@@ -581,9 +581,8 @@ fn the_witness_rank_is_read_at_the_drawing_it_is_given() {
     });
     let level = held(ConstraintKind::Horizontal { segment });
 
-    let rank_of = |constraints: &[Constraint]| {
-        constraint::witness_rank(sketch.points(), &ends, &[], constraints)
-    };
+    let rank_of =
+        |constraints: &[Constraint]| constraint::witness_rank(sketch.points(), &frame, constraints);
     assert_eq!(rank_of(&[]), 0, "no assertions pin nothing");
     assert_eq!(
         rank_of(&[pin]),
@@ -1139,6 +1138,119 @@ fn an_achievable_drag_lands_exactly_on_the_cursor() {
     assert!(
         (dragged[0] + 7.0).abs() < 1e-9 && (dragged[1] + 18.0).abs() < 1e-9,
         "the hand holds the grabbed end exactly: {dragged:?}"
+    );
+}
+
+/// A closed quad, laid out counter-clockwise from the origin, and its four edges in that order.
+fn quad(corners: [[i64; 2]; 4]) -> (Sketch, [EntityId; 4], [EntityId; 4]) {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let points = corners.map(|[x, y]| sketch.add_free_point(SketchPoint::new(x, y)));
+    let edges = [0, 1, 2, 3].map(|index| {
+        sketch
+            .connect(points[index], points[(index + 1) % 4])
+            .expect("a fresh edge")
+    });
+    (sketch, points, edges)
+}
+
+/// **A constraint moves untouched geometry as a piece, not as a pile of independent points**
+/// (owner, 2026-07-31). Bringing one corner of a square to a point a long way off used to drag that
+/// corner alone and leave the other three where they were — the cheapest travel, and the maximum
+/// deformation. Preferring to keep every edge's span makes the whole square TRANSLATE instead: a
+/// rigid motion satisfies both the constraint and the preference at once, so there is nothing to
+/// trade.
+#[test]
+fn a_constraint_translates_a_group_rather_than_deforming_it() {
+    let (mut sketch, corners, _) = quad([[0, 0], [20, 0], [20, 20], [0, 20]]);
+    let target = sketch.add_free_point(SketchPoint::new(50, 30));
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: target,
+            at: SketchPoint::new(50, 30),
+        })
+        .expect("the target is where the square must reach");
+
+    let before = corners.map(|corner| position(&sketch, corner));
+    sketch
+        .add_constraint(ConstraintKind::Coincident {
+            first: corners[0],
+            second: target,
+        })
+        .expect("one corner meets it");
+
+    let after = corners.map(|corner| position(&sketch, corner));
+    for (index, (was, now)) in before.iter().zip(&after).enumerate() {
+        let travel = [now[0] - was[0], now[1] - was[1]];
+        assert!(
+            (travel[0] - 50.0).abs() < 1e-6 && (travel[1] - 30.0).abs() < 1e-6,
+            "corner {index} rode along with the rest: {was:?} to {now:?}"
+        );
+    }
+}
+
+/// **The heavier group holds; the lighter one comes to it** (owner, 2026-07-31, after Fusion) —
+/// and nothing had to be written to make it so.
+///
+/// Rigidity makes each connected group move as ONE piece, and the solve moves the drawing as little
+/// as it can. "As little as it can" is summed over POINTS, so translating a group of `n` costs `n`
+/// times what translating a lone point costs: joining two groups splits the gap in inverse
+/// proportion to their sizes, which is mass by another name. Here a four-corner quad meets a
+/// two-point stick and travels exactly half as far as the stick does.
+#[test]
+fn the_smaller_group_travels_to_the_larger_one() {
+    let (mut sketch, corners, _) = quad([[0, 0], [20, 0], [20, 20], [0, 20]]);
+    let near = sketch.add_free_point(SketchPoint::new(60, 30));
+    let far = sketch.add_free_point(SketchPoint::new(80, 30));
+    sketch.connect(near, far).expect("a two-point stick");
+
+    let before: Vec<[f64; 2]> = [corners[1], near]
+        .iter()
+        .map(|id| position(&sketch, *id))
+        .collect();
+    sketch
+        .add_constraint(ConstraintKind::Coincident {
+            first: corners[1],
+            second: near,
+        })
+        .expect("the stick's near end meets the quad's corner");
+    let after: Vec<[f64; 2]> = [corners[1], near]
+        .iter()
+        .map(|id| position(&sketch, *id))
+        .collect();
+    let travel = |index: usize| {
+        let (was, now) = (before[index], after[index]);
+        ((now[0] - was[0]).powi(2) + (now[1] - was[1]).powi(2)).sqrt()
+    };
+    // They met, so the two travels sum to the gap: (20,0) to (60,30) is 50.
+    assert!(
+        (travel(0) + travel(1) - 50.0).abs() < 1e-6,
+        "the gap closed: {:.4} + {:.4}",
+        travel(0),
+        travel(1)
+    );
+    assert!(
+        (travel(1) - 2.0 * travel(0)).abs() < 1e-6,
+        "the two-point stick came twice as far as the four-corner quad: \
+         quad {:.4}, stick {:.4}",
+        travel(0),
+        travel(1)
+    );
+}
+
+/// The preference never outranks the assertion. Levelling one edge of a closed quad CANNOT leave
+/// the other three spans alone, and when the two genuinely fight, the constraint wins outright —
+/// the pass that follows the preferred one re-solves the assertions by themselves.
+#[test]
+fn a_constraint_that_fights_rigidity_is_still_met_exactly() {
+    let (mut sketch, corners, edges) = quad([[0, 0], [20, 8], [20, 28], [0, 20]]);
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment: edges[0] })
+        .expect("level the slanted bottom");
+
+    let (tail, head) = (position(&sketch, corners[0]), position(&sketch, corners[1]));
+    assert!(
+        (tail[1] - head[1]).abs() < 1e-9,
+        "exactly level, not nearly: {tail:?} to {head:?}"
     );
 }
 
