@@ -23,7 +23,7 @@ inner nodes group, name, and reuse. Each node carries a position on the block gr
 a material.
 
 **What it buys.** Permanence and smallness. A file's size tracks the number of design
-decisions, not the number of voxels — a fortress wall a kilometre long is a dozen
+decisions, not the number of voxels — a fortress wall a kilometer long is a dozen
 numbers. Editing means changing a parameter and re-deriving, so nothing is ever
 destroyed by an edit; and any cache anywhere in the system can be thrown away at will,
 because the recipe can always cook it again. Every other structure in this document is,
@@ -50,13 +50,58 @@ stores *what they typed*, alongside the concrete voxel count it currently works 
 **Shape.** A value plus its unit, kept next to the derived canonical number.
 
 **What it buys.** Preservation of intent. The document has a global *density* setting —
-how many voxels each block is divided into (bounded between 1 and 64; see entry 9 for
+how many voxels each block is divided into (bounded between 1 and 64; see entry 10 for
 why the bound is a gift). When density changes, a wall authored as "3 blocks" is
 re-derived and stays three blocks wide, because the system still knows that "3 blocks"
 is what was meant. Storing only the voxel count would silently freeze old intent at the
 old fineness.
 
-## 4. The conservative interval bound — how big solids stay cheap
+## 4. The residual vector — how a sketch is held in place
+
+**What it is.** The author asserts relations about a drawing — this edge is horizontal,
+these two points meet, this radius equals that one — and the drawing has to move to
+satisfy them. The structure that makes this tractable is the one that turns every
+assertion, of every kind, into the same thing: a number that is zero when the assertion
+holds and signed by how far off it is.
+
+**Shape.** A vector of those numbers, one entry per scalar equation, laid out beside a
+vector of the drawing's free coordinates. Solving is a trust-region least-squares search
+over the coordinate vector that drives the residual vector to zero, with the sensitivity
+of each residual to each coordinate measured numerically rather than derived by hand.
+Coordinates that are *implied* rather than drawn — an arc's center, which follows from
+its two ends and its sweep — are read through their definition instead of holding slots
+of their own, so a correction lands on what the author actually placed.
+
+Two properties are read off the same structure without a second mechanism. Whether a
+set of assertions is under- or over-determined is the **rank** of the sensitivities at
+the drawing as given. And whether the drawing is *solved* is the residual vector's own
+norm against a satisfaction threshold — never the search's reason for stopping, which
+reports how the search went, not whether the answer is right.
+
+**What it buys.** Two things, and the second is why the structure is shaped this way.
+
+First, a new kind of assertion costs exactly one function — the one that says how far
+from satisfied it is. No derivative to hand-derive and keep in step with it, no new
+solving strategy, no interaction with the kinds already present.
+
+Second, and this is the part the shape earns: **preferences can be expressed in the same
+currency as constraints without ever weakening them.** A preference — the pull of the
+hand during a drag, a term that prefers untouched geometry to translate rather than
+deform, an anchor naming which side of a relation should be the one that stays — is just
+more rows. Adding rows would ordinarily mean the constraints are only satisfied on
+balance, which is not what a constraint means. So the solve runs twice: once with the
+preference rows present, to choose *which* satisfying configuration to head toward, and
+once with the constraints alone from that answer, to arrive exactly. Every verdict is
+read from the second pass. Preference shapes the path; only the assertions decide the
+destination.
+
+The anchor is the one preference that is not a row at all. To make one piece of a
+drawing travel to another rather than the two meeting in the middle, the anchored
+piece's coordinates are **removed from the vector being solved for**. A weight can only
+make a piece reluctant; taking it out of the search makes it immovable. The distinction
+is exactly the distinction between a preference and a constraint, expressed structurally.
+
+## 5. The conservative interval bound — how big solids stay cheap
 
 **What it is.** Before evaluating a region voxel-by-voxel, the system asks each
 operation a cheaper question about a whole box of space: "over this box, are you
@@ -74,7 +119,7 @@ actually passes. And because a wrong "certainly" is forbidden — uncertainty fa
 to honest per-voxel work — the fast answer is *identical* to the slow one everywhere,
 which is what lets the proof gates hold the whole edifice to byte-equality.
 
-## 5. The two-layer chunk — memory that follows the surface
+## 6. The two-layer chunk — memory that follows the surface
 
 **What it is.** Space is divided into fixed-size cubes called *chunks*. Within a
 chunk, every block is classified: **air** (stores nothing), **coarse-solid** (stores
@@ -92,7 +137,7 @@ voxel data. This mirrors how the target game itself stores chiseled builds, whic
 export natural, and it is the single shared form every consumer — display, exporter,
 measurement — reads, so no consumer can disagree with another about what exists.
 
-## 6. The resident cache and the shared handout
+## 7. The resident cache and the shared handout
 
 **What it is.** Chunks, once classified, are kept in a cache. When an edit happens, only
 the chunks the edit touches are discarded and re-derived; everything else is reused
@@ -109,7 +154,7 @@ safety*: because a handed-out chunk is immutable and stays alive as long as anyo
 holds it, a background worker can keep computing over the set it was given even while
 the main thread moves on — no locks, no torn reads, no "the data changed under me."
 
-## 7. The producer-bounds tree — finding what an edit touches
+## 8. The producer-bounds tree — finding what an edit touches
 
 **What it is.** To know which chunks an edit dirties, the system needs to answer "which
 operations' geometry overlaps this region?" quickly. It builds a *bounding-volume
@@ -136,7 +181,7 @@ consults the document's geometry operations themselves; it walks a cache. That i
 renderer's founding bargain (see [Display](03-display.md) for its lineage): frame cost
 tracks what is on screen, not how the design was authored.
 
-## 8. Sorted display records — a frame's cost decoupled from the scene
+## 9. Sorted display records — a frame's cost decoupled from the scene
 
 **What it is.** The primary display draws by casting rays into a *cache* of the scene.
 The cache's spine is a flat list of *records*, one per visible surface block, each
@@ -145,7 +190,7 @@ sorted by that key. A ray asking "is there a block here?" finds out by binary se
 repeatedly halving the sorted list — in a few dozen steps even for millions of records.
 
 Records exist *only for the surface*: a block completely buried behind solid
-neighbours can never be the first thing a ray meets, so it never becomes a record at
+neighbors can never be the first thing a ray meets, so it never becomes a record at
 all.
 
 **Shape.** A sorted array of small fixed-size records (position key, kind, material,
@@ -157,7 +202,7 @@ volume of the solids. And because the record set tracks the *skin*, the data upl
 to the graphics card after a full rebuild also tracks the skin: enormous solid
 interiors cost the display nothing.
 
-## 9. The carved-block atlas and its free list
+## 10. The carved-block atlas and its free list
 
 **What it is.** A block the chisel has touched needs its actual voxel shape available
 to the ray-caster. All such shapes live together in one big reusable 3D texture — an
@@ -184,7 +229,7 @@ eight-fold saving and a faster one — and the same entitlement extends to measu
 queries (a widest-run scan over rows becomes shifts and masks) wherever occupancy is
 touched.
 
-## 10. The occupancy pyramid — how rays skip emptiness
+## 11. The occupancy pyramid — how rays skip emptiness
 
 **What it is.** Above the fine record set sits a small pyramid of coarser summaries:
 "does this 8-block cell contain *any* record?", then the same question for cells of 64
@@ -201,21 +246,21 @@ rather than the width of it. Crucially, the pyramid answers only *"might there b
 something here?"* — never "what is here?" — so a wrong pyramid can only make a ray
 slower, never make it wrong; exactness stays with the records.
 
-## 11. Seam flags — cooperation without inspection
+## 12. Seam flags — cooperation without inspection
 
 **What it is.** Every boundary block records, for each of its six faces, whether that
-face is effectively solid. When a neighbouring chunk decides which of its own faces are
-hidden and need not be drawn, it reads these flags instead of opening the neighbour's
+face is effectively solid. When a neighboring chunk decides which of its own faces are
+hidden and need not be drawn, it reads these flags instead of opening the neighbor's
 voxel data.
 
 **Shape.** Six booleans per boundary block, stored with the chunk that owns the block.
 
 **What it buys.** Independence between chunks. Chunks can be built, cached, and meshed
-in parallel without ever expanding a neighbour's contents; the flags are a tiny,
-pre-digested summary of exactly what a neighbour is entitled to know. This is the same
+in parallel without ever expanding a neighbor's contents; the flags are a tiny,
+pre-digested summary of exactly what a neighbor is entitled to know. This is the same
 courtesy the pyramid extends to rays, applied at chunk seams.
 
-## 12. The generation tracker — how late answers are refused
+## 13. The generation tracker — how late answers are refused
 
 **What it is.** Long rebuilds happen on background threads while the interface keeps
 drawing the previous state. Each dispatched rebuild is stamped with a number from a
@@ -236,12 +281,12 @@ two-integer solution to a problem usually solved with locks, and it composes wit
 rule of conduct: while any rebuild is in flight, the artifact it will replace is
 looked at but never patched.
 
-## 13. Wide-integer frames — correctness at the edges of huge scenes
+## 14. Wide-integer frames — correctness at the edges of huge scenes
 
 **What it is.** Positions in the world are kept as 64-bit integers on the voxel
-lattice, and every derived artifact records the *reference point* (the "recentre") it
+lattice, and every derived artifact records the *reference point* (the "recenter") it
 was expressed relative to. Rendering happens near the origin in floating point; the
-recentre travels with the data so that nothing ever has to guess which reference point
+recenter travels with the data so that nothing ever has to guess which reference point
 a value meant.
 
 **Shape.** 64-bit integer coordinates in the document and evaluator; an explicit
@@ -259,11 +304,11 @@ so the buildable envelope is three nested ceilings and the tightest is not the d
 | Ceiling | Limit | Bound by | Failure |
 | --- | --- | --- | --- |
 | Brick record key | ~±1M blocks, **absolute** | Three 21-bit lanes in a 64-bit sortable key, biased by 2²⁰ | The object stops rendering on the brick path |
-| Recentre-relative f32 | ~±2²⁴ voxels **from the recentre**; composite span under ~2M blocks | f32 stops resolving adjacent integers | Voxels become unnameable; the raymarch and the grid melt |
+| Recenter-relative f32 | ~±2²⁴ voxels **from the recenter**; composite span under ~2M blocks | f32 stops resolving adjacent integers | Voxels become unnameable; the raymarch and the grid melt |
 | Document | ~9×10¹⁸ | 64-bit lattice integers | Never the binding one |
 
 The first is bound by *absolute position*, the second by *span and distance from the
-recentre*, and they fail on different scenes: a lone object a few million blocks out hits
+recenter*, and they fail on different scenes: a lone object a few million blocks out hits
 the first, while a pair of objects a few million blocks apart, each near the origin, hits
 the second — the floating origin is the composite's midpoint, and a midpoint cannot be
 near both ends of a span wider than twice its own reach. Authoring is bounded well inside
@@ -309,10 +354,11 @@ textbook terms can be handed to a proof tool, and several here have been.
 
 ## The shape of the whole
 
-Read together, the thirteen structures implement four promises:
+Read together, the fourteen structures implement four promises:
 
 - **Permanence** — the operation stack and command stack make the design and its
-  history indestructible; measurements keep intent alive across re-derivation.
+  history indestructible; measurements keep intent alive across re-derivation, and the
+  residual vector keeps a drawing's asserted relations alive as the drawing moves.
 - **Memory ∝ surface** — the interval bound decides cheaply, the two-layer chunk
   stores only skins, surface-only records extend the same law to the GPU, and the
   density bound lets the skin itself be stored bit-per-voxel.
@@ -321,5 +367,5 @@ Read together, the thirteen structures implement four promises:
   sorted records and pyramid decouple frames from documents.
 - **Stability under concurrency and scale** — shared immutable handouts, generation
   stamps, seam flags, and explicit frames remove, by construction, the bug classes
-  (torn state, time-travel installs, neighbour peeking, frame drift) that vigilance
+  (torn state, time-travel installs, neighbor peeking, frame drift) that vigilance
   alone never removes.
