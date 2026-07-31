@@ -1168,37 +1168,43 @@ impl Sketch {
         true
     }
 
-    /// Re-solve the standing constraints with the point `held` pinned at `at`, writing the result
-    /// back only if the residuals are met. Reports whether they were.
+    /// Re-solve the standing constraints with the hand pulling `held` toward `at`, writing the
+    /// result back only if the standing residuals are met. Reports whether they were.
     ///
     /// This is the live tier of ADR 0035 Decision 11: the assertions hold DURING the gesture, not
-    /// merely at the moment they were made. The pin is an ephemeral [`ConstraintKind::Fix`] that
-    /// is never stored — the author's hand is a constraint for exactly as long as it is on the
-    /// point, which is what makes the rest of the drawing follow rather than the grabbed vertex
-    /// snapping back.
+    /// merely at the moment they were made.
     ///
-    /// **The standing constraints win a fight.** When the pinned system cannot be met — dragging a
-    /// point that is already `Fix`ed, or one whose freedom is spent — the drawing is left exactly
-    /// where it was and the vertex does not move. Refusing the drag is the honest answer: the
-    /// alternative is to move it and let the next solve haul it back, which reads as the drag being
-    /// broken rather than as the geometry being determined.
+    /// **The hand is a PULL, not a demand — two stages.** The drag joins the system as one more
+    /// least-squares row and the solve trades it off against everything standing; then the hand
+    /// lets go and the standing system alone is re-solved from that answer, which restores it
+    /// exactly while moving as little as it can. The grabbed point therefore lands at the nearest
+    /// place the drawing allows, and only the standing residuals decide whether the drag stands.
+    ///
+    /// It shipped as a hard pin, and that was the bug (owner, 2026-07-31). A hard pin makes the
+    /// whole drag all-or-nothing: a point free to slide along a line but not across it could not be
+    /// moved AT ALL, because the cursor is essentially never exactly on that line and the pinned
+    /// system was refused as unsatisfiable. The reported case was a vertical segment whose far end
+    /// was held by an arc that two `Fix`es had already determined — one real freedom left, its
+    /// length, and no way to use it. Sliding along the allowed direction is what every CAD tool
+    /// does and what the freedom count already promises.
+    ///
+    /// A drag that IS achievable is unaffected: stage one meets the pull exactly, so stage two
+    /// starts at a solution and moves nothing.
     fn settle_under_the_hand(&mut self, held: EntityId, at: SketchPoint) -> bool {
         if self.constraints.is_empty() {
             return true;
         }
-        let mut pinned = self.constraints.clone();
-        pinned.push(Constraint {
+        let ends = self.segment_ends();
+        let centers = self.arc_centers();
+        let mut pulled = self.constraints.clone();
+        pulled.push(Constraint {
             id: self.next_id,
             kind: ConstraintKind::Fix { point: held, at },
             redundant: false,
         });
         let mut points = self.points.clone();
-        let report = constraint::solve_in_place(
-            &mut points,
-            &self.segment_ends(),
-            &self.arc_centers(),
-            &pinned,
-        );
+        constraint::solve_in_place(&mut points, &ends, &centers, &pulled);
+        let report = constraint::solve_in_place(&mut points, &ends, &centers, &self.constraints);
         // Judged on the RESIDUALS, never on why the search stopped — see [`SATISFIED_RESIDUAL`].
         if report.is_some_and(|report| report.residual_norm > SATISFIED_RESIDUAL) {
             return false;
@@ -1266,11 +1272,51 @@ impl Sketch {
         self.drop_dangling_constraints();
     }
 
-    /// Delete just the segment with id `seg_id` (ADR 0030 — deleting a line removes only the
-    /// line). Its endpoint points survive as free points. No-op if `seg_id` is unknown.
+    /// Delete the segment with id `seg_id`, **and each of its ends that nothing else draws**.
+    /// No-op if `seg_id` is unknown.
+    ///
+    /// The ends used to survive unconditionally as free points, and that was wrong (owner,
+    /// 2026-07-31): a line deleted from a drawing left two dots behind that the author had never
+    /// placed and had no reason to want. A point the author *did* place stays — it is either an
+    /// end of some other edge, an arc's center, or a circle's, and [`point_is_still_drawn`] asks
+    /// exactly that question.
+    ///
+    /// **A constraint does not keep a point alive.** An assertion about a point is not a reason
+    /// for the point to outlive the geometry it was drawn for, and the cascade takes the
+    /// constraint with it — which is what the author asked for when they deleted the line.
+    ///
+    /// [`point_is_still_drawn`]: Self::point_is_still_drawn
     pub fn delete_segment(&mut self, seg_id: EntityId) {
+        let Some(span) = self.segments.iter().find(|seg| seg.id == seg_id).copied() else {
+            return;
+        };
         self.segments.retain(|seg| seg.id != seg_id);
+        self.drop_undrawn_points([span.from, span.to]);
+        self.prune_orphan_centers();
         self.drop_dangling_constraints();
+    }
+
+    /// Whether any geometry still draws this point — another edge's end, an arc's center, a
+    /// circle's. Constraints deliberately do not count; see [`delete_segment`](Self::delete_segment).
+    fn point_is_still_drawn(&self, id: EntityId) -> bool {
+        self.segments
+            .iter()
+            .any(|seg| seg.from == id || seg.to == id)
+            || self
+                .arcs
+                .iter()
+                .any(|arc| arc.from == id || arc.to == id || arc.center == id)
+            || self.circles.iter().any(|circle| circle.center == id)
+    }
+
+    /// Erase each candidate that no geometry draws any more. Asked AFTER the edge has gone, so
+    /// "still drawn" is a question about what is left rather than about what was.
+    fn drop_undrawn_points(&mut self, candidates: impl IntoIterator<Item = EntityId>) {
+        for id in candidates {
+            if !self.point_is_still_drawn(id) {
+                self.points.retain(|point| point.id != id);
+            }
+        }
     }
 
     /// The constraint entities, in the order they were authored.
@@ -1899,11 +1945,18 @@ impl Sketch {
         })
     }
 
-    /// Delete just the arc with id `arc_id`, its endpoints left as free points (ADR 0030
-    /// §6 — deleting a segment/arc removes only it). No-op if `arc_id` is unknown.
+    /// Delete the arc with id `arc_id`, **and each of its ends that nothing else draws** — the
+    /// same rule [`delete_segment`](Self::delete_segment) follows, because deleting a curve and
+    /// deleting a line are one gesture as far as the author is concerned. Its center goes with it
+    /// through [`prune_orphan_centers`](Self::prune_orphan_centers). No-op if `arc_id` is unknown.
     pub fn delete_arc(&mut self, arc_id: EntityId) {
+        let Some(curve) = self.arcs.iter().find(|arc| arc.id == arc_id).copied() else {
+            return;
+        };
         self.arcs.retain(|arc| arc.id != arc_id);
+        self.drop_undrawn_points([curve.from, curve.to]);
         self.prune_orphan_centers();
+        self.drop_dangling_constraints();
     }
 
     /// The lowest-id point entity sitting EXACTLY at `at`'s position, if any. The drawing

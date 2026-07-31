@@ -117,8 +117,15 @@ fn a_fixed_point_does_not_move_under_the_hand() {
         })
         .expect("nothing else is asserted");
 
+    // Near-exactly, not exactly: the drag is now a PULL that the standing system takes back, so
+    // the point is re-solved to its fixed place rather than the whole move being discarded, and a
+    // re-solved coordinate carries the solver's dust.
     assert!(sketch.move_point(tail, SketchPoint::new(25, 25)));
-    assert_eq!(position(&sketch, tail), [0.0, 0.0], "the fix wins");
+    let held = position(&sketch, tail);
+    assert!(
+        held[0].abs() < 1e-9 && held[1].abs() < 1e-9,
+        "the fix wins: {held:?}"
+    );
     assert_eq!(
         position(&sketch, head),
         [10.0, 4.0],
@@ -278,16 +285,12 @@ fn deleting_geometry_takes_its_constraints_with_it() {
         .expect("and a level");
     assert_eq!(sketch.constraints().len(), 2);
 
+    // The line takes its two ends with it — nothing else draws them — so BOTH constraints go:
+    // the level names the segment, and the fix names an end that no longer exists.
     sketch.delete_segment(segment);
-    assert_eq!(
-        sketch.constraints().len(),
-        1,
-        "the level went with the line"
-    );
-    sketch.delete_point_cascade(tail);
     assert!(
         sketch.constraints().is_empty(),
-        "the fix went with the point"
+        "the level went with the line and the fix went with the end it named"
     );
 }
 
@@ -1041,5 +1044,148 @@ fn an_arcs_center_is_not_a_degree_of_freedom() {
         sketch.degrees_of_freedom(),
         6,
         "three authored points, two coordinates each — the center is not one of them"
+    );
+}
+
+/// **A drag uses whatever freedom is left, instead of being refused for the freedom that is not.**
+///
+/// The owner's configuration (2026-07-31, from the repro dump): an arc whose two ends are both
+/// `Fix`ed — so its center is fully determined — a point `Coincident` with that center, and a
+/// `Vertical` on the segment reaching down from it. One freedom remains, the segment's LENGTH, and
+/// the far end could not be moved at all: the hand was a hard pin, the cursor is essentially never
+/// exactly on the line the point may slide along, and the pinned system was refused as
+/// unsatisfiable.
+#[test]
+fn a_point_with_one_freedom_left_slides_along_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let arc_tail = sketch.add_free_point(SketchPoint::new(16, 43));
+    let arc_head = sketch.add_free_point(SketchPoint::new(-1, 67));
+    sketch
+        .connect_arc(arc_tail, arc_head, AngleMeasurement::from_degrees(262))
+        .expect("the owner's arc");
+    let center = sketch.arcs()[0].center;
+    let at_center = position(&sketch, center);
+    let top = sketch.add_free_point(SketchPoint::from_continuous(at_center[0], at_center[1]));
+    let bottom = sketch.add_free_point(SketchPoint::from_continuous(
+        at_center[0],
+        at_center[1] - 36.0,
+    ));
+    let segment = sketch.connect(bottom, top).expect("the owner's line");
+
+    for point in [arc_tail, arc_head] {
+        let held = position(&sketch, point);
+        sketch
+            .add_constraint(ConstraintKind::Fix {
+                point,
+                at: SketchPoint::from_continuous(held[0], held[1]),
+            })
+            .expect("both arc ends pin");
+    }
+    sketch
+        .add_constraint(ConstraintKind::Coincident {
+            first: top,
+            second: center,
+        })
+        .expect("the line's top meets the arc's center");
+    sketch
+        .add_constraint(ConstraintKind::Vertical { segment })
+        .expect("and the line stands plumb");
+
+    // Drag the free end well off the line it may slide along. It must MOVE — down the line.
+    let before = position(&sketch, bottom);
+    assert!(sketch.move_point(bottom, SketchPoint::from_continuous(before[0] + 22.0, 4.0)));
+
+    let after = position(&sketch, bottom);
+    assert!(
+        (after[1] - before[1]).abs() > 1.0,
+        "the length changed: {before:?} to {after:?}"
+    );
+    assert!(
+        (after[1] - 4.0).abs() < 1e-6,
+        "and it followed the cursor as far as it was allowed: {after:?}"
+    );
+    // The standing constraints are still exactly met — the pull did not buy the move with them.
+    let up = position(&sketch, top);
+    assert!(
+        (after[0] - up[0]).abs() < 1e-6,
+        "still plumb: {after:?} under {up:?}"
+    );
+    let settled_center = position(&sketch, center);
+    assert!(
+        (up[0] - settled_center[0]).abs() < 1e-6 && (up[1] - settled_center[1]).abs() < 1e-6,
+        "still on the arc's center: {up:?} vs {settled_center:?}"
+    );
+    assert_eq!(
+        position(&sketch, arc_tail),
+        [16.0, 43.0],
+        "and the arc did not move"
+    );
+}
+
+/// A drag the standing system CAN meet exactly is untouched by the two-stage settle: stage one
+/// meets the pull, so stage two starts at a solution and moves nothing.
+#[test]
+fn an_achievable_drag_lands_exactly_on_the_cursor() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(40, 0));
+    let segment = sketch.connect(tail, head).expect("a fresh segment");
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment })
+        .expect("a lone level");
+
+    assert!(sketch.move_point(tail, SketchPoint::new(-7, -18)));
+    let dragged = position(&sketch, tail);
+    assert!(
+        (dragged[0] + 7.0).abs() < 1e-9 && (dragged[1] + 18.0).abs() < 1e-9,
+        "the hand holds the grabbed end exactly: {dragged:?}"
+    );
+}
+
+/// **Deleting a line deletes the points it was drawn between**, unless something else draws them
+/// (owner, 2026-07-31). A line removed from a drawing used to leave two dots behind that the author
+/// had never placed, along with any constraint naming them.
+#[test]
+fn deleting_a_line_takes_the_ends_nothing_else_draws() {
+    let (mut sketch, tail, head, segment) = slanted();
+    let shared = sketch.add_free_point(SketchPoint::new(30, 30));
+    let neighbour = sketch.connect(head, shared).expect("a second line");
+
+    sketch.delete_segment(segment);
+    assert!(
+        !sketch.points().iter().any(|point| point.id == tail),
+        "the lone end went with the line"
+    );
+    assert!(
+        sketch.points().iter().any(|point| point.id == head),
+        "the shared end stays: the other line still draws it"
+    );
+    assert!(
+        sketch.points().iter().any(|point| point.id == shared),
+        "and so does its far end"
+    );
+    assert_eq!(sketch.segments().len(), 1, "only the named line went");
+    assert_eq!(sketch.segments()[0].id, neighbour);
+}
+
+/// A constraint is not a reason for a point to outlive the geometry it was drawn for: the line
+/// takes the point, and the cascade takes the constraint. This is the owner's phrasing exactly —
+/// "deleting the coincident line should delete the points on either end along with the constraint".
+#[test]
+fn a_constraint_does_not_keep_a_deleted_lines_end_alive() {
+    let (mut sketch, tail, _head, segment) = slanted();
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::new(0, 0),
+        })
+        .expect("a lone fix");
+    assert_eq!(sketch.constraints().len(), 1);
+
+    sketch.delete_segment(segment);
+    assert!(sketch.points().is_empty(), "both ends went with the line");
+    assert!(
+        sketch.constraints().is_empty(),
+        "and the fix went with the point it named"
     );
 }

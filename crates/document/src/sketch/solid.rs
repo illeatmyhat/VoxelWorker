@@ -356,8 +356,8 @@ impl SketchSolid {
         next
     }
 
-    /// This producer with just the segment `seg_id` deleted, its endpoints left as free points
-    /// (ADR 0030 — deleting a line removes only the line). No-op if unknown. Pure.
+    /// This producer with the segment `seg_id` deleted, along with each of its ends that nothing
+    /// else draws ([`Sketch::delete_segment`]). No-op if unknown. Pure.
     pub fn with_segment_deleted(&self, seg_id: EntityId) -> SketchSolid {
         let mut next = self.clone();
         next.sketch.delete_segment(seg_id);
@@ -379,8 +379,8 @@ impl SketchSolid {
         next
     }
 
-    /// This producer with just the arc `arc_id` deleted, its endpoints left as free points
-    /// (ADR 0030 §6). No-op if unknown. Pure.
+    /// This producer with the arc `arc_id` deleted, along with each of its ends that nothing else
+    /// draws ([`Sketch::delete_arc`]). No-op if unknown. Pure.
     pub fn with_arc_deleted(&self, arc_id: EntityId) -> SketchSolid {
         let mut next = self.clone();
         next.sketch.delete_arc(arc_id);

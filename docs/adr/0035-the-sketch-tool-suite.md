@@ -5,7 +5,9 @@
 - **Supersedes:** [ADR 0030 §2](0030-sketch-as-entity-collection.md)'s topological region
   ("a visual crossing with no shared point makes no region") and its §3 face identity (the
   boundary origin-set `FaceKey`); [ADR 0028 §4](0028-sketch-mode.md)'s nested session undo;
-  [ADR 0030 §5](0030-sketch-as-entity-collection.md)'s "no solver in v1" and one-shot tangency.
+  [ADR 0030 §5](0030-sketch-as-entity-collection.md)'s "no solver in v1" and one-shot tangency;
+  [ADR 0030 §6](0030-sketch-as-entity-collection.md)'s "deleting an edge removes only the edge"
+  (Decision 3 below — an edge now takes the ends nothing else draws).
 - **Relates to:** [ADR 0029](0029-measurement-as-authored-quantity.md) (`Measurement` grows a
   dimension and moves to a crate), [ADR 0034](0034-curves-stay-curves.md) (the curve-native region
   this builds on), [ADR 0017](0017-csg-composition.md) (the no-operand-targeting law that cuts
@@ -87,6 +89,23 @@ same way it reaches a segment. Two limits follow from a constraint having no pos
 its initial guess and writes them back — they are both input and output. `Derived` is for what is
 recomputed from nothing, and an under-constrained sketch has free degrees of freedom that only the
 stored position remembers.
+
+**Deleting an edge deletes the ends nothing else draws**, superseding ADR 0030 §6's "deleting a
+segment/arc removes only it" (owner, 2026-07-31). The old rule left two dots behind that the author
+had never placed and had no reason to want: a point is born as part of a line, so it dies with the
+line unless it earned its own existence by being drawn to. "Drawn to" is a question about geometry
+— another edge's end, an arc's center, a circle's — and the cascade above then reaches whatever
+constraints named the deleted ends.
+
+**A constraint does not keep a point alive**, which is the sharp edge of that rule and is deliberate.
+An assertion about a point is not a reason for the point to outlive the geometry it was drawn for;
+if it were, deleting a line would leave behind exactly the invisible residue — a dot and a badge —
+that the delete was meant to clear. The author who deletes a line has said what they want gone.
+
+The point-delete cascade is unchanged: deleting a POINT still leaves the far ends of the edges it
+kills as free points. Deleting a point is an instruction about that point, and inferring a sweep
+outward from it is a different claim than reading a line as the thing its two ends belong to. The
+asymmetry is known and is the smaller surprise of the two.
 
 ### 4. Reject conflicts at add; allow redundancy, flagged
 
@@ -297,15 +316,34 @@ small (tens to low hundreds of DOF), where a dense solve is well under a millise
 Accepted risk: a mid-drag round that oscillates at a cell boundary would show as jitter. Measure it
 on a deliberately hostile sketch; the fallback is deferring only the integer tier to release.
 
-**Shipped as a hard pin, not a weight, and the standing constraints win a fight** (2026-07-30). The
+**Shipped first as a hard pin (2026-07-30), corrected to a pull in two stages (2026-07-31).** The
 continuous tier is live: `Sketch::move_point` writes the coordinate and then re-solves with the
 grabbed point held by an ephemeral `Fix` that is never stored — the hand is a constraint for exactly
-as long as it is on the point. A weight was considered and dropped: with the pin the grabbed vertex
-sits precisely under the cursor and the *rest* of the drawing absorbs the constraint, which is the
-reading the author expects from a direct-manipulation handle. The lag the paragraph above describes
-becomes a refusal instead — when the pinned system cannot be met (dragging a `Fix`ed point, or one
-whose freedom is spent) the drawing is left exactly where it was and the vertex does not move at
-all, rather than moving and being hauled back, which reads as the drag being broken.
+as long as it is on the point.
+
+Making that pin HARD, so that a drag the system could not meet exactly was refused outright, was
+wrong, and the case that showed it is the one this decision opened by promising: *the point visibly
+lags when constraints will not let it follow.* A hard pin cannot lag. It can only succeed or refuse,
+and refusal is all-or-nothing — so a point free to slide along a line but not across it could not be
+moved at all, because the cursor is essentially never exactly on that line. The owner's report
+(2026-07-31) was a vertical segment whose top was `Coincident` with the center of an arc that two
+`Fix`es had already determined: exactly one freedom left, the segment's length, and no way to use
+it. The freedom counter said 1 and the drawing behaved as though it said 0.
+
+The correction keeps the pin's virtue and drops its brittleness, in two stages. **Stage one**: the
+drag joins the system as one more least-squares row, so the solve trades it off against everything
+standing instead of demanding it. **Stage two**: the hand lets go, and the standing system alone is
+re-solved from stage one's answer — restoring it exactly while moving as little as it can. The
+grabbed point lands at the nearest place the drawing allows, and only the standing residuals decide
+whether the drag stands. A drag that IS achievable is unaffected: stage one meets the pull exactly,
+so stage two starts at a solution and moves nothing, and the vertex sits precisely under the cursor
+as before.
+
+Two stages rather than a weight because a weight is a number to tune and this is not: the standing
+constraints must be met *exactly*, not merely met more strongly than the hand, and a second solve
+says that without anyone choosing how much more strongly. The visible cost is that a refused drag
+now rewrites coordinates with solver dust rather than discarding the move — the drawing is always a
+solved configuration, which is the better invariant.
 
 Until this landed, a constraint survived only until it was tested: the level was asserted, the
 author moved one of the line's own points, and the drawing tilted straight back off, because the

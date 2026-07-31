@@ -299,11 +299,11 @@ fn delete_cascades_and_repair_cover_arcs() {
         .connect_arc(a, b, AngleMeasurement::from_degrees(90))
         .expect("fresh arc");
 
-    // Deleting the arc alone leaves both endpoints as free points.
+    // Deleting the arc takes both endpoints with it — nothing else draws them.
     let solid = SketchSolid::extrude(sketch.clone(), 1);
     let without_arc = solid.with_arc_deleted(arc);
     assert!(without_arc.sketch.arcs().is_empty());
-    assert_eq!(without_arc.sketch.points().len(), 2);
+    assert!(without_arc.sketch.points().is_empty());
 
     // Deleting an endpoint cascades to the arc.
     sketch.delete_point_cascade(a);
@@ -514,11 +514,13 @@ fn a_centre_lives_and_dies_with_its_arc() {
         "both endpoints survive as free"
     );
 
-    // Deleting the ARC takes the centre, and leaves the endpoints alone.
+    // Deleting the ARC takes the center AND both ends: nothing else draws them, and a curve
+    // deleted from a drawing must not leave dots behind that the author never placed
+    // (owner 2026-07-31).
     sketch.delete_arc(arc);
     assert!(sketch.arcs().is_empty());
-    assert_eq!(sketch.points().len(), 2);
-    assert!(sketch.points().iter().any(|point| point.id == from));
+    assert!(sketch.points().is_empty());
+    assert!(!sketch.points().iter().any(|point| point.id == from));
 
     // A centre the author has since drawn TO is referenced geometry, and outlives its arc.
     let (mut kept, from, _to, arc) = half_turn();
