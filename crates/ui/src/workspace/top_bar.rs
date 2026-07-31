@@ -149,28 +149,59 @@ fn viewer_segment(ui: &mut egui::Ui, state: &mut PanelState, x: f32, middle: f32
 /// collide with the left-packed run however wide the window is.
 fn readouts(ui: &egui::Ui, state: &PanelState, band: egui::Rect, middle: f32) {
     let mut right = band.right() - EDGE_PAD;
-    for (label, value) in [
-        ("Nodes", format!("{}", state.scene.arena.len())),
+    for (label, value, warn) in sketch_readouts(state).into_iter().chain([
+        ("Nodes", format!("{}", state.scene.arena.len()), false),
         (
             "Density",
             format!("{}³ / block", state.scene.voxels_per_block),
+            false,
         ),
-    ] {
+    ]) {
+        let ink = if warn {
+            theme::WARN
+        } else {
+            theme::TEXT_SECONDARY
+        };
         let l = theme::letter_spaced(ui, label, theme::TEXT_HINT, 8.5, 1.4);
-        let v = theme::letter_spaced(ui, &value, theme::TEXT_SECONDARY, 9.5, 0.8);
+        let v = theme::letter_spaced(ui, &value, ink, 9.5, 0.8);
         let width = l.size().x.max(v.size().x);
         let left = right - width;
         let block_height = l.size().y + v.size().y + 2.0;
         let top = middle - block_height * 0.5;
         ui.painter()
             .galley(egui::pos2(left, top), l, theme::TEXT_HINT);
-        ui.painter().galley(
-            egui::pos2(left, top + block_height - v.size().y),
-            v,
-            theme::TEXT_SECONDARY,
-        );
+        ui.painter()
+            .galley(egui::pos2(left, top + block_height - v.size().y), v, ink);
         right = left - READOUT_GAP;
     }
+}
+
+/// The readouts that only exist while a sketch is open: how many ways the drawing can still
+/// move, and — when the last constraint was refused — why (ADR 0035).
+///
+/// Degrees of freedom is the number a constraint tool is FOR. Without it the author presses
+/// Horizontal and watches a line rotate, with no way to tell whether the sketch is now pinned
+/// or still has eleven freedoms left; "fully constrained" is a claim only this readout makes.
+fn sketch_readouts(state: &PanelState) -> Vec<(&'static str, String, bool)> {
+    let Some(target) = state.sketch_mode else {
+        return Vec::new();
+    };
+    let mut readouts = Vec::new();
+    if let Some(why) = state.sketch_constraint_refusal {
+        readouts.push(("Refused", why.to_string(), true));
+    }
+    if let Some(document::scene::NodeContent::SketchTool { producer, .. }) =
+        state.scene.node_by_id(target).map(|node| &node.content)
+    {
+        let freedoms = producer.sketch.degrees_of_freedom();
+        let value = if freedoms == 0 {
+            "0 — fully constrained".to_string()
+        } else {
+            format!("{freedoms}")
+        };
+        readouts.push(("DOF", value, false));
+    }
+    readouts
 }
 
 /// A full-height hairline divider between top-bar groups.

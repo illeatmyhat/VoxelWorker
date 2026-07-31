@@ -387,6 +387,30 @@ impl SketchSolid {
         next
     }
 
+    /// This producer with `kind` asserted, the drawing moved to where the solve put it, and the
+    /// new constraint's id (ADR 0035). `Err` leaves nothing changed — a refusal is not a partial
+    /// edit, so a caller that discards the `Err` still holds the drawing the author had.
+    ///
+    /// The solve happens inside [`Sketch::add_constraint`], which trials on a copy and keeps it
+    /// only once it converges; solving again here would move nothing and cost a second Jacobian.
+    pub fn with_constraint(
+        &self,
+        kind: ConstraintKind,
+    ) -> Result<(SketchSolid, EntityId), ConstraintRefusal> {
+        let mut next = self.clone();
+        let id = next.sketch.add_constraint(kind)?;
+        Ok((next, id))
+    }
+
+    /// This producer with the constraint `constraint_id` released. The geometry stays where the
+    /// last solve left it (ADR 0035) — dropping an assertion stops re-asserting it, it does not
+    /// undo it. No-op if unknown. Pure.
+    pub fn with_constraint_deleted(&self, constraint_id: EntityId) -> SketchSolid {
+        let mut next = self.clone();
+        next.sketch.delete_constraint(constraint_id);
+        next
+    }
+
     /// This producer with the derived face `key` picked or unpicked (ADR 0030 §3, #100) — the
     /// only edit that carves a hole. Geometry is untouched, so the profile bbox and the node
     /// anchor cannot move. Pure.

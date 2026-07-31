@@ -89,6 +89,8 @@ fn the_escape_hatches_are_exactly_these() {
             // `443e789` (the ±1M-block coordinate envelope) without reaching this list, so
             // this test failed from that commit until ADR 0032 slice 4 ran it again.
             ("coordinate_limit_warning", StateCategory::Derived),
+            // Why the last constraint was refused (ADR 0035), re-latched at every apply.
+            ("sketch_constraint_refusal", StateCategory::Derived),
             // The camera target, rounded to whole blocks, refreshed each frame.
             ("point_add_position_blocks", StateCategory::Derived),
         ],

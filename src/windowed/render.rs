@@ -380,6 +380,10 @@ impl WindowedState {
         if prepared.panel_response.delete_selection {
             self.delete_selection();
         }
+        // ADR 0035: the rail's constraint verbs, asserted over the sketch selection.
+        if let Some(verb) = prepared.panel_response.apply_sketch_constraint {
+            self.apply_sketch_constraint(verb);
+        }
         // #100: the context menu's carve / fill row, acting on the region the press resolved.
         if prepared.panel_response.toggle_sketch_face {
             self.toggle_sketch_menu_face();
@@ -2097,6 +2101,52 @@ impl WindowedState {
         self.panel_state.selection.clear_sketch_entities();
     }
 
+    /// ADR 0035: assert `verb` over every picked entity it applies to, as ONE edit, and commit
+    /// the drawing the solver leaves behind.
+    ///
+    /// The batch is all-or-nothing at the level of the commit but not of the assertion: each
+    /// constraint is trialled in turn against the sketch the previous ones already moved, so a
+    /// second segment told Horizontal is judged against a drawing where the first one already is.
+    /// Judging them all against the original would let a pair through that cannot both hold.
+    ///
+    /// A refusal stops the batch and commits what was accepted before it. The alternative —
+    /// discarding the accepted ones too — would make one impossible member of a five-line
+    /// selection silently undo four assertions the author watched land.
+    pub(super) fn apply_sketch_constraint(&mut self, verb: ui::panel::ConstraintVerb) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
+        let segments: Vec<_> = self.panel_state.selection.sketch_segments(target).collect();
+        let kinds = verb.kinds(&producer.sketch, &points, &segments);
+        if kinds.is_empty() {
+            return;
+        }
+
+        let mut next = producer;
+        let mut refusal = None;
+        let mut accepted = 0_usize;
+        for kind in kinds {
+            match next.with_constraint(kind) {
+                Ok((constrained, _)) => {
+                    next = constrained;
+                    accepted += 1;
+                }
+                Err(why) => {
+                    refusal = Some(refusal_text(why));
+                    break;
+                }
+            }
+        }
+        self.panel_state.sketch_constraint_refusal = refusal;
+        if accepted > 0 {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
     /// The derived region under the physical-px cursor (#100), or `None`. The SMALLEST containing
     /// face wins, so a click inside a pocket carves the pocket rather than the shape around it —
     /// the same "most specific thing under the cursor" rule the vertex-over-edge priority uses.
@@ -2747,6 +2797,17 @@ fn polygon_double_area(boundary: &[egui::Pos2]) -> f32 {
         previous = point;
     }
     sum
+}
+
+/// What the top bar says about a refused constraint (ADR 0035). The rail's applicability rule
+/// screens the first two out before a cell is ever live, so in practice the author reads the
+/// third — but a message per variant is what keeps that claim checkable rather than assumed.
+fn refusal_text(why: document::sketch::ConstraintRefusal) -> &'static str {
+    match why {
+        document::sketch::ConstraintRefusal::UnknownEntity => "names geometry that is gone",
+        document::sketch::ConstraintRefusal::Impossible => "no drawing can meet it",
+        document::sketch::ConstraintRefusal::Unsatisfiable => "fights a constraint already set",
+    }
 }
 
 /// Whether `point` lies inside the closed polygon through `boundary` — the even-odd crossing

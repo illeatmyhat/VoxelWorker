@@ -242,6 +242,31 @@ Minimum feature size and "this arc is too small to survive quantization" are **l
 constraints**. They are properties to check after solving and report; as constraints they would give
 the solver an objective it cannot converge on.
 
+### 15. A constraint is a verb on the selection, not a tool mode
+
+Every other cell on the sketch rail arms: Polyline waits for clicks, Rectangle waits for a drag,
+the snap picker changes what a later click means. A constraint does none of that. It reads what is
+already picked and applies at once, which is what Fusion and Onshape both settle on and what the
+alternative argues itself out of — a modal Horizontal would ask the author to pick the same line a
+second time inside the mode, and the second pick has nothing to add that the first did not say.
+
+This makes applicability a first-class question the rail must answer before the author presses
+anything: *can what is picked right now carry this verb?* A live cell must not be able to fail for
+want of geometry, so the same function decides the cell's enabled state and builds the assertions —
+"the cell was enabled" and "these are the constraints" cannot then drift apart. Refusals that
+survive are geometric only (`Unsatisfiable`), never clerical.
+
+A multi-selection asserts the verb of each member **separately** rather than relating them: two
+segments told Horizontal is two constraints, not one "these agree". The relating verbs — Parallel,
+Equal, Symmetry — are different entries with a different arity, and folding them together here
+would make the number of constraints depend on which button was pressed rather than on what was
+said.
+
+The batch is one commit and one undo step, but each constraint is trialled against the sketch the
+previous ones already moved, not against the original. A refusal stops the batch and keeps what
+landed before it: discarding the accepted ones too would let one impossible member of a five-line
+selection silently undo four assertions the author watched happen.
+
 ## Consequences
 
 - **Text is deferred to its own epic.** It is a font subsystem — face loading, glyph outline

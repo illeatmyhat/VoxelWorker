@@ -37,12 +37,14 @@ mod palette;
 mod points;
 mod selection;
 mod signal_stack;
+mod sketch_constraint;
 mod state;
 
 pub use add_shape_dialog::build_add_shape_dialog;
 pub(crate) use nodes::tool_node_spec;
 pub use selection::{Selection, SelectionRequest, SelectionTarget};
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
+pub use sketch_constraint::ConstraintVerb;
 pub use state::{
     AngleSnap, ArmedTool, ExportPanelState, LayerRange, ModeCommand, OrbitCenterRequest, OrbitMode,
     PanelResponse, PanelState, PlacementGhost, PlacementPivot, PlacementSnap, PositionSnap,

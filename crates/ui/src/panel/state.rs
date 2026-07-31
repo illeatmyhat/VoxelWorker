@@ -531,6 +531,16 @@ pub struct PanelState {
     /// changes nothing else.
     #[snapshot(derived)]
     pub coordinate_limit_warning: bool,
+    /// When `Some`, the last constraint the author asked for was REFUSED, and the value says
+    /// why (ADR 0035). The top bar shows it while a sketch is open; the next constraint that
+    /// lands clears it. A fixed string rather than an owned one, because the refusals are a
+    /// closed set and nothing about them is per-sketch.
+    ///
+    /// **Derived**, on the same footing as
+    /// [`coordinate_limit_warning`](Self::coordinate_limit_warning): a function of the last
+    /// edit's outcome, recomputed at every apply, and dropping it changes nothing else.
+    #[snapshot(derived)]
+    pub sketch_constraint_refusal: Option<&'static str>,
     /// When `Some`, a loaded VS block (M6) is the active material; the value is
     /// its label, shown under the Material selector. `None` = a procedural
     /// material is active.
@@ -902,6 +912,12 @@ pub struct PanelResponse {
     /// in is a screen-space hit-test only the shell can answer, and it already answered it to
     /// decide whether to offer the row at all. `false` when the row was not chosen.
     pub toggle_sketch_face: bool,
+    /// The constraint verb the user applied to the sketch selection this frame (ADR 0035) →
+    /// the shell asserts it over what is picked and commits the solved drawing. Routed as a
+    /// request rather than an `Intent` for the same reason `delete_selection` is: the selection
+    /// and the sketch commit path both live on the shell, and the panel cannot name the entities
+    /// without reaching for both. `None` when no constraint button was pressed.
+    pub apply_sketch_constraint: Option<super::ConstraintVerb>,
     /// How the user asked to move the **orbit center** this frame from the general viewport
     /// context menu (`docs/design/tool-modes-and-navigation.md`) — the deliberate act that is
     /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW

@@ -258,3 +258,52 @@ fn solving_a_solved_sketch_moves_nothing() {
     let again: Vec<[f64; 2]> = sketch.points().iter().map(|p| p.at.in_plane()).collect();
     assert_eq!(settled, again);
 }
+
+/// The PRODUCER door the rail's constraint verbs go through (ADR 0035): pure, so the caller
+/// holds both drawings and the shell's one-transaction commit has something to commit.
+#[test]
+fn the_producer_door_asserts_without_touching_the_original() {
+    let (sketch, tail, head, segment) = slanted();
+    let before = SketchSolid::extrude(sketch, 3);
+    let (after, id) = before
+        .with_constraint(ConstraintKind::Horizontal { segment })
+        .expect("nothing else is asserted");
+
+    assert_eq!(position(&before.sketch, head), [10.0, 4.0], "the original");
+    assert_eq!(
+        position(&after.sketch, tail)[1],
+        position(&after.sketch, head)[1],
+        "the copy is levelled"
+    );
+    assert_eq!(after.sketch.constraints().len(), 1);
+    assert_eq!(after.sketch.degrees_of_freedom(), 3);
+
+    // Releasing it stops the assertion without undoing what it did — the geometry stays level.
+    let released = after.with_constraint_deleted(id);
+    assert!(released.sketch.constraints().is_empty());
+    assert_eq!(
+        position(&released.sketch, tail)[1],
+        position(&after.sketch, tail)[1],
+        "releasing an assertion is not an undo"
+    );
+}
+
+/// A refusal at the producer door hands back nothing, so the shell cannot commit half an edit.
+#[test]
+fn the_producer_door_refuses_without_a_partial_result() {
+    let (mut sketch, tail, _, _) = slanted();
+    sketch
+        .add_constraint(ConstraintKind::Fix {
+            point: tail,
+            at: SketchPoint::new(0, 0),
+        })
+        .expect("the first assertion cannot conflict");
+    let solid = SketchSolid::extrude(sketch, 3);
+    assert_eq!(
+        solid
+            .with_constraint(ConstraintKind::Horizontal { segment: 900 })
+            .err(),
+        Some(ConstraintRefusal::UnknownEntity)
+    );
+    assert_eq!(solid.sketch.constraints().len(), 1, "unchanged");
+}
