@@ -14,7 +14,9 @@
 //! of freedom that only the stored position remembers.
 
 use super::{EntityId, Point, SketchLength, SketchPoint};
-use substrate::nonlinear_least_squares::{solve, ResidualSystem, SolveReport, SolveSettings};
+use substrate::nonlinear_least_squares::{
+    jacobian, rank, solve, ResidualSystem, SolveReport, SolveSettings,
+};
 
 /// What a constraint asserts. Each variant names geometry **by id**, never by index.
 ///
@@ -114,23 +116,66 @@ pub struct Constraint {
     pub redundant: bool,
 }
 
-/// Why a constraint could not be added.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why a constraint could not be added — **and what to blame** (ADR 0035 Decision 4).
+///
+/// Every refusal that has a culprit names it. A diagnosis the author cannot act on is barely a
+/// diagnosis: "it fights something" leaves them to find the something, and on a drawing carrying
+/// twenty assertions that is the whole of the work. Since constraints are selectable entities with
+/// badges, an id is all the shell needs to point at one.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstraintRefusal {
     /// It names geometry the store does not hold.
     UnknownEntity,
     /// Its own terms cannot be met by any drawing — a negative distance, a `Horizontal` on a
-    /// segment whose ends are the same point.
+    /// segment whose ends are the same point. Nothing to blame but the request.
     Impossible,
-    /// The system it would join has no solution: it fights what is already asserted. The
-    /// constraint it fights is not named yet; that is the tool layer's job once constraints are
-    /// selectable in the UI.
-    Unsatisfiable,
+    /// The system it would join has no solution: it fights what is already asserted.
+    Unsatisfiable {
+        /// The standing constraints it cannot coexist with, found by leave-one-out (see
+        /// `Sketch::blame`). **Empty means undetermined, never innocent** — a conflict that
+        /// needs two removals to clear leaves no single culprit, and claiming one would be worse
+        /// than admitting none.
+        fights: Vec<EntityId>,
+    },
+    /// The system HAS a solution, and the solution deletes the drawing: this geometry would be
+    /// squeezed to nothing. Separated from [`Unsatisfiable`](Self::Unsatisfiable) because it is a
+    /// different thing to tell somebody — nothing is fighting, the assertions agree on an answer
+    /// that happens to be a singularity.
+    WouldCollapse {
+        /// The segment or arc that would lose its extent.
+        entity: EntityId,
+        /// The standing constraints that already act on that geometry.
+        ///
+        /// Structural rather than experimental, and deliberately so: leave-one-out cannot answer
+        /// this one. A previous solve has already MOVED the drawing, and releasing an assertion
+        /// does not undo its effect — so dropping the `Horizontal` that levelled a segment leaves
+        /// it level, and adding `Vertical` still collapses it. What the author needs is not "which
+        /// removal would have helped" but "what else is holding this shape", which is a question
+        /// about the constraint graph and always has an answer.
+        implicated: Vec<EntityId>,
+    },
     /// The same kind of assertion already stands on the same geometry. One constraint of a kind
     /// per entity set: a second `Horizontal` on a segment that is already asserted horizontal says
     /// nothing the first did not, and a second `Fix` on a fixed point is a re-fix, which is a
     /// delete and an add rather than two claims about one place.
-    AlreadyAsserted,
+    AlreadyAsserted {
+        /// The one already standing — so the answer to "you already have this" is a badge lit on
+        /// the drawing rather than a hunt.
+        existing: EntityId,
+    },
+}
+
+impl ConstraintRefusal {
+    /// Every constraint this refusal blames, for a caller that wants to light them up. Empty when
+    /// the refusal has no culprit or none could be isolated.
+    pub fn culprits(&self) -> Vec<EntityId> {
+        match self {
+            ConstraintRefusal::UnknownEntity | ConstraintRefusal::Impossible => Vec::new(),
+            ConstraintRefusal::Unsatisfiable { fights } => fights.clone(),
+            ConstraintRefusal::WouldCollapse { implicated, .. } => implicated.clone(),
+            ConstraintRefusal::AlreadyAsserted { existing } => vec![*existing],
+        }
+    }
 }
 
 /// The sketch's points flattened into a parameter vector, with one entry per constraint residual.
@@ -282,6 +327,31 @@ impl ResidualSystem for SketchResiduals<'_> {
             }
         }
     }
+}
+
+/// The rank of the constraint system's Jacobian **at the author's own drawing** rather than at the
+/// solution — the witness-configuration idea, and the fix for a defect the literature is explicit
+/// about (FreeCAD #5931).
+///
+/// Redundancy is "did this constraint raise the rank", and rank has to be read somewhere. Reading
+/// it at the SOLUTION is the obvious choice and the wrong one: rows of the Jacobian vanish at an
+/// exactly-solved configuration — a distance residual between two coincident points has a zero
+/// gradient — so a perfectly informative constraint can look redundant purely because the solver
+/// did its job. Reading it at the pre-solve drawing avoids that: the author's sketch is a generic
+/// configuration, which is exactly what a witness is for.
+///
+/// Zero for a system with no points or no constraints, which is the right answer for both.
+pub(super) fn witness_rank(
+    points: &[Point],
+    segments: &[(EntityId, EntityId, EntityId)],
+    constraints: &[Constraint],
+) -> usize {
+    let Some(system) = SketchResiduals::new(points, segments, constraints) else {
+        return 0;
+    };
+    let at = system.guess(points);
+    let matrix = jacobian(&system, &at);
+    rank(&matrix, system.residual_count(), system.parameter_count())
 }
 
 /// Solve `points` against `constraints`, writing the solution back into the points.

@@ -2347,11 +2347,24 @@ impl WindowedState {
                     // clerical ones. The gesture stays armed but gives its picks BACK, because a
                     // full slot list answers every further click with "already complete": the
                     // author would be holding a command that can no longer be told anything.
+                    //
+                    // In their place go the constraints the refusal BLAMES, selected. A reason
+                    // sentence in the top bar cannot say *which* of twenty assertions is the
+                    // problem; a lit badge can, and it lands the culprit in the selection so
+                    // Delete is the next key rather than the next search.
                     Err(why) => {
-                        self.panel_state.sketch_constraint_refusal = Some(refusal_text(why));
+                        self.panel_state.sketch_constraint_refusal = Some(refusal_text(&why));
                         self.panel_state.armed_constraint =
                             Some(ui::panel::ArmedConstraint::new(armed.verb()));
                         self.panel_state.selection.clear_sketch_entities();
+                        for entity in why.culprits() {
+                            self.panel_state.selection.toggle(
+                                ui::panel::SelectionTarget::SketchConstraint {
+                                    sketch: target,
+                                    entity,
+                                },
+                            );
+                        }
                     }
                 }
             }
@@ -3062,12 +3075,25 @@ fn selection_target(
 /// What the top bar says about a refused constraint (ADR 0035). `offer` screens the clerical
 /// refusals before the producer sees them, so in practice the author reads the third — but a
 /// message per variant is what keeps that claim checkable rather than assumed.
-fn refusal_text(why: document::sketch::ConstraintRefusal) -> &'static str {
+fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
+    use document::sketch::ConstraintRefusal;
     match why {
-        document::sketch::ConstraintRefusal::UnknownEntity => "names geometry that is gone",
-        document::sketch::ConstraintRefusal::Impossible => "no drawing can meet it",
-        document::sketch::ConstraintRefusal::Unsatisfiable => "fights a constraint already set",
-        document::sketch::ConstraintRefusal::AlreadyAsserted => "already asserted there",
+        ConstraintRefusal::UnknownEntity => "names geometry that is gone",
+        ConstraintRefusal::Impossible => "no drawing can meet it",
+        // Whether a culprit was isolated changes what the sentence can honestly promise: with one
+        // selected, "this" points at a lit badge; without, the author is on their own and the
+        // message must not imply otherwise.
+        ConstraintRefusal::Unsatisfiable { fights } if fights.is_empty() => {
+            "fights a constraint already set"
+        }
+        ConstraintRefusal::Unsatisfiable { .. } => "fights the selected constraint",
+        ConstraintRefusal::WouldCollapse { implicated, .. } if implicated.is_empty() => {
+            "would squeeze that shape to nothing"
+        }
+        ConstraintRefusal::WouldCollapse { .. } => {
+            "would squeeze that shape to nothing — see the selected constraint"
+        }
+        ConstraintRefusal::AlreadyAsserted { .. } => "already asserted — it is selected",
     }
 }
 

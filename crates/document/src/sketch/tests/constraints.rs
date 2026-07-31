@@ -95,26 +95,37 @@ fn a_distance_dimension_is_met() {
 #[test]
 fn a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone() {
     let (mut sketch, tail, head, _) = slanted();
+    let mut pins = Vec::new();
     for (point, at) in [
         (tail, SketchPoint::new(0, 0)),
         (head, SketchPoint::new(10, 4)),
     ] {
-        sketch
-            .add_constraint(ConstraintKind::Fix { point, at })
-            .expect("pinning each end in turn is consistent");
+        pins.push(
+            sketch
+                .add_constraint(ConstraintKind::Fix { point, at })
+                .expect("pinning each end in turn is consistent"),
+        );
     }
     assert_eq!(sketch.degrees_of_freedom(), 0, "fully constrained");
     let before: Vec<[f64; 2]> = sketch.points().iter().map(|p| p.at.in_plane()).collect();
 
     // The ends are pinned about 10.77 apart. Five is not a distance they can be.
-    assert_eq!(
-        sketch.add_constraint(ConstraintKind::Distance {
+    let refusal = sketch
+        .add_constraint(ConstraintKind::Distance {
             from: tail,
             to: head,
             length: SketchLength::new(5),
-        }),
-        Err(ConstraintRefusal::Unsatisfiable)
+        })
+        .expect_err("five is not a distance those pins allow");
+    // And it NAMES what it fights: releasing either pin would let the distance hold, so
+    // leave-one-out finds both, and the author is pointed at something they can act on.
+    assert_eq!(
+        refusal,
+        ConstraintRefusal::Unsatisfiable {
+            fights: pins.clone()
+        }
     );
+    assert_eq!(refusal.culprits(), pins);
     assert_eq!(sketch.constraints().len(), 2, "it was not kept");
     let after: Vec<[f64; 2]> = sketch.points().iter().map(|p| p.at.in_plane()).collect();
     assert_eq!(before, after, "nor did the failed trial move anything");
@@ -356,12 +367,13 @@ fn deleting_geometry_takes_its_constraints_and_the_id_stays_safe_to_delete() {
 #[test]
 fn the_same_assertion_twice_on_one_segment_is_refused() {
     let (mut sketch, _, _, segment) = slanted();
-    sketch
+    let first = sketch
         .add_constraint(ConstraintKind::Horizontal { segment })
         .expect("the first assertion");
     assert_eq!(
         sketch.add_constraint(ConstraintKind::Horizontal { segment }),
-        Err(ConstraintRefusal::AlreadyAsserted)
+        Err(ConstraintRefusal::AlreadyAsserted { existing: first }),
+        "and it names the one already standing, so the answer is a lit badge not a hunt"
     );
     assert_eq!(sketch.constraints().len(), 1);
 }
@@ -371,7 +383,7 @@ fn the_same_assertion_twice_on_one_segment_is_refused() {
 #[test]
 fn refixing_a_fixed_point_somewhere_else_is_still_a_duplicate() {
     let (mut sketch, tail, _, _) = slanted();
-    sketch
+    let first = sketch
         .add_constraint(ConstraintKind::Fix {
             point: tail,
             at: SketchPoint::new(0, 0),
@@ -382,7 +394,7 @@ fn refixing_a_fixed_point_somewhere_else_is_still_a_duplicate() {
             point: tail,
             at: SketchPoint::new(7, 7),
         }),
-        Err(ConstraintRefusal::AlreadyAsserted),
+        Err(ConstraintRefusal::AlreadyAsserted { existing: first }),
         "a different place is still the same claim about the same point"
     );
 }
@@ -396,14 +408,14 @@ fn a_distance_is_the_same_assertion_in_either_direction() {
         to: head,
         length: SketchLength::from_continuous(value),
     };
-    sketch.add_constraint(apart(9.0)).expect("the first");
+    let first = sketch.add_constraint(apart(9.0)).expect("the first");
     assert_eq!(
         sketch.add_constraint(ConstraintKind::Distance {
             from: head,
             to: tail,
             length: SketchLength::from_continuous(4.0),
         }),
-        Err(ConstraintRefusal::AlreadyAsserted)
+        Err(ConstraintRefusal::AlreadyAsserted { existing: first })
     );
 }
 
@@ -414,15 +426,21 @@ fn a_distance_is_the_same_assertion_in_either_direction() {
 #[test]
 fn a_solve_that_collapses_geometry_is_refused() {
     let (mut sketch, tail, head, segment) = slanted();
-    sketch
+    let level = sketch
         .add_constraint(ConstraintKind::Horizontal { segment })
         .expect("levelling a slanted segment is fine");
     let levelled = (position(&sketch, head)[0] - position(&sketch, tail)[0]).abs();
     assert!(levelled > 1.0, "still a line, {levelled} across");
 
+    // Its own refusal, not Unsatisfiable: nothing here fights, the assertions AGREE on an answer
+    // that happens to be a singularity. It names the geometry that would vanish and the assertion
+    // whose release would save it.
     assert_eq!(
         sketch.add_constraint(ConstraintKind::Vertical { segment }),
-        Err(ConstraintRefusal::Unsatisfiable),
+        Err(ConstraintRefusal::WouldCollapse {
+            entity: segment,
+            implicated: vec![level],
+        }),
         "level AND plumb is only meetable by deleting the segment"
     );
     assert_eq!(sketch.constraints().len(), 1, "the refusal kept nothing");
@@ -448,4 +466,72 @@ fn already_collapsed_geometry_does_not_veto_the_rest() {
     sketch
         .add_constraint(ConstraintKind::Horizontal { segment: real })
         .expect("the collapsed stub is not this assertion's doing");
+}
+
+/// The witness rank reads the drawing it is HANDED, never a solution it went and computed.
+///
+/// That is the whole of the fix for a defect the literature names (FreeCAD #5931): rows of the
+/// Jacobian can vanish at an exactly-solved configuration, so redundancy read there mistakes a
+/// solver's success for a constraint saying nothing. Read at the author's own slanted drawing —
+/// a generic configuration — a `Fix` pins two coordinates and a `Horizontal` adds a third
+/// independent row.
+#[test]
+fn the_witness_rank_is_read_at_the_drawing_it_is_given() {
+    let (sketch, tail, _, segment) = slanted();
+    let ends = sketch.segment_ends();
+    let held = |kind| Constraint {
+        id: 99,
+        kind,
+        redundant: false,
+    };
+    let pin = held(ConstraintKind::Fix {
+        point: tail,
+        at: SketchPoint::new(0, 0),
+    });
+    let level = held(ConstraintKind::Horizontal { segment });
+
+    let rank_of =
+        |constraints: &[Constraint]| constraint::witness_rank(sketch.points(), &ends, constraints);
+    assert_eq!(rank_of(&[]), 0, "no assertions pin nothing");
+    assert_eq!(
+        rank_of(&[pin]),
+        2,
+        "a Fix pins both of a point's coordinates"
+    );
+    assert_eq!(rank_of(&[pin, level]), 3, "and levelling adds a third");
+    assert_eq!(rank_of(&[level]), 1);
+}
+
+/// The verdict does not depend on the drawing having been pre-solved onto its own assertions —
+/// the property the witness reading exists to protect.
+#[test]
+fn redundancy_reads_the_same_on_a_solved_and_an_unsolved_drawing() {
+    let flagged_for = |corner: [f64; 2]| {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+        let head = sketch.add_free_point(SketchPoint::from_continuous(corner[0], corner[1]));
+        let segment = sketch
+            .connect(tail, head)
+            .expect("two distinct points join");
+        for (point, at) in [
+            (tail, SketchPoint::new(0, 0)),
+            (head, SketchPoint::new(10, 0)),
+        ] {
+            sketch
+                .add_constraint(ConstraintKind::Fix { point, at })
+                .expect("pinning each end in turn is consistent");
+        }
+        let implied = sketch
+            .add_constraint(ConstraintKind::Horizontal { segment })
+            .expect("the pins already put it level");
+        sketch
+            .constraints()
+            .iter()
+            .find(|held| held.id == implied)
+            .expect("just added")
+            .redundant
+    };
+    // Drawn level to begin with, and drawn slanted so the pins had to move it.
+    assert!(flagged_for([10.0, 0.0]));
+    assert!(flagged_for([10.0, 4.0]));
 }

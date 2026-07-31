@@ -684,6 +684,24 @@ pub const ABSENT_CENTER: EntityId = EntityId::MAX;
 /// author draws can land under it by accident.
 const COLLAPSED_SPAN: f64 = 1e-6;
 
+/// One trial solve on a copy of the drawing: what it produced, and whether that is acceptable.
+struct Trial {
+    points: Vec<Point>,
+    verdict: TrialVerdict,
+}
+
+/// How a trial solve turned out. Three outcomes rather than two, because "converged" and
+/// "acceptable" are different questions (ADR 0035 Decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrialVerdict {
+    /// A real drawing that meets every assertion.
+    Solved,
+    /// No solution was reached: the assertions fight.
+    Diverged,
+    /// A solution WAS reached, and it squeezes this entity to nothing.
+    Collapsed(EntityId),
+}
+
 fn absent_center() -> EntityId {
     ABSENT_CENTER
 }
@@ -1217,32 +1235,118 @@ impl Sketch {
             redundant: false,
         };
 
-        let mut trial = self.points.clone();
         let mut with_candidate = self.constraints.clone();
         with_candidate.push(candidate);
-        let report = constraint::solve_in_place(&mut trial, &self.segment_ends(), &with_candidate)
-            .expect("a constraint was just pushed, so the system is not empty");
-        if report.outcome != SolveOutcome::Converged {
-            return Err(ConstraintRefusal::Unsatisfiable);
-        }
-        if self.collapses_geometry(&trial) {
-            return Err(ConstraintRefusal::Unsatisfiable);
+        let trial = self.trial(&with_candidate);
+        match trial.verdict {
+            TrialVerdict::Diverged => {
+                return Err(ConstraintRefusal::Unsatisfiable {
+                    fights: self.blame(candidate),
+                })
+            }
+            TrialVerdict::Collapsed(entity) => {
+                return Err(ConstraintRefusal::WouldCollapse {
+                    entity,
+                    implicated: self.constraints_acting_on(entity),
+                })
+            }
+            TrialVerdict::Solved => {}
         }
 
         // Rank is measured against what the system knew a moment ago: if the new constraint did
-        // not raise it, everything it says was already being said. `rank = parameters − dof`,
-        // and the parameter count is the same on both sides because the points did not change.
-        let parameters = self.points.len() * 2;
-        let rank = |report: &SolveReport| parameters - report.degrees_of_freedom;
-        let previous_rank = self.solve_report().as_ref().map_or(0, rank);
+        // not raise it, everything it says was already being said. Both readings are taken at the
+        // author's PRE-solve drawing (`constraint::witness_rank`) rather than at each system's own
+        // solution, which is what keeps a vanishing Jacobian row from reading as redundancy.
+        let ends = self.segment_ends();
+        let witness =
+            |constraints: &[Constraint]| constraint::witness_rank(&self.points, &ends, constraints);
+        let redundant = witness(&with_candidate) <= witness(&self.constraints);
         let id = self.alloc_id();
         self.constraints.push(Constraint {
             id,
-            redundant: rank(&report) <= previous_rank,
+            redundant,
             ..candidate
         });
-        self.points = trial;
+        self.points = trial.points;
         Ok(id)
+    }
+
+    /// The standing constraints that act on `entity` — the ones holding the shape that is about
+    /// to be squeezed to nothing.
+    ///
+    /// Asked structurally rather than by experiment because leave-one-out cannot answer it: an
+    /// earlier solve has already moved the drawing, and releasing an assertion does not undo its
+    /// effect, so dropping the `Horizontal` that levelled a segment leaves the segment level and
+    /// `Vertical` still collapses it. "What else is holding this?" is a question about the graph,
+    /// and it always has an answer.
+    ///
+    /// A constraint counts if it names the entity itself or either of its ends.
+    fn constraints_acting_on(&self, entity: EntityId) -> Vec<EntityId> {
+        let ends: Vec<EntityId> = self
+            .segments
+            .iter()
+            .filter(|seg| seg.id == entity)
+            .flat_map(|seg| [seg.from, seg.to])
+            .chain(
+                self.arcs
+                    .iter()
+                    .filter(|arc| arc.id == entity)
+                    .flat_map(|arc| [arc.from, arc.to, arc.center]),
+            )
+            .collect();
+        self.constraints
+            .iter()
+            .filter(|held| {
+                held.kind.segment() == Some(entity)
+                    || held.kind.points().iter().any(|named| ends.contains(named))
+            })
+            .map(|held| held.id)
+            .collect()
+    }
+
+    /// Which standing constraints the candidate cannot coexist with — **leave-one-out**.
+    ///
+    /// Re-run the trial with each standing constraint dropped in turn; any drop that lets the
+    /// system succeed names a culprit. That is `n` solves of a system with at most a few dozen
+    /// parameters, which at sketch scale is free, and it is an ANSWER rather than an estimate:
+    /// the alternative in the literature is a rank heuristic that picks the constraint appearing
+    /// in the most dependent groups, and it is known to blame the wrong one.
+    ///
+    /// An empty result means no SINGLE removal helps — a conflict needing two, or one whose
+    /// effect on the geometry outlived the assertion that caused it. Saying nothing is right
+    /// there; naming an arbitrary member would send the author to delete something innocent.
+    fn blame(&self, candidate: Constraint) -> Vec<EntityId> {
+        self.constraints
+            .iter()
+            .filter(|standing| {
+                let mut without: Vec<Constraint> = self
+                    .constraints
+                    .iter()
+                    .filter(|held| held.id != standing.id)
+                    .copied()
+                    .collect();
+                without.push(candidate);
+                self.trial(&without).verdict == TrialVerdict::Solved
+            })
+            .map(|standing| standing.id)
+            .collect()
+    }
+
+    /// Solve `constraints` on a COPY of the drawing and judge the result. The copy is what lets a
+    /// refusal leave the sketch exactly where it was rather than where a failed solve pushed it.
+    fn trial(&self, constraints: &[Constraint]) -> Trial {
+        let mut points = self.points.clone();
+        let report = constraint::solve_in_place(&mut points, &self.segment_ends(), constraints);
+        let verdict = match report {
+            // Nothing to solve is not a failure: an empty system is met by the drawing as it is.
+            None => TrialVerdict::Solved,
+            Some(report) if report.outcome != SolveOutcome::Converged => TrialVerdict::Diverged,
+            Some(_) => match self.collapsed_by(&points) {
+                Some(entity) => TrialVerdict::Collapsed(entity),
+                None => TrialVerdict::Solved,
+            },
+        };
+        Trial { points, verdict }
     }
 
     /// **One constraint of a kind per entity set** (ADR 0035 Decision 4).
@@ -1259,17 +1363,18 @@ impl Sketch {
     /// point is refused whether or not it names the same place, because "fix this here, and also
     /// there" is a re-fix — delete the first, assert the second — rather than two live claims.
     fn check_is_not_already_asserted(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
-        let stands = self
+        let standing = self
             .constraints
             .iter()
-            .any(|held| held.kind.is_about_the_same_as(kind));
-        if stands {
-            return Err(ConstraintRefusal::AlreadyAsserted);
+            .find(|held| held.kind.is_about_the_same_as(kind));
+        match standing {
+            Some(held) => Err(ConstraintRefusal::AlreadyAsserted { existing: held.id }),
+            None => Ok(()),
         }
-        Ok(())
     }
 
-    /// Whether the trial solve COLLAPSED geometry that had extent before it ran.
+    /// WHICH geometry the trial solve collapsed, if it collapsed any — geometry that had extent
+    /// before the solve ran and has none after.
     ///
     /// **A singularity solves everything.** Almost every residual in the set is a difference
     /// between two coordinates, so putting every point in one place drives them all to zero: it is
@@ -1285,27 +1390,35 @@ impl Sketch {
     ///
     /// Geometry that was ALREADY degenerate is not this test's business — an unrelated assertion
     /// elsewhere should not be refused for a collapse that predates it.
-    fn collapses_geometry(&self, trial: &[Point]) -> bool {
+    fn collapsed_by(&self, trial: &[Point]) -> Option<EntityId> {
         let span = |points: &[Point], from: EntityId, to: EntityId| -> Option<f64> {
             let at = |id: EntityId| points.iter().find(|point| point.id == id).map(|p| p.at);
             let (a, b) = (at(from)?.in_plane(), at(to)?.in_plane());
             Some(((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt())
         };
-        let mut open: Vec<(EntityId, EntityId)> =
-            self.segments.iter().map(|seg| (seg.from, seg.to)).collect();
+        // Every span the drawing needs to still be itself, as `(the entity that needs it, its two
+        // ends)`.
+        let mut open: Vec<(EntityId, EntityId, EntityId)> = self
+            .segments
+            .iter()
+            .map(|seg| (seg.id, seg.from, seg.to))
+            .collect();
         for arc in &self.arcs {
-            open.push((arc.from, arc.to));
+            open.push((arc.id, arc.from, arc.to));
             if arc.center != ABSENT_CENTER {
-                open.push((arc.center, arc.from));
+                open.push((arc.id, arc.center, arc.from));
             }
         }
-        open.into_iter().any(|(from, to)| {
-            let (Some(before), Some(after)) = (span(&self.points, from, to), span(trial, from, to))
-            else {
-                return false;
-            };
-            before > COLLAPSED_SPAN && after <= COLLAPSED_SPAN
-        })
+        open.into_iter()
+            .find(|&(_, from, to)| {
+                let (Some(before), Some(after)) =
+                    (span(&self.points, from, to), span(trial, from, to))
+                else {
+                    return false;
+                };
+                before > COLLAPSED_SPAN && after <= COLLAPSED_SPAN
+            })
+            .map(|(entity, _, _)| entity)
     }
 
     /// Whether every entity `kind` names is in the store, and its own terms are meetable.

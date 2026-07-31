@@ -116,6 +116,35 @@ So the trial also asks whether any segment that had length lost it, and refuses 
 as a property of the result rather than as a table of forbidden pairs, it covers every combination
 meetable only by deleting what it names — including the ones the residual set does not have yet.
 
+**Every refusal that has a culprit names it.** A diagnosis the author cannot act on is barely a
+diagnosis: "it fights something" leaves them to find the something, and on a drawing carrying
+twenty assertions that is the whole of the work. Constraints are selectable entities with badges,
+so an id is all the shell needs — a refusal lands its culprits *in the selection*, lit, and Delete
+is the next key rather than the next search. How the culprit is found differs by refusal, and the
+difference is not incidental:
+
+- *Already asserted* knows it directly — the check found the standing constraint.
+- *Unsatisfiable* uses **leave-one-out**: re-trial with each standing constraint dropped in turn,
+  and any drop that succeeds names a culprit. That is `n` solves of a system with a few dozen
+  parameters, which at sketch scale is free, and it is an answer rather than an estimate. The
+  alternative in the literature is a rank heuristic that blames whichever constraint appears in
+  the most dependent groups, and it is known to blame the wrong one. An empty result means no
+  single removal helps; saying nothing beats sending the author to delete something innocent.
+- *Would collapse* is asked **structurally** — the constraints that act on the collapsing entity —
+  because leave-one-out cannot answer it. An earlier solve has already moved the drawing, and
+  releasing an assertion does not undo its effect, so dropping the `Horizontal` that levelled a
+  segment leaves the segment level and `Vertical` still collapses it. "What else is holding this
+  shape" is a question about the graph, and it always has an answer.
+
+**Redundancy is read at the author's drawing, not at the solution.** Rank has to be read somewhere,
+and the solution is the obvious place and the wrong one: rows of the Jacobian vanish at an
+exactly-solved configuration, so a perfectly informative constraint can look redundant purely
+because the solver did its job. This is a defect FreeCAD carries and documents (#5931). Reading
+both ranks at the pre-solve drawing — a generic configuration, which is what the witness
+configuration method means by a witness — avoids it. None of the four shipped residuals can vanish
+this way; the point is that Tangent and Perpendicular can, and the reading is settled before they
+arrive rather than after somebody reports it.
+
 ### 5. Inference is Shift-gated and curated
 
 Drawing infers nothing by default. **Holding Shift** during a gesture offers inference, sampled
