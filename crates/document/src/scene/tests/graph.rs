@@ -86,16 +86,16 @@ fn from_measurements_integer_multiple_density_keeps_voxel_term_exact() {
 /// re-evaluates back to exactly those voxels at any density (versioning:
 /// shared documents must load forward).
 #[test]
-fn transform_serde_back_compat_synthesises_measurements_from_voxels() {
+fn transform_serde_back_compat_synthesizes_measurements_from_voxels() {
     let old_json = r#"{ "offset_voxels": [48, -16, 7] }"#;
     let restored: NodeTransform =
         serde_json::from_str(old_json).expect("old transform without measurements must load");
     assert_eq!(restored.offset_voxels, [48, -16, 7]);
-    let synthesised = restored.offset_measurements();
+    let synthesized = restored.offset_measurements();
     for (axis, &voxels) in restored.offset_voxels.iter().enumerate() {
-        assert_eq!(synthesised[axis], Measurement::from_voxels(voxels));
-        assert_eq!(synthesised[axis].to_voxels(16).unwrap(), voxels);
-        assert_eq!(synthesised[axis].to_voxels(32).unwrap(), voxels);
+        assert_eq!(synthesized[axis], Measurement::from_voxels(voxels));
+        assert_eq!(synthesized[axis].to_voxels(16).unwrap(), voxels);
+        assert_eq!(synthesized[axis].to_voxels(32).unwrap(), voxels);
     }
 }
 

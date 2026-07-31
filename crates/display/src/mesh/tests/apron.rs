@@ -341,7 +341,7 @@ fn solid_slab_across_chunk_seam_has_no_interior_faces() {
 
 /// The per-chunk band clip must match the whole-region band clip's VISIBLE
 /// exposed-face set (real caps at the band edges, per chunk). A torus clipped to a
-/// sub-band that falls INSIDE the chunks must synthesise the cap faces identically
+/// sub-band that falls INSIDE the chunks must synthesize the cap faces identically
 /// in both paths. Ground truth = the genuinely-exposed faces of the BAND-MASKED
 /// occupancy (cells outside `[band_min, band_max]` removed, so the band edges are
 /// real air boundaries → cap faces).

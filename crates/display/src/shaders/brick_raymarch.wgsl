@@ -695,7 +695,7 @@ struct MarchHit {
 
 // Ray/AABB slab entry: max component of the near-face parameters (clamped to 0)
 // and its axis. The AABB is the block's box CLAMPED to the traversal bounds, so a
-// band cut-plane entry reports axis 2 — the cap face the banded mesher synthesises.
+// band cut-plane entry reports axis 2 — the cap face the banded mesher synthesizes.
 struct SlabEntry {
     t_enter: f32,
     t_exit: f32,

@@ -64,7 +64,7 @@ impl Scene {
     /// floating_origin_voxels`, with the subtraction performed in **i64 before the
     /// f32 downcast**, so the rendered f32 magnitude stays small no matter how far the
     /// chunk sits from the absolute origin. The chunk-membership clip is still decided
-    /// in **absolute** space (f64), so a far chunk's boundary voxels are never
+    /// in **absolute i64** space, so a far chunk's boundary voxels are never
     /// misclassified by f32 rounding.
     ///
     /// `floating_origin_voxels = [0, 0, 0]` reproduces `resolve_chunk` exactly. The
@@ -329,7 +329,7 @@ impl Scene {
 /// downcast** so the rendered f32 magnitude stays small regardless of how far the chunk
 /// sits from the absolute origin (no far-lands jitter). Pass `[0, 0, 0]` to store true
 /// absolute positions (the chunk-cache parity tests / `.vox`-style consumers). The
-/// chunk-membership clip is computed in **f64 absolute** space (independent of the
+/// chunk-membership clip is computed in **absolute i64** space (independent of the
 /// rebase) so a far chunk's boundary voxels are never misclassified by f32 rounding.
 #[allow(clippy::too_many_arguments)]
 fn stamp_producer_into_chunk(

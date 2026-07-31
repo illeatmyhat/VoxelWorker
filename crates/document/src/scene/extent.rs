@@ -281,9 +281,9 @@ impl NodeTransform {
         measurements: [Measurement; 3],
         offset_voxels: [i64; 3],
     ) -> Option<Box<[Measurement; 3]>> {
-        let is_synthesisable =
+        let is_synthesizable =
             (0..3).all(|axis| measurements[axis] == Measurement::from_voxels(offset_voxels[axis]));
-        if is_synthesisable {
+        if is_synthesizable {
             None
         } else {
             Some(Box::new(measurements))

@@ -473,7 +473,7 @@ const CASES: &[GoldenCase] = &[
 /// `CASES`.
 ///
 /// ADR 0010 #53: the two LAYER-BAND-clip cases are now INCLUDED — the two-layer mesher honors
-/// a layer band (clips coarse blocks to the band one-box, clips microblock cuboids, synthesises
+/// a layer band (clips coarse blocks to the band one-box, clips microblock cuboids, synthesizes
 /// cut-plane cap faces at the band edge), so the band slab renders pixel-identical to the dense
 /// banded path with no dense source grids:
 /// * `sketch-revolve-dome` — IMPLICITLY band-clipped: the layer-track upper bound is taken from

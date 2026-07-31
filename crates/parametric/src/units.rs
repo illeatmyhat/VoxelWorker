@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn from_voxels_is_a_pure_voxel_measurement() {
-        // A synthesised measurement re-evaluates to exactly its voxel count at any
+        // A synthesized measurement re-evaluates to exactly its voxel count at any
         // density (the block term is zero, so density never scales it).
         for voxels in [-48_i64, -1, 0, 7, 56] {
             let measurement = Measurement::from_voxels(voxels);

@@ -255,9 +255,9 @@ impl SdfShape {
     ) -> Option<Box<[parametric::units::Measurement; 3]>> {
         use parametric::units::Measurement;
         let measurements = measurements?;
-        let is_synthesisable = (0..3)
+        let is_synthesizable = (0..3)
             .all(|axis| measurements[axis] == Measurement::from_voxels(size_voxels[axis] as i64));
-        if is_synthesisable {
+        if is_synthesizable {
             None
         } else {
             Some(measurements)
@@ -769,7 +769,7 @@ mod sdf_size_units_tests {
     /// (serde default → `None`) and the accessor synthesizes a pure-voxel measurement from
     /// `size_voxels`.
     #[test]
-    fn serde_back_compat_synthesises_measurements_from_voxels() {
+    fn serde_back_compat_synthesizes_measurements_from_voxels() {
         let old_json = r#"{ "kind": "Box", "size_voxels": [83, 17, 80], "wall_blocks": 1 }"#;
         let restored: SdfShape =
             serde_json::from_str(old_json).expect("old shape without size_measurements must load");
