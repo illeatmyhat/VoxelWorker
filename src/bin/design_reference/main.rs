@@ -40,6 +40,10 @@ struct Reference {
     bridge: EguiPaintBridge,
     egui_winit_state: egui_winit::State,
     sheet: sheet::Sheet,
+    /// Where `--capture` should write, if it was asked for.
+    capture: Option<String>,
+    /// Frames drawn so far — `--capture` waits for the scroll to settle before reading back.
+    frames: u32,
 }
 
 impl Reference {
@@ -94,6 +98,8 @@ impl Reference {
             bridge,
             egui_winit_state,
             sheet: sheet::Sheet::scrolled_to(scroll_from_args()),
+            capture: capture_from_args(),
+            frames: 0,
         }
     }
 
@@ -106,7 +112,16 @@ impl Reference {
     }
 
     /// Draw one frame: run the sheet's egui pass and present it.
+    ///
+    /// Under `--capture` the same pass targets an owned texture instead of the swapchain, which
+    /// is read back to a PNG. Nothing about the drawing changes — same style, same tessellation,
+    /// same sRGB target — so the file is what the window would have shown, and the sheet can
+    /// finally be checked without a human looking at a screen.
     fn render(&mut self) {
+        if self.capture.is_some() {
+            self.render_to_file();
+            return;
+        }
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -221,7 +236,177 @@ impl Reference {
             self.bridge.renderer.free_texture(texture_id);
         }
     }
+
+    /// One offscreen frame, written to `--capture`'s path once the scroll has settled.
+    ///
+    /// The first frames are drawn and thrown away on purpose: `--scroll` clamps its offset
+    /// against a content height that only exists after a layout pass, so a capture taken on
+    /// frame one lands at the top of the sheet however far down it was asked to go.
+    fn render_to_file(&mut self) {
+        self.frames += 1;
+
+        let raw_input = self.egui_winit_state.take_egui_input(&self.window);
+        let pixels_per_point = self.egui_winit_state.egui_ctx().pixels_per_point();
+        self.bridge
+            .context
+            .all_styles_mut(ui::theme::apply_app_style);
+        let sheet = &mut self.sheet;
+        let full_output = self.bridge.context.run_ui(raw_input, |ui| sheet.show(ui));
+
+        let (width, height) = (self.surface_config.width, self.surface_config.height);
+        let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("design-reference capture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOR_TARGET_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        for (texture_id, image_delta) in &full_output.textures_delta.set {
+            self.bridge.renderer.update_texture(
+                &self.gpu.device,
+                &self.gpu.queue,
+                *texture_id,
+                image_delta,
+            );
+        }
+        let paint_jobs = self
+            .bridge
+            .context
+            .tessellate(full_output.shapes, pixels_per_point);
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [width, height],
+            pixels_per_point,
+        };
+
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("design-reference capture frame"),
+            });
+        let upload_commands = self.bridge.renderer.update_buffers(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &mut encoder,
+            &paint_jobs,
+            &screen_descriptor,
+        );
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("design-reference capture pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0018,
+                            g: 0.0022,
+                            b: 0.0028,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.bridge.renderer.render(
+                &mut pass.forget_lifetime(),
+                &paint_jobs,
+                &screen_descriptor,
+            );
+        }
+
+        // A copy row must be 256-byte aligned, so the buffer is padded and the padding is
+        // dropped again when the rows are re-assembled below.
+        let unpadded = width * 4;
+        let padded = unpadded.div_ceil(256) * 256;
+        let readback = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("design-reference readback"),
+            size: u64::from(padded) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.gpu
+            .queue
+            .submit(upload_commands.into_iter().chain(Some(encoder.finish())));
+
+        for texture_id in &full_output.textures_delta.free {
+            self.bridge.renderer.free_texture(texture_id);
+        }
+
+        // Draw the settle frames, but only read back and write on the last one.
+        if self.frames <= SCROLL_SETTLE_FRAMES {
+            self.window.request_redraw();
+            return;
+        }
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |result| {
+            result.expect("failed to map the readback buffer");
+        });
+        self.gpu
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("failed to wait for the capture copy");
+
+        let mapped = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((unpadded * height) as usize);
+        for row in 0..height {
+            let start = (row * padded) as usize;
+            pixels.extend_from_slice(&mapped[start..start + unpadded as usize]);
+        }
+        drop(mapped);
+        readback.unmap();
+
+        let path = self.capture.clone().expect("capture path");
+        image::RgbaImage::from_raw(width, height, pixels)
+            .expect("readback did not fill the image")
+            .save(&path)
+            .unwrap_or_else(|error| panic!("failed to write {path}: {error}"));
+        println!("wrote {path} ({width}x{height})");
+        std::process::exit(0);
+    }
 }
+
+/// How many frames `--capture` draws before reading back. Must clear [`SCROLL_SETTLE_FRAMES`].
+const SCROLL_SETTLE_FRAMES: u32 = 3;
 
 /// The winit pump. The window is created lazily on `resumed`, as winit 0.30 requires.
 #[derive(Default)]
@@ -295,6 +480,14 @@ fn scroll_from_args() -> f32 {
         .and_then(|pair| pair[1].parse::<f32>().ok())
         .filter(|offset| *offset >= 0.0)
         .unwrap_or(0.0)
+}
+
+/// Read `--capture <path>`: render one settled frame to a PNG and exit, instead of presenting.
+fn capture_from_args() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|pair| pair[0] == "--capture")
+        .map(|pair| pair[1].clone())
 }
 
 fn main() {
