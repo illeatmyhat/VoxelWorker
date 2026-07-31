@@ -252,7 +252,7 @@ fn rgba(r: f32, g: f32, b: f32) -> [u8; 4] {
 }
 
 /// Stone: 32×32 gray ~rgb(132,126,118) with ±20 per-pixel noise + darker speckles.
-/// Port of `makeStone` (chisel-bench-reference.html).
+/// Port of the browser prototype's `makeStone`.
 fn generate_stone_texture() -> Vec<u8> {
     let mut rng = Lcg::new(0x5701_3a9f);
     let count = (MATERIAL_TEXTURE_SIZE * MATERIAL_TEXTURE_SIZE) as usize;
@@ -277,7 +277,7 @@ fn generate_stone_texture() -> Vec<u8> {
 }
 
 /// Wood: 32×32 brown base with a horizontal sine grain + per-pixel noise.
-/// Port of `makeWood` (chisel-bench-reference.html).
+/// Port of the browser prototype's `makeWood`.
 fn generate_wood_texture() -> Vec<u8> {
     let mut rng = Lcg::new(0x00c0_ffee);
     let mut pixels =

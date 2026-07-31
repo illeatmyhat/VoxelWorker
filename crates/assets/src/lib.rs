@@ -26,7 +26,7 @@
 //! The chiselable filter + variant grouping (the ALLOW / EXCLUDE lists, the
 //! "anything under a `/rock/` segment" accept, the trailing-digit group key and
 //! Title-Case label) are transcribed from the browser prototype's
-//! `isChiselable` / `scanBlocks` / `prettify` (chisel-bench-reference.html) into
+//! `isChiselable` / `scanBlocks` / `prettify` into
 //! [`is_chiselable`] / [`group_block_textures`] / [`prettify_label`] below.
 
 // A public item's doc may link to a private helper to explain how the two relate; that

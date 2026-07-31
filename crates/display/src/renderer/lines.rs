@@ -4,8 +4,8 @@
 
 use super::*;
 
-/// Grid overlay tuning, transcribed from the prototype `GRID` uniforms
-/// (chisel-bench-reference.html). Half-widths are in voxel units (the overlay is
+/// Grid overlay tuning, transcribed from the browser prototype's `GRID`
+/// uniforms. Half-widths are in voxel units (the overlay is
 /// computed from absolute voxel position), alphas are blend strengths, and the
 /// colors are the sRGB hex line colors (`docs/design/color-vocabulary.md`).
 pub(crate) const VOXEL_LINE_HALF_WIDTH: f32 = 0.05;

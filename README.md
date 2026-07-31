@@ -97,6 +97,6 @@ checking, Verus, Lean) for the wgpu-free crates. They are not part of the cargo 
 ## Provenance
 
 The tool concept appears as "Chisel Bench" in the earliest design notes. It began as a Rust port
-of a three.js browser prototype (`chisel-bench-reference.html`, kept for reference) — the native
+of a three.js browser prototype — the native
 port existed to read the VS asset folder directly, which the browser File System Access sandbox
 blocks for `%APPDATA%`. The engine has since diverged completely from that prototype.
