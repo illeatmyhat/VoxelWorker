@@ -1,6 +1,8 @@
 # ADR 0021 — Noise as a bounded field operation
 
-- **Status:** Accepted (2026-07-18 — design grill; **implementation not started**). Builds on
+- **Status:** Accepted (2026-07-18 — design grill; **implementation not started**).
+  **Amended 2026-07-31: SHIPPED** — the cloud classifies a cell from puff geometry with no
+  noise evaluation, and answers `None` for its field. Builds on
   ADR 0019 (the field layer) and ADR 0020 (the field trait). **Corrects a premise of ADR 0020
   Decision 1**: `DebugCloudField` is not fieldless, and the `Option` on `as_field` rests on
   freehand sculpt rather than on this producer.

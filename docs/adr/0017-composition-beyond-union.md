@@ -2,7 +2,8 @@
 
 - **Status:** Accepted (2026-07-15 — design grill + two prior-art study rounds,
   `docs/design/csg-prior-art-study.md`; **implementation not started** — epic #72,
-  slices #73–#77). Supersedes, in
+  slices #73–#77). **Amended 2026-07-31: SHIPPED** — the ordered fold, sealed scopes and
+  operand x-ray ghosts are the live composition path. Supersedes, in
   part, ADR 0003: the §1 *assembly-scoped override layers* seam is retired unbuilt
   (junctions are parts, nothing patches the composed result), and the §3b per-part
   `Vec<Layer>` stack is not adopted — composition stays node-granular on the scene graph,
