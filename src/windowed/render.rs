@@ -367,6 +367,7 @@ impl WindowedState {
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
+            self.polygon_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -379,6 +380,7 @@ impl WindowedState {
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
+            self.polygon_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1685,6 +1687,18 @@ impl WindowedState {
         ) {
             return true;
         }
+        let polygon_kind = polygon_kind(self.panel_state.sketch_tool);
+        self.polygon_gesture.retain_for_context(
+            polygon_kind,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self
+            .polygon_gesture
+            .blocks_enter(polygon_kind, self.panel_state.armed_constraint.is_some())
+        {
+            return true;
+        }
         let tangent_producer = self
             .panel_state
             .sketch_mode
@@ -1786,6 +1800,31 @@ impl WindowedState {
         if let three_point_rectangle::ThreePointRectangleEdit::Document(next) = self
             .three_point_rectangle_gesture
             .click(target, &producer, resolved)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance the active regular-polygon grammar. Its construction picks remain transient;
+    /// the final click authors the complete closed loop as one undoable edit.
+    pub(super) fn sketch_polygon_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(kind) = polygon_kind(self.panel_state.sketch_tool) else {
+            self.polygon_gesture.reset();
+            return;
+        };
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.polygon_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.polygon_gesture.reset();
+            return;
+        };
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        let sides = normalized_polygon_sides(self.panel_state.sketch_polygon_sides);
+        if let polygon::PolygonEdit::Document(next) = self
+            .polygon_gesture
+            .click(target, kind, &producer, resolved, sides)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2175,6 +2214,7 @@ impl WindowedState {
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
+            self.polygon_gesture.reset();
             self.sketch_edit_press = false;
             return false;
         }
@@ -2230,6 +2270,10 @@ impl WindowedState {
             self.panel_state.sketch_tool == ui::panel::SketchTool::Rectangle3Point,
             self.panel_state.armed_constraint.is_some(),
         );
+        let polygon_live = self.polygon_gesture.cancel_for_escape(
+            polygon_kind(self.panel_state.sketch_tool),
+            self.panel_state.armed_constraint.is_some(),
+        );
         let live = constraint_picks
             || line_live
             || midpoint_line_live
@@ -2237,6 +2281,7 @@ impl WindowedState {
             || tangent_arc_live
             || point_circle_live
             || three_point_rectangle_live
+            || polygon_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2275,6 +2320,7 @@ impl WindowedState {
         self.center_arc_gesture.reset();
         self.point_circle_gesture.reset();
         self.three_point_rectangle_gesture.reset();
+        self.polygon_gesture.reset();
         true
     }
 
@@ -2328,6 +2374,7 @@ impl WindowedState {
                     self.center_arc_gesture.reset();
                     self.point_circle_gesture.reset();
                     self.three_point_rectangle_gesture.reset();
+                    self.polygon_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2340,6 +2387,7 @@ impl WindowedState {
                     self.center_arc_gesture.reset();
                     self.point_circle_gesture.reset();
                     self.three_point_rectangle_gesture.reset();
+                    self.polygon_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -3243,6 +3291,7 @@ impl WindowedState {
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
+            self.polygon_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3263,6 +3312,7 @@ impl WindowedState {
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
+            self.polygon_gesture.reset();
             return;
         };
 
@@ -3292,6 +3342,11 @@ impl WindowedState {
         );
         self.three_point_rectangle_gesture.retain_for_context(
             tool == ui::panel::SketchTool::Rectangle3Point,
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
+        self.polygon_gesture.retain_for_context(
+            polygon_kind(tool),
             self.panel_state.armed_constraint.is_some(),
             Some(target),
         );
@@ -3462,7 +3517,10 @@ impl WindowedState {
             | ui::panel::SketchTool::ArcCenterEndpoints
             | ui::panel::SketchTool::CircleCenterDiameter
             | ui::panel::SketchTool::Circle2Point
-            | ui::panel::SketchTool::Circle3Point => None,
+            | ui::panel::SketchTool::Circle3Point
+            | ui::panel::SketchTool::PolygonInscribed
+            | ui::panel::SketchTool::PolygonCircumscribed
+            | ui::panel::SketchTool::PolygonEdge => None,
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -3984,6 +4042,47 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::PolygonInscribed
+            | ui::panel::SketchTool::PolygonCircumscribed
+            | ui::panel::SketchTool::PolygonEdge => {
+                if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
+                    polygon_kind(tool),
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                ) {
+                    let cursor = self.sketch_target_at(cursor_x, cursor_y);
+                    let sides = normalized_polygon_sides(self.panel_state.sketch_polygon_sides);
+                    let ring = cursor.and_then(|cursor| {
+                        self.polygon_gesture
+                            .placement(target, kind, &producer, cursor, sides)
+                            .map(|placement| {
+                                let mut ring: Vec<[f64; 2]> = placement
+                                    .vertices
+                                    .iter()
+                                    .map(document::sketch::SketchPoint::in_plane)
+                                    .collect();
+                                ring.push(placement.vertices[0].in_plane());
+                                ring
+                            })
+                            .or_else(|| {
+                                self.polygon_gesture.guide(target, kind).and_then(
+                                    |(first, second)| {
+                                        second
+                                            .is_none()
+                                            .then_some(vec![first.in_plane(), cursor.at.in_plane()])
+                                    },
+                                )
+                            })
+                    });
+                    if let Some(ring) = ring {
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -4079,7 +4178,39 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::ThreePointArc
         | ui::panel::SketchTool::ArcCenterEndpoints
         | ui::panel::SketchTool::ArcTangent
-        | ui::panel::SketchTool::CircleCenterDiameter => None,
+        | ui::panel::SketchTool::CircleCenterDiameter
+        | ui::panel::SketchTool::PolygonInscribed
+        | ui::panel::SketchTool::PolygonCircumscribed
+        | ui::panel::SketchTool::PolygonEdge => None,
+    }
+}
+
+const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKind> {
+    match tool {
+        ui::panel::SketchTool::PolygonInscribed => Some(polygon::PolygonKind::Inscribed),
+        ui::panel::SketchTool::PolygonCircumscribed => Some(polygon::PolygonKind::Circumscribed),
+        ui::panel::SketchTool::PolygonEdge => Some(polygon::PolygonKind::Edge),
+        ui::panel::SketchTool::Select
+        | ui::panel::SketchTool::AddPoint
+        | ui::panel::SketchTool::Line
+        | ui::panel::SketchTool::MidpointLine
+        | ui::panel::SketchTool::Rectangle
+        | ui::panel::SketchTool::Rectangle3Point
+        | ui::panel::SketchTool::RectangleCenterCorner
+        | ui::panel::SketchTool::ThreePointArc
+        | ui::panel::SketchTool::ArcCenterEndpoints
+        | ui::panel::SketchTool::ArcTangent
+        | ui::panel::SketchTool::CircleCenterDiameter
+        | ui::panel::SketchTool::Circle2Point
+        | ui::panel::SketchTool::Circle3Point => None,
+    }
+}
+
+const fn normalized_polygon_sides(sides: u16) -> u16 {
+    if sides >= 3 && sides <= 128 {
+        sides
+    } else {
+        6
     }
 }
 

@@ -332,6 +332,12 @@ pub enum SketchTool {
     Circle2Point,
     /// Draw the unique circle through three circumference points.
     Circle3Point,
+    /// Draw a regular polygon whose vertices lie on the authored center-radius circle.
+    PolygonInscribed,
+    /// Draw a regular polygon whose edge midpoints lie on the authored center-apothem circle.
+    PolygonCircumscribed,
+    /// Draw a regular polygon from one edge and a third pick selecting the body side.
+    PolygonEdge,
 }
 
 /// The floating Signal **display stack**'s viewer state.
@@ -626,6 +632,11 @@ pub struct PanelState {
     /// with the same tool in hand.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
+    /// Side count used by all regular-polygon creation tools. Values outside `3..=128` are
+    /// normalized to the six-sided default at the interaction seam, which keeps older session
+    /// artifacts (where this field is absent and therefore zero) deterministic.
+    #[snapshot(session)]
+    pub sketch_polygon_sides: u16,
     /// The armed **constraint** and the entities picked for it so far.
     ///
     /// Held apart from [`sketch_tool`](Self::sketch_tool) rather than joining its enum, because

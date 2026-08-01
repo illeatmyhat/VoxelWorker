@@ -32,6 +32,7 @@ mod edits;
 mod extrude;
 mod field;
 mod parametric;
+mod polygons;
 mod region_memo;
 mod regions;
 mod revolve;

@@ -175,6 +175,26 @@ pub struct RectanglePlacement {
     pub corners: [SketchPoint; 4],
 }
 
+/// Why a regular polygon could not be appended atomically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolygonRefusal {
+    /// The continuous construction or side count is invalid.
+    Candidate(parametric::sketch::PolygonCandidateError),
+    /// A solved vertex cannot be represented distinctly in canonical storage.
+    Unrepresentable,
+    /// The polygon would add no new boundary edge.
+    AlreadyExists,
+}
+
+/// Canonical regular-polygon geometry shared by preview and commit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolygonPlacement {
+    /// Boundary vertices in traversal order.
+    pub vertices: Vec<SketchPoint>,
+    /// Canonical geometric center; a construction input rather than a persisted freedom.
+    pub center: SketchPoint,
+}
+
 /// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
 /// Radius and center stay derived curve data; the persisted arc remains its endpoint ids plus
 /// intrinsic sweep.

@@ -664,6 +664,112 @@ impl SketchSolid {
             .ok_or(RectangleRefusal::AlreadyExists)
     }
 
+    /// Resolve an inscribed regular polygon without allocation.
+    pub fn inscribed_polygon_placement(
+        &self,
+        center: SketchPoint,
+        radius_point: SketchPoint,
+        sides: u16,
+    ) -> Result<PolygonPlacement, PolygonRefusal> {
+        let candidate = parametric::sketch::centered_polygon_candidate(
+            parametric::sketch::CenteredPolygonKind::Inscribed,
+            center.in_plane(),
+            radius_point.in_plane(),
+            sides,
+        )
+        .map_err(PolygonRefusal::Candidate)?;
+        canonical_polygon(candidate)
+    }
+
+    /// Resolve a circumscribed regular polygon without allocation.
+    pub fn circumscribed_polygon_placement(
+        &self,
+        center: SketchPoint,
+        apothem_point: SketchPoint,
+        sides: u16,
+    ) -> Result<PolygonPlacement, PolygonRefusal> {
+        let candidate = parametric::sketch::centered_polygon_candidate(
+            parametric::sketch::CenteredPolygonKind::Circumscribed,
+            center.in_plane(),
+            apothem_point.in_plane(),
+            sides,
+        )
+        .map_err(PolygonRefusal::Candidate)?;
+        canonical_polygon(candidate)
+    }
+
+    /// Resolve an edge-defined regular polygon without allocation.
+    pub fn edge_polygon_placement(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+        side_point: SketchPoint,
+        sides: u16,
+    ) -> Result<PolygonPlacement, PolygonRefusal> {
+        let candidate = parametric::sketch::edge_polygon_candidate(
+            first.in_plane(),
+            second.in_plane(),
+            side_point.in_plane(),
+            sides,
+        )
+        .map_err(PolygonRefusal::Candidate)?;
+        canonical_polygon(candidate)
+    }
+
+    pub fn with_inscribed_polygon(
+        &self,
+        center: SketchPoint,
+        radius_point: SketchPoint,
+        sides: u16,
+    ) -> Result<SketchSolid, PolygonRefusal> {
+        self.inscribed_polygon_placement(center, radius_point, sides)
+            .and_then(|placement| self.with_polygon_placement(&placement))
+    }
+
+    pub fn with_circumscribed_polygon(
+        &self,
+        center: SketchPoint,
+        apothem_point: SketchPoint,
+        sides: u16,
+    ) -> Result<SketchSolid, PolygonRefusal> {
+        self.circumscribed_polygon_placement(center, apothem_point, sides)
+            .and_then(|placement| self.with_polygon_placement(&placement))
+    }
+
+    pub fn with_edge_polygon(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+        side_point: SketchPoint,
+        sides: u16,
+    ) -> Result<SketchSolid, PolygonRefusal> {
+        self.edge_polygon_placement(first, second, side_point, sides)
+            .and_then(|placement| self.with_polygon_placement(&placement))
+    }
+
+    fn with_polygon_placement(
+        &self,
+        placement: &PolygonPlacement,
+    ) -> Result<SketchSolid, PolygonRefusal> {
+        let mut next = self.clone();
+        let ids: Vec<EntityId> = placement
+            .vertices
+            .iter()
+            .map(|&vertex| {
+                next.sketch
+                    .point_at(vertex)
+                    .unwrap_or_else(|| next.sketch.add_free_point(vertex))
+            })
+            .collect();
+        for index in 0..ids.len() {
+            next.sketch
+                .connect(ids[index], ids[(index + 1) % ids.len()]);
+        }
+        (next != *self)
+            .then_some(next)
+            .ok_or(PolygonRefusal::AlreadyExists)
+    }
+
     /// This producer with the point `point_id` deleted, CASCADING to its incident segments:
     /// deleting a point removes its edges and nothing else, and does NOT reclose the loop.
     /// No-op if `point_id` is unknown. Pure — returns a new producer. A loop that
@@ -1331,6 +1437,28 @@ fn canonical_rectangle(
         return Err(RectangleRefusal::Unrepresentable);
     }
     Ok(RectanglePlacement { corners })
+}
+
+fn canonical_polygon(
+    candidate: parametric::sketch::PolygonCandidate,
+) -> Result<PolygonPlacement, PolygonRefusal> {
+    let center = SketchPoint::try_from_continuous(candidate.center[0], candidate.center[1])
+        .map_err(|_| PolygonRefusal::Unrepresentable)?;
+    let vertices: Vec<SketchPoint> = candidate
+        .vertices
+        .into_iter()
+        .map(|vertex| SketchPoint::try_from_continuous(vertex[0], vertex[1]))
+        .collect::<Result<_, _>>()
+        .map_err(|_| PolygonRefusal::Unrepresentable)?;
+    if vertices.len() < 3
+        || vertices
+            .iter()
+            .enumerate()
+            .any(|(index, vertex)| vertex.coincides(&vertices[(index + 1) % vertices.len()]))
+    {
+        return Err(PolygonRefusal::Unrepresentable);
+    }
+    Ok(PolygonPlacement { vertices, center })
 }
 
 impl SketchSolid {

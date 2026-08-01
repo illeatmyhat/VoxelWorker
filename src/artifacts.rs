@@ -138,6 +138,13 @@ enum SketchToolConfig {
     CircleCenterDiameter,
     Circle2Point,
     Circle3Point,
+    PolygonInscribed,
+    PolygonCircumscribed,
+    PolygonEdge,
+}
+
+const fn default_sketch_polygon_sides() -> u16 {
+    6
 }
 
 /// The persisted form of an armed constraint gesture.
@@ -426,6 +433,9 @@ pub struct SessionArtifact {
     /// `Select`.
     #[serde(default, with = "SketchToolConfig")]
     pub sketch_tool: SketchTool,
+    /// Polygon tool side count; six is the compatibility default for older dumps.
+    #[serde(default = "default_sketch_polygon_sides")]
+    pub sketch_polygon_sides: u16,
     /// The armed constraint gesture and its picks so far. A pre-field
     /// dump degrades to `None` — nothing armed.
     #[serde(default)]
@@ -519,6 +529,8 @@ impl DocumentArtifact {
             sketch_mode: _,
             // Declined — session state. Which sketch tool was armed is where they stopped too.
             sketch_tool: _,
+            // Declined — session state. The polygon side count is an active tool option.
+            sketch_polygon_sides: _,
             // Declined — an unfinished constraint gesture is the very definition of where
             // somebody stopped.
             armed_constraint: _,
@@ -591,6 +603,7 @@ impl Dump {
             placement_snap,
             sketch_mode,
             sketch_tool,
+            sketch_polygon_sides,
             armed_constraint,
             sketch_snap,
             selection,
@@ -634,6 +647,7 @@ impl Dump {
                 placement_snap: *placement_snap,
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
+                sketch_polygon_sides: *sketch_polygon_sides,
                 armed_constraint: armed_constraint
                     .as_ref()
                     .map(ArmedConstraintConfig::capture),
@@ -689,6 +703,7 @@ impl Dump {
             placement_snap: session.placement_snap,
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
+            sketch_polygon_sides: session.sketch_polygon_sides.clamp(3, 128),
             armed_constraint: session
                 .armed_constraint
                 .as_ref()
@@ -892,6 +907,8 @@ mod tests {
             sketch_mode: Some(document::scene::NodeId(9)),
             // Off its default (CircleCenterDiameter, not Select) for the same reason.
             sketch_tool: SketchTool::CircleCenterDiameter,
+            // Off its default so the active polygon option is covered by persistence.
+            sketch_polygon_sides: 9,
             armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
                 ui::panel::ConstraintVerb::Fix,
                 vec![ui::panel::SketchEntity::Point(7)],
@@ -1053,6 +1070,27 @@ mod tests {
                     .sketch_tool,
                 tool
             );
+        }
+    }
+
+    #[test]
+    fn polygon_tools_and_side_count_survive_both_sides_of_the_session_shim() {
+        for tool in [
+            SketchTool::PolygonInscribed,
+            SketchTool::PolygonCircumscribed,
+            SketchTool::PolygonEdge,
+        ] {
+            let mut state = distinctive_state();
+            state.sketch_tool = tool;
+            state.sketch_polygon_sides = 17;
+            let json = Dump::from_state(&state)
+                .to_json()
+                .expect("serialize polygon session");
+            let restored = Dump::from_json(&json)
+                .expect("deserialize polygon session")
+                .into_state();
+            assert_eq!(restored.sketch_tool, tool);
+            assert_eq!(restored.sketch_polygon_sides, 17);
         }
     }
 

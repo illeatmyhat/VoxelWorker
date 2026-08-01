@@ -233,6 +233,7 @@ fn arbitrary_config(rng: &mut Lcg, scene: Option<Scene>) -> AppConfig {
             SketchTool::Line,
             SketchTool::Rectangle,
         ]),
+        sketch_polygon_sides: rng.pick(&[3, 6, 11, 128]),
         armed_constraint: rng.flag().then(|| {
             ArmedConstraint::from_parts(
                 rng.pick(&[ConstraintVerb::HorizontalOrVertical, ConstraintVerb::Fix]),

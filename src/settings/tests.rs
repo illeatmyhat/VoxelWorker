@@ -78,6 +78,8 @@ fn config_round_trips_through_json() {
         sketch_mode: Some(document::scene::NodeId(9)),
         // Non-default (not Select) so the round-trip exercises the armed sketch tool (#95).
         sketch_tool: ui::panel::SketchTool::CircleCenterDiameter,
+        // Non-default so polygon tool configuration is exercised too.
+        sketch_polygon_sides: 11,
         armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
             ui::panel::ConstraintVerb::HorizontalOrVertical,
             vec![ui::panel::SketchEntity::Segment(11)],
@@ -119,6 +121,7 @@ fn the_session_survives_a_relaunch_through_the_panel_and_back() {
         pivot: ui::panel::PlacementPivot::VolumetricCenter,
     };
     panel.sketch_snap = ui::panel::PositionSnap::NoSnap;
+    panel.sketch_polygon_sides = 13;
 
     let config = AppConfig::capture(
         &panel,
@@ -140,6 +143,7 @@ fn the_session_survives_a_relaunch_through_the_panel_and_back() {
         restored.sketch_snap, panel.sketch_snap,
         "the sketch snap survives relaunch (#96)"
     );
+    assert_eq!(restored.sketch_polygon_sides, 13);
 }
 
 /// The other direction of the same promise: a dump written before the session category

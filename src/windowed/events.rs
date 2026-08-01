@@ -25,7 +25,10 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::CircleCenterDiameter
         | ui::panel::SketchTool::Circle2Point
         | ui::panel::SketchTool::Circle3Point
-        | ui::panel::SketchTool::Rectangle3Point => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::Rectangle3Point
+        | ui::panel::SketchTool::PolygonInscribed
+        | ui::panel::SketchTool::PolygonCircumscribed
+        | ui::panel::SketchTool::PolygonEdge => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
         ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
             SketchPointerRoute::RectangleDrag
@@ -348,6 +351,11 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::Rectangle3Point => {
                                         state.sketch_three_point_rectangle_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::PolygonInscribed
+                                    | ui::panel::SketchTool::PolygonCircumscribed
+                                    | ui::panel::SketchTool::PolygonEdge => {
+                                        state.sketch_polygon_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::MidpointLine => {
                                         state.sketch_midpoint_line_click(up_x, up_y);
@@ -810,6 +818,16 @@ mod tests {
             sketch_pointer_route(ui::panel::SketchTool::Rectangle3Point),
             SketchPointerRoute::StationaryEdit
         );
+        for tool in [
+            ui::panel::SketchTool::PolygonInscribed,
+            ui::panel::SketchTool::PolygonCircumscribed,
+            ui::panel::SketchTool::PolygonEdge,
+        ] {
+            assert_eq!(
+                sketch_pointer_route(tool),
+                SketchPointerRoute::StationaryEdit
+            );
+        }
         assert_eq!(
             sketch_pointer_route(ui::panel::SketchTool::RectangleCenterCorner),
             SketchPointerRoute::RectangleDrag

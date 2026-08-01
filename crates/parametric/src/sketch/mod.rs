@@ -8,6 +8,7 @@ mod circle;
 mod curve;
 mod midpoint_line;
 mod model;
+mod polygon;
 mod rectangle;
 mod solve;
 mod symmetry;
@@ -24,6 +25,10 @@ pub use midpoint_line::{
     midpoint_line_candidate, MidpointLineCandidate, MidpointLineCandidateError,
 };
 pub use model::{SolveOutcome, SolveReport};
+pub use polygon::{
+    centered_polygon_candidate, edge_polygon_candidate, CenteredPolygonKind, PolygonCandidate,
+    PolygonCandidateError,
+};
 pub use rectangle::{
     center_rectangle_candidate, three_point_rectangle_candidate, RectangleCandidate,
     RectangleCandidateError,

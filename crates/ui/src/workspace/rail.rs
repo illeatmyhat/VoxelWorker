@@ -136,6 +136,21 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         "3-Point Circle — click three circumference points",
         Some(SketchTool::Circle3Point),
     ),
+    (
+        Icon::PolygonInscribed,
+        "Inscribed Polygon — click center, then a vertex",
+        Some(SketchTool::PolygonInscribed),
+    ),
+    (
+        Icon::PolygonCircumscribed,
+        "Circumscribed Polygon — click center, then an edge midpoint",
+        Some(SketchTool::PolygonCircumscribed),
+    ),
+    (
+        Icon::PolygonEdge,
+        "Edge Polygon — click edge endpoints, then choose the body side",
+        Some(SketchTool::PolygonEdge),
+    ),
 ];
 
 /// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch
@@ -262,6 +277,22 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
             }
             None => sketch_cell(ui, icon, tip, false, true),
         }
+    }
+    if matches!(
+        state.sketch_tool,
+        SketchTool::PolygonInscribed | SketchTool::PolygonCircumscribed | SketchTool::PolygonEdge
+    ) {
+        if !(3..=128).contains(&state.sketch_polygon_sides) {
+            state.sketch_polygon_sides = 6;
+        }
+        ui.horizontal(|ui| {
+            ui.label("Sides");
+            ui.add(
+                egui::DragValue::new(&mut state.sketch_polygon_sides)
+                    .range(3..=128)
+                    .speed(0.1),
+            );
+        });
     }
     rail_heading(ui, "Snap");
     for &(icon, tip, snap) in SKETCH_SNAPS {
@@ -571,6 +602,29 @@ mod tests {
                     (_, _, Some(SketchTool::CircleCenterDiameter)),
                     (Icon::Circle2Point, _, Some(SketchTool::Circle2Point)),
                     (Icon::Circle3Point, _, Some(SketchTool::Circle3Point))
+                ]
+            )
+        }));
+    }
+
+    #[test]
+    fn sketch_rail_groups_all_polygon_grammars_after_circles() {
+        assert!(SKETCH_TOOLS.windows(4).any(|items| {
+            matches!(
+                items,
+                [
+                    (_, _, Some(SketchTool::Circle3Point)),
+                    (
+                        Icon::PolygonInscribed,
+                        _,
+                        Some(SketchTool::PolygonInscribed)
+                    ),
+                    (
+                        Icon::PolygonCircumscribed,
+                        _,
+                        Some(SketchTool::PolygonCircumscribed)
+                    ),
+                    (Icon::PolygonEdge, _, Some(SketchTool::PolygonEdge))
                 ]
             )
         }));
