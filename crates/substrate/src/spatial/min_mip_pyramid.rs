@@ -281,7 +281,7 @@ mod tests {
 
         // Sorted strictly ascending + unique.
         assert!(
-            level.cell_keys.windows(2).all(|pair| pair[0] < pair[1]),
+            level.cell_keys.array_windows::<2>().all(|pair| pair[0] < pair[1]),
             "cell keys must be strictly ascending and unique"
         );
 
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(pyramid.levels[0].cell_edge, 1);
 
         // Monotone non-increasing cell count as the edge grows.
-        for pair in pyramid.levels.windows(2) {
+        for pair in pyramid.levels.array_windows::<2>() {
             assert!(
                 pair[1].cell_keys.len() <= pair[0].cell_keys.len(),
                 "a coarser level cannot hold more cells than a finer one"

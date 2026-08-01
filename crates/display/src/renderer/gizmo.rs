@@ -138,7 +138,7 @@ fn gizmo_vertices() -> Vec<LineVertex> {
     let s = square_side;
     // Square line-loops (closed) in the XY, YZ and ZX planes (prototype `sq`).
     let loop_segments = |points: &[[f32; 3]], color: [f32; 4], out: &mut Vec<LineVertex>| {
-        for pair in points.windows(2) {
+        for pair in points.array_windows::<2>() {
             out.push(LineVertex {
                 position: pair[0],
                 color,

@@ -459,7 +459,7 @@ fn window_size_from_args() -> (f64, f64) {
     let mut width = 1280.0;
     let mut height = 900.0;
     let args: Vec<String> = std::env::args().collect();
-    for pair in args.windows(2) {
+    for pair in args.array_windows::<2>() {
         let value = pair[1].parse::<f64>().ok();
         match (pair[0].as_str(), value) {
             ("--width", Some(v)) if v >= 480.0 => width = v,
@@ -475,7 +475,7 @@ fn window_size_from_args() -> (f64, f64) {
 /// part-way down. It is one-shot — the wheel still works afterwards.
 fn scroll_from_args() -> f32 {
     let args: Vec<String> = std::env::args().collect();
-    args.windows(2)
+    args.array_windows::<2>()
         .find(|pair| pair[0] == "--scroll")
         .and_then(|pair| pair[1].parse::<f32>().ok())
         .filter(|offset| *offset >= 0.0)
@@ -485,7 +485,7 @@ fn scroll_from_args() -> f32 {
 /// Read `--capture <path>`: render one settled frame to a PNG and exit, instead of presenting.
 fn capture_from_args() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
-    args.windows(2)
+    args.array_windows::<2>()
         .find(|pair| pair[0] == "--capture")
         .map(|pair| pair[1].clone())
 }

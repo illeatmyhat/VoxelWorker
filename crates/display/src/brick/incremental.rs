@@ -484,7 +484,7 @@ impl IncrementalBrickField {
             .sort_unstable_by_key(|record| record.packed_world_block_key);
         debug_assert!(
             self.records
-                .windows(2)
+                .array_windows::<2>()
                 .all(|pair| pair[0].packed_world_block_key < pair[1].packed_world_block_key),
             "brick keys must stay unique + sorted after an incremental merge"
         );

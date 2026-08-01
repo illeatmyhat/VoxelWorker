@@ -297,7 +297,7 @@ impl<'a> IconPainter<'a> {
     /// Trace a polyline in a given stroke.
     pub fn line_with(&self, points: &[(f32, f32)], stroke: Stroke) {
         let mapped: Vec<Pos2> = points.iter().map(|&(x, y)| self.at(x, y)).collect();
-        for pair in mapped.windows(2) {
+        for pair in mapped.array_windows::<2>() {
             self.painter.line_segment([pair[0], pair[1]], stroke);
         }
     }
@@ -415,7 +415,7 @@ impl<'a> IconPainter<'a> {
         // Below about half a pixel the rhythm cannot resolve on screen — a solid line is what
         // it would read as anyway — and refusing it keeps the dash count below bounded.
         if period < 0.5 {
-            for pair in points.windows(2) {
+            for pair in points.array_windows::<2>() {
                 self.painter.line_segment([pair[0], pair[1]], stroke);
             }
             return;
@@ -423,7 +423,7 @@ impl<'a> IconPainter<'a> {
         // How far into the rhythm this segment begins, wrapped into one period so the
         // arithmetic stays exact however long the path is.
         let mut phase_at_segment_start = 0.0_f32;
-        for pair in points.windows(2) {
+        for pair in points.array_windows::<2>() {
             let span = pair[1] - pair[0];
             let length = span.length();
             if length <= f32::EPSILON {

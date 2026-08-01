@@ -92,7 +92,7 @@ fn tessellation_stays_on_the_circle_within_the_sagitta_tolerance() {
     }
     // Sagitta bound: each chord's midpoint deviates from the circle by at most the
     // versioned tolerance.
-    for pair in ring.windows(2) {
+    for pair in ring.array_windows::<2>() {
         let mid = [
             (pair[0][0] + pair[1][0]) / 2.0,
             (pair[0][1] + pair[1][1]) / 2.0,

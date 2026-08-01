@@ -1285,7 +1285,7 @@ impl WindowedState {
         let mut nearest: Option<(document::sketch::EntityId, f32)> = None;
         for (arc_id, chords) in &self.sketch_arc_chords {
             let Some(distance) = chords
-                .windows(2)
+                .array_windows::<2>()
                 .map(|pair| point_to_segment_distance(cursor, pair[0], pair[1]))
                 .min_by(|a, b| a.total_cmp(b))
             else {
@@ -1618,7 +1618,7 @@ impl WindowedState {
             let hit = match (window, chords.first(), chords.last()) {
                 (true, Some(a), Some(b)) => rect.contains(*a) || rect.contains(*b),
                 (false, _, _) => chords
-                    .windows(2)
+                    .array_windows::<2>()
                     .any(|pair| segment_touches_rect(pair[0], pair[1], rect)),
                 (true, _, _) => false,
             };

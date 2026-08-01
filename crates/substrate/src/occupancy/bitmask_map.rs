@@ -110,7 +110,7 @@ impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
     /// already-sorted input.
     pub fn from_sorted_unique_triples(triples: Vec<(u64, [u32; MASK_WORDS], u32)>) -> Self {
         debug_assert!(
-            triples.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            triples.array_windows::<2>().all(|pair| pair[0].0 < pair[1].0),
             "from_sorted_unique_triples requires keys strictly ascending and unique"
         );
         let mut keys = Vec::with_capacity(triples.len());
@@ -179,7 +179,7 @@ mod tests {
         ]);
 
         assert_eq!(map.keys, vec![10, 50, 90]);
-        assert!(map.keys.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(map.keys.array_windows::<2>().all(|pair| pair[0] < pair[1]));
         // Each mask + fallback rode with its key through the sort.
         assert_eq!(map.masks[0], mask_a);
         assert_eq!(map.fallbacks[0], 10);

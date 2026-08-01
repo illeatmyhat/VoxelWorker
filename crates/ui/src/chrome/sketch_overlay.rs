@@ -118,7 +118,7 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
         Order::Foreground,
         Id::new("sketch_draw_preview"),
     ));
-    for pair in points.windows(2) {
+    for pair in points.array_windows::<2>() {
         gizmos::dashed_segment(&painter, pair[0], pair[1]);
     }
 }
@@ -231,14 +231,14 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleStat
     ));
     let draw = |curve: &[Pos2], state: gizmos::HandleState| {
         if state == gizmos::HandleState::Marked {
-            for pair in curve.windows(2) {
+            for pair in curve.array_windows::<2>() {
                 gizmos::warn_segment(&painter, pair[0], pair[1]);
             }
             if let Some(mid) = curve.get(curve.len() / 2) {
                 gizmos::warn_cross(&painter, *mid);
             }
         } else {
-            for pair in curve.windows(2) {
+            for pair in curve.array_windows::<2>() {
                 gizmos::styled_segment(&painter, pair[0], pair[1], state);
             }
         }

@@ -316,7 +316,7 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
         assert!(
             build
                 .brick_records
-                .windows(2)
+                .array_windows::<2>()
                 .all(|pair| pair[0].packed_world_block_key < pair[1].packed_world_block_key),
             "{}: records must sort strictly ascending",
             case.name

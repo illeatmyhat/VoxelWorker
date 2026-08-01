@@ -133,7 +133,7 @@ pub fn build_brick_field_with_tiles(
     brick_records.par_sort_unstable_by_key(|record| record.packed_world_block_key);
     debug_assert!(
         brick_records
-            .windows(2)
+            .array_windows::<2>()
             .all(|pair| pair[0].packed_world_block_key < pair[1].packed_world_block_key),
         "brick keys must be unique (each world block appears in exactly one chunk)"
     );
@@ -245,7 +245,7 @@ pub fn build_brick_field_all_blocks(
     brick_records.par_sort_unstable_by_key(|record| record.packed_world_block_key);
     debug_assert!(
         brick_records
-            .windows(2)
+            .array_windows::<2>()
             .all(|pair| pair[0].packed_world_block_key < pair[1].packed_world_block_key),
         "brick keys must be unique (each world block appears in exactly one chunk)"
     );

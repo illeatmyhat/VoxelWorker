@@ -114,7 +114,7 @@ fn collect_edge_segments_true_world(slice: &Scene, density: u32, out: &mut Vec<[
             leaf.offset_local_voxels,
         );
         for polyline in polylines {
-            for pair in polyline.windows(2) {
+            for pair in polyline.array_windows::<2>() {
                 for point in pair {
                     out.push(
                         placement
@@ -300,7 +300,7 @@ fn collect_junction_segments_true_world(
             );
             truncated |= outcome.seed_budget_exhausted || outcome.step_budget_exhausted;
             for curve in outcome.curves {
-                for pair in curve.points.windows(2) {
+                for pair in curve.points.array_windows::<2>() {
                     out.push(pair[0].to_array());
                     out.push(pair[1].to_array());
                 }

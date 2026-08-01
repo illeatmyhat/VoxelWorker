@@ -587,7 +587,7 @@ impl RegionEdge {
                     ]
                 };
                 let mut crossings = 0;
-                for piece in cuts.windows(2) {
+                for piece in cuts.array_windows::<2>() {
                     let (entry, exit) = (piece[0], piece[1]);
                     if exit <= entry {
                         continue;

@@ -214,7 +214,7 @@ impl PlanarCurve {
             // leaves the curve closed; it is merely re-seamed there.
             let first = cuts[0];
             let mut pieces = Vec::with_capacity(cuts.len());
-            for window in cuts.windows(2) {
+            for window in cuts.array_windows::<2>() {
                 pieces.push(self.sub_curve(window[0], window[1]));
             }
             pieces.push(self.sub_curve(cuts[cuts.len() - 1], first + 1.0));
