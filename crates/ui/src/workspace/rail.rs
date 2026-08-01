@@ -102,6 +102,11 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         Some(SketchTool::ThreePointArc),
     ),
     (
+        Icon::ArcTangent,
+        "Tangent Arc — click a line/arc endpoint, then the other endpoint",
+        Some(SketchTool::ArcTangent),
+    ),
+    (
         Icon::CircleCenterDiameter,
         "Circle — click center, then perimeter",
         Some(SketchTool::CircleCenterDiameter),
@@ -504,6 +509,23 @@ mod tests {
                         Icon::MidpointLine,
                         "Midpoint Line — click midpoint, then endpoint",
                         Some(SketchTool::MidpointLine)
+                    )
+                ]
+            )
+        }));
+    }
+
+    #[test]
+    fn sketch_rail_places_tangent_arc_after_three_point_arc() {
+        assert!(SKETCH_TOOLS.windows(2).any(|pair| {
+            matches!(
+                pair,
+                [
+                    (_, _, Some(SketchTool::ThreePointArc)),
+                    (
+                        Icon::ArcTangent,
+                        "Tangent Arc — click a line/arc endpoint, then the other endpoint",
+                        Some(SketchTool::ArcTangent)
                     )
                 ]
             )

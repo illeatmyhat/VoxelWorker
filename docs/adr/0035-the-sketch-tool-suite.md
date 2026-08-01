@@ -236,11 +236,13 @@ stored value. Arcs nested through each other's centers are not authorable by any
 a shortcut whose cost is confined to a case that cannot arise is worth taking over a fixed point
 iteration in the residual loop.
 
-**Still unbacked:** Concentric, Tangent and Curvature, which need arcs and circles inside the
-parameter vector — a *radius* is still not something a constraint can name, only a position derived
-from one; Symmetry; and `Quantize`, which is Decision 14's integer tier.
-Their glyphs are drawn on the design sheet and deliberately absent from the rail — an armable verb
-that asserts nothing is worse than a cell that is not there.
+**Implementation update (2026-08-01):** Concentric, Tangent and Symmetry now have solver residuals,
+durable document entities and armable rail gestures. Circular curves are in the parameter vector,
+and their center and radius are exposed as derived geometry. The connected Line command and the
+standalone Tangent Arc command also author their required Tangent relation atomically with the new
+arc. Curvature and `Quantize` remain unbacked; the latter still requires Decision 14's integer
+tier. Their glyphs remain deliberately absent from the rail — an armable verb that asserts nothing
+is worse than a cell that is not there.
 
 ### 6. Project, Intersect and Spun Profile are cut
 

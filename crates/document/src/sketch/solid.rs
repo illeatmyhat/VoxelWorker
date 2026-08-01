@@ -680,6 +680,60 @@ impl SketchSolid {
         Ok((next, arc))
     }
 
+    /// Resolve a standalone Tangent Arc destination without allocating document geometry.
+    /// A supplied endpoint id is authoritative, so preview uses the same stored position commit
+    /// will connect even when retained measurement provenance or snap policy differs.
+    pub fn tangent_arc_placement_to(
+        &self,
+        incoming: SketchCurve,
+        seam: EntityId,
+        endpoint: SketchPoint,
+        endpoint_existing: Option<EntityId>,
+        context: EvaluationContext,
+    ) -> Result<TangentArcPlacement, TangentArcRefusal> {
+        let point = |id| {
+            self.sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at)
+        };
+        let seam_at = point(seam).ok_or(TangentArcRefusal::UnknownEndpoint)?;
+        let endpoint = endpoint_existing.map_or(Ok(endpoint), |id| {
+            point(id).ok_or(TangentArcRefusal::UnknownEndpoint)
+        })?;
+        let candidate =
+            self.sketch
+                .tangent_arc_candidate(incoming, seam, endpoint.in_plane(), context)?;
+        Ok(TangentArcPlacement {
+            seam: seam_at,
+            endpoint,
+            candidate,
+        })
+    }
+
+    /// Atomically append a standalone Tangent Arc to a canonical destination. A fresh endpoint
+    /// is allocated only on a trial clone; every refusal leaves the source and its next id intact.
+    pub fn with_tangent_arc_to(
+        &self,
+        incoming: SketchCurve,
+        seam: EntityId,
+        endpoint: SketchPoint,
+        endpoint_existing: Option<EntityId>,
+        context: EvaluationContext,
+    ) -> Result<(SketchSolid, SketchCurve), TangentArcRefusal> {
+        let placement =
+            self.tangent_arc_placement_to(incoming, seam, endpoint, endpoint_existing, context)?;
+        let mut trial = self.clone();
+        let endpoint_id = endpoint_existing.unwrap_or_else(|| {
+            trial
+                .sketch
+                .point_at(placement.endpoint)
+                .unwrap_or_else(|| trial.sketch.add_free_point(placement.endpoint))
+        });
+        trial.with_tangent_arc_between(incoming, seam, endpoint_id, context)
+    }
+
     /// This producer with the arc `arc_id` deleted, along with each of its ends that nothing else
     /// draws ([`Sketch::delete_arc`]). No-op if unknown. Pure.
     pub fn with_arc_deleted(&self, arc_id: EntityId) -> SketchSolid {

@@ -131,6 +131,7 @@ enum SketchToolConfig {
     MidpointLine,
     Rectangle,
     ThreePointArc,
+    ArcTangent,
     CircleCenterDiameter,
 }
 
@@ -972,6 +973,24 @@ mod tests {
                 .into_state()
                 .sketch_tool,
             SketchTool::MidpointLine
+        );
+    }
+
+    #[test]
+    fn tangent_arc_survives_both_sides_of_the_tool_config_shim() {
+        let mut state = distinctive_state();
+        state.sketch_tool = SketchTool::ArcTangent;
+        let json = Dump::from_state(&state)
+            .to_json()
+            .expect("serialize Tangent Arc");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse Tangent Arc");
+        assert_eq!(value["sketch_tool"], "ArcTangent");
+        assert_eq!(
+            Dump::from_json(&json)
+                .expect("deserialize Tangent Arc")
+                .into_state()
+                .sketch_tool,
+            SketchTool::ArcTangent
         );
     }
 

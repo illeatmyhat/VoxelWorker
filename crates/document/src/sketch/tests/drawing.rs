@@ -713,6 +713,75 @@ fn tangent_arc_failures_are_atomic_and_do_not_advance_identity() {
 }
 
 #[test]
+fn standalone_tangent_arc_preview_and_commit_share_the_canonical_destination() {
+    let (solid, tail) = empty_solid().with_point_placed(SketchPoint::new(0, 0));
+    let (solid, seam) = solid.with_point_placed(SketchPoint::new(10, 0));
+    let (solid, incoming) = solid
+        .with_segment_between_traced(tail, seam)
+        .expect("incoming");
+    let endpoint = SketchPoint::from_continuous(10.25, 7.5);
+    let placement = solid
+        .tangent_arc_placement_to(incoming, seam, endpoint, None, ctx(16))
+        .unwrap();
+    assert!(placement.candidate.radius.is_finite());
+    assert!(placement.candidate.radius > 0.0);
+
+    let (made, arc) = solid
+        .with_tangent_arc_to(incoming, seam, endpoint, None, ctx(16))
+        .unwrap();
+    let arc = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|candidate| SketchCurve::Arc(candidate.id) == arc)
+        .unwrap();
+    let stored_endpoint = made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == arc.to)
+        .unwrap()
+        .at;
+    assert!(placement.endpoint.coincides(&stored_endpoint));
+    assert_eq!(made.sketch.constraints().len(), 1);
+}
+
+#[test]
+fn standalone_tangent_arc_reuses_an_authoritative_endpoint_and_refuses_atomically() {
+    let (solid, tail) = empty_solid().with_point_placed(SketchPoint::new(0, 0));
+    let (solid, seam) = solid.with_point_placed(SketchPoint::new(10, 0));
+    let (solid, endpoint) = solid.with_point_placed(SketchPoint::new(10, 10));
+    let (solid, incoming) = solid
+        .with_segment_between_traced(tail, seam)
+        .expect("incoming");
+    let (made, arc) = solid
+        .with_tangent_arc_to(
+            incoming,
+            seam,
+            SketchPoint::new(999, 999),
+            Some(endpoint),
+            ctx(16),
+        )
+        .unwrap();
+    let arc_id = arc.id();
+    assert_eq!(
+        made.sketch
+            .arcs()
+            .iter()
+            .find(|arc| arc.id == arc_id)
+            .unwrap()
+            .to,
+        endpoint
+    );
+
+    let before = serde_json::to_string(&solid).unwrap();
+    assert!(solid
+        .with_tangent_arc_to(incoming, seam, SketchPoint::new(20, 0), None, ctx(16),)
+        .is_err());
+    assert_eq!(serde_json::to_string(&solid).unwrap(), before);
+}
+
+#[test]
 fn tangent_arc_refuses_unsupported_dead_nonincident_self_and_duplicate_inputs() {
     let (solid, tail) = empty_solid().with_point_placed(SketchPoint::new(0, 0));
     let (solid, seam) = solid.with_point_placed(SketchPoint::new(10, 0));

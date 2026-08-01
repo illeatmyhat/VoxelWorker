@@ -52,6 +52,7 @@ mod midpoint_line;
 mod palette;
 mod render;
 mod sketch_target;
+mod tangent_arc;
 mod view_cube;
 mod workers;
 
@@ -423,6 +424,9 @@ struct WindowedState {
     /// Midpoint Line's one construction input. It is session-only and owns no point identity:
     /// completion consumes it whether the document adapter accepts or refuses the segment.
     midpoint_line_gesture: midpoint_line::MidpointLineGesture,
+    /// Standalone Tangent Arc's interaction-transient incoming curve endpoint. The armed tool is
+    /// persisted; an incomplete two-click gesture is deliberately abandoned across reload.
+    tangent_arc_gesture: tangent_arc::TangentArcGesture,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -815,6 +819,7 @@ impl WindowedState {
             sketch_constraint_badges: Vec::new(),
             line_gesture: line::LineGesture::default(),
             midpoint_line_gesture: midpoint_line::MidpointLineGesture::default(),
+            tangent_arc_gesture: tangent_arc::TangentArcGesture::default(),
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1008,6 +1013,7 @@ impl WindowedState {
             sketch_constraint_badges: _,
             line_gesture: _,
             midpoint_line_gesture: _,
+            tangent_arc_gesture: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,

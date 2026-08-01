@@ -108,6 +108,19 @@ pub enum TangentArcRefusal {
     Constraint(ConstraintRefusal),
 }
 
+/// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
+/// Radius and center stay derived curve data; the persisted arc remains its endpoint ids plus
+/// intrinsic sweep.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TangentArcPlacement {
+    /// The existing endpoint where the new arc leaves its incoming curve.
+    pub seam: SketchPoint,
+    /// The canonical destination position commit will persist or reuse by coincidence.
+    pub endpoint: SketchPoint,
+    /// The derived circular geometry, including the radius exposed to callers and previews.
+    pub candidate: parametric::sketch::TangentArcCandidate,
+}
+
 /// The document-canonical geometry of a midpoint-defined segment. These are the exact positions
 /// preview must draw and commit will persist or reuse by coincidence. A reused point may retain
 /// different [`SketchPoint::offset_measurements`] provenance without changing that positional

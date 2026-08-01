@@ -363,6 +363,7 @@ impl WindowedState {
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
+            self.tangent_arc_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -371,6 +372,7 @@ impl WindowedState {
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
+            self.tangent_arc_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1373,6 +1375,24 @@ impl WindowedState {
         ])
     }
 
+    /// The nearest sketch edge with an addressable endpoint. Tangent Arc begins at a seam, so a
+    /// closed circle must not mask a line or arc that is equally close to the cursor.
+    fn nearest_open_sketch_edge(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchEdgeHit> {
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        let segment = self
+            .nearest_sketch_segment(cursor_x, cursor_y)
+            .map(|(id, a, b)| {
+                (
+                    SketchEdgeHit::Segment(id),
+                    point_to_segment_distance(cursor, a, b),
+                )
+            });
+        let arc = self
+            .nearest_sketch_arc(cursor_x, cursor_y)
+            .map(|(id, distance)| (SketchEdgeHit::Arc(id), distance));
+        nearest_sketch_edge_from_candidates([segment, arc])
+    }
+
     /// The id of the sketch SEGMENT under the cursor (physical px), for add-point — the click
     /// splits the named segment. `None` when no edge is close enough.
     fn sketch_segment_at(
@@ -1479,6 +1499,27 @@ impl WindowedState {
             existing,
             self.sketch_snapped_point_at(cursor_x, cursor_y),
         )
+    }
+
+    /// Resolve the endpoint and hovered open curve that form Tangent Arc's first semantic pick.
+    /// The edge comes from the same nearest-edge cache the overlay highlights, so a junction's
+    /// deterministic choice cannot disagree with what the author saw under the cursor.
+    fn sketch_tangent_arc_source_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<tangent_arc::TangentArcSource> {
+        let target = self.panel_state.sketch_mode?;
+        let (producer, _) = self.sketch_node_state(target)?;
+        let seam = self
+            .sketch_vertex_at(cursor_x, cursor_y)
+            .and_then(|index| self.sketch_point_ids.get(index).copied())?;
+        let curve = match self.nearest_open_sketch_edge(cursor_x, cursor_y)? {
+            SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
+            SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
+            SketchEdgeHit::Circle(_) => return None,
+        };
+        tangent_arc::resolve_source(&producer, curve, seam)
     }
 
     fn validate_line_gesture(&mut self, target: document::scene::NodeId) {
@@ -1597,6 +1638,23 @@ impl WindowedState {
         ) {
             return true;
         }
+        let tangent_producer = self
+            .panel_state
+            .sketch_mode
+            .and_then(|owner| self.sketch_node_state(owner).map(|(producer, _)| producer));
+        self.tangent_arc_gesture.retain_for_context(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::ArcTangent,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+            tangent_producer.as_ref(),
+        );
+        if self.tangent_arc_gesture.blocks_enter(
+            self.panel_state.sketch_mode.is_some()
+                && self.panel_state.sketch_tool == ui::panel::SketchTool::ArcTangent,
+            self.panel_state.armed_constraint.is_some(),
+        ) {
+            return true;
+        }
         self.line_gesture.accept_for_enter(
             self.panel_state.sketch_mode.is_some()
                 && self.panel_state.sketch_tool == ui::panel::SketchTool::Line,
@@ -1619,6 +1677,36 @@ impl WindowedState {
         if let midpoint_line::MidpointLineEdit::Document(next) = self
             .midpoint_line_gesture
             .click(target, &producer, resolved)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance standalone Tangent Arc on stationary clicks. The first click captures only a
+    /// supported incoming endpoint; the second is the sole document/undo boundary.
+    pub(super) fn sketch_tangent_arc_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.tangent_arc_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.tangent_arc_gesture.reset();
+            return;
+        };
+        if !self.tangent_arc_gesture.is_pending() {
+            if let Some(source) = self.sketch_tangent_arc_source_at(cursor_x, cursor_y) {
+                self.tangent_arc_gesture.begin(target, source);
+            }
+            return;
+        }
+        let endpoint = self.sketch_target_at(cursor_x, cursor_y);
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.tangent_arc_gesture.reset();
+            return;
+        };
+        if let tangent_arc::TangentArcEdit::Document(next) = self
+            .tangent_arc_gesture
+            .complete(target, &producer, endpoint, context)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -1969,6 +2057,7 @@ impl WindowedState {
     pub(super) fn cancel_sketch_gesture(&mut self) -> bool {
         if self.panel_state.sketch_mode.is_none() {
             self.midpoint_line_gesture.reset();
+            self.tangent_arc_gesture.reset();
             self.sketch_edit_press = false;
             return false;
         }
@@ -1997,13 +2086,21 @@ impl WindowedState {
             self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine,
             self.panel_state.armed_constraint.is_some(),
         );
-        let midpoint_line_press = self.sketch_edit_press
-            && self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine
+        let two_click_press = self.sketch_edit_press
+            && matches!(
+                self.panel_state.sketch_tool,
+                ui::panel::SketchTool::MidpointLine | ui::panel::SketchTool::ArcTangent
+            )
             && self.panel_state.armed_constraint.is_none();
+        let tangent_arc_live = self.tangent_arc_gesture.cancel_for_escape(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::ArcTangent,
+            self.panel_state.armed_constraint.is_some(),
+        );
         let live = constraint_picks
             || line_live
             || midpoint_line_live
-            || midpoint_line_press
+            || tangent_arc_live
+            || two_click_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
             || self.sketch_arc_gesture.is_some()
@@ -2037,6 +2134,7 @@ impl WindowedState {
         self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
         self.line_gesture.reset();
         self.midpoint_line_gesture.reset();
+        self.tangent_arc_gesture.reset();
         true
     }
 
@@ -2086,6 +2184,7 @@ impl WindowedState {
                 ui::shortcuts::ShortcutCommand::Undo => {
                     self.line_gesture.reset();
                     self.midpoint_line_gesture.reset();
+                    self.tangent_arc_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2094,6 +2193,7 @@ impl WindowedState {
                 ui::shortcuts::ShortcutCommand::Redo => {
                     self.line_gesture.reset();
                     self.midpoint_line_gesture.reset();
+                    self.tangent_arc_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2993,6 +3093,7 @@ impl WindowedState {
             // #99 / slice 3 / #102: a drawing or marquee gesture dies with the mode.
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
+            self.tangent_arc_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3009,6 +3110,7 @@ impl WindowedState {
         else {
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
+            self.tangent_arc_gesture.reset();
             return;
         };
 
@@ -3023,6 +3125,13 @@ impl WindowedState {
             tool == ui::panel::SketchTool::MidpointLine,
             self.panel_state.armed_constraint.is_some(),
             Some(target),
+        );
+        let tangent_producer = self.sketch_node_state(target).map(|(producer, _)| producer);
+        self.tangent_arc_gesture.retain_for_context(
+            tool == ui::panel::SketchTool::ArcTangent,
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+            tangent_producer.as_ref(),
         );
         if tool == ui::panel::SketchTool::Line && self.panel_state.armed_constraint.is_none() {
             self.validate_line_gesture(target);
@@ -3166,7 +3275,9 @@ impl WindowedState {
         // (brighter, "you can pick this edge"); Add-point has its own insert diamond, so
         // segments stay Idle.
         let hovered_edge: Option<(SketchEdgeHit, ui::gizmos::HandleState)> = match tool {
-            ui::panel::SketchTool::Select => Some(ui::gizmos::HandleState::Hover),
+            ui::panel::SketchTool::Select | ui::panel::SketchTool::ArcTangent => {
+                Some(ui::gizmos::HandleState::Hover)
+            }
             // Add-point has its own insert diamond; the drawing tools (#99, #102) target
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
@@ -3178,6 +3289,21 @@ impl WindowedState {
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
+                if tool == ui::panel::SketchTool::ArcTangent {
+                    if self.tangent_arc_gesture.is_pending() {
+                        return None;
+                    }
+                    return self
+                        .sketch_tangent_arc_source_at(cx, cy)
+                        .map(|source| match source.curve {
+                            document::sketch::SketchCurve::Segment(id) => {
+                                SketchEdgeHit::Segment(id)
+                            }
+                            document::sketch::SketchCurve::Arc(id) => SketchEdgeHit::Arc(id),
+                            document::sketch::SketchCurve::Circle(id) => SketchEdgeHit::Circle(id),
+                        })
+                        .map(|hit| (hit, state));
+                }
                 if self.sketch_vertex_at(cx, cy).is_some() {
                     None
                 } else {
@@ -3402,6 +3528,41 @@ impl WindowedState {
                             profile.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == profile.len() {
                             self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::ArcTangent => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                    self.sketch_evaluation_context(),
+                ) {
+                    if self.tangent_arc_gesture.is_pending() {
+                        let endpoint = self.sketch_target_at(cursor_x, cursor_y);
+                        if let Some(placement) = endpoint.and_then(|endpoint| {
+                            self.tangent_arc_gesture
+                                .placement(target, &producer, endpoint, context)
+                                .ok()
+                        }) {
+                            let from = placement.seam.in_plane();
+                            let to = placement.endpoint.in_plane();
+                            let mut profile = vec![from];
+                            profile.extend(
+                                document::sketch::arc_interior_points(
+                                    from,
+                                    to,
+                                    placement.candidate.sweep_radians.to_degrees(),
+                                )
+                                .iter()
+                                .map(|point| point.in_plane()),
+                            );
+                            profile.push(to);
+                            let projected: Vec<egui::Pos2> =
+                                profile.iter().copied().filter_map(snapped_screen).collect();
+                            if projected.len() == profile.len() {
+                                self.sketch_draw_preview = projected;
+                            }
                         }
                     }
                 }
