@@ -131,6 +131,7 @@ enum SketchToolConfig {
     MidpointLine,
     Rectangle,
     ThreePointArc,
+    ArcCenterEndpoints,
     ArcTangent,
     CircleCenterDiameter,
 }
@@ -991,6 +992,24 @@ mod tests {
                 .into_state()
                 .sketch_tool,
             SketchTool::ArcTangent
+        );
+    }
+
+    #[test]
+    fn center_arc_survives_both_sides_of_the_tool_config_shim() {
+        let mut state = distinctive_state();
+        state.sketch_tool = SketchTool::ArcCenterEndpoints;
+        let json = Dump::from_state(&state)
+            .to_json()
+            .expect("serialize Center Point Arc");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse Center Point Arc");
+        assert_eq!(value["sketch_tool"], "ArcCenterEndpoints");
+        assert_eq!(
+            Dump::from_json(&json)
+                .expect("deserialize Center Point Arc")
+                .into_state()
+                .sketch_tool,
+            SketchTool::ArcCenterEndpoints
         );
     }
 

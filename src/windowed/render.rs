@@ -364,6 +364,7 @@ impl WindowedState {
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
+            self.center_arc_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -373,6 +374,7 @@ impl WindowedState {
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
+            self.center_arc_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1638,6 +1640,23 @@ impl WindowedState {
         ) {
             return true;
         }
+        let center_arc_producer = self
+            .panel_state
+            .sketch_mode
+            .and_then(|owner| self.sketch_node_state(owner).map(|(producer, _)| producer));
+        self.center_arc_gesture.retain_for_context(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::ArcCenterEndpoints,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+            center_arc_producer.as_ref(),
+        );
+        if self.center_arc_gesture.blocks_enter(
+            self.panel_state.sketch_mode.is_some()
+                && self.panel_state.sketch_tool == ui::panel::SketchTool::ArcCenterEndpoints,
+            self.panel_state.armed_constraint.is_some(),
+        ) {
+            return true;
+        }
         let tangent_producer = self
             .panel_state
             .sketch_mode
@@ -1677,6 +1696,25 @@ impl WindowedState {
         if let midpoint_line::MidpointLineEdit::Document(next) = self
             .midpoint_line_gesture
             .click(target, &producer, resolved)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance Center Point Arc on stationary clicks. Center and start are transient inputs; only
+    /// a valid end-direction click crosses the document/undo boundary.
+    pub(super) fn sketch_center_arc_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.center_arc_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.center_arc_gesture.reset();
+            return;
+        };
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        if let center_arc::CenterArcEdit::Document(next) =
+            self.center_arc_gesture.click(target, &producer, resolved)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2049,15 +2087,15 @@ impl WindowedState {
     }
 
     /// Escape's first sketch rung: drop whatever half-finished gesture the armed tool is holding
-    /// — the Line chain, Midpoint Line's construction midpoint, the rectangle's press corner,
-    /// the marquee's anchor, or the arc's
-    /// endpoints. Reports whether anything was actually put back, so the cancel chain can fall
+    /// — the Line chain, construction inputs, the rectangle's press corner, the marquee's anchor,
+    /// or an arc's pending picks. Reports whether anything was actually put back, so the cancel chain can fall
     /// through when there was nothing mid-stroke. The tool stays armed: dropping a stroke is not
     /// the same act as putting the tool down.
     pub(super) fn cancel_sketch_gesture(&mut self) -> bool {
         if self.panel_state.sketch_mode.is_none() {
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
+            self.center_arc_gesture.reset();
             self.sketch_edit_press = false;
             return false;
         }
@@ -2086,12 +2124,18 @@ impl WindowedState {
             self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine,
             self.panel_state.armed_constraint.is_some(),
         );
-        let two_click_press = self.sketch_edit_press
+        let stationary_gesture_press = self.sketch_edit_press
             && matches!(
                 self.panel_state.sketch_tool,
-                ui::panel::SketchTool::MidpointLine | ui::panel::SketchTool::ArcTangent
+                ui::panel::SketchTool::MidpointLine
+                    | ui::panel::SketchTool::ArcCenterEndpoints
+                    | ui::panel::SketchTool::ArcTangent
             )
             && self.panel_state.armed_constraint.is_none();
+        let center_arc_live = self.center_arc_gesture.cancel_for_escape(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::ArcCenterEndpoints,
+            self.panel_state.armed_constraint.is_some(),
+        );
         let tangent_arc_live = self.tangent_arc_gesture.cancel_for_escape(
             self.panel_state.sketch_tool == ui::panel::SketchTool::ArcTangent,
             self.panel_state.armed_constraint.is_some(),
@@ -2099,8 +2143,9 @@ impl WindowedState {
         let live = constraint_picks
             || line_live
             || midpoint_line_live
+            || center_arc_live
             || tangent_arc_live
-            || two_click_press
+            || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
             || self.sketch_arc_gesture.is_some()
@@ -2135,6 +2180,7 @@ impl WindowedState {
         self.line_gesture.reset();
         self.midpoint_line_gesture.reset();
         self.tangent_arc_gesture.reset();
+        self.center_arc_gesture.reset();
         true
     }
 
@@ -2185,6 +2231,7 @@ impl WindowedState {
                     self.line_gesture.reset();
                     self.midpoint_line_gesture.reset();
                     self.tangent_arc_gesture.reset();
+                    self.center_arc_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2194,6 +2241,7 @@ impl WindowedState {
                     self.line_gesture.reset();
                     self.midpoint_line_gesture.reset();
                     self.tangent_arc_gesture.reset();
+                    self.center_arc_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -3094,6 +3142,7 @@ impl WindowedState {
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
+            self.center_arc_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3111,6 +3160,7 @@ impl WindowedState {
             self.line_gesture.reset();
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
+            self.center_arc_gesture.reset();
             return;
         };
 
@@ -3125,6 +3175,13 @@ impl WindowedState {
             tool == ui::panel::SketchTool::MidpointLine,
             self.panel_state.armed_constraint.is_some(),
             Some(target),
+        );
+        let center_arc_producer = self.sketch_node_state(target).map(|(producer, _)| producer);
+        self.center_arc_gesture.retain_for_context(
+            tool == ui::panel::SketchTool::ArcCenterEndpoints,
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+            center_arc_producer.as_ref(),
         );
         let tangent_producer = self.sketch_node_state(target).map(|(producer, _)| producer);
         self.tangent_arc_gesture.retain_for_context(
@@ -3285,6 +3342,7 @@ impl WindowedState {
             | ui::panel::SketchTool::MidpointLine
             | ui::panel::SketchTool::Rectangle
             | ui::panel::SketchTool::ThreePointArc
+            | ui::panel::SketchTool::ArcCenterEndpoints
             | ui::panel::SketchTool::CircleCenterDiameter => None,
         }
         .and_then(|state| {
@@ -3558,6 +3616,47 @@ impl WindowedState {
                                 .map(|point| point.in_plane()),
                             );
                             profile.push(to);
+                            let projected: Vec<egui::Pos2> =
+                                profile.iter().copied().filter_map(snapped_screen).collect();
+                            if projected.len() == profile.len() {
+                                self.sketch_draw_preview = projected;
+                            }
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::ArcCenterEndpoints => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y))) =
+                    (self.sketch_node_state(target), self.last_cursor_position)
+                {
+                    if let (Some(center), Some(direction)) = (
+                        self.center_arc_gesture.center(target),
+                        self.sketch_target_at(cursor_x, cursor_y),
+                    ) {
+                        if self.center_arc_gesture.start(target).is_some() {
+                            if let Some(placement) = self
+                                .center_arc_gesture
+                                .placement(target, &producer, direction)
+                            {
+                                let mut profile = vec![placement.start.in_plane()];
+                                profile.extend(
+                                    document::sketch::arc_interior_points(
+                                        placement.start.in_plane(),
+                                        placement.endpoint.in_plane(),
+                                        placement.candidate.sweep_radians.to_degrees(),
+                                    )
+                                    .iter()
+                                    .map(|point| point.in_plane()),
+                                );
+                                profile.push(placement.endpoint.in_plane());
+                                let projected: Vec<egui::Pos2> =
+                                    profile.iter().copied().filter_map(snapped_screen).collect();
+                                if projected.len() == profile.len() {
+                                    self.sketch_draw_preview = projected;
+                                }
+                            }
+                        } else {
+                            let profile = [center.in_plane(), direction.at.in_plane()];
                             let projected: Vec<egui::Pos2> =
                                 profile.iter().copied().filter_map(snapped_screen).collect();
                             if projected.len() == profile.len() {

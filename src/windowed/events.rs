@@ -19,6 +19,7 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         ui::panel::SketchTool::Select => SketchPointerRoute::Select,
         ui::panel::SketchTool::AddPoint
         | ui::panel::SketchTool::MidpointLine
+        | ui::panel::SketchTool::ArcCenterEndpoints
         | ui::panel::SketchTool::ArcTangent
         | ui::panel::SketchTool::ThreePointArc
         | ui::panel::SketchTool::CircleCenterDiameter => SketchPointerRoute::StationaryEdit,
@@ -328,6 +329,9 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::MidpointLine => {
                                         state.sketch_midpoint_line_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::ArcCenterEndpoints => {
+                                        state.sketch_center_arc_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::ArcTangent => {
                                         state.sketch_tangent_arc_click(up_x, up_y);
@@ -761,6 +765,10 @@ mod tests {
     fn midpoint_line_uses_only_the_stationary_edit_route() {
         assert_eq!(
             sketch_pointer_route(ui::panel::SketchTool::MidpointLine),
+            SketchPointerRoute::StationaryEdit
+        );
+        assert_eq!(
+            sketch_pointer_route(ui::panel::SketchTool::ArcCenterEndpoints),
             SketchPointerRoute::StationaryEdit
         );
         assert_eq!(

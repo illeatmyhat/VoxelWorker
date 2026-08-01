@@ -5,13 +5,152 @@
 
 use super::ctx;
 use crate::sketch::{
-    ConstraintKind, MidpointLineRefusal, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
-    SketchPointConstructionError, SketchSolid, TangentArcRefusal,
+    CenterArcRefusal, ConstraintKind, MidpointLineRefusal, PlaneAxis, Sketch, SketchCurve,
+    SketchLength, SketchPoint, SketchPointConstructionError, SketchSolid, TangentArcRefusal,
 };
 use parametric::units::{AngleMeasurement, Measurement};
 
 fn empty_solid() -> SketchSolid {
     SketchSolid::extrude(Sketch::new(PlaneAxis::Z, vec![]), 3)
+}
+
+#[test]
+fn center_arc_projects_the_end_direction_and_keeps_the_center_derived() {
+    let solid = empty_solid();
+    let center = SketchPoint::new(0, 0);
+    let start = SketchPoint::new(4, 0);
+    let direction = SketchPoint::new(0, 9);
+    let placement = solid
+        .center_arc_placement(center, start, None, direction)
+        .unwrap();
+    assert!(placement.endpoint.coincides(&SketchPoint::new(0, 4)));
+    assert_eq!(placement.candidate.radius, 4.0);
+    assert!((placement.candidate.sweep_radians.to_degrees() - 90.0).abs() < 1e-12);
+
+    let (made, arc_id) = solid
+        .with_center_arc(center, start, None, direction)
+        .unwrap();
+    assert_eq!(
+        made.sketch.points().len(),
+        3,
+        "the derived center is reified"
+    );
+    let arc = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| arc.id == arc_id)
+        .unwrap();
+    assert!(made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == arc.to)
+        .unwrap()
+        .at
+        .coincides(&placement.endpoint));
+    assert!(made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == arc.center)
+        .unwrap()
+        .at
+        .coincides(&center));
+}
+
+#[test]
+fn center_arc_reuses_a_stored_start_and_refuses_without_mutating() {
+    let (solid, start) = empty_solid().with_point_placed(SketchPoint::new(4, 0));
+    let (made, arc_id) = solid
+        .with_center_arc(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(999, 999),
+            Some(start),
+            SketchPoint::new(0, -8),
+        )
+        .unwrap();
+    assert_eq!(
+        made.sketch
+            .arcs()
+            .iter()
+            .find(|arc| arc.id == arc_id)
+            .unwrap()
+            .from,
+        start
+    );
+    assert!(
+        (made.sketch.arcs()[0]
+            .bulge
+            .free_value()
+            .unwrap()
+            .to_degrees_f64()
+            - 270.0)
+            .abs()
+            < 1e-12
+    );
+
+    let before = serde_json::to_string(&solid).unwrap();
+    assert_eq!(
+        solid.with_center_arc(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(0, 0),
+            None,
+            SketchPoint::new(1, 0),
+        ),
+        Err(CenterArcRefusal::Candidate(
+            parametric::sketch::CenterArcCandidateError::CollapsedRadius
+        ))
+    );
+    assert_eq!(serde_json::to_string(&solid).unwrap(), before);
+}
+
+#[test]
+fn center_arc_preview_matches_persisted_geometry_after_endpoint_narrowing() {
+    let solid = empty_solid();
+    let placement = solid
+        .center_arc_placement(
+            SketchPoint::from_continuous(0.25, -0.5),
+            SketchPoint::from_continuous(4.125, 0.75),
+            None,
+            SketchPoint::from_continuous(2.7, 8.9),
+        )
+        .unwrap();
+    let (made, arc) = solid
+        .with_center_arc(
+            SketchPoint::from_continuous(0.25, -0.5),
+            SketchPoint::from_continuous(4.125, 0.75),
+            None,
+            SketchPoint::from_continuous(2.7, 8.9),
+        )
+        .unwrap();
+    let parametric::sketch::CurveGeometry::Circular(persisted) = made
+        .sketch
+        .curve_geometry(SketchCurve::Arc(arc), ctx(16))
+        .unwrap()
+    else {
+        panic!("arc geometry")
+    };
+    assert!((persisted.center[0] - placement.candidate.center[0]).abs() < 1e-10);
+    assert!((persisted.center[1] - placement.candidate.center[1]).abs() < 1e-10);
+    assert!((persisted.radius - placement.candidate.radius).abs() < 1e-10);
+    assert!(
+        (persisted.arc.unwrap().sweep_radians - placement.candidate.sweep_radians).abs() < 1e-10
+    );
+    let stored_arc = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|candidate| candidate.id == arc)
+        .unwrap();
+    assert!(made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == stored_arc.center)
+        .unwrap()
+        .at
+        .coincides(&placement.center));
 }
 
 #[test]

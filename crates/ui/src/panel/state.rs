@@ -316,6 +316,9 @@ pub enum SketchTool {
     /// through-point is consumed — the stored form is the two endpoints plus the solved included
     /// angle.
     ThreePointArc,
+    /// Draw a counter-clockwise arc by clicking its center, start point, and end direction. The
+    /// final pick is projected onto the start radius.
+    ArcCenterEndpoints,
     /// Draw an arc tangent to a line or arc: click an endpoint on the incoming curve, then the
     /// destination endpoint. The durable Tangent relation is authored with the arc.
     ArcTangent,

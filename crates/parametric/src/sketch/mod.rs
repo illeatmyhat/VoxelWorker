@@ -3,6 +3,7 @@
 //! The public façade owns local handles, typed outcomes, and domain diagnostics. Solver mechanics
 //! and substrate numerical types stay private to this subsystem.
 
+mod center_arc;
 mod curve;
 mod midpoint_line;
 mod model;
@@ -12,6 +13,7 @@ mod tangent;
 #[cfg(test)]
 mod tests;
 
+pub use center_arc::{center_arc_candidate, CenterArcCandidate, CenterArcCandidateError};
 pub use curve::{ArcDomain, CircularCurve, CurveGeometry};
 pub use midpoint_line::{
     midpoint_line_candidate, MidpointLineCandidate, MidpointLineCandidateError,

@@ -108,6 +108,33 @@ pub enum TangentArcRefusal {
     Constraint(ConstraintRefusal),
 }
 
+/// Why a center-first arc could not be represented as durable endpoint-and-sweep geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CenterArcRefusal {
+    /// The continuous center/start/direction geometry is invalid or degenerate.
+    Candidate(parametric::sketch::CenterArcCandidateError),
+    /// A supplied stable start-point id no longer exists.
+    UnknownStart,
+    /// The derived endpoint or sweep cannot be represented in document scalar storage.
+    Unrepresentable,
+    /// The projected endpoints are already joined or otherwise refuse a new arc.
+    ArcRefused,
+}
+
+/// Exact document-side geometry shared by Center Point Arc preview and commit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CenterArcPlacement {
+    /// The construction center. Arc creation reifies it as a derived construction point; it is
+    /// never an independent authored freedom.
+    pub center: SketchPoint,
+    /// The first on-curve endpoint, authoritative when it came from an existing point id.
+    pub start: SketchPoint,
+    /// The direction pick projected onto the fixed start radius.
+    pub endpoint: SketchPoint,
+    /// Continuous circular geometry, including exposed radius and counter-clockwise sweep.
+    pub candidate: parametric::sketch::CenterArcCandidate,
+}
+
 /// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
 /// Radius and center stay derived curve data; the persisted arc remains its endpoint ids plus
 /// intrinsic sweep.

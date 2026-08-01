@@ -630,6 +630,101 @@ impl SketchSolid {
         next
     }
 
+    /// Resolve Center Point Arc's projected endpoint without allocating document entities.
+    /// An existing start id is authoritative; the end click supplies only a direction and is
+    /// projected onto the fixed start radius.
+    pub fn center_arc_placement(
+        &self,
+        center: SketchPoint,
+        start: SketchPoint,
+        start_existing: Option<EntityId>,
+        end_direction: SketchPoint,
+    ) -> Result<CenterArcPlacement, CenterArcRefusal> {
+        let start = start_existing.map_or(Ok(start), |id| {
+            self.sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at)
+                .ok_or(CenterArcRefusal::UnknownStart)
+        })?;
+        let raw_candidate = parametric::sketch::center_arc_candidate(
+            center.in_plane(),
+            start.in_plane(),
+            end_direction.in_plane(),
+        )
+        .map_err(CenterArcRefusal::Candidate)?;
+        let endpoint =
+            SketchPoint::try_from_continuous(raw_candidate.endpoint[0], raw_candidate.endpoint[1])
+                .map_err(|_| CenterArcRefusal::Unrepresentable)?;
+        // Canonical storage narrows the projected endpoint to `i64 + f32`. Recompute the sweep
+        // from that durable direction, then expose the center/radius derived from the exact
+        // endpoint+sweep representation commit will persist. Preview therefore cannot advertise
+        // an ideal f64 circle that writeback changes by a fraction of a voxel.
+        let canonical = parametric::sketch::center_arc_candidate(
+            center.in_plane(),
+            start.in_plane(),
+            endpoint.in_plane(),
+        )
+        .map_err(CenterArcRefusal::Candidate)?;
+        let sweep = parametric::units::AngleMeasurement::try_from_degrees_f64(
+            canonical.sweep_radians.to_degrees(),
+        )
+        .map_err(|_| CenterArcRefusal::Unrepresentable)?;
+        let (derived_center, radius) = arc_center_radius(
+            start.in_plane(),
+            endpoint.in_plane(),
+            sweep.to_degrees_f64(),
+        )
+        .ok_or(CenterArcRefusal::Unrepresentable)?;
+        let candidate = parametric::sketch::CenterArcCandidate {
+            center: derived_center,
+            start: start.in_plane(),
+            endpoint: endpoint.in_plane(),
+            radius,
+            sweep_radians: sweep.to_degrees_f64().to_radians(),
+        };
+        let center = SketchPoint::try_from_continuous(derived_center[0], derived_center[1])
+            .map_err(|_| CenterArcRefusal::Unrepresentable)?;
+        Ok(CenterArcPlacement {
+            center,
+            start,
+            endpoint,
+            candidate,
+        })
+    }
+
+    /// Atomically append a Center Point Arc. The construction center is reified by the arc as a
+    /// derived construction point; only the endpoints and intrinsic sweep are authored freedoms.
+    pub fn with_center_arc(
+        &self,
+        center: SketchPoint,
+        start: SketchPoint,
+        start_existing: Option<EntityId>,
+        end_direction: SketchPoint,
+    ) -> Result<(SketchSolid, EntityId), CenterArcRefusal> {
+        let placement = self.center_arc_placement(center, start, start_existing, end_direction)?;
+        let sweep = parametric::units::AngleMeasurement::try_from_degrees_f64(
+            placement.candidate.sweep_radians.to_degrees(),
+        )
+        .map_err(|_| CenterArcRefusal::Unrepresentable)?;
+        let mut next = self.clone();
+        let start_id = start_existing.unwrap_or_else(|| {
+            next.sketch
+                .point_at(placement.start)
+                .unwrap_or_else(|| next.sketch.add_free_point(placement.start))
+        });
+        let endpoint_id = next
+            .sketch
+            .point_at(placement.endpoint)
+            .unwrap_or_else(|| next.sketch.add_free_point(placement.endpoint));
+        let arc = next
+            .sketch
+            .connect_arc(start_id, endpoint_id, sweep)
+            .ok_or(CenterArcRefusal::ArcRefused)?;
+        Ok((next, arc))
+    }
+
     /// Append an arc tangent to the live incoming curve at their shared endpoint. Arc creation
     /// and the durable Tangent assertion land together or not at all.
     pub fn with_tangent_arc_between(
