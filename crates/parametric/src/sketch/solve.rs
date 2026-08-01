@@ -18,10 +18,18 @@
     clippy::use_self
 )]
 
+use super::curve::{
+    ArcDomain, CircularCurve, CurveGeometry, COLLAPSE_TOLERANCE as COLLAPSED_SPAN,
+    SATISFACTION_TOLERANCE as SATISFIED_RESIDUAL,
+};
 use super::model::{SolveOutcome, SolveReport};
+use super::symmetry::{
+    residuals as symmetry_residuals, symmetry_witness, SymmetryBranch, SymmetryError,
+    SymmetryWitness,
+};
 use super::tangent::{
-    residual as tangent_residual, tangent_contact, ArcDomain, CircularCurve, CurveGeometry,
-    TangentBranch, TangentContact, TangentContactError,
+    residual as tangent_residual, tangent_contact, TangentBranch, TangentContact,
+    TangentContactError,
 };
 use crate::{AngleMeasurement, ResolvedLength};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,14 +43,6 @@ use substrate::nonlinear_least_squares::{
 /// The search outcome is deliberately not this test: residual tolerance is absolute while a step
 /// tolerance is relative to parameter magnitude, so a large yet satisfied drawing may stop with a
 /// `Stalled` status. Search status describes the path; residual norm describes the answer.
-const SATISFIED_RESIDUAL: f64 = 1e-6;
-/// A span the sketch needs — a segment, arc chord, or arc radius — below this threshold has lost
-/// its geometric identity. This is separate from satisfaction even though both current values are
-/// `1e-6`: one judges equations and the other judges whether meaningful geometry survived. It is
-/// deliberately not a flattening tolerance: flattening chooses a display/discretization scale,
-/// while this test rejects loss of the curve or segment identity itself.
-const COLLAPSED_SPAN: f64 = 1e-6;
-
 /// The shared center witness for a satisfied Concentric pair. This uses the same residual norm
 /// threshold as the solver, so overlays and numerical acceptance cannot disagree at the boundary.
 pub fn concentric_center(first: [f64; 2], second: [f64; 2]) -> Option<[f64; 2]> {
@@ -163,6 +163,13 @@ pub enum Relation {
         first: SketchCurve,
         second: SketchCurve,
     },
+    /// Two same-kind curves mirror across an explicit segment axis at a persisted correspondence.
+    Symmetry {
+        first: SketchCurve,
+        second: SketchCurve,
+        axis: SegmentId,
+        branch: SymmetryBranch,
+    },
 }
 
 impl Relation {
@@ -182,6 +189,11 @@ impl Relation {
             | Self::Perpendicular { .. }
             | Self::Equal { .. }
             | Self::Tangent { .. } => 1,
+            Self::Symmetry { first, .. } => match first {
+                SketchCurve::Segment(_) => 4,
+                SketchCurve::Arc(_) => 5,
+                SketchCurve::Circle(_) => 3,
+            },
         }
     }
 }
@@ -194,6 +206,7 @@ pub enum BuildError {
     InvalidParameter,
     InvalidTangent,
     InvalidConcentric,
+    InvalidSymmetry,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -641,6 +654,52 @@ impl Problem {
         tangent_contact(first_geometry, second_geometry, branch)
     }
 
+    /// Derive the validated presentation locus for one standing Symmetry relation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the relation, solution, branch, or resolved geometry is invalid, or
+    /// when the relation is not satisfied within the shared residual tolerance.
+    pub fn symmetry_witness(
+        &self,
+        relation: Relation,
+        solution: &Solution,
+    ) -> Result<SymmetryWitness, SymmetryError> {
+        let Resolved::Symmetry {
+            first,
+            second,
+            axis,
+            branch,
+        } = self
+            .resolve(relation)
+            .map_err(|_| SymmetryError::InvalidBranch)?
+        else {
+            return Err(SymmetryError::InvalidBranch);
+        };
+        if solution.owner != self.owner {
+            return Err(SymmetryError::NonFinite);
+        }
+        if solution.positions.len() != self.points.len() {
+            return Err(SymmetryError::NonFinite);
+        }
+        let scalars =
+            scalar_coordinates_of_solution(self, solution).ok_or(SymmetryError::NonFinite)?;
+        let mut whole = Vec::with_capacity(solution.positions.len() * 2 + scalars.len());
+        for position in &solution.positions {
+            whole.extend(*position);
+        }
+        whole.extend(scalars);
+        let at = |slot| solution.positions[slot];
+        let geometry =
+            |curve| curve_geometry(curve, &at, &self.parameters, &whole, self.points.len());
+        symmetry_witness(
+            geometry(first),
+            geometry(second),
+            geometry(ResolvedCurve::Segment(axis)),
+            branch,
+        )
+    }
+
     /// The first precise finite-contact failure among the standing Tangents, in constraint order.
     /// Document adapters use this before writeback so ordinary settle and drag remain atomic.
     pub fn first_tangent_contact_failure(
@@ -859,6 +918,49 @@ impl Problem {
                 Ok(Resolved::Concentric {
                     first: center(first)?,
                     second: center(second)?,
+                })
+            }
+            Relation::Symmetry {
+                first,
+                second,
+                axis,
+                branch,
+            } => {
+                if first == second
+                    || matches!(first, SketchCurve::Segment(subject) if subject == axis)
+                    || matches!(second, SketchCurve::Segment(subject) if subject == axis)
+                {
+                    return Err(BuildError::InvalidSymmetry);
+                }
+                let first = curve(first).map_err(|_| BuildError::InvalidSymmetry)?;
+                let second = curve(second).map_err(|_| BuildError::InvalidSymmetry)?;
+                let axis = segment(axis).map_err(|_| BuildError::InvalidSymmetry)?;
+                let matches = matches!(
+                    (first, second, branch),
+                    (
+                        ResolvedCurve::Segment(_),
+                        ResolvedCurve::Segment(_),
+                        SymmetryBranch::Direct | SymmetryBranch::Reversed
+                    ) | (
+                        ResolvedCurve::Arc(_),
+                        ResolvedCurve::Arc(_),
+                        SymmetryBranch::Direct | SymmetryBranch::Reversed
+                    ) | (
+                        ResolvedCurve::Circle(_),
+                        ResolvedCurve::Circle(_),
+                        SymmetryBranch::Centers
+                    )
+                );
+                let from = self.points[axis.from].at;
+                let to = self.points[axis.to].at;
+                if !matches || (to[0] - from[0]).hypot(to[1] - from[1]) <= COLLAPSED_SPAN {
+                    return Err(BuildError::InvalidSymmetry);
+                }
+                Ok(Resolved::Symmetry {
+                    first,
+                    second,
+                    axis,
+                    branch,
                 })
             }
         }
@@ -1632,6 +1734,366 @@ mod tests {
         });
         assert!(matches!(builder.finish(), Err(BuildError::InvalidTangent)));
     }
+
+    #[test]
+    fn symmetry_relation_rows_rank_and_freedom_match_each_curve_kind() {
+        let mut segments = ProblemBuilder::new();
+        let axis_from = segments.add_point([0.0, -5.0]);
+        let axis_to = segments.add_point([0.0, 5.0]);
+        let axis = segments.add_segment(axis_from, axis_to);
+        let a0 = segments.add_point([-3.0, 0.0]);
+        let a1 = segments.add_point([-2.0, 2.0]);
+        let b0 = segments.add_point([3.0, 0.0]);
+        let b1 = segments.add_point([2.0, 2.0]);
+        let first = segments.add_segment(a0, a1);
+        let second = segments.add_segment(b0, b1);
+        let relation = Relation::Symmetry {
+            first: SketchCurve::Segment(first),
+            second: SketchCurve::Segment(second),
+            axis,
+            branch: SymmetryBranch::Direct,
+        };
+        assert_eq!(relation.residual_count(), 4);
+        segments.add_constraint(relation);
+        let analysis = segments.finish().unwrap().analyze();
+        assert_eq!((analysis.witness_rank, analysis.degrees_of_freedom), (4, 8));
+
+        let mut circles = ProblemBuilder::new();
+        let axis_from = circles.add_point([0.0, -5.0]);
+        let axis_to = circles.add_point([0.0, 5.0]);
+        let axis = circles.add_segment(axis_from, axis_to);
+        let first_center = circles.add_point([-3.0, 0.0]);
+        let second_center = circles.add_point([3.0, 0.0]);
+        let first_radius = circles.add_free_positive_radius(2.0).unwrap();
+        let second_radius = circles.add_free_positive_radius(2.0).unwrap();
+        let first = circles.add_circle(first_center, first_radius);
+        let second = circles.add_circle(second_center, second_radius);
+        let relation = Relation::Symmetry {
+            first: SketchCurve::Circle(first),
+            second: SketchCurve::Circle(second),
+            axis,
+            branch: SymmetryBranch::Centers,
+        };
+        assert_eq!(relation.residual_count(), 3);
+        circles.add_constraint(relation);
+        let analysis = circles.finish().unwrap().analyze();
+        assert_eq!((analysis.witness_rank, analysis.degrees_of_freedom), (3, 7));
+
+        let mut arcs = ProblemBuilder::new();
+        let axis_from = arcs.add_point([0.0, -5.0]);
+        let axis_to = arcs.add_point([0.0, 5.0]);
+        let axis = arcs.add_segment(axis_from, axis_to);
+        let a0 = arcs.add_point([-3.0, 0.0]);
+        let a1 = arcs.add_point([-2.0, 2.0]);
+        let ac = arcs.add_point([0.0, 0.0]);
+        let b0 = arcs.add_point([3.0, 0.0]);
+        let b1 = arcs.add_point([2.0, 2.0]);
+        let bc = arcs.add_point([0.0, 0.0]);
+        let first_sweep = arcs.add_free_signed_sweep(90.0).unwrap();
+        let second_sweep = arcs.add_free_signed_sweep(-90.0).unwrap();
+        let first = arcs.add_arc(ac, a0, a1, first_sweep);
+        let second = arcs.add_arc(bc, b0, b1, second_sweep);
+        let relation = Relation::Symmetry {
+            first: SketchCurve::Arc(first),
+            second: SketchCurve::Arc(second),
+            axis,
+            branch: SymmetryBranch::Direct,
+        };
+        assert_eq!(relation.residual_count(), 5);
+        arcs.add_constraint(relation);
+        let analysis = arcs.finish().unwrap().analyze();
+        assert_eq!((analysis.witness_rank, analysis.degrees_of_freedom), (5, 9));
+    }
+
+    #[test]
+    fn symmetry_kernel_validates_identity_type_branch_and_axis() {
+        let build = |second_kind: u8, branch, alias_axis: bool, collapsed_axis: bool| {
+            let mut builder = ProblemBuilder::new();
+            let axis_from = builder.add_point([0.0, 0.0]);
+            let axis_to = builder.add_point(if collapsed_axis {
+                [0.0, 0.0]
+            } else {
+                [0.0, 5.0]
+            });
+            let axis = builder.add_segment(axis_from, axis_to);
+            let a = builder.add_point([-2.0, 0.0]);
+            let b = builder.add_point([-2.0, 2.0]);
+            let first = builder.add_segment(a, b);
+            let second = if second_kind == 0 {
+                let c = builder.add_point([2.0, 0.0]);
+                let d = builder.add_point([2.0, 2.0]);
+                SketchCurve::Segment(builder.add_segment(c, d))
+            } else {
+                SketchCurve::Circle(circle(&mut builder, [2.0, 1.0], 1.0))
+            };
+            builder.add_constraint(Relation::Symmetry {
+                first: SketchCurve::Segment(first),
+                second,
+                axis: if alias_axis { first } else { axis },
+                branch,
+            });
+            builder.finish()
+        };
+        assert!(build(0, SymmetryBranch::Direct, false, false).is_ok());
+        for invalid in [
+            build(1, SymmetryBranch::Direct, false, false),
+            build(0, SymmetryBranch::Centers, false, false),
+            build(0, SymmetryBranch::Direct, true, false),
+            build(0, SymmetryBranch::Direct, false, true),
+        ] {
+            assert!(matches!(invalid, Err(BuildError::InvalidSymmetry)));
+        }
+        let mut self_pair = ProblemBuilder::new();
+        let axis_from = self_pair.add_point([0.0, -2.0]);
+        let axis_to = self_pair.add_point([0.0, 2.0]);
+        let axis = self_pair.add_segment(axis_from, axis_to);
+        let from = self_pair.add_point([-2.0, 0.0]);
+        let to = self_pair.add_point([-2.0, 2.0]);
+        let subject = self_pair.add_segment(from, to);
+        self_pair.add_constraint(Relation::Symmetry {
+            first: SketchCurve::Segment(subject),
+            second: SketchCurve::Segment(subject),
+            axis,
+            branch: SymmetryBranch::Direct,
+        });
+        assert!(matches!(
+            self_pair.finish(),
+            Err(BuildError::InvalidSymmetry)
+        ));
+    }
+
+    #[test]
+    fn symmetry_trial_keeps_axis_exact_and_drag_can_move_it_later() {
+        let mut builder = ProblemBuilder::new();
+        let axis_from = builder.add_point([0.0, -5.0]);
+        let axis_to = builder.add_point([0.0, 5.0]);
+        let axis = builder.add_segment(axis_from, axis_to);
+        let a0 = builder.add_point([-5.0, 0.0]);
+        let a1 = builder.add_point([-2.0, 3.0]);
+        let b0 = builder.add_point([7.0, 1.0]);
+        let b1 = builder.add_point([8.0, 5.0]);
+        let first = builder.add_segment(a0, a1);
+        let second = builder.add_segment(b0, b1);
+        let problem = builder.finish().unwrap();
+        let relation = Relation::Symmetry {
+            first: SketchCurve::Segment(first),
+            second: SketchCurve::Segment(second),
+            axis,
+            branch: SymmetryBranch::Direct,
+        };
+        let TrialAdd::Accepted { settled, .. } = problem.trial_add(relation).unwrap() else {
+            panic!("free subjects")
+        };
+        assert_eq!(settled.solution.position(axis_from), Some([0.0, -5.0]));
+        assert_eq!(settled.solution.position(axis_to), Some([0.0, 5.0]));
+
+        let mut standing = ProblemBuilder::new();
+        let axis_from = standing.add_point([0.0, -5.0]);
+        let axis_to = standing.add_point([0.0, 5.0]);
+        let axis = standing.add_segment(axis_from, axis_to);
+        let a0 = standing.add_point([-3.0, 0.0]);
+        let a1 = standing.add_point([-2.0, 2.0]);
+        let b0 = standing.add_point([3.0, 0.0]);
+        let b1 = standing.add_point([2.0, 2.0]);
+        let first = standing.add_segment(a0, a1);
+        let second = standing.add_segment(b0, b1);
+        standing.add_constraint(Relation::Symmetry {
+            first: SketchCurve::Segment(first),
+            second: SketchCurve::Segment(second),
+            axis,
+            branch: SymmetryBranch::Direct,
+        });
+        let standing = standing.finish().unwrap();
+        let DragOutcome::Accepted(dragged) = standing.drag(axis_to, [2.0, 6.0]).unwrap() else {
+            panic!("axis drag")
+        };
+        assert_ne!(dragged.solution.position(axis_to), Some([0.0, 5.0]));
+        assert!(standing
+            .symmetry_witness(
+                Relation::Symmetry {
+                    first: SketchCurve::Segment(first),
+                    second: SketchCurve::Segment(second),
+                    axis,
+                    branch: SymmetryBranch::Direct,
+                },
+                &dragged.solution,
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn symmetry_trial_holds_derived_axis_centers_and_reports_the_retained_solution() {
+        let mut builder = ProblemBuilder::new();
+        let lower_center = builder.add_point([0.0, -5.0]);
+        let lower_from = builder.add_point([-1.0, -5.0]);
+        let lower_to = builder.add_point([1.0, -5.0]);
+        builder.add_arc_center(lower_center, lower_from, lower_to, 180.0);
+        let upper_center = builder.add_point([0.0, 5.0]);
+        let upper_from = builder.add_point([-1.0, 5.0]);
+        let upper_to = builder.add_point([1.0, 5.0]);
+        builder.add_arc_center(upper_center, upper_from, upper_to, 180.0);
+        let axis = builder.add_segment(lower_center, upper_center);
+        let a0 = builder.add_point([-5.0, 0.0]);
+        let a1 = builder.add_point([-2.0, 3.0]);
+        let b0 = builder.add_point([7.0, 1.0]);
+        let b1 = builder.add_point([8.0, 5.0]);
+        let first = builder.add_segment(a0, a1);
+        let second = builder.add_segment(b0, b1);
+        let problem = builder.finish().unwrap();
+        let relation = Relation::Symmetry {
+            first: SketchCurve::Segment(first),
+            second: SketchCurve::Segment(second),
+            axis,
+            branch: SymmetryBranch::Direct,
+        };
+        let TrialAdd::Accepted { settled, .. } = problem.trial_add(relation).unwrap() else {
+            panic!("free subjects")
+        };
+        for (center, expected) in [(lower_center, [0.0, -5.0]), (upper_center, [0.0, 5.0])] {
+            let actual = settled.solution.position(center).unwrap();
+            assert!((actual[0] - expected[0]).abs() <= SATISFIED_RESIDUAL);
+            assert!((actual[1] - expected[1]).abs() <= SATISFIED_RESIDUAL);
+        }
+
+        let resolved = problem.resolve(relation).unwrap();
+        let candidate = problem.with_candidate(relation, resolved);
+        let mut preferred_positions: Vec<_> =
+            candidate.points.iter().map(|point| point.at).collect();
+        let mut preferred_scalars = candidate.scalar_coordinates();
+        let preferred_trace = run(
+            &candidate,
+            &mut preferred_positions,
+            &mut preferred_scalars,
+            Rigidity::Preferred {
+                anchored: &[lower_center, upper_center],
+                flexible_curves: &[SketchCurve::Segment(first), SketchCurve::Segment(second)],
+            },
+        )
+        .unwrap();
+        let scalars = scalar_coordinates_of_solution(&candidate, &settled.solution).unwrap();
+        let measured = exact_report_at(
+            &candidate,
+            &settled.solution.positions,
+            &scalars,
+            preferred_trace,
+        )
+        .unwrap();
+        let reported = settled.diagnostics.report.unwrap();
+        assert_eq!(reported.outcome, preferred_trace.outcome);
+        assert_eq!(reported.iterations, preferred_trace.iterations);
+        assert_eq!(
+            reported.residual_norm.to_bits(),
+            measured.residual_norm.to_bits()
+        );
+        assert_eq!(
+            (reported.degrees_of_freedom, reported.redundant_residuals),
+            (measured.degrees_of_freedom, measured.redundant_residuals)
+        );
+    }
+
+    #[test]
+    fn symmetry_direct_reversed_and_member_axis_reversal_are_kernel_invariant() {
+        for branch in [SymmetryBranch::Direct, SymmetryBranch::Reversed] {
+            for reverse_members in [false, true] {
+                for reverse_axis in [false, true] {
+                    let mut builder = ProblemBuilder::new();
+                    let low = builder.add_point([0.0, -5.0]);
+                    let high = builder.add_point([0.0, 5.0]);
+                    let axis = if reverse_axis {
+                        builder.add_segment(high, low)
+                    } else {
+                        builder.add_segment(low, high)
+                    };
+                    let a0 = builder.add_point([-3.0, 0.0]);
+                    let a1 = builder.add_point([-2.0, 2.0]);
+                    let (second_from, second_to) = if branch == SymmetryBranch::Direct {
+                        ([3.0, 0.0], [2.0, 2.0])
+                    } else {
+                        ([2.0, 2.0], [3.0, 0.0])
+                    };
+                    let b0 = builder.add_point(second_from);
+                    let b1 = builder.add_point(second_to);
+                    let first = builder.add_segment(a0, a1);
+                    let second = builder.add_segment(b0, b1);
+                    let (first, second) = if reverse_members {
+                        (second, first)
+                    } else {
+                        (first, second)
+                    };
+                    let relation = Relation::Symmetry {
+                        first: SketchCurve::Segment(first),
+                        second: SketchCurve::Segment(second),
+                        axis,
+                        branch,
+                    };
+                    builder.add_constraint(relation);
+                    let problem = builder.finish().unwrap();
+                    let analysis = problem.analyze();
+                    assert!(analysis.diagnostics.satisfied);
+                    assert!(problem
+                        .symmetry_witness(relation, &analysis.solution)
+                        .is_ok());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn symmetry_kernel_reads_fixed_and_writes_only_free_curve_scalars() {
+        let mut circles = ProblemBuilder::new();
+        let low = circles.add_point([0.0, -5.0]);
+        let high = circles.add_point([0.0, 5.0]);
+        let axis = circles.add_segment(low, high);
+        let first_center = circles.add_point([-3.0, 0.0]);
+        let second_center = circles.add_point([3.0, 0.0]);
+        let free_radius = circles.add_free_positive_radius(2.0).unwrap();
+        let fixed_radius = circles.add_fixed_positive_radius(4.0).unwrap();
+        let first = circles.add_circle(first_center, free_radius);
+        let second = circles.add_circle(second_center, fixed_radius);
+        circles.add_constraint(Relation::Symmetry {
+            first: SketchCurve::Circle(first),
+            second: SketchCurve::Circle(second),
+            axis,
+            branch: SymmetryBranch::Centers,
+        });
+        let settled = circles.finish().unwrap().settle();
+        assert!(settled.diagnostics.satisfied);
+        assert!(
+            matches!(settled.solution.parameter(free_radius), Some(ParameterValue::Radius(value)) if (value - 4.0).abs() < SATISFIED_RESIDUAL)
+        );
+        assert!(
+            matches!(settled.solution.parameter(fixed_radius), Some(ParameterValue::Radius(value)) if value.to_bits() == 4.0_f64.to_bits())
+        );
+
+        let mut arcs = ProblemBuilder::new();
+        let low = arcs.add_point([0.0, -5.0]);
+        let high = arcs.add_point([0.0, 5.0]);
+        let axis = arcs.add_segment(low, high);
+        let a0 = arcs.add_point([-8.0, 0.0]);
+        let a1 = arcs.add_point([-2.0, 0.0]);
+        let ac = arcs.add_point([-5.0, 0.0]);
+        let b0 = arcs.add_point([8.0, 0.0]);
+        let b1 = arcs.add_point([2.0, 0.0]);
+        let bc = arcs.add_point([5.0, 0.0]);
+        let free_sweep = arcs.add_free_signed_sweep(90.0).unwrap();
+        let fixed_sweep = arcs.add_fixed_signed_sweep(-120.0).unwrap();
+        let first = arcs.add_arc(ac, a0, a1, free_sweep);
+        let second = arcs.add_arc(bc, b0, b1, fixed_sweep);
+        arcs.add_constraint(Relation::Symmetry {
+            first: SketchCurve::Arc(first),
+            second: SketchCurve::Arc(second),
+            axis,
+            branch: SymmetryBranch::Direct,
+        });
+        let settled = arcs.finish().unwrap().settle();
+        assert!(settled.diagnostics.satisfied);
+        assert!(
+            matches!(settled.solution.parameter(free_sweep), Some(ParameterValue::SweepDegrees(value)) if (value - 120.0).abs() < SATISFIED_RESIDUAL)
+        );
+        assert!(
+            matches!(settled.solution.parameter(fixed_sweep), Some(ParameterValue::SweepDegrees(value)) if value.to_bits() == (-120.0_f64).to_bits())
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1793,7 +2255,10 @@ enum Rigidity<'a> {
     /// Constraint rows only: used for rank readings and the final exactness pass.
     Ignored,
     /// Preserve every edge span and remove the chosen reference piece from the parameter vector.
-    Preferred { anchored: &'a [PointId] },
+    Preferred {
+        anchored: &'a [PointId],
+        flexible_curves: &'a [SketchCurve],
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1802,6 +2267,13 @@ struct EdgeSpan {
     to: usize,
     span: [f64; 2],
 }
+
+#[derive(Debug, Clone, Copy)]
+struct PointHold {
+    slot: usize,
+    at: [f64; 2],
+}
+
 #[derive(Debug, Clone, Copy)]
 /// An arc center's derived dependencies, resolved to local coordinate slots.
 struct ArcSlots {
@@ -1890,6 +2362,12 @@ enum Resolved {
         first: usize,
         second: usize,
     },
+    Symmetry {
+        first: ResolvedCurve,
+        second: ResolvedCurve,
+        axis: SegmentSlots,
+        branch: SymmetryBranch,
+    },
 }
 
 /// The parameterized residual system, field by field.
@@ -1912,6 +2390,8 @@ struct Residuals<'a> {
     derived: Vec<Option<ArcSlots>>,
     /// Every author-drawn edge span to preserve during the preference pass, absent in exact mode.
     rigidity: Vec<EdgeSpan>,
+    /// Derived points selected as anchors, held through their defining geometry in preference mode.
+    holds: Vec<PointHold>,
     /// Whole-coordinate values at the start of this pass; anchored values remain here unchanged.
     base: Vec<f64>,
     /// Indices into `base` that the numerical solver may alter, in parameter-vector order.
@@ -2110,6 +2590,7 @@ impl<'a> Residuals<'a> {
     /// omitted from the parameter vector; free coordinates are widened before every geometry read.
     /// This narrowing/widening boundary keeps residual code in one whole-coordinate space while
     /// the numerical substrate sees only actual unknowns.
+    #[allow(clippy::too_many_lines)]
     fn new(problem: &'a Problem, scalar_coordinates: &[f64], rigidity: Rigidity) -> Option<Self> {
         if scalar_coordinates.len() != problem.parameters.len() {
             return None;
@@ -2147,14 +2628,18 @@ impl<'a> Residuals<'a> {
                 })
                 .collect::<Vec<_>>()
         };
-        let (rigidity, mut free) = match rigidity {
+        let (rigidity, holds, mut free) = match rigidity {
             Rigidity::Ignored => (
+                Vec::new(),
                 Vec::new(),
                 (0..point_coordinates)
                     .filter(|index| derived[index / 2].is_none())
                     .collect::<Vec<_>>(),
             ),
-            Rigidity::Preferred { anchored } => {
+            Rigidity::Preferred {
+                anchored,
+                flexible_curves,
+            } => {
                 let at = |slot| {
                     position_of(
                         &derived,
@@ -2164,15 +2649,29 @@ impl<'a> Residuals<'a> {
                         slot,
                     )
                 };
+                let flexible_segment = |index| {
+                    flexible_curves.iter().any(
+                        |curve| matches!(curve, SketchCurve::Segment(segment) if segment.index == index),
+                    )
+                };
+                let flexible_arc = |index| {
+                    flexible_curves
+                        .iter()
+                        .any(|curve| matches!(curve, SketchCurve::Arc(arc) if arc.index == index))
+                };
                 let spans = problem
                     .segments
                     .iter()
-                    .map(|segment| (segment.from.index, segment.to.index))
+                    .enumerate()
+                    .filter(|(index, _)| !flexible_segment(*index))
+                    .map(|(_, segment)| (segment.from.index, segment.to.index))
                     .chain(
                         problem
                             .arc_centers
                             .iter()
-                            .map(|arc| (arc.from.index, arc.to.index)),
+                            .enumerate()
+                            .filter(|(index, _)| !flexible_arc(*index))
+                            .map(|(_, arc)| (arc.from.index, arc.to.index)),
                     )
                     .map(|(from, to)| {
                         let (tail, head) = (at(from), at(to));
@@ -2184,8 +2683,15 @@ impl<'a> Residuals<'a> {
                     })
                     .collect();
                 let held: Vec<_> = anchored.iter().map(|point| point.index).collect();
+                let holds = held
+                    .iter()
+                    .copied()
+                    .filter(|slot| derived[*slot].is_some())
+                    .map(|slot| PointHold { slot, at: at(slot) })
+                    .collect();
                 (
                     spans,
+                    holds,
                     (0..point_coordinates)
                         .filter(|index| {
                             derived[index / 2].is_none() && !held.contains(&(index / 2))
@@ -2200,6 +2706,7 @@ impl<'a> Residuals<'a> {
             resolved,
             derived,
             rigidity,
+            holds,
             base,
             free,
         })
@@ -2236,7 +2743,9 @@ impl ResidualSystem for Residuals<'_> {
             .map(|constraint| constraint.relation.residual_count())
             .sum::<usize>()
             + self.rigidity.len() * 2
+            + self.holds.len() * 2
     }
+    #[allow(clippy::too_many_lines)]
     fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
         let whole = self.widen(parameters);
         let at = |slot| {
@@ -2332,6 +2841,29 @@ impl ResidualSystem for Residuals<'_> {
                     );
                     row += 1;
                 }
+                Resolved::Symmetry {
+                    first,
+                    second,
+                    axis,
+                    branch,
+                } => {
+                    let geometry = |curve| {
+                        curve_geometry(
+                            curve,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        )
+                    };
+                    row += symmetry_residuals(
+                        geometry(first),
+                        geometry(second),
+                        geometry(ResolvedCurve::Segment(axis)),
+                        branch,
+                    )
+                    .write_to(&mut into[row..]);
+                }
             }
         }
         for edge in &self.rigidity {
@@ -2340,6 +2872,12 @@ impl ResidualSystem for Residuals<'_> {
             let (tail, head) = (at(edge.from), at(edge.to));
             into[row] = (head[0] - tail[0]) - edge.span[0];
             into[row + 1] = (head[1] - tail[1]) - edge.span[1];
+            row += 2;
+        }
+        for hold in &self.holds {
+            let here = at(hold.slot);
+            into[row] = here[0] - hold.at[0];
+            into[row + 1] = here[1] - hold.at[1];
             row += 2;
         }
     }
@@ -2391,6 +2929,38 @@ fn run(
     Some(domain_report(report))
 }
 
+fn exact_report_at(
+    problem: &Problem,
+    positions: &[[f64; 2]],
+    scalar_coordinates: &[f64],
+    trace: SolveReport,
+) -> Option<SolveReport> {
+    let system = Residuals::new(problem, scalar_coordinates, Rigidity::Ignored)?;
+    let parameters = system.guess(positions);
+    let mut residuals = vec![0.0; system.residual_count()];
+    system.residuals(&parameters, &mut residuals);
+    let residual_norm = residuals
+        .iter()
+        .map(|residual| residual * residual)
+        .sum::<f64>()
+        .sqrt();
+    if !residual_norm.is_finite() {
+        return None;
+    }
+    let rank = rank(
+        &jacobian(&system, &parameters),
+        system.residual_count(),
+        system.parameter_count(),
+    );
+    Some(SolveReport {
+        outcome: trace.outcome,
+        iterations: trace.iterations,
+        residual_norm,
+        degrees_of_freedom: system.parameter_count().saturating_sub(rank),
+        redundant_residuals: system.residual_count().saturating_sub(rank),
+    })
+}
+
 /// Search status diagnoses the numerical path; residual norm decides whether relations hold.
 fn diagnostics(problem: &Problem, solution: &Solution, report: Option<SolveReport>) -> Diagnostics {
     let satisfied = report
@@ -2431,7 +3001,10 @@ impl Problem {
             self,
             &mut positions,
             &mut scalar_coordinates,
-            Rigidity::Preferred { anchored: &[] },
+            Rigidity::Preferred {
+                anchored: &[],
+                flexible_curves: &[],
+            },
         );
         let report = run(
             self,
@@ -2492,10 +3065,14 @@ impl Problem {
             .map_err(RequestError::InvalidRelation)?;
         let anchored = self.anchor_for(relation);
         let candidate_problem = self.with_candidate(relation, candidate);
-        let settled = candidate_problem.settle_with(&anchored);
+        let flexible_curves = match relation {
+            Relation::Symmetry { first, second, .. } => vec![first, second],
+            _ => Vec::new(),
+        };
+        let settled = candidate_problem.settle_with(&anchored, &flexible_curves);
         if !settled.diagnostics.satisfied {
             return Ok(TrialAdd::Rejected(TrialRejection::Unsatisfied {
-                conflicts: self.blame(relation, candidate, &anchored),
+                conflicts: self.blame(relation, candidate, &anchored, &flexible_curves),
             }));
         }
         if let Some(failure) = candidate_problem.first_tangent_contact_failure(&settled.solution) {
@@ -2571,21 +3148,31 @@ impl Problem {
         )
     }
 
-    fn settle_with(&self, anchored: &[PointId]) -> Settled {
+    fn settle_with(&self, anchored: &[PointId], flexible_curves: &[SketchCurve]) -> Settled {
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         let mut scalar_coordinates = self.scalar_coordinates();
-        run(
+        let preferred_trace = run(
             self,
             &mut positions,
             &mut scalar_coordinates,
-            Rigidity::Preferred { anchored },
+            Rigidity::Preferred {
+                anchored,
+                flexible_curves,
+            },
         );
-        let report = run(
-            self,
-            &mut positions,
-            &mut scalar_coordinates,
-            Rigidity::Ignored,
-        );
+        let preferred_report = preferred_trace
+            .and_then(|trace| exact_report_at(self, &positions, &scalar_coordinates, trace));
+        let report =
+            if preferred_report.is_some_and(|report| report.residual_norm <= SATISFIED_RESIDUAL) {
+                preferred_report
+            } else {
+                run(
+                    self,
+                    &mut positions,
+                    &mut scalar_coordinates,
+                    Rigidity::Ignored,
+                )
+            };
         let solution = self.solution(positions, &scalar_coordinates);
         let diagnostics = diagnostics(self, &solution, report);
         Settled {
@@ -2612,6 +3199,16 @@ impl Problem {
     /// cardinality because it is not going to travel regardless of size. Equal pieces meet in the
     /// middle rather than inheriting an arbitrary pick or id order the author cannot see.
     fn anchor_for(&self, relation: Relation) -> Vec<PointId> {
+        if let Relation::Symmetry { axis, .. } = relation {
+            let Some(axis) = self
+                .segments
+                .get(axis.index)
+                .filter(|_| axis.owner == self.owner)
+            else {
+                return Vec::new();
+            };
+            return vec![axis.from, axis.to];
+        }
         let named = self.named_points(relation);
         let pieces = self.connected_pieces();
         let reached: Vec<_> = pieces
@@ -2690,6 +3287,15 @@ impl Problem {
                     .flat_map(|curve| self.points_of_curve(curve))
                     .collect()
             }
+            Relation::Symmetry {
+                first,
+                second,
+                axis: _,
+                branch: _,
+            } => [first, second]
+                .into_iter()
+                .flat_map(|curve| self.points_of_curve(curve))
+                .collect(),
             _ => Vec::new(),
         };
         for segment in Self::named_segments(relation) {
@@ -2715,6 +3321,17 @@ impl Problem {
                     SketchCurve::Segment(segment) => Some(segment),
                     SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
                 })
+                .collect(),
+            Relation::Symmetry {
+                first,
+                second,
+                axis,
+                branch: _,
+            } => std::iter::once(axis)
+                .chain([first, second].into_iter().filter_map(|curve| match curve {
+                    SketchCurve::Segment(segment) => Some(segment),
+                    SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
+                }))
                 .collect(),
             Relation::Fix { .. }
             | Relation::Distance { .. }
@@ -2754,11 +3371,12 @@ impl Problem {
         relation: Relation,
         resolved: Resolved,
         anchored: &[PointId],
+        flexible_curves: &[SketchCurve],
     ) -> Vec<ConstraintId> {
         self.leave_one_out(|without| {
             without
                 .with_candidate(relation, resolved)
-                .settle_with(anchored)
+                .settle_with(anchored, flexible_curves)
                 .diagnostics
                 .satisfied
         })

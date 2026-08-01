@@ -26,7 +26,7 @@ use parametric::sketch::{
     ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
     SegmentId, SketchCurve as ParametricSketchCurve, TangentContactError, TangentContactFailure,
 };
-pub use parametric::sketch::{InternalContainment, LineSide, TangentBranch};
+pub use parametric::sketch::{InternalContainment, LineSide, SymmetryBranch, TangentBranch};
 use parametric::EvaluationContext;
 
 /// A stable reference to one authored curve. This is the document boundary equivalent of the
@@ -112,6 +112,13 @@ pub enum ConstraintKind {
         first: SketchCurve,
         second: SketchCurve,
     },
+    /// Two same-kind authored curves mirror across an explicit segment axis.
+    Symmetry {
+        first: SketchCurve,
+        second: SketchCurve,
+        axis: EntityId,
+        branch: SymmetryBranch,
+    },
 }
 
 impl ConstraintKind {
@@ -147,6 +154,30 @@ impl ConstraintKind {
         }
     }
 
+    /// Construct Symmetry with canonical subjects while retaining the axis's reference role.
+    pub const fn symmetry(
+        first: SketchCurve,
+        second: SketchCurve,
+        axis: EntityId,
+        branch: SymmetryBranch,
+    ) -> Self {
+        if first.id() <= second.id() {
+            Self::Symmetry {
+                first,
+                second,
+                axis,
+                branch,
+            }
+        } else {
+            Self::Symmetry {
+                first: second,
+                second: first,
+                axis,
+                branch,
+            }
+        }
+    }
+
     pub(super) fn normalized(self) -> Self {
         match self {
             Self::Tangent {
@@ -155,6 +186,12 @@ impl ConstraintKind {
                 branch,
             } => Self::tangent(first, second, branch),
             Self::Concentric { first, second } => Self::concentric(first, second),
+            Self::Symmetry {
+                first,
+                second,
+                axis,
+                branch,
+            } => Self::symmetry(first, second, axis, branch),
             other => other,
         }
     }
@@ -171,7 +208,8 @@ impl ConstraintKind {
             | Self::Equal { .. }
             | Self::Collinear { .. }
             | Self::Tangent { .. }
-            | Self::Concentric { .. } => Vec::new(),
+            | Self::Concentric { .. }
+            | Self::Symmetry { .. } => Vec::new(),
         }
     }
 
@@ -179,6 +217,25 @@ impl ConstraintKind {
     /// deliberately do not participate: two Fixes on a point are the same assertion whether or
     /// not their targets agree, because changing a fix is delete-then-add rather than two claims.
     pub fn is_about_the_same_as(&self, other: Self) -> bool {
+        if let (
+            Self::Symmetry {
+                first,
+                second,
+                axis,
+                ..
+            },
+            Self::Symmetry {
+                first: other_first,
+                second: other_second,
+                axis: other_axis,
+                ..
+            },
+        ) = (*self, other)
+        {
+            return first.id() == other_first.id()
+                && second.id() == other_second.id()
+                && axis == other_axis;
+        }
         std::mem::discriminant(self) == std::mem::discriminant(&other)
             && self.subject() == other.subject()
     }
@@ -200,6 +257,7 @@ impl ConstraintKind {
                 let (first, second) = (first.id(), second.id());
                 [first.min(second), first.max(second)]
             }
+            Self::Symmetry { first, second, .. } => [first.id(), second.id()],
             Self::Midpoint { point, segment } => [point, segment],
         }
     }
@@ -221,6 +279,17 @@ impl ConstraintKind {
                     SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
                 })
                 .collect(),
+            Self::Symmetry {
+                first,
+                second,
+                axis,
+                ..
+            } => std::iter::once(axis)
+                .chain([first, second].into_iter().filter_map(|curve| match curve {
+                    SketchCurve::Segment(id) => Some(id),
+                    SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
+                }))
+                .collect(),
             Self::Fix { .. }
             | Self::Distance { .. }
             | Self::Coincident { .. }
@@ -234,6 +303,7 @@ impl ConstraintKind {
             Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
                 vec![first, second]
             }
+            Self::Symmetry { first, second, .. } => vec![first, second],
             _ => Vec::new(),
         }
     }
@@ -273,6 +343,38 @@ impl ConstraintKind {
                 first.id() != second.id()
                     && matches!(first, SketchCurve::Arc(_) | SketchCurve::Circle(_))
                     && matches!(second, SketchCurve::Arc(_) | SketchCurve::Circle(_))
+            }
+            _ => true,
+        }
+    }
+
+    pub(super) const fn symmetry_is_structurally_valid(&self) -> bool {
+        match *self {
+            Self::Symmetry {
+                first,
+                second,
+                axis,
+                branch,
+            } => {
+                first.id() != second.id()
+                    && first.id() != axis
+                    && second.id() != axis
+                    && matches!(
+                        (first, second, branch),
+                        (
+                            SketchCurve::Segment(_),
+                            SketchCurve::Segment(_),
+                            SymmetryBranch::Direct | SymmetryBranch::Reversed
+                        ) | (
+                            SketchCurve::Arc(_),
+                            SketchCurve::Arc(_),
+                            SymmetryBranch::Direct | SymmetryBranch::Reversed
+                        ) | (
+                            SketchCurve::Circle(_),
+                            SketchCurve::Circle(_),
+                            SymmetryBranch::Centers
+                        )
+                    )
             }
             _ => true,
         }
@@ -324,6 +426,8 @@ pub enum ConstraintRefusal {
     },
     /// Concentric accepts two distinct arcs or circles and no other geometry.
     InvalidConcentric,
+    /// Symmetry requires two same-kind curves and one distinct nondegenerate segment axis.
+    InvalidSymmetry,
     /// The request names geometry the store does not hold.
     UnknownEntity,
     /// Its own terms cannot be met by any drawing: for example a negative distance or a horizontal
@@ -373,6 +477,7 @@ impl ConstraintRefusal {
             | Self::UnknownEntity
             | Self::Impossible
             | Self::InvalidConcentric
+            | Self::InvalidSymmetry
             | Self::InvalidTangent {
                 constraint: None, ..
             } => Vec::new(),
@@ -706,6 +811,20 @@ fn relation_for(
         ConstraintKind::Concentric { first, second } => curve(first)
             .zip(curve(second))
             .map(|(first, second)| Relation::Concentric { first, second }),
+        ConstraintKind::Symmetry {
+            first,
+            second,
+            axis,
+            branch,
+        } => curve(first)
+            .zip(curve(second))
+            .zip(segment(axis))
+            .map(|((first, second), axis)| Relation::Symmetry {
+                first,
+                second,
+                axis,
+                branch,
+            }),
     }
 }
 

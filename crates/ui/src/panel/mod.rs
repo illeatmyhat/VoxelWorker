@@ -395,7 +395,8 @@ pub(crate) use nodes::tool_node_spec;
 pub use selection::{Selection, SelectionRequest, SelectionTarget};
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use sketch_constraint::{
-    constraint_icon, ArmedConstraint, ConstraintVerb, Offer, SketchEntity, SlotKind,
+    constraint_icon, ArmedConstraint, ConstraintVerb, Offer, PickRequirement, SketchEntity,
+    SlotKind,
 };
 pub use state::{
     AngleSnap, ArmedTool, ExportPanelState, LayerRange, ModeCommand, OrbitCenterRequest, OrbitMode,

@@ -17,8 +17,10 @@
     clippy::too_many_lines
 )]
 
-const SATISFIED_RESIDUAL: f64 = 1e-6;
-const COLLAPSED_SPAN: f64 = 1e-6;
+use super::curve::{
+    CurveGeometry, COLLAPSE_TOLERANCE as COLLAPSED_SPAN,
+    SATISFACTION_TOLERANCE as SATISFIED_RESIDUAL,
+};
 
 /// Which directed side of a segment's authored `from → to` direction a circular curve touches.
 /// This belongs to the segment itself and is consequently unchanged when a relation's members swap.
@@ -79,30 +81,6 @@ pub enum TangentContactError {
     NotCoincident,
     OutsideFirstDomain,
     OutsideSecondDomain,
-}
-
-/// The minimum continuous geometry needed to select and validate a Tangent branch. It is a value
-/// descriptor, not a persistent entity reference: document ids and solver slots remain outside.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CurveGeometry {
-    Segment { from: [f64; 2], to: [f64; 2] },
-    Circular(CircularCurve),
-}
-
-/// A supporting circle, optionally restricted to an authored arc domain.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CircularCurve {
-    pub center: [f64; 2],
-    pub radius: f64,
-    pub arc: Option<ArcDomain>,
-}
-
-/// The finite authored sweep of a circular arc, measured from `from` with its sign.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ArcDomain {
-    pub from: [f64; 2],
-    pub to: [f64; 2],
-    pub sweep_radians: f64,
 }
 
 /// A user-facing alias: callers choose a Tangent branch from curve values plus session-only loci.
@@ -467,6 +445,7 @@ pub(super) fn contains_contact(curve: CurveGeometry, contact: [f64; 2]) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sketch::{ArcDomain, CircularCurve};
 
     fn arc(sweep_radians: f64) -> CurveGeometry {
         let (from, to) = if sweep_radians.is_sign_positive() {

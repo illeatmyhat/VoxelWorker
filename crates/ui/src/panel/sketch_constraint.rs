@@ -45,7 +45,18 @@ pub enum SlotKind {
     CircularCurve,
 }
 
-impl SlotKind {
+/// The exact kind the current gesture asks the shell to resolve before comparing distances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickRequirement {
+    Point,
+    Segment,
+    Curve,
+    CircularCurve,
+    Arc,
+    Circle,
+}
+
+impl PickRequirement {
     fn accepts(self, entity: SketchEntity) -> bool {
         matches!(
             (self, entity),
@@ -59,8 +70,35 @@ impl SlotKind {
                     Self::CircularCurve,
                     SketchEntity::Arc(_) | SketchEntity::Circle(_)
                 )
+                | (Self::Arc, SketchEntity::Arc(_))
+                | (Self::Circle, SketchEntity::Circle(_))
         )
     }
+
+    pub fn wanted(self) -> &'static str {
+        match self {
+            Self::Point => "a point",
+            Self::Segment => "a line",
+            Self::Curve => "a curve",
+            Self::CircularCurve => "an arc or circle",
+            Self::Arc => "an arc",
+            Self::Circle => "a circle",
+        }
+    }
+}
+
+impl From<SlotKind> for PickRequirement {
+    fn from(slot: SlotKind) -> Self {
+        match slot {
+            SlotKind::Point => Self::Point,
+            SlotKind::Segment => Self::Segment,
+            SlotKind::Curve => Self::Curve,
+            SlotKind::CircularCurve => Self::CircularCurve,
+        }
+    }
+}
+
+impl SlotKind {
     /// What the prompt asks for when this slot is the one waiting.
     pub fn wanted(self) -> &'static str {
         match self {
@@ -102,6 +140,8 @@ pub enum ConstraintVerb {
     Tangent,
     /// Two arcs or circles share one center.
     Concentric,
+    /// Two same-kind curves mirror across a third picked segment axis.
+    Symmetry,
 }
 
 impl ConstraintVerb {
@@ -124,6 +164,7 @@ impl ConstraintVerb {
             ConstraintVerb::Midpoint => &[SlotKind::Point, SlotKind::Segment],
             ConstraintVerb::Tangent => &[SlotKind::Curve, SlotKind::Curve],
             ConstraintVerb::Concentric => &[SlotKind::CircularCurve, SlotKind::CircularCurve],
+            ConstraintVerb::Symmetry => &[SlotKind::Curve, SlotKind::Curve, SlotKind::Segment],
         }
     }
 
@@ -141,6 +182,7 @@ impl ConstraintVerb {
             ConstraintVerb::Collinear => "Collinear — then pick two lines",
             ConstraintVerb::Tangent => "Tangent — then pick two curves",
             ConstraintVerb::Concentric => "Concentric — then pick two arcs or circles",
+            ConstraintVerb::Symmetry => "Symmetry — then pick two matching curves and an axis",
         }
     }
 
@@ -162,6 +204,7 @@ impl ConstraintVerb {
             ConstraintVerb::Collinear => Icon::ConstraintCollinear,
             ConstraintVerb::Tangent => Icon::ConstraintTangent,
             ConstraintVerb::Concentric => Icon::ConstraintConcentric,
+            ConstraintVerb::Symmetry => Icon::ConstraintSymmetry,
         }
     }
 }
@@ -183,6 +226,7 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Collinear { .. } => Icon::ConstraintCollinear,
         ConstraintKind::Tangent { .. } => Icon::ConstraintTangent,
         ConstraintKind::Concentric { .. } => Icon::ConstraintConcentric,
+        ConstraintKind::Symmetry { .. } => Icon::ConstraintSymmetry,
     }
 }
 
@@ -221,22 +265,28 @@ impl ArmedConstraint {
     /// Rebuild a gesture from its parts — the door a dump comes back through, so a mid-pick
     /// repro re-enters with the same question on screen.
     ///
-    /// Picks past the verb's slot count are DROPPED rather than trusted: a dump written by a
-    /// build whose slot list was longer would otherwise hand back a gesture that reports itself
-    /// complete while `kind` cannot build anything. Truncating degrades it to "still asking",
-    /// which every part of the gesture already handles.
+    /// A full or overfull restored list restarts empty: completed gestures are dispatched and
+    /// disarmed rather than persisted, so such a list is malformed session state.
     pub fn from_parts(verb: ConstraintVerb, picked: Vec<SketchEntity>) -> Self {
-        let mut picked = picked;
-        picked.truncate(verb.slots().len());
         // Tangent depends on unsnapped click evidence; restored artifacts intentionally restart it.
         if verb == ConstraintVerb::Tangent {
             return Self::new(verb);
         }
-        ArmedConstraint {
-            verb,
-            picked,
-            loci: Vec::new(),
+        if picked.len() >= verb.slots().len() {
+            return Self::new(verb);
         }
+        let mut restored = Self::new(verb);
+        for candidate in picked.into_iter().take(verb.slots().len()) {
+            if restored.picked.contains(&candidate)
+                || restored
+                    .wants()
+                    .is_none_or(|wanted| !wanted.accepts(candidate))
+            {
+                return Self::new(verb);
+            }
+            restored.picked.push(candidate);
+        }
+        restored
     }
 
     pub fn verb(&self) -> ConstraintVerb {
@@ -254,8 +304,31 @@ impl ArmedConstraint {
     /// the vertices sitting on them, rather than resolving the click by the general
     /// most-specific-thing-wins rule and then refusing what it found. A question that already
     /// knows what kind of answer it wants should not be able to pick up the wrong kind.
-    pub fn wants(&self) -> Option<SlotKind> {
-        self.verb.slots().get(self.picked.len()).copied()
+    pub fn wants(&self) -> Option<PickRequirement> {
+        if self.verb == ConstraintVerb::Symmetry && self.picked.len() == 1 {
+            return match self.picked[0] {
+                SketchEntity::Segment(_) => Some(PickRequirement::Segment),
+                SketchEntity::Arc(_) => Some(PickRequirement::Arc),
+                SketchEntity::Circle(_) => Some(PickRequirement::Circle),
+                SketchEntity::Point(_) => None,
+            };
+        }
+        self.verb
+            .slots()
+            .get(self.picked.len())
+            .copied()
+            .map(Into::into)
+    }
+
+    /// Restart a restored gesture whose held entities are dead or no longer fit its dynamic slots.
+    pub fn restart_if_invalid(&mut self, sketch: &Sketch) -> bool {
+        let restored = Self::from_parts(self.verb, self.picked.clone());
+        let invalid = restored.picked.len() != self.picked.len()
+            || restored.picked.iter().any(|entity| !holds(sketch, *entity));
+        if invalid {
+            *self = Self::new(self.verb);
+        }
+        invalid
     }
 
     /// What the status line says while this gesture runs.
@@ -286,10 +359,12 @@ impl ArmedConstraint {
         };
         if !slot.accepts(candidate) {
             return Offer::Refused(match slot {
-                SlotKind::Point => "that is not a point",
-                SlotKind::Segment => "that is not a line",
-                SlotKind::Curve => "that is not a curve",
-                SlotKind::CircularCurve => "pick an arc or circle — lines have no center",
+                PickRequirement::Point => "that is not a point",
+                PickRequirement::Segment => "that is not a line",
+                PickRequirement::Curve => "that is not a curve",
+                PickRequirement::CircularCurve => "pick an arc or circle — lines have no center",
+                PickRequirement::Arc => "pick another arc",
+                PickRequirement::Circle => "pick another circle",
             });
         }
         if self.picked.contains(&candidate) {
@@ -387,7 +462,7 @@ impl ArmedConstraint {
                 }
                 _ => None,
             },
-            ConstraintVerb::Tangent => None,
+            ConstraintVerb::Tangent | ConstraintVerb::Symmetry => None,
             ConstraintVerb::Concentric => {
                 let (first, second) = circular_pair()?;
                 Some(ConstraintKind::concentric(first, second))
@@ -406,8 +481,30 @@ impl ArmedConstraint {
         sketch: &Sketch,
         context: parametric::EvaluationContext,
     ) -> Result<ConstraintKind, &'static str> {
-        if self.verb != ConstraintVerb::Tangent {
+        if !matches!(
+            self.verb,
+            ConstraintVerb::Tangent | ConstraintVerb::Symmetry
+        ) {
             return self.kind(sketch).ok_or("constraint is incomplete");
+        }
+        if self.verb == ConstraintVerb::Symmetry {
+            let curve = |entity: SketchEntity| match entity {
+                SketchEntity::Segment(id) => Some(SketchCurve::Segment(id)),
+                SketchEntity::Arc(id) => Some(SketchCurve::Arc(id)),
+                SketchEntity::Circle(id) => Some(SketchCurve::Circle(id)),
+                SketchEntity::Point(_) => None,
+            };
+            let (Some(first), Some(second), Some(SketchEntity::Segment(axis))) = (
+                self.picked.first().copied().and_then(curve),
+                self.picked.get(1).copied().and_then(curve),
+                self.picked.get(2).copied(),
+            ) else {
+                return Err("pick two matching curves and an axis");
+            };
+            let branch = sketch
+                .choose_symmetry_branch(first, second, axis, context)
+                .map_err(|_| "cannot mirror those curves about that axis")?;
+            return Ok(ConstraintKind::symmetry(first, second, axis, branch));
         }
         let (Some(first), Some(second), Some(first_locus), Some(second_locus)) = (
             self.picked.first(),
@@ -519,13 +616,13 @@ mod tests {
     fn a_running_gesture_says_what_kind_of_pick_it_is_waiting_for() {
         let (sketch, _, _, segment) = one_segment();
         let mut armed = ArmedConstraint::new(ConstraintVerb::HorizontalOrVertical);
-        assert_eq!(armed.wants(), Some(SlotKind::Segment));
+        assert_eq!(armed.wants(), Some(PickRequirement::Segment));
         assert_eq!(SlotKind::Segment.wanted(), "a line");
         armed.offer(SketchEntity::Segment(segment), &sketch);
         assert_eq!(armed.wants(), None, "a filled gesture asks for nothing");
 
         let fix = ArmedConstraint::new(ConstraintVerb::Fix);
-        assert_eq!(fix.wants(), Some(SlotKind::Point));
+        assert_eq!(fix.wants(), Some(PickRequirement::Point));
     }
 
     /// The refusal that motivates the whole gesture: a pick of the wrong kind is turned away and
@@ -752,7 +849,7 @@ mod tests {
             )
             .expect("circle");
         let mut armed = ArmedConstraint::new(ConstraintVerb::Concentric);
-        assert_eq!(armed.wants(), Some(SlotKind::CircularCurve));
+        assert_eq!(armed.wants(), Some(PickRequirement::CircularCurve));
         assert_eq!(
             armed.offer(SketchEntity::Segment(segment), &sketch),
             Offer::Refused("pick an arc or circle — lines have no center")
@@ -829,6 +926,102 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn symmetry_waits_for_the_first_subjects_exact_curve_kind_then_a_segment_axis() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let axis_from = sketch.add_free_point(SketchPoint::new(0, -10));
+        let axis_to = sketch.add_free_point(SketchPoint::new(0, 10));
+        let axis = sketch.connect(axis_from, axis_to).expect("axis");
+        let a0 = sketch.add_free_point(SketchPoint::new(-4, 0));
+        let a1 = sketch.add_free_point(SketchPoint::new(-4, 4));
+        let first_segment = sketch.connect(a0, a1).expect("segment");
+        let b0 = sketch.add_free_point(SketchPoint::new(4, 0));
+        let b1 = sketch.add_free_point(SketchPoint::new(4, 4));
+        let second_segment = sketch.connect(b0, b1).expect("segment");
+        let arc = sketch
+            .connect_arc(a0, a1, AngleMeasurement::from_degrees(90))
+            .expect("arc");
+        let circle = sketch
+            .add_circle(
+                SketchPoint::new(8, 0),
+                document::sketch::SketchLength::new(2),
+            )
+            .expect("circle");
+        let context =
+            parametric::EvaluationContext::new(std::num::NonZeroU32::new(16).expect("density"));
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Symmetry);
+        assert_eq!(armed.wants(), Some(PickRequirement::Curve));
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(first_segment), &sketch),
+            Offer::Taken
+        );
+        assert_eq!(armed.wants(), Some(PickRequirement::Segment));
+        assert_eq!(
+            armed.offer(SketchEntity::Arc(arc), &sketch),
+            Offer::Refused("that is not a line")
+        );
+        assert_eq!(armed.picked(), &[SketchEntity::Segment(first_segment)]);
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(second_segment), &sketch),
+            Offer::Taken
+        );
+        assert_eq!(armed.wants(), Some(PickRequirement::Segment));
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(first_segment), &sketch),
+            Offer::Refused("already picked")
+        );
+        assert_eq!(
+            armed.offer(SketchEntity::Circle(circle), &sketch),
+            Offer::Refused("that is not a line")
+        );
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(axis), &sketch),
+            Offer::Complete
+        );
+        assert!(matches!(
+            armed.kind_at_context(&sketch, context),
+            Ok(ConstraintKind::Symmetry {
+                axis: held_axis,
+                ..
+            }) if held_axis == axis
+        ));
+        assert_eq!(ConstraintVerb::Symmetry.icon(), Icon::ConstraintSymmetry);
+    }
+
+    #[test]
+    fn symmetry_dynamic_requirement_covers_arcs_circles_and_malformed_restore() {
+        let arc = ArmedConstraint::from_parts(ConstraintVerb::Symmetry, vec![SketchEntity::Arc(1)]);
+        assert_eq!(arc.wants(), Some(PickRequirement::Arc));
+        let circle =
+            ArmedConstraint::from_parts(ConstraintVerb::Symmetry, vec![SketchEntity::Circle(2)]);
+        assert_eq!(circle.wants(), Some(PickRequirement::Circle));
+        let malformed = ArmedConstraint::from_parts(
+            ConstraintVerb::Symmetry,
+            vec![SketchEntity::Arc(1), SketchEntity::Circle(2)],
+        );
+        assert!(malformed.picked().is_empty());
+        assert_eq!(malformed.wants(), Some(PickRequirement::Curve));
+        let complete = ArmedConstraint::from_parts(
+            ConstraintVerb::Symmetry,
+            vec![
+                SketchEntity::Segment(1),
+                SketchEntity::Segment(2),
+                SketchEntity::Segment(3),
+            ],
+        );
+        assert!(complete.picked().is_empty());
+        let overfull = ArmedConstraint::from_parts(
+            ConstraintVerb::Symmetry,
+            vec![
+                SketchEntity::Circle(1),
+                SketchEntity::Circle(2),
+                SketchEntity::Segment(3),
+                SketchEntity::Point(4),
+            ],
+        );
+        assert!(overfull.picked().is_empty());
     }
 
     /// The badge reports the ANSWER, not the question: a line asserted plumb carries the plain

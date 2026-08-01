@@ -157,6 +157,7 @@ enum ConstraintVerbConfig {
     Midpoint,
     Collinear,
     Concentric,
+    Symmetry,
     Tangent,
 }
 
@@ -183,6 +184,7 @@ impl ArmedConstraintConfig {
                 ui::panel::ConstraintVerb::Midpoint => ConstraintVerbConfig::Midpoint,
                 ui::panel::ConstraintVerb::Collinear => ConstraintVerbConfig::Collinear,
                 ui::panel::ConstraintVerb::Concentric => ConstraintVerbConfig::Concentric,
+                ui::panel::ConstraintVerb::Symmetry => ConstraintVerbConfig::Symmetry,
                 ui::panel::ConstraintVerb::Tangent => ConstraintVerbConfig::Tangent,
             },
             picked: if armed.verb() == ui::panel::ConstraintVerb::Tangent {
@@ -215,6 +217,7 @@ impl ArmedConstraintConfig {
             ConstraintVerbConfig::Midpoint => ui::panel::ConstraintVerb::Midpoint,
             ConstraintVerbConfig::Collinear => ui::panel::ConstraintVerb::Collinear,
             ConstraintVerbConfig::Concentric => ui::panel::ConstraintVerb::Concentric,
+            ConstraintVerbConfig::Symmetry => ui::panel::ConstraintVerb::Symmetry,
             ConstraintVerbConfig::Tangent => ui::panel::ConstraintVerb::Tangent,
         };
         let picked = self
@@ -1112,6 +1115,55 @@ mod tests {
         let restored = config.restore();
         assert_eq!(restored.verb(), ui::panel::ConstraintVerb::Concentric);
         assert_eq!(restored.picked(), &[ui::panel::SketchEntity::Arc(17)]);
-        assert_eq!(restored.wants(), Some(ui::panel::SlotKind::CircularCurve));
+        assert_eq!(
+            restored.wants(),
+            Some(ui::panel::PickRequirement::CircularCurve)
+        );
+    }
+
+    #[test]
+    fn symmetry_artifact_restores_its_dynamic_exact_curve_requirement() {
+        for (pick, expected) in [
+            (
+                ui::panel::SketchEntity::Segment(17),
+                ui::panel::PickRequirement::Segment,
+            ),
+            (
+                ui::panel::SketchEntity::Arc(18),
+                ui::panel::PickRequirement::Arc,
+            ),
+            (
+                ui::panel::SketchEntity::Circle(19),
+                ui::panel::PickRequirement::Circle,
+            ),
+        ] {
+            let armed = ui::panel::ArmedConstraint::from_parts(
+                ui::panel::ConstraintVerb::Symmetry,
+                vec![pick],
+            );
+            let config = ArmedConstraintConfig::capture(&armed);
+            let restored = config.restore();
+            assert_eq!(restored.verb(), ui::panel::ConstraintVerb::Symmetry);
+            assert_eq!(restored.picked(), &[pick]);
+            assert_eq!(restored.wants(), Some(expected));
+        }
+
+        let malformed = ArmedConstraintConfig {
+            verb: ConstraintVerbConfig::Symmetry,
+            picked: vec![SketchEntityConfig::Arc(1), SketchEntityConfig::Circle(2)],
+        };
+        let restored = malformed.restore();
+        assert!(restored.picked().is_empty());
+        assert_eq!(restored.wants(), Some(ui::panel::PickRequirement::Curve));
+
+        let complete = ArmedConstraintConfig {
+            verb: ConstraintVerbConfig::Symmetry,
+            picked: vec![
+                SketchEntityConfig::Segment(1),
+                SketchEntityConfig::Segment(2),
+                SketchEntityConfig::Segment(3),
+            ],
+        };
+        assert!(complete.restore().picked().is_empty());
     }
 }

@@ -12,7 +12,7 @@ use document::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
 use document::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
 use document::sketch::{
     evaluation_context_from_density, ConstraintKind, LineSide, PlaneAxis, RevolveAxis, Sketch,
-    SketchCurve, SketchLength, SketchPoint, SketchSolid, TangentBranch,
+    SketchCurve, SketchLength, SketchPoint, SketchSolid, SymmetryBranch, TangentBranch,
 };
 use document::voxel::SdfShape;
 use parametric::units::Measurement;
@@ -570,6 +570,57 @@ fn set_sketch_concentric_json_dispatch_undo_redo_round_trips() {
             first: SketchCurve::Circle(a),
             second: SketchCurve::Circle(b)
         } if a < b
+    ));
+    assert_round_trips(&mut scene, replayed);
+}
+
+#[test]
+fn set_sketch_symmetry_json_dispatch_undo_redo_round_trips_byte_exactly() {
+    let mut scene = sketch_then_tool_scene();
+    let target = scene.roots[0];
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let axis_from = sketch.add_free_point(SketchPoint::new(0, -10));
+    let axis_to = sketch.add_free_point(SketchPoint::new(0, 10));
+    let axis = sketch.connect(axis_from, axis_to).expect("axis");
+    let a0 = sketch.add_free_point(SketchPoint::new(-4, 0));
+    let a1 = sketch.add_free_point(SketchPoint::new(-4, 4));
+    let b0 = sketch.add_free_point(SketchPoint::new(4, 0));
+    let b1 = sketch.add_free_point(SketchPoint::new(4, 4));
+    let first = sketch.connect(a0, a1).expect("first");
+    let second = sketch.connect(b0, b1).expect("second");
+    let constraint = sketch
+        .add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(second),
+                SketchCurve::Segment(first),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            evaluation_context_from_density(16).expect("density"),
+        )
+        .expect("symmetry");
+    let intent = Intent::SetSketch {
+        target,
+        producer: SketchSolid::extrude(sketch, 3),
+    };
+    let serialized = serde_json::to_vec(&intent).expect("serialize");
+    let replayed: Intent = serde_json::from_slice(&serialized).expect("deserialize");
+    assert_eq!(
+        serde_json::to_vec(&replayed).expect("reserialize"),
+        serialized
+    );
+    let Intent::SetSketch { producer, .. } = &replayed else {
+        panic!("SetSketch")
+    };
+    assert_eq!(producer.sketch.constraints()[0].id, constraint);
+    assert!(matches!(
+        producer.sketch.constraints()[0].kind,
+        ConstraintKind::Symmetry {
+            first: SketchCurve::Segment(a),
+            second: SketchCurve::Segment(b),
+            axis: held_axis,
+            branch: SymmetryBranch::Direct,
+        } if a < b && held_axis == axis
     ));
     assert_round_trips(&mut scene, replayed);
 }

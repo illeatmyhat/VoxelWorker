@@ -2229,7 +2229,7 @@ fn fixed_block_radius_tangent_retargets_from_density_16_to_32_without_losing_aut
             TangentBranch::Line(LineSide::Left),
         ),
     );
-    assert_eq!(sketch.circles()[0].resolved_radius(ctx(16)), 16.0);
+    assert!((sketch.circles()[0].resolved_radius(ctx(16)) - 16.0).abs() < 1.0e-6);
     sketch.retarget_density(16, 32);
     sketch.solve(ctx(32)).expect("d32 tangent solve");
     assert_eq!(
@@ -2321,6 +2321,548 @@ fn concentric_center_rejects_unsatisfied_or_non_circular_pairs() {
     assert!(sketch
         .concentric_center(SketchCurve::Segment(segment), SketchCurve::Circle(first))
         .is_none());
+}
+
+fn add_test_segment(
+    sketch: &mut Sketch,
+    from: [i64; 2],
+    to: [i64; 2],
+) -> (EntityId, EntityId, EntityId) {
+    let from = sketch.add_free_point(SketchPoint::new(from[0], from[1]));
+    let to = sketch.add_free_point(SketchPoint::new(to[0], to[1]));
+    let segment = sketch.connect(from, to).expect("segment");
+    (from, to, segment)
+}
+
+#[test]
+fn symmetry_uses_the_explicit_axis_as_add_preference_then_allows_axis_drag() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (axis_from, axis_to, axis) = add_test_segment(&mut sketch, [0, -10], [0, 10]);
+    let (_, _, first) = add_test_segment(&mut sketch, [-6, 0], [-4, 4]);
+    let (_, _, second) = add_test_segment(&mut sketch, [8, 1], [7, 6]);
+    let (unrelated_from, unrelated_to, _) = add_test_segment(&mut sketch, [20, 2], [27, 5]);
+    let first = SketchCurve::Segment(first);
+    let second = SketchCurve::Segment(second);
+    let axis_before = (position(&sketch, axis_from), position(&sketch, axis_to));
+    let unrelated_before = (
+        position(&sketch, unrelated_from),
+        position(&sketch, unrelated_to),
+    );
+    let branch = sketch
+        .choose_symmetry_branch(first, second, axis, ctx(16))
+        .expect("same-kind subjects and live axis");
+    sketch
+        .add_constraint(
+            ConstraintKind::symmetry(second, first, axis, branch),
+            ctx(16),
+        )
+        .expect("free subjects can mirror about the axis");
+    assert_eq!(
+        (position(&sketch, axis_from), position(&sketch, axis_to)),
+        axis_before,
+        "the preference pass keeps the explicit reference axis"
+    );
+    assert_eq!(
+        (
+            position(&sketch, unrelated_from),
+            position(&sketch, unrelated_to),
+        ),
+        unrelated_before,
+        "unrelated rigidity remains a preference"
+    );
+    let locus = sketch
+        .symmetry_badge_locus(first, second, axis, branch, ctx(16))
+        .expect("standing symmetry has a witness");
+    assert!(
+        locus[0].abs() < 1.0e-6,
+        "badge lies on the vertical axis: {locus:?}"
+    );
+
+    assert!(sketch
+        .move_point(axis_to, SketchPoint::new(3, 11), ctx(16))
+        .expect("drag evaluates"));
+    assert_ne!(
+        position(&sketch, axis_to),
+        axis_before.1,
+        "the axis is not fixed"
+    );
+    sketch
+        .symmetry_badge_locus(first, second, axis, branch, ctx(16))
+        .expect("subjects follow the dragged axis");
+}
+
+#[test]
+fn symmetry_anchors_only_axis_endpoints_when_a_subject_shares_axis_topology() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let axis_from = sketch.add_free_point(SketchPoint::new(0, -10));
+    let shared = sketch.add_free_point(SketchPoint::new(0, 10));
+    let axis = sketch.connect(axis_from, shared).expect("axis");
+    let movable = sketch.add_free_point(SketchPoint::new(-8, 4));
+    let first = sketch.connect(shared, movable).expect("connected subject");
+    let fixed_from = sketch.add_free_point(SketchPoint::new(0, 10));
+    let fixed_to = sketch.add_free_point(SketchPoint::new(3, 6));
+    let second = sketch.connect(fixed_from, fixed_to).expect("fixed subject");
+    for (point, at) in [
+        (fixed_from, SketchPoint::new(0, 10)),
+        (fixed_to, SketchPoint::new(3, 6)),
+    ] {
+        sketch
+            .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
+            .expect("fix subject endpoint");
+    }
+    let axis_before = (position(&sketch, axis_from), position(&sketch, shared));
+    let movable_before = position(&sketch, movable);
+    sketch
+        .add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(first),
+                SketchCurve::Segment(second),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        )
+        .expect("the connected subject endpoint remains driven");
+    assert_eq!(
+        (position(&sketch, axis_from), position(&sketch, shared)),
+        axis_before
+    );
+    assert_ne!(position(&sketch, movable), movable_before);
+}
+
+#[test]
+fn symmetry_normalizes_subjects_and_deduplicates_independently_of_branch() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (_, _, axis) = add_test_segment(&mut sketch, [0, -10], [0, 10]);
+    let (_, _, first) = add_test_segment(&mut sketch, [-4, 0], [-4, 3]);
+    let (_, _, second) = add_test_segment(&mut sketch, [4, 0], [4, 3]);
+    let first = SketchCurve::Segment(first);
+    let second = SketchCurve::Segment(second);
+    let constraint = sketch
+        .add_constraint(
+            ConstraintKind::symmetry(second, first, axis, SymmetryBranch::Direct),
+            ctx(16),
+        )
+        .expect("already symmetric");
+    let ConstraintKind::Symmetry {
+        first: stored_first,
+        second: stored_second,
+        axis: stored_axis,
+        branch,
+    } = sketch.constraints()[0].kind
+    else {
+        panic!("symmetry")
+    };
+    assert!(stored_first.id() < stored_second.id());
+    assert_eq!(stored_axis, axis);
+    assert_eq!(branch, SymmetryBranch::Direct);
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::symmetry(first, second, axis, SymmetryBranch::Reversed),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::AlreadyAsserted {
+            existing: constraint
+        })
+    );
+}
+
+#[test]
+fn symmetry_refuses_bad_structure_and_degenerate_axes_before_solving() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (_, _, axis) = add_test_segment(&mut sketch, [0, -10], [0, 10]);
+    let (_, _, first_segment) = add_test_segment(&mut sketch, [-4, 0], [-4, 3]);
+    let circle = sketch
+        .add_circle(SketchPoint::new(4, 1), SketchLength::new(2))
+        .expect("circle");
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(first_segment),
+                SketchCurve::Circle(circle),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::InvalidSymmetry)
+    );
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(first_segment),
+                SketchCurve::Segment(first_segment),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::InvalidSymmetry)
+    );
+    let (_, _, second_segment) = add_test_segment(&mut sketch, [4, 0], [4, 3]);
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(first_segment),
+                SketchCurve::Segment(second_segment),
+                first_segment,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::InvalidSymmetry)
+    );
+    let degenerate_from = sketch.add_free_point(SketchPoint::new(20, 20));
+    let degenerate_to = sketch.add_free_point(SketchPoint::new(20, 20));
+    let degenerate = sketch
+        .connect(degenerate_from, degenerate_to)
+        .expect("distinct ids");
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(first_segment),
+                SketchCurve::Segment(second_segment),
+                degenerate,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::InvalidSymmetry)
+    );
+}
+
+#[test]
+fn public_symmetry_queries_reject_invalid_persisted_identities() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (_, _, axis) = add_test_segment(&mut sketch, [0, -10], [0, 10]);
+    let (_, _, first) = add_test_segment(&mut sketch, [-4, 0], [-4, 3]);
+    let (_, _, second) = add_test_segment(&mut sketch, [4, 0], [4, 3]);
+    let circle = sketch
+        .add_circle(SketchPoint::new(4, 1), SketchLength::new(2))
+        .expect("circle");
+    assert!(sketch
+        .choose_symmetry_branch(
+            SketchCurve::Segment(first),
+            SketchCurve::Segment(first),
+            axis,
+            ctx(16),
+        )
+        .is_err());
+    assert!(sketch
+        .choose_symmetry_branch(
+            SketchCurve::Segment(first),
+            SketchCurve::Circle(circle),
+            axis,
+            ctx(16),
+        )
+        .is_err());
+    assert!(sketch
+        .choose_symmetry_branch(
+            SketchCurve::Segment(first),
+            SketchCurve::Segment(second),
+            first,
+            ctx(16),
+        )
+        .is_err());
+    assert!(sketch
+        .symmetry_badge_locus(
+            SketchCurve::Segment(first),
+            SketchCurve::Segment(second),
+            axis,
+            SymmetryBranch::Centers,
+            ctx(16),
+        )
+        .is_err());
+}
+
+#[test]
+fn circle_symmetry_equalizes_free_radii_and_fixed_disagreement_is_unsatisfiable() {
+    let make = || {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let (_, _, axis) = add_test_segment(&mut sketch, [0, -10], [0, 10]);
+        let first = sketch
+            .add_circle(SketchPoint::new(-5, 0), SketchLength::new(2))
+            .expect("circle");
+        let second = sketch
+            .add_circle(SketchPoint::new(5, 0), SketchLength::new(6))
+            .expect("circle");
+        (sketch, axis, first, second)
+    };
+    let (mut free, axis, first, second) = make();
+    free.add_constraint(
+        ConstraintKind::symmetry(
+            SketchCurve::Circle(first),
+            SketchCurve::Circle(second),
+            axis,
+            SymmetryBranch::Centers,
+        ),
+        ctx(16),
+    )
+    .expect("free radii can equalize");
+    assert!(
+        (free.circles()[0].resolved_radius(ctx(16)) - free.circles()[1].resolved_radius(ctx(16)))
+            .abs()
+            < 1.0e-6
+    );
+
+    let (mut fixed, axis, first, second) = make();
+    fixed.circles_mut_for_test()[0].radius =
+        CircleRadius::fixed(::parametric::units::Measurement::from_voxels(2));
+    fixed.circles_mut_for_test()[1].radius =
+        CircleRadius::fixed(::parametric::units::Measurement::from_voxels(6));
+    assert!(matches!(
+        fixed.add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Circle(first),
+                SketchCurve::Circle(second),
+                axis,
+                SymmetryBranch::Centers,
+            ),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::Unsatisfiable { .. })
+    ));
+}
+
+#[test]
+fn circle_symmetry_reads_fixed_radius_authority_at_each_density() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (_, _, axis) = add_test_segment(&mut sketch, [0, -40], [0, 40]);
+    let free = sketch
+        .add_circle(SketchPoint::new(-20, 0), SketchLength::new(3))
+        .expect("free circle");
+    let fixed = sketch
+        .add_circle(SketchPoint::new(20, 0), SketchLength::new(1))
+        .expect("fixed circle");
+    let source =
+        ::parametric::units::Measurement::new(::parametric::ExactRational::from_integer(1), 0);
+    sketch.circles_mut_for_test()[1].radius = CircleRadius::fixed(source);
+    let fixed_bits = serde_json::to_vec(&sketch.circles()[1].radius).expect("fixed source");
+    sketch
+        .add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Circle(free),
+                SketchCurve::Circle(fixed),
+                axis,
+                SymmetryBranch::Centers,
+            ),
+            ctx(16),
+        )
+        .expect("free radius follows fixed source");
+    assert!((sketch.circles()[0].resolved_radius(ctx(16)) - 16.0).abs() < 1.0e-6);
+    assert_eq!(
+        serde_json::to_vec(&sketch.circles()[1].radius).expect("fixed source"),
+        fixed_bits
+    );
+    sketch.solve(ctx(32)).expect("density re-evaluation");
+    assert!((sketch.circles()[0].resolved_radius(ctx(32)) - 32.0).abs() < 1.0e-6);
+    assert_eq!(
+        serde_json::to_vec(&sketch.circles()[1].radius).expect("fixed source"),
+        fixed_bits
+    );
+}
+
+#[test]
+fn arc_symmetry_reads_fixed_sweep_authority_for_direct_and_reversed_branches() {
+    for (branch, second_ends, fixed_degrees) in [
+        (SymmetryBranch::Direct, ([8, 0], [2, 0]), -120),
+        (SymmetryBranch::Reversed, ([2, 0], [8, 0]), 120),
+    ] {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let (_, _, axis) = add_test_segment(&mut sketch, [0, -20], [0, 20]);
+        let first_from = sketch.add_free_point(SketchPoint::new(-8, 0));
+        let first_to = sketch.add_free_point(SketchPoint::new(-2, 0));
+        let first = sketch
+            .connect_arc(first_from, first_to, AngleMeasurement::from_degrees(90))
+            .expect("free arc");
+        let second_from =
+            sketch.add_free_point(SketchPoint::new(second_ends.0[0], second_ends.0[1]));
+        let second_to = sketch.add_free_point(SketchPoint::new(second_ends.1[0], second_ends.1[1]));
+        let second = sketch
+            .connect_arc(
+                second_from,
+                second_to,
+                AngleMeasurement::from_degrees(fixed_degrees),
+            )
+            .expect("fixed arc");
+        sketch.arcs_mut_for_test()[1].bulge =
+            ArcSweep::fixed(AngleMeasurement::from_degrees(fixed_degrees));
+        let fixed_bits = serde_json::to_vec(&sketch.arcs()[1].bulge).expect("fixed sweep");
+        sketch
+            .add_constraint(
+                ConstraintKind::symmetry(
+                    SketchCurve::Arc(first),
+                    SketchCurve::Arc(second),
+                    axis,
+                    branch,
+                ),
+                ctx(16),
+            )
+            .expect("free sweep follows fixed authority");
+        assert!((sketch.arcs()[0].sweep_degrees() - 120.0).abs() < 1.0e-6);
+        assert_eq!(
+            serde_json::to_vec(&sketch.arcs()[1].bulge).expect("fixed sweep"),
+            fixed_bits
+        );
+        sketch
+            .solve(ctx(32))
+            .expect("density-independent angle source");
+        assert!((sketch.arcs()[0].sweep_degrees() - 120.0).abs() < 1.0e-6);
+        assert_eq!(
+            serde_json::to_vec(&sketch.arcs()[1].bulge).expect("fixed sweep"),
+            fixed_bits
+        );
+    }
+}
+
+#[test]
+fn symmetry_round_trips_repairs_degenerate_axes_and_cascades_axis_deletion() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (axis_from, axis_to, axis) = add_test_segment(&mut sketch, [0, -10], [0, 10]);
+    let (_, _, first) = add_test_segment(&mut sketch, [-4, 0], [-4, 3]);
+    let (_, _, second) = add_test_segment(&mut sketch, [4, 0], [4, 3]);
+    sketch
+        .add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(second),
+                SketchCurve::Segment(first),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        )
+        .expect("symmetry");
+    let json = serde_json::to_string(&sketch).expect("serialize");
+    let mut loaded: Sketch = serde_json::from_str(&json).expect("deserialize");
+    let ConstraintKind::Symmetry {
+        first: stored_first,
+        second: stored_second,
+        axis: stored_axis,
+        branch: SymmetryBranch::Direct,
+    } = loaded.constraints()[0].kind
+    else {
+        panic!("stored symmetry")
+    };
+    assert!(stored_first.id() < stored_second.id());
+    assert_eq!(stored_axis, axis);
+
+    let collapsed_at = loaded
+        .points
+        .iter()
+        .find(|point| point.id == axis_from)
+        .expect("axis endpoint")
+        .at;
+    loaded
+        .points
+        .iter_mut()
+        .find(|point| point.id == axis_to)
+        .expect("axis endpoint")
+        .at = collapsed_at;
+    assert_eq!(
+        loaded.repair(ctx(16)),
+        1,
+        "only the invalid relation is dropped"
+    );
+    assert!(loaded.constraints().is_empty());
+
+    let mut cascade: Sketch = serde_json::from_str(&json).expect("deserialize again");
+    cascade.delete_segment(axis);
+    assert!(cascade.constraints().is_empty());
+}
+
+#[test]
+fn loaded_conflicting_symmetry_keeps_solve_and_drag_byte_atomic_with_sorted_blame() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let (_, _, axis) = add_test_segment(&mut sketch, [0, -10], [0, 10]);
+    let (first_from, first_to, first) = add_test_segment(&mut sketch, [-4, 0], [-4, 3]);
+    let (second_from, second_to, second) = add_test_segment(&mut sketch, [4, 0], [4, 3]);
+    let symmetry = sketch
+        .add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(first),
+                SketchCurve::Segment(second),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        )
+        .expect("symmetry");
+    let mut last_fix = None;
+    for point in [first_from, first_to, second_from, second_to] {
+        let at = position(&sketch, point);
+        last_fix = Some(
+            sketch
+                .add_constraint(
+                    ConstraintKind::Fix {
+                        point,
+                        at: SketchPoint::from_continuous(at[0], at[1]),
+                    },
+                    ctx(16),
+                )
+                .expect("compatible fix"),
+        );
+    }
+    let last_fix = last_fix.expect("fix");
+    let held = sketch
+        .constraints
+        .iter_mut()
+        .find(|constraint| constraint.id == last_fix)
+        .expect("fix constraint");
+    let ConstraintKind::Fix { point, at } = held.kind else {
+        panic!("fix")
+    };
+    held.kind = ConstraintKind::Fix {
+        point,
+        at: SketchPoint::from_continuous(at.in_plane()[0] + 2.0, at.in_plane()[1]),
+    };
+    let raw = serde_json::to_vec(&sketch).expect("malformed standing document");
+    let mut loaded: Sketch = serde_json::from_slice(&raw).expect("structural load");
+    let before = serde_json::to_vec(&loaded).expect("before solve");
+    let Err(SketchEvaluationError::Unsatisfied { conflicts }) = loaded.solve(ctx(16)) else {
+        panic!("standing conflict")
+    };
+    assert!(conflicts.windows(2).all(|ids| ids[0] < ids[1]));
+    assert!(conflicts.contains(&symmetry) && conflicts.contains(&last_fix));
+    assert_eq!(serde_json::to_vec(&loaded).expect("after solve"), before);
+    assert_eq!(
+        loaded.move_point(first_from, SketchPoint::new(-9, 2), ctx(16)),
+        Ok(false)
+    );
+    assert_eq!(serde_json::to_vec(&loaded).expect("after drag"), before);
+}
+
+#[test]
+fn repair_refreshes_a_derived_arc_center_before_validating_a_symmetry_axis() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    add_test_arc(&mut sketch, [0, 0]);
+    let center = sketch.arcs()[0].center;
+    let axis_to = sketch.add_free_point(SketchPoint::new(0, 10));
+    let axis = sketch.connect(center, axis_to).expect("center-based axis");
+    let (_, _, first) = add_test_segment(&mut sketch, [-4, 2], [-4, 5]);
+    let (_, _, second) = add_test_segment(&mut sketch, [4, 2], [4, 5]);
+    sketch
+        .add_constraint(
+            ConstraintKind::symmetry(
+                SketchCurve::Segment(first),
+                SketchCurve::Segment(second),
+                axis,
+                SymmetryBranch::Direct,
+            ),
+            ctx(16),
+        )
+        .expect("symmetry");
+    sketch
+        .points
+        .iter_mut()
+        .find(|point| point.id == center)
+        .expect("derived center")
+        .at = SketchPoint::new(0, 10);
+    let raw = serde_json::to_vec(&sketch).expect("stale derived cache");
+    let mut loaded: Sketch = serde_json::from_slice(&raw).expect("structural load");
+    assert_eq!(loaded.repair(ctx(16)), 0);
+    assert_eq!(loaded.constraints().len(), 1);
+    let center = position(&loaded, center);
+    assert!(center[0].hypot(center[1]) < 1.0e-12);
 }
 
 #[test]

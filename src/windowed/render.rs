@@ -1369,15 +1369,6 @@ impl WindowedState {
         ])
     }
 
-    /// The nearest arc or circle under the cursor. A line is deliberately absent from this
-    /// competition so an overlapping segment cannot hide the kind the waiting slot accepts.
-    fn nearest_sketch_circular_edge(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchEdgeHit> {
-        nearest_sketch_circular_edge_from_candidates(
-            self.nearest_sketch_arc(cursor_x, cursor_y),
-            self.nearest_sketch_circle(cursor_x, cursor_y),
-        )
-    }
-
     /// The id of the sketch SEGMENT under the cursor (physical px), for add-point — the click
     /// splits the named segment. `None` when no edge is close enough.
     fn sketch_segment_at(
@@ -2463,6 +2454,26 @@ impl WindowedState {
                     .into_iter()
                     .collect()
                 }
+                document::sketch::ConstraintKind::Symmetry {
+                    first,
+                    second,
+                    axis,
+                    branch,
+                } => symmetry_badge_anchor(
+                    &producer.sketch,
+                    first,
+                    second,
+                    axis,
+                    branch,
+                    context,
+                    handles
+                        .as_ref()
+                        .map(|handles| |coord| handles.profile_to_render(coord)),
+                    (view_projection, viewport_px, pixels_per_point),
+                )
+                .map(|at| (at, egui::vec2(0.707, -0.707)))
+                .into_iter()
+                .collect(),
             };
             for (anchor, direction) in placements {
                 // Anchors are keyed by their rounded bits so two constraints on the same midpoint
@@ -2525,24 +2536,30 @@ impl WindowedState {
         let Some(mut armed) = self.panel_state.armed_constraint.clone() else {
             return;
         };
+        if armed.restart_if_invalid(&producer.sketch) {
+            self.panel_state.selection.clear_sketch_entities();
+            self.panel_state.armed_constraint = Some(armed.clone());
+        }
         // The gesture's own question decides what the click can resolve to — see
-        // `sketch_entity_for_slot`. A gesture with every slot filled cannot reach here (a
+        // `sketch_entity_for_requirement`. A gesture with every slot filled cannot reach here (a
         // completed offer disarms), so `wants` answering `None` means nothing is being asked.
         let Some(slot) = armed.wants() else {
             return;
         };
-        let candidate = match self.sketch_entity_for_slot(slot, cursor_x, cursor_y) {
+        let candidate = match self.sketch_entity_for_requirement(slot, cursor_x, cursor_y) {
             Some(candidate) => candidate,
-            // A click that lands on nothing REPORTS, where it used to return in silence. A tool
-            // that answers a miss with no sign at all is indistinguishable from a tool that is
-            // broken, which is exactly how it read (owner 2026-07-30).
+            // A miss reports the active requirement so the gesture remains observable.
             None => {
                 self.panel_state.sketch_constraint_refusal = Some(match slot {
-                    ui::panel::SlotKind::Point => "nothing under the cursor — pick a point",
-                    ui::panel::SlotKind::Segment => "nothing under the cursor — pick a line",
-                    ui::panel::SlotKind::Curve => "nothing under the cursor — pick a curve",
-                    ui::panel::SlotKind::CircularCurve => {
+                    ui::panel::PickRequirement::Point => "nothing under the cursor — pick a point",
+                    ui::panel::PickRequirement::Segment => "nothing under the cursor — pick a line",
+                    ui::panel::PickRequirement::Curve => "nothing under the cursor — pick a curve",
+                    ui::panel::PickRequirement::CircularCurve => {
                         "nothing under the cursor — pick an arc or circle"
+                    }
+                    ui::panel::PickRequirement::Arc => "nothing under the cursor — pick an arc",
+                    ui::panel::PickRequirement::Circle => {
+                        "nothing under the cursor — pick a circle"
                     }
                 });
                 return;
@@ -2636,42 +2653,41 @@ impl WindowedState {
 
     /// The sketch entity of the kind `slot` accepts under the physical-px cursor, or `None`.
     ///
-    /// **Not the general hit-test filtered afterwards.** A click resolves elsewhere by "the most
-    /// specific thing under the cursor wins", which puts a vertex ahead of the segments meeting
-    /// at it — right for Select, wrong for a gesture that already knows it wants a line. The
-    /// vertex grab radius is wider than the segment's, so on a polyline of short edges most of a
-    /// segment's length sits inside one endpoint's circle: asking the general question and
-    /// refusing the answer made "pick a line" refuse nearly every click on a line (owner
-    /// 2026-07-30, and the reason the tool read as broken). Asking only for what the slot takes
-    /// has no such dead zone, and it is what Fusion does.
+    /// Resolve directly against the required kind. Filtering a general hit afterwards lets a
+    /// closer wrong-kind entity hide a valid candidate under the same cursor.
     ///
     /// Segment slots intentionally ignore arcs and circles. Curve slots preserve all three edge
     /// identities for Tangent; circular-curve slots retain only arcs and circles for Concentric.
-    fn sketch_entity_for_slot(
+    fn sketch_entity_for_requirement(
         &self,
-        slot: ui::panel::SlotKind,
+        slot: ui::panel::PickRequirement,
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<ui::panel::SketchEntity> {
-        match slot {
-            ui::panel::SlotKind::Point => self
+        if slot == ui::panel::PickRequirement::Point {
+            return self
                 .sketch_vertex_at(cursor_x, cursor_y)
                 .and_then(|index| self.sketch_point_ids.get(index).copied())
-                .map(ui::panel::SketchEntity::Point),
-            ui::panel::SlotKind::Segment => self
-                .nearest_sketch_segment(cursor_x, cursor_y)
-                .map(|(id, _, _)| ui::panel::SketchEntity::Segment(id)),
-            ui::panel::SlotKind::Curve => self
-                .nearest_sketch_edge(cursor_x, cursor_y)
-                .map(sketch_entity_from_curve_hit),
-            ui::panel::SlotKind::CircularCurve => {
-                match self.nearest_sketch_circular_edge(cursor_x, cursor_y)? {
-                    SketchEdgeHit::Arc(id) => Some(ui::panel::SketchEntity::Arc(id)),
-                    SketchEdgeHit::Circle(id) => Some(ui::panel::SketchEntity::Circle(id)),
-                    SketchEdgeHit::Segment(_) => None,
-                }
-            }
+                .map(ui::panel::SketchEntity::Point);
         }
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        let segment = self
+            .nearest_sketch_segment(cursor_x, cursor_y)
+            .map(|(id, from, to)| {
+                (
+                    SketchEdgeHit::Segment(id),
+                    point_to_segment_distance(cursor, from, to),
+                )
+            });
+        nearest_sketch_edge_for_requirement(
+            slot,
+            segment,
+            self.nearest_sketch_arc(cursor_x, cursor_y)
+                .map(|(id, distance)| (SketchEdgeHit::Arc(id), distance)),
+            self.nearest_sketch_circle(cursor_x, cursor_y)
+                .map(|(id, distance)| (SketchEdgeHit::Circle(id), distance)),
+        )
+        .map(sketch_entity_from_curve_hit)
     }
 
     /// The derived region under the physical-px cursor (#100), or `None`. The SMALLEST containing
@@ -3389,14 +3405,25 @@ fn nearest_sketch_edge_from_candidates<const N: usize>(
         .map(|(hit, _)| hit)
 }
 
-fn nearest_sketch_circular_edge_from_candidates(
-    arc: Option<(document::sketch::EntityId, f32)>,
-    circle: Option<(document::sketch::EntityId, f32)>,
+/// Resolve only candidates admitted by the current constraint question, then compare distance.
+fn nearest_sketch_edge_for_requirement(
+    requirement: ui::panel::PickRequirement,
+    segment: Option<(SketchEdgeHit, f32)>,
+    arc: Option<(SketchEdgeHit, f32)>,
+    circle: Option<(SketchEdgeHit, f32)>,
 ) -> Option<SketchEdgeHit> {
-    nearest_sketch_edge_from_candidates([
-        arc.map(|(id, distance)| (SketchEdgeHit::Arc(id), distance)),
-        circle.map(|(id, distance)| (SketchEdgeHit::Circle(id), distance)),
-    ])
+    match requirement {
+        ui::panel::PickRequirement::Segment => segment.map(|(hit, _)| hit),
+        ui::panel::PickRequirement::Arc => arc.map(|(hit, _)| hit),
+        ui::panel::PickRequirement::Circle => circle.map(|(hit, _)| hit),
+        ui::panel::PickRequirement::Curve => {
+            nearest_sketch_edge_from_candidates([segment, arc, circle])
+        }
+        ui::panel::PickRequirement::CircularCurve => {
+            nearest_sketch_edge_from_candidates([arc, circle])
+        }
+        ui::panel::PickRequirement::Point => None,
+    }
 }
 
 /// Quantize a continuous in-plane profile coordinate by the sketch position snap (#96):
@@ -3647,6 +3674,34 @@ where
     )
 }
 
+/// Project the document-owned witness for one satisfied Symmetry relation.
+#[allow(clippy::too_many_arguments)]
+fn symmetry_badge_anchor<F>(
+    sketch: &document::sketch::Sketch,
+    first: document::sketch::SketchCurve,
+    second: document::sketch::SketchCurve,
+    axis: document::sketch::EntityId,
+    branch: document::sketch::SymmetryBranch,
+    context: Option<parametric::EvaluationContext>,
+    profile_to_render: Option<F>,
+    projection: (glam::Mat4, [u32; 4], f32),
+) -> Option<egui::Pos2>
+where
+    F: FnOnce([f64; 2]) -> [f32; 3],
+{
+    let locus = sketch
+        .symmetry_badge_locus(first, second, axis, branch, context?)
+        .ok()?;
+    let render = profile_to_render?(locus);
+    let (view_projection, viewport_px, pixels_per_point) = projection;
+    project_to_screen(
+        glam::Vec3::from_array(render),
+        view_projection,
+        viewport_px,
+        pixels_per_point,
+    )
+}
+
 /// Return the topmost generic constraint badge under a physical-pixel cursor. The badge keeps
 /// the constraint id beside its position, so every caller picks the authored relation directly.
 fn sketch_constraint_badge_at(
@@ -3697,6 +3752,9 @@ fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
             "that tangent branch has no finite contact on both curves"
         }
         ConstraintRefusal::InvalidConcentric => "pick two distinct arcs or circles",
+        ConstraintRefusal::InvalidSymmetry => {
+            "pick two matching curves and a distinct nonzero line axis"
+        }
     }
 }
 
@@ -3725,17 +3783,17 @@ mod tests {
     use super::{
         advance_circle_center_diameter_gesture, apply_sketch_snap, circle_gesture_is_current,
         circle_marquee_hit, circle_ring, closest_point_on_segment, complete_circle_center_diameter,
-        concentric_badge_anchor, nearest_sketch_circular_edge_from_candidates,
+        concentric_badge_anchor, nearest_sketch_edge_for_requirement,
         nearest_sketch_edge_from_candidates, point_in_screen_polygon, point_to_segment_distance,
         polygon_double_area, reset_failed_sketch_constraint_completion,
         reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
         select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
-        sketch_entity_from_curve_hit, sketch_profile_edit_transaction, tangent_badge_anchor,
-        SketchEdgeHit,
+        sketch_entity_from_curve_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
+        tangent_badge_anchor, SketchEdgeHit,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
-        SketchSolid, TangentBranch,
+        SketchSolid, SymmetryBranch, TangentBranch,
     };
     use egui::{pos2, Rect};
     use std::num::NonZeroU32;
@@ -3954,31 +4012,52 @@ mod tests {
 
     #[test]
     fn typed_edge_slots_ignore_closer_overlapping_wrong_kinds() {
-        let segment = Some((SketchEdgeHit::Segment(1), 1.0));
-        let arc = Some((SketchEdgeHit::Arc(2), 2.0));
-        assert_eq!(
-            nearest_sketch_edge_from_candidates([segment, arc]),
-            Some(SketchEdgeHit::Segment(1)),
-            "the general curve hit sees the closer line"
-        );
-        assert_eq!(
-            nearest_sketch_circular_edge_from_candidates(Some((2, 2.0)), None),
-            Some(SketchEdgeHit::Arc(2)),
-            "the circular slot compares only circular candidates"
-        );
+        for (requirement, segment, arc, circle, expected) in [
+            (
+                ui::panel::PickRequirement::Segment,
+                Some((SketchEdgeHit::Segment(1), 3.0)),
+                Some((SketchEdgeHit::Arc(2), 1.0)),
+                Some((SketchEdgeHit::Circle(3), 2.0)),
+                SketchEdgeHit::Segment(1),
+            ),
+            (
+                ui::panel::PickRequirement::Arc,
+                Some((SketchEdgeHit::Segment(1), 1.0)),
+                Some((SketchEdgeHit::Arc(2), 3.0)),
+                Some((SketchEdgeHit::Circle(3), 2.0)),
+                SketchEdgeHit::Arc(2),
+            ),
+            (
+                ui::panel::PickRequirement::Circle,
+                Some((SketchEdgeHit::Segment(1), 1.0)),
+                Some((SketchEdgeHit::Arc(2), 2.0)),
+                Some((SketchEdgeHit::Circle(3), 3.0)),
+                SketchEdgeHit::Circle(3),
+            ),
+        ] {
+            assert_eq!(
+                nearest_sketch_edge_for_requirement(requirement, segment, arc, circle),
+                Some(expected),
+                "wrong-kind distance never hides the requested variant"
+            );
+        }
+    }
 
-        let segment = Some((SketchEdgeHit::Segment(3), 2.0));
-        let circle = Some((SketchEdgeHit::Circle(4), 1.0));
-        assert_eq!(
-            nearest_sketch_edge_from_candidates([segment, circle]),
-            Some(SketchEdgeHit::Circle(4)),
-            "the general curve hit sees the closer circle"
+    #[test]
+    fn restored_dead_symmetry_pick_restarts_before_requirement_dispatch() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let from = sketch.add_free_point(SketchPoint::new(0, 0));
+        let to = sketch.add_free_point(SketchPoint::new(4, 0));
+        let segment = sketch.connect(from, to).expect("segment");
+        let mut armed = ui::panel::ArmedConstraint::from_parts(
+            ui::panel::ConstraintVerb::Symmetry,
+            vec![ui::panel::SketchEntity::Segment(segment)],
         );
-        assert_eq!(
-            segment.map(|(hit, _)| hit),
-            Some(SketchEdgeHit::Segment(3)),
-            "the segment slot asks only the segment resolver"
-        );
+        assert_eq!(armed.wants(), Some(ui::panel::PickRequirement::Segment));
+        sketch.delete_segment(segment);
+        assert!(armed.restart_if_invalid(&sketch));
+        assert!(armed.picked().is_empty());
+        assert_eq!(armed.wants(), Some(ui::panel::PickRequirement::Curve));
     }
 
     #[test]
@@ -4146,6 +4225,57 @@ mod tests {
     }
 
     #[test]
+    fn symmetry_badge_projects_document_witness_and_uses_generic_delete_path() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let axis_from = sketch.add_free_point(SketchPoint::new(-4, -4));
+        let axis_to = sketch.add_free_point(SketchPoint::new(4, 4));
+        let axis = sketch.connect(axis_from, axis_to).expect("axis");
+        let a0 = sketch.add_free_point(SketchPoint::new(-2, 0));
+        let a1 = sketch.add_free_point(SketchPoint::new(-1, 1));
+        let b0 = sketch.add_free_point(SketchPoint::new(0, -2));
+        let b1 = sketch.add_free_point(SketchPoint::new(1, -1));
+        let first = sketch.connect(a0, a1).expect("first");
+        let second = sketch.connect(b0, b1).expect("second");
+        let anchor = symmetry_badge_anchor(
+            &sketch,
+            SketchCurve::Segment(first),
+            SketchCurve::Segment(second),
+            axis,
+            SymmetryBranch::Direct,
+            Some(context()),
+            Some(|at: [f64; 2]| [at[0] as f32 / 10.0, at[1] as f32 / 10.0, 0.0]),
+            (glam::Mat4::IDENTITY, [0, 0, 200, 100], 2.0),
+        )
+        .expect("projected witness");
+        let (producer, constraint) = SketchSolid::extrude(sketch, 3)
+            .with_constraint(
+                ConstraintKind::symmetry(
+                    SketchCurve::Segment(first),
+                    SketchCurve::Segment(second),
+                    axis,
+                    SymmetryBranch::Direct,
+                ),
+                context(),
+            )
+            .expect("symmetry");
+        let badges = [ui::chrome::ConstraintBadge {
+            center: anchor,
+            icon: ui::icons::Icon::ConstraintSymmetry,
+            constraint,
+            picked: false,
+        }];
+        assert_eq!(
+            sketch_constraint_badge_at(&badges, anchor * 2.0, 2.0),
+            Some(constraint)
+        );
+        assert!(producer
+            .with_constraint_deleted(constraint)
+            .sketch
+            .constraints()
+            .is_empty());
+    }
+
+    #[test]
     fn completed_tangent_queues_its_canonical_branch_through_set_sketch() {
         let (sketch, segment, circle) = tangent_ready_sketch();
         let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
@@ -4261,6 +4391,73 @@ mod tests {
         );
         assert!(armed.is_some_and(|armed| {
             armed.verb() == ui::panel::ConstraintVerb::Concentric && armed.picked().is_empty()
+        }));
+    }
+
+    #[test]
+    fn completed_symmetry_queues_one_set_sketch_and_refusal_restarts_cleanly() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let axis_from = sketch.add_free_point(SketchPoint::new(0, -10));
+        let axis_to = sketch.add_free_point(SketchPoint::new(0, 10));
+        let axis = sketch.connect(axis_from, axis_to).expect("axis");
+        let a0 = sketch.add_free_point(SketchPoint::new(-4, 0));
+        let a1 = sketch.add_free_point(SketchPoint::new(-4, 4));
+        let b0 = sketch.add_free_point(SketchPoint::new(4, 0));
+        let b1 = sketch.add_free_point(SketchPoint::new(4, 4));
+        let first = sketch.connect(a0, a1).expect("first");
+        let second = sketch.connect(b0, b1).expect("second");
+        let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Symmetry);
+        assert_eq!(
+            armed.offer(ui::panel::SketchEntity::Segment(second), &sketch),
+            ui::panel::Offer::Taken
+        );
+        assert_eq!(
+            armed.offer(ui::panel::SketchEntity::Segment(first), &sketch),
+            ui::panel::Offer::Taken
+        );
+        assert_eq!(
+            armed.offer(ui::panel::SketchEntity::Segment(axis), &sketch),
+            ui::panel::Offer::Complete
+        );
+        let kind = armed.kind_at_context(&sketch, context()).expect("branch");
+        let (constrained, constraint) = SketchSolid::extrude(sketch, 3)
+            .with_constraint(kind, context())
+            .expect("symmetry completion");
+        let target = document::scene::NodeId(83);
+        let transaction =
+            sketch_profile_edit_transaction(target, constrained, [0, 0, 0], [0, 0, 0]);
+        assert!(matches!(
+            transaction.as_slice(),
+            [crate::Intent::SetSketch { target: queued, producer }]
+                if *queued == target && producer.sketch.constraints()[0].id == constraint
+        ));
+        let mut selection = ui::panel::Selection::from_targets([
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch: target,
+                entity: first,
+            },
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch: target,
+                entity: second,
+            },
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch: target,
+                entity: axis,
+            },
+        ]);
+        let mut held = Some(armed);
+        let refusal = reset_refused_sketch_constraint_completion(
+            &mut held,
+            &mut selection,
+            ui::panel::ConstraintVerb::Symmetry,
+            &document::sketch::ConstraintRefusal::AlreadyAsserted {
+                existing: constraint,
+            },
+        );
+        assert_eq!(refusal, "already asserted — it is selected");
+        assert!(selection.is_empty());
+        assert!(held.is_some_and(|held| {
+            held.verb() == ui::panel::ConstraintVerb::Symmetry && held.picked().is_empty()
         }));
     }
 

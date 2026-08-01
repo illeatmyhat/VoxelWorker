@@ -61,7 +61,7 @@ mod tests;
 
 pub use constraint::{
     Constraint, ConstraintKind, ConstraintRefusal, InternalContainment, LineSide, SketchCurve,
-    TangentBranch,
+    SymmetryBranch, TangentBranch,
 };
 pub use faces::{Face, FaceKey};
 pub use parametric::sketch::{SolveOutcome, SolveReport};
@@ -972,9 +972,8 @@ pub struct Sketch {
 }
 
 impl Sketch {
-    /// Resolve one persisted curve into the semantic tangent geometry at this evaluation context.
-    /// Click loci and contacts remain session-only; this is the narrow document adapter boundary.
-    pub fn tangent_curve_geometry(
+    /// Resolve one persisted curve into continuous relation geometry at this evaluation context.
+    pub fn curve_geometry(
         &self,
         curve: SketchCurve,
         context: parametric::EvaluationContext,
@@ -1072,10 +1071,10 @@ impl Sketch {
             (second, second_locus, first, first_locus)
         };
         parametric::sketch::choose_branch(
-            self.tangent_curve_geometry(first, context)
+            self.curve_geometry(first, context)
                 .ok_or(parametric::sketch::BranchChoiceError::Degenerate)?,
             first_locus,
-            self.tangent_curve_geometry(second, context)
+            self.curve_geometry(second, context)
                 .ok_or(parametric::sketch::BranchChoiceError::Degenerate)?,
             second_locus,
         )
@@ -1090,12 +1089,71 @@ impl Sketch {
         context: parametric::EvaluationContext,
     ) -> Result<parametric::sketch::TangentContact, parametric::sketch::TangentContactError> {
         parametric::sketch::tangent_contact(
-            self.tangent_curve_geometry(first, context)
+            self.curve_geometry(first, context)
                 .ok_or(parametric::sketch::TangentContactError::InvalidBranch)?,
-            self.tangent_curve_geometry(second, context)
+            self.curve_geometry(second, context)
                 .ok_or(parametric::sketch::TangentContactError::InvalidBranch)?,
             branch,
         )
+    }
+
+    /// Choose the deterministic persisted Symmetry branch after canonicalizing its subjects.
+    pub fn choose_symmetry_branch(
+        &self,
+        first: SketchCurve,
+        second: SketchCurve,
+        axis: EntityId,
+        context: parametric::EvaluationContext,
+    ) -> Result<SymmetryBranch, parametric::sketch::SymmetryError> {
+        let identities_are_valid = first.id() != second.id()
+            && first.id() != axis
+            && second.id() != axis
+            && matches!(
+                (first, second),
+                (SketchCurve::Segment(_), SketchCurve::Segment(_))
+                    | (SketchCurve::Arc(_), SketchCurve::Arc(_))
+                    | (SketchCurve::Circle(_), SketchCurve::Circle(_))
+            );
+        if !identities_are_valid {
+            return Err(parametric::sketch::SymmetryError::UnsupportedPair);
+        }
+        let (first, second) = if first.id() <= second.id() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        parametric::sketch::choose_symmetry_branch(
+            self.curve_geometry(first, context)
+                .ok_or(parametric::sketch::SymmetryError::UnsupportedPair)?,
+            self.curve_geometry(second, context)
+                .ok_or(parametric::sketch::SymmetryError::UnsupportedPair)?,
+            self.curve_geometry(SketchCurve::Segment(axis), context)
+                .ok_or(parametric::sketch::SymmetryError::DegenerateAxis)?,
+        )
+    }
+
+    /// Derive one validated badge locus on the stored Symmetry axis.
+    pub fn symmetry_badge_locus(
+        &self,
+        first: SketchCurve,
+        second: SketchCurve,
+        axis: EntityId,
+        branch: SymmetryBranch,
+        context: parametric::EvaluationContext,
+    ) -> Result<[f64; 2], parametric::sketch::SymmetryError> {
+        if !ConstraintKind::symmetry(first, second, axis, branch).symmetry_is_structurally_valid() {
+            return Err(parametric::sketch::SymmetryError::InvalidBranch);
+        }
+        parametric::sketch::symmetry_witness(
+            self.curve_geometry(first, context)
+                .ok_or(parametric::sketch::SymmetryError::UnsupportedPair)?,
+            self.curve_geometry(second, context)
+                .ok_or(parametric::sketch::SymmetryError::UnsupportedPair)?,
+            self.curve_geometry(SketchCurve::Segment(axis), context)
+                .ok_or(parametric::sketch::SymmetryError::DegenerateAxis)?,
+            branch,
+        )
+        .map(|witness| witness.at)
     }
     /// A sketch on `plane` whose entities form ONE closed loop through the given ordered
     /// points — the common case, and the constructor every caller still uses. Builds N
@@ -1721,13 +1779,14 @@ impl Sketch {
     /// after the typed trial has accepted do we allocate, append, and apply its solution together.
     /// Accepted redundancy remains visible because it can express author intent even when rank adds
     /// no new information.
+    #[allow(clippy::too_many_lines)]
     pub fn add_constraint(
         &mut self,
         kind: ConstraintKind,
         context: parametric::EvaluationContext,
     ) -> Result<EntityId, ConstraintRefusal> {
         let kind = kind.normalized();
-        self.check_names_live_geometry(kind)?;
+        self.check_names_live_geometry(kind, context)?;
         self.check_is_not_already_asserted(kind)?;
         let prepared = constraint::prepare(self, &self.constraints, Some(context)).map_err(
             |error| match error {
@@ -1766,6 +1825,11 @@ impl Sketch {
                     parametric::sketch::BuildError::InvalidConcentric,
                 ),
             ) => ConstraintRefusal::InvalidConcentric,
+            constraint::TrialMapError::Request(
+                parametric::sketch::RequestError::InvalidRelation(
+                    parametric::sketch::BuildError::InvalidSymmetry,
+                ),
+            ) => ConstraintRefusal::InvalidSymmetry,
         })?;
         let (settled, redundant) = match trial {
             parametric::sketch::TrialAdd::Accepted { settled, redundant } => (settled, redundant),
@@ -1845,7 +1909,11 @@ impl Sketch {
     /// This preflight belongs to the document because the local solver sees only validated handles;
     /// it gives missing geometry and self-contradictory requests distinct author-facing refusals.
     #[allow(clippy::too_many_lines)]
-    fn check_names_live_geometry(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
+    fn check_names_live_geometry(
+        &self,
+        kind: ConstraintKind,
+        context: parametric::EvaluationContext,
+    ) -> Result<(), ConstraintRefusal> {
         let known_point = |id: EntityId| self.points.iter().any(|point| point.id == id);
         let live_segment = |id: EntityId| self.segments.iter().find(|seg| seg.id == id);
         match kind {
@@ -1949,6 +2017,30 @@ impl Sketch {
                     return Err(ConstraintRefusal::UnknownEntity);
                 }
             }
+            ConstraintKind::Symmetry {
+                first,
+                second,
+                axis,
+                ..
+            } => {
+                if !kind.symmetry_is_structurally_valid() {
+                    return Err(ConstraintRefusal::InvalidSymmetry);
+                }
+                let live = |curve: SketchCurve| match curve {
+                    SketchCurve::Segment(id) => self.segments.iter().any(|held| held.id == id),
+                    SketchCurve::Arc(id) => self.arcs.iter().any(|held| held.id == id),
+                    SketchCurve::Circle(id) => self.circles.iter().any(|held| held.id == id),
+                };
+                if !live(first) || !live(second) || live_segment(axis).is_none() {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                let axis = self
+                    .curve_geometry(SketchCurve::Segment(axis), context)
+                    .ok_or(ConstraintRefusal::InvalidSymmetry)?;
+                if !parametric::sketch::symmetry_axis_is_valid(axis) {
+                    return Err(ConstraintRefusal::InvalidSymmetry);
+                }
+            }
         }
         Ok(())
     }
@@ -2034,6 +2126,25 @@ impl Sketch {
         let segment_ids: Vec<EntityId> = self.segments.iter().map(|seg| seg.id).collect();
         let arc_ids: Vec<EntityId> = self.arcs.iter().map(|arc| arc.id).collect();
         let circle_ids: Vec<EntityId> = self.circles.iter().map(|circle| circle.id).collect();
+        let valid_symmetry_axes: Vec<EntityId> = self
+            .segments
+            .iter()
+            .filter_map(|segment| {
+                let point = |id| {
+                    self.points
+                        .iter()
+                        .find(|point| point.id == id)
+                        .map(|point| point.at.in_plane())
+                };
+                let (Some(from), Some(to)) = (point(segment.from), point(segment.to)) else {
+                    return None;
+                };
+                parametric::sketch::symmetry_axis_is_valid(
+                    parametric::sketch::CurveGeometry::Segment { from, to },
+                )
+                .then_some(segment.id)
+            })
+            .collect();
         self.constraints.retain(|constraint| {
             constraint
                 .kind
@@ -2052,6 +2163,11 @@ impl Sketch {
                 })
                 && constraint.kind.tangent_is_structurally_valid()
                 && constraint.kind.concentric_is_structurally_valid()
+                && constraint.kind.symmetry_is_structurally_valid()
+                && match constraint.kind {
+                    ConstraintKind::Symmetry { axis, .. } => valid_symmetry_axes.contains(&axis),
+                    _ => true,
+                }
         });
         let surviving = self.constraints.clone();
         self.constraints.retain(|constraint| {
@@ -2390,6 +2506,9 @@ impl Sketch {
             point_ids.contains(&circle.center)
                 && circle_radius_is_valid(circle.resolved_radius(context))
         });
+        // Geometry-dependent constraint repair must see derived arc centers at their authored
+        // positions, not a stale serialized cache.
+        self.sync_arc_centers();
         // A constraint naming geometry the store does not hold asserts nothing about anything,
         // and left in place it would keep a row in the residual system for a shape that is gone.
         let before = before + self.constraints.len();
