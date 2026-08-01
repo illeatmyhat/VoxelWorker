@@ -4,6 +4,7 @@
 //! and substrate numerical types stay private to this subsystem.
 
 mod curve;
+mod midpoint_line;
 mod model;
 mod solve;
 mod symmetry;
@@ -12,6 +13,9 @@ mod tangent;
 mod tests;
 
 pub use curve::{ArcDomain, CircularCurve, CurveGeometry};
+pub use midpoint_line::{
+    midpoint_line_candidate, MidpointLineCandidate, MidpointLineCandidateError,
+};
 pub use model::{SolveOutcome, SolveReport};
 pub use solve::{
     concentric_center, Analysis, ArcId, BuildError, CircleId, ConstraintId, CurrentValidation,

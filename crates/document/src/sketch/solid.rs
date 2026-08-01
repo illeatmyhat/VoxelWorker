@@ -415,7 +415,7 @@ impl SketchSolid {
 
     /// This producer with a free point added at `at` — or, when a point already sits exactly
     /// there, the untouched producer and that point's id (coincidence). Returns the producer
-    /// and the id the polyline chain continues from. Pure.
+    /// and the id the Line chain continues from. Pure.
     pub fn with_point_placed(&self, at: SketchPoint) -> (SketchSolid, EntityId) {
         if let Some(existing) = self.sketch.point_at(at) {
             return (self.clone(), existing);
@@ -425,7 +425,7 @@ impl SketchSolid {
         (next, id)
     }
 
-    /// This producer with a segment joining the existing points `from → to` (the polyline tool).
+    /// This producer with a segment joining the existing points `from → to` (the Line tool).
     /// Unchanged for a self-loop, an unknown endpoint, or an already-joined pair
     /// ([`Sketch::connect`]). Pure.
     pub fn with_segment_between(&self, from: EntityId, to: EntityId) -> SketchSolid {
@@ -442,6 +442,123 @@ impl SketchSolid {
         let mut next = self.clone();
         let id = next.sketch.connect(from, to)?;
         Some((next, SketchCurve::Segment(id)))
+    }
+
+    /// Resolve raw midpoint-line input into the exact canonical points that preview and commit
+    /// share. The midpoint is a construction input, not an entity: only `endpoint` and
+    /// `reflected` are candidates for persistence.
+    pub fn midpoint_line_placement(
+        &self,
+        midpoint: [f64; 2],
+        endpoint: [f64; 2],
+        endpoint_existing: Option<EntityId>,
+    ) -> Result<MidpointLinePlacement, MidpointLineRefusal> {
+        if endpoint_existing.is_none() {
+            parametric::sketch::midpoint_line_candidate(midpoint, endpoint)
+                .map_err(MidpointLineRefusal::Candidate)?;
+        }
+
+        let canonical = |point: [f64; 2]| {
+            SketchPoint::try_from_continuous(point[0], point[1]).map_err(MidpointLineRefusal::Point)
+        };
+        let midpoint = canonical(midpoint)?;
+        let endpoint = if let Some(id) = endpoint_existing {
+            self.sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at)
+                .ok_or(MidpointLineRefusal::UnknownEndpoint)?
+        } else {
+            canonical(endpoint)?
+        };
+        self.midpoint_line_placement_from_canonical(midpoint, endpoint, endpoint_existing)
+    }
+
+    /// Resolve already-canonical midpoint-line input without composing either split-coordinate
+    /// point into a large `f64`. This is the drawing-tool adapter: snapped/grabbed positions stay
+    /// exact from cursor resolution through preview and commit.
+    pub fn midpoint_line_placement_from_canonical(
+        &self,
+        midpoint: SketchPoint,
+        endpoint: SketchPoint,
+        endpoint_existing: Option<EntityId>,
+    ) -> Result<MidpointLinePlacement, MidpointLineRefusal> {
+        let endpoint = if let Some(id) = endpoint_existing {
+            self.sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at)
+                .ok_or(MidpointLineRefusal::UnknownEndpoint)?
+        } else {
+            endpoint
+        };
+        let reflected = midpoint
+            .exact_reflection_of(&endpoint)
+            .map_err(MidpointLineRefusal::Point)?
+            .ok_or(MidpointLineRefusal::CanonicalCollapse)?;
+
+        // The split-coordinate reflection is authoritative. Refuse a self-loop; construction
+        // above has already refused any reflection that canonical storage cannot hold exactly.
+        if endpoint.coincides(&reflected) {
+            return Err(MidpointLineRefusal::CanonicalCollapse);
+        }
+
+        Ok(MidpointLinePlacement {
+            midpoint,
+            endpoint,
+            reflected,
+        })
+    }
+
+    /// Atomically append the one segment defined by a midpoint and one endpoint, returning its
+    /// stable segment id. Exact existing coordinates are reused; a supplied clicked endpoint id
+    /// is authoritative and must still be live. Every allocation occurs on a clone, so refusal
+    /// consumes neither geometry nor ids from `self`.
+    pub fn with_midpoint_line(
+        &self,
+        midpoint: [f64; 2],
+        endpoint: [f64; 2],
+        endpoint_existing: Option<EntityId>,
+    ) -> Result<(SketchSolid, EntityId), MidpointLineRefusal> {
+        let placement = self.midpoint_line_placement(midpoint, endpoint, endpoint_existing)?;
+        self.with_midpoint_line_placement(&placement, endpoint_existing)
+    }
+
+    /// Append a segment from already-canonical midpoint and endpoint inputs. See
+    /// [`midpoint_line_placement_from_canonical`](Self::midpoint_line_placement_from_canonical).
+    pub fn with_midpoint_line_from_canonical(
+        &self,
+        midpoint: SketchPoint,
+        endpoint: SketchPoint,
+        endpoint_existing: Option<EntityId>,
+    ) -> Result<(SketchSolid, EntityId), MidpointLineRefusal> {
+        let placement =
+            self.midpoint_line_placement_from_canonical(midpoint, endpoint, endpoint_existing)?;
+        self.with_midpoint_line_placement(&placement, endpoint_existing)
+    }
+
+    fn with_midpoint_line_placement(
+        &self,
+        placement: &MidpointLinePlacement,
+        endpoint_existing: Option<EntityId>,
+    ) -> Result<(SketchSolid, EntityId), MidpointLineRefusal> {
+        let mut next = self.clone();
+        let endpoint_id = endpoint_existing.unwrap_or_else(|| {
+            next.sketch
+                .point_at(placement.endpoint)
+                .unwrap_or_else(|| next.sketch.add_free_point(placement.endpoint))
+        });
+        let reflected_id = next
+            .sketch
+            .point_at(placement.reflected)
+            .unwrap_or_else(|| next.sketch.add_free_point(placement.reflected));
+        let segment = next
+            .sketch
+            .connect(endpoint_id, reflected_id)
+            .ok_or(MidpointLineRefusal::DuplicateSegment)?;
+        Ok((next, segment))
     }
 
     /// This producer with a closed axis-aligned rectangle appended between opposite corners

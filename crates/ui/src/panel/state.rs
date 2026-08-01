@@ -306,6 +306,9 @@ pub enum SketchTool {
     /// a tangent arc, then returns to straight continuation. The start closes the chain; clicking
     /// the live end or pressing Enter finishes it open.
     Line,
+    /// Draw one segment from its midpoint: click the construction midpoint, then one endpoint.
+    /// The reflected endpoint is derived; the midpoint itself is never persisted.
+    MidpointLine,
     /// Draw a rectangle: press one corner, drag, release at the opposite corner to
     /// append the closed four-segment loop. A degenerate (zero-span) drag draws nothing.
     Rectangle,

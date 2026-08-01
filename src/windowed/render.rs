@@ -362,6 +362,7 @@ impl WindowedState {
         let mut sketch_effect = crate::IntentEffect::none();
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
             self.line_gesture.reset();
+            self.midpoint_line_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -369,6 +370,7 @@ impl WindowedState {
         }
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
             self.line_gesture.reset();
+            self.midpoint_line_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1460,27 +1462,23 @@ impl WindowedState {
         )
     }
 
-    /// Resolve the exact target shared by Line preview and commit. A grabbed existing vertex wins
-    /// over snap policy, so an off-grid closure preview cannot disagree with its release.
-    fn sketch_line_target_at(
+    /// Resolve the exact target shared by sketch drawing previews and commits. A grabbed existing
+    /// vertex wins over snap policy, so an off-grid target cannot drift on release.
+    fn sketch_target_at(
         &self,
         cursor_x: f64,
         cursor_y: f64,
-    ) -> Option<(
-        document::sketch::SketchPoint,
-        Option<document::sketch::EntityId>,
-    )> {
+    ) -> Option<sketch_target::ResolvedSketchTarget> {
         let target = self.panel_state.sketch_mode?;
         let (producer, _) = self.sketch_node_state(target)?;
         let existing = self
             .sketch_vertex_at(cursor_x, cursor_y)
             .and_then(|index| self.sketch_point_ids.get(index).copied());
-        let resolved = line::resolve_target(
+        sketch_target::resolve_target(
             &producer,
             existing,
             self.sketch_snapped_point_at(cursor_x, cursor_y),
-        )?;
-        Some((resolved.at, resolved.existing))
+        )
     }
 
     fn validate_line_gesture(&mut self, target: document::scene::NodeId) {
@@ -1544,11 +1542,12 @@ impl WindowedState {
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
-        let Some((at, existing)) = self.sketch_line_target_at(cursor_x, cursor_y) else {
+        let Some(resolved) = self.sketch_target_at(cursor_x, cursor_y) else {
             return;
         };
         if let line::LineEdit::Document(next) =
-            self.line_gesture.click(target, &producer, at, existing)
+            self.line_gesture
+                .click(target, &producer, resolved.at, resolved.existing)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -1564,16 +1563,18 @@ impl WindowedState {
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
-        let Some((at, existing)) = self.sketch_line_target_at(cursor_x, cursor_y) else {
+        let Some(resolved) = self.sketch_target_at(cursor_x, cursor_y) else {
             return;
         };
         let Some(context) = self.sketch_evaluation_context() else {
             return;
         };
-        let Ok(next) = self
-            .line_gesture
-            .append_tangent_arc(&producer, at, existing, context)
-        else {
+        let Ok(next) = self.line_gesture.append_tangent_arc(
+            &producer,
+            resolved.at,
+            resolved.existing,
+            context,
+        ) else {
             return;
         };
         self.commit_sketch_profile_edit(target, next);
@@ -1583,12 +1584,44 @@ impl WindowedState {
         self.line_gesture.end_press();
     }
 
-    pub(super) fn finish_line_chain(&mut self) -> bool {
+    pub(super) fn accept_sketch_gesture(&mut self) -> bool {
+        self.midpoint_line_gesture.retain_for_context(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self.midpoint_line_gesture.blocks_enter(
+            self.panel_state.sketch_mode.is_some()
+                && self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine,
+            self.panel_state.armed_constraint.is_some(),
+        ) {
+            return true;
+        }
         self.line_gesture.accept_for_enter(
             self.panel_state.sketch_mode.is_some()
                 && self.panel_state.sketch_tool == ui::panel::SketchTool::Line,
             self.panel_state.armed_constraint.is_some(),
         )
+    }
+
+    /// Advance Midpoint Line on the ordinary stationary-click path. A missing/refused second
+    /// target still reaches the gesture so its pending midpoint is consumed without history.
+    pub(super) fn sketch_midpoint_line_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.midpoint_line_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.midpoint_line_gesture.reset();
+            return;
+        };
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        if let midpoint_line::MidpointLineEdit::Document(next) = self
+            .midpoint_line_gesture
+            .click(target, &producer, resolved)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
     }
 
     /// #102: one 3-point-arc click. Click 1 picks the start endpoint, click 2 the
@@ -1928,12 +1961,15 @@ impl WindowedState {
     }
 
     /// Escape's first sketch rung: drop whatever half-finished gesture the armed tool is holding
-    /// — the Line chain, the rectangle's press corner, the marquee's anchor, the arc's
+    /// — the Line chain, Midpoint Line's construction midpoint, the rectangle's press corner,
+    /// the marquee's anchor, or the arc's
     /// endpoints. Reports whether anything was actually put back, so the cancel chain can fall
     /// through when there was nothing mid-stroke. The tool stays armed: dropping a stroke is not
     /// the same act as putting the tool down.
     pub(super) fn cancel_sketch_gesture(&mut self) -> bool {
         if self.panel_state.sketch_mode.is_none() {
+            self.midpoint_line_gesture.reset();
+            self.sketch_edit_press = false;
             return false;
         }
         // A constraint holding picks is a half-finished gesture like any other, and Escape puts
@@ -1957,8 +1993,17 @@ impl WindowedState {
             self.panel_state.sketch_tool == ui::panel::SketchTool::Line,
             self.panel_state.armed_constraint.is_some(),
         );
+        let midpoint_line_live = self.midpoint_line_gesture.cancel_for_escape(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine,
+            self.panel_state.armed_constraint.is_some(),
+        );
+        let midpoint_line_press = self.sketch_edit_press
+            && self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine
+            && self.panel_state.armed_constraint.is_none();
         let live = constraint_picks
             || line_live
+            || midpoint_line_live
+            || midpoint_line_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
             || self.sketch_arc_gesture.is_some()
@@ -1968,6 +2013,7 @@ impl WindowedState {
         self.sketch_arc_gesture = None;
         self.sketch_circle_center = None;
         self.sketch_circle_target = None;
+        self.sketch_edit_press = false;
         live
     }
 
@@ -1990,6 +2036,7 @@ impl WindowedState {
         }
         self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
         self.line_gesture.reset();
+        self.midpoint_line_gesture.reset();
         true
     }
 
@@ -2038,6 +2085,7 @@ impl WindowedState {
                 // group's fine-grained session stacks by themselves.
                 ui::shortcuts::ShortcutCommand::Undo => {
                     self.line_gesture.reset();
+                    self.midpoint_line_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2045,6 +2093,7 @@ impl WindowedState {
                 }
                 ui::shortcuts::ShortcutCommand::Redo => {
                     self.line_gesture.reset();
+                    self.midpoint_line_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2061,10 +2110,12 @@ impl WindowedState {
                 // Leaving never writes the DEFAULT orbit type: a session override dies with the
                 // mode rather than outliving it.
                 //
-                // Inside a sketch the chain gains two rungs, innermost first: a half-drawn Line,
-                // rectangle, or arc goes back before anything else the mode is holding. An armed
-                // sketch TOOL then falls back to Select before the placement ghost is touched.
-                // Escape never leaves sketch mode; that is the mode's own Cancel button's job.
+                // Inside a sketch the chain gains two rungs, innermost first: a half-drawn Line
+                // chain, pending Midpoint Line, rectangle press, marquee, arc/circle gesture, or
+                // constraint pick-set goes back before anything else the mode is holding. An
+                // armed sketch TOOL then falls back to Select before the placement ghost is
+                // touched. Escape never leaves sketch mode; that is the mode's own Cancel button's
+                // job.
                 ui::shortcuts::ShortcutCommand::CancelCommand => {
                     if !self.cancel_orbit_center_placement()
                         && !self.cancel_sketch_gesture()
@@ -2074,10 +2125,12 @@ impl WindowedState {
                         self.disarm_placement();
                     }
                 }
-                // The other half of the universal pair. It does nothing when no command is
-                // running — Accept is not a general viewport verb.
+                // The other half of the universal pair. Line finishes an open chain; Midpoint
+                // Line explicitly keeps its pending midpoint because Enter cannot name the second
+                // endpoint. Other sketch gestures do nothing here. Outside those cases Accept is
+                // not a general viewport verb.
                 ui::shortcuts::ShortcutCommand::AcceptCommand => {
-                    if !self.finish_line_chain() {
+                    if !self.accept_sketch_gesture() {
                         self.end_modal_command(ui::panel::ModeCommand::Accept);
                     }
                 }
@@ -2939,6 +2992,7 @@ impl WindowedState {
         let Some(target) = self.panel_state.sketch_mode else {
             // #99 / slice 3 / #102: a drawing or marquee gesture dies with the mode.
             self.line_gesture.reset();
+            self.midpoint_line_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -2954,6 +3008,7 @@ impl WindowedState {
             .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
         else {
             self.line_gesture.reset();
+            self.midpoint_line_gesture.reset();
             return;
         };
 
@@ -2961,6 +3016,11 @@ impl WindowedState {
         // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
         self.line_gesture.retain_for_context(
             tool == ui::panel::SketchTool::Line,
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
+        self.midpoint_line_gesture.retain_for_context(
+            tool == ui::panel::SketchTool::MidpointLine,
             self.panel_state.armed_constraint.is_some(),
             Some(target),
         );
@@ -3111,6 +3171,7 @@ impl WindowedState {
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
             | ui::panel::SketchTool::Line
+            | ui::panel::SketchTool::MidpointLine
             | ui::panel::SketchTool::Rectangle
             | ui::panel::SketchTool::ThreePointArc
             | ui::panel::SketchTool::CircleCenterDiameter => None,
@@ -3284,11 +3345,11 @@ impl WindowedState {
                                 .map(|point| point.at.in_plane())
                         })
                     };
-                    if let (Some(from), Some((point, _))) = (
+                    if let (Some(from), Some(point)) = (
                         profile_of(chain.end),
-                        self.sketch_line_target_at(cursor_x, cursor_y),
+                        self.sketch_target_at(cursor_x, cursor_y),
                     ) {
-                        let to = point.in_plane();
+                        let to = point.at.in_plane();
                         let profile = if self.line_gesture.arc_is_latched() {
                             chain.incoming.and_then(|_| {
                                 let (producer, _) = self.sketch_node_state(target)?;
@@ -3319,6 +3380,28 @@ impl WindowedState {
                             if projected.len() == profile.len() {
                                 self.sketch_draw_preview = projected;
                             }
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::MidpointLine => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y))) =
+                    (self.sketch_node_state(target), self.last_cursor_position)
+                {
+                    let endpoint = self.sketch_target_at(cursor_x, cursor_y);
+                    if let Some(placement) = endpoint.and_then(|endpoint| {
+                        self.midpoint_line_gesture
+                            .placement(target, &producer, endpoint)
+                    }) {
+                        let profile = [
+                            placement.reflected.in_plane(),
+                            placement.midpoint.in_plane(),
+                            placement.endpoint.in_plane(),
+                        ];
+                        let projected: Vec<egui::Pos2> =
+                            profile.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == profile.len() {
+                            self.sketch_draw_preview = projected;
                         }
                     }
                 }
@@ -3704,7 +3787,7 @@ fn sketch_entity_from_curve_hit(hit: SketchEdgeHit) -> ui::panel::SketchEntity {
 /// Build the one undoable edit emitted for a completed sketch command. A Tangent reaches this
 /// same intent door as every other profile edit; anchor compensation remains inseparable from
 /// the authored change.
-fn sketch_profile_edit_transaction(
+pub(super) fn sketch_profile_edit_transaction(
     target: document::scene::NodeId,
     producer: document::sketch::SketchSolid,
     old_offset: [i64; 3],

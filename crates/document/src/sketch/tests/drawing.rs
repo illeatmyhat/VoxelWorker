@@ -1,17 +1,83 @@
 //! The drawing-tool store mutators: free points, `connect`, coincidence via `point_at`, and the
-//! pure `with_point_placed` / `with_segment_between` / `with_rectangle` wrappers the polyline and
+//! pure `with_point_placed` / `with_segment_between` / `with_rectangle` wrappers the Line and
 //! rectangle gestures commit through. Coincidence IS shared point identity: placing on an occupied
 //! coord reuses the id, never mints a twin.
 
 use super::ctx;
 use crate::sketch::{
-    ConstraintKind, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint, SketchSolid,
-    TangentArcRefusal,
+    ConstraintKind, MidpointLineRefusal, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
+    SketchPointConstructionError, SketchSolid, TangentArcRefusal,
 };
-use parametric::units::AngleMeasurement;
+use parametric::units::{AngleMeasurement, Measurement};
 
 fn empty_solid() -> SketchSolid {
     SketchSolid::extrude(Sketch::new(PlaneAxis::Z, vec![]), 3)
+}
+
+#[test]
+fn checked_continuous_points_are_canonical_and_round_trip() {
+    for [x, y] in [[2.25, -3.75], [-0.125, 0.5], [0.0, 0.0]] {
+        let point = SketchPoint::try_from_continuous(x, y).unwrap();
+        assert!(point
+            .offset_local_voxels
+            .into_iter()
+            .all(|local| (0.0..1.0).contains(&local)));
+        assert_eq!(
+            SketchPoint::try_from_continuous(point.in_plane()[0], point.in_plane()[1]).unwrap(),
+            point
+        );
+    }
+}
+
+#[test]
+fn checked_continuous_points_handle_the_asymmetric_i64_f64_bounds() {
+    let lower = i64::MIN as f64;
+    let upper = -(i64::MIN as f64);
+    let just_below_upper = f64::from_bits(upper.to_bits() - 1);
+    let just_below_lower = f64::from_bits(lower.to_bits() + 1);
+
+    assert_eq!(
+        SketchPoint::try_from_continuous(lower, just_below_upper)
+            .unwrap()
+            .offset_voxels,
+        [i64::MIN, just_below_upper as i64]
+    );
+    assert_eq!(
+        SketchPoint::try_from_continuous(upper, 0.0),
+        Err(SketchPointConstructionError::OutOfCanonicalRange),
+        "`i64::MAX as f64` is 2^63 and must not be accepted by a saturating cast"
+    );
+    assert_eq!(
+        SketchPoint::try_from_continuous(just_below_lower, 0.0),
+        Err(SketchPointConstructionError::OutOfCanonicalRange)
+    );
+}
+
+#[test]
+fn checked_continuous_points_distinguish_nonfinite_and_range_errors() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            SketchPoint::try_from_continuous(bad, 0.0),
+            Err(SketchPointConstructionError::NonFinite)
+        );
+    }
+    assert_eq!(
+        SketchPoint::try_from_continuous(f64::MAX, 0.0),
+        Err(SketchPointConstructionError::OutOfCanonicalRange)
+    );
+}
+
+#[test]
+fn fractional_narrowing_carries_one_and_refuses_carry_overflow() {
+    let rounds_to_one = 1.0 - f64::EPSILON;
+    assert_eq!(
+        SketchPoint::finish_continuous_split(4, rounds_to_one),
+        Ok((5, 0.0))
+    );
+    assert_eq!(
+        SketchPoint::finish_continuous_split(i64::MAX, rounds_to_one),
+        Err(SketchPointConstructionError::OutOfCanonicalRange)
+    );
 }
 
 #[test]
@@ -55,6 +121,387 @@ fn with_point_placed_reuses_the_occupied_coord() {
     let (three, third) = two.with_point_placed(SketchPoint::new(5, 1));
     assert_ne!(third, first);
     assert_eq!(three.sketch.points().len(), 2);
+}
+
+#[test]
+fn midpoint_line_preview_is_the_exact_document_geometry_that_commit_stores() {
+    let empty = empty_solid();
+    let placement = empty
+        .midpoint_line_placement([5.25, -1.5], [8.75, 3.125], None)
+        .unwrap();
+    let (made, segment_id) = empty
+        .with_midpoint_line([5.25, -1.5], [8.75, 3.125], None)
+        .unwrap();
+    let segment = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.id == segment_id)
+        .unwrap();
+    let at = |id| {
+        made.sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .unwrap()
+            .at
+    };
+
+    assert_eq!(at(segment.from), placement.endpoint);
+    assert_eq!(at(segment.to), placement.reflected);
+    assert_eq!(made.sketch.points().len(), 2);
+    assert_eq!(made.sketch.segments().len(), 1);
+    assert!(made.sketch.constraints().is_empty());
+    assert_eq!(made.sketch.point_at(placement.midpoint), None);
+}
+
+#[test]
+fn midpoint_line_reuses_clicked_reflected_and_both_endpoint_ids() {
+    let midpoint = [5.0, 0.0];
+    let clicked_at = SketchPoint::new(8, 0);
+    let reflected_at = SketchPoint::new(2, 0);
+
+    let mut clicked_sketch = Sketch::empty(PlaneAxis::Z);
+    let clicked = clicked_sketch.add_free_point(clicked_at);
+    let clicked_solid = SketchSolid::extrude(clicked_sketch, 3);
+    let (clicked_reused, segment) = clicked_solid
+        .with_midpoint_line(midpoint, [999.0, 999.0], Some(clicked))
+        .unwrap();
+    assert_eq!(clicked_reused.sketch.segments()[0].id, segment);
+    assert_eq!(clicked_reused.sketch.segments()[0].from, clicked);
+    assert_eq!(clicked_reused.sketch.points().len(), 2);
+
+    let mut reflected_sketch = Sketch::empty(PlaneAxis::Z);
+    let reflected = reflected_sketch.add_free_point(reflected_at);
+    let reflected_solid = SketchSolid::extrude(reflected_sketch, 3);
+    let (reflected_reused, _) = reflected_solid
+        .with_midpoint_line(midpoint, clicked_at.in_plane(), None)
+        .unwrap();
+    assert_eq!(reflected_reused.sketch.segments()[0].to, reflected);
+    assert_eq!(reflected_reused.sketch.points().len(), 2);
+
+    let mut both_sketch = Sketch::empty(PlaneAxis::Z);
+    let clicked = both_sketch.add_free_point(clicked_at);
+    let reflected = both_sketch.add_free_point(reflected_at);
+    let both_solid = SketchSolid::extrude(both_sketch, 3);
+    let (both_reused, _) = both_solid
+        .with_midpoint_line(midpoint, clicked_at.in_plane(), Some(clicked))
+        .unwrap();
+    assert_eq!(both_reused.sketch.points().len(), 2, "no coordinate twins");
+    assert_eq!(both_reused.sketch.segments()[0].from, clicked);
+    assert_eq!(both_reused.sketch.segments()[0].to, reflected);
+
+    let mut coordinate_sketch = Sketch::empty(PlaneAxis::Z);
+    let clicked = coordinate_sketch.add_free_point(clicked_at);
+    let coordinate_solid = SketchSolid::extrude(coordinate_sketch, 3);
+    let (coordinate_reused, _) = coordinate_solid
+        .with_midpoint_line(midpoint, clicked_at.in_plane(), None)
+        .unwrap();
+    assert_eq!(coordinate_reused.sketch.segments()[0].from, clicked);
+    assert_eq!(coordinate_reused.sketch.points().len(), 2);
+}
+
+#[test]
+fn midpoint_line_preview_matches_a_reused_reflected_position_not_its_provenance() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let mut reflected_at = SketchPoint::new(2, 0);
+    reflected_at.offset_measurements =
+        Some([Measurement::from_voxels(2), Measurement::from_voxels(0)]);
+    let reflected = sketch.add_free_point(reflected_at);
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let placement = source
+        .midpoint_line_placement([5.0, 0.0], [8.0, 0.0], None)
+        .unwrap();
+    assert!(placement.reflected.coincides(&reflected_at));
+    assert_ne!(
+        placement.reflected, reflected_at,
+        "retained measurements are provenance, not preview geometry"
+    );
+
+    let (made, segment_id) = source
+        .with_midpoint_line([5.0, 0.0], [8.0, 0.0], None)
+        .unwrap();
+    let segment = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.id == segment_id)
+        .unwrap();
+    assert_eq!(
+        segment.to, reflected,
+        "the coincident stored point is reused"
+    );
+    let committed = made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == segment.to)
+        .unwrap()
+        .at;
+    assert!(placement.reflected.coincides(&committed));
+    assert_eq!(committed, reflected_at, "stored provenance remains intact");
+}
+
+#[test]
+fn midpoint_line_accepts_extreme_finite_canonical_coordinates() {
+    let upper = -(i64::MIN as f64);
+    let midpoint = [upper - 4096.0, -4096.0];
+    let endpoint = [upper - 3072.0, -3072.0];
+    let (made, segment) = empty_solid()
+        .with_midpoint_line(midpoint, endpoint, None)
+        .unwrap();
+    assert_eq!(made.sketch.segments()[0].id, segment);
+    assert_eq!(made.sketch.points().len(), 2);
+    assert!(made.sketch.points().iter().all(|point| point
+        .at
+        .in_plane()
+        .into_iter()
+        .all(f64::is_finite)));
+}
+
+#[test]
+fn midpoint_line_avoids_large_coordinate_cancellation_and_keeps_valid_extremes() {
+    let far = 2.0f64.powi(62);
+    for midpoint in [[1.0, 0.0], [0.0, 0.0], [1024.0, -1024.0]] {
+        let endpoint = [far, far];
+        let placement = empty_solid()
+            .midpoint_line_placement(midpoint, endpoint, None)
+            .unwrap();
+        assert!(placement
+            .midpoint
+            .is_exact_midpoint_of(&placement.endpoint, &placement.reflected));
+    }
+    let ordinary_large = empty_solid()
+        .midpoint_line_placement([1.0, 0.0], [2.0f64.powi(52), 0.0], None)
+        .unwrap();
+    assert!(ordinary_large
+        .midpoint
+        .is_exact_midpoint_of(&ordinary_large.endpoint, &ordinary_large.reflected));
+}
+
+#[test]
+fn midpoint_line_preserves_an_authoritative_large_split_endpoint() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let endpoint_at = SketchPoint {
+        offset_voxels: [1_i64 << 62, -(1_i64 << 62)],
+        offset_local_voxels: [0.5, 0.25],
+        offset_measurements: None,
+    };
+    let endpoint = sketch.add_free_point(endpoint_at);
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let placement = source
+        .midpoint_line_placement([1.0, -1.0], [f64::NAN, f64::NAN], Some(endpoint))
+        .unwrap();
+    assert_eq!(placement.endpoint, endpoint_at);
+    assert!(placement
+        .midpoint
+        .is_exact_midpoint_of(&placement.endpoint, &placement.reflected));
+
+    let (made, segment) = source
+        .with_midpoint_line([1.0, -1.0], [f64::NAN, f64::NAN], Some(endpoint))
+        .unwrap();
+    assert_eq!(made.sketch.segments()[0].id, segment);
+    assert_eq!(made.sketch.segments()[0].from, endpoint);
+    assert_eq!(
+        made.sketch
+            .points()
+            .iter()
+            .find(|point| point.id == endpoint)
+            .unwrap()
+            .at,
+        placement.endpoint
+    );
+}
+
+#[test]
+fn exact_split_reflection_normalizes_signs_and_refuses_both_range_edges() {
+    let midpoint = SketchPoint {
+        offset_voxels: [i64::MIN + 1, i64::MAX - 1],
+        offset_local_voxels: [0.75, 0.25],
+        offset_measurements: None,
+    };
+    let endpoint = SketchPoint {
+        offset_voxels: [i64::MIN, i64::MAX],
+        offset_local_voxels: [0.5, 0.5],
+        offset_measurements: None,
+    };
+    let reflected = midpoint.exact_reflection_of(&endpoint).unwrap().unwrap();
+    assert_eq!(
+        reflected,
+        SketchPoint {
+            offset_voxels: [i64::MIN + 3, i64::MAX - 2],
+            offset_local_voxels: [0.0, 0.0],
+            offset_measurements: None,
+        }
+    );
+    assert!(midpoint.is_exact_midpoint_of(&endpoint, &reflected));
+
+    assert_eq!(
+        SketchPoint::new(i64::MIN, 0).exact_reflection_of(&SketchPoint::new(i64::MIN + 1, 0)),
+        Err(SketchPointConstructionError::OutOfCanonicalRange)
+    );
+    assert_eq!(
+        SketchPoint::new(i64::MAX, 0).exact_reflection_of(&SketchPoint::new(i64::MAX - 1, 0)),
+        Err(SketchPointConstructionError::OutOfCanonicalRange)
+    );
+}
+
+#[test]
+fn midpoint_line_refuses_a_fractional_reflection_that_f32_cannot_store_exactly() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let endpoint = sketch.add_free_point(SketchPoint {
+        offset_voxels: [0, 0],
+        offset_local_voxels: [f32::from_bits(1), 0.0],
+        offset_measurements: None,
+    });
+    let source = SketchSolid::extrude(sketch, 3);
+
+    assert_eq!(
+        source.with_midpoint_line([0.5, 0.0], [0.0, 0.0], Some(endpoint)),
+        Err(MidpointLineRefusal::CanonicalCollapse)
+    );
+}
+
+#[test]
+fn a_preexisting_midpoint_remains_independent_geometry_not_an_authored_input() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let midpoint_at = SketchPoint::new(5, 0);
+    let midpoint_id = sketch.add_free_point(midpoint_at);
+    let source = SketchSolid::extrude(sketch, 3);
+    let (made, segment_id) = source
+        .with_midpoint_line(midpoint_at.in_plane(), [8.0, 0.0], None)
+        .unwrap();
+
+    let segment = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.id == segment_id)
+        .unwrap();
+    assert_ne!(segment.from, midpoint_id);
+    assert_ne!(segment.to, midpoint_id);
+
+    assert_eq!(
+        made.sketch.points().len(),
+        3,
+        "one old midpoint plus two ends"
+    );
+    assert_eq!(made.sketch.point_at(midpoint_at), Some(midpoint_id));
+    assert_eq!(
+        made.sketch
+            .points()
+            .iter()
+            .filter(|point| point.at.coincides(&midpoint_at))
+            .count(),
+        1,
+        "the construction input minted no midpoint twin"
+    );
+    assert_eq!(
+        made.sketch
+            .segments()
+            .iter()
+            .filter(|segment| segment.from == midpoint_id || segment.to == midpoint_id)
+            .count(),
+        0,
+        "the transient midpoint has no incident segment"
+    );
+    assert_eq!(
+        made.sketch
+            .arcs()
+            .iter()
+            .filter(|arc| arc.from == midpoint_id || arc.to == midpoint_id)
+            .count(),
+        0,
+        "the transient midpoint has no incident curve"
+    );
+    assert!(made.sketch.constraints().is_empty());
+}
+
+#[test]
+fn midpoint_line_refuses_stale_duplicate_and_canonical_collapse_atomically() {
+    let empty = empty_solid();
+    let raw_midpoint = [0.25 + 1.0e-10, 0.0];
+    let raw_endpoint = [0.25, 0.0];
+    assert!(parametric::sketch::midpoint_line_candidate(raw_midpoint, raw_endpoint).is_ok());
+
+    for refusal in [
+        empty.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(9999)),
+        empty.with_midpoint_line(raw_midpoint, raw_endpoint, None),
+    ] {
+        assert!(matches!(
+            refusal,
+            Err(MidpointLineRefusal::UnknownEndpoint | MidpointLineRefusal::CanonicalCollapse)
+        ));
+    }
+
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let endpoint = sketch.add_free_point(SketchPoint::new(8, 0));
+    let reflected = sketch.add_free_point(SketchPoint::new(2, 0));
+    sketch.connect(endpoint, reflected).unwrap();
+    let duplicate = SketchSolid::extrude(sketch, 3);
+    let before = serde_json::to_string(&duplicate).unwrap();
+    assert_eq!(
+        duplicate.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(endpoint)),
+        Err(MidpointLineRefusal::DuplicateSegment)
+    );
+    assert_eq!(serde_json::to_string(&duplicate).unwrap(), before);
+    let expected_next = duplicate.with_point_placed(SketchPoint::new(100, 100)).1;
+    assert_eq!(
+        duplicate.with_point_placed(SketchPoint::new(100, 100)).1,
+        expected_next,
+        "duplicate refusal consumed no id"
+    );
+}
+
+#[test]
+fn every_midpoint_line_refusal_preserves_bytes_and_the_next_id() {
+    let source = empty_solid();
+    let upper = -(i64::MIN as f64);
+    let cases = [
+        (
+            source.with_midpoint_line([0.0, 0.0], [0.0, 0.0], None),
+            MidpointLineRefusal::Candidate(
+                parametric::sketch::MidpointLineCandidateError::Collapsed,
+            ),
+        ),
+        (
+            source.with_midpoint_line([f64::NAN, 0.0], [1.0, 0.0], None),
+            MidpointLineRefusal::Candidate(
+                parametric::sketch::MidpointLineCandidateError::NonFinite,
+            ),
+        ),
+        (
+            source.with_midpoint_line([f64::MAX, 0.0], [-f64::MAX, 1.0], None),
+            MidpointLineRefusal::Candidate(
+                parametric::sketch::MidpointLineCandidateError::Overflow,
+            ),
+        ),
+        (
+            source.with_midpoint_line([upper, 0.0], [0.0, 1.0], None),
+            MidpointLineRefusal::Point(SketchPointConstructionError::OutOfCanonicalRange),
+        ),
+        (
+            source.with_midpoint_line([5.0, 0.0], [8.0, 0.0], Some(7777)),
+            MidpointLineRefusal::UnknownEndpoint,
+        ),
+        (
+            source.with_midpoint_line([0.25 + 1.0e-10, 0.0], [0.25, 0.0], None),
+            MidpointLineRefusal::CanonicalCollapse,
+        ),
+    ];
+    let before = serde_json::to_string(&source).unwrap();
+    let expected_next = source.with_point_placed(SketchPoint::new(100, 100)).1;
+    for (refusal, expected) in cases {
+        assert_eq!(refusal, Err(expected));
+        assert_eq!(serde_json::to_string(&source).unwrap(), before);
+        assert_eq!(
+            source.with_point_placed(SketchPoint::new(100, 100)).1,
+            expected_next,
+            "refusal consumed no id"
+        );
+    }
 }
 
 #[test]

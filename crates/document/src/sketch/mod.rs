@@ -108,6 +108,38 @@ pub enum TangentArcRefusal {
     Constraint(ConstraintRefusal),
 }
 
+/// The document-canonical geometry of a midpoint-defined segment. These are the exact positions
+/// preview must draw and commit will persist or reuse by coincidence. A reused point may retain
+/// different [`SketchPoint::offset_measurements`] provenance without changing that positional
+/// contract. The raw parametric candidate deliberately remains a separate type on the continuous
+/// side of the adapter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MidpointLinePlacement {
+    /// The transient construction input, canonicalized for preview but never persisted by the
+    /// Midpoint Line tool merely because it was clicked.
+    pub midpoint: SketchPoint,
+    /// The endpoint supplied by the author.
+    pub endpoint: SketchPoint,
+    /// The endpoint reflected through [`midpoint`](Self::midpoint). Commit may reuse an existing
+    /// point that [`SketchPoint::coincides`] with this canonical position.
+    pub reflected: SketchPoint,
+}
+
+/// Why a midpoint-defined segment could not be appended atomically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidpointLineRefusal {
+    /// Raw continuous construction was nonfinite, overflowed, or exactly collapsed.
+    Candidate(parametric::sketch::MidpointLineCandidateError),
+    /// A raw coordinate could not be represented by canonical [`SketchPoint`] storage.
+    Point(SketchPointConstructionError),
+    /// The clicked endpoint id no longer names a point in this sketch.
+    UnknownEndpoint,
+    /// Canonicalization produced a self-loop or an exactly symmetric reflection cannot be stored.
+    CanonicalCollapse,
+    /// The two resolved endpoint ids are already joined by a straight segment.
+    DuplicateSegment,
+}
+
 /// Build the explicit sketch evaluation context at a density-bearing boundary.
 ///
 /// Zero is not a density. Returning `None` keeps a legacy [`crate::voxel::VoxelProducer`] caller from
@@ -310,6 +342,16 @@ impl PlaneAxis {
     }
 }
 
+/// Why a continuous coordinate cannot be represented by canonical [`SketchPoint`] storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchPointConstructionError {
+    /// At least one supplied coordinate is NaN or infinite.
+    NonFinite,
+    /// A coordinate lies outside the split `i64 + [0, 1)` representation, including carry
+    /// overflow after the fractional part narrows to `f32`.
+    OutOfCanonicalRange,
+}
+
 /// One vertex of a sketch profile — a 2D point on the plane's in-plane axes (see
 /// [`PlaneAxis::in_plane_axes`]), carried as the full node-position representation, mirroring
 /// `NodeTransform`: a canonical integer voxel coordinate, a sub-voxel remainder, and an
@@ -338,6 +380,44 @@ pub struct SketchPoint {
 }
 
 impl SketchPoint {
+    /// Split one finite continuous coordinate into the document's canonical integer and local
+    /// parts. The positive bound is EXCLUSIVE: `i64::MAX as f64` rounds to `2^63`, so accepting
+    /// it and casting would silently claim the unrepresentable coordinate is `i64::MAX`.
+    fn try_split_continuous(coord: f64) -> Result<(i64, f32), SketchPointConstructionError> {
+        const LOWER: f64 = i64::MIN as f64;
+        const UPPER_EXCLUSIVE: f64 = -(i64::MIN as f64);
+
+        if !coord.is_finite() {
+            return Err(SketchPointConstructionError::NonFinite);
+        }
+        if !(LOWER..UPPER_EXCLUSIVE).contains(&coord) {
+            return Err(SketchPointConstructionError::OutOfCanonicalRange);
+        }
+        let floor = coord.floor();
+        Self::finish_continuous_split(floor as i64, coord - floor)
+    }
+
+    /// Finish a split after narrowing the local fraction. A value just below one can round to
+    /// `1.0f32`; carrying it keeps the documented `[0, 1)` invariant. Kept separate so the carry
+    /// overflow at `i64::MAX` is directly testable even though no `f64` has sub-voxel resolution
+    /// that high.
+    fn finish_continuous_split(
+        voxel: i64,
+        fraction: f64,
+    ) -> Result<(i64, f32), SketchPointConstructionError> {
+        if !fraction.is_finite() || !(0.0..1.0).contains(&fraction) {
+            return Err(SketchPointConstructionError::OutOfCanonicalRange);
+        }
+        let local = fraction as f32;
+        if local >= 1.0 {
+            return voxel
+                .checked_add(1)
+                .map(|carried| (carried, 0.0))
+                .ok_or(SketchPointConstructionError::OutOfCanonicalRange);
+        }
+        Ok((voxel, local))
+    }
+
     /// A profile vertex at the given whole-voxel in-plane coordinates (no fraction,
     /// no retained expression).
     pub fn new(axis0: i64, axis1: i64) -> Self {
@@ -359,7 +439,8 @@ impl SketchPoint {
                 return (0, 0.0);
             }
             let floor = coord.floor();
-            (floor as i64, (coord - floor) as f32)
+            Self::finish_continuous_split(floor as i64, coord - floor)
+                .unwrap_or((floor as i64, (coord - floor) as f32))
         };
         let (voxels_0, local_0) = split(axis0);
         let (voxels_1, local_1) = split(axis1);
@@ -368,6 +449,22 @@ impl SketchPoint {
             offset_local_voxels: [local_0, local_1],
             offset_measurements: None,
         }
+    }
+
+    /// A profile vertex at the supplied continuous coordinate, refusing input that cannot be
+    /// represented as canonical `i64 + f32` parts. Unlike [`from_continuous`](Self::from_continuous),
+    /// this programmatic-authoring door never sanitizes or saturates invalid input.
+    pub fn try_from_continuous(
+        axis0: f64,
+        axis1: f64,
+    ) -> Result<Self, SketchPointConstructionError> {
+        let (voxels_0, local_0) = Self::try_split_continuous(axis0)?;
+        let (voxels_1, local_1) = Self::try_split_continuous(axis1)?;
+        Ok(Self {
+            offset_voxels: [voxels_0, voxels_1],
+            offset_local_voxels: [local_0, local_1],
+            offset_measurements: None,
+        })
     }
 
     /// The continuous in-plane position: `offset_voxels + offset_local_voxels` per
@@ -398,6 +495,67 @@ impl SketchPoint {
     pub fn coincides(&self, other: &SketchPoint) -> bool {
         self.offset_voxels == other.offset_voxels
             && self.offset_local_voxels == other.offset_local_voxels
+    }
+
+    /// Whether this point is the exact midpoint of `first` and `second` in canonical document
+    /// storage. This avoids composing either endpoint into one large `f64`, where a small midpoint
+    /// or sub-voxel remainder could disappear before the equality is asked.
+    #[cfg(test)]
+    pub(crate) fn is_exact_midpoint_of(&self, first: &SketchPoint, second: &SketchPoint) -> bool {
+        matches!(self.exact_reflection_of(first), Ok(Some(reflected)) if reflected.coincides(second))
+    }
+
+    /// Reflect `endpoint` through this point using the canonical split representation itself.
+    /// `Ok(None)` means the mathematical reflection exists but its local fraction needs more
+    /// precision than `f32` can store exactly. Range failure is kept distinct so callers can
+    /// report an out-of-document coordinate rather than a rounding collapse.
+    #[allow(clippy::float_cmp)]
+    pub(crate) fn exact_reflection_of(
+        &self,
+        endpoint: &SketchPoint,
+    ) -> Result<Option<Self>, SketchPointConstructionError> {
+        // Knuth's TwoSum returns an exact two-component expansion of a floating-point sum. The
+        // error component matters when, for example, a minimum subnormal endpoint is reflected
+        // through 0.5: plain f64 arithmetic rounds `1.0 - 2^-149` to `1.0`.
+        let two_sum = |a: f64, b: f64| {
+            let sum = a + b;
+            let b_virtual = sum - a;
+            let error = (a - (sum - b_virtual)) + (b - b_virtual);
+            (sum, error)
+        };
+        let reflect_axis = |axis: usize| -> Result<Option<(i64, f32)>, _> {
+            let integer =
+                2 * i128::from(self.offset_voxels[axis]) - i128::from(endpoint.offset_voxels[axis]);
+            let (fraction, fraction_error) = two_sum(
+                2.0 * f64::from(self.offset_local_voxels[axis]),
+                -f64::from(endpoint.offset_local_voxels[axis]),
+            );
+            let mut fraction_floor = fraction.floor();
+            if fraction == fraction_floor && fraction_error < 0.0 {
+                fraction_floor -= 1.0;
+            }
+            let voxel = integer + fraction_floor as i128;
+            let voxel = i64::try_from(voxel)
+                .map_err(|_| SketchPointConstructionError::OutOfCanonicalRange)?;
+            let (exact_local, local_error) = two_sum(fraction - fraction_floor, fraction_error);
+            let local = exact_local as f32;
+            if local_error != 0.0 || f64::from(local) != exact_local {
+                return Ok(None);
+            }
+            Ok(Some((voxel, local)))
+        };
+
+        let Some((voxel_0, local_0)) = reflect_axis(0)? else {
+            return Ok(None);
+        };
+        let Some((voxel_1, local_1)) = reflect_axis(1)? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            offset_voxels: [voxel_0, voxel_1],
+            offset_local_voxels: [local_0, local_1],
+            offset_measurements: None,
+        }))
     }
 
     /// This point re-targeted from `old_density` to `new_density` — the `SetDensity`
@@ -2293,7 +2451,7 @@ impl Sketch {
     }
 
     /// Add a FREE point entity at `at` — no incident segment — returning its fresh id. A free
-    /// point is legal geometry; the polyline tool places one per click and then connects them.
+    /// point is legal geometry; the Line tool places one per click and then connects them.
     /// The public door to [`add_point`](Self::add_point).
     pub fn add_free_point(&mut self, at: SketchPoint) -> EntityId {
         self.add_point(at)

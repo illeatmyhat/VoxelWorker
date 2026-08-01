@@ -4,6 +4,28 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SketchPointerRoute {
+    Select,
+    StationaryEdit,
+    LineClickOrArcDrag,
+    RectangleDrag,
+}
+
+/// Classify the pointer grammar once. Midpoint Line deliberately shares the ordinary stationary
+/// edit route and can never latch Line's tangent-arc drag state.
+const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute {
+    match tool {
+        ui::panel::SketchTool::Select => SketchPointerRoute::Select,
+        ui::panel::SketchTool::AddPoint
+        | ui::panel::SketchTool::MidpointLine
+        | ui::panel::SketchTool::ThreePointArc
+        | ui::panel::SketchTool::CircleCenterDiameter => SketchPointerRoute::StationaryEdit,
+        ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
+        ui::panel::SketchTool::Rectangle => SketchPointerRoute::RectangleDrag,
+    }
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
@@ -138,8 +160,8 @@ impl ApplicationHandler for App {
                             if state.panel_state.armed_constraint.is_some() {
                                 state.sketch_constraint_press = true;
                             } else {
-                                match state.panel_state.sketch_tool {
-                                    ui::panel::SketchTool::Select => {
+                                match sketch_pointer_route(state.panel_state.sketch_tool) {
+                                    SketchPointerRoute::Select => {
                                         // A viewport Select press arms a selection resolve on the
                                         // stationary release (this arm only runs under `!egui_consumed`,
                                         // so a press on the context menu never arms it).
@@ -157,18 +179,16 @@ impl ApplicationHandler for App {
                                     }
                                     // Generic click tools latch their press here; a stationary
                                     // release dispatches the selected edit below.
-                                    ui::panel::SketchTool::AddPoint
-                                    | ui::panel::SketchTool::ThreePointArc
-                                    | ui::panel::SketchTool::CircleCenterDiameter => {
+                                    SketchPointerRoute::StationaryEdit => {
                                         state.sketch_edit_press = true;
                                     }
                                     // Line owns a typed click-or-tangent-arc press path.
-                                    ui::panel::SketchTool::Line => {
+                                    SketchPointerRoute::LineClickOrArcDrag => {
                                         state.begin_line_press(cursor_x, cursor_y);
                                     }
                                     // #99: the rectangle is a press-drag-release gesture — the
                                     // press pins the anchor corner; the release commits.
-                                    ui::panel::SketchTool::Rectangle => {
+                                    SketchPointerRoute::RectangleDrag => {
                                         state.sketch_rect_anchor =
                                             state.sketch_snapped_point_at(cursor_x, cursor_y);
                                     }
@@ -304,6 +324,9 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::CircleCenterDiameter => {
                                         state.sketch_circle_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::MidpointLine => {
+                                        state.sketch_midpoint_line_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Line
@@ -723,5 +746,22 @@ impl ApplicationHandler for App {
         if let Some(state) = self.state.as_ref() {
             state.save_config();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn midpoint_line_uses_only_the_stationary_edit_route() {
+        assert_eq!(
+            sketch_pointer_route(ui::panel::SketchTool::MidpointLine),
+            SketchPointerRoute::StationaryEdit
+        );
+        assert_eq!(
+            sketch_pointer_route(ui::panel::SketchTool::Line),
+            SketchPointerRoute::LineClickOrArcDrag
+        );
     }
 }

@@ -128,6 +128,7 @@ enum SketchToolConfig {
     AddPoint,
     #[serde(alias = "Polyline")]
     Line,
+    MidpointLine,
     Rectangle,
     ThreePointArc,
     CircleCenterDiameter,
@@ -953,6 +954,24 @@ mod tests {
                 .into_state()
                 .sketch_tool,
             SketchTool::Line
+        );
+    }
+
+    #[test]
+    fn midpoint_line_survives_both_sides_of_the_tool_config_shim() {
+        let mut state = distinctive_state();
+        state.sketch_tool = SketchTool::MidpointLine;
+        let json = Dump::from_state(&state)
+            .to_json()
+            .expect("serialize Midpoint Line");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse Midpoint Line");
+        assert_eq!(value["sketch_tool"], "MidpointLine");
+        assert_eq!(
+            Dump::from_json(&json)
+                .expect("deserialize Midpoint Line")
+                .into_state()
+                .sketch_tool,
+            SketchTool::MidpointLine
         );
     }
 

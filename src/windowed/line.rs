@@ -4,36 +4,6 @@ use document::scene::NodeId;
 use document::sketch::{EntityId, SketchCurve, SketchPoint, SketchSolid, TangentArcRefusal};
 use parametric::EvaluationContext;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct ResolvedLineTarget {
-    pub at: SketchPoint,
-    pub existing: Option<EntityId>,
-}
-
-pub(super) fn resolve_target(
-    producer: &SketchSolid,
-    grabbed: Option<EntityId>,
-    snapped: Option<SketchPoint>,
-) -> Option<ResolvedLineTarget> {
-    if let Some(id) = grabbed {
-        let at = producer
-            .sketch
-            .points()
-            .iter()
-            .find(|point| point.id == id)?
-            .at;
-        return Some(ResolvedLineTarget {
-            at,
-            existing: Some(id),
-        });
-    }
-    let at = snapped?;
-    Some(ResolvedLineTarget {
-        at,
-        existing: producer.sketch.point_at(at),
-    })
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum LineEdit {
     SessionOnly,
@@ -596,8 +566,12 @@ mod tests {
     fn grabbed_off_grid_vertex_wins_over_the_snapped_cursor_target() {
         let (producer, grabbed) =
             empty().with_point_placed(SketchPoint::from_continuous(3.25, 4.75));
-        let resolved =
-            resolve_target(&producer, Some(grabbed), Some(SketchPoint::new(3, 5))).unwrap();
+        let resolved = super::super::sketch_target::resolve_target(
+            &producer,
+            Some(grabbed),
+            Some(SketchPoint::new(3, 5)),
+        )
+        .unwrap();
         assert_eq!(resolved.existing, Some(grabbed));
         assert_eq!(resolved.at.in_plane(), [3.25, 4.75]);
     }

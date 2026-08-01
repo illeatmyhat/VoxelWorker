@@ -87,6 +87,11 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         Some(SketchTool::Line),
     ),
     (
+        Icon::MidpointLine,
+        "Midpoint Line — click midpoint, then endpoint",
+        Some(SketchTool::MidpointLine),
+    ),
+    (
         Icon::Rectangle,
         "Rectangle — drag opposite corners",
         Some(SketchTool::Rectangle),
@@ -485,6 +490,23 @@ mod tests {
     fn sketch_rail_exposes_line_with_the_complete_line_glyph() {
         assert!(SKETCH_TOOLS.iter().any(|&(icon, tip, tool)| {
             icon == Icon::Line && tip.starts_with("Line —") && tool == Some(SketchTool::Line)
+        }));
+    }
+
+    #[test]
+    fn sketch_rail_places_midpoint_line_immediately_after_line() {
+        assert!(SKETCH_TOOLS.windows(2).any(|pair| {
+            matches!(
+                pair,
+                [
+                    (_, _, Some(SketchTool::Line)),
+                    (
+                        Icon::MidpointLine,
+                        "Midpoint Line — click midpoint, then endpoint",
+                        Some(SketchTool::MidpointLine)
+                    )
+                ]
+            )
         }));
     }
 }
