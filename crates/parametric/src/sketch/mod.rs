@@ -10,6 +10,7 @@ mod midpoint_line;
 mod model;
 mod polygon;
 mod rectangle;
+mod slot;
 mod solve;
 mod symmetry;
 mod tangent;
@@ -32,6 +33,10 @@ pub use polygon::{
 pub use rectangle::{
     center_rectangle_candidate, three_point_rectangle_candidate, RectangleCandidate,
     RectangleCandidateError,
+};
+pub use slot::{
+    center_arc_slot_candidate, linear_slot_candidate, three_point_arc_slot_candidate,
+    LinearSlotKind, SlotCandidate, SlotCandidateError, SlotEdgeCandidate,
 };
 pub use solve::{
     concentric_center, Analysis, ArcId, BuildError, CircleId, ConstraintId, CurrentValidation,

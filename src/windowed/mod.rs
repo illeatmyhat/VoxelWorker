@@ -55,6 +55,7 @@ mod point_circle;
 mod polygon;
 mod render;
 mod sketch_target;
+mod slot;
 mod tangent_arc;
 mod three_point_rectangle;
 mod view_cube;
@@ -440,6 +441,8 @@ struct WindowedState {
     three_point_rectangle_gesture: three_point_rectangle::ThreePointRectangleGesture,
     /// Shared transient picks for inscribed, circumscribed, and edge polygons.
     polygon_gesture: polygon::PolygonGesture,
+    /// Shared transient construction picks for the five slot grammars.
+    slot_gesture: slot::SlotGesture,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -838,6 +841,7 @@ impl WindowedState {
             three_point_rectangle_gesture:
                 three_point_rectangle::ThreePointRectangleGesture::default(),
             polygon_gesture: polygon::PolygonGesture::default(),
+            slot_gesture: slot::SlotGesture::default(),
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1036,6 +1040,7 @@ impl WindowedState {
             point_circle_gesture: _,
             three_point_rectangle_gesture: _,
             polygon_gesture: _,
+            slot_gesture: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,

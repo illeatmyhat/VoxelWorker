@@ -151,6 +151,31 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         "Edge Polygon — click edge endpoints, then choose the body side",
         Some(SketchTool::PolygonEdge),
     ),
+    (
+        Icon::SlotCenterToCenter,
+        "Center-to-Center Slot — click cap centers, then width",
+        Some(SketchTool::SlotCenterToCenter),
+    ),
+    (
+        Icon::SlotOverall,
+        "Overall Slot — click overall endpoints, then width",
+        Some(SketchTool::SlotOverall),
+    ),
+    (
+        Icon::SlotCenterPoint,
+        "Center Point Slot — click midpoint, cap center, then width",
+        Some(SketchTool::SlotCenterPoint),
+    ),
+    (
+        Icon::Slot3PointArc,
+        "3-Point Arc Slot — click arc endpoints, through point, then width",
+        Some(SketchTool::Slot3PointArc),
+    ),
+    (
+        Icon::SlotCenterPointArc,
+        "Center Point Arc Slot — click center, start, end direction, then width",
+        Some(SketchTool::SlotCenterPointArc),
+    ),
 ];
 
 /// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch
@@ -625,6 +650,30 @@ mod tests {
                         Some(SketchTool::PolygonCircumscribed)
                     ),
                     (Icon::PolygonEdge, _, Some(SketchTool::PolygonEdge))
+                ]
+            )
+        }));
+    }
+
+    #[test]
+    fn sketch_rail_groups_all_five_slot_grammars() {
+        assert!(SKETCH_TOOLS.windows(5).any(|items| {
+            matches!(
+                items,
+                [
+                    (
+                        Icon::SlotCenterToCenter,
+                        _,
+                        Some(SketchTool::SlotCenterToCenter)
+                    ),
+                    (Icon::SlotOverall, _, Some(SketchTool::SlotOverall)),
+                    (Icon::SlotCenterPoint, _, Some(SketchTool::SlotCenterPoint)),
+                    (Icon::Slot3PointArc, _, Some(SketchTool::Slot3PointArc)),
+                    (
+                        Icon::SlotCenterPointArc,
+                        _,
+                        Some(SketchTool::SlotCenterPointArc)
+                    )
                 ]
             )
         }));

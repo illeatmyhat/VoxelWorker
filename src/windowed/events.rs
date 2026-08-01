@@ -28,7 +28,12 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::Rectangle3Point
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
-        | ui::panel::SketchTool::PolygonEdge => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::PolygonEdge
+        | ui::panel::SketchTool::SlotCenterToCenter
+        | ui::panel::SketchTool::SlotOverall
+        | ui::panel::SketchTool::SlotCenterPoint
+        | ui::panel::SketchTool::SlotCenterPointArc
+        | ui::panel::SketchTool::Slot3PointArc => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
         ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
             SketchPointerRoute::RectangleDrag
@@ -356,6 +361,13 @@ impl ApplicationHandler for App {
                                     | ui::panel::SketchTool::PolygonCircumscribed
                                     | ui::panel::SketchTool::PolygonEdge => {
                                         state.sketch_polygon_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::SlotCenterToCenter
+                                    | ui::panel::SketchTool::SlotOverall
+                                    | ui::panel::SketchTool::SlotCenterPoint
+                                    | ui::panel::SketchTool::SlotCenterPointArc
+                                    | ui::panel::SketchTool::Slot3PointArc => {
+                                        state.sketch_slot_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::MidpointLine => {
                                         state.sketch_midpoint_line_click(up_x, up_y);
@@ -822,6 +834,11 @@ mod tests {
             ui::panel::SketchTool::PolygonInscribed,
             ui::panel::SketchTool::PolygonCircumscribed,
             ui::panel::SketchTool::PolygonEdge,
+            ui::panel::SketchTool::SlotCenterToCenter,
+            ui::panel::SketchTool::SlotOverall,
+            ui::panel::SketchTool::SlotCenterPoint,
+            ui::panel::SketchTool::SlotCenterPointArc,
+            ui::panel::SketchTool::Slot3PointArc,
         ] {
             assert_eq!(
                 sketch_pointer_route(tool),

@@ -770,6 +770,127 @@ impl SketchSolid {
             .ok_or(PolygonRefusal::AlreadyExists)
     }
 
+    /// Resolve any linear slot grammar without allocating document entities.
+    pub fn linear_slot_placement(
+        &self,
+        kind: parametric::sketch::LinearSlotKind,
+        first: SketchPoint,
+        second: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<SlotPlacement, SlotRefusal> {
+        canonical_slot(
+            parametric::sketch::linear_slot_candidate(
+                kind,
+                first.in_plane(),
+                second.in_plane(),
+                width_point.in_plane(),
+            )
+            .map_err(SlotRefusal::Candidate)?,
+        )
+    }
+
+    /// Resolve Three Point Arc Slot without allocating document entities.
+    pub fn three_point_arc_slot_placement(
+        &self,
+        start: SketchPoint,
+        end: SketchPoint,
+        through: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<SlotPlacement, SlotRefusal> {
+        canonical_slot(
+            parametric::sketch::three_point_arc_slot_candidate(
+                start.in_plane(),
+                end.in_plane(),
+                through.in_plane(),
+                width_point.in_plane(),
+            )
+            .map_err(SlotRefusal::Candidate)?,
+        )
+    }
+
+    /// Resolve Center Point Arc Slot without allocating document entities.
+    pub fn center_arc_slot_placement(
+        &self,
+        center: SketchPoint,
+        start: SketchPoint,
+        end_direction: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<SlotPlacement, SlotRefusal> {
+        canonical_slot(
+            parametric::sketch::center_arc_slot_candidate(
+                center.in_plane(),
+                start.in_plane(),
+                end_direction.in_plane(),
+                width_point.in_plane(),
+            )
+            .map_err(SlotRefusal::Candidate)?,
+        )
+    }
+
+    pub fn with_linear_slot(
+        &self,
+        kind: parametric::sketch::LinearSlotKind,
+        first: SketchPoint,
+        second: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<SketchSolid, SlotRefusal> {
+        let placement = self.linear_slot_placement(kind, first, second, width_point)?;
+        self.with_slot_placement(&placement)
+    }
+
+    pub fn with_three_point_arc_slot(
+        &self,
+        start: SketchPoint,
+        end: SketchPoint,
+        through: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<SketchSolid, SlotRefusal> {
+        let placement = self.three_point_arc_slot_placement(start, end, through, width_point)?;
+        self.with_slot_placement(&placement)
+    }
+
+    pub fn with_center_arc_slot(
+        &self,
+        center: SketchPoint,
+        start: SketchPoint,
+        end_direction: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<SketchSolid, SlotRefusal> {
+        let placement =
+            self.center_arc_slot_placement(center, start, end_direction, width_point)?;
+        self.with_slot_placement(&placement)
+    }
+
+    fn with_slot_placement(&self, placement: &SlotPlacement) -> Result<SketchSolid, SlotRefusal> {
+        let mut next = self.clone();
+        for edge in placement.edges {
+            let (from, to) = match edge {
+                SlotEdgePlacement::Line { from, to } | SlotEdgePlacement::Arc { from, to, .. } => {
+                    (from, to)
+                }
+            };
+            let from = next
+                .sketch
+                .point_at(from)
+                .unwrap_or_else(|| next.sketch.add_free_point(from));
+            let to = next
+                .sketch
+                .point_at(to)
+                .unwrap_or_else(|| next.sketch.add_free_point(to));
+            match edge {
+                SlotEdgePlacement::Line { .. } => {
+                    next.sketch.connect(from, to);
+                }
+                SlotEdgePlacement::Arc { sweep, .. } => {
+                    next.sketch.connect_arc(from, to, sweep);
+                }
+            }
+        }
+        (next != *self)
+            .then_some(next)
+            .ok_or(SlotRefusal::AlreadyExists)
+    }
+
     /// This producer with the point `point_id` deleted, CASCADING to its incident segments:
     /// deleting a point removes its edges and nothing else, and does NOT reclose the loop.
     /// No-op if `point_id` is unknown. Pure — returns a new producer. A loop that
@@ -1459,6 +1580,47 @@ fn canonical_polygon(
         return Err(PolygonRefusal::Unrepresentable);
     }
     Ok(PolygonPlacement { vertices, center })
+}
+
+fn canonical_slot(
+    candidate: parametric::sketch::SlotCandidate,
+) -> Result<SlotPlacement, SlotRefusal> {
+    let edges = candidate
+        .edges
+        .map(|edge| match edge {
+            parametric::sketch::SlotEdgeCandidate::Line { from, to } => {
+                Ok(SlotEdgePlacement::Line {
+                    from: SketchPoint::try_from_continuous(from[0], from[1])
+                        .map_err(|_| SlotRefusal::Unrepresentable)?,
+                    to: SketchPoint::try_from_continuous(to[0], to[1])
+                        .map_err(|_| SlotRefusal::Unrepresentable)?,
+                })
+            }
+            parametric::sketch::SlotEdgeCandidate::Arc {
+                from,
+                to,
+                sweep_degrees,
+            } => Ok(SlotEdgePlacement::Arc {
+                from: SketchPoint::try_from_continuous(from[0], from[1])
+                    .map_err(|_| SlotRefusal::Unrepresentable)?,
+                to: SketchPoint::try_from_continuous(to[0], to[1])
+                    .map_err(|_| SlotRefusal::Unrepresentable)?,
+                sweep: parametric::units::AngleMeasurement::try_from_degrees_f64(sweep_degrees)
+                    .map_err(|_| SlotRefusal::Unrepresentable)?,
+            }),
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, SlotRefusal>>()?;
+    let edges: [SlotEdgePlacement; 4] =
+        edges.try_into().map_err(|_| SlotRefusal::Unrepresentable)?;
+    if edges.iter().any(|edge| match edge {
+        SlotEdgePlacement::Line { from, to } | SlotEdgePlacement::Arc { from, to, .. } => {
+            from.coincides(to)
+        }
+    }) {
+        return Err(SlotRefusal::Unrepresentable);
+    }
+    Ok(SlotPlacement { edges })
 }
 
 impl SketchSolid {

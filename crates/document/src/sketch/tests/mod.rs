@@ -36,6 +36,7 @@ mod polygons;
 mod region_memo;
 mod regions;
 mod revolve;
+mod slots;
 
 /// Explicit evaluation context for a test's authoritative scene density. Keeping this one small
 /// helper makes it visible at every curve-sensitive call site without scattering constructors.

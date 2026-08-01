@@ -338,6 +338,16 @@ pub enum SketchTool {
     PolygonCircumscribed,
     /// Draw a regular polygon from one edge and a third pick selecting the body side.
     PolygonEdge,
+    /// Draw a linear slot from the centers of its semicircular ends, then its width.
+    SlotCenterToCenter,
+    /// Draw a linear slot from its overall endpoints, then its width.
+    SlotOverall,
+    /// Draw a linear slot from its midpoint, one cap center, then its width.
+    SlotCenterPoint,
+    /// Draw a curved slot from a center-first arc and a width pick.
+    SlotCenterPointArc,
+    /// Draw a curved slot from a three-point center arc and a width pick.
+    Slot3PointArc,
 }
 
 /// The floating Signal **display stack**'s viewer state.

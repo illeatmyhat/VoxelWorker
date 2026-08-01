@@ -141,6 +141,11 @@ enum SketchToolConfig {
     PolygonInscribed,
     PolygonCircumscribed,
     PolygonEdge,
+    SlotCenterToCenter,
+    SlotOverall,
+    SlotCenterPoint,
+    SlotCenterPointArc,
+    Slot3PointArc,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
@@ -1091,6 +1096,30 @@ mod tests {
                 .into_state();
             assert_eq!(restored.sketch_tool, tool);
             assert_eq!(restored.sketch_polygon_sides, 17);
+        }
+    }
+
+    #[test]
+    fn all_slot_tools_survive_both_sides_of_the_tool_config_shim() {
+        for tool in [
+            SketchTool::SlotCenterToCenter,
+            SketchTool::SlotOverall,
+            SketchTool::SlotCenterPoint,
+            SketchTool::Slot3PointArc,
+            SketchTool::SlotCenterPointArc,
+        ] {
+            let mut state = distinctive_state();
+            state.sketch_tool = tool;
+            let json = Dump::from_state(&state)
+                .to_json()
+                .expect("serialize slot tool");
+            assert_eq!(
+                Dump::from_json(&json)
+                    .expect("deserialize slot tool")
+                    .into_state()
+                    .sketch_tool,
+                tool
+            );
         }
     }
 

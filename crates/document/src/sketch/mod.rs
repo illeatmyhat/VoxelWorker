@@ -195,6 +195,37 @@ pub struct PolygonPlacement {
     pub center: SketchPoint,
 }
 
+/// Why a slot boundary could not be appended atomically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotRefusal {
+    /// The continuous construction is invalid or degenerate.
+    Candidate(parametric::sketch::SlotCandidateError),
+    /// A boundary endpoint or arc sweep cannot be represented in canonical storage.
+    Unrepresentable,
+    /// The complete boundary already exists.
+    AlreadyExists,
+}
+
+/// One document-canonical boundary curve of a slot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlotEdgePlacement {
+    /// Straight boundary span.
+    Line { from: SketchPoint, to: SketchPoint },
+    /// Circular boundary span with its signed included angle.
+    Arc {
+        from: SketchPoint,
+        to: SketchPoint,
+        sweep: parametric::units::AngleMeasurement,
+    },
+}
+
+/// Canonical four-curve slot boundary shared by preview and commit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotPlacement {
+    /// Connected boundary curves in traversal order.
+    pub edges: [SlotEdgePlacement; 4],
+}
+
 /// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
 /// Radius and center stay derived curve data; the persisted arc remains its endpoint ids plus
 /// intrinsic sweep.

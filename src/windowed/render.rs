@@ -368,6 +368,7 @@ impl WindowedState {
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
+            self.slot_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -381,6 +382,7 @@ impl WindowedState {
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
+            self.slot_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1699,6 +1701,18 @@ impl WindowedState {
         {
             return true;
         }
+        let slot_kind = slot_kind(self.panel_state.sketch_tool);
+        self.slot_gesture.retain_for_context(
+            slot_kind,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self
+            .slot_gesture
+            .blocks_enter(slot_kind, self.panel_state.armed_constraint.is_some())
+        {
+            return true;
+        }
         let tangent_producer = self
             .panel_state
             .sketch_mode
@@ -1825,6 +1839,29 @@ impl WindowedState {
         if let polygon::PolygonEdit::Document(next) = self
             .polygon_gesture
             .click(target, kind, &producer, resolved, sides)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance the active slot grammar; only its final width pick commits the native line/arc
+    /// boundary and enters undo history.
+    pub(super) fn sketch_slot_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(kind) = slot_kind(self.panel_state.sketch_tool) else {
+            self.slot_gesture.reset();
+            return;
+        };
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.slot_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.slot_gesture.reset();
+            return;
+        };
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        if let slot::SlotEdit::Document(next) =
+            self.slot_gesture.click(target, kind, &producer, resolved)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2215,6 +2252,7 @@ impl WindowedState {
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
+            self.slot_gesture.reset();
             self.sketch_edit_press = false;
             return false;
         }
@@ -2252,6 +2290,14 @@ impl WindowedState {
                     | ui::panel::SketchTool::Circle2Point
                     | ui::panel::SketchTool::Circle3Point
                     | ui::panel::SketchTool::Rectangle3Point
+                    | ui::panel::SketchTool::PolygonInscribed
+                    | ui::panel::SketchTool::PolygonCircumscribed
+                    | ui::panel::SketchTool::PolygonEdge
+                    | ui::panel::SketchTool::SlotCenterToCenter
+                    | ui::panel::SketchTool::SlotOverall
+                    | ui::panel::SketchTool::SlotCenterPoint
+                    | ui::panel::SketchTool::SlotCenterPointArc
+                    | ui::panel::SketchTool::Slot3PointArc
             )
             && self.panel_state.armed_constraint.is_none();
         let center_arc_live = self.center_arc_gesture.cancel_for_escape(
@@ -2274,6 +2320,10 @@ impl WindowedState {
             polygon_kind(self.panel_state.sketch_tool),
             self.panel_state.armed_constraint.is_some(),
         );
+        let slot_live = self.slot_gesture.cancel_for_escape(
+            slot_kind(self.panel_state.sketch_tool),
+            self.panel_state.armed_constraint.is_some(),
+        );
         let live = constraint_picks
             || line_live
             || midpoint_line_live
@@ -2282,6 +2332,7 @@ impl WindowedState {
             || point_circle_live
             || three_point_rectangle_live
             || polygon_live
+            || slot_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2321,6 +2372,7 @@ impl WindowedState {
         self.point_circle_gesture.reset();
         self.three_point_rectangle_gesture.reset();
         self.polygon_gesture.reset();
+        self.slot_gesture.reset();
         true
     }
 
@@ -2375,6 +2427,7 @@ impl WindowedState {
                     self.point_circle_gesture.reset();
                     self.three_point_rectangle_gesture.reset();
                     self.polygon_gesture.reset();
+                    self.slot_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2388,6 +2441,7 @@ impl WindowedState {
                     self.point_circle_gesture.reset();
                     self.three_point_rectangle_gesture.reset();
                     self.polygon_gesture.reset();
+                    self.slot_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -3292,6 +3346,7 @@ impl WindowedState {
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
+            self.slot_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3313,6 +3368,7 @@ impl WindowedState {
             self.point_circle_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
+            self.slot_gesture.reset();
             return;
         };
 
@@ -3347,6 +3403,11 @@ impl WindowedState {
         );
         self.polygon_gesture.retain_for_context(
             polygon_kind(tool),
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
+        self.slot_gesture.retain_for_context(
+            slot_kind(tool),
             self.panel_state.armed_constraint.is_some(),
             Some(target),
         );
@@ -3520,7 +3581,12 @@ impl WindowedState {
             | ui::panel::SketchTool::Circle3Point
             | ui::panel::SketchTool::PolygonInscribed
             | ui::panel::SketchTool::PolygonCircumscribed
-            | ui::panel::SketchTool::PolygonEdge => None,
+            | ui::panel::SketchTool::PolygonEdge
+            | ui::panel::SketchTool::SlotCenterToCenter
+            | ui::panel::SketchTool::SlotOverall
+            | ui::panel::SketchTool::SlotCenterPoint
+            | ui::panel::SketchTool::SlotCenterPointArc
+            | ui::panel::SketchTool::Slot3PointArc => None,
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -4083,6 +4149,37 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::SlotCenterToCenter
+            | ui::panel::SketchTool::SlotOverall
+            | ui::panel::SketchTool::SlotCenterPoint
+            | ui::panel::SketchTool::SlotCenterPointArc
+            | ui::panel::SketchTool::Slot3PointArc => {
+                if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
+                    slot_kind(tool),
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                ) {
+                    let cursor = self.sketch_target_at(cursor_x, cursor_y);
+                    let ring = cursor.and_then(|cursor| {
+                        self.slot_gesture
+                            .placement(target, kind, &producer, cursor)
+                            .map(|placement| slot_ring(&placement))
+                            .or_else(|| {
+                                self.slot_gesture.guide(target, kind).map(|mut guide| {
+                                    guide.push(cursor.at);
+                                    guide.into_iter().map(|point| point.in_plane()).collect()
+                                })
+                            })
+                    });
+                    if let Some(ring) = ring {
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -4181,7 +4278,12 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::CircleCenterDiameter
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
-        | ui::panel::SketchTool::PolygonEdge => None,
+        | ui::panel::SketchTool::PolygonEdge
+        | ui::panel::SketchTool::SlotCenterToCenter
+        | ui::panel::SketchTool::SlotOverall
+        | ui::panel::SketchTool::SlotCenterPoint
+        | ui::panel::SketchTool::SlotCenterPointArc
+        | ui::panel::SketchTool::Slot3PointArc => None,
     }
 }
 
@@ -4202,8 +4304,66 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::ArcTangent
         | ui::panel::SketchTool::CircleCenterDiameter
         | ui::panel::SketchTool::Circle2Point
-        | ui::panel::SketchTool::Circle3Point => None,
+        | ui::panel::SketchTool::Circle3Point
+        | ui::panel::SketchTool::SlotCenterToCenter
+        | ui::panel::SketchTool::SlotOverall
+        | ui::panel::SketchTool::SlotCenterPoint
+        | ui::panel::SketchTool::SlotCenterPointArc
+        | ui::panel::SketchTool::Slot3PointArc => None,
     }
+}
+
+const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
+    match tool {
+        ui::panel::SketchTool::SlotCenterToCenter => Some(slot::SlotKind::CenterToCenter),
+        ui::panel::SketchTool::SlotOverall => Some(slot::SlotKind::Overall),
+        ui::panel::SketchTool::SlotCenterPoint => Some(slot::SlotKind::CenterPoint),
+        ui::panel::SketchTool::SlotCenterPointArc => Some(slot::SlotKind::CenterPointArc),
+        ui::panel::SketchTool::Slot3PointArc => Some(slot::SlotKind::ThreePointArc),
+        ui::panel::SketchTool::Select
+        | ui::panel::SketchTool::AddPoint
+        | ui::panel::SketchTool::Line
+        | ui::panel::SketchTool::MidpointLine
+        | ui::panel::SketchTool::Rectangle
+        | ui::panel::SketchTool::Rectangle3Point
+        | ui::panel::SketchTool::RectangleCenterCorner
+        | ui::panel::SketchTool::ThreePointArc
+        | ui::panel::SketchTool::ArcCenterEndpoints
+        | ui::panel::SketchTool::ArcTangent
+        | ui::panel::SketchTool::CircleCenterDiameter
+        | ui::panel::SketchTool::Circle2Point
+        | ui::panel::SketchTool::Circle3Point
+        | ui::panel::SketchTool::PolygonInscribed
+        | ui::panel::SketchTool::PolygonCircumscribed
+        | ui::panel::SketchTool::PolygonEdge => None,
+    }
+}
+
+fn slot_ring(placement: &document::sketch::SlotPlacement) -> Vec<[f64; 2]> {
+    let mut ring = Vec::new();
+    for edge in placement.edges {
+        match edge {
+            document::sketch::SlotEdgePlacement::Line { from, .. } => {
+                ring.push(from.in_plane());
+            }
+            document::sketch::SlotEdgePlacement::Arc { from, to, sweep } => {
+                ring.push(from.in_plane());
+                ring.extend(
+                    document::sketch::arc_interior_points(
+                        from.in_plane(),
+                        to.in_plane(),
+                        sweep.to_degrees_f64(),
+                    )
+                    .iter()
+                    .map(document::sketch::SketchPoint::in_plane),
+                );
+            }
+        }
+    }
+    if let Some(first) = ring.first().copied() {
+        ring.push(first);
+    }
+    ring
 }
 
 const fn normalized_polygon_sides(sides: u16) -> u16 {
