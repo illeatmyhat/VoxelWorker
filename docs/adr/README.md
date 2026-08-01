@@ -67,6 +67,8 @@ can be skipped entirely; one superseded *in part* cannot.
 | [0032](0032-selection-as-workspace-state.md) | Selection is workspace state, unified across target kinds | Accepted |
 | [0033](0033-selection-is-not-undo-state.md) | Selection is view state, not undo state | Accepted |
 | [0035](0035-the-sketch-tool-suite.md) | The sketch tool suite: a constraint solver, a geometric arrangement, a parametric library | Accepted; being built |
+| [0036](0036-parametric-sketch-solver-ownership.md) | Parametric owns continuous sketch solving | Accepted |
+| [0037](0037-curve-intrinsic-authority-and-evaluation-context.md) | Curve-intrinsic authority and density-aware evaluation | Accepted |
 
 ## Records that quote documents no longer in the repo
 

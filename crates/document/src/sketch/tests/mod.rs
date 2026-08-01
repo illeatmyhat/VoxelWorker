@@ -19,6 +19,7 @@
 use super::*;
 use crate::voxel::VoxelProducer;
 use std::collections::BTreeSet;
+use std::num::NonZeroU32;
 use voxel_core::voxel::VoxelGrid;
 
 mod arcs;
@@ -34,6 +35,14 @@ mod parametric;
 mod region_memo;
 mod regions;
 mod revolve;
+
+/// Explicit evaluation context for a test's authoritative scene density. Keeping this one small
+/// helper makes it visible at every curve-sensitive call site without scattering constructors.
+pub(super) fn ctx(voxels_per_block: u32) -> ::parametric::EvaluationContext {
+    ::parametric::EvaluationContext::new(
+        NonZeroU32::new(voxels_per_block).expect("test density is non-zero"),
+    )
+}
 
 /// Collect a producer's occupied voxels as a sorted set of
 /// `(world_position_bits, block_local_coord, material_id)` so two producers can

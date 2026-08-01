@@ -828,7 +828,11 @@ impl WindowedState {
             };
             // No tolerance and no screen-scale heuristic: the region carries its arcs and the wash
             // measures the curve, so there is nothing here for a zoom level to be right about.
-            let region = sketch.region_field_loops();
+            let Some(context) = self.sketch_evaluation_context() else {
+                self.sketch_region_renderer.disarm();
+                return;
+            };
+            let region = sketch.region_field_loops(context);
             self.sketch_region_renderer.update(
                 &self.gpu.device,
                 &self.gpu.queue,
@@ -1057,11 +1061,22 @@ impl WindowedState {
         // Mutate the grabbed point ENTITY directly by its stable id — no loop index.
         // The snap policy re-authors the whole position (#96/#101): a snapped drag zeroes
         // the fraction, NoSnap carries it; either way a stale retained expression drops.
-        if !preview.sketch.move_point(point_id, snapped) {
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.sketch_drag = None;
+            return IntentEffect::none();
+        };
+        let Ok(moved) = preview.sketch.move_point(point_id, snapped, context) else {
+            self.sketch_drag = None;
+            return IntentEffect::none();
+        };
+        if !moved {
             self.sketch_drag = None;
             return IntentEffect::none();
         }
-        let new_min = Self::profile_bbox_min(&preview);
+        let Some(new_min) = self.profile_bbox_min(&preview) else {
+            self.sketch_drag = None;
+            return IntentEffect::none();
+        };
         let [in0, in1] = preview.sketch.plane.in_plane_axes();
         let mut new_offset = original_offset;
         new_offset[in0] += new_min[0] - original_min[0];
@@ -1176,8 +1191,15 @@ impl WindowedState {
 
     /// The in-plane bbox-minimum (per profile coordinate) of a sketch producer's profile — the
     /// anchor the drag compensation measures its bbox-min shift against.
-    fn profile_bbox_min(producer: &document::sketch::SketchSolid) -> [i64; 2] {
-        producer.profile_bbox_min()
+    fn sketch_evaluation_context(&self) -> Option<parametric::EvaluationContext> {
+        document::sketch::evaluation_context_from_density(
+            self.panel_state.geometry.voxels_per_block,
+        )
+    }
+
+    fn profile_bbox_min(&self, producer: &document::sketch::SketchSolid) -> Option<[i64; 2]> {
+        self.sketch_evaluation_context()
+            .map(|context| producer.profile_bbox_min(context))
     }
 
     /// Cursor (physical px) → the CONTINUOUS profile coordinate `(c0, c1)` under it on the
@@ -2481,7 +2503,10 @@ impl WindowedState {
                 let Some(kind) = armed.kind(&producer.sketch) else {
                     return;
                 };
-                match producer.with_constraint(kind) {
+                let Some(context) = self.sketch_evaluation_context() else {
+                    return;
+                };
+                match producer.with_constraint(kind, context) {
                     Ok((constrained, _)) => {
                         self.commit_sketch_profile_edit(target, constrained);
                         // The gesture's picks were scaffolding for the question, not a selection
@@ -2574,7 +2599,9 @@ impl WindowedState {
         // faces nobody points at.
         let target = self.panel_state.sketch_mode?;
         let (producer, _) = self.sketch_node_state(target)?;
-        producer.sketch.face_key_at(index)
+        producer
+            .sketch
+            .face_key_at(index, self.sketch_evaluation_context()?)
     }
 
     /// Whether the region the open viewport menu is acting on is picked (#100), or `None` when the
@@ -2583,7 +2610,11 @@ impl WindowedState {
         let target = self.panel_state.sketch_mode?;
         let key = self.sketch_menu_face.as_ref()?;
         let (producer, _) = self.sketch_node_state(target)?;
-        Some(producer.sketch.face_is_picked(key))
+        Some(
+            producer
+                .sketch
+                .face_is_picked(key, self.sketch_evaluation_context()?),
+        )
     }
 
     /// Flip the pick state of the region the viewport menu is acting on (#100) — the one edit that
@@ -2599,8 +2630,11 @@ impl WindowedState {
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
-        let picked = producer.sketch.face_is_picked(&key);
-        let next = producer.with_face_picked(key, !picked);
+        let Some(context) = self.sketch_evaluation_context() else {
+            return;
+        };
+        let picked = producer.sketch.face_is_picked(&key, context);
+        let next = producer.with_face_picked(key, !picked, context);
         self.commit_sketch_profile_edit(target, next);
     }
 
@@ -2619,7 +2653,10 @@ impl WindowedState {
         let Some((old_producer, old_offset)) = self.sketch_node_state(target) else {
             return;
         };
-        let new_offset = new_producer.anchor_preserving_offset(&old_producer, old_offset);
+        let Some(context) = self.sketch_evaluation_context() else {
+            return;
+        };
+        let new_offset = new_producer.anchor_preserving_offset(&old_producer, old_offset, context);
 
         // ONE transaction: an authoring act is one in-mode undo step, and the anchor
         // compensation is part of the act rather than an edit of its own (owner 2026-07-29).
@@ -2672,7 +2709,7 @@ impl WindowedState {
             point_id,
             original: producer.clone(),
             original_offset: node.transform.offset_voxels,
-            original_min: Self::profile_bbox_min(producer),
+            original_min: self.profile_bbox_min(producer)?,
         })
     }
 
@@ -2983,8 +3020,8 @@ impl WindowedState {
                 })
                 .collect()
         };
-        if let Some(sketch) = sketch {
-            for (index, face) in sketch.faces().into_iter().enumerate() {
+        if let (Some(sketch), Some(context)) = (sketch, self.sketch_evaluation_context()) {
+            for (index, face) in sketch.faces(context).into_iter().enumerate() {
                 // A hit-test polygon IS discrete, so this is a terminal adapter: it flattens here
                 // rather than asking the region for a coarser boundary.
                 let boundary = document::sketch::flatten_edges(
@@ -3410,6 +3447,9 @@ fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
             "would squeeze that shape to nothing — see the selected constraint"
         }
         ConstraintRefusal::AlreadyAsserted { .. } => "already asserted — it is selected",
+        ConstraintRefusal::MissingEvaluationContext => {
+            "needs the document density to resolve its fixed curve"
+        }
     }
 }
 

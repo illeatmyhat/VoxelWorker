@@ -120,6 +120,16 @@ impl DemoScene {
     }
 }
 
+/// A zero-density request has no voxel lattice. Keep demo construction non-geometric instead of
+/// manufacturing a one-voxel block size for a sketch's fixed sources to evaluate against.
+fn invalid_density_demo(voxels_per_block: u32) -> DemoScene {
+    let scene = Scene {
+        voxels_per_block,
+        ..Scene::default()
+    };
+    DemoScene::selecting(scene, None)
+}
+
 /// Build the `--demo-scene`: a hardcoded multi-node PLACED
 /// scene proving disjoint placement. A sphere at the origin, a box offset +8
 /// blocks in X, and a torus offset +6 blocks in Z. Each Tool is 5 blocks, so the
@@ -743,6 +753,9 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
 /// fixed density. Profile coords are absolute voxels, so the cube's block size is
 /// `edge_voxels / voxels_per_block`.
 pub(crate) fn build_demo_sketch_box(edge_voxels: i64, voxels_per_block: u32) -> DemoScene {
+    if voxels_per_block == 0 {
+        return invalid_density_demo(voxels_per_block);
+    }
     let edge = edge_voxels.max(1);
     let profile = vec![
         SketchPoint::new(0, 0),
@@ -764,7 +777,10 @@ pub(crate) fn build_demo_sketch_box(edge_voxels: i64, voxels_per_block: u32) -> 
 }
 
 pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> DemoScene {
-    let density = voxels_per_block.max(1) as i64;
+    if voxels_per_block == 0 {
+        return invalid_density_demo(voxels_per_block);
+    }
+    let density = i64::from(voxels_per_block);
     let two = 2 * density;
     let four = 4 * density;
     // L footprint (CCW), in voxels on the XY ground plane (PlaneAxis::Z in-plane axes
@@ -805,7 +821,10 @@ pub(crate) fn build_demo_sketch_extrude(voxels_per_block: u32) -> DemoScene {
 /// flared lip — a stepped vase. All extents are whole blocks so the body sits cleanly
 /// on the lattice in the recentered render frame.
 pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
-    let block = voxels_per_block.max(1) as i64;
+    if voxels_per_block == 0 {
+        return invalid_density_demo(voxels_per_block);
+    }
+    let block = i64::from(voxels_per_block);
     // Radial profile (radius, height) in voxels, walked up one side of the silhouette
     // from the bottom of the axis, then back DOWN the axis (radius 0) to close — a
     // stepped vase: foot (r=4b) → waist (r=2b) → shoulder (r=4b) → lip (r=3b), 8 blocks
@@ -846,7 +865,10 @@ pub(crate) fn build_demo_sketch_revolve(voxels_per_block: u32) -> DemoScene {
 /// disc in the render is the proof that path derives, resolves and displays; an octagon would mean
 /// something flattened it, and nothing at all would mean the closed curve never reached a face.
 pub(crate) fn build_demo_sketch_circle(voxels_per_block: u32) -> DemoScene {
-    let block = voxels_per_block.max(1) as i64;
+    if voxels_per_block == 0 {
+        return invalid_density_demo(voxels_per_block);
+    }
+    let block = i64::from(voxels_per_block);
     let sketch = Sketch::circle(PlaneAxis::Z, SketchPoint::new(0, 0), 3 * block);
     let producer = SketchSolid::extrude(sketch, block as u32);
     let node = Node::new(
@@ -868,7 +890,10 @@ pub(crate) fn build_demo_sketch_circle(voxels_per_block: u32) -> DemoScene {
 /// it sits in and the render has a round hole through it. That the hole is round and the outside is
 /// square is the point: one region, two kinds of boundary, no conversion between them.
 pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
-    let block = voxels_per_block.max(1) as i64;
+    if voxels_per_block == 0 {
+        return invalid_density_demo(voxels_per_block);
+    }
+    let block = i64::from(voxels_per_block);
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let span = 8 * block;
     let corners = [
@@ -886,13 +911,15 @@ pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
         SketchLength::new(3 * block),
     );
     // The disc is the smaller face; unpicking it is what turns the square into a ring.
+    let context = document::sketch::evaluation_context_from_density(voxels_per_block)
+        .expect("non-zero density returned above");
     let disc = sketch
-        .identified_faces()
+        .identified_faces(context)
         .into_iter()
         .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
         .expect("the square and the disc")
         .1;
-    sketch.set_face_picked(disc, false);
+    sketch.set_face_picked(disc, false, context);
     let producer = SketchSolid::extrude(sketch, block as u32);
     let node = Node::new(
         "Sketch donut",
@@ -914,7 +941,10 @@ pub(crate) fn build_demo_sketch_donut(voxels_per_block: u32) -> DemoScene {
 /// regions rather than two. Carving the middle one is what makes that visible — the render is two
 /// crescents with a gap between them, which no pair of whole circles could produce.
 pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
-    let block = voxels_per_block.max(1) as i64;
+    if voxels_per_block == 0 {
+        return invalid_density_demo(voxels_per_block);
+    }
+    let block = i64::from(voxels_per_block);
     let radius = 4 * block;
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     // Centers 1.5 radii apart, so the lens is a substantial third of the drawing.
@@ -924,13 +954,15 @@ pub(crate) fn build_demo_sketch_lens(voxels_per_block: u32) -> DemoScene {
         SketchLength::new(radius),
     );
     // The lens is the smallest of the three faces; unpicking it splits the pair into crescents.
+    let context = document::sketch::evaluation_context_from_density(voxels_per_block)
+        .expect("non-zero density returned above");
     let lens = sketch
-        .identified_faces()
+        .identified_faces(context)
         .into_iter()
         .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
         .expect("two crescents and a lens")
         .1;
-    sketch.set_face_picked(lens, false);
+    sketch.set_face_picked(lens, false, context);
     let producer = SketchSolid::extrude(sketch, block as u32);
     let node = Node::new(
         "Sketch lens",

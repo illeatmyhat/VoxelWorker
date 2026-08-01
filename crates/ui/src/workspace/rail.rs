@@ -266,10 +266,14 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
         // node's operation through the SAME `SetSketch` door the inspector's picker uses,
         // carrying the same switch defaults. Clicking the active one changes nothing.
         if sketch_tool_cell(ui, icon, tip, active) && !active {
-            if let (Some(target), Some(producer)) = (target, producer.as_ref()) {
+            if let (Some(target), Some(producer), Some(context)) = (
+                target,
+                producer.as_ref(),
+                document::sketch::evaluation_context_from_density(state.scene.voxels_per_block),
+            ) {
                 response.emit_and_frame(Intent::SetSketch {
                     target,
-                    producer: producer_switched_to(producer, icon),
+                    producer: producer_switched_to(producer, icon, context),
                 });
             }
         }
@@ -280,12 +284,16 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
 /// preserved. Switch defaults mirror the inspector's Operation picker: Extrude seeds its height
 /// from the rectangle depth span (else 16); Revolve seeds a full 360° turn about the first
 /// in-plane axis.
-fn producer_switched_to(producer: &SketchSolid, icon: Icon) -> SketchSolid {
+fn producer_switched_to(
+    producer: &SketchSolid,
+    icon: Icon,
+    context: parametric::EvaluationContext,
+) -> SketchSolid {
     let sketch = producer.sketch.clone();
     match icon {
         Icon::Extrude => {
             let height = producer
-                .rectangle_in_plane_spans()
+                .rectangle_in_plane_spans(context)
                 .map(|spans| spans[1])
                 .unwrap_or(16)
                 .max(1);

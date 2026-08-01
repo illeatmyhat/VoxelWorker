@@ -1,4 +1,5 @@
 //! Constraint entities and the continuous solve.
+use super::ctx;
 
 use super::*;
 
@@ -26,7 +27,11 @@ fn position(sketch: &Sketch, id: EntityId) -> [f64; 2] {
 #[test]
 fn an_unconstrained_sketch_is_all_freedom() {
     let (sketch, _, _, _) = slanted();
-    assert_eq!(sketch.degrees_of_freedom(), 4, "two points, two axes each");
+    assert_eq!(
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
+        4,
+        "two points, two axes each"
+    );
     assert!(sketch.constraints().is_empty());
 }
 
@@ -36,12 +41,19 @@ fn a_fix_pins_two_freedoms_and_moves_nothing() {
     let (mut sketch, tail, head, _) = slanted();
     let before = position(&sketch, tail);
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("nothing else is asserted, so it cannot conflict");
-    assert_eq!(sketch.degrees_of_freedom(), 2, "the head is still free");
+    assert_eq!(
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
+        2,
+        "the head is still free"
+    );
     assert_eq!(
         position(&sketch, tail),
         before,
@@ -57,7 +69,7 @@ fn a_fix_pins_two_freedoms_and_moves_nothing() {
 fn horizontal_levels_a_segment_by_meeting_in_the_middle() {
     let (mut sketch, tail, head, segment) = slanted();
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("a lone constraint always holds");
 
     let (a, b) = (position(&sketch, tail), position(&sketch, head));
@@ -66,7 +78,11 @@ fn horizontal_levels_a_segment_by_meeting_in_the_middle() {
     assert!((b[1] - 2.0).abs() < 1e-6, "the head fell halfway: {b:?}");
     assert_eq!(a[0], 0.0, "nothing pulled sideways");
     assert_eq!(b[0], 10.0);
-    assert_eq!(sketch.degrees_of_freedom(), 3, "one assertion, one freedom");
+    assert_eq!(
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
+        3,
+        "one assertion, one freedom"
+    );
 }
 
 /// A constraint holds through a DRAG, not merely at the moment it was asserted. The grabbed end
@@ -82,10 +98,12 @@ fn a_level_segment_stays_level_when_an_end_is_dragged() {
     let head = sketch.add_free_point(SketchPoint::new(40, 0));
     let segment = sketch.connect(tail, head).expect("a fresh segment");
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("a lone level on a lone segment");
 
-    assert!(sketch.move_point(tail, SketchPoint::new(-7, -18)));
+    assert!(sketch
+        .move_point(tail, SketchPoint::new(-7, -18), ctx(16))
+        .expect("evaluation context"));
 
     let (dragged, follower) = (position(&sketch, tail), position(&sketch, head));
     assert!(
@@ -109,16 +127,21 @@ fn a_level_segment_stays_level_when_an_end_is_dragged() {
 fn a_fixed_point_does_not_move_under_the_hand() {
     let (mut sketch, tail, head, _) = slanted();
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("nothing else is asserted");
 
     // Near-exactly, not exactly: the drag is now a PULL that the standing system takes back, so
     // the point is re-solved to its fixed place rather than the whole move being discarded, and a
     // re-solved coordinate carries the solver's dust.
-    assert!(sketch.move_point(tail, SketchPoint::new(25, 25)));
+    assert!(sketch
+        .move_point(tail, SketchPoint::new(25, 25), ctx(16))
+        .expect("evaluation context"));
     let held = position(&sketch, tail);
     assert!(
         held[0].abs() < 1e-9 && held[1].abs() < 1e-9,
@@ -153,7 +176,7 @@ fn free_geometry_the_constraint_never_names_cannot_refuse_it() {
         let segment = sketch.connect(tail, head).expect("a fresh segment");
         assert!(
             sketch
-                .add_constraint(ConstraintKind::Horizontal { segment })
+                .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
                 .is_ok(),
             "{bystanders} unrelated free point(s) refused a lone level"
         );
@@ -169,11 +192,14 @@ fn a_distance_dimension_is_met() {
     let tail = sketch.add_free_point(SketchPoint::new(0, 0));
     let head = sketch.add_free_point(SketchPoint::new(10, 0));
     sketch
-        .add_constraint(ConstraintKind::Distance {
-            from: tail,
-            to: head,
-            length: SketchLength::new(6),
-        })
+        .add_constraint(
+            ConstraintKind::Distance {
+                from: tail,
+                to: head,
+                length: SketchLength::new(6),
+            },
+            ctx(16),
+        )
         .expect("two free points can always be six apart");
 
     let (a, b) = (position(&sketch, tail), position(&sketch, head));
@@ -195,20 +221,27 @@ fn a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone() {
     ] {
         pins.push(
             sketch
-                .add_constraint(ConstraintKind::Fix { point, at })
+                .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
                 .expect("pinning each end in turn is consistent"),
         );
     }
-    assert_eq!(sketch.degrees_of_freedom(), 0, "fully constrained");
+    assert_eq!(
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
+        0,
+        "fully constrained"
+    );
     let before: Vec<[f64; 2]> = sketch.points().iter().map(|p| p.at.in_plane()).collect();
 
     // The ends are pinned about 10.77 apart. Five is not a distance they can be.
     let refusal = sketch
-        .add_constraint(ConstraintKind::Distance {
-            from: tail,
-            to: head,
-            length: SketchLength::new(5),
-        })
+        .add_constraint(
+            ConstraintKind::Distance {
+                from: tail,
+                to: head,
+                length: SketchLength::new(5),
+            },
+            ctx(16),
+        )
         .expect_err("five is not a distance those pins allow");
     // And it NAMES what it fights: releasing either pin would let the distance hold, so
     // leave-one-out finds both, and the author is pointed at something they can act on.
@@ -235,19 +268,25 @@ fn a_contradictory_constraint_is_refused_and_leaves_the_drawing_alone() {
 fn a_redundant_constraint_is_kept_and_flagged() {
     let (mut sketch, tail, head, segment) = slanted();
     let pinned_tail = sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("the first pin");
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: head,
-            at: SketchPoint::new(10, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: head,
+                at: SketchPoint::new(10, 0),
+            },
+            ctx(16),
+        )
         .expect("the second pin, level with the first");
     let implied = sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("already true, so redundant rather than refused");
 
     let flagged = |id: EntityId| {
@@ -261,7 +300,7 @@ fn a_redundant_constraint_is_kept_and_flagged() {
     assert!(!flagged(pinned_tail), "the first raised the rank");
     assert!(flagged(implied), "the last added no information");
     assert_eq!(
-        sketch.degrees_of_freedom(),
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
         0,
         "and it took no freedom away, which is what redundant MEANS — the pins took them all"
     );
@@ -273,13 +312,16 @@ fn a_redundant_constraint_is_kept_and_flagged() {
 fn deleting_geometry_takes_its_constraints_with_it() {
     let (mut sketch, tail, _, segment) = slanted();
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("a lone fix");
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("and a level");
     assert_eq!(sketch.constraints().len(), 2);
 
@@ -310,7 +352,11 @@ fn repair_erases_a_constraint_that_names_nothing() {
         kind: ConstraintKind::Horizontal { segment: 903 },
         redundant: false,
     });
-    assert_eq!(sketch.repair(), 2, "both name entities that are not there");
+    assert_eq!(
+        sketch.repair(ctx(16)),
+        2,
+        "both name entities that are not there"
+    );
     assert!(sketch.constraints().is_empty());
 }
 
@@ -320,23 +366,29 @@ fn repair_erases_a_constraint_that_names_nothing() {
 fn a_constraint_naming_absent_geometry_is_refused() {
     let (mut sketch, tail, head, _) = slanted();
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Fix {
-            point: 900,
-            at: SketchPoint::new(0, 0),
-        }),
+        sketch.add_constraint(
+            ConstraintKind::Fix {
+                point: 900,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16)
+        ),
         Err(ConstraintRefusal::UnknownEntity)
     );
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Horizontal { segment: 900 }),
+        sketch.add_constraint(ConstraintKind::Horizontal { segment: 900 }, ctx(16)),
         Err(ConstraintRefusal::UnknownEntity)
     );
     // A negative length is no drawing's distance, so it never reaches the solver.
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Distance {
-            from: tail,
-            to: head,
-            length: SketchLength::new(-3),
-        }),
+        sketch.add_constraint(
+            ConstraintKind::Distance {
+                from: tail,
+                to: head,
+                length: SketchLength::new(-3),
+            },
+            ctx(16)
+        ),
         Err(ConstraintRefusal::Impossible)
     );
     assert!(sketch.constraints().is_empty());
@@ -346,12 +398,15 @@ fn a_constraint_naming_absent_geometry_is_refused() {
 #[test]
 fn a_refusal_does_not_consume_an_id() {
     let (mut sketch, tail, _, _) = slanted();
-    let _ = sketch.add_constraint(ConstraintKind::Horizontal { segment: 900 });
+    let _ = sketch.add_constraint(ConstraintKind::Horizontal { segment: 900 }, ctx(16));
     let next = sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("a lone fix");
     assert_eq!(next, 3, "after two points and a segment, the next id is 3");
 }
@@ -362,11 +417,14 @@ fn a_refusal_does_not_consume_an_id() {
 fn solving_a_solved_sketch_moves_nothing() {
     let (mut sketch, _, _, segment) = slanted();
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("a lone constraint");
     let settled: Vec<[f64; 2]> = sketch.points().iter().map(|p| p.at.in_plane()).collect();
 
-    let report = sketch.solve().expect("there is a constraint to solve");
+    let report = sketch
+        .solve(ctx(16))
+        .expect("no fixed source")
+        .expect("there is a constraint to solve");
     assert_eq!(report.outcome, SolveOutcome::Converged);
     let again: Vec<[f64; 2]> = sketch.points().iter().map(|p| p.at.in_plane()).collect();
     assert_eq!(settled, again);
@@ -379,7 +437,7 @@ fn the_producer_door_asserts_without_touching_the_original() {
     let (sketch, tail, head, segment) = slanted();
     let before = SketchSolid::extrude(sketch, 3);
     let (after, id) = before
-        .with_constraint(ConstraintKind::Horizontal { segment })
+        .with_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("nothing else is asserted");
 
     assert_eq!(position(&before.sketch, head), [10.0, 4.0], "the original");
@@ -389,7 +447,13 @@ fn the_producer_door_asserts_without_touching_the_original() {
         "the copy is leveled"
     );
     assert_eq!(after.sketch.constraints().len(), 1);
-    assert_eq!(after.sketch.degrees_of_freedom(), 3);
+    assert_eq!(
+        after
+            .sketch
+            .degrees_of_freedom(ctx(16))
+            .expect("no fixed source"),
+        3
+    );
 
     // Releasing it stops the assertion without undoing what it did — the geometry stays level.
     let released = after.with_constraint_deleted(id);
@@ -406,15 +470,18 @@ fn the_producer_door_asserts_without_touching_the_original() {
 fn the_producer_door_refuses_without_a_partial_result() {
     let (mut sketch, tail, _, _) = slanted();
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("the first assertion cannot conflict");
     let solid = SketchSolid::extrude(sketch, 3);
     assert_eq!(
         solid
-            .with_constraint(ConstraintKind::Horizontal { segment: 900 })
+            .with_constraint(ConstraintKind::Horizontal { segment: 900 }, ctx(16))
             .err(),
         Some(ConstraintRefusal::UnknownEntity)
     );
@@ -430,7 +497,7 @@ fn deleting_geometry_takes_its_constraints_and_the_id_stays_safe_to_delete() {
     let (sketch, tail, _, segment) = slanted();
     let before = SketchSolid::extrude(sketch, 3);
     let (asserted, id) = before
-        .with_constraint(ConstraintKind::Horizontal { segment })
+        .with_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("nothing else is asserted");
 
     let cascaded = asserted.with_point_deleted(tail);
@@ -457,10 +524,10 @@ fn deleting_geometry_takes_its_constraints_and_the_id_stays_safe_to_delete() {
 fn the_same_assertion_twice_on_one_segment_is_refused() {
     let (mut sketch, _, _, segment) = slanted();
     let first = sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("the first assertion");
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Horizontal { segment }),
+        sketch.add_constraint(ConstraintKind::Horizontal { segment }, ctx(16)),
         Err(ConstraintRefusal::AlreadyAsserted { existing: first }),
         "and it names the one already standing, so the answer is a lit badge not a hunt"
     );
@@ -473,16 +540,22 @@ fn the_same_assertion_twice_on_one_segment_is_refused() {
 fn refixing_a_fixed_point_somewhere_else_is_still_a_duplicate() {
     let (mut sketch, tail, _, _) = slanted();
     let first = sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("the first assertion");
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(7, 7),
-        }),
+        sketch.add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(7, 7),
+            },
+            ctx(16)
+        ),
         Err(ConstraintRefusal::AlreadyAsserted { existing: first }),
         "a different place is still the same claim about the same point"
     );
@@ -497,13 +570,18 @@ fn a_distance_is_the_same_assertion_in_either_direction() {
         to: head,
         length: SketchLength::from_continuous(value),
     };
-    let first = sketch.add_constraint(apart(9.0)).expect("the first");
+    let first = sketch
+        .add_constraint(apart(9.0), ctx(16))
+        .expect("the first");
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Distance {
-            from: head,
-            to: tail,
-            length: SketchLength::from_continuous(4.0),
-        }),
+        sketch.add_constraint(
+            ConstraintKind::Distance {
+                from: head,
+                to: tail,
+                length: SketchLength::from_continuous(4.0),
+            },
+            ctx(16)
+        ),
         Err(ConstraintRefusal::AlreadyAsserted { existing: first })
     );
 }
@@ -516,7 +594,7 @@ fn a_distance_is_the_same_assertion_in_either_direction() {
 fn a_solve_that_collapses_geometry_is_refused() {
     let (mut sketch, tail, head, segment) = slanted();
     let level = sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("leveling a slanted segment is fine");
     let levelled = (position(&sketch, head)[0] - position(&sketch, tail)[0]).abs();
     assert!(levelled > 1.0, "still a line, {levelled} across");
@@ -525,7 +603,7 @@ fn a_solve_that_collapses_geometry_is_refused() {
     // that happens to be a singularity. It names the geometry that would vanish and the assertion
     // whose release would save it.
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Vertical { segment }),
+        sketch.add_constraint(ConstraintKind::Vertical { segment }, ctx(16)),
         Err(ConstraintRefusal::WouldCollapse {
             entity: segment,
             implicated: vec![level],
@@ -553,7 +631,7 @@ fn already_collapsed_geometry_does_not_veto_the_rest() {
 
     assert!(sketch.segments().iter().any(|seg| seg.id == stub));
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment: real })
+        .add_constraint(ConstraintKind::Horizontal { segment: real }, ctx(16))
         .expect("the collapsed stub is not this assertion's doing");
 }
 
@@ -573,11 +651,11 @@ fn redundancy_reads_the_same_on_a_solved_and_an_unsolved_drawing() {
             (head, SketchPoint::new(10, 0)),
         ] {
             sketch
-                .add_constraint(ConstraintKind::Fix { point, at })
+                .add_constraint(ConstraintKind::Fix { point, at }, ctx(16))
                 .expect("pinning each end in turn is consistent");
         }
         let implied = sketch
-            .add_constraint(ConstraintKind::Horizontal { segment })
+            .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
             .expect("the pins already put it level");
         sketch
             .constraints()
@@ -641,7 +719,7 @@ fn coincident_brings_two_points_together_without_merging_them() {
     let first = sketch.add_free_point(SketchPoint::new(0, 0));
     let second = sketch.add_free_point(SketchPoint::new(10, 6));
     let id = sketch
-        .add_constraint(ConstraintKind::Coincident { first, second })
+        .add_constraint(ConstraintKind::Coincident { first, second }, ctx(16))
         .expect("two free points can always meet");
 
     let (here, there) = (position(&sketch, first), position(&sketch, second));
@@ -662,10 +740,13 @@ fn coincident_with_itself_is_refused() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let point = sketch.add_free_point(SketchPoint::new(3, 3));
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Coincident {
-            first: point,
-            second: point
-        }),
+        sketch.add_constraint(
+            ConstraintKind::Coincident {
+                first: point,
+                second: point
+            },
+            ctx(16)
+        ),
         Err(ConstraintRefusal::Impossible)
     );
 }
@@ -685,7 +766,7 @@ fn parallel_aligns_two_segments_without_collapsing_them() {
     let before_first = span_length(&sketch, first);
     let before_second = span_length(&sketch, second);
     sketch
-        .add_constraint(ConstraintKind::Parallel { first, second })
+        .add_constraint(ConstraintKind::Parallel { first, second }, ctx(16))
         .expect("two free segments can always be made parallel");
 
     let (a, b) = (direction(&sketch, first), direction(&sketch, second));
@@ -707,7 +788,7 @@ fn parallel_aligns_two_segments_without_collapsing_them() {
 fn perpendicular_squares_two_segments() {
     let (mut sketch, first, second) = two_segments();
     sketch
-        .add_constraint(ConstraintKind::Perpendicular { first, second })
+        .add_constraint(ConstraintKind::Perpendicular { first, second }, ctx(16))
         .expect("two free segments can always be squared");
 
     let (a, b) = (direction(&sketch, first), direction(&sketch, second));
@@ -725,7 +806,7 @@ fn equal_matches_two_lengths_without_asserting_which() {
     let longest = span_length(&sketch, first).max(span_length(&sketch, second));
     let shortest = span_length(&sketch, first).min(span_length(&sketch, second));
     sketch
-        .add_constraint(ConstraintKind::Equal { first, second })
+        .add_constraint(ConstraintKind::Equal { first, second }, ctx(16))
         .expect("two free segments can always match");
 
     let (a, b) = (span_length(&sketch, first), span_length(&sketch, second));
@@ -745,7 +826,7 @@ fn midpoint_puts_a_point_halfway_along_a_segment() {
     let segment = sketch.connect(tail, head).expect("a segment");
     let point = sketch.add_free_point(SketchPoint::new(3, 17));
     sketch
-        .add_constraint(ConstraintKind::Midpoint { point, segment })
+        .add_constraint(ConstraintKind::Midpoint { point, segment }, ctx(16))
         .expect("a free point can always reach a midpoint");
 
     let here = position(&sketch, point);
@@ -767,10 +848,13 @@ fn an_endpoint_is_refused_as_its_own_segments_midpoint() {
     let head = sketch.add_free_point(SketchPoint::new(20, 0));
     let segment = sketch.connect(tail, head).expect("a segment");
     assert_eq!(
-        sketch.add_constraint(ConstraintKind::Midpoint {
-            point: tail,
-            segment
-        }),
+        sketch.add_constraint(
+            ConstraintKind::Midpoint {
+                point: tail,
+                segment
+            },
+            ctx(16)
+        ),
         Err(ConstraintRefusal::Impossible)
     );
 }
@@ -780,9 +864,9 @@ fn an_endpoint_is_refused_as_its_own_segments_midpoint() {
 #[test]
 fn collinear_puts_two_segments_on_one_line() {
     let (mut sketch, first, second) = two_segments();
-    let before = sketch.degrees_of_freedom();
+    let before = sketch.degrees_of_freedom(ctx(16)).expect("no fixed source");
     sketch
-        .add_constraint(ConstraintKind::Collinear { first, second })
+        .add_constraint(ConstraintKind::Collinear { first, second }, ctx(16))
         .expect("two free segments can always share a line");
 
     let (a, b) = (direction(&sketch, first), direction(&sketch, second));
@@ -808,7 +892,7 @@ fn collinear_puts_two_segments_on_one_line() {
         assert!(off.abs() < 1e-6, "end {end} stands {off} off the line");
     }
     assert_eq!(
-        sketch.degrees_of_freedom(),
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
         before - 2,
         "collinear spends two freedoms"
     );
@@ -831,10 +915,10 @@ fn a_two_residual_relation_does_not_shift_the_rows_after_it() {
     let segment = sketch.connect(tail, head).expect("a segment");
 
     sketch
-        .add_constraint(ConstraintKind::Coincident { first, second })
+        .add_constraint(ConstraintKind::Coincident { first, second }, ctx(16))
         .expect("two free points can meet");
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("an untouched segment can be leveled");
 
     let (here, there) = (position(&sketch, first), position(&sketch, second));
@@ -856,7 +940,7 @@ fn a_two_residual_relation_does_not_shift_the_rows_after_it() {
 fn the_relations_hold_through_a_drag() {
     let (mut sketch, first, second) = two_segments();
     sketch
-        .add_constraint(ConstraintKind::Perpendicular { first, second })
+        .add_constraint(ConstraintKind::Perpendicular { first, second }, ctx(16))
         .expect("two free segments can be squared");
     let grabbed = sketch
         .segments()
@@ -865,7 +949,9 @@ fn the_relations_hold_through_a_drag() {
         .expect("the segment")
         .from;
 
-    assert!(sketch.move_point(grabbed, SketchPoint::new(-13, 9)));
+    assert!(sketch
+        .move_point(grabbed, SketchPoint::new(-13, 9), ctx(16))
+        .expect("evaluation context"));
 
     let (a, b) = (direction(&sketch, first), direction(&sketch, second));
     assert!(
@@ -907,17 +993,23 @@ fn a_constraint_on_an_arcs_center_moves_the_arc() {
     assert!(sketch.is_derived_point(center));
     let (before_tail, before_head) = (position(&sketch, tail), position(&sketch, head));
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: loose,
-            at: SketchPoint::new(40, 17),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: loose,
+                at: SketchPoint::new(40, 17),
+            },
+            ctx(16),
+        )
         .expect("the point the arc must reach");
 
     sketch
-        .add_constraint(ConstraintKind::Coincident {
-            first: center,
-            second: loose,
-        })
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: center,
+                second: loose,
+            },
+            ctx(16),
+        )
         .expect("an arc's center can be pinned to a point");
 
     let (here, there) = (position(&sketch, center), position(&sketch, loose));
@@ -950,18 +1042,24 @@ fn a_fixed_arc_end_holds_while_the_center_is_brought_to_a_point() {
     let (mut sketch, tail, head, center, loose) = arc_with_center();
     let anchored = position(&sketch, tail);
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::from_continuous(anchored[0], anchored[1]),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::from_continuous(anchored[0], anchored[1]),
+            },
+            ctx(16),
+        )
         .expect("an end can be pinned");
     let before_head = position(&sketch, head);
 
     sketch
-        .add_constraint(ConstraintKind::Coincident {
-            first: center,
-            second: loose,
-        })
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: center,
+                second: loose,
+            },
+            ctx(16),
+        )
         .expect("the center can still be pinned with one end held");
 
     let held = position(&sketch, tail);
@@ -988,15 +1086,20 @@ fn fixing_an_arcs_center_pins_the_arc_through_it() {
     let (mut sketch, tail, _head, center, _loose) = arc_with_center();
     let held = position(&sketch, center);
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: center,
-            at: SketchPoint::from_continuous(held[0], held[1]),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: center,
+                at: SketchPoint::from_continuous(held[0], held[1]),
+            },
+            ctx(16),
+        )
         .expect("an arc's center can be fixed");
 
     // Dragging an END now has to respect the fixed center, so the drag settles somewhere that keeps
     // the derived center where it was pinned rather than wherever the raw drag would have put it.
-    assert!(sketch.move_point(tail, SketchPoint::new(-9, 6)));
+    assert!(sketch
+        .move_point(tail, SketchPoint::new(-9, 6), ctx(16))
+        .expect("evaluation context"));
     let after = position(&sketch, center);
     assert!(
         (after[0] - held[0]).abs() < 1e-6 && (after[1] - held[1]).abs() < 1e-6,
@@ -1016,9 +1119,9 @@ fn an_arcs_center_is_not_a_degree_of_freedom() {
         "two arc ends, the derived center, and the loose point"
     );
     assert_eq!(
-        sketch.degrees_of_freedom(),
-        6,
-        "three authored points, two coordinates each — the center is not one of them"
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
+        7,
+        "three authored points plus the free arc sweep — the center is not one of them"
     );
 }
 
@@ -1051,25 +1154,37 @@ fn a_point_with_one_freedom_left_slides_along_it() {
     for point in [arc_tail, arc_head] {
         let held = position(&sketch, point);
         sketch
-            .add_constraint(ConstraintKind::Fix {
-                point,
-                at: SketchPoint::from_continuous(held[0], held[1]),
-            })
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(held[0], held[1]),
+                },
+                ctx(16),
+            )
             .expect("both arc ends pin");
     }
     sketch
-        .add_constraint(ConstraintKind::Coincident {
-            first: top,
-            second: center,
-        })
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: top,
+                second: center,
+            },
+            ctx(16),
+        )
         .expect("the line's top meets the arc's center");
     sketch
-        .add_constraint(ConstraintKind::Vertical { segment })
+        .add_constraint(ConstraintKind::Vertical { segment }, ctx(16))
         .expect("and the line stands plumb");
 
     // Drag the free end well off the line it may slide along. It must MOVE — down the line.
     let before = position(&sketch, bottom);
-    assert!(sketch.move_point(bottom, SketchPoint::from_continuous(before[0] + 22.0, 4.0)));
+    assert!(sketch
+        .move_point(
+            bottom,
+            SketchPoint::from_continuous(before[0] + 22.0, 4.0),
+            ctx(16)
+        )
+        .expect("evaluation context"));
 
     let after = position(&sketch, bottom);
     assert!(
@@ -1107,10 +1222,12 @@ fn an_achievable_drag_lands_exactly_on_the_cursor() {
     let head = sketch.add_free_point(SketchPoint::new(40, 0));
     let segment = sketch.connect(tail, head).expect("a fresh segment");
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment })
+        .add_constraint(ConstraintKind::Horizontal { segment }, ctx(16))
         .expect("a lone level");
 
-    assert!(sketch.move_point(tail, SketchPoint::new(-7, -18)));
+    assert!(sketch
+        .move_point(tail, SketchPoint::new(-7, -18), ctx(16))
+        .expect("evaluation context"));
     let dragged = position(&sketch, tail);
     assert!(
         (dragged[0] + 7.0).abs() < 1e-9 && (dragged[1] + 18.0).abs() < 1e-9,
@@ -1140,18 +1257,24 @@ fn a_constraint_translates_a_group_rather_than_deforming_it() {
     let (mut sketch, corners, _) = quad([[0, 0], [20, 0], [20, 20], [0, 20]]);
     let target = sketch.add_free_point(SketchPoint::new(50, 30));
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: target,
-            at: SketchPoint::new(50, 30),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: target,
+                at: SketchPoint::new(50, 30),
+            },
+            ctx(16),
+        )
         .expect("the target is where the square must reach");
 
     let before = corners.map(|corner| position(&sketch, corner));
     sketch
-        .add_constraint(ConstraintKind::Coincident {
-            first: corners[0],
-            second: target,
-        })
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: corners[0],
+                second: target,
+            },
+            ctx(16),
+        )
         .expect("one corner meets it");
 
     let after = corners.map(|corner| position(&sketch, corner));
@@ -1181,10 +1304,13 @@ fn the_smaller_group_travels_to_the_larger_one() {
         .map(|id| position(&sketch, *id))
         .collect();
     sketch
-        .add_constraint(ConstraintKind::Coincident {
-            first: corners[1],
-            second: near,
-        })
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: corners[1],
+                second: near,
+            },
+            ctx(16),
+        )
         .expect("the stick's near end meets the quad's corner");
     let after: Vec<[f64; 2]> = [corners[1], near]
         .iter()
@@ -1220,7 +1346,7 @@ fn the_smaller_group_travels_to_the_larger_one() {
 fn a_constraint_that_fights_rigidity_is_still_met_exactly() {
     let (mut sketch, corners, edges) = quad([[0, 0], [20, 8], [20, 28], [0, 20]]);
     sketch
-        .add_constraint(ConstraintKind::Horizontal { segment: edges[0] })
+        .add_constraint(ConstraintKind::Horizontal { segment: edges[0] }, ctx(16))
         .expect("level the slanted bottom");
 
     let (tail, head) = (position(&sketch, corners[0]), position(&sketch, corners[1]));
@@ -1262,10 +1388,13 @@ fn deleting_a_line_takes_the_ends_nothing_else_draws() {
 fn a_constraint_does_not_keep_a_deleted_lines_end_alive() {
     let (mut sketch, tail, _head, segment) = slanted();
     sketch
-        .add_constraint(ConstraintKind::Fix {
-            point: tail,
-            at: SketchPoint::new(0, 0),
-        })
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
         .expect("a lone fix");
     assert_eq!(sketch.constraints().len(), 1);
 

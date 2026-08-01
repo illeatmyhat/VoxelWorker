@@ -336,6 +336,10 @@ pub(crate) fn build_two_layer_chunk_per_block(
     let block_extent = density as i64;
 
     let mut chunk = TwoLayerChunk::empty(density);
+    // One density/context-resolved field set for the entire `CHUNK_BLOCKS³` interval walk.
+    // The classifier borrows it per block, so a nested sketch never re-enters its region memo or
+    // reconstructs a fixed curve evaluator at block-center sampling frequency.
+    let prepared_fields = PreparedLeafFields::new(leaves, voxels_per_block);
 
     for block_z in 0..CHUNK_BLOCKS {
         for block_y in 0..CHUNK_BLOCKS {
@@ -356,7 +360,12 @@ pub(crate) fn build_two_layer_chunk_per_block(
                     ],
                 );
 
-                match classify_chunk_block(leaves, block_abs, voxels_per_block) {
+                match classify_chunk_block_prepared(
+                    leaves,
+                    &prepared_fields,
+                    block_abs,
+                    voxels_per_block,
+                ) {
                     BlockClassification::Air => {}
                     BlockClassification::CoarseSolid(block_id) => {
                         let flat = coarse_flat_index(block);
@@ -382,4 +391,94 @@ pub(crate) fn build_two_layer_chunk_per_block(
     }
 
     chunk
+}
+
+#[cfg(test)]
+mod prepared_interval_tests {
+    use super::*;
+    use document::scene::{CombineOp, LeafOrigin, NodeId};
+    use document::voxel::{Field, PreparedField, VoxelProducer};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use voxel_core::core_geom::BlockId;
+    use voxel_core::voxel::VoxelGrid;
+
+    struct CountingField(Arc<AtomicUsize>);
+    struct PreparedCountingField;
+
+    impl PreparedField for PreparedCountingField {
+        fn signed_distance(&self, _point_local_voxels: [f32; 3]) -> f32 {
+            -1.0
+        }
+
+        fn metric(&self) -> substrate::geom2d::Metric {
+            substrate::geom2d::Metric::Chebyshev
+        }
+    }
+
+    impl VoxelProducer for CountingField {
+        fn resolve(&self, grid: &mut VoxelGrid, _voxels_per_block: u32) {
+            grid.dimensions = [32, 32, 32];
+            grid.occupied.clear();
+        }
+
+        fn resolve_into(
+            &self,
+            grid: &mut VoxelGrid,
+            voxels_per_block: u32,
+            _window_local_voxels: VoxelAabb,
+        ) {
+            self.resolve(grid, voxels_per_block);
+        }
+
+        fn as_field(&self) -> Option<&dyn Field> {
+            Some(self)
+        }
+
+        fn full_dimensions(&self, _voxels_per_block: u32) -> [u32; 3] {
+            [32, 32, 32]
+        }
+    }
+
+    impl Field for CountingField {
+        fn signed_distance(&self, _point_local_voxels: [f32; 3], _voxels_per_block: u32) -> f32 {
+            -1.0
+        }
+
+        fn metric(&self) -> substrate::geom2d::Metric {
+            substrate::geom2d::Metric::Chebyshev
+        }
+
+        fn prepare(&self, _voxels_per_block: u32) -> Box<dyn PreparedField + '_> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Box::new(PreparedCountingField)
+        }
+    }
+
+    #[test]
+    fn per_block_chunk_classification_prepares_each_field_once() {
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let leaf = LeafProducer {
+            world_offset_voxels: [0, 0, 0],
+            rotation: glam::Quat::IDENTITY,
+            offset_local_voxels: [0.0; 3],
+            producer: Box::new(CountingField(Arc::clone(&preparations))),
+            material: Some(BlockId::DEFAULT),
+            grid_overlay: false,
+            operation: CombineOp::Union,
+            scope_path: Vec::new(),
+            origin: LeafOrigin::authored(NodeId(1)),
+        };
+        let leaves = [&leaf];
+
+        let _ = build_two_layer_chunk_per_block([0, 0, 0], &leaves, 8, 8);
+
+        assert_eq!(
+            preparations.load(Ordering::Relaxed),
+            1,
+            "the field is prepared once for the 4³ block interval sweep, not once per block"
+        );
+    }
 }

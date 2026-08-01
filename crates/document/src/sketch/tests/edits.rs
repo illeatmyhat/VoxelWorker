@@ -8,6 +8,7 @@
 //! loop index. The profile is DERIVED from the entity store via `flattened_loop`, which is empty
 //! unless a closed loop exists.
 
+use super::ctx;
 use crate::sketch::{EntityId, PlaneAxis, Sketch, SketchPoint, SketchSolid};
 
 /// A closed rectangular profile whose bbox-minimum is `[2, 2]`, extruded so it is a real solid.
@@ -51,7 +52,7 @@ fn split_inserts_a_vertex_on_the_named_segment() {
     let after = before.with_point_on_segment(seg, SketchPoint::new(6, 3));
     let coords: Vec<[i64; 2]> = after
         .sketch
-        .flattened_loop()
+        .flattened_loop(ctx(16))
         .iter()
         .map(|p| p.offset_voxels)
         .collect();
@@ -63,7 +64,7 @@ fn split_inserts_a_vertex_on_the_named_segment() {
     assert!(
         !before
             .sketch
-            .flattened_loop()
+            .flattened_loop(ctx(16))
             .iter()
             .any(|p| p.offset_voxels == [6, 3]),
         "the source is untouched"
@@ -107,7 +108,7 @@ fn delete_removes_the_point_and_cascades_only_its_segments() {
         "only its two incident segments cascade away — the other two remain"
     );
     assert!(
-        after.sketch.flattened_loop().is_empty(),
+        after.sketch.flattened_loop(ctx(16)).is_empty(),
         "the loop is open ⇒ no closed region ⇒ resolves to nothing"
     );
     assert_eq!(
@@ -134,8 +135,11 @@ fn deleting_every_point_leaves_an_empty_sketch() {
         after.sketch.segments().is_empty(),
         "no dangling segment remains"
     );
-    assert!(after.sketch.flattened_loop().is_empty(), "no loop remains");
-    let _ = after.profile_bbox_min(); // well-defined on an empty sketch (no panic)
+    assert!(
+        after.sketch.flattened_loop(ctx(16)).is_empty(),
+        "no loop remains"
+    );
+    let _ = after.profile_bbox_min(ctx(16)); // well-defined on an empty sketch (no panic)
 }
 
 #[test]
@@ -155,7 +159,7 @@ fn deleting_a_segment_removes_only_the_line() {
         "only the one line is removed"
     );
     assert!(
-        after.sketch.flattened_loop().is_empty(),
+        after.sketch.flattened_loop(ctx(16)).is_empty(),
         "the loop is open ⇒ resolves to nothing"
     );
 }
@@ -188,7 +192,7 @@ fn repair_erases_dangling_and_self_segments() {
         origin: 101,
         role: EntityRole::Real,
     });
-    let dropped = solid.sketch.repair();
+    let dropped = solid.sketch.repair(ctx(16));
     assert_eq!(
         dropped, 2,
         "both the dangling reference and the self-loop are erased"
@@ -199,7 +203,7 @@ fn repair_erases_dangling_and_self_segments() {
         "the four valid segments remain"
     );
     assert_eq!(
-        solid.sketch.flattened_loop().len(),
+        solid.sketch.flattened_loop(ctx(16)).len(),
         4,
         "the loop still closes"
     );
@@ -218,8 +222,8 @@ fn resolve_tolerates_a_dangling_segment_without_panic() {
     });
     // Deriving the loop must not panic — the missing vertex is simply filtered out — and the
     // resolve extent stays sound: a malformed store never hard-fails the load.
-    let _ = solid.sketch.flattened_loop();
-    let _ = solid.grid_dimensions();
+    let _ = solid.sketch.flattened_loop(ctx(16));
+    let _ = solid.grid_dimensions(ctx(16));
 }
 
 #[test]
@@ -230,7 +234,7 @@ fn anchor_offset_absorbs_a_bbox_min_shift_on_the_in_plane_axes_only() {
     let before = bracket();
     let seg = segment_id_between(&before, [2, 2], [6, 2]);
     let after = before.with_point_on_segment(seg, SketchPoint::new(0, 1));
-    let offset = after.anchor_preserving_offset(&before, [10, 10, 10]);
+    let offset = after.anchor_preserving_offset(&before, [10, 10, 10], ctx(16));
     assert_eq!(
         offset,
         [8, 9, 10],
@@ -245,7 +249,7 @@ fn anchor_offset_is_unchanged_when_the_edit_stays_inside_the_bbox() {
     let seg = segment_id_between(&before, [6, 2], [6, 5]);
     let after = before.with_point_on_segment(seg, SketchPoint::new(4, 3));
     assert_eq!(
-        after.anchor_preserving_offset(&before, [10, 10, 10]),
+        after.anchor_preserving_offset(&before, [10, 10, 10], ctx(16)),
         [10, 10, 10],
         "an interior edit leaves the anchor — and so the offset — where it was"
     );

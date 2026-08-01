@@ -3,6 +3,7 @@
 //! producer), a genuinely fractional profile, and the density re-target (a retained
 //! `Measurement` re-evaluates losslessly; a plain point rescales its physical position).
 
+use super::ctx;
 use crate::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
 use crate::voxel::VoxelProducer;
 use ::parametric::units::{ExactRational, Measurement};
@@ -93,7 +94,7 @@ fn fractional_profile_resolves_off_the_voxel_grid() {
         2,
     );
     assert_eq!(
-        solid.grid_dimensions(),
+        solid.grid_dimensions(ctx(16)),
         [5, 4, 2],
         "the grid box is the floor/ceil cover of the fractional profile"
     );

@@ -113,8 +113,8 @@ struct HalfEdge {
 /// ([`super::ProfileLoop::flatten`]).
 ///
 /// Construction geometry is skipped: a construction edge never bounds a region.
-pub fn derive(sketch: &Sketch) -> Vec<Face> {
-    let drawn = drawn_curves(sketch);
+pub fn derive(sketch: &Sketch, context: parametric::EvaluationContext) -> Vec<Face> {
+    let drawn = drawn_curves(sketch, context);
     if drawn.is_empty() {
         return Vec::new();
     }
@@ -285,7 +285,10 @@ fn pole(
 /// A segment is its span, an arc is the circle its endpoints-plus-bulge form already solves for,
 /// and a [`Circle`](super::Circle) is the whole turn — closed, and therefore a curve like any
 /// other here rather than a face that skips the walk.
-fn drawn_curves(sketch: &Sketch) -> Vec<(EntityId, PlanarCurve)> {
+fn drawn_curves(
+    sketch: &Sketch,
+    context: parametric::EvaluationContext,
+) -> Vec<(EntityId, PlanarCurve)> {
     let position = |id: EntityId| {
         sketch
             .points
@@ -316,7 +319,7 @@ fn drawn_curves(sketch: &Sketch) -> Vec<(EntityId, PlanarCurve)> {
         };
         // The bulge solve already lives in `ProfileEdge`; read the circle back off it rather than
         // keeping a second copy of that trigonometry here.
-        let Some(solved) = ProfileEdge::curved(from, to, arc.bulge.to_degrees_f64()).arc else {
+        let Some(solved) = ProfileEdge::curved(from, to, arc.sweep_degrees()).arc else {
             continue;
         };
         curves.push((
@@ -335,7 +338,7 @@ fn drawn_curves(sketch: &Sketch) -> Vec<(EntityId, PlanarCurve)> {
         };
         curves.push((
             circle.origin,
-            PlanarCurve::circle(center.in_plane(), circle.radius.value()),
+            PlanarCurve::circle(center.in_plane(), circle.resolved_radius(context)),
         ));
     }
     curves

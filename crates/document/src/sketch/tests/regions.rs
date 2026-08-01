@@ -1,5 +1,6 @@
 //! Multi-region derivation and face pick/unpick.
 
+use super::ctx;
 use super::*;
 use crate::sketch::FaceKey;
 
@@ -29,7 +30,7 @@ fn nested_squares() -> Sketch {
 
 /// The face of `sketch` whose area is smallest — the inner one in every fixture here.
 fn innermost(sketch: &Sketch) -> FaceKey {
-    let mut faces = sketch.identified_faces();
+    let mut faces = sketch.identified_faces(ctx(16));
     faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
     faces.first().expect("a face").1
 }
@@ -39,7 +40,7 @@ fn innermost(sketch: &Sketch) -> FaceKey {
 #[test]
 fn derivation_enumerates_the_bounded_faces_and_nothing_else() {
     let sketch = nested_squares();
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 2, "one face per square, no unbounded face");
     let mut areas: Vec<f64> = faces.iter().map(|face| face.area_voxels).collect();
     areas.sort_by(f64::total_cmp);
@@ -56,9 +57,9 @@ fn derivation_enumerates_the_bounded_faces_and_nothing_else() {
 fn a_chord_splits_one_face_into_two() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let corners = square(&mut sketch, 0, 4);
-    assert_eq!(sketch.faces().len(), 1);
+    assert_eq!(sketch.faces(ctx(16)).len(), 1);
     sketch.connect(corners[0], corners[2]);
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 2, "the diagonal cuts the square in half");
     for face in &faces {
         assert!((face.area_voxels - 8.0).abs() < 1e-9, "each half is half");
@@ -71,16 +72,16 @@ fn unpicking_the_inner_face_carves_a_hole_through_the_extrude() {
     let mut sketch = nested_squares();
     assert!(
         sketch
-            .identified_faces()
+            .identified_faces(ctx(16))
             .iter()
-            .all(|f| sketch.face_is_picked(&f.1)),
+            .all(|f| sketch.face_is_picked(&f.1, ctx(16))),
         "every derived face starts picked"
     );
     let solid = SketchSolid::extrude(sketch.clone(), 2);
     let full = occupancy_set(&solid, 8).len();
     assert_eq!(full, 12 * 12 * 2, "picked-everything is the whole square");
 
-    sketch.set_face_picked(innermost(&sketch), false);
+    sketch.set_face_picked(innermost(&sketch), false, ctx(16));
     let holed = SketchSolid::extrude(sketch, 2);
     assert_eq!(
         occupancy_set(&holed, 8).len(),
@@ -88,7 +89,7 @@ fn unpicking_the_inner_face_carves_a_hole_through_the_extrude() {
         "the pocket is gone from every layer — a tube"
     );
     assert_eq!(
-        holed.grid_dimensions(),
+        holed.grid_dimensions(ctx(16)),
         [12, 12, 2],
         "a hole changes no extent"
     );
@@ -101,7 +102,7 @@ fn a_revolve_lifts_the_hole_as_well() {
     square(&mut sketch, 2, 10);
     square(&mut sketch, 5, 4);
     let solid_wall = SketchSolid::revolve(sketch.clone(), RevolveAxis::InPlane0, 360);
-    sketch.set_face_picked(innermost(&sketch), false);
+    sketch.set_face_picked(innermost(&sketch), false, ctx(16));
     let hollow = SketchSolid::revolve(sketch, RevolveAxis::InPlane0, 360);
     let full = occupancy_set(&solid_wall, 8).len();
     let carved = occupancy_set(&hollow, 8).len();
@@ -118,15 +119,17 @@ fn a_revolve_lifts_the_hole_as_well() {
 #[test]
 fn an_unpick_survives_a_vertex_drag_and_an_edge_split() {
     let mut sketch = nested_squares();
-    sketch.set_face_picked(innermost(&sketch), false);
+    sketch.set_face_picked(innermost(&sketch), false, ctx(16));
 
     let moved = sketch.points().last().expect("a point").id;
     assert!(
-        sketch.move_point(moved, SketchPoint::new(5, 5)),
+        sketch
+            .move_point(moved, SketchPoint::new(5, 5), ctx(16))
+            .expect("evaluation context"),
         "the point"
     );
     assert!(
-        !sketch.face_is_picked(&innermost(&sketch)),
+        !sketch.face_is_picked(&innermost(&sketch), ctx(16)),
         "a drag leaves the pocket under its own point"
     );
 
@@ -141,7 +144,7 @@ fn an_unpick_survives_a_vertex_drag_and_an_edge_split() {
         .id;
     sketch.split_segment(inner_edge, SketchPoint::new(6, 4));
     assert!(
-        !sketch.face_is_picked(&innermost(&sketch)),
+        !sketch.face_is_picked(&innermost(&sketch), ctx(16)),
         "the hole is still a hole"
     );
 }
@@ -163,7 +166,7 @@ fn inner_corner_ids(sketch: &Sketch) -> Vec<EntityId> {
 fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
     let mut sketch = nested_squares();
     let carved = innermost(&sketch);
-    sketch.set_face_picked(carved, false);
+    sketch.set_face_picked(carved, false, ctx(16));
 
     // A chord across the pocket, well off its center so the stored point is unambiguously on one
     // side. Its ends are free points on the boundary — the arrangement cuts at the crossings.
@@ -171,11 +174,11 @@ fn cutting_an_unpicked_face_in_two_migrates_the_unpick() {
     let high = sketch.add_free_point(SketchPoint::new(8, 5));
     sketch.connect(low, high).expect("the chord");
 
-    let mut faces = sketch.identified_faces();
+    let mut faces = sketch.identified_faces(ctx(16));
     faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
     let holes: Vec<&(Face, FaceKey)> = faces
         .iter()
-        .filter(|(_, key)| !sketch.face_is_picked(key))
+        .filter(|(_, key)| !sketch.face_is_picked(key, ctx(16)))
         .collect();
     assert_eq!(holes.len(), 1, "the unpick names ONE face, not both halves");
     assert!(
@@ -203,7 +206,7 @@ fn a_crossing_bounds_faces_with_no_snapped_point() {
             SketchPoint::new(6, 0),
         ],
     );
-    let faces = bowtie.faces();
+    let faces = bowtie.faces(ctx(16));
     assert_eq!(faces.len(), 2, "one triangle either side of the crossing");
     for face in &faces {
         assert!(
@@ -224,11 +227,11 @@ fn a_crossing_bounds_faces_with_no_snapped_point() {
 #[test]
 fn the_pick_state_round_trips_and_an_older_document_loads_picked() {
     let mut sketch = nested_squares();
-    sketch.set_face_picked(innermost(&sketch), false);
+    sketch.set_face_picked(innermost(&sketch), false, ctx(16));
     let json = serde_json::to_string(&sketch).expect("serialize");
     let restored: Sketch = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(restored, sketch);
-    assert!(!restored.face_is_picked(&innermost(&restored)));
+    assert!(!restored.face_is_picked(&innermost(&restored), ctx(16)));
 
     let mut value: serde_json::Value = serde_json::from_str(&json).expect("json");
     value
@@ -239,9 +242,9 @@ fn the_pick_state_round_trips_and_an_older_document_loads_picked() {
     let older: Sketch = serde_json::from_value(value).expect("a document with no pick state");
     assert!(
         older
-            .identified_faces()
+            .identified_faces(ctx(16))
             .iter()
-            .all(|f| older.face_is_picked(&f.1)),
+            .all(|f| older.face_is_picked(&f.1, ctx(16))),
         "no unpicked list means everything is picked"
     );
 }
@@ -252,7 +255,7 @@ fn the_pick_state_round_trips_and_an_older_document_loads_picked() {
 #[test]
 fn the_coarse_claim_never_over_claims_across_a_hole() {
     let mut sketch = nested_squares();
-    sketch.set_face_picked(innermost(&sketch), false);
+    sketch.set_face_picked(innermost(&sketch), false, ctx(16));
     let solid = SketchSolid::extrude(sketch, 2);
     let occupied = occupancy_set(&solid, 8);
     for cell_0 in 0..12u32 {
@@ -261,7 +264,7 @@ fn the_coarse_claim_never_over_claims_across_a_hole() {
                 min: [cell_0 as i64, cell_1 as i64, 0],
                 max: [cell_0 as i64 + 1, cell_1 as i64 + 1, 2],
             };
-            if !solid.extrude_cell_is_solid(cell) {
+            if !solid.extrude_cell_is_solid(cell, ctx(16)) {
                 continue;
             }
             for layer in 0..2u32 {
@@ -290,8 +293,8 @@ fn the_coarse_claim_never_over_claims_across_a_hole() {
 #[test]
 fn nested_picked_faces_claim_the_region_once() {
     let sketch = nested_squares();
-    assert_eq!(sketch.faces().len(), 2, "still two faces");
-    let field = sketch.region_field_loops();
+    assert_eq!(sketch.faces(ctx(16)).len(), 2, "still two faces");
+    let field = sketch.region_field_loops(ctx(16));
     assert!(substrate::geom2d::point_in_region(&field, [6.0, 6.0]));
     assert!(substrate::geom2d::point_in_region(&field, [2.0, 2.0]));
     assert!(!substrate::geom2d::point_in_region(&field, [13.0, 6.0]));
@@ -310,8 +313,8 @@ fn nested_picked_faces_claim_the_region_once() {
 #[test]
 fn an_unpicked_inner_face_reads_as_a_void() {
     let mut sketch = nested_squares();
-    sketch.set_face_picked(innermost(&sketch), false);
-    let field = sketch.region_field_loops();
+    sketch.set_face_picked(innermost(&sketch), false, ctx(16));
+    let field = sketch.region_field_loops(ctx(16));
     assert!(
         substrate::geom2d::point_in_region(&field, [2.0, 2.0]),
         "the ring"
@@ -332,12 +335,12 @@ fn a_picked_island_inside_a_void_survives_the_carve() {
     square(&mut sketch, 4, 12);
     square(&mut sketch, 8, 4);
     let middle = {
-        let mut faces = sketch.identified_faces();
+        let mut faces = sketch.identified_faces(ctx(16));
         faces.sort_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels));
         faces[1].1
     };
-    sketch.set_face_picked(middle, false);
-    let field = sketch.region_field_loops();
+    sketch.set_face_picked(middle, false, ctx(16));
+    let field = sketch.region_field_loops(ctx(16));
     assert!(
         substrate::geom2d::point_in_region(&field, [2.0, 2.0]),
         "the outermost ring is material"
@@ -365,7 +368,7 @@ fn faces_sharing_an_edge_are_both_material() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let corners = square(&mut sketch, 0, 4);
     sketch.connect(corners[0], corners[2]);
-    let field = sketch.region_field_loops();
+    let field = sketch.region_field_loops(ctx(16));
     assert_eq!(field.len(), 2);
     assert!(substrate::geom2d::point_in_region(&field, [1.0, 2.0]));
     assert!(substrate::geom2d::point_in_region(&field, [3.0, 2.0]));

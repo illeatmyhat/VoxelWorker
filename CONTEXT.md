@@ -58,6 +58,15 @@ no decisions. Define a term here the first time an ambiguity bites.
   number: a future **Array / pattern** feature is *authoring*, so its count and spacing **are**
   measurements even though it emits geometry.
 
+- **Evaluation context** — the explicit, operation-scoped input carrying authoritative scene
+  density used to resolve a fixed measurement into voxel geometry. It is not persisted state and
+  never supplies a default density; a region/solid memo keys on it whenever fixed curves exist.
+
+- **Curve-intrinsic parameter** — a scalar owned by a curve rather than a point: presently an arc
+  sweep or circle radius. It has exactly one authority: a free exact solver value or a fixed
+  measurement source. A fixed source is re-evaluated through the evaluation context and carries no
+  resolved-value cache.
+
 ## Boundary residency (the two-layer chunk)
 
 The chunk representation a boundary-aware store keeps, modelled on Vintage Story's

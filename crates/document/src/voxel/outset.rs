@@ -16,7 +16,7 @@
     clippy::similar_names
 )]
 
-use super::{Field, FieldInterval, VoxelProducer};
+use super::{Field, FieldInterval, PreparedField, VoxelProducer};
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{BlockAttrs, BlockId, Voxel, VoxelGrid, SURFACE_ISOLEVEL};
 
@@ -49,6 +49,40 @@ use voxel_core::voxel::{BlockAttrs, BlockId, Voxel, VoxelGrid, SURFACE_ISOLEVEL}
 pub struct OutsetProducer {
     inner: Box<dyn VoxelProducer>,
     outset_voxels: i64,
+}
+
+/// A dilated child field prepared once for one dense or coarse sampling operation.
+struct PreparedOutsetField<'a> {
+    inner: Option<Box<dyn PreparedField + 'a>>,
+    outset_voxels: f32,
+}
+
+impl PreparedField for PreparedOutsetField<'_> {
+    fn signed_distance(&self, point_local_voxels: [f32; 3]) -> f32 {
+        let inner_point = std::array::from_fn(|axis| point_local_voxels[axis] - self.outset_voxels);
+        self.inner.as_deref().map_or(f32::INFINITY, |field| {
+            field.signed_distance(inner_point) - self.outset_voxels
+        })
+    }
+
+    fn metric(&self) -> substrate::geom2d::Metric {
+        self.inner
+            .as_deref()
+            .map_or(substrate::geom2d::Metric::Euclidean, PreparedField::metric)
+    }
+
+    fn preserves_native_interval(&self) -> bool {
+        true
+    }
+
+    /// The native outset interval is the metric bracket of its translated, shifted field.
+    /// Keep that exact proof on the prepared path rather than inheriting a subtly different
+    /// wrapper default.
+    fn native_cell_field_interval(&self, cell_local_voxels: VoxelAabb) -> FieldInterval {
+        super::metric_cell_bracket(cell_local_voxels, self.metric(), |center| {
+            self.signed_distance(center)
+        })
+    }
 }
 
 impl OutsetProducer {
@@ -110,6 +144,7 @@ impl VoxelProducer for OutsetProducer {
         let Some(field) = self.inner.as_field() else {
             return;
         };
+        let field = field.prepare(voxels_per_block);
         let outset = self.outset_voxels as f32;
 
         // Clamp the window to `[0, full_dim)` per axis, so an oversized window is harmless
@@ -130,8 +165,7 @@ impl VoxelProducer for OutsetProducer {
                     // inner producer's frame.
                     let center =
                         self.to_inner_point([i as f32 + 0.5, j as f32 + 0.5, k as f32 + 0.5]);
-                    if field.signed_distance(center, voxels_per_block) - outset <= SURFACE_ISOLEVEL
-                    {
+                    if field.signed_distance(center) - outset <= SURFACE_ISOLEVEL {
                         occupied.push(Voxel {
                             local_index: [i as i32, j as i32, k as i32],
                             block_local_coord: [
@@ -245,5 +279,32 @@ impl Field for OutsetProducer {
             Some(field) => field.metric(),
             None => substrate::geom2d::Metric::Euclidean,
         }
+    }
+
+    fn has_native_interval(&self) -> bool {
+        true
+    }
+
+    fn native_cell_field_interval(
+        &self,
+        cell_local_voxels: VoxelAabb,
+        voxels_per_block: u32,
+    ) -> FieldInterval {
+        VoxelProducer::cell_field_interval(self, cell_local_voxels, voxels_per_block)
+            .unwrap_or_else(|| {
+                super::metric_cell_bracket(cell_local_voxels, self.metric(), |center| {
+                    self.signed_distance(center, voxels_per_block)
+                })
+            })
+    }
+
+    fn prepare(&self, voxels_per_block: u32) -> Box<dyn PreparedField + '_> {
+        Box::new(PreparedOutsetField {
+            inner: self
+                .inner
+                .as_field()
+                .map(|field| field.prepare(voxels_per_block)),
+            outset_voxels: self.outset_voxels as f32,
+        })
     }
 }

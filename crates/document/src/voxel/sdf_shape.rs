@@ -616,6 +616,23 @@ impl Field for SdfShape {
             _ => substrate::geom2d::Metric::Euclidean,
         }
     }
+
+    fn has_native_interval(&self) -> bool {
+        true
+    }
+
+    fn native_cell_field_interval(
+        &self,
+        cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
+        voxels_per_block: u32,
+    ) -> FieldInterval {
+        VoxelProducer::cell_field_interval(self, cell_local_voxels, voxels_per_block)
+            .unwrap_or_else(|| {
+                super::metric_cell_bracket(cell_local_voxels, self.metric(), |center| {
+                    self.signed_distance(center, voxels_per_block)
+                })
+            })
+    }
 }
 
 /// Voxel-granular Size with parametric Measurement retention, mirroring the Offset tests

@@ -1,7 +1,10 @@
+use super::ctx;
 use super::*;
 use crate::sketch::RevolveAxis;
-use crate::voxel::VoxelProducer;
+use crate::voxel::{Field, VoxelProducer};
+use ::parametric::units::{ExactRational, Measurement};
 use std::collections::BTreeSet;
+use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::VoxelGrid;
 
 /// A set of extrude profiles worth stressing: a plain rectangle, a concave L, one with a
@@ -74,7 +77,7 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
             .map(|voxel| voxel.local_index)
             .collect();
 
-        let dimensions = solid.grid_dimensions();
+        let dimensions = solid.grid_dimensions(ctx(16));
         let mut checked = 0u32;
         let mut inside = 0u32;
         let mut on_boundary = 0u32;
@@ -82,7 +85,7 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
             for y in 0..dimensions[1] {
                 for z in 0..dimensions[2] {
                     let center = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
-                    let distance = solid.signed_distance(center);
+                    let distance = solid.signed_distance(center, ctx(16));
                     let field_says_solid = distance.is_sign_negative();
                     let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                     assert_eq!(
@@ -114,13 +117,51 @@ fn extrude_signed_distance_agrees_with_the_resolve() {
     }
 }
 
+/// A zero passed through the legacy `VoxelProducer` door is invalid, not an implicit density-one
+/// evaluation. The fixed radius is the probe: reaching the region memo would resolve it.
+#[test]
+fn zero_density_is_non_geometric_and_never_resolves_a_fixed_curve() {
+    let mut sketch = Sketch::circle(PlaneAxis::Z, SketchPoint::new(0, 0), 2);
+    sketch.circles_mut_for_test()[0].radius =
+        CircleRadius::fixed(Measurement::new(ExactRational::from_integer(7), 0));
+    let solid = SketchSolid::extrude(sketch, 4);
+    let cell = VoxelAabb::new([0, 0, 0], [4, 4, 4]);
+    let mut grid = VoxelGrid {
+        dimensions: [9, 9, 9],
+        ..VoxelGrid::default()
+    };
+
+    assert_eq!(evaluation_context_from_density(0), None);
+    solid.resolve(&mut grid, 0);
+    assert_eq!(grid.dimensions, [0; 3]);
+    assert!(grid.occupied.is_empty());
+    solid.resolve_into(&mut grid, 0, cell);
+    assert_eq!(grid.dimensions, [0; 3]);
+    assert!(grid.occupied.is_empty());
+    assert_eq!(solid.full_dimensions(0), [0; 3]);
+    assert_eq!(solid.cell_field_interval(cell, 0), None);
+    assert_eq!(solid.material_at([0.5; 3], 0), None);
+    assert_eq!(solid.origin_at([0.5; 3], 0), None);
+    assert!(solid.edge_polylines_local(0, 16).is_empty());
+    assert!(Field::signed_distance(&solid, [0.5; 3], 0).is_infinite());
+    let prepared = Field::prepare(&solid, 0);
+    assert!(!prepared.preserves_native_interval());
+    assert!(prepared.signed_distance([0.5; 3]).is_infinite());
+    assert!(solid.sketch.region_memo_is_empty_for_test());
+    assert_eq!(
+        solid.sketch.region_derivation_count_for_test(),
+        0,
+        "the fixed radius probe was never resolved"
+    );
+}
+
 /// The extrude field must be 1-Lipschitz in Chebyshev, which is what makes a cell bound
 /// from a single sample sound. Sampled on a fine sub-voxel lattice extending outside the
 /// grid, so the exterior and the rim edges are covered too.
 #[test]
 fn extrude_signed_distance_is_one_lipschitz_in_chebyshev() {
     for (label, solid) in extrude_field_cases() {
-        let dimensions = solid.grid_dimensions();
+        let dimensions = solid.grid_dimensions(ctx(16));
         let mut worst: f32 = 0.0;
         let step = 0.25f32;
         let span = |extent: u32| -> i32 { (extent as f32 / step) as i32 + 8 };
@@ -128,11 +169,11 @@ fn extrude_signed_distance_is_one_lipschitz_in_chebyshev() {
             for yi in -8..span(dimensions[1]) {
                 for zi in -8..span(dimensions[2]) {
                     let p = [xi as f32 * step, yi as f32 * step, zi as f32 * step];
-                    let here = solid.signed_distance(p);
+                    let here = solid.signed_distance(p, ctx(16));
                     for axis in 0..3 {
                         let mut q = p;
                         q[axis] += step;
-                        let there = solid.signed_distance(q);
+                        let there = solid.signed_distance(q, ctx(16));
                         worst = worst.max((there - here).abs() / step);
                     }
                 }
@@ -155,13 +196,13 @@ fn extrude_field_is_chebyshev_exact_on_a_prism() {
     let solid = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 2);
     assert_eq!(solid.field_metric(), Metric::Chebyshev);
     // Diagonally off the (4,4) corner by (3,3): Chebyshev reads 3, not 3*sqrt(2).
-    let corner = solid.signed_distance([7.0, 7.0, 1.0]);
+    let corner = solid.signed_distance([7.0, 7.0, 1.0], ctx(16));
     assert!((corner - 3.0).abs() < 1e-4, "corner distance {corner}");
     // Straight out one face by 2.
-    let face = solid.signed_distance([6.0, 2.0, 1.0]);
+    let face = solid.signed_distance([6.0, 2.0, 1.0], ctx(16));
     assert!((face - 2.0).abs() < 1e-4, "face distance {face}");
     // Deepest interior point is 1 from the nearest face (the normal slab is thinnest).
-    let center = solid.signed_distance([2.0, 2.0, 1.0]);
+    let center = solid.signed_distance([2.0, 2.0, 1.0], ctx(16));
     assert!((center + 1.0).abs() < 1e-4, "center distance {center}");
     // Revolve reports Euclidean instead — the lift decides the metric, not the profile.
     let revolved = SketchSolid::revolve(
@@ -172,7 +213,10 @@ fn extrude_field_is_chebyshev_exact_on_a_prism() {
     assert_eq!(revolved.field_metric(), Metric::Euclidean);
     // A degenerate producer is empty, so every point is outside it.
     let degenerate = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 0);
-    assert_eq!(degenerate.signed_distance([1.0, 1.0, 1.0]), f32::INFINITY);
+    assert_eq!(
+        degenerate.signed_distance([1.0, 1.0, 1.0], ctx(16)),
+        f32::INFINITY
+    );
 }
 
 /// Revolve cases covering both axis reinterpretations, a full turn and partial turns
@@ -253,13 +297,13 @@ fn revolve_signed_distance_agrees_with_the_resolve() {
             .iter()
             .map(|voxel| voxel.local_index)
             .collect();
-        let dimensions = solid.grid_dimensions();
+        let dimensions = solid.grid_dimensions(ctx(16));
         let mut inside = 0u32;
         for x in 0..dimensions[0] {
             for y in 0..dimensions[1] {
                 for z in 0..dimensions[2] {
                     let center = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
-                    let distance = solid.signed_distance(center);
+                    let distance = solid.signed_distance(center, ctx(16));
                     let field_says_solid = distance.is_sign_negative();
                     let resolve_says_solid = occupied.contains(&[x as i32, y as i32, z as i32]);
                     assert_eq!(
@@ -285,21 +329,21 @@ fn revolve_signed_distance_agrees_with_the_resolve() {
 #[test]
 fn revolve_signed_distance_is_one_lipschitz_in_euclidean() {
     for (label, solid) in revolve_field_cases() {
-        let dimensions = solid.grid_dimensions();
+        let dimensions = solid.grid_dimensions(ctx(16));
         let step = 0.25f32;
         let mut worst: f32 = 0.0;
         for xi in -6..(dimensions[0] as f32 / step) as i32 + 6 {
             for yi in -6..(dimensions[1] as f32 / step) as i32 + 6 {
                 for zi in -6..(dimensions[2] as f32 / step) as i32 + 6 {
                     let p = [xi as f32 * step, yi as f32 * step, zi as f32 * step];
-                    let here = solid.signed_distance(p);
+                    let here = solid.signed_distance(p, ctx(16));
                     if !here.is_finite() {
                         continue;
                     }
                     for axis in 0..3 {
                         let mut q = p;
                         q[axis] += step;
-                        let there = solid.signed_distance(q);
+                        let there = solid.signed_distance(q, ctx(16));
                         worst = worst.max((there - here).abs() / step);
                     }
                 }
@@ -348,7 +392,7 @@ fn revolve_closing_edge_is_inclusive_at_135_degrees() {
         RevolveAxis::InPlane0,
         135,
     );
-    let dimensions = solid.grid_dimensions();
+    let dimensions = solid.grid_dimensions(ctx(16));
     // Revolve about in-plane axis 0 (X) puts the radial axes at Y and Z, ascending.
     let (radial_a, radial_b) = (1usize, 2usize);
     let half_a = dimensions[radial_a] as f32 / 2.0;
@@ -373,7 +417,7 @@ fn revolve_closing_edge_is_inclusive_at_135_degrees() {
         point[0] = 3.5; // mid-axial, comfortably inside the profile 0..6 span
         point[radial_a] = centered_a + half_a;
         point[radial_b] = centered_b + half_b;
-        let field = solid.signed_distance(point);
+        let field = solid.signed_distance(point, ctx(16));
         assert!(
             field <= voxel_core::voxel::SURFACE_ISOLEVEL,
             "sample on the 135 degree closing edge at {point:?} (centered {centered_a}, \

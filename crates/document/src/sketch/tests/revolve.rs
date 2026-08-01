@@ -1,5 +1,6 @@
 // ----- Revolve operation: the solid-of-revolution producer -----
 
+use super::ctx;
 use super::*;
 use crate::sketch::RevolveAxis;
 use crate::voxel::{SdfShape, VoxelProducer};
@@ -40,7 +41,7 @@ fn rectangle_revolve_equals_cylinder() {
             1,
         );
         assert_eq!(
-            revolve.grid_dimensions(),
+            revolve.grid_dimensions(ctx(density)),
             cylinder.grid_dimensions(density),
             "grid dims must match for radial {radial}, axial {axial}"
         );
@@ -93,8 +94,8 @@ fn revolve_negative_and_straddling_radial_fold() {
         360,
     );
     assert_eq!(
-        negative_side.grid_dimensions(),
-        positive_mirror.grid_dimensions(),
+        negative_side.grid_dimensions(ctx(16)),
+        positive_mirror.grid_dimensions(ctx(16)),
         "negative-side and positive-mirror tubes must share grid dims (radial_max folds by abs)"
     );
     let negative_cells = cell_set(&negative_side, density);
@@ -140,8 +141,8 @@ fn revolve_negative_and_straddling_radial_fold() {
         360,
     );
     assert_eq!(
-        straddling.grid_dimensions(),
-        solid_disc.grid_dimensions(),
+        straddling.grid_dimensions(ctx(16)),
+        solid_disc.grid_dimensions(ctx(16)),
         "straddling profile diameter is 2·max(|radial|) = 50, matching the solid disc"
     );
     assert_eq!(
@@ -187,7 +188,10 @@ fn half_disc_revolve_approximates_sphere() {
         ],
         1,
     );
-    assert_eq!(revolve.grid_dimensions(), sphere.grid_dimensions(density));
+    assert_eq!(
+        revolve.grid_dimensions(ctx(density)),
+        sphere.grid_dimensions(density)
+    );
     let revolve_set = cell_set(&revolve, density);
     let sphere_set = cell_set(&sphere, density);
     let intersection = revolve_set.intersection(&sphere_set).count();
@@ -254,7 +258,7 @@ fn revolve_parity_axis_placement() {
                     RevolveAxis::InPlane0 => Sketch::rectangle(plane, axial, radial),
                 };
                 let revolve = SketchSolid::revolve(sketch, revolve_axis, 360);
-                let dims = revolve.grid_dimensions();
+                let dims = revolve.grid_dimensions(ctx(density));
                 let mut grid = VoxelGrid::default();
                 revolve.resolve(&mut grid, density);
                 assert!(

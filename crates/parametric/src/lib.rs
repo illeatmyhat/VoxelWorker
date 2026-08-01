@@ -37,13 +37,17 @@
 //! table and a type system is not that. So this sits between them:
 //! `substrate ← parametric ← voxel_core ← the rest of the app`.
 
+pub mod curve_parameter;
 pub mod dimension;
+pub mod evaluation;
 pub mod expression;
 pub mod quantity;
 pub mod sketch;
 pub mod units;
 
+pub use curve_parameter::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
 pub use dimension::Dimension;
+pub use evaluation::EvaluationContext;
 pub use expression::{Expression, SymbolTable};
 pub use quantity::Quantity;
 pub use units::{AngleMeasurement, ExactRational, Measurement};

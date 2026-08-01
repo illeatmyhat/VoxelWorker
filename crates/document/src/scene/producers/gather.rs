@@ -103,7 +103,8 @@ pub(super) fn gather_placed_field_into_grid(
 
     let field = producer
         .as_field()
-        .expect("the dense gather is only reached for field producers");
+        .expect("the dense gather is only reached for field producers")
+        .prepare(voxels_per_block);
     let (world_min, world_max) = placement.world_aabb();
 
     // The output-index box the leaf can touch: its absolute world AABB rebased to the output
@@ -145,7 +146,7 @@ pub(super) fn gather_placed_field_into_grid(
                     .local_of_abs_cell_center(abs_cell)
                     .voxels()
                     .to_array();
-                if field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL {
+                if field.signed_distance(local) <= SURFACE_ISOLEVEL {
                     let block_id = material_override
                         .or_else(|| producer.material_at(local, voxels_per_block))
                         .unwrap_or(voxel_core::core_geom::BlockId::DEFAULT);

@@ -135,9 +135,13 @@ impl Scene {
     /// CLI warning. Idempotent — a clean scene drops nothing and returns empty.
     pub fn repair_sketches(&mut self) -> Vec<(String, usize)> {
         let mut warnings = Vec::new();
+        let Some(context) = crate::sketch::evaluation_context_from_density(self.voxels_per_block)
+        else {
+            return warnings;
+        };
         for node in self.arena.values_mut() {
             if let NodeContent::SketchTool { producer, .. } = &mut node.content {
-                let dropped = producer.sketch.repair();
+                let dropped = producer.sketch.repair(context);
                 if dropped > 0 {
                     warnings.push((node.name.clone(), dropped));
                 }

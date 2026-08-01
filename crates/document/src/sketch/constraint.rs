@@ -18,10 +18,15 @@
     clippy::use_self
 )]
 
-use super::{Arc, EntityId, Point, Segment, Sketch, SketchLength, SketchPoint, ABSENT_CENTER};
-use parametric::sketch::{
-    ArcId, ConstraintId, CurveKey, PointId, Problem, ProblemBuilder, Relation, SegmentId,
+use super::{
+    Arc, Circle, CircleRadius, EntityId, Point, Segment, Sketch, SketchLength, SketchPoint,
+    ABSENT_CENTER,
 };
+use parametric::sketch::{
+    ArcId, BuildError, CircleId, ConstraintId, CurveKey, PointId, Problem, ProblemBuilder,
+    Relation, SegmentId,
+};
+use parametric::EvaluationContext;
 
 /// What a constraint asserts. Every reference is a stable document entity id, never a slot.
 ///
@@ -159,6 +164,8 @@ pub struct Constraint {
 /// badges, an id is all the shell needs to point at one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstraintRefusal {
+    /// A fixed curve source needs the document evaluation context; no cached voxel value is used.
+    MissingEvaluationContext,
     /// The request names geometry the store does not hold.
     UnknownEntity,
     /// Its own terms cannot be met by any drawing: for example a negative distance or a horizontal
@@ -200,7 +207,7 @@ impl ConstraintRefusal {
     /// the refusal has no culprit or none could be isolated.
     pub fn culprits(&self) -> Vec<EntityId> {
         match self {
-            Self::UnknownEntity | Self::Impossible => Vec::new(),
+            Self::MissingEvaluationContext | Self::UnknownEntity | Self::Impossible => Vec::new(),
             Self::Unsatisfiable { fights } => fights.clone(),
             Self::WouldCollapse { implicated, .. } => implicated.clone(),
             Self::AlreadyAsserted { existing } => vec![*existing],
@@ -217,13 +224,48 @@ pub(super) struct PreparedProblem {
     problem: Problem,
     points: Vec<(EntityId, PointId)>,
     segments: Vec<(EntityId, SegmentId)>,
-    arcs: Vec<(EntityId, ArcId)>,
+    arcs: Vec<(EntityId, ArcId, parametric::sketch::ParameterId)>,
+    circles: Vec<(EntityId, CircleId, parametric::sketch::ParameterId)>,
     constraints: Vec<(EntityId, ConstraintId)>,
 }
 
 pub(super) enum TrialMapError {
     UnmappedGeometry,
     Request(parametric::sketch::RequestError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PrepareError {
+    MissingEvaluationContext,
+    InvalidDocumentGeometry,
+    InvalidLocalProblem(BuildError),
+}
+
+/// Why an otherwise accepted local solution cannot be atomically written into document state.
+/// This remains separate from evaluation-context failures: a caller must never be told to supply
+/// density when the actual problem is an invalid scalar or a mismatched solver handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScalarWritebackError {
+    MissingSolutionPoint,
+    MissingSolutionParameter,
+    ParameterKindMismatch,
+    SweepNotRepresentable,
+    RadiusNotRepresentable,
+    MissingDocumentEntity,
+}
+
+pub(super) struct ApplyPlan {
+    points: Vec<Point>,
+    arcs: Vec<Arc>,
+    circles: Vec<Circle>,
+}
+
+impl ApplyPlan {
+    pub(super) fn apply(self, sketch: &mut Sketch) {
+        sketch.points = self.points;
+        sketch.arcs = self.arcs;
+        sketch.circles = self.circles;
+    }
 }
 
 impl PreparedProblem {
@@ -250,19 +292,73 @@ impl PreparedProblem {
         held: EntityId,
         at: [f64; 2],
     ) -> Result<parametric::sketch::DragOutcome, parametric::sketch::RequestError> {
-        self.problem
-            .drag(self.point(held).expect("live drag point"), at)
+        let point = self
+            .point(held)
+            .ok_or(parametric::sketch::RequestError::UnknownPoint)?;
+        self.problem.drag(point, at)
     }
 
-    pub(super) fn apply(&self, points: &mut [Point], solution: &parametric::sketch::Solution) {
+    pub(super) fn plan_apply(
+        &self,
+        points: &[Point],
+        arcs: &[Arc],
+        circles: &[Circle],
+        solution: &parametric::sketch::Solution,
+    ) -> Result<ApplyPlan, ScalarWritebackError> {
+        let mut points = points.to_vec();
+        let mut arcs = arcs.to_vec();
+        let mut circles = circles.to_vec();
         for (id, point) in &self.points {
-            let Some(at) = solution.position(*point) else {
-                continue;
-            };
-            if let Some(point) = points.iter_mut().find(|point| point.id == *id) {
-                point.at = SketchPoint::from_continuous(at[0], at[1]);
-            }
+            let at = solution
+                .position(*point)
+                .ok_or(ScalarWritebackError::MissingSolutionPoint)?;
+            let point = points
+                .iter_mut()
+                .find(|point| point.id == *id)
+                .ok_or(ScalarWritebackError::MissingDocumentEntity)?;
+            point.at = SketchPoint::from_continuous(at[0], at[1]);
         }
+        for (id, _, parameter) in &self.arcs {
+            let arc = arcs
+                .iter_mut()
+                .find(|arc| arc.id == *id)
+                .ok_or(ScalarWritebackError::MissingDocumentEntity)?;
+            if arc.bulge.free_value().is_none() {
+                continue;
+            }
+            let parametric::sketch::ParameterValue::SweepDegrees(value) = solution
+                .parameter(*parameter)
+                .ok_or(ScalarWritebackError::MissingSolutionParameter)?
+            else {
+                return Err(ScalarWritebackError::ParameterKindMismatch);
+            };
+            let value = parametric::units::AngleMeasurement::try_from_degrees_f64(value)
+                .map_err(|_| ScalarWritebackError::SweepNotRepresentable)?;
+            arc.replace_free_sweep(value);
+        }
+        for (id, _, parameter) in &self.circles {
+            let circle = circles
+                .iter_mut()
+                .find(|circle| circle.id == *id)
+                .ok_or(ScalarWritebackError::MissingDocumentEntity)?;
+            if circle.radius.free_value().is_none() {
+                continue;
+            }
+            let parametric::sketch::ParameterValue::Radius(value) = solution
+                .parameter(*parameter)
+                .ok_or(ScalarWritebackError::MissingSolutionParameter)?
+            else {
+                return Err(ScalarWritebackError::ParameterKindMismatch);
+            };
+            let value = super::ResolvedLength::try_from_f64(value)
+                .map_err(|_| ScalarWritebackError::RadiusNotRepresentable)?;
+            circle.radius = CircleRadius::free(value);
+        }
+        Ok(ApplyPlan {
+            points,
+            arcs,
+            circles,
+        })
     }
 
     pub(super) fn point(&self, id: EntityId) -> Option<PointId> {
@@ -289,8 +385,13 @@ impl PreparedProblem {
             CurveKey::Arc(key) => self
                 .arcs
                 .iter()
-                .find(|(_, local)| *local == key)
-                .map(|(stable, _)| *stable),
+                .find(|(_, local, _)| *local == key)
+                .map(|(stable, _, _)| *stable),
+            CurveKey::Circle(key) => self
+                .circles
+                .iter()
+                .find(|(_, local, _)| *local == key)
+                .map(|(stable, _, _)| *stable),
         }
     }
 
@@ -379,7 +480,11 @@ fn add_constraints(
 /// or authored scalar storage; it receives only resolved positions, topology, and relations.
 /// Sorting is not a semantic ordering of the document: it gives the local arithmetic layout a
 /// reproducible order while stable ids remain the only identity exposed to callers.
-pub(super) fn prepare(sketch: &Sketch, constraints: &[Constraint]) -> PreparedProblem {
+pub(super) fn prepare(
+    sketch: &Sketch,
+    constraints: &[Constraint],
+    context: Option<EvaluationContext>,
+) -> Result<PreparedProblem, PrepareError> {
     let mut builder = ProblemBuilder::new();
     let mut ordered_points: Vec<&Point> = sketch.points.iter().collect();
     ordered_points.sort_by_key(|point| point.id);
@@ -396,15 +501,13 @@ pub(super) fn prepare(sketch: &Sketch, constraints: &[Constraint]) -> PreparedPr
 
     let mut ordered_segments: Vec<&Segment> = sketch.segments.iter().collect();
     ordered_segments.sort_by_key(|segment| segment.id);
-    let segments: Vec<(EntityId, SegmentId)> = ordered_segments
-        .into_iter()
-        .filter_map(|segment| {
-            Some((
-                segment.id,
-                builder.add_segment(point(segment.from)?, point(segment.to)?),
-            ))
-        })
-        .collect();
+    let mut segments = Vec::with_capacity(ordered_segments.len());
+    for segment in ordered_segments {
+        let (Some(from), Some(to)) = (point(segment.from), point(segment.to)) else {
+            return Err(PrepareError::InvalidDocumentGeometry);
+        };
+        segments.push((segment.id, builder.add_segment(from, to)));
+    }
     let mut arcs: Vec<&Arc> = sketch.arcs.iter().collect();
     arcs.sort_by_key(|arc| arc.id);
     let mut local_arcs = Vec::new();
@@ -412,25 +515,49 @@ pub(super) fn prepare(sketch: &Sketch, constraints: &[Constraint]) -> PreparedPr
         if arc.center == ABSENT_CENTER {
             continue;
         }
-        if let (Some(center), Some(from), Some(to)) =
+        let (Some(center), Some(from), Some(to)) =
             (point(arc.center), point(arc.from), point(arc.to))
-        {
-            local_arcs.push((
-                arc.id,
-                builder.add_arc_center(center, from, to, arc.bulge.to_degrees_f64()),
-            ));
+        else {
+            return Err(PrepareError::InvalidDocumentGeometry);
+        };
+        let sweep = match (arc.bulge.free_value(), arc.bulge.fixed_source()) {
+            (Some(value), None) => builder.add_free_signed_sweep(value.to_degrees_f64()),
+            (None, Some(source)) => builder.add_fixed_signed_sweep(source.to_degrees_f64()),
+            _ => return Err(PrepareError::InvalidDocumentGeometry),
         }
+        .map_err(PrepareError::InvalidLocalProblem)?;
+        let local = builder.add_arc(center, from, to, sweep);
+        local_arcs.push((arc.id, local, sweep));
+    }
+
+    let mut circles: Vec<&Circle> = sketch.circles.iter().collect();
+    circles.sort_by_key(|circle| circle.id);
+    let mut local_circles = Vec::new();
+    for circle in circles {
+        let center = point(circle.center).ok_or(PrepareError::InvalidDocumentGeometry)?;
+        let radius = match (circle.radius.free_value(), circle.radius.fixed_source()) {
+            (Some(value), None) => builder.add_free_positive_radius(value.value()),
+            (None, Some(source)) => {
+                let context = context.ok_or(PrepareError::MissingEvaluationContext)?;
+                builder.add_fixed_positive_radius(source.to_voxel_rational(context).to_f64())
+            }
+            _ => return Err(PrepareError::InvalidDocumentGeometry),
+        }
+        .map_err(PrepareError::InvalidLocalProblem)?;
+        let local = builder.add_circle(center, radius);
+        local_circles.push((circle.id, local, radius));
     }
 
     let local_constraints = add_constraints(&mut builder, constraints, &points, &segments);
     let problem = builder
         .finish()
-        .expect("document adapter constructs only live local handles");
-    PreparedProblem {
+        .map_err(PrepareError::InvalidLocalProblem)?;
+    Ok(PreparedProblem {
         problem,
         points,
         segments,
         arcs: local_arcs,
+        circles: local_circles,
         constraints: local_constraints,
-    }
+    })
 }

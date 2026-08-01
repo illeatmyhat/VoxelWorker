@@ -62,10 +62,149 @@ mod tests;
 pub use constraint::{Constraint, ConstraintKind, ConstraintRefusal};
 pub use faces::{Face, FaceKey};
 pub use parametric::sketch::{SolveOutcome, SolveReport};
+pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 
-use parametric::units::{AngleMeasurement, Measurement};
+use parametric::units::{AngleMeasurement, ExactRational, Measurement};
+use std::num::NonZeroU32;
+
+/// An operation reached a fixed measurement source without the document evaluation context that
+/// resolves it. This is deliberately an error instead of a density default or stale cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchEvaluationError {
+    /// A fixed source was encountered without the density needed to resolve it.
+    MissingEvaluationContext,
+    /// Persisted or programmatically constructed geometry violates the adapter's invariants.
+    InvalidDocumentGeometry,
+    /// A local solution could not be represented in durable document scalar storage.
+    ScalarWritebackFailed,
+}
+
+/// Build the explicit sketch evaluation context at a density-bearing boundary.
+///
+/// Zero is not a density. Returning `None` keeps a legacy [`crate::voxel::VoxelProducer`] caller from
+/// fabricating geometry (especially a fixed curve) at density one; callers must instead take
+/// their explicit invalid/non-geometric path.
+#[must_use]
+pub fn evaluation_context_from_density(
+    voxels_per_block: u32,
+) -> Option<parametric::EvaluationContext> {
+    NonZeroU32::new(voxels_per_block).map(parametric::EvaluationContext::new)
+}
+
+fn map_prepare_evaluation_error(error: constraint::PrepareError) -> SketchEvaluationError {
+    match error {
+        constraint::PrepareError::MissingEvaluationContext => {
+            SketchEvaluationError::MissingEvaluationContext
+        }
+        constraint::PrepareError::InvalidDocumentGeometry
+        | constraint::PrepareError::InvalidLocalProblem(_) => {
+            SketchEvaluationError::InvalidDocumentGeometry
+        }
+    }
+}
+
+fn deserialize_arc_sweep<'de, D>(deserializer: D) -> Result<ArcSweep, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Stored {
+        #[serde(default)]
+        free: Option<AngleMeasurement>,
+        #[serde(default)]
+        fixed: Option<AngleMeasurement>,
+        #[serde(default)]
+        degrees_numerator: Option<i128>,
+        #[serde(default)]
+        degrees_denominator: Option<i128>,
+    }
+
+    let stored = <Stored as serde::Deserialize>::deserialize(deserializer)?;
+    match (
+        stored.free,
+        stored.fixed,
+        stored.degrees_numerator,
+        stored.degrees_denominator,
+    ) {
+        (Some(value), None, None, None) => Ok(ArcSweep::free(value)),
+        (None, Some(value), None, None) => Ok(ArcSweep::fixed(value)),
+        (None, None, Some(numerator), Some(denominator)) => {
+            ExactRational::new(numerator, denominator)
+                .map(AngleMeasurement::new)
+                .map(ArcSweep::free)
+                .ok_or_else(|| serde::de::Error::custom("legacy angle has a zero denominator"))
+        }
+        _ => Err(serde::de::Error::custom(
+            "arc sweep must contain exactly one complete authority",
+        )),
+    }
+}
+
+fn deserialize_circle_radius<'de, D>(deserializer: D) -> Result<CircleRadius, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Stored {
+        #[serde(default)]
+        free: Option<ResolvedLength>,
+        #[serde(default)]
+        fixed: Option<Measurement>,
+        #[serde(default)]
+        voxels: Option<i64>,
+        #[serde(default)]
+        local_voxels: Option<f32>,
+        #[serde(default)]
+        measurement: Option<Measurement>,
+    }
+
+    let stored = <Stored as serde::Deserialize>::deserialize(deserializer)?;
+    match (
+        stored.free,
+        stored.fixed,
+        stored.voxels,
+        stored.local_voxels,
+        stored.measurement,
+    ) {
+        (Some(value), None, None, None, None) => positive_circle_radius(value)
+            .ok_or_else(|| serde::de::Error::custom("circle radius must be strictly positive")),
+        (None, Some(source), None, None, None) => Ok(CircleRadius::fixed(source)),
+        (None, None, Some(voxels), local_voxels, measurement) => match measurement {
+            Some(source) => Ok(CircleRadius::fixed(source)),
+            None => {
+                ResolvedLength::try_from_f64(voxels as f64 + local_voxels.unwrap_or(0.0) as f64)
+                    .map_err(|_| serde::de::Error::custom("legacy radius is not finite"))
+                    .and_then(|value| {
+                        positive_circle_radius(value).ok_or_else(|| {
+                            serde::de::Error::custom(
+                                "legacy circle radius must be strictly positive",
+                            )
+                        })
+                    })
+            }
+        },
+        _ => Err(serde::de::Error::custom(
+            "circle radius must contain exactly one complete authority",
+        )),
+    }
+}
+
+fn circle_radius_from_sketch_length(value: SketchLength) -> Option<CircleRadius> {
+    match value.measurement {
+        Some(source) => Some(CircleRadius::fixed(source)),
+        None => ResolvedLength::try_from_f64(value.value())
+            .ok()
+            .and_then(positive_circle_radius),
+    }
+}
+
+fn positive_circle_radius(value: ResolvedLength) -> Option<CircleRadius> {
+    (value.value() > 0.0).then_some(CircleRadius::free(value))
+}
 
 /// Which axis the sketch plane's normal points along — i.e. the axis the profile
 /// is EXTRUDED along.
@@ -647,7 +786,8 @@ pub struct Arc {
     /// [`to`](Self::to) **counter-clockwise in the plane's in-plane basis for a positive
     /// angle**, clockwise for a negative one. Magnitude strictly inside `(0, 360)` — zero
     /// and full-turn bulges are degenerate and erased by [`Sketch::repair`].
-    pub bulge: AngleMeasurement,
+    #[serde(deserialize_with = "deserialize_arc_sweep")]
+    pub bulge: ArcSweep,
     /// The [`Point`] entity standing at the arc's center — a REIFIED derived value. Its
     /// coordinates are recomputed from the endpoints and the bulge by
     /// [`Sketch::sync_arc_centers`] and are never authored directly, but it is a real point
@@ -674,20 +814,66 @@ pub struct Arc {
 ///
 /// The center is always [`EntityRole::Construction`] — a center is not on the boundary, so it never
 /// bounds a region, exactly as an [`Arc`]'s center does not.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Circle {
     /// Stable identity.
     pub id: EntityId,
     /// The [`Point`] entity at the circle's center. Unlike an [`Arc`]'s center this is AUTHORED,
     /// not derived: it is where the author put it, and nothing recomputes it.
     pub center: EntityId,
-    /// The radius, in voxels, optionally retaining the authored expression.
-    pub radius: SketchLength,
+    /// The one authoritative radius: a free exact solved length or a fixed measurement source.
+    #[serde(deserialize_with = "deserialize_circle_radius")]
+    pub radius: CircleRadius,
     /// Lineage id for region identity across edits, like [`Segment::origin`].
     pub origin: EntityId,
     /// Real vs construction geometry.
     #[serde(default)]
     pub role: EntityRole,
+}
+
+impl Arc {
+    pub(crate) fn sweep_degrees(self) -> f64 {
+        self.bulge
+            .free_value()
+            .or_else(|| self.bulge.fixed_source())
+            .expect("a curve parameter always has one authority")
+            .to_degrees_f64()
+    }
+
+    fn replace_free_sweep(&mut self, sweep: AngleMeasurement) -> bool {
+        if self.bulge.free_value().is_none() {
+            return false;
+        }
+        self.bulge = ArcSweep::free(sweep);
+        true
+    }
+}
+
+impl Circle {
+    pub(crate) fn free_radius_value(&self) -> Option<f64> {
+        self.radius.free_value().map(|value| value.value())
+    }
+
+    pub(crate) fn resolved_radius(&self, context: parametric::EvaluationContext) -> f64 {
+        match (self.radius.free_value(), self.radius.fixed_source()) {
+            (Some(value), None) => value.value(),
+            (None, Some(source)) => source.to_voxel_rational(context).to_f64(),
+            // A malformed in-memory value cannot be constructed through the public parameter
+            // doors, but treating it as non-finite lets repair/solver preflight reject it without
+            // turning a corrupt document into a process-wide panic.
+            _ => f64::NAN,
+        }
+    }
+
+    fn rescale_free_radius(&mut self, old_density: u32, new_density: u32) {
+        let Some(value) = self.radius.free_value().copied() else {
+            return;
+        };
+        let Some(value) = value.scaled_by_ratio(new_density.max(1), old_density.max(1)) else {
+            return;
+        };
+        self.radius = CircleRadius::free(value);
+    }
 }
 
 /// The `center` of an arc that has no center point yet — a document that names none, or an
@@ -860,6 +1046,16 @@ impl Sketch {
         &mut self.constraints
     }
 
+    #[cfg(test)]
+    pub(crate) fn region_memo_is_empty_for_test(&self) -> bool {
+        self.region_memo.is_empty_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn region_derivation_count_for_test(&self) -> usize {
+        self.region_memo.derivation_count_for_test()
+    }
+
     /// Allocate a point entity at `at`, returning its fresh id.
     fn add_point(&mut self, at: SketchPoint) -> EntityId {
         let id = self.alloc_id();
@@ -911,8 +1107,8 @@ impl Sketch {
     /// The DERIVED bounded faces of the sketch's planar graph, in a deterministic order. Every
     /// face is a candidate region; whether it contributes solid or void is
     /// [`face_is_picked`](Self::face_is_picked).
-    pub fn faces(&self) -> Vec<Face> {
-        faces::derive(self)
+    pub fn faces(&self, context: parametric::EvaluationContext) -> Vec<Face> {
+        faces::derive(self, context)
     }
 
     /// The region in the **measurement** width — the exact value
@@ -922,20 +1118,26 @@ impl Sketch {
     /// One definition of the region, two evaluators of it: the resolve asks it per voxel on the
     /// CPU, the overlay asks it per pixel on the GPU. Curves arrive as curves, so neither is
     /// drawing a polygon the other chose the resolution of.
-    pub fn region_field_loops(&self) -> Vec<(LoopRole, Vec<substrate::geom2d::RegionEdge>)> {
-        self.derived().region_field_loops.clone()
+    pub fn region_field_loops(
+        &self,
+        context: parametric::EvaluationContext,
+    ) -> Vec<(LoopRole, Vec<substrate::geom2d::RegionEdge>)> {
+        self.derived(context).region_field_loops.clone()
     }
 
     /// The `Fill` loops' bounding box in voxels — the profile's FOOTPRINT, and what the producer
     /// sizes its grid from. `None` when nothing is filled.
-    pub(super) fn filled_extent(&self) -> Option<([f64; 2], [f64; 2])> {
-        self.derived().filled_extent
+    pub(super) fn filled_extent(
+        &self,
+        context: parametric::EvaluationContext,
+    ) -> Option<([f64; 2], [f64; 2])> {
+        self.derived(context).filled_extent
     }
 
     /// Whether the face containing this key's point contributes solid. Faces default to PICKED —
     /// the document stores only the unpicked exceptions.
-    pub fn face_is_picked(&self, key: &FaceKey) -> bool {
-        let faces = self.nested_faces();
+    pub fn face_is_picked(&self, key: &FaceKey, context: parametric::EvaluationContext) -> bool {
+        let faces = self.nested_faces(context);
         match innermost_face_at(&faces, key.interior_point) {
             Some(index) => self.pick_flags(&faces)[index],
             None => true,
@@ -948,8 +1150,12 @@ impl Sketch {
     /// The door for a caller holding a face by POSITION — the viewport keeps its hit-test polygons
     /// that way, because minting a key for every face on every frame is the search this whole
     /// arrangement is careful not to run.
-    pub fn face_key_at(&self, index: usize) -> Option<FaceKey> {
-        let faces = faces::derive(self);
+    pub fn face_key_at(
+        &self,
+        index: usize,
+        context: parametric::EvaluationContext,
+    ) -> Option<FaceKey> {
+        let faces = faces::derive(self, context);
         if index >= faces.len() {
             return None;
         }
@@ -967,8 +1173,8 @@ impl Sketch {
     /// costing some twenty times the arrangement that produced the face. Use
     /// [`faces`](Self::faces) for anything on a per-voxel or per-frame path, and reach for this
     /// only where a `FaceKey` is genuinely about to be stored or compared.
-    pub fn identified_faces(&self) -> Vec<(Face, FaceKey)> {
-        let faces = faces::derive(self);
+    pub fn identified_faces(&self, context: parametric::EvaluationContext) -> Vec<(Face, FaceKey)> {
+        let faces = faces::derive(self, context);
         // `identify` wants nesting order — smallest first — and `faces()` is largest first, so the
         // reverse IS that order and reversing the answer puts it back.
         let nested: Vec<Face> = faces.iter().rev().cloned().collect();
@@ -985,8 +1191,13 @@ impl Sketch {
     /// point inside the face rather than its boundary's lineage means the intent survives
     /// re-derivation: a vertex drag, an edge split, and a curve drawn elsewhere all leave the same
     /// ground under the point, while a face that shrinks past it reverts to picked.
-    pub fn set_face_picked(&mut self, key: FaceKey, picked: bool) {
-        let faces = self.nested_faces();
+    pub fn set_face_picked(
+        &mut self,
+        key: FaceKey,
+        picked: bool,
+        context: parametric::EvaluationContext,
+    ) {
+        let faces = self.nested_faces(context);
         let Some(index) = innermost_face_at(&faces, key.interior_point) else {
             // Nothing is there to carve. An unpick still records the intent — it is inert until
             // an edit puts a face under it — but a pick has nothing to clear.
@@ -1016,8 +1227,8 @@ impl Sketch {
     /// The derived faces in nesting order: smallest area first, so the FIRST face containing a
     /// point is the innermost one that does. [`substrate::geom2d::point_in_region`] takes the
     /// same order for the same reason.
-    fn nested_faces(&self) -> Vec<Face> {
-        let mut faces = faces::derive(self);
+    fn nested_faces(&self, context: parametric::EvaluationContext) -> Vec<Face> {
+        let mut faces = faces::derive(self, context);
         // Ties keep `derive`'s deterministic order, so the region is stable across derivations.
         faces.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
         faces
@@ -1050,21 +1261,24 @@ impl Sketch {
     /// This is what the producer resolves. The combination is an ordered fold over nesting, never a
     /// global crossing parity, so two fills that touch or share an edge both count where even-odd
     /// would cancel them.
-    pub fn region(&self) -> Vec<ProfileLoop> {
-        self.derived().region.clone()
+    pub fn region(&self, context: parametric::EvaluationContext) -> Vec<ProfileLoop> {
+        self.derived(context).region.clone()
     }
 
     /// The derived region, its measurement-width twin, and the filled extent, from the cache when
     /// the entity store has not moved — the door every per-voxel path goes through
     /// (see [`region_memo`]).
-    pub(super) fn derived(&self) -> std::sync::Arc<region_memo::Derived> {
-        self.region_memo.derived(self)
+    pub(super) fn derived(
+        &self,
+        context: parametric::EvaluationContext,
+    ) -> std::sync::Arc<region_memo::Derived> {
+        self.region_memo.derived(self, context)
     }
 
     /// The region derived from scratch. Only [`region_memo`] calls this; everything else asks
     /// [`region`](Self::region) and gets the same answer without re-deriving it.
-    fn region_uncached(&self) -> Vec<ProfileLoop> {
-        let faces = self.nested_faces();
+    fn region_uncached(&self, context: parametric::EvaluationContext) -> Vec<ProfileLoop> {
+        let faces = self.nested_faces(context);
         let picked = self.pick_flags(&faces);
         faces
             .into_iter()
@@ -1082,8 +1296,8 @@ impl Sketch {
 
     /// The profile's `Fill` loops only — what the region's EXTENT is measured from (a hole adds no
     /// footprint, and an unpicked face with nothing around it is not occupancy).
-    pub fn filled_loops(&self) -> Vec<ProfileLoop> {
-        self.region()
+    pub fn filled_loops(&self, context: parametric::EvaluationContext) -> Vec<ProfileLoop> {
+        self.region(context)
             .into_iter()
             .filter(|profile_loop| profile_loop.role == LoopRole::Fill)
             .collect()
@@ -1094,8 +1308,8 @@ impl Sketch {
     /// several — those are questions only [`region`](Self::region) can answer). Callers that reason
     /// about a single closed outline (rectangle detection, most tests) want this; anything that
     /// resolves occupancy wants the region.
-    pub fn flattened_loop(&self) -> Vec<SketchPoint> {
-        let loops = self.region();
+    pub fn flattened_loop(&self, context: parametric::EvaluationContext) -> Vec<SketchPoint> {
+        let loops = self.region(context);
         match (loops.len(), loops.first().map(|first| first.role)) {
             (1, Some(LoopRole::Fill)) => loops[0].flatten(ARC_SAGITTA_TOLERANCE_VOXELS),
             _ => Vec::new(),
@@ -1111,9 +1325,14 @@ impl Sketch {
     /// pinned there — see [`settle_under_the_hand`](Self::settle_under_the_hand). A constraint
     /// that only held at the moment it was asserted is not a constraint; it has to survive the
     /// next drag, which is the first thing the author does to test it.
-    pub fn move_point(&mut self, id: EntityId, at: SketchPoint) -> bool {
+    pub fn move_point(
+        &mut self,
+        id: EntityId,
+        at: SketchPoint,
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
         let Some(index) = self.point_index(id) else {
-            return false;
+            return Ok(false);
         };
         match self.arcs.iter().position(|arc| arc.center == id) {
             // An arc's center is DERIVED from its ends and its sweep, so there is no pinning it:
@@ -1126,12 +1345,12 @@ impl Sketch {
                 let before = self.points.clone();
                 self.points[index].at = at;
                 self.sync_arc_centers();
-                if !self.settle_under_the_hand(id, at) {
+                if !self.settle_under_the_hand(id, at, context)? {
                     self.points = before;
                 }
             }
         }
-        true
+        Ok(true)
     }
 
     /// Re-solve the standing constraints with the hand pulling `held` toward `at`, writing the
@@ -1154,18 +1373,29 @@ impl Sketch {
     ///
     /// A drag that IS achievable is unaffected: stage one meets the pull exactly, so stage two
     /// starts at a solution and moves nothing.
-    fn settle_under_the_hand(&mut self, held: EntityId, at: SketchPoint) -> bool {
+    fn settle_under_the_hand(
+        &mut self,
+        held: EntityId,
+        at: SketchPoint,
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
         if self.constraints.is_empty() {
-            return true;
+            return Ok(true);
         }
-        let prepared = constraint::prepare(self, &self.constraints);
+        let prepared = constraint::prepare(self, &self.constraints, Some(context))
+            .map_err(map_prepare_evaluation_error)?;
         match prepared.drag(held, at.in_plane()) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => {
-                prepared.apply(&mut self.points, &settled.solution);
+                let Ok(plan) =
+                    prepared.plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
+                else {
+                    return Err(SketchEvaluationError::ScalarWritebackFailed);
+                };
+                plan.apply(self);
                 self.sync_arc_centers();
-                true
+                Ok(true)
             }
-            Ok(parametric::sketch::DragOutcome::Rejected(_)) | Err(_) => false,
+            Ok(parametric::sketch::DragOutcome::Rejected(_)) | Err(_) => Ok(false),
         }
     }
 
@@ -1201,14 +1431,14 @@ impl Sketch {
         let apothem = (target[0] - mid[0]) * left[0] + (target[1] - mid[1]) * left[1];
         let half_sweep = (chord_length / 2.0).atan2(apothem);
         let mut degrees = 2.0 * half_sweep.to_degrees();
-        if arc.bulge.to_degrees_f64() < 0.0 {
+        if arc.sweep_degrees() < 0.0 {
             degrees -= 360.0;
         }
         let Ok(bulge) = AngleMeasurement::try_from_degrees_f64(degrees) else {
             return;
         };
         if arc_sweep_is_valid(bulge.to_degrees_f64()) {
-            self.arcs[arc_index].bulge = bulge;
+            self.arcs[arc_index].replace_free_sweep(bulge);
         }
     }
 
@@ -1285,19 +1515,37 @@ impl Sketch {
     /// after the typed trial has accepted do we allocate, append, and apply its solution together.
     /// Accepted redundancy remains visible because it can express author intent even when rank adds
     /// no new information.
-    pub fn add_constraint(&mut self, kind: ConstraintKind) -> Result<EntityId, ConstraintRefusal> {
+    pub fn add_constraint(
+        &mut self,
+        kind: ConstraintKind,
+        context: parametric::EvaluationContext,
+    ) -> Result<EntityId, ConstraintRefusal> {
         self.check_names_live_geometry(kind)?;
         self.check_is_not_already_asserted(kind)?;
-        let prepared = constraint::prepare(self, &self.constraints);
+        let prepared = constraint::prepare(self, &self.constraints, Some(context)).map_err(
+            |error| match error {
+                constraint::PrepareError::MissingEvaluationContext => {
+                    ConstraintRefusal::MissingEvaluationContext
+                }
+                constraint::PrepareError::InvalidDocumentGeometry
+                | constraint::PrepareError::InvalidLocalProblem(_) => ConstraintRefusal::Impossible,
+            },
+        )?;
         let trial = prepared.trial_add(kind).map_err(|error| match error {
             constraint::TrialMapError::UnmappedGeometry
             | constraint::TrialMapError::Request(
                 parametric::sketch::RequestError::UnknownPoint
                 | parametric::sketch::RequestError::InvalidRelation(
                     parametric::sketch::BuildError::UnknownPoint
-                    | parametric::sketch::BuildError::UnknownSegment,
+                    | parametric::sketch::BuildError::UnknownSegment
+                    | parametric::sketch::BuildError::UnknownParameter,
                 ),
             ) => ConstraintRefusal::UnknownEntity,
+            constraint::TrialMapError::Request(
+                parametric::sketch::RequestError::InvalidRelation(
+                    parametric::sketch::BuildError::InvalidParameter,
+                ),
+            ) => ConstraintRefusal::Impossible,
         })?;
         let (settled, redundant) = match trial {
             parametric::sketch::TrialAdd::Accepted { settled, redundant } => (settled, redundant),
@@ -1326,13 +1574,19 @@ impl Sketch {
                 });
             }
         };
+        let Ok(plan) =
+            prepared.plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
+        else {
+            return Err(ConstraintRefusal::Impossible);
+        };
         let id = self.alloc_id();
         self.constraints.push(Constraint {
             id,
             kind,
             redundant,
         });
-        prepared.apply(&mut self.points, &settled.solution);
+        plan.apply(self);
+        self.sync_arc_centers();
         Ok(id)
     }
 
@@ -1433,28 +1687,43 @@ impl Sketch {
         self.constraints.retain(|constraint| constraint.id != id);
     }
 
-    /// Solve the sketch against its constraints, writing the solution into the points — the
-    /// continuous tier; the integer loop sits above it.
+    /// Solve the sketch against its constraints with the document evaluation context that owns
+    /// every fixed measurement source.
     ///
     /// `None` when there is nothing to solve. Solved positions are **authored** state, not
     /// `Derived`: they are the solver's input as well as its output, and an under-constrained
     /// sketch has freedoms only the stored position remembers.
-    pub fn solve(&mut self) -> Option<SolveReport> {
-        let prepared = constraint::prepare(self, &self.constraints);
+    ///
+    /// Free curve values are written back atomically with solved points; fixed sources remain
+    /// untouched and are re-resolved only for this solve.
+    pub fn solve(
+        &mut self,
+        context: parametric::EvaluationContext,
+    ) -> Result<Option<SolveReport>, SketchEvaluationError> {
+        let prepared = constraint::prepare(self, &self.constraints, Some(context))
+            .map_err(map_prepare_evaluation_error)?;
         let settled = prepared.settle();
-        prepared.apply(&mut self.points, &settled.solution);
-        settled.diagnostics.report
+        let plan = prepared
+            .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
+            .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
+        plan.apply(self);
+        self.sync_arc_centers();
+        Ok(settled.diagnostics.report)
     }
 
     /// What a solve WOULD report, without moving anything.
     ///
     /// Read with the constraints alone — rigidity is a preference and has no place in a rank or a
     /// residual the caller is about to judge the drawing by.
-    pub fn solve_report(&self) -> Option<SolveReport> {
-        constraint::prepare(self, &self.constraints)
+    pub fn solve_report(
+        &self,
+        context: parametric::EvaluationContext,
+    ) -> Result<Option<SolveReport>, SketchEvaluationError> {
+        Ok(constraint::prepare(self, &self.constraints, Some(context))
+            .map_err(map_prepare_evaluation_error)?
             .analyze()
             .diagnostics
-            .report
+            .report)
     }
 
     /// How many ways the drawing can still move: `2 × authored points − rank(J)`.
@@ -1467,10 +1736,14 @@ impl Sketch {
     /// arc, so counting its two coordinates would say a sketch is under-constrained in ways
     /// nothing can take up. They occupy parameter slots (which keeps write-back simple) but no
     /// residual reads them, so they contribute zero Jacobian columns and are subtracted here.
-    pub fn degrees_of_freedom(&self) -> usize {
-        constraint::prepare(self, &self.constraints)
+    pub fn degrees_of_freedom(
+        &self,
+        context: parametric::EvaluationContext,
+    ) -> Result<usize, SketchEvaluationError> {
+        Ok(constraint::prepare(self, &self.constraints, Some(context))
+            .map_err(map_prepare_evaluation_error)?
             .analyze()
-            .degrees_of_freedom
+            .degrees_of_freedom)
     }
 
     /// Drop constraints naming geometry the store no longer holds. Called by every geometry delete
@@ -1569,7 +1842,7 @@ impl Sketch {
             id,
             from,
             to,
-            bulge,
+            bulge: ArcSweep::free(bulge),
             center: ABSENT_CENTER,
             origin: id,
             role: EntityRole::Real,
@@ -1612,6 +1885,7 @@ impl Sketch {
     /// Allocate the circle entity itself, its `origin` a root of its own lineage.
     fn push_circle(&mut self, center: EntityId, radius: SketchLength) -> Option<EntityId> {
         let id = self.alloc_id();
+        let radius = circle_radius_from_sketch_length(radius)?;
         self.circles.push(Circle {
             id,
             center,
@@ -1624,9 +1898,9 @@ impl Sketch {
 
     /// Whether a circle of this radius about this center is already stored.
     pub fn circle_traces(&self, center: EntityId, radius_voxels: f64) -> bool {
-        self.circles
-            .iter()
-            .any(|circle| circle.center == center && circle.radius.value() == radius_voxels)
+        self.circles.iter().any(|circle| {
+            circle.center == center && circle.free_radius_value() == Some(radius_voxels)
+        })
     }
 
     /// Resize the circle `id` — the radius-drag write path. Reports whether it took: an unknown id
@@ -1638,6 +1912,9 @@ impl Sketch {
         let Some(index) = self.circles.iter().position(|circle| circle.id == id) else {
             return false;
         };
+        let Some(radius) = circle_radius_from_sketch_length(radius) else {
+            return false;
+        };
         self.circles[index].radius = radius;
         true
     }
@@ -1647,6 +1924,7 @@ impl Sketch {
     pub fn delete_circle(&mut self, circle_id: EntityId) {
         self.circles.retain(|circle| circle.id != circle_id);
         self.prune_orphan_centers();
+        self.drop_dangling_constraints();
     }
 
     /// Whether the drawing OWNS this point's coordinates — whether it is an arc's center, which
@@ -1678,7 +1956,7 @@ impl Sketch {
             let Some((center, _radius)) = arc_center_radius(
                 self.points[tail].at.in_plane(),
                 self.points[head].at.in_plane(),
-                arc.bulge.to_degrees_f64(),
+                arc.sweep_degrees(),
             ) else {
                 continue;
             };
@@ -1722,7 +2000,7 @@ impl Sketch {
     /// over the same pair is a different curve, and legal.
     pub fn arc_traces(&self, from: EntityId, to: EntityId, sweep_degrees: f64) -> bool {
         self.arcs.iter().any(|arc| {
-            let stored = arc.bulge.to_degrees_f64();
+            let stored = arc.sweep_degrees();
             (arc.from == from && arc.to == to && stored == sweep_degrees)
                 || (arc.from == to && arc.to == from && stored == -sweep_degrees)
         })
@@ -1781,7 +2059,7 @@ impl Sketch {
         }
         // A radius is a length like any other: an authored `2 blocks` must stay two blocks.
         for circle in &mut self.circles {
-            circle.radius = circle.radius.retargeted(old_density, new_density);
+            circle.rescale_free_radius(old_density, new_density);
         }
         self.sync_arc_centers();
     }
@@ -1795,7 +2073,7 @@ impl Sketch {
     /// Repair also cascades dead relations and then settles derived centers: a loaded document can
     /// name neither a usable curve nor its center, but after repair the surviving topology and all
     /// derived center points agree again.
-    pub fn repair(&mut self) -> usize {
+    pub fn repair(&mut self, context: parametric::EvaluationContext) -> usize {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
         let before = self.segments.len() + self.arcs.len() + self.circles.len();
         self.segments.retain(|seg| {
@@ -1807,12 +2085,13 @@ impl Sketch {
             arc.from != arc.to
                 && point_ids.contains(&arc.from)
                 && point_ids.contains(&arc.to)
-                && arc_sweep_is_valid(arc.bulge.to_degrees_f64())
+                && arc_sweep_is_valid(arc.sweep_degrees())
         });
         // A circle is invalid on a missing center or a radius that is not a positive finite
         // length — either way there is no curve to draw.
         self.circles.retain(|circle| {
-            point_ids.contains(&circle.center) && circle_radius_is_valid(circle.radius.value())
+            point_ids.contains(&circle.center)
+                && circle_radius_is_valid(circle.resolved_radius(context))
         });
         // A constraint naming geometry the store does not hold asserts nothing about anything,
         // and left in place it would keep a row in the residual system for a shape that is gone.

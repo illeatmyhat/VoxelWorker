@@ -19,6 +19,7 @@
 )]
 
 use super::model::{SolveOutcome, SolveReport};
+use crate::{AngleMeasurement, ResolvedLength};
 use std::sync::atomic::{AtomicU64, Ordering};
 use substrate::nonlinear_least_squares::{
     jacobian, rank, solve as solve_nlls, ResidualSystem, SolveOutcome as SubstrateSolveOutcome,
@@ -56,6 +57,21 @@ pub struct ArcId {
     index: usize,
 }
 
+/// An opaque local intrinsic-curve parameter. It cannot alias a point coordinate or cross a
+/// problem-owner boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ParameterId {
+    owner: u64,
+    index: usize,
+}
+
+/// A local whole circle: an authored center point plus an intrinsic radius parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CircleId {
+    owner: u64,
+    index: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConstraintId {
     owner: u64,
@@ -66,6 +82,22 @@ pub struct ConstraintId {
 pub enum CurveKey {
     Segment(SegmentId),
     Arc(ArcId),
+    Circle(CircleId),
+}
+
+/// The physical kind of an intrinsic scalar. Typed results prevent an adapter from writing a
+/// solved radius through the arc-angle door, or vice versa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterKind {
+    SignedSweepDegrees,
+    PositiveRadius,
+}
+
+/// A solved intrinsic scalar paired with its kind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParameterValue {
+    SweepDegrees(f64),
+    Radius(f64),
 }
 
 /// A continuous author relation over local handles.
@@ -131,6 +163,8 @@ impl Relation {
 pub enum BuildError {
     UnknownPoint,
     UnknownSegment,
+    UnknownParameter,
+    InvalidParameter,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,6 +187,27 @@ struct ArcCenter {
     sweep_degrees: f64,
 }
 
+/// One scalar represented in a topology-safe solver coordinate.
+///
+/// `stored` is the physical value supplied by the document.  A free parameter occupies one
+/// numerical column; a fixed one remains available to derived geometry but has no column.  The
+/// transform is deliberately here rather than in the document so finite-difference Jacobians see
+/// every dependency through the same physical-value read.
+#[derive(Debug, Clone, Copy)]
+struct Parameter {
+    kind: ParameterKind,
+    stored: f64,
+    free: bool,
+    sweep_sign: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Circle {
+    key: CircleId,
+    center: PointId,
+    radius: ParameterId,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ConstraintEntry {
     key: ConstraintId,
@@ -171,6 +226,9 @@ pub struct ProblemBuilder {
     points: Vec<Point>,
     segments: Vec<Segment>,
     arc_centers: Vec<ArcCenter>,
+    arc_parameters: Vec<Option<ParameterId>>,
+    parameters: Vec<Parameter>,
+    circles: Vec<Circle>,
     constraints: Vec<(ConstraintId, Relation)>,
 }
 
@@ -182,6 +240,9 @@ impl Default for ProblemBuilder {
             points: Vec::new(),
             segments: Vec::new(),
             arc_centers: Vec::new(),
+            arc_parameters: Vec::new(),
+            parameters: Vec::new(),
+            circles: Vec::new(),
             constraints: Vec::new(),
         }
     }
@@ -210,6 +271,101 @@ impl ProblemBuilder {
         id
     }
 
+    /// Add a solver-writable signed arc sweep. Its sign is fixed at creation and the numerical
+    /// coordinate represents only the open-turn magnitude, so no solver step can create a zero
+    /// or full-turn chord arc.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::InvalidParameter`] when `degrees` is not a finite, non-zero sweep
+    /// strictly inside one turn.
+    pub fn add_free_signed_sweep(&mut self, degrees: f64) -> Result<ParameterId, BuildError> {
+        self.add_parameter(ParameterKind::SignedSweepDegrees, degrees, true)
+    }
+
+    /// Add a source-owned signed arc sweep. Fixed values are resolved geometry but do not enter
+    /// the optimization vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::InvalidParameter`] when `degrees` is not a finite, non-zero sweep
+    /// strictly inside one turn.
+    pub fn add_fixed_signed_sweep(&mut self, degrees: f64) -> Result<ParameterId, BuildError> {
+        self.add_parameter(ParameterKind::SignedSweepDegrees, degrees, false)
+    }
+
+    /// Add a solver-writable strictly-positive radius.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::InvalidParameter`] when `radius` is non-finite or not positive.
+    pub fn add_free_positive_radius(&mut self, radius: f64) -> Result<ParameterId, BuildError> {
+        self.add_parameter(ParameterKind::PositiveRadius, radius, true)
+    }
+
+    /// Add a source-owned strictly-positive radius.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::InvalidParameter`] when `radius` is non-finite or not positive.
+    pub fn add_fixed_positive_radius(&mut self, radius: f64) -> Result<ParameterId, BuildError> {
+        self.add_parameter(ParameterKind::PositiveRadius, radius, false)
+    }
+
+    fn add_parameter(
+        &mut self,
+        kind: ParameterKind,
+        stored: f64,
+        free: bool,
+    ) -> Result<ParameterId, BuildError> {
+        // Fixed scalars are resolved source geometry, not solver coordinates: retain every
+        // exact/domain-valid source value. Free scalars cross the transform on every residual
+        // evaluation, so their authored starting value must already lie in that transform's
+        // durable-output envelope.
+        let source_valid = match kind {
+            ParameterKind::SignedSweepDegrees => {
+                stored.is_finite()
+                    && stored.abs() > 0.0
+                    && stored.abs() < 360.0
+                    // The inverse is intentionally not clamped: authored values retain their
+                    // own coordinate, including values adjacent to either open endpoint.
+                    && (stored.abs().ln() - (360.0 - stored.abs()).ln()).is_finite()
+                    && AngleMeasurement::try_from_degrees_f64(stored).is_ok()
+            }
+            ParameterKind::PositiveRadius => {
+                stored.is_finite() && stored > 0.0 && ResolvedLength::try_from_f64(stored).is_ok()
+            }
+        };
+        let valid = source_valid
+            && (!free
+                || match kind {
+                    ParameterKind::SignedSweepDegrees => {
+                        stored.abs() >= min_exact_positive() && stored.abs() <= max_open_sweep()
+                    }
+                    ParameterKind::PositiveRadius => {
+                        stored >= min_exact_positive() && stored <= max_exact_positive()
+                    }
+                });
+        if !valid {
+            return Err(BuildError::InvalidParameter);
+        }
+        let key = ParameterId {
+            owner: self.owner,
+            index: self.parameters.len(),
+        };
+        self.parameters.push(Parameter {
+            kind,
+            stored,
+            free,
+            sweep_sign: if matches!(kind, ParameterKind::SignedSweepDegrees) {
+                stored.signum()
+            } else {
+                1.0
+            },
+        });
+        Ok(key)
+    }
+
     pub fn add_arc_center(
         &mut self,
         center: PointId,
@@ -227,6 +383,48 @@ impl ProblemBuilder {
             from,
             to,
             sweep_degrees,
+        });
+        self.arc_parameters.push(None);
+        key
+    }
+
+    /// Add a chord-defined arc whose sweep is an intrinsic scalar parameter.
+    pub fn add_arc(
+        &mut self,
+        center: PointId,
+        from: PointId,
+        to: PointId,
+        sweep: ParameterId,
+    ) -> ArcId {
+        let key = ArcId {
+            owner: self.owner,
+            index: self.arc_centers.len(),
+        };
+        // Validation at `finish` keeps this construction door cheap and gives foreign parameter
+        // ids the same owner check every other local handle receives.
+        self.arc_centers.push(ArcCenter {
+            key,
+            center,
+            from,
+            to,
+            sweep_degrees: f64::NAN,
+        });
+        // The old ArcCenter layout still stores a scalar for existing callers. Phase 0 replaces
+        // it through the side table below when the problem is finished.
+        self.arc_parameters.push(Some(sweep));
+        key
+    }
+
+    /// Add a whole circle with an authored center point and an intrinsic radius parameter.
+    pub fn add_circle(&mut self, center: PointId, radius: ParameterId) -> CircleId {
+        let key = CircleId {
+            owner: self.owner,
+            index: self.circles.len(),
+        };
+        self.circles.push(Circle {
+            key,
+            center,
+            radius,
         });
         key
     }
@@ -248,14 +446,42 @@ impl ProblemBuilder {
             |point: PointId| point.owner == self.owner && point.index < self.points.len();
         let known_segment =
             |segment: SegmentId| segment.owner == self.owner && segment.index < self.segments.len();
+        let known_parameter = |parameter: ParameterId| {
+            parameter.owner == self.owner && parameter.index < self.parameters.len()
+        };
         for segment in &self.segments {
             if !known_point(segment.from) || !known_point(segment.to) {
                 return Err(BuildError::UnknownPoint);
             }
         }
-        for arc in &self.arc_centers {
+        for (arc, parameter) in self.arc_centers.iter().zip(&self.arc_parameters) {
             if !known_point(arc.center) || !known_point(arc.from) || !known_point(arc.to) {
                 return Err(BuildError::UnknownPoint);
+            }
+            if parameter.is_some_and(|parameter| !known_parameter(parameter)) {
+                return Err(BuildError::UnknownParameter);
+            }
+            if let Some(parameter) = parameter {
+                if !matches!(
+                    self.parameters[parameter.index].kind,
+                    ParameterKind::SignedSweepDegrees
+                ) {
+                    return Err(BuildError::InvalidParameter);
+                }
+            }
+        }
+        for circle in &self.circles {
+            if !known_point(circle.center) {
+                return Err(BuildError::UnknownPoint);
+            }
+            if !known_parameter(circle.radius) {
+                return Err(BuildError::UnknownParameter);
+            }
+            if !matches!(
+                self.parameters[circle.radius.index].kind,
+                ParameterKind::PositiveRadius
+            ) {
+                return Err(BuildError::InvalidParameter);
             }
         }
         for (_, relation) in &self.constraints {
@@ -287,6 +513,9 @@ impl ProblemBuilder {
             points: self.points,
             segments: self.segments,
             arc_centers: self.arc_centers,
+            arc_parameters: self.arc_parameters,
+            parameters: self.parameters,
+            circles: self.circles,
             constraints: Vec::new(),
         };
         let constraints = self
@@ -315,6 +544,9 @@ pub struct Problem {
     points: Vec<Point>,
     segments: Vec<Segment>,
     arc_centers: Vec<ArcCenter>,
+    arc_parameters: Vec<Option<ParameterId>>,
+    parameters: Vec<Parameter>,
+    circles: Vec<Circle>,
     constraints: Vec<ConstraintEntry>,
 }
 
@@ -325,6 +557,43 @@ impl Problem {
 
     pub fn relation_count(&self) -> usize {
         self.constraints.len()
+    }
+
+    fn scalar_coordinates(&self) -> Vec<f64> {
+        self.parameters
+            .iter()
+            .copied()
+            .map(parameter_coordinate)
+            .collect()
+    }
+
+    fn solution(&self, positions: Vec<[f64; 2]>, scalar_coordinates: &[f64]) -> Solution {
+        Solution {
+            owner: self.owner,
+            positions,
+            parameters: self
+                .parameters
+                .iter()
+                .copied()
+                .zip(scalar_coordinates)
+                .map(|(parameter, coordinate)| match parameter.kind {
+                    ParameterKind::SignedSweepDegrees => ParameterValue::SweepDegrees(
+                        if coordinate.to_bits() == parameter_coordinate(parameter).to_bits() {
+                            parameter.stored
+                        } else {
+                            physical_parameter_value(parameter, *coordinate)
+                        },
+                    ),
+                    ParameterKind::PositiveRadius => ParameterValue::Radius(
+                        if coordinate.to_bits() == parameter_coordinate(parameter).to_bits() {
+                            parameter.stored
+                        } else {
+                            physical_parameter_value(parameter, *coordinate)
+                        },
+                    ),
+                })
+                .collect(),
+        }
     }
 
     fn resolve(&self, relation: Relation) -> Result<Resolved, BuildError> {
@@ -638,16 +907,189 @@ mod tests {
             Err(RequestError::UnknownPoint)
         ));
     }
+
+    #[test]
+    /// Fixed intrinsic values are geometry inputs, while free ones are genuine solver freedoms.
+    /// A whole circle is sufficient to prove this without coupling the test to a relation kind.
+    fn only_free_curve_parameters_contribute_degrees_of_freedom() {
+        let mut free = ProblemBuilder::new();
+        let center = free.add_point([0.0, 0.0]);
+        let radius = free.add_free_positive_radius(4.0).unwrap();
+        free.add_circle(center, radius);
+        assert_eq!(free.finish().unwrap().analyze().degrees_of_freedom, 3);
+
+        let mut fixed = ProblemBuilder::new();
+        let center = fixed.add_point([0.0, 0.0]);
+        let radius = fixed.add_fixed_positive_radius(4.0).unwrap();
+        fixed.add_circle(center, radius);
+        assert_eq!(fixed.finish().unwrap().analyze().degrees_of_freedom, 2);
+    }
+
+    #[test]
+    fn free_scalar_endpoints_preserve_authored_bits_when_settled() {
+        // These are the transform envelope endpoints. No arbitrary transform clamp may rewrite
+        // their authored bits before the solver has a relation to satisfy.
+        for sweep in [min_exact_positive(), max_open_sweep()] {
+            let mut builder = ProblemBuilder::new();
+            let parameter = builder.add_free_signed_sweep(sweep).unwrap();
+            let settled = builder.finish().unwrap().settle();
+            let Some(ParameterValue::SweepDegrees(value)) = settled.solution.parameter(parameter)
+            else {
+                panic!("the sweep has its declared scalar type");
+            };
+            assert_eq!(value.to_bits(), sweep.to_bits());
+        }
+        for radius in [min_exact_positive(), max_exact_positive()] {
+            let mut builder = ProblemBuilder::new();
+            let parameter = builder.add_free_positive_radius(radius).unwrap();
+            let settled = builder.finish().unwrap().settle();
+            let Some(ParameterValue::Radius(value)) = settled.solution.parameter(parameter) else {
+                panic!("the radius has its declared scalar type");
+            };
+            assert_eq!(value.to_bits(), radius.to_bits());
+        }
+    }
+
+    #[test]
+    fn fixed_outside_free_envelope_stays_exact_while_free_is_refused() {
+        // This exact power of two fits durable rational storage but lies below the transform
+        // envelope that guarantees any optimizer-produced neighboring f64 also fits.
+        let source_value = f64::from_bits(923_u64 << 52); // 2^-100
+
+        let mut free = ProblemBuilder::new();
+        assert!(matches!(
+            free.add_free_signed_sweep(source_value),
+            Err(BuildError::InvalidParameter)
+        ));
+        assert!(matches!(
+            free.add_free_positive_radius(source_value),
+            Err(BuildError::InvalidParameter)
+        ));
+
+        let mut fixed = ProblemBuilder::new();
+        let sweep = fixed.add_fixed_signed_sweep(source_value).unwrap();
+        let radius = fixed.add_fixed_positive_radius(source_value).unwrap();
+        let problem = fixed.finish().unwrap();
+        assert_eq!(problem.analyze().degrees_of_freedom, 0);
+        let settled = problem.settle();
+        let Some(ParameterValue::SweepDegrees(solved_sweep)) = settled.solution.parameter(sweep)
+        else {
+            panic!("the sweep has its declared scalar type");
+        };
+        let Some(ParameterValue::Radius(solved_radius)) = settled.solution.parameter(radius) else {
+            panic!("the radius has its declared scalar type");
+        };
+        assert_eq!(solved_sweep.to_bits(), source_value.to_bits());
+        assert_eq!(solved_radius.to_bits(), source_value.to_bits());
+
+        assert_eq!(
+            physical_parameter_value(problem.parameters[sweep.index], f64::INFINITY).to_bits(),
+            source_value.to_bits(),
+            "fixed sweep bypasses the free-value logistic transform"
+        );
+        assert_eq!(
+            physical_parameter_value(problem.parameters[radius.index], f64::NEG_INFINITY).to_bits(),
+            source_value.to_bits(),
+            "fixed radius bypasses the free-value exponential transform"
+        );
+    }
+
+    #[test]
+    fn scalar_transforms_stay_topology_safe_and_exactly_writable_at_extremes() {
+        let mut builder = ProblemBuilder::new();
+        let sweep = builder.add_free_signed_sweep(90.0).unwrap();
+        let radius = builder.add_free_positive_radius(1.0).unwrap();
+        let problem = builder.finish().unwrap();
+        let sweep_parameter = problem.parameters[sweep.index];
+        let radius_parameter = problem.parameters[radius.index];
+
+        for coordinate in [f64::NEG_INFINITY, -1.0e300, 1.0e300, f64::INFINITY] {
+            let sweep_value = physical_parameter_value(sweep_parameter, coordinate);
+            assert!(sweep_value.abs() > 0.0 && sweep_value.abs() < 360.0);
+            assert!(AngleMeasurement::try_from_degrees_f64(sweep_value).is_ok());
+
+            let radius_value = physical_parameter_value(radius_parameter, coordinate);
+            assert!(radius_value > 0.0 && radius_value.is_finite());
+            assert!(
+                ResolvedLength::try_from_f64(radius_value).is_ok(),
+                "radius {radius_value:?} at coordinate {coordinate:?}"
+            );
+        }
+    }
+
+    #[test]
+    /// An arc center reads its sweep through the intrinsic parameter transform. Fixing its ends
+    /// and center therefore solves the free sweep rather than treating the reified center as an
+    /// independent, stale coordinate.
+    fn free_arc_sweep_moves_through_derived_center() {
+        let mut builder = ProblemBuilder::new();
+        let from = builder.add_point([0.0, 0.0]);
+        let to = builder.add_point([10.0, 0.0]);
+        let center = builder.add_point([5.0, 5.0]);
+        let sweep = builder.add_free_signed_sweep(90.0).unwrap();
+        builder.add_arc(center, from, to, sweep);
+        builder.add_constraint(Relation::Fix {
+            point: from,
+            at: [0.0, 0.0],
+        });
+        builder.add_constraint(Relation::Fix {
+            point: to,
+            at: [10.0, 0.0],
+        });
+        builder.add_constraint(Relation::Fix {
+            point: center,
+            at: [5.0, 0.0],
+        });
+        let settled = builder.finish().unwrap().settle();
+        assert!(settled.diagnostics.satisfied);
+        let Some(ParameterValue::SweepDegrees(solved)) = settled.solution.parameter(sweep) else {
+            panic!("the sweep has its declared scalar type");
+        };
+        assert!((solved - 180.0).abs() < 1e-4, "solved sweep was {solved}");
+    }
+
+    #[test]
+    fn intrinsic_parameter_building_rejects_wrong_domains_and_kinds() {
+        let mut builder = ProblemBuilder::new();
+        assert!(matches!(
+            builder.add_free_signed_sweep(0.0),
+            Err(BuildError::InvalidParameter)
+        ));
+        assert!(matches!(
+            builder.add_fixed_positive_radius(f64::INFINITY),
+            Err(BuildError::InvalidParameter)
+        ));
+        let point = builder.add_point([0.0, 0.0]);
+        let sweep = builder.add_fixed_signed_sweep(90.0).unwrap();
+        builder.add_circle(point, sweep);
+        assert!(matches!(
+            builder.finish(),
+            Err(BuildError::InvalidParameter)
+        ));
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Solution {
+    owner: u64,
     positions: Vec<[f64; 2]>,
+    parameters: Vec<ParameterValue>,
 }
 
 impl Solution {
     pub fn position(&self, point: PointId) -> Option<[f64; 2]> {
+        if point.owner != self.owner {
+            return None;
+        }
         self.positions.get(point.index).copied()
+    }
+
+    /// The physical value of an intrinsic parameter, typed by the construction door that made it.
+    pub fn parameter(&self, parameter: ParameterId) -> Option<ParameterValue> {
+        if parameter.owner != self.owner {
+            return None;
+        }
+        self.parameters.get(parameter.index).copied()
     }
 }
 
@@ -742,6 +1184,7 @@ struct EdgeSpan {
 struct ArcSlots {
     from: usize,
     to: usize,
+    sweep_parameter: Option<usize>,
     sweep_degrees: f64,
 }
 #[derive(Debug, Clone, Copy)]
@@ -826,15 +1269,75 @@ struct Residuals<'a> {
 /// Derived-center chains are not authored topology, so this follows exactly one level. A degenerate
 /// arc falls back to its stored slot: repair owns invalid-document cleanup, while the solver must
 /// retain a finite value to evaluate the rest of a drawing.
-fn position_of(derived: &[Option<ArcSlots>], parameters: &[f64], slot: usize) -> [f64; 2] {
+fn position_of(
+    derived: &[Option<ArcSlots>],
+    specifications: &[Parameter],
+    parameters: &[f64],
+    point_count: usize,
+    slot: usize,
+) -> [f64; 2] {
     let stored = |slot: usize| [parameters[slot * 2], parameters[slot * 2 + 1]];
     derived[slot].map_or_else(
         || stored(slot),
         |arc| {
-            arc_center_radius(stored(arc.from), stored(arc.to), arc.sweep_degrees)
+            let sweep = arc.sweep_parameter.map_or(arc.sweep_degrees, |index| {
+                physical_parameter_value(specifications[index], parameters[point_count * 2 + index])
+            });
+            arc_center_radius(stored(arc.from), stored(arc.to), sweep)
                 .map_or_else(|| stored(slot), |(center, _)| center)
         },
     )
+}
+
+fn parameter_coordinate(parameter: Parameter) -> f64 {
+    match parameter.kind {
+        ParameterKind::SignedSweepDegrees => {
+            let magnitude = parameter.stored.abs();
+            magnitude.ln() - (360.0 - magnitude).ln()
+        }
+        ParameterKind::PositiveRadius => parameter.stored.ln(),
+    }
+}
+
+fn physical_parameter_value(parameter: Parameter, coordinate: f64) -> f64 {
+    // Source-owned geometry never participates in optimization. Returning it directly preserves
+    // its exact resolved f64 rather than routing it through the free-value topology transform.
+    if !parameter.free {
+        return parameter.stored;
+    }
+    match parameter.kind {
+        ParameterKind::SignedSweepDegrees => {
+            let magnitude = if coordinate >= 0.0 {
+                360.0 / (1.0 + (-coordinate).exp())
+            } else {
+                360.0 * coordinate.exp() / (1.0 + coordinate.exp())
+            };
+            parameter.sweep_sign * magnitude.clamp(min_exact_positive(), max_open_sweep())
+        }
+        ParameterKind::PositiveRadius => coordinate
+            .clamp(min_exact_positive().ln(), max_exact_positive().ln())
+            .exp()
+            .clamp(min_exact_positive(), max_exact_positive()),
+    }
+}
+
+/// The smallest positive bound for which *every* finite `f64` at or above the bound has an exact
+/// binary ratio in the bounded `i128` store. Individual values can fit below it, but an optimizer
+/// may produce adjacent values whose denominator does not; this envelope keeps every output
+/// atomically writable.
+const fn min_exact_positive() -> f64 {
+    f64::from_bits(949_u64 << 52) // 2^-74; 52 significand bits + 74 exponent bits = 126
+}
+
+/// The largest positive IEEE value whose exact binary ratio fits the bounded `i128` rational
+/// store: the predecessor of 2^127, which itself is one past the positive `i128` boundary.
+const fn max_exact_positive() -> f64 {
+    f64::from_bits((1150_u64 << 52) - 1)
+}
+
+/// A chord arc has an open sweep domain, so the physical map must not round to a full turn.
+const fn max_open_sweep() -> f64 {
+    f64::from_bits(360.0_f64.to_bits() - 1)
 }
 
 fn arc_center_radius(from: [f64; 2], to: [f64; 2], sweep_degrees: f64) -> Option<([f64; 2], f64)> {
@@ -887,15 +1390,19 @@ impl<'a> Residuals<'a> {
     /// omitted from the parameter vector; free coordinates are widened before every geometry read.
     /// This narrowing/widening boundary keeps residual code in one whole-coordinate space while
     /// the numerical substrate sees only actual unknowns.
-    fn new(problem: &'a Problem, rigidity: Rigidity) -> Option<Self> {
+    fn new(problem: &'a Problem, scalar_coordinates: &[f64], rigidity: Rigidity) -> Option<Self> {
+        if scalar_coordinates.len() != problem.parameters.len() {
+            return None;
+        }
         if problem.points.is_empty() {
             return None;
         }
         let mut derived = vec![None; problem.points.len()];
-        for arc in &problem.arc_centers {
+        for (arc, sweep) in problem.arc_centers.iter().zip(&problem.arc_parameters) {
             derived[arc.center.index] = Some(ArcSlots {
                 from: arc.from.index,
                 to: arc.to.index,
+                sweep_parameter: sweep.map(|parameter| parameter.index),
                 sweep_degrees: arc.sweep_degrees,
             });
         }
@@ -904,14 +1411,39 @@ impl<'a> Residuals<'a> {
             .iter()
             .map(|constraint| constraint.resolved)
             .collect();
-        let mut base = Vec::with_capacity(problem.points.len() * 2);
+        let mut base = Vec::with_capacity(problem.points.len() * 2 + problem.parameters.len());
         for point in &problem.points {
             base.extend(point.at);
         }
-        let (rigidity, free) = match rigidity {
-            Rigidity::Ignored => (Vec::new(), (0..base.len()).collect()),
+        base.extend_from_slice(scalar_coordinates);
+        let point_coordinates = problem.points.len() * 2;
+        let free_scalars = || {
+            problem
+                .parameters
+                .iter()
+                .enumerate()
+                .filter_map(|(index, parameter)| {
+                    parameter.free.then_some(point_coordinates + index)
+                })
+                .collect::<Vec<_>>()
+        };
+        let (rigidity, mut free) = match rigidity {
+            Rigidity::Ignored => (
+                Vec::new(),
+                (0..point_coordinates)
+                    .filter(|index| derived[index / 2].is_none())
+                    .collect::<Vec<_>>(),
+            ),
             Rigidity::Preferred { anchored } => {
-                let at = |slot| position_of(&derived, &base, slot);
+                let at = |slot| {
+                    position_of(
+                        &derived,
+                        &problem.parameters,
+                        &base,
+                        problem.points.len(),
+                        slot,
+                    )
+                };
                 let spans = problem
                     .segments
                     .iter()
@@ -934,12 +1466,15 @@ impl<'a> Residuals<'a> {
                 let held: Vec<_> = anchored.iter().map(|point| point.index).collect();
                 (
                     spans,
-                    (0..base.len())
-                        .filter(|index| !held.contains(&(index / 2)))
-                        .collect(),
+                    (0..point_coordinates)
+                        .filter(|index| {
+                            derived[index / 2].is_none() && !held.contains(&(index / 2))
+                        })
+                        .collect::<Vec<_>>(),
                 )
             }
         };
+        free.extend(free_scalars());
         Some(Self {
             problem,
             resolved,
@@ -952,7 +1487,13 @@ impl<'a> Residuals<'a> {
     fn guess(&self, positions: &[[f64; 2]]) -> Vec<f64> {
         self.free
             .iter()
-            .map(|index| positions[index / 2][index % 2])
+            .map(|index| {
+                if *index < positions.len() * 2 {
+                    positions[index / 2][index % 2]
+                } else {
+                    self.base[*index]
+                }
+            })
             .collect()
     }
     fn widen(&self, parameters: &[f64]) -> Vec<f64> {
@@ -978,7 +1519,15 @@ impl ResidualSystem for Residuals<'_> {
     }
     fn residuals(&self, parameters: &[f64], into: &mut [f64]) {
         let whole = self.widen(parameters);
-        let at = |slot| position_of(&self.derived, &whole, slot);
+        let at = |slot| {
+            position_of(
+                &self.derived,
+                &self.problem.parameters,
+                &whole,
+                self.problem.points.len(),
+                slot,
+            )
+        };
         let mut row = 0;
         for relation in &self.resolved {
             match *relation {
@@ -1070,6 +1619,7 @@ fn domain_report(subtrate: SubstrateSolveReport) -> SolveReport {
 fn run(
     problem: &Problem,
     positions: &mut Vec<[f64; 2]>,
+    scalar_coordinates: &mut Vec<f64>,
     rigidity: Rigidity,
 ) -> Option<SolveReport> {
     // An empty system is already met at its current drawing; callers read unconstrained freedom
@@ -1078,13 +1628,22 @@ fn run(
     if problem.constraints.is_empty() {
         return None;
     }
-    let system = Residuals::new(problem, rigidity)?;
+    let system = Residuals::new(problem, scalar_coordinates, rigidity)?;
     let mut parameters = system.guess(positions);
     let report = solve_nlls(&system, &mut parameters, SolveSettings::default());
     let whole = system.widen(&parameters);
     *positions = (0..problem.points.len())
-        .map(|slot| position_of(&system.derived, &whole, slot))
+        .map(|slot| {
+            position_of(
+                &system.derived,
+                &problem.parameters,
+                &whole,
+                problem.points.len(),
+                slot,
+            )
+        })
         .collect();
+    *scalar_coordinates = whole[problem.points.len() * 2..].to_vec();
     Some(domain_report(report))
 }
 
@@ -1102,7 +1661,8 @@ fn diagnostics(report: Option<SolveReport>) -> Diagnostics {
 /// singular configuration. Rigidity is excluded because it is preference, not an assertion; no
 /// points or no relations therefore yield rank zero.
 fn witness_rank(problem: &Problem) -> usize {
-    let Some(system) = Residuals::new(problem, Rigidity::Ignored) else {
+    let scalar_coordinates = problem.scalar_coordinates();
+    let Some(system) = Residuals::new(problem, &scalar_coordinates, Rigidity::Ignored) else {
         return 0;
     };
     let positions: Vec<_> = problem.points.iter().map(|point| point.at).collect();
@@ -1118,10 +1678,21 @@ impl Problem {
     /// exactness and degree-of-freedom diagnostics independent of the preference mechanism.
     pub fn settle(&self) -> Settled {
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
-        run(self, &mut positions, Rigidity::Preferred { anchored: &[] });
-        let report = run(self, &mut positions, Rigidity::Ignored);
+        let mut scalar_coordinates = self.scalar_coordinates();
+        run(
+            self,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Preferred { anchored: &[] },
+        );
+        let report = run(
+            self,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Ignored,
+        );
         Settled {
-            solution: Solution { positions },
+            solution: self.solution(positions, &scalar_coordinates),
             diagnostics: diagnostics(report),
         }
     }
@@ -1130,14 +1701,26 @@ impl Problem {
     /// centers are not freedoms: they are represented in slots solely for simple write-back.
     pub fn analyze(&self) -> Analysis {
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
-        let report = run(self, &mut positions, Rigidity::Ignored);
-        let derived = self.arc_centers.len() * 2;
+        let mut scalar_coordinates = self.scalar_coordinates();
+        let report = run(
+            self,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Ignored,
+        );
         let degrees_of_freedom = report.as_ref().map_or_else(
-            || (self.points.len() * 2).saturating_sub(derived),
-            |report| report.degrees_of_freedom.saturating_sub(derived),
+            || {
+                self.points.len() * 2 - self.arc_centers.len() * 2
+                    + self
+                        .parameters
+                        .iter()
+                        .filter(|parameter| parameter.free)
+                        .count()
+            },
+            |report| report.degrees_of_freedom,
         );
         Analysis {
-            solution: Solution { positions },
+            solution: self.solution(positions, &scalar_coordinates),
             diagnostics: diagnostics(report),
             witness_rank: witness_rank(self),
             degrees_of_freedom,
@@ -1190,11 +1773,22 @@ impl Problem {
             self.resolve(pull).map_err(RequestError::InvalidRelation)?,
         );
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
-        run(&pulled, &mut positions, Rigidity::Ignored);
-        let report = run(self, &mut positions, Rigidity::Ignored);
+        let mut scalar_coordinates = self.scalar_coordinates();
+        run(
+            &pulled,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Ignored,
+        );
+        let report = run(
+            self,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Ignored,
+        );
         let diagnostics = diagnostics(report);
         let settled = Settled {
-            solution: Solution { positions },
+            solution: self.solution(positions, &scalar_coordinates),
             diagnostics: diagnostics.clone(),
         };
         Ok(if diagnostics.satisfied {
@@ -1206,10 +1800,21 @@ impl Problem {
 
     fn settle_with(&self, anchored: &[PointId]) -> Settled {
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
-        run(self, &mut positions, Rigidity::Preferred { anchored });
-        let report = run(self, &mut positions, Rigidity::Ignored);
+        let mut scalar_coordinates = self.scalar_coordinates();
+        run(
+            self,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Preferred { anchored },
+        );
+        let report = run(
+            self,
+            &mut positions,
+            &mut scalar_coordinates,
+            Rigidity::Ignored,
+        );
         Settled {
-            solution: Solution { positions },
+            solution: self.solution(positions, &scalar_coordinates),
             diagnostics: diagnostics(report),
         }
     }
@@ -1385,6 +1990,16 @@ impl Problem {
                 return Some(CurveKey::Arc(arc.key));
             }
         }
+        for circle in &self.circles {
+            let before = self.parameters[circle.radius.index].stored;
+            let after = match solution.parameter(circle.radius) {
+                Some(ParameterValue::Radius(value)) => value,
+                Some(ParameterValue::SweepDegrees(_)) | None => continue,
+            };
+            if before > COLLAPSED_SPAN && after <= COLLAPSED_SPAN {
+                return Some(CurveKey::Circle(circle.key));
+            }
+        }
         None
     }
 
@@ -1400,6 +2015,10 @@ impl Problem {
                 .arc_centers
                 .get(arc.index)
                 .map(|arc| vec![arc.from, arc.to, arc.center]),
+            CurveKey::Circle(circle) => self
+                .circles
+                .get(circle.index)
+                .map(|circle| vec![circle.center]),
         }
         .unwrap_or_default();
         self.constraints

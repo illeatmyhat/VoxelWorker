@@ -438,6 +438,9 @@ fn strongly_anisotropic_sdf_cells_stay_sound_where_lipschitz_is_underestimated()
 fn sketch_extrude_cell_interval_never_misclassifies() {
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     let density = 16u32;
+    let Some(context) = document::sketch::evaluation_context_from_density(density) else {
+        return;
+    };
     // A rectangle and an L-shape (a concave polygon, so the bbox over-claims).
     let rectangle = Sketch::rectangle(PlaneAxis::Z, 40, 24);
     let l_shape = Sketch::new(
@@ -458,7 +461,7 @@ fn sketch_extrude_cell_interval_never_misclassifies() {
     let mut boundary = 0u64;
     for (label, sketch) in [("rect", rectangle), ("L", l_shape)] {
         let producer = SketchSolid::extrude(sketch, 24);
-        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x57E7_u64);
+        let cells = fuzz_cells(producer.grid_dimensions(context), density, 0x57E7_u64);
         for &cell in &cells {
             // The over-claim police: any coarse claim (all-inside or the L reflex corner)
             // must match brute force EXACTLY.
@@ -497,6 +500,9 @@ fn sketch_revolve_cell_interval_never_misclassifies() {
     // revolve axis — the only place a partial wedge can go coarse (axis-adjacent blocks are
     // always boundary).
     let density = 8u32;
+    let Some(context) = document::sketch::evaluation_context_from_density(density) else {
+        return;
+    };
 
     // Two profiles: a ONE-SIDED lathe rectangle (radial >= 0) and an AXIS-STRADDLING one
     // (radial spans negative→positive, exercising the resolve's mirrored `−radius` union so
@@ -529,7 +535,7 @@ fn sketch_revolve_cell_interval_never_misclassifies() {
             for &turn in &turns {
                 let producer = SketchSolid::revolve(profile.clone(), axis, turn);
                 let seed = 0x5EF0_u64 ^ (turn as u64) ^ ((axis as u64) << 20);
-                let cells = fuzz_cells(producer.grid_dimensions(), density, seed);
+                let cells = fuzz_cells(producer.grid_dimensions(context), density, seed);
                 for &cell in &cells {
                     let label = format!("Sketch-revolve {profile_label} {axis:?} {turn}°");
                     assert_cell_bound_exact(&producer, cell, density, &label);
@@ -640,6 +646,9 @@ fn sketch_cell_interval_brackets_the_true_distance() {
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     use document::voxel::Field;
     let density = 16u32;
+    let Some(context) = document::sketch::evaluation_context_from_density(density) else {
+        return;
+    };
     let rectangle = Sketch::rectangle(PlaneAxis::Z, 40, 24);
     let l_shape = Sketch::new(
         PlaneAxis::Z,
@@ -657,7 +666,7 @@ fn sketch_cell_interval_brackets_the_true_distance() {
     let mut widest_slack = f32::NEG_INFINITY;
     for (label, sketch) in [("rect", rectangle), ("L", l_shape)] {
         let producer = SketchSolid::extrude(sketch, 24);
-        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x01_75_E7u64);
+        let cells = fuzz_cells(producer.grid_dimensions(context), density, 0x01_75_E7u64);
         for &cell in &cells {
             if cell.is_empty() {
                 continue;

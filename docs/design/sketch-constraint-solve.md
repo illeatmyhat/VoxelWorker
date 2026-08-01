@@ -70,6 +70,17 @@ leave two dots the author never placed. A constraint is not a reason for a point
 the geometry it was drawn for, so the cascade takes the constraint too. The point-delete
 cascade is deliberately unchanged, which leaves a known asymmetry.
 
+## Curve-intrinsic evaluation context
+
+Arc sweep and circle radius are curve-owned scalars. A free radius is exact solver state; a fixed
+radius is a `Measurement` source, not a cached voxel number. Geometry consumers therefore take an
+explicit evaluation context carrying scene density. The region memo resolves fixed radii once per
+logical derivation and keys the result by that context, so faces, bounds, field sampling, voxel
+resolve, handles and feature edges borrow one resolved curve set. Dense field walks prepare that
+view once, so sample callbacks do not re-enter the memo. `SetDensity` rescales free
+radii by an exact integer ratio and leaves fixed sources untouched. This is Phase 0 authority
+plumbing only; Tangent remains out of scope.
+
 ## Open
 
 - **Rotation preference across pieces.** `Parallel` between two separate pieces must rotate

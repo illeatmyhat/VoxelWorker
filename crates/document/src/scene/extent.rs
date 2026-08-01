@@ -1086,7 +1086,8 @@ fn leaf_size_blocks(
         // like a Tool. The recenter / chunk-coverage / spatial-index use the exact
         // producer voxel frame (`leaf_producer_grid_voxels`) instead.
         NodeContent::SketchTool { producer, .. } => {
-            let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
+            let context = crate::sketch::evaluation_context_from_density(voxels_per_block)?;
+            let [grid_x, grid_y, grid_z] = producer.grid_dimensions(context);
             let ceil_blocks = |voxels: u32| grow(voxels).div_ceil(density);
             Some([
                 ceil_blocks(grid_x),

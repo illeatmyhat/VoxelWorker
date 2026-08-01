@@ -2,6 +2,7 @@
 //!
 //! Every mutator invalidates it because the cache compares the entity store it was derived from,
 //! so these tests exercise the ways the store can move rather than the mutators one by one.
+use super::ctx;
 
 use super::*;
 
@@ -25,8 +26,11 @@ fn square(sketch: &mut Sketch, origin: i64, size: i64) -> [EntityId; 4] {
 fn a_repeated_question_gets_the_same_answer() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     square(&mut sketch, 0, 12);
-    assert_eq!(sketch.region(), sketch.region());
-    assert_eq!(sketch.region_field_loops(), sketch.region_field_loops());
+    assert_eq!(sketch.region(ctx(16)), sketch.region(ctx(16)));
+    assert_eq!(
+        sketch.region_field_loops(ctx(16)),
+        sketch.region_field_loops(ctx(16))
+    );
 }
 
 /// Drawing an entity after the region has been derived changes the region.
@@ -34,9 +38,9 @@ fn a_repeated_question_gets_the_same_answer() {
 fn a_drawn_curve_after_a_query_is_seen() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     square(&mut sketch, 0, 12);
-    assert_eq!(sketch.region().len(), 1);
+    assert_eq!(sketch.region(ctx(16)).len(), 1);
     square(&mut sketch, 4, 4);
-    assert_eq!(sketch.region().len(), 2);
+    assert_eq!(sketch.region(ctx(16)).len(), 2);
 }
 
 /// Moving a point after the region has been derived moves the region with it. The topology is
@@ -45,9 +49,11 @@ fn a_drawn_curve_after_a_query_is_seen() {
 fn a_dragged_point_after_a_query_is_seen() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let corners = square(&mut sketch, 0, 12);
-    let before = sketch.filled_extent().expect("a filled region");
-    sketch.move_point(corners[2], SketchPoint::new(20, 20));
-    let after = sketch.filled_extent().expect("a filled region");
+    let before = sketch.filled_extent(ctx(16)).expect("a filled region");
+    sketch
+        .move_point(corners[2], SketchPoint::new(20, 20), ctx(16))
+        .expect("evaluation context");
+    let after = sketch.filled_extent(ctx(16)).expect("a filled region");
     assert_ne!(before, after);
     assert_eq!(after.1, [20.0, 20.0]);
 }
@@ -58,9 +64,9 @@ fn a_deleted_entity_after_a_query_is_seen() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     square(&mut sketch, 0, 12);
     let inner = square(&mut sketch, 4, 4);
-    assert_eq!(sketch.region().len(), 2);
+    assert_eq!(sketch.region(ctx(16)).len(), 2);
     sketch.delete_point_cascade(inner[0]);
-    assert_eq!(sketch.region().len(), 1);
+    assert_eq!(sketch.region(ctx(16)).len(), 1);
 }
 
 /// Carving a face after the region has been derived flips that loop's role.
@@ -70,19 +76,19 @@ fn an_unpick_after_a_query_is_seen() {
     square(&mut sketch, 0, 12);
     square(&mut sketch, 4, 4);
     assert!(sketch
-        .region()
+        .region(ctx(16))
         .iter()
         .all(|profile_loop| profile_loop.role == LoopRole::Fill));
     let inner = sketch
-        .identified_faces()
+        .identified_faces(ctx(16))
         .into_iter()
         .min_by(|first, second| first.0.area_voxels.total_cmp(&second.0.area_voxels))
         .expect("a face")
         .1;
-    sketch.set_face_picked(inner, false);
+    sketch.set_face_picked(inner, false, ctx(16));
     assert_eq!(
         sketch
-            .region()
+            .region(ctx(16))
             .iter()
             .filter(|profile_loop| profile_loop.role == LoopRole::Hole)
             .count(),
@@ -95,8 +101,8 @@ fn an_unpick_after_a_query_is_seen() {
 fn a_clone_derives_the_same_region() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     square(&mut sketch, 0, 12);
-    let _ = sketch.region();
+    let _ = sketch.region(ctx(16));
     let copy = sketch.clone();
     assert_eq!(copy, sketch);
-    assert_eq!(copy.region(), sketch.region());
+    assert_eq!(copy.region(ctx(16)), sketch.region(ctx(16)));
 }

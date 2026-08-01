@@ -1,3 +1,4 @@
+use super::ctx;
 use super::*;
 use crate::voxel::{SdfShape, VoxelProducer};
 use std::collections::BTreeSet;
@@ -29,7 +30,7 @@ fn rectangle_extrude_equals_box() {
             grid_y as u32,
         );
         assert_eq!(
-            extrude.grid_dimensions(),
+            extrude.grid_dimensions(ctx(density)),
             box_shape.grid_dimensions(density),
             "grid dims must match for size {size_blocks:?} @ d{density}"
         );
@@ -58,7 +59,7 @@ fn rectangle_extrude_each_plane_equals_box() {
             dims[normal],
         );
         assert_eq!(
-            extrude.grid_dimensions(),
+            extrude.grid_dimensions(ctx(density)),
             dims,
             "plane {plane:?} grid dims must match the box AABB"
         );
@@ -179,7 +180,7 @@ fn sub_block_precise_profile_at_d16() {
     let density = 16u32;
     // 20 voxels = 1 block + 4 voxels — a sub-block extent on a non-block boundary.
     let extrude = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Y, 20, 20), 3);
-    assert_eq!(extrude.grid_dimensions(), [20, 3, 20]);
+    assert_eq!(extrude.grid_dimensions(ctx(16)), [20, 3, 20]);
     let mut grid = VoxelGrid::default();
     extrude.resolve(&mut grid, density);
     // A full 20×3×20 rectangular prism.
@@ -208,7 +209,7 @@ fn rectangle_in_plane_spans_detection() {
     for plane in [PlaneAxis::X, PlaneAxis::Y, PlaneAxis::Z] {
         let extrude = SketchSolid::extrude(Sketch::rectangle(plane, 6, 4), 3);
         assert_eq!(
-            extrude.rectangle_in_plane_spans(),
+            extrude.rectangle_in_plane_spans(ctx(16)),
             Some([6, 4]),
             "plane {plane:?} rectangle must report its spans"
         );
@@ -223,7 +224,8 @@ fn rectangle_in_plane_spans_detection() {
         SketchPoint::new(0, 4),
     ];
     assert_eq!(
-        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile), 1).rectangle_in_plane_spans(),
+        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile), 1)
+            .rectangle_in_plane_spans(ctx(16)),
         None,
         "an L-shape is not a rectangle"
     );
@@ -236,7 +238,8 @@ fn rectangle_in_plane_spans_detection() {
         SketchPoint::new(0, 2),
     ];
     assert_eq!(
-        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, diamond), 1).rectangle_in_plane_spans(),
+        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, diamond), 1)
+            .rectangle_in_plane_spans(ctx(16)),
         None,
         "a diamond quad is not an axis-aligned rectangle"
     );
@@ -247,7 +250,8 @@ fn rectangle_in_plane_spans_detection() {
         SketchPoint::new(0, 4),
     ];
     assert_eq!(
-        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, triangle), 1).rectangle_in_plane_spans(),
+        SketchSolid::extrude(Sketch::new(PlaneAxis::Z, triangle), 1)
+            .rectangle_in_plane_spans(ctx(16)),
         None,
         "a triangle is not a rectangle"
     );
@@ -260,6 +264,6 @@ fn grid_dimensions_consistent_and_cap() {
     let extrude = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 6, 4), 5);
     let mut grid = VoxelGrid::default();
     extrude.resolve(&mut grid, 16);
-    assert_eq!(grid.dimensions, extrude.grid_dimensions());
-    assert!(!extrude.exceeds_voxel_cap());
+    assert_eq!(grid.dimensions, extrude.grid_dimensions(ctx(16)));
+    assert!(!extrude.exceeds_voxel_cap(ctx(16)));
 }

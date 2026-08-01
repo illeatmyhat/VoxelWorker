@@ -12,6 +12,8 @@
 //! is drawn, so the two surfaces agree about what "hard against the edge" means.
 
 use document::scene::ROOT_NODE_ID;
+use parametric::EvaluationContext;
+use std::num::NonZeroU32;
 
 use super::{hairline, region_frame, Edge, TOP_BAR_HEIGHT};
 use crate::panel::{PanelResponse, PanelState, ViewMode};
@@ -196,11 +198,16 @@ fn sketch_readouts(state: &PanelState) -> Vec<(&'static str, String, bool)> {
     if let Some(document::scene::NodeContent::SketchTool { producer, .. }) =
         state.scene.node_by_id(target).map(|node| &node.content)
     {
-        let freedoms = producer.sketch.degrees_of_freedom();
-        let value = if freedoms == 0 {
-            "0 — fully constrained".to_string()
-        } else {
-            format!("{freedoms}")
+        let freedoms = NonZeroU32::new(state.scene.voxels_per_block).and_then(|density| {
+            producer
+                .sketch
+                .degrees_of_freedom(EvaluationContext::new(density))
+                .ok()
+        });
+        let value = match freedoms {
+            Some(0) => "0 — fully constrained".to_string(),
+            Some(freedoms) => format!("{freedoms}"),
+            None => "—".to_string(),
         };
         readouts.push(("DOF", value, false));
     }

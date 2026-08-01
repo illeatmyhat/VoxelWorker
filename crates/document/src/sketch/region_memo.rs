@@ -17,11 +17,14 @@
 //! callers re-enter (`signed_distance` asks for the bounds and then the region), and a recursive
 //! read lock is free to deadlock.
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use substrate::geom2d::{LoopRole, RegionEdge};
 
 use super::{Arc as ArcEntity, Circle, FaceKey, PlaneAxis, Point, ProfileLoop, Segment, Sketch};
+use parametric::EvaluationContext;
 
 /// Everything the per-sample paths ask of the entity store, derived once.
 pub struct Derived {
@@ -34,8 +37,10 @@ pub struct Derived {
 }
 
 impl Derived {
-    fn of(sketch: &Sketch) -> Self {
-        let region = sketch.region_uncached();
+    fn of(sketch: &Sketch, context: EvaluationContext) -> Self {
+        // The resolved radius enters the arrangement once here. Every subsequent region/field
+        // sample borrows these curves; no hot path re-evaluates a measurement source.
+        let region = sketch.region_uncached(context);
         let region_field_loops = super::produce::to_region_edges_measured(&region);
         let filled_extent = filled_extent(&region);
         Self {
@@ -67,6 +72,7 @@ fn filled_extent(region: &[ProfileLoop]) -> Option<([f64; 2], [f64; 2])> {
 
 /// The entity store as it stood when the [`Derived`] beside it was computed.
 struct Snapshot {
+    context: EvaluationContext,
     plane: PlaneAxis,
     points: Vec<Point>,
     segments: Vec<Segment>,
@@ -76,8 +82,9 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    fn of(sketch: &Sketch) -> Self {
+    fn of(sketch: &Sketch, context: EvaluationContext) -> Self {
         Self {
+            context,
             plane: sketch.plane,
             points: sketch.points.clone(),
             segments: sketch.segments.clone(),
@@ -89,8 +96,9 @@ impl Snapshot {
 
     /// Whether `sketch` would derive to the same region. Length mismatches short-circuit, so the
     /// common miss — an entity just added — costs two integer comparisons.
-    fn matches(&self, sketch: &Sketch) -> bool {
-        self.plane == sketch.plane
+    fn matches(&self, sketch: &Sketch, context: EvaluationContext) -> bool {
+        self.context == context
+            && self.plane == sketch.plane
             && self.points == sketch.points
             && self.segments == sketch.segments
             && self.arcs == sketch.arcs
@@ -114,26 +122,42 @@ struct Remembered {
 /// scene enums, and a cache is not worth widening every node in the document by the size of a
 /// snapshot it usually does not hold.
 #[derive(Default)]
-pub(super) struct RegionMemo(RwLock<Option<Box<Remembered>>>);
+pub(super) struct RegionMemo {
+    remembered: RwLock<Option<Box<Remembered>>>,
+    #[cfg(test)]
+    derivations: AtomicUsize,
+}
 
 impl RegionMemo {
+    #[cfg(test)]
+    pub(super) fn is_empty_for_test(&self) -> bool {
+        self.remembered.read().map_or(true, |memo| memo.is_none())
+    }
+
+    #[cfg(test)]
+    pub(super) fn derivation_count_for_test(&self) -> usize {
+        self.derivations.load(Ordering::Relaxed)
+    }
+
     /// The region derived from `sketch`, from the cache when the store has not moved since.
     ///
     /// A miss derives OUTSIDE the write lock, so two threads racing a miss both compute and the
     /// later one wins — wasteful once, never wrong. A poisoned lock degrades to deriving every
     /// time rather than propagating a panic into geometry.
-    pub(super) fn derived(&self, sketch: &Sketch) -> Arc<Derived> {
-        if let Ok(guard) = self.0.read() {
+    pub(super) fn derived(&self, sketch: &Sketch, context: EvaluationContext) -> Arc<Derived> {
+        if let Ok(guard) = self.remembered.read() {
             if let Some(held) = guard.as_deref() {
-                if held.snapshot.matches(sketch) {
+                if held.snapshot.matches(sketch, context) {
                     return Arc::clone(&held.derived);
                 }
             }
         }
-        let fresh = Arc::new(Derived::of(sketch));
-        if let Ok(mut guard) = self.0.write() {
+        #[cfg(test)]
+        self.derivations.fetch_add(1, Ordering::Relaxed);
+        let fresh = Arc::new(Derived::of(sketch, context));
+        if let Ok(mut guard) = self.remembered.write() {
             *guard = Some(Box::new(Remembered {
-                snapshot: Snapshot::of(sketch),
+                snapshot: Snapshot::of(sketch, context),
                 derived: Arc::clone(&fresh),
             }));
         }

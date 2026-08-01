@@ -534,7 +534,7 @@ pub fn operation_masks_beyond_bounds(operation: CombineOp, scope_path: &[ScopeFr
 /// [`Scene::build_leaf_spatial_index`]: crate::scene::Scene::build_leaf_spatial_index
 pub fn leaf_producer_grid_voxels(
     content: &NodeContent,
-    _voxels_per_block: u32,
+    voxels_per_block: u32,
     outset_voxels: i64,
 ) -> Option<[i64; 3]> {
     let grown = |dimensions: [i64; 3]| {
@@ -553,7 +553,8 @@ pub fn leaf_producer_grid_voxels(
             shape.size_voxels[2] as i64,
         ]),
         NodeContent::SketchTool { producer, .. } => {
-            let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
+            let context = crate::sketch::evaluation_context_from_density(voxels_per_block)?;
+            let [grid_x, grid_y, grid_z] = producer.grid_dimensions(context);
             grown([grid_x as i64, grid_y as i64, grid_z as i64])
         }
         NodeContent::VoxelBody(_) | NodeContent::Group(_) | NodeContent::Instance(_) => None,

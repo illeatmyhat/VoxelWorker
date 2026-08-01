@@ -1,6 +1,9 @@
 //! Whole-circle entities: a closed curve is its own loop.
 
+use super::ctx;
 use super::*;
+use ::parametric::EvaluationContext;
+use std::num::NonZeroU32;
 use substrate::geom2d::point_in_region;
 
 /// A sketch holding one radius-`r` circle about `(cx, cy)`, and nothing else.
@@ -14,7 +17,7 @@ fn lone_circle(cx: i64, cy: i64, radius: i64) -> Sketch {
 #[test]
 fn a_circle_bounds_a_face_on_its_own() {
     let sketch = lone_circle(0, 0, 4);
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 1, "one closed curve, one face");
     let expected = std::f64::consts::PI * 16.0;
     assert!(
@@ -30,7 +33,7 @@ fn a_circle_bounds_a_face_on_its_own() {
 #[test]
 fn the_boundary_is_one_closed_edge_with_no_on_curve_vertex() {
     let sketch = lone_circle(3, 5, 2);
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces[0].boundary.len(), 1);
     assert!(faces[0].boundary[0].is_closed());
     assert_eq!(
@@ -48,7 +51,7 @@ fn the_boundary_is_one_closed_edge_with_no_on_curve_vertex() {
 #[test]
 fn the_region_classifies_against_the_curve() {
     let sketch = lone_circle(0, 0, 8);
-    let region = sketch.region_field_loops();
+    let region = sketch.region_field_loops(ctx(16));
     assert!(point_in_region(&region, [0.0, 0.0]), "the center is solid");
     assert!(point_in_region(&region, [7.9, 0.0]), "just inside the rim");
     assert!(!point_in_region(&region, [8.1, 0.0]), "just outside it");
@@ -77,22 +80,22 @@ fn an_unpicked_circle_inside_a_square_is_a_hole() {
         sketch.connect(corners[index], corners[(index + 1) % 4]);
     }
     sketch.add_circle(SketchPoint::new(10, 10), SketchLength::new(5));
-    assert_eq!(sketch.faces().len(), 2, "the square and the disc");
+    assert_eq!(sketch.faces(ctx(16)).len(), 2, "the square and the disc");
 
-    let solid_everywhere = sketch.region_field_loops();
+    let solid_everywhere = sketch.region_field_loops(ctx(16));
     assert!(
         point_in_region(&solid_everywhere, [10.0, 10.0]),
         "both picked: the middle is solid"
     );
 
     let disc = sketch
-        .identified_faces()
+        .identified_faces(ctx(16))
         .into_iter()
         .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
         .expect("a face")
         .1;
-    sketch.set_face_picked(disc, false);
-    let donut = sketch.region_field_loops();
+    sketch.set_face_picked(disc, false, ctx(16));
+    let donut = sketch.region_field_loops(ctx(16));
     assert!(!point_in_region(&donut, [10.0, 10.0]), "the hole is carved");
     assert!(!point_in_region(&donut, [13.0, 10.0]), "still in the hole");
     assert!(point_in_region(&donut, [16.0, 10.0]), "the ring is solid");
@@ -111,7 +114,7 @@ fn concentric_circles_are_two_faces() {
     sketch
         .circle_about(center, SketchLength::new(3))
         .expect("the inner one");
-    assert_eq!(sketch.faces().len(), 2);
+    assert_eq!(sketch.faces(ctx(16)).len(), 2);
     assert!(
         sketch.circle_about(center, SketchLength::new(3)).is_none(),
         "the same curve twice is not two curves"
@@ -127,7 +130,7 @@ fn two_overlapping_circles_bound_three_faces() {
     sketch.add_circle(SketchPoint::new(0, 0), SketchLength::new(10));
     sketch.add_circle(SketchPoint::new(12, 0), SketchLength::new(10));
 
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 3, "two crescents and the lens");
 
     // Equal circles, r=10 at a center distance of 12: the lens is
@@ -144,7 +147,7 @@ fn two_overlapping_circles_bound_three_faces() {
     }
 
     // The crossings are at (6, +-8), so the lens spans x in 2..10 on the axis.
-    let region = sketch.region_field_loops();
+    let region = sketch.region_field_loops(ctx(16));
     for inside in [[-5.0, 0.0], [6.0, 0.0], [17.0, 0.0]] {
         assert!(point_in_region(&region, inside), "{inside:?} is solid");
     }
@@ -152,13 +155,13 @@ fn two_overlapping_circles_bound_three_faces() {
     // The lens is a face like any other, so unpicking it carves a slot neither circle drew — the
     // proof that the three faces are separately addressable and not one region reported thrice.
     let lens_face = sketch
-        .identified_faces()
+        .identified_faces(ctx(16))
         .into_iter()
         .min_by(|a, b| a.0.area_voxels.total_cmp(&b.0.area_voxels))
         .expect("a face")
         .1;
-    sketch.set_face_picked(lens_face, false);
-    let carved = sketch.region_field_loops();
+    sketch.set_face_picked(lens_face, false, ctx(16));
+    let carved = sketch.region_field_loops(ctx(16));
     assert!(!point_in_region(&carved, [6.0, 0.0]), "the lens is gone");
     assert!(point_in_region(&carved, [-5.0, 0.0]), "the left crescent");
     assert!(point_in_region(&carved, [17.0, 0.0]), "the right one");
@@ -181,7 +184,7 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
     let right = sketch.add_free_point(SketchPoint::new(30, 15));
     sketch.connect(left, right).expect("the tangent line");
 
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 1, "the disc, touched but not cut open");
     let expected = std::f64::consts::PI * 25.0;
     assert!(
@@ -192,7 +195,7 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
     assert_eq!(faces[0].boundary.len(), 1, "still one edge");
     assert!(faces[0].boundary[0].is_closed(), "still closed");
 
-    let region = sketch.region_field_loops();
+    let region = sketch.region_field_loops(ctx(16));
     assert!(
         point_in_region(&region, [10.0, 10.0]),
         "the center is solid"
@@ -209,7 +212,11 @@ fn a_tangent_line_re_seams_the_circle_without_opening_it() {
     let a = secant.add_free_point(SketchPoint::new(0, 10));
     let b = secant.add_free_point(SketchPoint::new(30, 10));
     secant.connect(a, b).expect("the secant");
-    assert_eq!(secant.faces().len(), 2, "cut clean through: two halves");
+    assert_eq!(
+        secant.faces(ctx(16)).len(),
+        2,
+        "cut clean through: two halves"
+    );
 }
 
 /// **The relaxation itself.** The SAME geometry — a full turn about `(2, -3)` at radius 4 — is
@@ -291,7 +298,7 @@ fn the_center_and_the_circle_live_and_die_together() {
     let center = sketch.points()[0].id;
     sketch.delete_point_cascade(center);
     assert!(sketch.circles().is_empty());
-    assert!(sketch.faces().is_empty());
+    assert!(sketch.faces(ctx(16)).is_empty());
 
     let mut sketch = lone_circle(0, 0, 4);
     let circle = sketch.circles()[0].id;
@@ -300,6 +307,26 @@ fn the_center_and_the_circle_live_and_die_together() {
         sketch.points().is_empty(),
         "the minted center goes with the curve it anchored"
     );
+}
+
+#[test]
+fn deleting_a_circle_cascades_constraints_that_named_its_center() {
+    let mut sketch = lone_circle(0, 0, 4);
+    let center = sketch.points()[0].id;
+    let circle = sketch.circles()[0].id;
+    sketch
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: center,
+                at: SketchPoint::new(0, 0),
+            },
+            ctx(16),
+        )
+        .expect("the center is live geometry while its circle exists");
+
+    sketch.delete_circle(circle);
+
+    assert!(sketch.constraints().is_empty());
 }
 
 /// A center the author has since drawn to is referenced geometry and survives the circle.
@@ -334,15 +361,194 @@ fn an_authored_radius_survives_a_density_retarget() {
         )
         .expect("a circle");
     sketch.retarget_density(16, 32);
+    let at_32 = EvaluationContext::new(NonZeroU32::new(32).expect("non-zero"));
     assert_eq!(
-        sketch.circles()[0].radius.voxels,
-        32,
+        sketch.circles()[0].resolved_radius(at_32),
+        32.0,
         "one block is 32 voxels at d32"
     );
 
     let mut plain = lone_circle(0, 0, 4);
     plain.retarget_density(16, 32);
-    assert_eq!(plain.circles()[0].radius.voxels, 8, "a plain radius scales");
+    assert_eq!(
+        plain.circles()[0].free_radius_value(),
+        Some(8.0),
+        "a plain radius scales"
+    );
+}
+
+#[test]
+fn free_radius_retarget_preserves_the_exact_ratio() {
+    let mut sketch = lone_circle(0, 0, 1);
+    sketch.circles_mut_for_test()[0].radius = CircleRadius::free(ResolvedLength::from_rational(
+        ::parametric::ExactRational::new(1, 3).expect("non-zero denominator"),
+    ));
+
+    sketch.retarget_density(16, 24);
+
+    assert_eq!(
+        sketch.circles()[0]
+            .radius
+            .free_value()
+            .expect("the free authority remains free")
+            .rational(),
+        ::parametric::ExactRational::new(1, 2).expect("non-zero denominator"),
+        "the free radius is scaled as an exact 24/16 ratio"
+    );
+}
+
+#[test]
+fn legacy_radius_json_migrates_to_a_fixed_source_without_a_voxel_cache() {
+    let mut sketch = lone_circle(0, 0, 4);
+    let source = Measurement::new(::parametric::ExactRational::from_integer(1), 0);
+    let legacy = SketchLength {
+        voxels: 16,
+        local_voxels: 0.0,
+        measurement: Some(source),
+    };
+    let mut json = serde_json::to_value(&sketch).expect("serialize");
+    json["circles"][0]["radius"] = serde_json::to_value(legacy).expect("legacy shape");
+    sketch = serde_json::from_value(json).expect("legacy document loads");
+
+    let radius = &sketch.circles()[0].radius;
+    assert_eq!(radius.fixed_source(), Some(&source));
+    assert_eq!(
+        sketch.circles()[0].resolved_radius(EvaluationContext::new(
+            NonZeroU32::new(32).expect("non-zero"),
+        )),
+        32.0
+    );
+
+    let saved = serde_json::to_value(&sketch).expect("new schema serializes");
+    assert!(saved["circles"][0]["radius"].get("fixed").is_some());
+    assert!(saved["circles"][0]["radius"].get("voxels").is_none());
+
+    let context = EvaluationContext::new(NonZeroU32::new(32).expect("non-zero"));
+    assert_eq!(sketch.degrees_of_freedom(context), Ok(2));
+}
+
+#[test]
+fn legacy_circle_radius_fixtures_preserve_free_and_fixed_authority() {
+    let free_fixture = r#"
+        {
+          "plane": "Z",
+          "points": [{ "id": 0, "at": { "offset_voxels": [0, 0] } }],
+          "segments": [], "arcs": [],
+          "circles": [{
+            "id": 1, "center": 0,
+            "radius": { "local_voxels": 0.5, "voxels": 3 },
+            "origin": 1
+          }],
+          "unpicked_points": [], "constraints": [], "next_id": 2
+        }
+    "#;
+    let free: Sketch = serde_json::from_str(free_fixture).expect("legacy free radius loads");
+    assert_eq!(free.circles()[0].free_radius_value(), Some(3.5));
+
+    let fixed_fixture = r#"
+        {
+          "plane": "Z",
+          "points": [{ "id": 0, "at": { "offset_voxels": [0, 0] } }],
+          "segments": [], "arcs": [],
+          "circles": [{
+            "id": 1, "center": 0,
+            "radius": {
+              "measurement": {
+                "block_term_numerator": 1,
+                "block_term_denominator": 1,
+                "voxel_term": 0
+              },
+              "voxels": 16
+            },
+            "origin": 1
+          }],
+          "unpicked_points": [], "constraints": [], "next_id": 2
+        }
+    "#;
+    let fixed: Sketch = serde_json::from_str(fixed_fixture).expect("legacy fixed radius loads");
+    assert!(fixed.circles()[0].radius.free_value().is_none());
+    assert_eq!(fixed.circles()[0].resolved_radius(ctx(32)), 32.0);
+}
+
+#[test]
+fn malformed_curve_denominator_fixtures_are_rejected_at_deserialization() {
+    let bad_free = r#"
+        { "plane": "Z", "points": [{ "id": 0, "at": { "offset_voxels": [0, 0] } }],
+          "segments": [], "arcs": [],
+          "circles": [{ "id": 1, "center": 0,
+            "radius": { "free": { "numerator": 1, "denominator": 0 } }, "origin": 1 }],
+          "unpicked_points": [], "constraints": [], "next_id": 2 }
+    "#;
+    let bad_fixed = r#"
+        { "plane": "Z", "points": [{ "id": 0, "at": { "offset_voxels": [0, 0] } }],
+          "segments": [], "arcs": [],
+          "circles": [{ "id": 1, "center": 0,
+            "radius": { "fixed": {
+              "block_term_numerator": 1, "block_term_denominator": 0, "voxel_term": 0
+            } }, "origin": 1 }],
+          "unpicked_points": [], "constraints": [], "next_id": 2 }
+    "#;
+
+    assert!(serde_json::from_str::<Sketch>(bad_free).is_err());
+    assert!(serde_json::from_str::<Sketch>(bad_fixed).is_err());
+}
+
+#[test]
+fn current_free_and_fixed_circle_authorities_round_trip() {
+    let free = lone_circle(0, 0, 4);
+    let free_json = serde_json::to_string(&free).expect("serialize free radius");
+    let restored_free: Sketch = serde_json::from_str(&free_json).expect("deserialize free radius");
+    assert_eq!(restored_free.circles()[0].free_radius_value(), Some(4.0));
+
+    let mut fixed = lone_circle(0, 0, 4);
+    fixed.circles_mut_for_test()[0].radius = CircleRadius::fixed(Measurement::new(
+        ::parametric::ExactRational::from_integer(1),
+        0,
+    ));
+    let fixed_json = serde_json::to_string(&fixed).expect("serialize fixed radius");
+    let restored_fixed: Sketch =
+        serde_json::from_str(&fixed_json).expect("deserialize fixed radius");
+    assert!(restored_fixed.circles()[0].radius.fixed_source().is_some());
+    assert_eq!(restored_fixed.circles()[0].resolved_radius(ctx(16)), 16.0);
+}
+
+#[test]
+fn fixed_radius_context_drives_region_bounds_field_and_resolve_together() {
+    let mut sketch = lone_circle(0, 0, 1);
+    let source = Measurement::new(::parametric::ExactRational::from_integer(1), 0);
+    sketch.circles_mut_for_test()[0].radius = CircleRadius::fixed(source);
+    let d16 = ctx(16);
+    let d32 = ctx(32);
+
+    let derived_at_16 = sketch.derived(d16);
+    let derived_at_32 = sketch.derived(d32);
+    assert!(
+        !std::sync::Arc::ptr_eq(&derived_at_16, &derived_at_32),
+        "density is part of the resolved-region memo key"
+    );
+
+    assert_eq!(sketch.circles()[0].resolved_radius(d16), 16.0);
+    assert_eq!(sketch.circles()[0].resolved_radius(d32), 32.0);
+    assert_eq!(
+        sketch.faces(d16)[0].area_voxels,
+        std::f64::consts::PI * 256.0
+    );
+    assert_eq!(
+        sketch.faces(d32)[0].area_voxels,
+        std::f64::consts::PI * 1024.0
+    );
+    assert!(
+        substrate::geom2d::point_in_region(&sketch.region_field_loops(d32), [31.5, 0.0]),
+        "the field borrows the d32-resolved curve"
+    );
+
+    let solid = SketchSolid::extrude(sketch, 1);
+    assert_eq!(solid.grid_dimensions(d16), [32, 32, 1]);
+    assert_eq!(solid.grid_dimensions(d32), [64, 64, 1]);
+    assert!(
+        occupancy_set(&solid, 32).len() > occupancy_set(&solid, 16).len(),
+        "resolve uses the same d32 radius as the region and bounds"
+    );
 }
 
 /// Load repair erases a circle with no center or no radius, and reports it — the same policy every
@@ -354,19 +560,69 @@ fn repair_erases_a_circle_that_cannot_be_drawn() {
     sketch.circles_mut_for_test().push(Circle {
         id: 900,
         center: 901,
-        radius: SketchLength::new(3),
+        radius: CircleRadius::free(ResolvedLength::from_voxels(3)),
         origin: 900,
         role: EntityRole::Real,
     });
     sketch.circles_mut_for_test().push(Circle {
         id: 902,
         center,
-        radius: SketchLength::new(0),
+        radius: CircleRadius::free(ResolvedLength::from_voxels(0)),
         origin: 902,
         role: EntityRole::Real,
     });
-    assert_eq!(sketch.repair(), 2, "the dangling one and the zero one");
+    assert_eq!(
+        sketch.repair(ctx(16)),
+        2,
+        "the dangling one and the zero one"
+    );
     assert_eq!(sketch.circles().len(), 1);
+}
+
+#[test]
+fn repair_removes_a_fixed_circle_that_resolves_invalid_at_its_context() {
+    let mut sketch = lone_circle(0, 0, 4);
+    let center = sketch.circles()[0].center;
+    sketch.circles_mut_for_test().push(Circle {
+        id: 900,
+        center,
+        radius: CircleRadius::fixed(Measurement::from_voxels(0)),
+        origin: 900,
+        role: EntityRole::Real,
+    });
+
+    assert_eq!(sketch.repair(ctx(16)), 1);
+    assert_eq!(sketch.circles().len(), 1);
+}
+
+#[test]
+fn current_schema_rejects_a_nonpositive_free_circle_radius() {
+    let sketch = lone_circle(0, 0, 4);
+    let mut json = serde_json::to_value(sketch).expect("serialize");
+    json["circles"][0]["radius"] = serde_json::json!({
+        "free": { "numerator": 0, "denominator": 1 }
+    });
+    assert!(
+        serde_json::from_value::<Sketch>(json).is_err(),
+        "a nonpositive current-schema radius must not enter the document"
+    );
+}
+
+#[test]
+fn constructed_invalid_curve_state_reports_geometry_instead_of_panicking() {
+    let mut sketch = lone_circle(0, 0, 4);
+    let center = sketch.circles()[0].center;
+    sketch.circles_mut_for_test().push(Circle {
+        id: 900,
+        center,
+        radius: CircleRadius::free(ResolvedLength::from_voxels(0)),
+        origin: 900,
+        role: EntityRole::Real,
+    });
+    assert_eq!(
+        sketch.solve(ctx(16)),
+        Err(SketchEvaluationError::InvalidDocumentGeometry)
+    );
 }
 
 /// A zero or negative radius is refused at the door rather than stored and erased later.
@@ -381,12 +637,12 @@ fn an_impossible_radius_is_refused() {
         .expect("a real one");
     assert!(!sketch.set_circle_radius(circle, SketchLength::new(0)));
     assert_eq!(
-        sketch.circles()[0].radius.value(),
-        4.0,
+        sketch.circles()[0].free_radius_value(),
+        Some(4.0),
         "the refused resize left the curve alone"
     );
     assert!(sketch.set_circle_radius(circle, SketchLength::new(7)));
-    assert_eq!(sketch.circles()[0].radius.value(), 7.0);
+    assert_eq!(sketch.circles()[0].free_radius_value(), Some(7.0));
 }
 
 /// The center-diameter tool keeps its perimeter sample transient: only a center and radius enter
@@ -401,7 +657,7 @@ fn center_diameter_reuses_or_mints_only_its_center() {
         "the perimeter is not a point entity"
     );
     assert_eq!(made.sketch.points()[0].role, EntityRole::Construction);
-    assert_eq!(made.sketch.circles()[0].radius.value(), 4.0);
+    assert_eq!(made.sketch.circles()[0].free_radius_value(), Some(4.0));
     let circle = made.sketch.circles()[0].id;
     let removed = made.with_circle_deleted(circle);
     assert!(removed.sketch.circles().is_empty());
@@ -442,7 +698,7 @@ fn a_full_turn_is_not_an_arc_bulge() {
 #[test]
 fn flattening_a_circle_closes_the_ring_within_tolerance() {
     let sketch = lone_circle(0, 0, 8);
-    let ring = sketch.flattened_loop();
+    let ring = sketch.flattened_loop(ctx(16));
     assert!(ring.len() >= 8, "a real ring, got {}", ring.len());
     for point in &ring {
         let [x, y] = point.in_plane();
@@ -471,11 +727,11 @@ fn flattening_a_circle_closes_the_ring_within_tolerance() {
 fn the_extent_is_the_circle_not_a_chord() {
     let solid = SketchSolid::extrude(lone_circle(0, 0, 6), 3);
     assert_eq!(
-        solid.grid_dimensions(),
+        solid.grid_dimensions(ctx(16)),
         [12, 12, 3],
         "the disc's own 12x12 footprint"
     );
-    assert_eq!(solid.profile_bbox_min(), [-6, -6]);
+    assert_eq!(solid.profile_bbox_min(ctx(16)), [-6, -6]);
 }
 
 /// The resolve produces a disc: the occupied count per layer is the circle's area to within the

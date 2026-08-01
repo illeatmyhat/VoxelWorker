@@ -24,7 +24,7 @@
 
 use crate::cuboid::{decompose_into_boxes, VoxelRegion};
 use document::scene::{CombineOp, LeafProducer, ScopeFrame};
-use document::voxel::FieldClassification;
+use document::voxel::{FieldClassification, PreparedField};
 use glam::{Quat, Vec3};
 use substrate::solids::{
     CellCombineOp, CellContribution, ScopedCellClassification, ScopedCellEvent,
@@ -35,6 +35,62 @@ use voxel_core::voxel::{VoxelGrid, SURFACE_ISOLEVEL};
 
 #[allow(unused_imports)]
 use super::*;
+
+/// Every field-bearing leaf prepared once for one coarse-classification sweep.
+///
+/// The set deliberately owns the general [`PreparedField`] trait object rather than naming a
+/// sketch implementation: a producer's density/context setup is opaque to the evaluator, and a
+/// fieldless producer continues through its existing `VoxelProducer::cell_field_interval` path.
+pub(crate) struct PreparedLeafFields<'leaf> {
+    fields: Vec<(&'leaf LeafProducer, Option<Box<dyn PreparedField + 'leaf>>)>,
+}
+
+impl<'leaf> PreparedLeafFields<'leaf> {
+    /// Prepare every field once for a chunk/whole-cell classification operation.
+    pub(crate) fn new(leaves: &'leaf [&'leaf LeafProducer], voxels_per_block: u32) -> Self {
+        Self {
+            fields: leaves
+                .iter()
+                .copied()
+                .map(|leaf| {
+                    (
+                        leaf,
+                        leaf.producer
+                            .as_field()
+                            .map(|field| field.prepare(voxels_per_block)),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The prepared interval where possible, or the fieldless producer's native classifier.
+    fn interval(
+        &self,
+        leaf: &LeafProducer,
+        cell_local_voxels: VoxelAabb,
+        voxels_per_block: u32,
+    ) -> Option<document::voxel::FieldInterval> {
+        let prepared = self
+            .fields
+            .iter()
+            .find(|(candidate, _)| std::ptr::eq(*candidate, leaf))
+            .and_then(|(_, field)| field.as_deref());
+        match prepared {
+            Some(field) if field.preserves_native_interval() => {
+                Some(field.native_cell_field_interval(cell_local_voxels))
+            }
+            None => leaf
+                .producer
+                .cell_field_interval(cell_local_voxels, voxels_per_block),
+            // A generic field without a legacy interval stays on the original classifier path
+            // (normally `None` / boundary). Preparation must not broaden that capability.
+            Some(_) => leaf
+                .producer
+                .cell_field_interval(cell_local_voxels, voxels_per_block),
+        }
+    }
+}
 
 /// One step of the depth-first **scoped ordered fold**
 /// over a document-order leaf subsequence: the scope-open / scope-close markers of the
@@ -156,6 +212,19 @@ pub(crate) fn classify_chunk_block(
     block_abs_voxels: VoxelAabb,
     voxels_per_block: u32,
 ) -> BlockClassification {
+    let prepared = PreparedLeafFields::new(leaves, voxels_per_block);
+    classify_chunk_block_prepared(leaves, &prepared, block_abs_voxels, voxels_per_block)
+}
+
+/// The block classifier over a caller-owned prepared field set. The per-block builder makes one
+/// set before its `CHUNK_BLOCKS³` walk, so fixed curve sources and derived regions are prepared
+/// once per leaf/chunk rather than once per block-center interval sample.
+pub(crate) fn classify_chunk_block_prepared(
+    leaves: &[&LeafProducer],
+    prepared: &PreparedLeafFields<'_>,
+    block_abs_voxels: VoxelAabb,
+    voxels_per_block: u32,
+) -> BlockClassification {
     // Gather the leaves whose own grid AABB overlaps this block (others contribute
     // nothing to any cell in it: a dropped Union adds no occupancy, a dropped
     // Subtract carves none, and a scope whose leaves are all dropped never opens).
@@ -216,9 +285,7 @@ pub(crate) fn classify_chunk_block(
                     let cell_local =
                         abs_box_to_producer_local(leaf, block_abs_voxels, voxels_per_block);
                     ScopedCellEvent::Contribution(CellContribution {
-                        field_interval: leaf
-                            .producer
-                            .cell_field_interval(cell_local, voxels_per_block),
+                        field_interval: prepared.interval(leaf, cell_local, voxels_per_block),
                         combine: cell_combine_role(leaf.operation),
                     })
                 }
@@ -973,4 +1040,60 @@ pub(crate) fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
     }
 
     SeamSolidity { solid }
+}
+
+#[cfg(test)]
+mod prepared_interval_tests {
+    use super::*;
+    use document::scene::{CombineOp, LeafOrigin, NodeId};
+    use document::voxel::SdfShape;
+    use voxel_core::core_geom::BlockId;
+    use voxel_core::voxel::ShapeKind;
+
+    #[test]
+    fn prepared_sphere_intervals_match_the_native_flat_sphere_fixture() {
+        const DENSITY: u32 = 16;
+        let leaf = LeafProducer {
+            world_offset_voxels: [0, 0, 0],
+            rotation: glam::Quat::IDENTITY,
+            offset_local_voxels: [0.0; 3],
+            producer: Box::new(SdfShape::from_blocks(
+                ShapeKind::Sphere,
+                [5, 1, 5],
+                1,
+                DENSITY,
+            )),
+            material: Some(BlockId::DEFAULT),
+            grid_overlay: false,
+            operation: CombineOp::Union,
+            scope_path: Vec::new(),
+            origin: LeafOrigin::authored(NodeId(1)),
+        };
+        let leaves = [&leaf];
+        let prepared = PreparedLeafFields::new(&leaves, DENSITY);
+
+        // This is the SDF case that previously changed the exposed-face count. Walk every
+        // producer-local block cell the flat `[5, 1, 5]` fixture queries and require the
+        // prepared classifier to preserve its old native bound exactly.
+        for z in 0..5 {
+            for y in 0..1 {
+                for x in 0..5 {
+                    let min = [
+                        i64::from(x * DENSITY),
+                        i64::from(y * DENSITY),
+                        i64::from(z * DENSITY),
+                    ];
+                    let cell = VoxelAabb::new(
+                        min,
+                        std::array::from_fn(|axis| min[axis] + i64::from(DENSITY)),
+                    );
+                    assert_eq!(
+                        prepared.interval(&leaf, cell, DENSITY),
+                        leaf.producer.cell_field_interval(cell, DENSITY),
+                        "prepared/native interval differs at fixture block [{x}, {y}, {z}]"
+                    );
+                }
+            }
+        }
+    }
 }

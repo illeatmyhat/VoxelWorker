@@ -3,6 +3,7 @@
 //! rectangle gestures commit through. Coincidence IS shared point identity: placing on an occupied
 //! coord reuses the id, never mints a twin.
 
+use super::ctx;
 use crate::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
 
 fn empty_solid() -> SketchSolid {
@@ -74,7 +75,7 @@ fn with_rectangle_closes_a_four_point_loop() {
     assert_eq!(after.sketch.segments().len(), 4);
     let coords: std::collections::BTreeSet<[i64; 2]> = after
         .sketch
-        .flattened_loop()
+        .flattened_loop(ctx(16))
         .iter()
         .map(|p| p.offset_voxels)
         .collect();

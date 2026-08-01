@@ -26,6 +26,7 @@
 //! [`AngleMeasurement`] is the family's second kind: an authored angle in exact
 //! degrees, density-free, consumed by the sketch arc bulge.
 
+use crate::EvaluationContext;
 use std::fmt;
 
 /// The units layer's exact rational — substrate's [`substrate::interval::Rational`], the
@@ -50,7 +51,7 @@ pub use substrate::interval::{Rational as ExactRational, RationalFromF64Error};
 /// The block term is an exact rational so `"3.5 blocks"`, `"8/16 blocks"` and
 /// `"3 8/16 blocks"` are all retained losslessly; the voxel term is a plain
 /// integer because nothing is finer than a voxel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Measurement {
     /// Block count as an exact rational (numerator, denominator). Serialized as
     /// the reduced pair so a persisted document is float-free end to end.
@@ -58,6 +59,28 @@ pub struct Measurement {
     block_term_denominator: i128,
     /// Whole voxels added on top of the block term.
     voxel_term: i64,
+}
+
+impl<'de> serde::Deserialize<'de> for Measurement {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            block_term_numerator: i128,
+            block_term_denominator: i128,
+            voxel_term: i64,
+        }
+
+        let stored = Stored::deserialize(deserializer)?;
+        let block_term =
+            ExactRational::new(stored.block_term_numerator, stored.block_term_denominator)
+                .ok_or_else(|| {
+                    serde::de::Error::custom("measurement has an invalid block denominator")
+                })?;
+        Ok(Self::new(block_term, stored.voxel_term))
+    }
 }
 
 /// Convert an exact value to the storage type without wrapping at either boundary.
@@ -182,6 +205,14 @@ impl Measurement {
             .times(ExactRational::from_integer(i128::from(density)))
             .plus(ExactRational::from_integer(i128::from(self.voxel_term)))
     }
+
+    /// Resolve this authored source for one document evaluation.
+    ///
+    /// The context carries the document-owned density; the measurement stores no resolved cache,
+    /// so a fixed curve parameter cannot accidentally grow a second density authority.
+    pub fn to_voxel_rational(self, context: EvaluationContext) -> ExactRational {
+        self.to_voxels_exact(context.voxels_per_block().get())
+    }
 }
 
 /// A parametric ANGLE measurement in degrees.
@@ -192,11 +223,29 @@ impl Measurement {
 /// arithmetic — an angle has no block term, no density, and no voxel evaluation, so a
 /// shared representation would force every length call-site through a kind check it can
 /// never fail. The degree value is a reduced exact rational, mirroring the block term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct AngleMeasurement {
     /// Degrees as an exact rational (numerator, denominator), serialized reduced.
     degrees_numerator: i128,
     degrees_denominator: i128,
+}
+
+impl<'de> serde::Deserialize<'de> for AngleMeasurement {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            degrees_numerator: i128,
+            degrees_denominator: i128,
+        }
+
+        let stored = Stored::deserialize(deserializer)?;
+        let degrees = ExactRational::new(stored.degrees_numerator, stored.degrees_denominator)
+            .ok_or_else(|| serde::de::Error::custom("angle has an invalid degree denominator"))?;
+        Ok(Self::new(degrees))
+    }
 }
 
 impl Default for AngleMeasurement {
@@ -755,6 +804,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
     use super::*;
+    use std::num::NonZeroU32;
 
     /// Helper: parse then evaluate at one density, asserting the parse succeeds.
     fn parse_and_evaluate(input: &str, density: u32) -> Result<i64, MeasurementError> {
@@ -787,6 +837,16 @@ mod tests {
         let measurement = parse("3.5 blocks").expect("parses");
         assert_eq!(measurement.to_voxels(16).unwrap(), 56);
         assert_eq!(measurement.to_voxels(32).unwrap(), 112);
+    }
+
+    #[test]
+    fn evaluation_context_preserves_the_exact_voxel_rational() {
+        let measurement = parse("3.5 blocks 1 voxels").expect("parses");
+        let context = EvaluationContext::new(NonZeroU32::new(16).expect("non-zero"));
+        assert_eq!(
+            measurement.to_voxel_rational(context),
+            ExactRational::from_integer(57)
+        );
     }
 
     #[test]

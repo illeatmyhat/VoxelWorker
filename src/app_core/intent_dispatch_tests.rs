@@ -1035,7 +1035,10 @@ fn default_sketch_spec_equals_box() {
     let sketch = box_sketch(size_blocks);
 
     assert_eq!(
-        sketch.grid_dimensions(),
+        sketch.grid_dimensions(
+            document::sketch::evaluation_context_from_density(density)
+                .expect("fixture density is non-zero"),
+        ),
         box_shape.grid_dimensions(density),
         "default sketch AABB must match the box AABB"
     );

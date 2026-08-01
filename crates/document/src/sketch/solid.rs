@@ -23,7 +23,9 @@
 
 use super::produce::{revolve_box_within_sweep_arc, to_region_curve_bounds, to_region_points};
 use super::*;
+use parametric::EvaluationContext;
 use rayon::prelude::*;
+use std::sync::Arc;
 use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 
 /// The revolve field, with every per-solid constant hoisted out of the per-voxel loop.
@@ -49,16 +51,13 @@ use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 ///
 /// `SdfShape` has no such split: its resolve is already `signed_distance(..) <=
 /// SURFACE_ISOLEVEL` over one field function.
-pub(super) struct RevolveField<'region> {
+pub(super) struct RevolveField {
     /// The tagged region in the measurement width: a hole in the profile is a hollow in the
     /// lathed body, so the field folds every loop rather than measuring one polygon.
     ///
-    /// BORROWED from the sketch's derived region, because `signed_distance` builds a field per
-    /// sample and copying the curves there is the whole cost of the call.
-    region_edges: &'region [(
-        substrate::geom2d::LoopRole,
-        Vec<substrate::geom2d::RegionEdge>,
-    )],
+    /// Owned reference-counted derived view. A prepared evaluator keeps this alive while its
+    /// samples borrow the resolved curves without revisiting the sketch memo.
+    derived: Arc<super::region_memo::Derived>,
     axis: RevolveAxis,
     turn_degrees: u32,
     /// World axis carrying the profile's AXIAL coordinate (un-centered, profile-space).
@@ -120,7 +119,7 @@ fn build_voxel(index: [u32; 3], density: u32) -> Voxel {
     }
 }
 
-impl RevolveField<'_> {
+impl RevolveField {
     /// The signed distance at a point in the producer's own `[0, full_dim)` voxel frame.
     /// Negative/zero is inside (occupancy is `field <= SURFACE_ISOLEVEL`).
     pub(super) fn signed_distance_at(&self, point_local_voxels: [f32; 3]) -> f32 {
@@ -137,7 +136,7 @@ impl RevolveField<'_> {
                 RevolveAxis::InPlane1 => (signed_radius, profile_axial),
             };
             substrate::geom2d::signed_distance_to_region(
-                self.region_edges,
+                &self.derived.region_field_loops,
                 [sample_0, sample_1],
                 substrate::geom2d::Metric::Euclidean,
             )
@@ -187,6 +186,71 @@ impl RevolveField<'_> {
     }
 }
 
+/// An immutable, density-resolved sketch field for a single sampling operation.
+///
+/// It owns the memo's derived view, so its point queries never take the memo lock or resolve a
+/// measurement source. Construct it once with `SketchSolid::prepare_field` before a dense walk.
+pub(super) struct PreparedSketchField<'a> {
+    /// The original producer supplies the established structural interval proof. Keeping this
+    /// borrow does not re-resolve curves: `inner` owns the derived region for point queries.
+    pub(super) source: &'a SketchSolid,
+    pub(super) voxels_per_block: u32,
+    pub(super) inner: PreparedSketchFieldKind,
+}
+
+pub(super) enum PreparedSketchFieldKind {
+    Empty,
+    Extrude {
+        derived: Arc<super::region_memo::Derived>,
+        profile_min: [i64; 2],
+        in_plane_0: usize,
+        in_plane_1: usize,
+        normal: usize,
+        height_voxels: u32,
+    },
+    Revolve(RevolveField),
+}
+
+impl PreparedSketchField<'_> {
+    /// A legacy producer operation received an invalid zero density. It is intentionally empty:
+    /// interpreting zero as density one would evaluate fixed curve sources at invented units.
+    pub(super) fn invalid(source: &SketchSolid) -> PreparedSketchField<'_> {
+        PreparedSketchField {
+            source,
+            voxels_per_block: 0,
+            inner: PreparedSketchFieldKind::Empty,
+        }
+    }
+
+    pub(crate) fn signed_distance_at(&self, point_local_voxels: [f32; 3]) -> f32 {
+        match &self.inner {
+            PreparedSketchFieldKind::Empty => f32::INFINITY,
+            PreparedSketchFieldKind::Extrude {
+                derived,
+                profile_min,
+                in_plane_0,
+                in_plane_1,
+                normal,
+                height_voxels,
+            } => {
+                let in_profile = [
+                    profile_min[0] as f32 + point_local_voxels[*in_plane_0],
+                    profile_min[1] as f32 + point_local_voxels[*in_plane_1],
+                ];
+                let to_profile = substrate::geom2d::signed_distance_to_region(
+                    &derived.region_field_loops,
+                    in_profile,
+                    substrate::geom2d::Metric::Chebyshev,
+                );
+                let along_normal = point_local_voxels[*normal];
+                let to_slab = (-along_normal).max(along_normal - *height_voxels as f32);
+                to_profile.max(to_slab)
+            }
+            PreparedSketchFieldKind::Revolve(field) => field.signed_distance_at(point_local_voxels),
+        }
+    }
+}
+
 /// A [`Sketch`] paired with an [`Operation`] that turns its 2D profile into a 3D volume — the
 /// sketch→volume producer. It sits **alongside** `SdfShape`; both implement
 /// [`VoxelProducer`](crate::voxel::VoxelProducer) and resolve through the same stamp /
@@ -223,11 +287,51 @@ impl SketchSolid {
         }
     }
 
+    /// Resolve curve geometry once for a dense field walk. The returned evaluator owns the
+    /// derived view, so its point queries do not touch the sketch memo.
+    pub(super) fn prepare_field(&self, context: EvaluationContext) -> PreparedSketchField<'_> {
+        let derived = self.sketch.derived(context);
+        let Some((profile_min, _profile_max)) = self.profile_bounds(context) else {
+            return PreparedSketchField {
+                source: self,
+                voxels_per_block: context.voxels_per_block().get(),
+                inner: PreparedSketchFieldKind::Empty,
+            };
+        };
+        let inner = match self.operation {
+            Operation::Extrude { height_voxels } => {
+                let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
+                PreparedSketchFieldKind::Extrude {
+                    derived,
+                    profile_min,
+                    in_plane_0,
+                    in_plane_1,
+                    normal: self.sketch.plane.normal_axis(),
+                    height_voxels,
+                }
+            }
+            Operation::Revolve { axis, sweep } => {
+                self.revolve_field(derived, axis, sweep, context).map_or(
+                    PreparedSketchFieldKind::Empty,
+                    PreparedSketchFieldKind::Revolve,
+                )
+            }
+        };
+        PreparedSketchField {
+            source: self,
+            voxels_per_block: context.voxels_per_block().get(),
+            inner,
+        }
+    }
+
     /// The profile's 2D bounding box in voxels as `(min, max)` half-open per
     /// in-plane axis, or `None` for a degenerate profile (fewer than 3 points or a
     /// zero-extent span on either in-plane axis). The local in-plane grid is sized
     /// `max − min`; cells are addressed from `min`.
-    pub(super) fn profile_bounds(&self) -> Option<([i64; 2], [i64; 2])> {
+    pub(super) fn profile_bounds(
+        &self,
+        context: EvaluationContext,
+    ) -> Option<([i64; 2], [i64; 2])> {
         // Per-operation degeneracy: an Extrude with zero height is empty (its prism
         // has no thickness); a Revolve with zero turn is empty (no sweep). Other
         // operations branch here as they are added.
@@ -238,7 +342,7 @@ impl SketchSolid {
         if operation_is_degenerate {
             return None;
         }
-        let (min, max) = self.filled_extent()?;
+        let (min, max) = self.filled_extent(context)?;
         // A zero-extent span on either in-plane axis is a degenerate (collinear /
         // zero-area) profile: no cell can be inside it.
         if max[0] <= min[0] || max[1] <= min[1] {
@@ -254,8 +358,8 @@ impl SketchSolid {
     /// empty profile. Unlike [`profile_bounds`](Self::profile_bounds) this ignores degeneracy: it
     /// is the authoring anchor the producer re-seats to the node origin, needed while a profile is
     /// still being built (fewer than three points, zero height) and its vertices are being edited.
-    pub fn profile_bbox_min(&self) -> [i64; 2] {
-        match self.filled_extent() {
+    pub fn profile_bbox_min(&self, context: EvaluationContext) -> [i64; 2] {
+        match self.filled_extent(context) {
             Some((min, _max)) => [min[0].floor() as i64, min[1].floor() as i64],
             None => [0, 0],
         }
@@ -272,8 +376,8 @@ impl SketchSolid {
     ///
     /// A hole sits inside a fill and adds no footprint, and an unpicked face on its own is not
     /// occupancy at all.
-    fn filled_extent(&self) -> Option<([f64; 2], [f64; 2])> {
-        self.sketch.filled_extent()
+    fn filled_extent(&self, context: EvaluationContext) -> Option<([f64; 2], [f64; 2])> {
+        self.sketch.filled_extent(context)
     }
 
     /// The node offset that keeps every **un-edited** profile vertex fixed in world after this
@@ -289,9 +393,10 @@ impl SketchSolid {
         &self,
         previous: &SketchSolid,
         previous_offset: [i64; 3],
+        context: EvaluationContext,
     ) -> [i64; 3] {
-        let old_min = previous.profile_bbox_min();
-        let new_min = self.profile_bbox_min();
+        let old_min = previous.profile_bbox_min(context);
+        let new_min = self.profile_bbox_min(context);
         let [in0, in1] = self.sketch.plane.in_plane_axes();
         let mut offset = previous_offset;
         offset[in0] += new_min[0] - old_min[0];
@@ -449,9 +554,10 @@ impl SketchSolid {
     pub fn with_constraint(
         &self,
         kind: ConstraintKind,
+        context: EvaluationContext,
     ) -> Result<(SketchSolid, EntityId), ConstraintRefusal> {
         let mut next = self.clone();
-        let id = next.sketch.add_constraint(kind)?;
+        let id = next.sketch.add_constraint(kind, context)?;
         Ok((next, id))
     }
 
@@ -467,9 +573,14 @@ impl SketchSolid {
     /// This producer with the derived face `key` picked or unpicked — the only edit that
     /// carves a hole. Geometry is untouched, so the profile bbox and the node
     /// anchor cannot move. Pure.
-    pub fn with_face_picked(&self, key: super::FaceKey, picked: bool) -> SketchSolid {
+    pub fn with_face_picked(
+        &self,
+        key: super::FaceKey,
+        picked: bool,
+        context: EvaluationContext,
+    ) -> SketchSolid {
         let mut next = self.clone();
-        next.sketch.set_face_picked(key, picked);
+        next.sketch.set_face_picked(key, picked, context);
         next
     }
 
@@ -490,21 +601,19 @@ impl SketchSolid {
     /// Build the hoisted revolve field — the ONE evaluation both the bound and the
     /// resolve go through (see [`RevolveField`]). `None` for a degenerate profile, which
     /// is empty everywhere.
-    pub(super) fn revolve_field<'region>(
+    pub(super) fn revolve_field(
         &self,
-        region_edges: &'region [(
-            substrate::geom2d::LoopRole,
-            Vec<substrate::geom2d::RegionEdge>,
-        )],
+        derived: Arc<super::region_memo::Derived>,
         axis: RevolveAxis,
         sweep: RevolveSweep,
-    ) -> Option<RevolveField<'region>> {
-        let (profile_min, _profile_max) = self.profile_bounds()?;
+        context: EvaluationContext,
+    ) -> Option<RevolveField> {
+        let (profile_min, _profile_max) = self.profile_bounds(context)?;
         // The straddle / reach measurements below are about how far the SOLID reaches from the
         // lathe axis, so they read the filled loops' EXTENT; a hole never extends the body, and a
         // bulge reaches past the chord approximating it.
-        let (radial_low, radial_high) = self.filled_extent()?;
-        let dimensions = self.grid_dimensions();
+        let (radial_low, radial_high) = self.filled_extent(context)?;
+        let dimensions = self.grid_dimensions(context);
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
         // Reinterpret the in-plane axes as (axial, radial) per `RevolveAxis` (shared).
@@ -526,7 +635,7 @@ impl SketchSolid {
             .max(radial_high[radial_profile_coord].abs());
 
         Some(RevolveField {
-            region_edges,
+            derived,
             axis,
             turn_degrees: sweep.turn_degrees,
             axial_world_axis,
@@ -576,8 +685,8 @@ impl SketchSolid {
     /// is outside and the distance is `f32::INFINITY`.
     ///
     /// [`resolve_into`]: crate::voxel::VoxelProducer::resolve_into
-    pub fn signed_distance(&self, point_local_voxels: [f32; 3]) -> f32 {
-        let Some((profile_min, _profile_max)) = self.profile_bounds() else {
+    pub fn signed_distance(&self, point_local_voxels: [f32; 3], context: EvaluationContext) -> f32 {
+        let Some((profile_min, _profile_max)) = self.profile_bounds(context) else {
             return f32::INFINITY;
         };
         match self.operation {
@@ -591,7 +700,7 @@ impl SketchSolid {
                     profile_min[1] as f32 + point_local_voxels[in_plane_1],
                 ];
                 let to_profile = substrate::geom2d::signed_distance_to_region(
-                    &self.sketch.derived().region_field_loops,
+                    &self.sketch.derived(context).region_field_loops,
                     in_profile,
                     substrate::geom2d::Metric::Chebyshev,
                 );
@@ -606,8 +715,8 @@ impl SketchSolid {
                 // resolve decides occupancy by calling this same function, so the bound
                 // brackets exactly what the resolve computed rather than a parallel
                 // reimplementation that rounds differently.
-                let derived = self.sketch.derived();
-                match self.revolve_field(&derived.region_field_loops, axis, sweep) {
+                let derived = self.sketch.derived(context);
+                match self.revolve_field(derived, axis, sweep, context) {
                     Some(field) => field.signed_distance_at(point_local_voxels),
                     None => f32::INFINITY,
                 }
@@ -618,8 +727,8 @@ impl SketchSolid {
     /// The resolved grid's voxel dimensions `[x, y, z]` (the prism's AABB), or `[0, 0, 0]`
     /// for a degenerate profile. The two in-plane axes get the profile's bounding-box span;
     /// the normal axis gets `height_voxels`.
-    pub fn grid_dimensions(&self) -> [u32; 3] {
-        let Some((min, max)) = self.profile_bounds() else {
+    pub fn grid_dimensions(&self, context: EvaluationContext) -> [u32; 3] {
+        let Some((min, max)) = self.profile_bounds(context) else {
             return [0, 0, 0];
         };
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
@@ -662,8 +771,8 @@ impl SketchSolid {
     }
 
     /// Total sampling-grid voxel count (`x · y · z`) as `u64` so it can't overflow.
-    pub fn grid_voxel_count(&self) -> u64 {
-        let [x, y, z] = self.grid_dimensions();
+    pub fn grid_voxel_count(&self, context: EvaluationContext) -> u64 {
+        let [x, y, z] = self.grid_dimensions(context);
         x as u64 * y as u64 * z as u64
     }
 
@@ -676,11 +785,11 @@ impl SketchSolid {
     /// editor never clobbers a custom polygon by forcing it to a rectangle.
     ///
     /// [`in_plane_axes`]: PlaneAxis::in_plane_axes
-    pub fn rectangle_in_plane_spans(&self) -> Option<[u32; 2]> {
+    pub fn rectangle_in_plane_spans(&self, context: EvaluationContext) -> Option<[u32; 2]> {
         // Exactly four vertices, spanning a non-degenerate box. A fractional vertex
         // disqualifies: the spans are whole voxels, and the inspector's editable
         // Width/Depth would clobber the sub-voxel remainder by rewriting the corners.
-        let profile = self.sketch.flattened_loop();
+        let profile = self.sketch.flattened_loop(context);
         if profile.len() != 4
             || profile
                 .iter()
@@ -688,7 +797,7 @@ impl SketchSolid {
         {
             return None;
         }
-        let (min, max) = self.profile_bounds()?;
+        let (min, max) = self.profile_bounds(context)?;
         // Every vertex must sit on a corner of the bounding box (each in-plane
         // coordinate is the box min or max), and all four distinct corners must be
         // present — i.e. the four points ARE the rectangle's corners.
@@ -722,8 +831,8 @@ impl SketchSolid {
     /// Whether the prism's AABB exceeds [`MAX_GRID_VOXELS`] — the same single-shape
     /// sanity cap `SdfShape::exceeds_voxel_cap` applies, so a pathological
     /// profile/height can't blow memory on a lone resolve.
-    pub fn exceeds_voxel_cap(&self) -> bool {
-        self.grid_voxel_count() > MAX_GRID_VOXELS
+    pub fn exceeds_voxel_cap(&self, context: EvaluationContext) -> bool {
+        self.grid_voxel_count(context) > MAX_GRID_VOXELS
     }
 }
 
@@ -740,8 +849,12 @@ impl SketchSolid {
     /// axis-aligned FACE block — fully solid, but with its face lattice line collinear with
     /// the profile edge — while never over-claiming (the edge sits 0.5 beyond the outermost
     /// sample center).
-    pub(super) fn extrude_cell_is_solid(&self, cell: voxel_core::spatial_index::VoxelAabb) -> bool {
-        let Some((min, _max)) = self.profile_bounds() else {
+    pub(super) fn extrude_cell_is_solid(
+        &self,
+        cell: voxel_core::spatial_index::VoxelAabb,
+        context: EvaluationContext,
+    ) -> bool {
+        let Some((min, _max)) = self.profile_bounds(context) else {
             return false;
         };
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
@@ -749,7 +862,7 @@ impl SketchSolid {
         let c0_hi = (min[0] + cell.max[in_plane_0]) as f64 - 0.5;
         let c1_lo = (min[1] + cell.min[in_plane_1]) as f64 + 0.5;
         let c1_hi = (min[1] + cell.max[in_plane_1]) as f64 - 0.5;
-        let region = self.sketch.region();
+        let region = self.sketch.region(context);
         substrate::geom2d::rectangle_inside_region(
             &to_region_points(&region),
             &to_region_curve_bounds(&region),
@@ -793,8 +906,9 @@ impl SketchSolid {
         axis: RevolveAxis,
         sweep: RevolveSweep,
         dimensions: [u32; 3],
+        context: EvaluationContext,
     ) -> bool {
-        let Some((min, _max)) = self.profile_bounds() else {
+        let Some((min, _max)) = self.profile_bounds(context) else {
             return false;
         };
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
@@ -842,7 +956,7 @@ impl SketchSolid {
             RevolveAxis::InPlane0 => (axial_lo, axial_hi, r_lo, r_hi),
             RevolveAxis::InPlane1 => (r_lo, r_hi, axial_lo, axial_hi),
         };
-        let region = self.sketch.region();
+        let region = self.sketch.region(context);
         if !substrate::geom2d::rectangle_inside_region(
             &to_region_points(&region),
             &to_region_curve_bounds(&region),
@@ -869,13 +983,14 @@ impl SketchSolid {
         voxels_per_block: u32,
         height_voxels: u32,
         window_local_voxels: voxel_core::spatial_index::VoxelAabb,
+        context: EvaluationContext,
     ) {
-        let dimensions = self.grid_dimensions();
+        let dimensions = self.grid_dimensions(context);
         // FULL dimensions even when only a window is written.
         grid.dimensions = dimensions;
         grid.occupied.clear();
 
-        let Some((min, _max)) = self.profile_bounds() else {
+        let Some((min, _max)) = self.profile_bounds(context) else {
             // Degenerate profile: empty occupancy, no panic.
             return;
         };
@@ -906,7 +1021,7 @@ impl SketchSolid {
         // `Fill` loop and no `Hole` loop. The region test is on `min + cell`, which is
         // FULL-derived; only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
-        let derived = self.sketch.derived();
+        let derived = self.sketch.derived(context);
         let region_edges = &derived.region_field_loops;
         let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
         for cell_1 in cell_1_lo..cell_1_hi {
@@ -977,8 +1092,9 @@ impl SketchSolid {
         axis: RevolveAxis,
         sweep: RevolveSweep,
         window_local_voxels: voxel_core::spatial_index::VoxelAabb,
+        context: EvaluationContext,
     ) {
-        let dimensions = self.grid_dimensions();
+        let dimensions = self.grid_dimensions(context);
         // FULL dimensions even when only a window is written.
         grid.dimensions = dimensions;
         grid.occupied.clear();
@@ -991,8 +1107,8 @@ impl SketchSolid {
         // re-decides occupancy with its own arithmetic: one set computed two ways rounds two
         // ways, which breaks the bound's conservative-never-narrow contract on samples landing
         // exactly on the surface.
-        let derived = self.sketch.derived();
-        let Some(field) = self.revolve_field(&derived.region_field_loops, axis, sweep) else {
+        let derived = self.sketch.derived(context);
+        let Some(field) = self.revolve_field(derived, axis, sweep, context) else {
             // Degenerate (no profile / zero turn / zero radial extent): empty, no panic.
             return;
         };

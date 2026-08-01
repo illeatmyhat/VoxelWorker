@@ -2,9 +2,10 @@
 //! tessellation through the flattened loop, resolve through an arced profile, delete
 //! cascade / repair, and serialization (including a pre-arc document loading clean).
 
+use super::ctx;
 use crate::sketch::{
-    arc_center_radius, arc_interior_points, included_angle_through_degrees, EntityId, EntityRole,
-    PlaneAxis, Point, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
+    arc_center_radius, arc_interior_points, included_angle_through_degrees, ArcSweep, EntityId,
+    EntityRole, PlaneAxis, Point, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
 };
 use crate::voxel::VoxelProducer;
 use ::parametric::units::AngleMeasurement;
@@ -38,6 +39,40 @@ fn rounded_bottom_solid(height: u32) -> SketchSolid {
         .connect_arc(0, 3, AngleMeasurement::from_degrees(180))
         .expect("a fresh arc over an unjoined pair");
     SketchSolid::extrude(sketch, height)
+}
+
+#[test]
+fn legacy_direct_arc_sweep_fixture_loads_regardless_of_json_field_order() {
+    let fixture = r#"
+        {
+          "plane": "Z",
+          "points": [
+            { "id": 0, "at": { "offset_voxels": [0, 0] } },
+            { "id": 1, "at": { "offset_voxels": [4, 0] } }
+          ],
+          "segments": [],
+          "arcs": [{
+            "id": 2,
+            "from": 0,
+            "to": 1,
+            "bulge": { "degrees_denominator": 1, "degrees_numerator": 90 },
+            "origin": 2
+          }],
+          "circles": [],
+          "unpicked_points": [],
+          "constraints": [],
+          "next_id": 3
+        }
+    "#;
+
+    let sketch: Sketch = serde_json::from_str(fixture).expect("legacy direct arc loads");
+    assert_eq!(
+        sketch.arcs()[0]
+            .bulge
+            .free_value()
+            .map(|value| value.degrees().to_f64()),
+        Some(90.0)
+    );
 }
 
 #[test]
@@ -108,14 +143,14 @@ fn tessellation_stays_on_the_circle_within_the_sagitta_tolerance() {
 #[test]
 fn an_arc_closed_profile_extrudes_a_rounded_shape() {
     let solid = rounded_bottom_solid(2);
-    let flattened = solid.sketch.flattened_loop();
+    let flattened = solid.sketch.flattened_loop(ctx(16));
     assert!(
         flattened.len() > 4,
         "the loop carries the arc's chord fan, got {}",
         flattened.len()
     );
     assert_eq!(
-        solid.grid_dimensions(),
+        solid.grid_dimensions(ctx(16)),
         [4, 5, 2],
         "in-plane cover 0..4 × -2..3 (the bulge extends the box), extrude 2"
     );
@@ -137,14 +172,14 @@ fn arc_edges_join_the_region_graph() {
     sketch.connect(a, c).expect("fresh edge");
     sketch.connect(c, b).expect("fresh edge");
     assert!(
-        sketch.flattened_loop().is_empty(),
+        sketch.flattened_loop(ctx(16)).is_empty(),
         "two edges of three: still open"
     );
     sketch
         .connect_arc(b, a, AngleMeasurement::from_degrees(120))
         .expect("the arc closes the loop");
     assert!(
-        sketch.flattened_loop().len() > 3,
+        sketch.flattened_loop(ctx(16)).len() > 3,
         "closed, with the arc tessellated"
     );
 }
@@ -204,7 +239,7 @@ fn a_chord_and_its_arc_bound_a_d_shape() {
         .connect_arc(a, b, AngleMeasurement::from_degrees(180))
         .expect("the half-circle lands");
     sketch.connect(a, b).expect("the chord closes it");
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 1, "two edges over one pair bound ONE face");
     // Half a radius-2 disc, EXACTLY: the area integrates the arc itself (Green's theorem over the
     // circle), where a tessellated boundary could only inscribe it and land just under.
@@ -214,7 +249,7 @@ fn a_chord_and_its_arc_bound_a_d_shape() {
         (area - half_disc).abs() < 1e-9,
         "the exact half-disc, got {area} against {half_disc}"
     );
-    assert!(!sketch.region().is_empty(), "and it resolves");
+    assert!(!sketch.region(ctx(16)).is_empty(), "and it resolves");
 
     // The other direction — an arc over a pair a segment already joins — reaches the same store.
     let mut reversed = Sketch::new(PlaneAxis::Z, vec![]);
@@ -224,7 +259,7 @@ fn a_chord_and_its_arc_bound_a_d_shape() {
     reversed
         .connect_arc(c, d, AngleMeasurement::from_degrees(180))
         .expect("arcing over it is legal");
-    assert_eq!(reversed.faces().len(), 1);
+    assert_eq!(reversed.faces(ctx(16)).len(), 1);
 }
 
 /// Two arcs bulging opposite ways over one pair are a LENS, not a duplicate — the sign of the
@@ -240,7 +275,7 @@ fn two_arcs_over_one_pair_bound_a_lens() {
     sketch
         .connect_arc(a, b, AngleMeasurement::from_degrees(-120))
         .expect("the other side is a different curve");
-    let faces = sketch.faces();
+    let faces = sketch.faces(ctx(16));
     assert_eq!(faces.len(), 1, "the lens is one bounded face");
     assert!(faces[0].area_voxels > 0.0);
 }
@@ -319,7 +354,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         id: 90,
         from: p,
         to: 77, // dangling
-        bulge: AngleMeasurement::from_degrees(90),
+        bulge: ArcSweep::free(AngleMeasurement::from_degrees(90)),
         center: crate::sketch::ABSENT_CENTER,
         origin: 90,
         role: crate::sketch::EntityRole::Real,
@@ -328,7 +363,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         id: 91,
         from: p,
         to: p, // self-loop
-        bulge: AngleMeasurement::from_degrees(90),
+        bulge: ArcSweep::free(AngleMeasurement::from_degrees(90)),
         center: crate::sketch::ABSENT_CENTER,
         origin: 91,
         role: crate::sketch::EntityRole::Real,
@@ -337,12 +372,12 @@ fn delete_cascades_and_repair_cover_arcs() {
         id: 92,
         from: q,
         to: p,
-        bulge: AngleMeasurement::from_degrees(0), // degenerate bulge
+        bulge: ArcSweep::free(AngleMeasurement::from_degrees(0)), // degenerate bulge
         center: crate::sketch::ABSENT_CENTER,
         origin: 92,
         role: crate::sketch::EntityRole::Real,
     });
-    assert_eq!(broken.repair(), 3);
+    assert_eq!(broken.repair(ctx(16)), 3);
     assert_eq!(broken.arcs().len(), 1);
     assert_eq!(broken.arcs()[0].id, good);
 }
@@ -428,7 +463,7 @@ fn an_arc_reifies_its_center_as_a_selectable_point() {
 
     // Being construction geometry, it bounds nothing: an isolated point is not a face, and the
     // arc's own single edge still cannot close one.
-    assert!(sketch.faces().is_empty());
+    assert!(sketch.faces(ctx(16)).is_empty());
 }
 
 #[test]
@@ -439,7 +474,9 @@ fn dragging_a_center_changes_the_radius_and_nothing_else() {
     // The half turn's center sits ON the chord, its arc bulging DOWN to axis1 = -2. Pushing the
     // center up, away from the bulge, makes a shallower arc: apothem 2 with half-chord 2 halves
     // the sweep to 90°.
-    assert!(sketch.move_point(center, SketchPoint::new(2, 2)));
+    assert!(sketch
+        .move_point(center, SketchPoint::new(2, 2), ctx(16))
+        .expect("evaluation context"));
 
     let position = |id| {
         sketch
@@ -468,7 +505,9 @@ fn center_resweep_keeps_the_solver_value_without_angle_quantization() {
     let target = requested.in_plane();
     let expected = 2.0 * 2.0f64.atan2(target[1]).to_degrees();
 
-    assert!(sketch.move_point(center, requested));
+    assert!(sketch
+        .move_point(center, requested, ctx(16))
+        .expect("evaluation context"));
     assert_eq!(
         sketch.arcs()[0].bulge.to_degrees_f64().to_bits(),
         expected.to_bits(),
@@ -494,7 +533,9 @@ fn a_center_drag_projects_onto_the_bisector() {
     let center = center_of(&sketch, arc).id;
     // The chord runs along axis 0, so its bisector is the vertical through the midpoint: the
     // axis-0 component of this drag is discarded and only the -2 lands.
-    assert!(sketch.move_point(center, SketchPoint::new(9, -2)));
+    assert!(sketch
+        .move_point(center, SketchPoint::new(9, -2), ctx(16))
+        .expect("evaluation context"));
     assert_near(center_of(&sketch, arc).at.in_plane(), [2.0, -2.0]);
 }
 
@@ -504,7 +545,9 @@ fn a_center_drag_projects_onto_the_bisector() {
 fn a_center_dragged_into_the_bulge_makes_the_major_arc() {
     let (mut sketch, _from, _to, arc) = half_turn();
     let center = center_of(&sketch, arc).id;
-    assert!(sketch.move_point(center, SketchPoint::new(2, -2)));
+    assert!(sketch
+        .move_point(center, SketchPoint::new(2, -2), ctx(16))
+        .expect("evaluation context"));
     let sweep = sketch.arcs()[0].bulge.to_degrees_f64();
     assert!(
         (sweep - 270.0).abs() < 1.0e-3,
@@ -517,7 +560,9 @@ fn a_center_dragged_into_the_bulge_makes_the_major_arc() {
 fn a_center_re_derives_when_an_endpoint_moves() {
     let (mut sketch, _from, to, arc) = half_turn();
     // Halving the chord halves the radius, so the center slides to the new midpoint.
-    assert!(sketch.move_point(to, SketchPoint::new(2, 0)));
+    assert!(sketch
+        .move_point(to, SketchPoint::new(2, 0), ctx(16))
+        .expect("evaluation context"));
     assert_near(center_of(&sketch, arc).at.in_plane(), [1.0, 0.0]);
 }
 
@@ -575,7 +620,11 @@ fn a_pre_center_document_gains_its_centers_on_load() {
 
     let mut loaded: Sketch = serde_json::from_value(value).expect("a pre-center document loads");
     assert_eq!(loaded.arcs()[0].center, crate::sketch::ABSENT_CENTER);
-    assert_eq!(loaded.repair(), 0, "nothing was structurally invalid");
+    assert_eq!(
+        loaded.repair(ctx(16)),
+        0,
+        "nothing was structurally invalid"
+    );
     assert_near(center_of(&loaded, arc).at.in_plane(), [2.0, 0.0]);
 }
 
@@ -608,7 +657,7 @@ fn a_curved_face_keeps_its_arc() {
         .connect_arc(0, 3, AngleMeasurement::from_degrees(180))
         .expect("a fresh arc");
 
-    let region = sketch.region();
+    let region = sketch.region(ctx(16));
     assert_eq!(region.len(), 1);
     let edges = &region[0].edges;
     assert_eq!(
@@ -633,7 +682,7 @@ fn a_curved_face_keeps_its_arc() {
 
     // The bulge is material, and the field measures it against the CIRCLE: a point one voxel in
     // from the curve reads exactly one voxel deep, which a chord approximation cannot say.
-    let field = sketch.region_field_loops();
+    let field = sketch.region_field_loops(ctx(16));
     let under_the_bulge = [arc.center[0] as f32, (arc.center[1] - 1.0) as f32];
     assert!(
         substrate::geom2d::point_in_region(&field, under_the_bulge),
@@ -650,6 +699,6 @@ fn a_curved_face_keeps_its_arc() {
     );
 
     // Faces are identified by lineage, not geometry.
-    let key = sketch.identified_faces().first().expect("a face").1;
-    assert!(sketch.face_is_picked(&key));
+    let key = sketch.identified_faces(ctx(16)).first().expect("a face").1;
+    assert!(sketch.face_is_picked(&key, ctx(16)));
 }

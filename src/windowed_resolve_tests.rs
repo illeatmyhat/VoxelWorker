@@ -269,6 +269,9 @@ fn sdf_shape_windowed_subset_contract() {
 #[test]
 fn sketch_extrude_windowed_subset_contract() {
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
+    let Some(context) = document::sketch::evaluation_context_from_density(16) else {
+        return;
+    };
     // Vary the plane so the in-plane↔world axis window mapping is exercised on every
     // normal (X / Y / Z); EVEN, ODD, MIXED profile / height parities.
     let cases: [(PlaneAxis, i64, i64, u32); 4] = [
@@ -279,7 +282,7 @@ fn sketch_extrude_windowed_subset_contract() {
     ];
     for (plane, width, height, extrude_height) in cases {
         let solid = SketchSolid::extrude(Sketch::rectangle(plane, width, height), extrude_height);
-        let full_dim = solid.grid_dimensions();
+        let full_dim = solid.grid_dimensions(context);
         assert_windowed_subset_contract(&solid, 16, full_dim, "extrude");
     }
 }
@@ -291,6 +294,9 @@ fn sketch_extrude_windowed_subset_contract() {
 #[test]
 fn sketch_revolve_windowed_subset_contract() {
     use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+    let Some(context) = document::sketch::evaluation_context_from_density(16) else {
+        return;
+    };
 
     // (1) Full 360° revolve of a one-sided rectangle (radial >= 0): exercises the
     //     non-straddling early-out branch. Even disc diameter.
@@ -299,7 +305,7 @@ fn sketch_revolve_windowed_subset_contract() {
         RevolveAxis::InPlane0,
         360,
     );
-    let dim = full_revolve.grid_dimensions();
+    let dim = full_revolve.grid_dimensions(context);
     assert_windowed_subset_contract(&full_revolve, 16, dim, "revolve-360-onesided");
 
     // (2) PARTIAL 180° turn: exercises the partial-turn theta gate under windowing.
@@ -308,7 +314,7 @@ fn sketch_revolve_windowed_subset_contract() {
         RevolveAxis::InPlane0,
         180,
     );
-    let dim = partial.grid_dimensions();
+    let dim = partial.grid_dimensions(context);
     assert_windowed_subset_contract(&partial, 16, dim, "revolve-180");
 
     // (3) A profile that STRADDLES the radial axis (a vertex at negative radial):
@@ -325,7 +331,7 @@ fn sketch_revolve_windowed_subset_contract() {
         RevolveAxis::InPlane0,
         360,
     );
-    let dim = straddle.grid_dimensions();
+    let dim = straddle.grid_dimensions(context);
     assert_windowed_subset_contract(&straddle, 16, dim, "revolve-straddle");
 
     // (4) Partial turn on a different plane/axis → mixed parity + InPlane1 mapping.
@@ -334,7 +340,7 @@ fn sketch_revolve_windowed_subset_contract() {
         RevolveAxis::InPlane1,
         270,
     );
-    let dim = partial_inplane1.grid_dimensions();
+    let dim = partial_inplane1.grid_dimensions(context);
     assert_windowed_subset_contract(&partial_inplane1, 16, dim, "revolve-270-inplane1");
 }
 
@@ -351,6 +357,9 @@ fn sketch_revolve_windowed_subset_contract() {
 fn large_revolve_resolves_windows_despite_full_grid_cap() {
     use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
     use voxel_core::voxel::MAX_GRID_VOXELS;
+    let Some(context) = document::sketch::evaluation_context_from_density(16) else {
+        return;
+    };
 
     // A 200×200-VOXEL rectangle revolved 360° → a cylinder, full grid
     // 200×400×400 ≈ 32M voxels ≫ the 6M cap (rectangle spans are in voxels).
@@ -359,11 +368,11 @@ fn large_revolve_resolves_windows_despite_full_grid_cap() {
         RevolveAxis::InPlane0,
         360,
     );
-    let [full_x, full_y, full_z] = big.grid_dimensions();
+    let [full_x, full_y, full_z] = big.grid_dimensions(context);
     assert!(
-        big.grid_voxel_count() > MAX_GRID_VOXELS,
+        big.grid_voxel_count(context) > MAX_GRID_VOXELS,
         "test scene must exceed the cap to be meaningful ({} voxels)",
-        big.grid_voxel_count()
+        big.grid_voxel_count(context)
     );
 
     // A small interior window straddling the disc center (where the solid is dense):

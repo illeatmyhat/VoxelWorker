@@ -10,7 +10,7 @@ mod tests;
 
 pub use model::{SolveOutcome, SolveReport};
 pub use solve::{
-    Analysis, ArcId, BuildError, ConstraintId, CurveKey, Diagnostics, DragOutcome, PointId,
-    Problem, ProblemBuilder, Relation, RequestError, SegmentId, Settled, Solution, TrialAdd,
-    TrialRejection,
+    Analysis, ArcId, BuildError, CircleId, ConstraintId, CurveKey, Diagnostics, DragOutcome,
+    ParameterId, ParameterKind, ParameterValue, PointId, Problem, ProblemBuilder, Relation,
+    RequestError, SegmentId, Settled, Solution, TrialAdd, TrialRejection,
 };

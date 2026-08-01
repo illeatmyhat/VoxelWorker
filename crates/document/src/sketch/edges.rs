@@ -57,8 +57,12 @@ impl SketchSolid {
     /// Empty for a degenerate producer.
     /// `circle_segments` tessellates one full latitude turn; a partial arc keeps the
     /// same angular density.
-    pub(crate) fn profile_edge_polylines_local(&self, circle_segments: u32) -> Vec<Vec<[f32; 3]>> {
-        let Some((profile_min, _)) = self.profile_bounds() else {
+    pub(crate) fn profile_edge_polylines_local(
+        &self,
+        circle_segments: u32,
+        context: parametric::EvaluationContext,
+    ) -> Vec<Vec<[f32; 3]>> {
+        let Some((profile_min, _)) = self.profile_bounds(context) else {
             return Vec::new();
         };
         // EVERY loop of the region creases, holes included: the wall of a pocket is as much
@@ -66,11 +70,12 @@ impl SketchSolid {
         let mut polylines = Vec::new();
         // A crease line IS a polyline, so this is a terminal adapter: it flattens at the default
         // tolerance rather than passing one back up to the region.
-        for profile_loop in self.sketch.region() {
+        for profile_loop in self.sketch.region(context) {
             self.ring_edge_polylines(
                 &profile_loop.flatten(super::ARC_SAGITTA_TOLERANCE_VOXELS),
                 profile_min,
                 circle_segments,
+                context,
                 &mut polylines,
             );
         }
@@ -85,6 +90,7 @@ impl SketchSolid {
         boundary: &[SketchPoint],
         profile_min: [i64; 2],
         circle_segments: u32,
+        context: parametric::EvaluationContext,
         polylines: &mut Vec<Vec<[f32; 3]>>,
     ) {
         // The ring in 1/256-voxel FIXED POINT: sub-voxel coords quantize onto an integer
@@ -150,7 +156,7 @@ impl SketchSolid {
                 }
             }
             Operation::Revolve { axis, sweep } => {
-                let dimensions = self.grid_dimensions();
+                let dimensions = self.grid_dimensions(context);
                 let (axial_world_axis, axial_min, radial_a, radial_b) =
                     revolve_axes(axis, in_plane_0, in_plane_1, normal, profile_min);
                 let half_a = dimensions[radial_a] as f32 / 2.0;

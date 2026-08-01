@@ -37,6 +37,8 @@
 use super::*;
 use crate::sketch::{EntityId, EntityRole, Operation};
 use glam::Vec3;
+use parametric::EvaluationContext;
+use std::num::NonZeroU32;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
 /// A circle ready for display: its identity stays paired with its profile-space geometry.
@@ -161,6 +163,7 @@ impl Scene {
     /// A totally EMPTY sketch returns handles with no vertices: the plane frame and inverse
     /// map still stand, which is what lets a drawing tool place the FIRST point.
     pub fn sketch_handles(&self, node_id: NodeId, voxels_per_block: u32) -> Option<SketchHandles> {
+        let context = EvaluationContext::new(NonZeroU32::new(voxels_per_block)?);
         let node = self.node_by_id(node_id)?;
         if !node.enabled {
             return None;
@@ -185,7 +188,7 @@ impl Scene {
         // A sketch with nothing filled anchors on `[0, 0]`: it resolves to nothing, so there is
         // no solid to sit on and every point draws at its own offset from the node origin — where
         // the author put it, and where it stays as further points are placed around it.
-        let anchor = producer.profile_bbox_min();
+        let anchor = producer.profile_bbox_min(context);
 
         // The extent of the box the HANDLES occupy, which is theirs and not the resolve's — it
         // covers free points and open chains that no face contains. Construction points are
@@ -282,7 +285,7 @@ impl Scene {
                     arc.id,
                     position_of(arc.from)?,
                     position_of(arc.to)?,
-                    arc.bulge.to_degrees_f64(),
+                    arc.sweep_degrees(),
                 ))
             })
             .collect();
@@ -294,7 +297,7 @@ impl Scene {
                 Some(SketchCircleHandle {
                     entity: circle.id,
                     center: position_of(circle.center)?,
-                    radius: circle.radius.value(),
+                    radius: circle.resolved_radius(context),
                 })
             })
             .collect();
@@ -626,7 +629,10 @@ mod tests {
         let (scene, id) = scene_with_sketch(producer.sketch.clone(), 3, [0, 0, 0]);
         let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
         // The profile origin maps to producer-local zero exactly when the two anchors agree.
-        let anchor = producer.profile_bbox_min();
+        let anchor = producer.profile_bbox_min(
+            crate::sketch::evaluation_context_from_density(DENSITY)
+                .expect("test density is non-zero"),
+        );
         assert_eq!(
             handles.render_hit_to_profile(
                 handles.profile_to_render([anchor[0] as f64, anchor[1] as f64])

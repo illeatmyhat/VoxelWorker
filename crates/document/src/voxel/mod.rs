@@ -268,6 +268,6 @@ mod outset;
 mod sdf_shape;
 
 pub use composite::{CompositeMember, CompositeProducer};
-pub use field::Field;
+pub use field::{Field, PreparedField};
 pub use outset::OutsetProducer;
 pub use sdf_shape::{GeometryParams, SdfShape};

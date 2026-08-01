@@ -193,7 +193,12 @@ pub(super) fn revolve_box_within_sweep_arc(
 
 impl VoxelProducer for SketchSolid {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
-        let [full_x, full_y, full_z] = self.grid_dimensions();
+        let Some(context) = super::evaluation_context_from_density(voxels_per_block) else {
+            grid.dimensions = [0; 3];
+            grid.occupied.clear();
+            return;
+        };
+        let [full_x, full_y, full_z] = self.grid_dimensions(context);
         self.resolve_into(
             grid,
             voxels_per_block,
@@ -211,13 +216,27 @@ impl VoxelProducer for SketchSolid {
         window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     ) {
         profiling::scope!("sketch_resolve");
+        let Some(context) = super::evaluation_context_from_density(voxels_per_block) else {
+            grid.dimensions = [0; 3];
+            grid.occupied.clear();
+            return;
+        };
         match self.operation {
-            Operation::Extrude { height_voxels } => {
-                self.resolve_extrude(grid, voxels_per_block, height_voxels, window_local_voxels)
-            }
-            Operation::Revolve { axis, sweep } => {
-                self.resolve_revolve(grid, voxels_per_block, axis, sweep, window_local_voxels)
-            }
+            Operation::Extrude { height_voxels } => self.resolve_extrude(
+                grid,
+                voxels_per_block,
+                height_voxels,
+                window_local_voxels,
+                context,
+            ),
+            Operation::Revolve { axis, sweep } => self.resolve_revolve(
+                grid,
+                voxels_per_block,
+                axis,
+                sweep,
+                window_local_voxels,
+                context,
+            ),
         }
     }
 
@@ -257,11 +276,11 @@ impl VoxelProducer for SketchSolid {
         cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
         voxels_per_block: u32,
     ) -> Option<crate::voxel::FieldInterval> {
-        let _ = voxels_per_block;
         if cell_local_voxels.is_empty() {
             return None;
         }
-        let dimensions = self.grid_dimensions();
+        let context = super::evaluation_context_from_density(voxels_per_block)?;
+        let dimensions = self.grid_dimensions(context);
         let [full_x, full_y, full_z] = dimensions;
         // A degenerate (empty-occupancy) producer: every cell is AIR.
         let grid_aabb = voxel_core::spatial_index::VoxelAabb::new(
@@ -283,9 +302,9 @@ impl VoxelProducer for SketchSolid {
         });
         let provably_solid = fully_inside_extent
             && match self.operation {
-                Operation::Extrude { .. } => self.extrude_cell_is_solid(cell_local_voxels),
+                Operation::Extrude { .. } => self.extrude_cell_is_solid(cell_local_voxels, context),
                 Operation::Revolve { axis, sweep } => {
-                    self.revolve_cell_is_solid(cell_local_voxels, axis, sweep, dimensions)
+                    self.revolve_cell_is_solid(cell_local_voxels, axis, sweep, dimensions, context)
                 }
             };
 
@@ -304,7 +323,7 @@ impl VoxelProducer for SketchSolid {
             half_extent[axis] = 0.5 * (high - low);
         }
         let mut interval = crate::voxel::FieldInterval::from_lipschitz_center(
-            SketchSolid::signed_distance(self, center),
+            SketchSolid::signed_distance(self, center, context),
             metric.cell_circumradius(half_extent),
         );
 
@@ -336,8 +355,9 @@ impl VoxelProducer for SketchSolid {
         Some(interval)
     }
 
-    fn full_dimensions(&self, _voxels_per_block: u32) -> [u32; 3] {
-        self.grid_dimensions()
+    fn full_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
+        super::evaluation_context_from_density(voxels_per_block)
+            .map_or([0; 3], |context| self.grid_dimensions(context))
     }
 
     fn as_field(&self) -> Option<&dyn crate::voxel::Field> {
@@ -348,21 +368,70 @@ impl VoxelProducer for SketchSolid {
     /// voxels outright) — see [`SketchSolid::profile_edge_polylines_local`].
     fn edge_polylines_local(
         &self,
-        _voxels_per_block: u32,
+        voxels_per_block: u32,
         circle_segments: u32,
     ) -> Vec<Vec<[f32; 3]>> {
-        self.profile_edge_polylines_local(circle_segments)
+        super::evaluation_context_from_density(voxels_per_block).map_or_else(Vec::new, |context| {
+            self.profile_edge_polylines_local(circle_segments, context)
+        })
     }
 }
 
 impl crate::voxel::Field for SketchSolid {
     /// Density-independent: a sketch's geometry is authored in voxels outright, so unlike
     /// `Tube`'s block-authored wall there is nothing here that density could change.
-    fn signed_distance(&self, point_local_voxels: [f32; 3], _voxels_per_block: u32) -> f32 {
-        SketchSolid::signed_distance(self, point_local_voxels)
+    fn signed_distance(&self, point_local_voxels: [f32; 3], voxels_per_block: u32) -> f32 {
+        super::evaluation_context_from_density(voxels_per_block).map_or(f32::INFINITY, |context| {
+            SketchSolid::signed_distance(self, point_local_voxels, context)
+        })
     }
 
     fn metric(&self) -> substrate::geom2d::Metric {
         self.field_metric()
+    }
+
+    fn has_native_interval(&self) -> bool {
+        true
+    }
+
+    fn prepare(&self, voxels_per_block: u32) -> Box<dyn crate::voxel::PreparedField + '_> {
+        match super::evaluation_context_from_density(voxels_per_block) {
+            Some(context) => Box::new(self.prepare_field(context)),
+            None => Box::new(super::solid::PreparedSketchField::invalid(self)),
+        }
+    }
+}
+
+impl crate::voxel::PreparedField for super::solid::PreparedSketchField<'_> {
+    fn signed_distance(&self, point_local_voxels: [f32; 3]) -> f32 {
+        self.signed_distance_at(point_local_voxels)
+    }
+
+    fn metric(&self) -> substrate::geom2d::Metric {
+        match &self.inner {
+            super::solid::PreparedSketchFieldKind::Empty
+            | super::solid::PreparedSketchFieldKind::Extrude { .. } => {
+                substrate::geom2d::Metric::Chebyshev
+            }
+            super::solid::PreparedSketchFieldKind::Revolve(_) => {
+                substrate::geom2d::Metric::Euclidean
+            }
+        }
+    }
+
+    fn preserves_native_interval(&self) -> bool {
+        self.voxels_per_block != 0
+    }
+
+    fn native_cell_field_interval(
+        &self,
+        cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
+    ) -> crate::voxel::FieldInterval {
+        crate::voxel::VoxelProducer::cell_field_interval(
+            self.source,
+            cell_local_voxels,
+            self.voxels_per_block,
+        )
+        .expect("a prepared sketch field has an interval")
     }
 }

@@ -17,7 +17,7 @@
     clippy::similar_names
 )]
 
-use super::{Field, FieldInterval, VoxelProducer};
+use super::{Field, FieldInterval, PreparedField, VoxelProducer};
 use crate::scene::{CombineOp, LeafOrigin};
 use voxel_core::core_geom::BlockId;
 use voxel_core::spatial_index::VoxelAabb;
@@ -37,6 +37,94 @@ pub struct CompositeMember {
     /// own per-voxel materials (a nested composite, a VoxelBody).
     pub material: Option<BlockId>,
     pub producer: Box<dyn VoxelProducer>,
+}
+
+/// The field half of a [`CompositeProducer`] resolved once for one dense sampling operation.
+///
+/// Each child evaluator owns its density-dependent state (a sketch's resolved region included),
+/// so the composite fold never re-enters a child `Field` from its per-voxel loop.
+struct PreparedCompositeField<'a> {
+    members: Vec<PreparedCompositeMember<'a>>,
+    voxels_per_block: u32,
+}
+
+struct PreparedCompositeMember<'a> {
+    member: &'a CompositeMember,
+    field: Box<dyn PreparedField + 'a>,
+}
+
+impl PreparedCompositeField<'_> {
+    /// The composed distance AND the material at a point, in one prepared field fold.
+    fn sample(&self, point_local_voxels: [f32; 3]) -> (f32, Option<BlockId>) {
+        let mut distance = f32::INFINITY;
+        let mut last_inside_material: Option<BlockId> = None;
+        let mut nearest_material: Option<BlockId> = None;
+        let mut nearest_distance = f32::INFINITY;
+
+        for prepared in &self.members {
+            let member = prepared.member;
+            let local = std::array::from_fn(|axis| {
+                point_local_voxels[axis] - member.offset_voxels[axis] as f32
+            });
+            let member_distance = prepared.field.signed_distance(local);
+            match member.operation {
+                CombineOp::Union => {
+                    distance = distance.min(member_distance);
+                    let material = member
+                        .material
+                        .or_else(|| member.producer.material_at(local, self.voxels_per_block));
+                    if member_distance.is_sign_negative() {
+                        last_inside_material = material;
+                    }
+                    if member_distance < nearest_distance {
+                        nearest_distance = member_distance;
+                        nearest_material = material;
+                    }
+                }
+                CombineOp::Subtract => distance = distance.max(-member_distance),
+                CombineOp::Intersect => distance = distance.max(member_distance),
+                CombineOp::Emboss { amount } => {
+                    let raise = amount.to_voxels(self.voxels_per_block).unwrap_or(0) as f32;
+                    distance = if raise >= 0.0 {
+                        distance.min((distance - raise).max(member_distance))
+                    } else {
+                        distance.max((distance - raise).min(-member_distance))
+                    };
+                }
+            }
+        }
+        (distance, last_inside_material.or(nearest_material))
+    }
+}
+
+impl PreparedField for PreparedCompositeField<'_> {
+    fn signed_distance(&self, point_local_voxels: [f32; 3]) -> f32 {
+        self.sample(point_local_voxels).0
+    }
+
+    fn metric(&self) -> substrate::geom2d::Metric {
+        let all_square = self
+            .members
+            .iter()
+            .all(|prepared| prepared.field.metric() == substrate::geom2d::Metric::Chebyshev);
+        if all_square {
+            substrate::geom2d::Metric::Chebyshev
+        } else {
+            substrate::geom2d::Metric::Euclidean
+        }
+    }
+
+    fn preserves_native_interval(&self) -> bool {
+        true
+    }
+
+    /// Preserve the composite producer's native interval proof while evaluating child geometry
+    /// through the evaluators prepared for this sweep.
+    fn native_cell_field_interval(&self, cell_local_voxels: VoxelAabb) -> FieldInterval {
+        super::metric_cell_bracket(cell_local_voxels, self.metric(), |center| {
+            self.sample(center).0
+        })
+    }
 }
 
 /// A sealed composition scope — a **Part** or a sealed definition body — evaluated as ONE
@@ -83,6 +171,29 @@ impl CompositeProducer {
 
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
+    }
+
+    /// Prepare every field-bearing member once for one sampling operation. A fieldless member is
+    /// skipped exactly as the legacy field fold skips it; callers that need an honest composite
+    /// field still go through [`VoxelProducer::as_field`], which rejects the composite unless all
+    /// members have one.
+    fn prepare_field(&self, voxels_per_block: u32) -> PreparedCompositeField<'_> {
+        PreparedCompositeField {
+            members: self
+                .members
+                .iter()
+                .filter_map(|member| {
+                    member
+                        .producer
+                        .as_field()
+                        .map(|field| PreparedCompositeMember {
+                            member,
+                            field: field.prepare(voxels_per_block),
+                        })
+                })
+                .collect(),
+            voxels_per_block,
+        }
     }
 
     /// The member's own field distance at a composite-frame point, or `None` if its geometry
@@ -286,12 +397,13 @@ impl VoxelProducer for CompositeProducer {
             window_local_voxels.max[axis].clamp(low[axis], dimensions[axis] as i64)
         });
 
+        let prepared = self.prepare_field(voxels_per_block);
         let mut occupied = Vec::new();
         for k in low[2]..high[2] {
             for j in low[1]..high[1] {
                 for i in low[0]..high[0] {
                     let center = [i as f32 + 0.5, j as f32 + 0.5, k as f32 + 0.5];
-                    let (distance, material) = self.sample(center, voxels_per_block);
+                    let (distance, material) = prepared.sample(center);
                     if distance <= SURFACE_ISOLEVEL {
                         occupied.push(Voxel {
                             local_index: [i as i32, j as i32, k as i32],
@@ -370,6 +482,10 @@ impl Field for CompositeProducer {
         self.sample(point_local_voxels, voxels_per_block).0
     }
 
+    fn has_native_interval(&self) -> bool {
+        true
+    }
+
     /// **The weakest of the members' metrics**, so a group mixing a box and a sphere outsets
     /// round. That is sound rather than merely conventional: since `‖·‖∞ <= ‖·‖₂`, a field
     /// 1-Lipschitz under Chebyshev is automatically 1-Lipschitz under Euclidean, so widening
@@ -388,5 +504,99 @@ impl Field for CompositeProducer {
         } else {
             substrate::geom2d::Metric::Euclidean
         }
+    }
+
+    fn prepare(&self, voxels_per_block: u32) -> Box<dyn PreparedField + '_> {
+        Box::new(self.prepare_field(voxels_per_block))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::{LeafOrigin, NodeId};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct CountingField {
+        preparations: Arc<AtomicUsize>,
+    }
+
+    struct PreparedCountingField;
+
+    impl PreparedField for PreparedCountingField {
+        fn signed_distance(&self, _point_local_voxels: [f32; 3]) -> f32 {
+            -1.0
+        }
+
+        fn metric(&self) -> substrate::geom2d::Metric {
+            substrate::geom2d::Metric::Chebyshev
+        }
+    }
+
+    impl VoxelProducer for CountingField {
+        fn resolve(&self, grid: &mut VoxelGrid, _voxels_per_block: u32) {
+            grid.dimensions = [4, 4, 4];
+            grid.occupied.clear();
+        }
+
+        fn resolve_into(
+            &self,
+            grid: &mut VoxelGrid,
+            voxels_per_block: u32,
+            _window_local_voxels: VoxelAabb,
+        ) {
+            self.resolve(grid, voxels_per_block);
+        }
+
+        fn as_field(&self) -> Option<&dyn Field> {
+            Some(self)
+        }
+
+        fn full_dimensions(&self, _voxels_per_block: u32) -> [u32; 3] {
+            [4, 4, 4]
+        }
+    }
+
+    impl Field for CountingField {
+        fn signed_distance(&self, _point_local_voxels: [f32; 3], _voxels_per_block: u32) -> f32 {
+            -1.0
+        }
+
+        fn metric(&self) -> substrate::geom2d::Metric {
+            substrate::geom2d::Metric::Chebyshev
+        }
+
+        fn prepare(&self, _voxels_per_block: u32) -> Box<dyn PreparedField + '_> {
+            self.preparations.fetch_add(1, Ordering::Relaxed);
+            Box::new(PreparedCountingField)
+        }
+    }
+
+    #[test]
+    fn dense_composite_resolution_prepares_each_child_once_not_per_voxel() {
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let member = |node| CompositeMember {
+            offset_voxels: [0, 0, 0],
+            operation: CombineOp::Union,
+            source: LeafOrigin::authored(NodeId(node)),
+            material: Some(BlockId::DEFAULT),
+            producer: Box::new(CountingField {
+                preparations: Arc::clone(&preparations),
+            }),
+        };
+        let composite = CompositeProducer::new(vec![member(1), member(2)]);
+        let mut grid = VoxelGrid::new([0, 0, 0]);
+
+        composite.resolve(&mut grid, 16);
+
+        assert_eq!(grid.occupied_count(), 64, "the 4³ sample grid was walked");
+        assert_eq!(
+            preparations.load(Ordering::Relaxed),
+            2,
+            "one prepared evaluator per child, not once for each of 64 voxels"
+        );
     }
 }

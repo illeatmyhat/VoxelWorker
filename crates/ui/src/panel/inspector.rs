@@ -433,7 +433,9 @@ fn build_sketch_inspector_section(
 
     // Rectangle profiles expose editable Width/Depth; a custom polygon is read-only.
     // Operation-independent — the profile shape is the same whether extruded or revolved.
-    let rectangle_spans = producer.rectangle_in_plane_spans();
+    let rectangle_spans =
+        document::sketch::evaluation_context_from_density(state.scene.voxels_per_block)
+            .and_then(|context| producer.rectangle_in_plane_spans(context));
     let mut width_voxels = rectangle_spans.map(|spans| spans[0]).unwrap_or(1).max(1);
     let mut depth_voxels = rectangle_spans.map(|spans| spans[1]).unwrap_or(1).max(1);
 

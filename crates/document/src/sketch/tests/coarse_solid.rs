@@ -1,3 +1,4 @@
+use super::ctx;
 use super::*;
 use crate::sketch::RevolveAxis;
 use crate::voxel::VoxelProducer;
@@ -57,7 +58,7 @@ fn coarse_solid_cells_never_over_claim_against_a_per_voxel_sweep() {
     ];
 
     for (label, solid) in cases {
-        let dimensions = solid.grid_dimensions();
+        let dimensions = solid.grid_dimensions(ctx(16));
         // The per-voxel truth: resolve the whole producer and index the occupied set.
         let mut grid = VoxelGrid::default();
         solid.resolve(&mut grid, 1);
@@ -79,9 +80,9 @@ fn coarse_solid_cells_never_over_claim_against_a_per_voxel_sweep() {
                     ];
                     let cell = VoxelAabb::new([x, y, z], hi);
                     let claimed = match solid.operation {
-                        Operation::Extrude { .. } => solid.extrude_cell_is_solid(cell),
+                        Operation::Extrude { .. } => solid.extrude_cell_is_solid(cell, ctx(16)),
                         Operation::Revolve { axis, sweep } => {
-                            solid.revolve_cell_is_solid(cell, axis, sweep, dimensions)
+                            solid.revolve_cell_is_solid(cell, axis, sweep, dimensions, ctx(16))
                         }
                     };
                     if !claimed {

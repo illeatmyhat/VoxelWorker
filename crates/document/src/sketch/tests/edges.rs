@@ -1,3 +1,4 @@
+use super::ctx;
 use super::*;
 
 /// The L profile: 6 vertices, every one a true corner.
@@ -18,7 +19,7 @@ fn l_profile() -> Vec<SketchPoint> {
 #[test]
 fn l_extrude_catalogs_caps_and_six_laterals() {
     let solid = SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile()), 3);
-    let polylines = solid.profile_edge_polylines_local(96);
+    let polylines = solid.profile_edge_polylines_local(96, ctx(16));
     assert_eq!(polylines.len(), 8);
     let caps: Vec<_> = polylines.iter().filter(|p| p.len() == 7).collect();
     let laterals: Vec<_> = polylines.iter().filter(|p| p.len() == 2).collect();
@@ -60,7 +61,7 @@ fn split_segment_midpoint_is_tangent_and_adds_no_lateral() {
     };
     sketch.split_segment(seg_id, midpoint);
     let solid = SketchSolid::extrude(sketch, 2);
-    let polylines = solid.profile_edge_polylines_local(96);
+    let polylines = solid.profile_edge_polylines_local(96, ctx(16));
     let laterals = polylines.iter().filter(|p| p.len() == 2).count();
     let caps = polylines.iter().filter(|p| p.len() == 6).count();
     assert_eq!(laterals, 4, "the split vertex creases nothing");
@@ -79,7 +80,7 @@ fn full_revolve_catalogs_latitude_circles_only() {
         RevolveAxis::InPlane0,
         360,
     );
-    let polylines = solid.profile_edge_polylines_local(96);
+    let polylines = solid.profile_edge_polylines_local(96, ctx(16));
     assert_eq!(polylines.len(), 2, "two off-axis corners, two circles");
     for circle in &polylines {
         assert_eq!(circle.len(), 97, "96 segments, closed");
@@ -106,7 +107,7 @@ fn partial_revolve_catalogs_arcs_and_end_meridians() {
         RevolveAxis::InPlane0,
         90,
     );
-    let polylines = solid.profile_edge_polylines_local(96);
+    let polylines = solid.profile_edge_polylines_local(96, ctx(16));
     let arcs: Vec<_> = polylines.iter().filter(|p| p.len() == 25).collect();
     let meridians: Vec<_> = polylines.iter().filter(|p| p.len() == 5).collect();
     assert_eq!(arcs.len(), 2, "quarter arcs at 24 + 1 points");
@@ -139,7 +140,7 @@ fn straddling_partial_revolve_outline_folds_at_the_axis() {
         RevolveAxis::InPlane0,
         90,
     );
-    let polylines = solid.profile_edge_polylines_local(96);
+    let polylines = solid.profile_edge_polylines_local(96, ctx(16));
     // All four vertices sit at |radial| = 2: four arcs.
     let arcs = polylines.iter().filter(|p| p.len() == 25).count();
     assert_eq!(arcs, 4);
@@ -160,13 +161,13 @@ fn straddling_partial_revolve_outline_folds_at_the_axis() {
 #[test]
 fn degenerate_solids_catalog_nothing() {
     let flat = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 0);
-    assert!(flat.profile_edge_polylines_local(96).is_empty());
+    assert!(flat.profile_edge_polylines_local(96, ctx(16)).is_empty());
     let unswept = SketchSolid::revolve(
         Sketch::rectangle(PlaneAxis::Z, 4, 3),
         RevolveAxis::InPlane0,
         0,
     );
-    assert!(unswept.profile_edge_polylines_local(96).is_empty());
+    assert!(unswept.profile_edge_polylines_local(96, ctx(16)).is_empty());
 }
 
 /// An arc reaches the boundary as a run of tessellation samples. Those are steps around a
@@ -202,7 +203,7 @@ fn an_arc_creases_only_at_its_authored_ends() {
         .expect("a half turn under the box");
 
     let solid = SketchSolid::extrude(sketch, 3);
-    let polylines = solid.profile_edge_polylines_local(96);
+    let polylines = solid.profile_edge_polylines_local(96, ctx(16));
     let laterals = polylines.iter().filter(|p| p.len() == 2).count();
     assert_eq!(laterals, 4, "one per authored corner, none per chord");
     // The caps still trace the FULL tessellated outline — the curve is drawn, just not creased.
