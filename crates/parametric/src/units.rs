@@ -718,11 +718,11 @@ fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseEr
             });
         };
         let numerator = if negative {
-            unsigned_numerator
-                .checked_neg()
-                .ok_or_else(|| MeasurementParseError::InvalidNumber {
+            unsigned_numerator.checked_neg().ok_or_else(|| {
+                MeasurementParseError::InvalidNumber {
                     number_text: token.to_string(),
-                })?
+                }
+            })?
         } else {
             unsigned_numerator
         };

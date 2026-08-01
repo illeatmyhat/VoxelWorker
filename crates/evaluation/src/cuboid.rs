@@ -131,7 +131,24 @@ fn region_from_voxel_grid(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::items_after_statements, clippy::manual_midpoint, clippy::panic, clippy::redundant_clone, clippy::too_many_lines, clippy::unwrap_used)]
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::indexing_slicing,
+        clippy::items_after_statements,
+        clippy::manual_midpoint,
+        clippy::panic,
+        clippy::redundant_clone,
+        clippy::too_many_lines,
+        clippy::unwrap_used
+    )]
 
     use super::*;
     use voxel_core::voxel::{Voxel, VoxelGrid};

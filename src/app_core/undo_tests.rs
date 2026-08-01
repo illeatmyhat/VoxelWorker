@@ -1,4 +1,9 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unreachable, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::unwrap_used
+)]
 
 use super::selection_of_first_root;
 use super::*;

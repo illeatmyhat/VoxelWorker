@@ -26,12 +26,10 @@ impl CustomFolderSource {
     /// chiselable test is a substring match.
     #[must_use]
     pub fn new(folder: PathBuf) -> Self {
-        let leaf = folder
-            .file_name()
-            .map_or_else(
-                || folder.to_string_lossy().into_owned(),
-                |name| name.to_string_lossy().into_owned(),
-            );
+        let leaf = folder.file_name().map_or_else(
+            || folder.to_string_lossy().into_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         Self {
             display_name: format!("Custom folder ({leaf})"),
             folder,

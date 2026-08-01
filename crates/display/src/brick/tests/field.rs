@@ -259,7 +259,10 @@ fn clipmap_pyramid_is_conservative_and_sorted() {
         ] {
             assert_eq!(level.blocks_per_cell, blocks_per_cell);
             assert!(
-                level.cell_keys.array_windows::<2>().all(|pair| pair[0] < pair[1]),
+                level
+                    .cell_keys
+                    .array_windows::<2>()
+                    .all(|pair| pair[0] < pair[1]),
                 "level {blocks_per_cell} keys must be sorted strictly ascending + unique"
             );
             // Truth: the cell of every record must be present (superset ⇒ the

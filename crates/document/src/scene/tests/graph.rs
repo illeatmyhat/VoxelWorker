@@ -1,11 +1,11 @@
 use super::*;
-use std::collections::HashSet;
 use crate::debug_clouds::DebugCloudField;
 use crate::voxel::GeometryParams;
 use crate::voxel::SdfShape;
 use crate::voxel::VoxelProducer;
 use parametric::units::ExactRational;
 use parametric::units::Measurement;
+use std::collections::HashSet;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 use voxel_core::voxel::VoxelGrid;

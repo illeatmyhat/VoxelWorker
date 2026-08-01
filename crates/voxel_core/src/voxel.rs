@@ -272,8 +272,8 @@ fn widest_run_over<'voxel>(
         if i < 0 || i >= i64::from(grid_x) || j < 0 || j >= i64::from(grid_y) {
             continue;
         }
-        let key = (u64::try_from(k).unwrap_or_default() << 32)
-            | u64::try_from(j).unwrap_or_default();
+        let key =
+            (u64::try_from(k).unwrap_or_default() << 32) | u64::try_from(j).unwrap_or_default();
         let row = rows.entry(key).or_insert_with(|| vec![false; width]);
         if let Some(cell) = row.get_mut(usize::try_from(i).unwrap_or_default()) {
             *cell = true;

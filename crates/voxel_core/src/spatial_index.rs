@@ -75,8 +75,8 @@ impl ChunkCoverage for VoxelAabb {
         // Voxel corners are i64 (a far-placed leaf); the chunk extent is small, so
         // the division happens in i64 and the chunk-coord QUOTIENT narrows to i32
         // safely (≤ ±2.5×10⁸ for offsets up to ±10⁹ blocks).
-        let chunk_extent_voxels = i64::from(CHUNK_BLOCKS)
-            .saturating_mul(i64::from(voxels_per_block.max(1)));
+        let chunk_extent_voxels =
+            i64::from(CHUNK_BLOCKS).saturating_mul(i64::from(voxels_per_block.max(1)));
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
         for axis in 0..3 {
@@ -259,8 +259,7 @@ fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
         "chunk coordinate {chunk_coord} overflows i32 — block offset past the \
          supported range (S4a)"
     );
-    i32::try_from(chunk_coord.clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
-        .unwrap_or_default()
+    i32::try_from(chunk_coord.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or_default()
 }
 
 impl From<VoxelAabb> for VoxelAabbKey {

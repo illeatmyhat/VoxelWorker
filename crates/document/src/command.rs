@@ -1,4 +1,8 @@
-#![allow(clippy::doc_markdown, clippy::too_long_first_doc_paragraph, clippy::use_self)]
+#![allow(
+    clippy::doc_markdown,
+    clippy::too_long_first_doc_paragraph,
+    clippy::use_self
+)]
 
 //! The linear command stack — inverse-based undo/redo.
 //!

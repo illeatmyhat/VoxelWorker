@@ -11,7 +11,24 @@ pub use crate::store::{ChunkCacheKey, ChunkResolveCache, Store};
 // the app's dev-dependency on `document`'s `oracle` feature (test builds only).
 #[cfg(test)]
 mod scene_cache_equivalence_tests {
-    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::items_after_statements, clippy::manual_midpoint, clippy::panic, clippy::redundant_clone, clippy::too_many_lines, clippy::unwrap_used)]
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::indexing_slicing,
+        clippy::items_after_statements,
+        clippy::manual_midpoint,
+        clippy::panic,
+        clippy::redundant_clone,
+        clippy::too_many_lines,
+        clippy::unwrap_used
+    )]
 
     use crate::store::ChunkResolveCache;
     use document::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
@@ -217,54 +234,56 @@ mod scene_cache_equivalence_tests {
         };
 
         // Run the four-invariant battery on one scene, returning its decoded cell set.
-        let check =
-            |scene: &Scene, vpb: u32, label: &str| -> std::collections::BTreeSet<[i64; 3]> {
-                let dims = scene.placed_region_dimensions(vpb);
-                let monolithic = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
-                let mut cache = ChunkResolveCache::new();
-                let assembled = cache.resolve_region(scene, vpb, 0);
+        let check = |scene: &Scene,
+                     vpb: u32,
+                     label: &str|
+         -> std::collections::BTreeSet<[i64; 3]> {
+            let dims = scene.placed_region_dimensions(vpb);
+            let monolithic = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+            let mut cache = ChunkResolveCache::new();
+            let assembled = cache.resolve_region(scene, vpb, 0);
 
-                assert_eq!(
-                    monolithic.dimensions, dims,
-                    "[{label}] monolithic dims voxel-framed"
-                );
-                assert_eq!(
-                    assembled.dimensions, dims,
-                    "[{label}] assembled dims voxel-framed"
-                );
+            assert_eq!(
+                monolithic.dimensions, dims,
+                "[{label}] monolithic dims voxel-framed"
+            );
+            assert_eq!(
+                assembled.dimensions, dims,
+                "[{label}] assembled dims voxel-framed"
+            );
 
-                // (a) every center is a half-integer.
-                for voxel in &monolithic.occupied {
-                    let position = voxel.world_position();
-                    for axis in 0..3 {
-                        assert_eq!(
+            // (a) every center is a half-integer.
+            for voxel in &monolithic.occupied {
+                let position = voxel.world_position();
+                for axis in 0..3 {
+                    assert_eq!(
                         position[axis].fract().abs(),
                         0.5,
                         "[{label}] center {position:?} axis {axis} must be a half-integer (on the lattice)"
                     );
-                    }
                 }
-                // (c) every decoded index is in [0, dim).
-                for voxel in &monolithic.occupied {
-                    let position = voxel.world_position();
-                    for (axis, &dim) in dims.iter().enumerate() {
-                        let half = (dim / 2) as f32;
-                        let index = (position[axis] + half - 0.5).round() as i64;
-                        assert!(
+            }
+            // (c) every decoded index is in [0, dim).
+            for voxel in &monolithic.occupied {
+                let position = voxel.world_position();
+                for (axis, &dim) in dims.iter().enumerate() {
+                    let half = (dim / 2) as f32;
+                    let index = (position[axis] + half - 0.5).round() as i64;
+                    assert!(
                         index >= 0 && index < dim as i64,
                         "[{label}] voxel {position:?} axis {axis} decodes to {index} OUTSIDE [0, {dim})"
                     );
-                    }
                 }
-                // (d) the two paths emit the identical voxel set.
-                assert_eq!(
-                    multiset(&monolithic),
-                    multiset(&assembled),
-                    "[{label}] monolithic and chunk paths must emit the identical voxel set"
-                );
-                assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty");
-                decode_cells(&monolithic)
-            };
+            }
+            // (d) the two paths emit the identical voxel set.
+            assert_eq!(
+                multiset(&monolithic),
+                multiset(&assembled),
+                "[{label}] monolithic and chunk paths must emit the identical voxel set"
+            );
+            assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty");
+            decode_cells(&monolithic)
+        };
 
         for vpb in [1u32, 2, 5, 15, 16] {
             // --- single shape: a Box fully fills `size·d`³ cells, zero dropped (b). ---

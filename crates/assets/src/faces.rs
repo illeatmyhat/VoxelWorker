@@ -602,8 +602,8 @@ fn variant_face_score(paths: &[PathBuf; 6]) -> i32 {
     }
     // up is distinct from the side: prefer the variant where fewer faces share
     // the up texture (i.e. up is the special/minority face → it reads as "top").
-    let faces_matching_up = i32::try_from(paths.iter().filter(|path| *path == up).count())
-        .unwrap_or(i32::MAX);
+    let faces_matching_up =
+        i32::try_from(paths.iter().filter(|path| *path == up).count()).unwrap_or(i32::MAX);
     // Base score 10 for being distinct, minus how widespread the up texture is.
     10i32.saturating_sub(faces_matching_up)
 }
@@ -652,10 +652,9 @@ fn clean_texture_path(reference: &str) -> String {
 
 /// The directory portion of a `a/b/c` path (`a/b`), or empty if no slash.
 fn directory_of(path: &str) -> String {
-    path.rfind('/').map_or_else(
-        String::new,
-        |slash| path.get(..slash).unwrap_or_default().to_string(),
-    )
+    path.rfind('/').map_or_else(String::new, |slash| {
+        path.get(..slash).unwrap_or_default().to_string()
+    })
 }
 
 #[cfg(test)]

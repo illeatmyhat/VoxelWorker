@@ -272,11 +272,7 @@ impl LeafBody<'_> {
 
     /// The leaf's emitted grid extent in voxels, grown by its outset — `None` for a body with
     /// no localizable extent.
-    pub fn grid_voxels(
-        &self,
-        voxels_per_block: u32,
-        outset_voxels: i64,
-    ) -> Option<[i64; 3]> {
+    pub fn grid_voxels(&self, voxels_per_block: u32, outset_voxels: i64) -> Option<[i64; 3]> {
         let dimensions = match self {
             LeafBody::Content(content) => {
                 return leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels)
@@ -569,10 +565,7 @@ pub fn leaf_producer_grid_voxels(
 ///
 /// Falling back to zero is the safe direction: an unresolvable outset leaves the body
 /// undilated rather than dilating it by a wrong amount.
-pub fn outset_voxels_at(
-    outset: parametric::units::Measurement,
-    voxels_per_block: u32,
-) -> i64 {
+pub fn outset_voxels_at(outset: parametric::units::Measurement, voxels_per_block: u32) -> i64 {
     outset.to_voxels(voxels_per_block).unwrap_or(0)
 }
 

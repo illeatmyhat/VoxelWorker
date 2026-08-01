@@ -1,4 +1,8 @@
-#![allow(clippy::doc_markdown, clippy::missing_const_for_fn, clippy::too_long_first_doc_paragraph)]
+#![allow(
+    clippy::doc_markdown,
+    clippy::missing_const_for_fn,
+    clippy::too_long_first_doc_paragraph
+)]
 
 //! The scene (assembly) model: an assembly graph of **nodes**, each wrapping a producer
 //! plus a placement. ALL voxel resolution routes through it.

@@ -304,7 +304,7 @@ fn collect_junction_segments_true_world(
             );
             truncated |= outcome.seed_budget_exhausted || outcome.step_budget_exhausted;
             for curve in outcome.curves {
-            for pair in curve.points.array_windows::<2>() {
+                for pair in curve.points.array_windows::<2>() {
                     out.push(pair[0].to_array());
                     out.push(pair[1].to_array());
                 }

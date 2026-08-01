@@ -1110,7 +1110,20 @@ mod continuity_schema_tests {
     //! The continuous rotation + local offset default to identity, so a payload omitting
     //! them loads byte-identical to a pure integer placement; a rotated placement must
     //! survive a JSON round-trip.
-    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::unwrap_used
+    )]
 
     use super::*;
 

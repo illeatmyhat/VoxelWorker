@@ -299,7 +299,10 @@ mod tests {
 
         // Sorted strictly ascending + unique.
         assert!(
-            level.cell_keys.array_windows::<2>().all(|pair| pair[0] < pair[1]),
+            level
+                .cell_keys
+                .array_windows::<2>()
+                .all(|pair| pair[0] < pair[1]),
             "cell keys must be strictly ascending and unique"
         );
 

@@ -1,8 +1,8 @@
 use super::*;
-use std::collections::BTreeSet;
 use crate::scene::producers::{outset_voxels_at, VisitedLeaf};
 use crate::voxel::GeometryParams;
 use crate::voxel::SdfShape;
+use std::collections::BTreeSet;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::ShapeKind;
