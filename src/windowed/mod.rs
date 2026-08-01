@@ -364,6 +364,8 @@ struct WindowedState {
     /// [`sketch_arc_lines`](Self::sketch_arc_lines) because that one is drawing state in egui
     /// points and this one is hit-test state in physical px, exactly as the segment pair splits.
     sketch_arc_chords: Vec<(document::sketch::EntityId, Vec<egui::Pos2>)>,
+    /// Each committed circle as `(circle id, its projected ring in physical px)` for this frame.
+    sketch_circle_chords: Vec<(document::sketch::EntityId, Vec<egui::Pos2>)>,
     /// Each derived region as `(its key, its boundary polygon in PHYSICAL px)` for this frame
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.
@@ -430,6 +432,10 @@ struct WindowedState {
         document::sketch::EntityId,
         Option<document::sketch::EntityId>,
     )>,
+    /// The center selected by Circle Center-Diameter while it waits for the perimeter click.
+    sketch_circle_center: Option<document::sketch::SketchPoint>,
+    /// The sketch that owns the pending Circle Center-Diameter center.
+    sketch_circle_target: Option<document::scene::NodeId>,
     /// Whether the most recent left-press armed a sketch **selection** resolve (sketch mode, the
     /// Select tool, on the live viewport — NOT egui chrome or the cube). A STATIONARY release with
     /// this set resolves the click into the selection; a drag leaves it (the vertex move happens
@@ -793,6 +799,7 @@ impl WindowedState {
             sketch_segment_lines: Vec::new(),
             sketch_arc_lines: Vec::new(),
             sketch_arc_chords: Vec::new(),
+            sketch_circle_chords: Vec::new(),
             sketch_face_polygons: Vec::new(),
             sketch_menu_face: None,
             sketch_insert_preview: None,
@@ -805,6 +812,8 @@ impl WindowedState {
             sketch_chain: None,
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
+            sketch_circle_center: None,
+            sketch_circle_target: None,
             sketch_select_press: false,
             sketch_marquee_anchor: None,
             sketch_marquee_band: None,
@@ -945,6 +954,7 @@ impl WindowedState {
             sketch_segment_lines: _,
             sketch_arc_lines: _,
             sketch_arc_chords: _,
+            sketch_circle_chords: _,
             sketch_face_polygons: _,
             sketch_menu_face: _,
             sketch_insert_preview: _,
@@ -994,6 +1004,8 @@ impl WindowedState {
             sketch_chain: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
+            sketch_circle_center: _,
+            sketch_circle_target: _,
             sketch_select_press: _,
             sketch_marquee_anchor: _,
             sketch_marquee_band: _,

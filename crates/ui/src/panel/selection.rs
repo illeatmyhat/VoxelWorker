@@ -53,6 +53,13 @@ pub enum SelectionTarget {
         /// The arc's id within that sketch.
         entity: EntityId,
     },
+    /// A closed circular edge of a sketch profile.
+    SketchCircle {
+        /// The sketch node that owns the entity counter this id came from.
+        sketch: NodeId,
+        /// The circle's id within that sketch.
+        entity: EntityId,
+    },
     /// A CONSTRAINT on a sketch. It draws no geometry, but it is an
     /// entity in the same id space as the rest and it is picked the same way — by clicking the
     /// badge that stands for it. Being selectable is what makes it deletable one at a time,
@@ -74,6 +81,7 @@ impl SelectionTarget {
             SelectionTarget::SketchPoint { sketch, .. }
             | SelectionTarget::SketchSegment { sketch, .. }
             | SelectionTarget::SketchArc { sketch, .. }
+            | SelectionTarget::SketchCircle { sketch, .. }
             | SelectionTarget::SketchConstraint { sketch, .. } => Some(sketch),
             SelectionTarget::Node(_) | SelectionTarget::ReferencePoint(_) => None,
         }
@@ -95,7 +103,8 @@ impl SelectionTarget {
             | SelectionTarget::ReferencePoint(_)
             | SelectionTarget::SketchPoint { .. }
             | SelectionTarget::SketchSegment { .. }
-            | SelectionTarget::SketchArc { .. } => true,
+            | SelectionTarget::SketchArc { .. }
+            | SelectionTarget::SketchCircle { .. } => true,
             SelectionTarget::SketchConstraint { .. } => false,
         }
     }
@@ -268,6 +277,17 @@ impl Selection {
         })
     }
 
+    /// The picked CIRCLE ids of `sketch`, in pick order.
+    pub fn sketch_circles(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
+        self.targets.iter().filter_map(move |target| match *target {
+            SelectionTarget::SketchCircle {
+                sketch: owner,
+                entity,
+            } if owner == sketch => Some(entity),
+            _ => None,
+        })
+    }
+
     /// The picked CONSTRAINT ids of `sketch`, in pick order.
     pub fn sketch_constraints(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
         self.targets.iter().filter_map(move |target| match *target {
@@ -310,6 +330,8 @@ impl Selection {
                 .is_some_and(|s| s.segments().iter().any(|segment| segment.id == entity)),
             SelectionTarget::SketchArc { sketch, entity } => sketch_of(scene, sketch)
                 .is_some_and(|s| s.arcs().iter().any(|arc| arc.id == entity)),
+            SelectionTarget::SketchCircle { sketch, entity } => sketch_of(scene, sketch)
+                .is_some_and(|s| s.circles().iter().any(|circle| circle.id == entity)),
             SelectionTarget::SketchConstraint { sketch, entity } => sketch_of(scene, sketch)
                 .is_some_and(|s| s.constraints().iter().any(|held| held.id == entity)),
         });
@@ -460,6 +482,27 @@ mod tests {
         );
     }
 
+    fn circle(entity: EntityId) -> SelectionTarget {
+        SelectionTarget::SketchCircle {
+            sketch: SKETCH,
+            entity,
+        }
+    }
+
+    #[test]
+    fn a_circle_is_its_own_kind() {
+        let mut selection = Selection::default();
+        selection.toggle(vertex(7));
+        selection.toggle(edge(7));
+        selection.toggle(curve(7));
+        selection.toggle(circle(7));
+        assert_eq!(selection.len(), 4);
+        assert_eq!(
+            selection.sketch_circles(SKETCH).collect::<Vec<_>>(),
+            vec![7]
+        );
+    }
+
     /// A constraint of the fixture sketch.
     fn assertion(entity: EntityId) -> SelectionTarget {
         SelectionTarget::SketchConstraint {
@@ -492,7 +535,7 @@ mod tests {
     /// over a sketch selection filters on this, so the answer is decided once.
     #[test]
     fn only_geometry_has_a_position_a_transform_could_move() {
-        for target in [FIRST, POINT, vertex(1), edge(2), curve(3)] {
+        for target in [FIRST, POINT, vertex(1), edge(2), curve(3), circle(4)] {
             assert!(target.is_positional(), "{target:?} should be movable");
         }
         assert!(!assertion(4).is_positional());

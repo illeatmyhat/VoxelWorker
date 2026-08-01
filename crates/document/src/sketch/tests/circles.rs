@@ -389,6 +389,39 @@ fn an_impossible_radius_is_refused() {
     assert_eq!(sketch.circles()[0].radius.value(), 7.0);
 }
 
+/// The center-diameter tool keeps its perimeter sample transient: only a center and radius enter
+/// the document, and a coincident second click is not a history-worthy edit.
+#[test]
+fn center_diameter_reuses_or_mints_only_its_center() {
+    let empty = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+    let made = empty.with_circle_center_diameter(SketchPoint::new(2, 3), SketchPoint::new(6, 3));
+    assert_eq!(
+        made.sketch.points().len(),
+        1,
+        "the perimeter is not a point entity"
+    );
+    assert_eq!(made.sketch.points()[0].role, EntityRole::Construction);
+    assert_eq!(made.sketch.circles()[0].radius.value(), 4.0);
+    let circle = made.sketch.circles()[0].id;
+    let removed = made.with_circle_deleted(circle);
+    assert!(removed.sketch.circles().is_empty());
+    assert!(
+        removed.sketch.points().is_empty(),
+        "deleting a selected circle prunes only its orphan construction center"
+    );
+
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let center = sketch.add_free_point(SketchPoint::new(2, 3));
+    let reused = SketchSolid::extrude(sketch, 3)
+        .with_circle_center_diameter(SketchPoint::new(2, 3), SketchPoint::new(2, 8));
+    assert_eq!(reused.sketch.points().len(), 1, "the real center is reused");
+    assert_eq!(reused.sketch.circles()[0].center, center);
+
+    let unchanged =
+        reused.with_circle_center_diameter(SketchPoint::new(2, 3), SketchPoint::new(2, 3));
+    assert_eq!(unchanged, reused, "a zero-radius gesture is a pure no-op");
+}
+
 /// The full turn stays out of the ARC form on purpose: its chord is zero-length, so there is no
 /// circle to recover from it. That is what `Circle` is for.
 #[test]

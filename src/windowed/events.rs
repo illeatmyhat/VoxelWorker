@@ -158,7 +158,8 @@ impl ApplicationHandler for App {
                                     // Arm the edit; a stationary release performs it.
                                     ui::panel::SketchTool::AddPoint
                                     | ui::panel::SketchTool::Polyline
-                                    | ui::panel::SketchTool::ThreePointArc => {
+                                    | ui::panel::SketchTool::ThreePointArc
+                                    | ui::panel::SketchTool::CircleCenterDiameter => {
                                         state.sketch_edit_press = true;
                                     }
                                     // #99: the rectangle is a press-drag-release gesture — the
@@ -281,6 +282,9 @@ impl ApplicationHandler for App {
                                     // solves the bulge; commits internally.
                                     ui::panel::SketchTool::ThreePointArc => {
                                         state.sketch_arc_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::CircleCenterDiameter => {
+                                        state.sketch_circle_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Rectangle => {}

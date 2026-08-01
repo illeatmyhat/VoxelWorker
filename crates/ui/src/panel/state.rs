@@ -314,6 +314,8 @@ pub enum SketchTool {
     /// through-point is consumed — the stored form is the two endpoints plus the solved included
     /// angle.
     ThreePointArc,
+    /// Draw a circle: click its center, then a point on its perimeter.
+    CircleCenterDiameter,
 }
 
 /// The floating Signal **display stack**'s viewer state.

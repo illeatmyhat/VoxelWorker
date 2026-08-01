@@ -1298,9 +1298,33 @@ impl WindowedState {
         nearest
     }
 
-    /// The sketch EDGE under the cursor — the nearer of the closest segment and the closest arc
-    /// (#102). One resolution so hover feedback and the click that follows it can never
-    /// disagree about which edge the cursor is on.
+    /// The sketch CIRCLE under the cursor (physical px), measured against its projected ring.
+    fn nearest_sketch_circle(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<(document::sketch::EntityId, f32)> {
+        let pad_px = ui::chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        let mut nearest: Option<(document::sketch::EntityId, f32)> = None;
+        for (circle_id, ring) in &self.sketch_circle_chords {
+            let Some(distance) = ring
+                .array_windows::<2>()
+                .map(|pair| point_to_segment_distance(cursor, pair[0], pair[1]))
+                .min_by(|a, b| a.total_cmp(b))
+            else {
+                continue;
+            };
+            if distance <= pad_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
+                nearest = Some((*circle_id, distance));
+            }
+        }
+        nearest
+    }
+
+    /// The sketch EDGE under the cursor — the nearest segment or curve. One resolution so hover
+    /// feedback and the click that follows it can never disagree about which edge the cursor is
+    /// on.
     pub(super) fn nearest_sketch_edge(
         &self,
         cursor_x: f64,
@@ -1310,17 +1334,17 @@ impl WindowedState {
         let segment = self
             .nearest_sketch_segment(cursor_x, cursor_y)
             .map(|(id, a, b)| (id, point_to_segment_distance(cursor, a, b)));
-        let arc = self.nearest_sketch_arc(cursor_x, cursor_y);
-        match (segment, arc) {
-            (Some((seg_id, seg_d)), Some((arc_id, arc_d))) => Some(if arc_d < seg_d {
-                SketchEdgeHit::Arc(arc_id)
-            } else {
-                SketchEdgeHit::Segment(seg_id)
-            }),
-            (Some((seg_id, _)), None) => Some(SketchEdgeHit::Segment(seg_id)),
-            (None, Some((arc_id, _))) => Some(SketchEdgeHit::Arc(arc_id)),
-            (None, None) => None,
-        }
+        let arc = self
+            .nearest_sketch_arc(cursor_x, cursor_y)
+            .map(|(id, distance)| (SketchEdgeHit::Arc(id), distance));
+        let circle = self
+            .nearest_sketch_circle(cursor_x, cursor_y)
+            .map(|(id, distance)| (SketchEdgeHit::Circle(id), distance));
+        nearest_sketch_edge_from_candidates([
+            segment.map(|(id, distance)| (SketchEdgeHit::Segment(id), distance)),
+            arc,
+            circle,
+        ])
     }
 
     /// The id of the sketch SEGMENT under the cursor (physical px), for add-point — the click
@@ -1519,6 +1543,30 @@ impl WindowedState {
         }
     }
 
+    /// One Circle Center-Diameter click. The first captures the center without writing; the
+    /// second supplies only the radius and commits the whole circle as one profile edit.
+    pub(super) fn sketch_circle_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(point) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some((center, perimeter)) =
+            advance_circle_center_diameter_gesture(&mut self.sketch_circle_center, point)
+        else {
+            self.sketch_circle_target = Some(target);
+            return;
+        };
+        self.sketch_circle_target = None;
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        if let Some(next) = complete_circle_center_diameter(&producer, center, perimeter) {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
     /// #99: the rectangle tool's release. Takes the press-time anchor corner; a release whose
     /// snapped opposite corner spans both in-plane axes appends the closed four-segment loop
     /// as one undo entry — a degenerate (zero-span) or off-plane release draws nothing. Either
@@ -1624,6 +1672,15 @@ impl WindowedState {
             };
             if hit {
                 picked.push(ui::panel::SelectionTarget::SketchArc {
+                    sketch,
+                    entity: *entity,
+                });
+            }
+        }
+        for (entity, ring) in &self.sketch_circle_chords {
+            let hit = circle_marquee_hit(ring, rect, window);
+            if hit {
+                picked.push(ui::panel::SelectionTarget::SketchCircle {
                     sketch,
                     entity: *entity,
                 });
@@ -1773,11 +1830,14 @@ impl WindowedState {
             || self.sketch_chain.is_some()
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
-            || self.sketch_arc_gesture.is_some();
+            || self.sketch_arc_gesture.is_some()
+            || self.sketch_circle_center.is_some();
         self.sketch_chain = None;
         self.sketch_rect_anchor = None;
         self.sketch_marquee_anchor = None;
         self.sketch_arc_gesture = None;
+        self.sketch_circle_center = None;
+        self.sketch_circle_target = None;
         live
     }
 
@@ -2055,6 +2115,9 @@ impl WindowedState {
                 SketchEdgeHit::Arc(entity) => {
                     ui::panel::SelectionTarget::SketchArc { sketch, entity }
                 }
+                SketchEdgeHit::Circle(entity) => {
+                    ui::panel::SelectionTarget::SketchCircle { sketch, entity }
+                }
             })
     }
 
@@ -2151,6 +2214,7 @@ impl WindowedState {
         let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
         let segments: Vec<_> = self.panel_state.selection.sketch_segments(target).collect();
         let arcs: Vec<_> = self.panel_state.selection.sketch_arcs(target).collect();
+        let circles: Vec<_> = self.panel_state.selection.sketch_circles(target).collect();
         let constraints: Vec<_> = self
             .panel_state
             .selection
@@ -2165,6 +2229,9 @@ impl WindowedState {
         }
         for arc_id in arcs {
             next = next.with_arc_deleted(arc_id);
+        }
+        for circle_id in circles {
+            next = next.with_circle_deleted(circle_id);
         }
         for constraint_id in constraints {
             next = next.with_constraint_deleted(constraint_id);
@@ -2477,7 +2544,7 @@ impl WindowedState {
                 .map(ui::panel::SketchEntity::Point),
             ui::panel::SlotKind::Segment => match self.nearest_sketch_edge(cursor_x, cursor_y)? {
                 SketchEdgeHit::Segment(id) => Some(ui::panel::SketchEntity::Segment(id)),
-                SketchEdgeHit::Arc(_) => None,
+                SketchEdgeHit::Arc(_) | SketchEdgeHit::Circle(_) => None,
             },
         }
     }
@@ -2627,6 +2694,7 @@ impl WindowedState {
         self.sketch_segment_lines.clear();
         self.sketch_arc_lines.clear();
         self.sketch_arc_chords.clear();
+        self.sketch_circle_chords.clear();
         self.sketch_face_polygons.clear();
         self.sketch_constraint_badges.clear();
         self.sketch_insert_preview = None;
@@ -2639,6 +2707,8 @@ impl WindowedState {
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
+            self.sketch_circle_center = None;
+            self.sketch_circle_target = None;
             // #100: so does the region a closed menu was acting on.
             self.sketch_menu_face = None;
             return;
@@ -2664,6 +2734,10 @@ impl WindowedState {
         }
         if tool != ui::panel::SketchTool::ThreePointArc {
             self.sketch_arc_gesture = None;
+        }
+        if !circle_gesture_is_current(tool, target, self.sketch_circle_target) {
+            self.sketch_circle_center = None;
+            self.sketch_circle_target = None;
         }
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
         let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
@@ -2760,6 +2834,29 @@ impl WindowedState {
                 self.sketch_arc_chords.push((arc_id, projected));
             }
         }
+        for circle in &handles.circles {
+            let circle_id = circle.entity;
+            let center = circle.center;
+            let radius = circle.radius;
+            let Some(radius_px) = to_viewport_px(center)
+                .zip(to_viewport_px([center[0] + radius, center[1]]))
+                .map(|(center_px, edge_px)| center_px.distance(edge_px))
+            else {
+                continue;
+            };
+            let tolerance = if radius_px > 1.0 {
+                radius * ARC_SCREEN_SAGITTA_PX / f64::from(radius_px)
+            } else {
+                document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS
+            }
+            .min(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS);
+            let profile = circle_ring(center, radius, tolerance);
+            let projected: Option<Vec<egui::Pos2>> =
+                profile.into_iter().map(&to_viewport_px).collect();
+            if let Some(projected) = projected {
+                self.sketch_circle_chords.push((circle_id, projected));
+            }
+        }
 
         // The segment under the cursor and the state it should draw in. A vertex under the cursor
         // takes priority — it already answers with its own handle state — so a segment lights up
@@ -2774,7 +2871,8 @@ impl WindowedState {
             ui::panel::SketchTool::AddPoint
             | ui::panel::SketchTool::Polyline
             | ui::panel::SketchTool::Rectangle
-            | ui::panel::SketchTool::ThreePointArc => None,
+            | ui::panel::SketchTool::ThreePointArc
+            | ui::panel::SketchTool::CircleCenterDiameter => None,
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -2830,6 +2928,23 @@ impl WindowedState {
                 _ => ui::gizmos::HandleState::Idle,
             };
             let curve = chords
+                .iter()
+                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
+                .collect();
+            self.sketch_arc_lines.push((curve, state));
+        }
+        for (circle_id, ring) in &self.sketch_circle_chords {
+            let picked = ui::panel::SelectionTarget::SketchCircle {
+                sketch: target,
+                entity: *circle_id,
+            };
+            let selected = self.panel_state.selection.contains(picked);
+            let state = match hovered_edge {
+                _ if selected => ui::gizmos::HandleState::Selected,
+                Some((SketchEdgeHit::Circle(id), state)) if id == *circle_id => state,
+                _ => ui::gizmos::HandleState::Idle,
+            };
+            let curve = ring
                 .iter()
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
@@ -3020,6 +3135,27 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::CircleCenterDiameter => {
+                if let (Some(center), Some((cursor_x, cursor_y))) =
+                    (self.sketch_circle_center, self.last_cursor_position)
+                {
+                    if let Some(perimeter) = self.sketch_snapped_point_at(cursor_x, cursor_y) {
+                        let center = center.in_plane();
+                        let perimeter = perimeter.in_plane();
+                        let radius = (perimeter[0] - center[0]).hypot(perimeter[1] - center[1]);
+                        let ring = circle_ring(
+                            center,
+                            radius,
+                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                        );
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -3033,6 +3169,94 @@ pub(super) enum SketchEdgeHit {
     Segment(document::sketch::EntityId),
     /// An arc.
     Arc(document::sketch::EntityId),
+    /// A circle.
+    Circle(document::sketch::EntityId),
+}
+
+fn circle_ring(center: [f64; 2], radius: f64, tolerance: f64) -> Vec<[f64; 2]> {
+    if !radius.is_finite() || radius <= 0.0 {
+        return Vec::new();
+    }
+    let mut ring = Vec::new();
+    for quarter in 0..4 {
+        let angle = std::f64::consts::FRAC_PI_2 * f64::from(quarter);
+        let next = angle + std::f64::consts::FRAC_PI_2;
+        let from = [
+            center[0] + radius * angle.cos(),
+            center[1] + radius * angle.sin(),
+        ];
+        let to = [
+            center[0] + radius * next.cos(),
+            center[1] + radius * next.sin(),
+        ];
+        ring.push(from);
+        ring.extend(
+            document::sketch::arc_interior_points_within(from, to, 90.0, tolerance)
+                .iter()
+                .map(|point| point.in_plane()),
+        );
+    }
+    if let Some(first) = ring.first().copied() {
+        ring.push(first);
+    }
+    ring
+}
+
+/// Advance the transient two-click circle gesture. The first point remains transient; the second
+/// returns a complete center/perimeter pair and clears the pending center.
+fn advance_circle_center_diameter_gesture(
+    center: &mut Option<document::sketch::SketchPoint>,
+    point: document::sketch::SketchPoint,
+) -> Option<(document::sketch::SketchPoint, document::sketch::SketchPoint)> {
+    match center.take() {
+        Some(center) => Some((center, point)),
+        None => {
+            *center = Some(point);
+            None
+        }
+    }
+}
+
+/// Produce the circle edit only when a complete gesture changes the sketch. `None` means no
+/// transaction must reach history, including zero-radius and duplicate circles.
+fn complete_circle_center_diameter(
+    producer: &document::sketch::SketchSolid,
+    center: document::sketch::SketchPoint,
+    perimeter: document::sketch::SketchPoint,
+) -> Option<document::sketch::SketchSolid> {
+    let next = producer.with_circle_center_diameter(center, perimeter);
+    (next != *producer).then_some(next)
+}
+
+/// Whether the pending circle center still belongs to the active tool and sketch.
+fn circle_gesture_is_current(
+    tool: ui::panel::SketchTool,
+    target: document::scene::NodeId,
+    pending_target: Option<document::scene::NodeId>,
+) -> bool {
+    tool == ui::panel::SketchTool::CircleCenterDiameter && pending_target == Some(target)
+}
+
+/// The directional marquee predicate for the projected closed circle ring.
+fn circle_marquee_hit(ring: &[egui::Pos2], rect: egui::Rect, window: bool) -> bool {
+    if window {
+        ring.iter().all(|point| rect.contains(*point))
+    } else {
+        ring.array_windows::<2>()
+            .any(|pair| segment_touches_rect(pair[0], pair[1], rect))
+    }
+}
+
+/// Resolve the nearest already-qualified edge candidate, retaining the existing straight-edge
+/// tie break before arcs and circles.
+fn nearest_sketch_edge_from_candidates<const N: usize>(
+    candidates: [Option<(SketchEdgeHit, f32)>; N],
+) -> Option<SketchEdgeHit> {
+    candidates
+        .into_iter()
+        .flatten()
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(hit, _)| hit)
 }
 
 /// Quantize a continuous in-plane profile coordinate by the sketch position snap (#96):
@@ -3211,9 +3435,12 @@ fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::{
-        apply_sketch_snap, closest_point_on_segment, point_in_screen_polygon,
-        point_to_segment_distance, polygon_double_area, segment_touches_rect, segments_intersect,
+        advance_circle_center_diameter_gesture, apply_sketch_snap, circle_gesture_is_current,
+        circle_marquee_hit, circle_ring, closest_point_on_segment, complete_circle_center_diameter,
+        nearest_sketch_edge_from_candidates, point_in_screen_polygon, point_to_segment_distance,
+        polygon_double_area, segment_touches_rect, segments_intersect, SketchEdgeHit,
     };
+    use document::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
     use egui::{pos2, Rect};
     use ui::panel::PositionSnap;
 
@@ -3287,6 +3514,116 @@ mod tests {
         assert!(
             !(rect.contains(pos2(0.0, 15.0)) || rect.contains(pos2(30.0, 15.0))),
             "the window predicate misses it"
+        );
+    }
+
+    #[test]
+    fn a_circle_ring_is_closed_and_answers_marquee_edges() {
+        let ring = circle_ring([0.0, 0.0], 5.0, 1.0 / 16.0);
+        assert!(ring.len() > 4, "the ring carries curve samples");
+        assert_eq!(
+            ring.first(),
+            ring.last(),
+            "the final chord closes the circle"
+        );
+
+        let projected: Vec<_> = ring
+            .iter()
+            .map(|point| pos2(point[0] as f32, point[1] as f32))
+            .collect();
+        let rim = Rect::from_min_max(pos2(4.5, -1.0), pos2(6.0, 1.0));
+        assert!(
+            circle_marquee_hit(&projected, rim, false),
+            "a crossing marquee reaches the actual rim"
+        );
+        let interior = Rect::from_min_max(pos2(-1.0, -1.0), pos2(1.0, 1.0));
+        assert!(
+            !circle_marquee_hit(&projected, interior, false),
+            "the empty center is not a circle edge"
+        );
+        let containing = Rect::from_min_max(pos2(-6.0, -6.0), pos2(6.0, 6.0));
+        assert!(circle_marquee_hit(&projected, containing, true));
+        assert!(!circle_marquee_hit(&projected, rim, true));
+    }
+
+    #[test]
+    fn circle_gesture_holds_one_transient_center_then_clears_on_completion() {
+        let mut pending = None;
+        let center = SketchPoint::new(2, 3);
+        let perimeter = SketchPoint::new(7, 3);
+
+        assert_eq!(
+            advance_circle_center_diameter_gesture(&mut pending, center),
+            None,
+            "the first click writes no document geometry"
+        );
+        assert_eq!(pending, Some(center));
+        assert_eq!(
+            advance_circle_center_diameter_gesture(&mut pending, perimeter),
+            Some((center, perimeter))
+        );
+        assert_eq!(pending, None, "a completion clears transient state");
+    }
+
+    #[test]
+    fn a_zero_or_duplicate_circle_completion_skips_history() {
+        let empty = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+        let center = SketchPoint::new(2, 3);
+        let perimeter = SketchPoint::new(7, 3);
+        let circle = complete_circle_center_diameter(&empty, center, perimeter);
+        assert!(circle.is_some(), "a nonzero circle produces one edit");
+        let Some(circle) = circle else {
+            return;
+        };
+        assert!(
+            complete_circle_center_diameter(&circle, center, center).is_none(),
+            "a zero-radius completion emits no transaction"
+        );
+        assert!(
+            complete_circle_center_diameter(&circle, center, perimeter).is_none(),
+            "an identical circle emits no transaction"
+        );
+    }
+
+    #[test]
+    fn pending_circle_center_dies_when_its_tool_or_sketch_changes() {
+        let first = document::scene::NodeId(7);
+        let second = document::scene::NodeId(8);
+        assert!(circle_gesture_is_current(
+            ui::panel::SketchTool::CircleCenterDiameter,
+            first,
+            Some(first)
+        ));
+        assert!(!circle_gesture_is_current(
+            ui::panel::SketchTool::Select,
+            first,
+            Some(first)
+        ));
+        assert!(!circle_gesture_is_current(
+            ui::panel::SketchTool::CircleCenterDiameter,
+            second,
+            Some(first)
+        ));
+    }
+
+    #[test]
+    fn circle_hit_joins_the_existing_nearest_edge_priority() {
+        assert_eq!(
+            nearest_sketch_edge_from_candidates([
+                Some((SketchEdgeHit::Segment(1), 4.0)),
+                Some((SketchEdgeHit::Arc(2), 3.0)),
+                Some((SketchEdgeHit::Circle(3), 2.0)),
+            ]),
+            Some(SketchEdgeHit::Circle(3))
+        );
+        assert_eq!(
+            nearest_sketch_edge_from_candidates([
+                Some((SketchEdgeHit::Segment(1), 2.0)),
+                Some((SketchEdgeHit::Arc(2), 2.0)),
+                Some((SketchEdgeHit::Circle(3), 2.0)),
+            ]),
+            Some(SketchEdgeHit::Segment(1)),
+            "the established segment tie break remains intact"
         );
     }
 

@@ -39,6 +39,17 @@ use crate::sketch::{EntityId, EntityRole, Operation};
 use glam::Vec3;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
+/// A circle ready for display: its identity stays paired with its profile-space geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SketchCircleHandle {
+    /// The circle entity this display handle names.
+    pub entity: EntityId,
+    /// The circle's center in profile coordinates.
+    pub center: [f64; 2],
+    /// The circle's radius in voxels.
+    pub radius: f64,
+}
+
 /// The sketch's profile vertices in the recentered render frame, with everything the UI
 /// needs to draw draggable handles and turn a cursor ray back into a profile coordinate.
 ///
@@ -67,6 +78,9 @@ pub struct SketchHandles {
     /// currently worth, and [`profile_to_render`](Self::profile_to_render) maps each sample it
     /// produces into this frame. An arc with a dangling endpoint is omitted.
     pub arcs: Vec<(EntityId, [f64; 2], [f64; 2], f64)>,
+    /// Each circle ready for display. Tessellation stays in the viewer, which alone knows the
+    /// screen-space tolerance.
+    pub circles: Vec<SketchCircleHandle>,
     /// A point ON the sketch plane in the render frame (the first vertex) — the ray
     /// intersection anchor.
     pub plane_point: [f32; 3],
@@ -272,6 +286,18 @@ impl Scene {
                 ))
             })
             .collect();
+        let circles: Vec<SketchCircleHandle> = producer
+            .sketch
+            .circles()
+            .iter()
+            .filter_map(|circle| {
+                Some(SketchCircleHandle {
+                    entity: circle.id,
+                    center: position_of(circle.center)?,
+                    radius: circle.radius.value(),
+                })
+            })
+            .collect();
 
         let plane_normal = (node.transform.rotation() * unit_axis(normal)).to_array();
         // ANY on-plane point anchors the ray intersection; the producer-local origin (the
@@ -288,6 +314,7 @@ impl Scene {
             point_ids,
             segments,
             arcs,
+            circles,
             plane_point,
             plane_normal,
             placement,
@@ -461,6 +488,22 @@ mod tests {
             .sketch_handles(id, DENSITY)
             .expect("two-point sketch shows handles");
         assert_eq!(handles.vertices.len(), 2, "one handle per point entity");
+    }
+
+    #[test]
+    fn handles_carry_a_circle_without_minting_a_perimeter_vertex() {
+        let sketch = Sketch::circle(PlaneAxis::Z, SketchPoint::new(2, 3), 5);
+        let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
+        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+
+        assert_eq!(
+            handles.vertices.len(),
+            1,
+            "only the circle center is a point"
+        );
+        assert_eq!(handles.circles.len(), 1);
+        assert_eq!(handles.circles[0].center, [2.0, 3.0]);
+        assert_eq!(handles.circles[0].radius, 5.0);
     }
 
     #[test]

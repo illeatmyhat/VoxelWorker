@@ -406,6 +406,40 @@ impl SketchSolid {
         next
     }
 
+    /// This producer with a circle centered at `center` and passing through `perimeter`.
+    /// Reuses a point already at the center; otherwise the circle owns a construction center.
+    /// A zero or non-finite radius leaves the producer unchanged.
+    pub fn with_circle_center_diameter(
+        &self,
+        center: SketchPoint,
+        perimeter: SketchPoint,
+    ) -> SketchSolid {
+        let offset = [
+            perimeter.in_plane()[0] - center.in_plane()[0],
+            perimeter.in_plane()[1] - center.in_plane()[1],
+        ];
+        let radius = offset[0].hypot(offset[1]);
+        let radius = SketchLength::from_continuous(radius);
+        let mut next = self.clone();
+        match next.sketch.point_at(center) {
+            Some(existing) => {
+                next.sketch.circle_about(existing, radius);
+            }
+            None => {
+                next.sketch.add_circle(center, radius);
+            }
+        }
+        next
+    }
+
+    /// This producer with the circle `circle_id` deleted. Its construction center is pruned only
+    /// when no remaining curve names it.
+    pub fn with_circle_deleted(&self, circle_id: EntityId) -> SketchSolid {
+        let mut next = self.clone();
+        next.sketch.delete_circle(circle_id);
+        next
+    }
+
     /// This producer with `kind` asserted, the drawing moved to where the solve put it, and the
     /// new constraint's id. `Err` leaves nothing changed — a refusal is not a partial edit, so
     /// a caller that discards the `Err` still holds the drawing the author had.

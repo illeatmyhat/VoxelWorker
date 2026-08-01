@@ -129,6 +129,7 @@ enum SketchToolConfig {
     Polyline,
     Rectangle,
     ThreePointArc,
+    CircleCenterDiameter,
 }
 
 /// The persisted form of an armed constraint gesture.
@@ -862,8 +863,8 @@ mod tests {
             // Off its default (Some, not None) so a capture that dropped it fails the
             // round-trip rather than coinciding with a default restore.
             sketch_mode: Some(document::scene::NodeId(9)),
-            // Off its default (AddPoint, not Select) for the same reason.
-            sketch_tool: SketchTool::AddPoint,
+            // Off its default (CircleCenterDiameter, not Select) for the same reason.
+            sketch_tool: SketchTool::CircleCenterDiameter,
             armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
                 ui::panel::ConstraintVerb::Fix,
                 vec![ui::panel::SketchEntity::Point(7)],
@@ -899,6 +900,21 @@ mod tests {
         let json = Dump::from_state(&state).to_json().expect("serialize");
         let restored = Dump::from_json(&json).expect("deserialize");
         assert_eq!(restored.into_state(), state);
+    }
+
+    #[test]
+    fn circle_center_diameter_survives_both_sides_of_the_tool_config_shim() {
+        let state = distinctive_state();
+        let json = Dump::from_state(&state).to_json().expect("serialize");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(value["sketch_tool"], "CircleCenterDiameter");
+        assert_eq!(
+            Dump::from_json(&json)
+                .expect("deserialize")
+                .into_state()
+                .sketch_tool,
+            SketchTool::CircleCenterDiameter
+        );
     }
 
     /// The flattening is a format decision, so it is pinned as one. If the three parts ever

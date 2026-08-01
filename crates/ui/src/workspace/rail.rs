@@ -96,6 +96,11 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         "Arc — click start, end, then a point it passes through",
         Some(SketchTool::ThreePointArc),
     ),
+    (
+        Icon::CircleCenterDiameter,
+        "Circle — click center, then perimeter",
+        Some(SketchTool::CircleCenterDiameter),
+    ),
 ];
 
 /// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch

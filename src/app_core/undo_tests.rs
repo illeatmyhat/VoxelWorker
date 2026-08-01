@@ -10,7 +10,7 @@ use super::*;
 use camera::OrbitCamera;
 use document::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
 use document::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
-use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 use document::voxel::SdfShape;
 use parametric::units::Measurement;
 use voxel_core::core_geom::MaterialChoice;
@@ -469,6 +469,15 @@ fn set_sketch_round_trips() {
             producer: box_sketch([9, 7, 3]),
         },
     );
+}
+
+#[test]
+fn set_sketch_circle_round_trips() {
+    let mut scene = sketch_then_tool_scene();
+    let target = scene.roots[0];
+    let producer = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3)
+        .with_circle_center_diameter(SketchPoint::new(2, 3), SketchPoint::new(7, 3));
+    assert_round_trips(&mut scene, Intent::SetSketch { target, producer });
 }
 
 #[test]

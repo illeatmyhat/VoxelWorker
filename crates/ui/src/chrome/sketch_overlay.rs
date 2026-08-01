@@ -272,3 +272,32 @@ pub fn sketch_vertex_handles(
         chrome_rects.push(Rect::from_center_size(*center, Vec2::splat(grab * 2.0)));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sketch_draw_preview;
+    use egui::{pos2, Context, Pos2, RawInput, Rect, Vec2};
+
+    #[test]
+    fn a_closed_preview_ring_paints_through_the_dashed_preview_layer() {
+        let context = Context::default();
+        let ring: [Pos2; 5] = [
+            pos2(10.0, 5.0),
+            pos2(5.0, 10.0),
+            pos2(0.0, 5.0),
+            pos2(5.0, 0.0),
+            pos2(10.0, 5.0),
+        ];
+        let output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(32.0))),
+                ..Default::default()
+            },
+            |ui| sketch_draw_preview(ui, &ring),
+        );
+        assert!(
+            !output.shapes.is_empty(),
+            "the closed preview produced foreground ink"
+        );
+    }
+}
