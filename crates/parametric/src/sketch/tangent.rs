@@ -86,6 +86,121 @@ pub enum TangentContactError {
 /// A user-facing alias: callers choose a Tangent branch from curve values plus session-only loci.
 pub type TangentCurve = CurveGeometry;
 
+/// The derived geometry of a tangent arc before a document chooses how to persist its sweep.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TangentArcCandidate {
+    pub center: [f64; 2],
+    pub radius: f64,
+    pub sweep_radians: f64,
+}
+
+/// Why a finite tangent arc cannot join the supplied seam and target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TangentArcCandidateError {
+    NonFinite,
+    Degenerate,
+    Collinear,
+}
+
+/// Construct the unique circular arc that leaves `seam` along `incoming_tangent` and reaches
+/// `target`. The tangent may have any non-collapsed magnitude.
+pub fn tangent_arc_candidate(
+    incoming_tangent: [f64; 2],
+    seam: [f64; 2],
+    target: [f64; 2],
+) -> Result<TangentArcCandidate, TangentArcCandidateError> {
+    if !incoming_tangent
+        .into_iter()
+        .chain(seam)
+        .chain(target)
+        .all(f64::is_finite)
+    {
+        return Err(TangentArcCandidateError::NonFinite);
+    }
+
+    let normalize = |value: [f64; 2], reject_collapsed: bool| {
+        let scale = value[0].abs().max(value[1].abs());
+        if !scale.is_finite() || scale == 0.0 {
+            return None;
+        }
+        let scaled = [value[0] / scale, value[1] / scale];
+        let length = scaled[0].hypot(scaled[1]);
+        (length.is_finite()
+            && length > 0.0
+            && (!reject_collapsed || scale > COLLAPSED_SPAN / length))
+            .then_some([scaled[0] / length, scaled[1] / length])
+    };
+    let tangent = normalize(incoming_tangent, true).ok_or(TangentArcCandidateError::Degenerate)?;
+    let normal = [-tangent[1], tangent[0]];
+    let delta = [target[0] - seam[0], target[1] - seam[1]];
+    if !delta.into_iter().all(f64::is_finite) {
+        return Err(TangentArcCandidateError::NonFinite);
+    }
+    let scale = delta[0].abs().max(delta[1].abs());
+    if !scale.is_finite() || scale == 0.0 {
+        return Err(TangentArcCandidateError::Degenerate);
+    }
+    let scaled = [delta[0] / scale, delta[1] / scale];
+    let scaled_length = scaled[0].hypot(scaled[1]);
+    if !scaled_length.is_finite() {
+        return Err(TangentArcCandidateError::NonFinite);
+    }
+    if scale <= COLLAPSED_SPAN / scaled_length {
+        return Err(TangentArcCandidateError::Degenerate);
+    }
+    let side = scaled[0] * normal[0] + scaled[1] * normal[1];
+    if !side.is_finite() {
+        return Err(TangentArcCandidateError::NonFinite);
+    }
+    if side.abs() / scaled_length <= COLLAPSED_SPAN {
+        return Err(TangentArcCandidateError::Collinear);
+    }
+
+    let scaled_length_squared = scaled[0] * scaled[0] + scaled[1] * scaled[1];
+    let signed_radius = scale * scaled_length_squared / (2.0 * side);
+    let center = [
+        seam[0] + signed_radius * normal[0],
+        seam[1] + signed_radius * normal[1],
+    ];
+    let radius = signed_radius.abs();
+    if !signed_radius.is_finite()
+        || !radius.is_finite()
+        || radius == 0.0
+        || !center.into_iter().all(f64::is_finite)
+    {
+        return Err(TangentArcCandidateError::NonFinite);
+    }
+
+    let from_radius = [seam[0] - center[0], seam[1] - center[1]];
+    let to_radius = [target[0] - center[0], target[1] - center[1]];
+    if !from_radius.into_iter().chain(to_radius).all(f64::is_finite) {
+        return Err(TangentArcCandidateError::NonFinite);
+    }
+    let from_direction =
+        normalize(from_radius, false).ok_or(TangentArcCandidateError::Degenerate)?;
+    let to_direction = normalize(to_radius, false).ok_or(TangentArcCandidateError::Degenerate)?;
+    let cross = from_direction[0] * to_direction[1] - from_direction[1] * to_direction[0];
+    let dot = from_direction[0] * to_direction[0] + from_direction[1] * to_direction[1];
+    if !cross.is_finite() || !dot.is_finite() {
+        return Err(TangentArcCandidateError::NonFinite);
+    }
+    let mut sweep = cross.atan2(dot);
+    if signed_radius > 0.0 && sweep <= 0.0 {
+        sweep += std::f64::consts::TAU;
+    } else if signed_radius < 0.0 && sweep >= 0.0 {
+        sweep -= std::f64::consts::TAU;
+    }
+    if !sweep.is_finite() || sweep.abs() <= COLLAPSED_SPAN || sweep.abs() >= std::f64::consts::TAU {
+        return Err(TangentArcCandidateError::Degenerate);
+    }
+
+    Ok(TangentArcCandidate {
+        center,
+        radius,
+        sweep_radians: sweep,
+    })
+}
+
 /// Why no branch can be chosen from the supplied transient geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchChoiceError {
@@ -445,6 +560,85 @@ pub(super) fn contains_contact(curve: CurveGeometry, contact: [f64; 2]) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() <= 1.0e-10 * expected.abs().max(1.0));
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn tangent_arc_candidate_preserves_side_and_minor_or_major_sweep() {
+        for (target, expected_center, expected_sweep) in [
+            ([1.0, 1.0], [0.0, 1.0], 90.0),
+            ([1.0, -1.0], [0.0, -1.0], -90.0),
+            ([-1.0, 1.0], [0.0, 1.0], 270.0),
+            ([-1.0, -1.0], [0.0, -1.0], -270.0),
+        ] {
+            let Ok(candidate) = tangent_arc_candidate([7.0, 0.0], [0.0, 0.0], target) else {
+                panic!("valid tangent arc candidate")
+            };
+            close(candidate.center[0], expected_center[0]);
+            close(candidate.center[1], expected_center[1]);
+            close(candidate.radius, 1.0);
+            close(candidate.sweep_radians.to_degrees(), expected_sweep);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn tangent_arc_candidate_is_scale_aware_and_normalizes_the_tangent() {
+        for scale in [1.0e-3, 1.0, 1.0e100] {
+            let Ok(candidate) =
+                tangent_arc_candidate([scale * 13.0, 0.0], [0.0, 0.0], [scale, scale])
+            else {
+                panic!("valid scaled tangent arc candidate")
+            };
+            close(candidate.center[0] / scale, 0.0);
+            close(candidate.center[1] / scale, 1.0);
+            close(candidate.radius / scale, 1.0);
+            close(candidate.sweep_radians.to_degrees(), 90.0);
+        }
+    }
+
+    #[test]
+    fn tangent_arc_candidate_refuses_collapsed_collinear_and_nonfinite_inputs() {
+        assert_eq!(
+            tangent_arc_candidate([0.0, 0.0], [0.0, 0.0], [1.0, 1.0]),
+            Err(TangentArcCandidateError::Degenerate)
+        );
+        assert_eq!(
+            tangent_arc_candidate([COLLAPSED_SPAN, 0.0], [0.0, 0.0], [1.0, 1.0],),
+            Err(TangentArcCandidateError::Degenerate)
+        );
+        assert!(
+            tangent_arc_candidate([COLLAPSED_SPAN, COLLAPSED_SPAN], [0.0, 0.0], [1.0, 0.0],)
+                .is_ok()
+        );
+        assert_eq!(
+            tangent_arc_candidate([1.0, 0.0], [0.0, 0.0], [1.0e-12, 1.0e-12]),
+            Err(TangentArcCandidateError::Degenerate)
+        );
+        assert_eq!(
+            tangent_arc_candidate([1.0, 0.0], [0.0, 0.0], [COLLAPSED_SPAN, 0.0],),
+            Err(TangentArcCandidateError::Degenerate)
+        );
+        assert!(
+            tangent_arc_candidate([1.0, 0.0], [0.0, 0.0], [COLLAPSED_SPAN, COLLAPSED_SPAN],)
+                .is_ok()
+        );
+        assert_eq!(
+            tangent_arc_candidate([1.0, 0.0], [0.0, 0.0], [1.0e100, 1.0e90]),
+            Err(TangentArcCandidateError::Collinear)
+        );
+        assert_eq!(
+            tangent_arc_candidate([1.0, 0.0], [0.0, 0.0], [f64::NAN, 1.0]),
+            Err(TangentArcCandidateError::NonFinite)
+        );
+        assert_eq!(
+            tangent_arc_candidate([1.0, 0.0], [-f64::MAX, 0.0], [f64::MAX, 1.0],),
+            Err(TangentArcCandidateError::NonFinite)
+        );
+    }
     use crate::sketch::{ArcDomain, CircularCurve};
 
     fn arc(sweep_radians: f64) -> CurveGeometry {

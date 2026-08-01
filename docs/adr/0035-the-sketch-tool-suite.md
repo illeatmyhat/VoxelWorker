@@ -16,7 +16,8 @@
 
 ## Context
 
-The sketch layer ships five tools — Select, AddPoint, Polyline, Rectangle, ThreePointArc — against
+At adoption, the sketch layer shipped five tools — Select, AddPoint, Polyline (now Line), Rectangle,
+ThreePointArc — against
 a point-segment graph with no constraints. The target is Fusion's suite: ~25 creation tools, 12
 constraints, 11 modifiers, 3 patterns, dimensions and a parameters panel. Roughly 53 commands.
 

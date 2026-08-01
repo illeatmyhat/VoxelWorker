@@ -429,9 +429,19 @@ impl SketchSolid {
     /// Unchanged for a self-loop, an unknown endpoint, or an already-joined pair
     /// ([`Sketch::connect`]). Pure.
     pub fn with_segment_between(&self, from: EntityId, to: EntityId) -> SketchSolid {
+        self.with_segment_between_traced(from, to)
+            .map_or_else(|| self.clone(), |(next, _)| next)
+    }
+
+    /// This producer with a fresh segment and the segment's stable curve identity.
+    pub fn with_segment_between_traced(
+        &self,
+        from: EntityId,
+        to: EntityId,
+    ) -> Option<(SketchSolid, SketchCurve)> {
         let mut next = self.clone();
-        next.sketch.connect(from, to);
-        next
+        let id = next.sketch.connect(from, to)?;
+        Some((next, SketchCurve::Segment(id)))
     }
 
     /// This producer with a closed axis-aligned rectangle appended between opposite corners
@@ -501,6 +511,56 @@ impl SketchSolid {
         let mut next = self.clone();
         next.sketch.connect_arc(from, to, bulge);
         next
+    }
+
+    /// Append an arc tangent to the live incoming curve at their shared endpoint. Arc creation
+    /// and the durable Tangent assertion land together or not at all.
+    pub fn with_tangent_arc_between(
+        &self,
+        incoming: SketchCurve,
+        seam: EntityId,
+        to: EntityId,
+        context: EvaluationContext,
+    ) -> Result<(SketchSolid, SketchCurve), TangentArcRefusal> {
+        if seam == to {
+            return Err(TangentArcRefusal::SelfLoop);
+        }
+        let seam_at = self
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == seam)
+            .map(|point| point.at.in_plane())
+            .ok_or(TangentArcRefusal::UnknownEndpoint)?;
+        let to_at = self
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == to)
+            .map(|point| point.at.in_plane())
+            .ok_or(TangentArcRefusal::UnknownEndpoint)?;
+        let candidate = self
+            .sketch
+            .tangent_arc_candidate(incoming, seam, to_at, context)?;
+        let sweep = parametric::units::AngleMeasurement::try_from_degrees_f64(
+            candidate.sweep_radians.to_degrees(),
+        )
+        .map_err(|_| TangentArcRefusal::UnrepresentableSweep)?;
+
+        let mut next = self.clone();
+        let arc_id = next
+            .sketch
+            .connect_arc(seam, to, sweep)
+            .ok_or(TangentArcRefusal::ArcRefused)?;
+        let arc = SketchCurve::Arc(arc_id);
+        let branch = next
+            .sketch
+            .choose_tangent_branch(incoming, seam_at, arc, seam_at, context)
+            .map_err(TangentArcRefusal::Branch)?;
+        next.sketch
+            .add_constraint(ConstraintKind::tangent(incoming, arc, branch), context)
+            .map_err(TangentArcRefusal::Constraint)?;
+        Ok((next, arc))
     }
 
     /// This producer with the arc `arc_id` deleted, along with each of its ends that nothing else

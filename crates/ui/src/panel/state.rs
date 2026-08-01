@@ -302,11 +302,10 @@ pub enum SketchTool {
     /// Add a point: click a profile **segment** to insert a new vertex there, splitting the
     /// edge at the grid-snapped click.
     AddPoint,
-    /// Draw a polyline: each click places a grid-snapped point chained to the previous
-    /// one by a segment; a click on an existing point joins it (coincidence = shared id);
-    /// clicking the chain's first point closes the loop and ends the chain; clicking the
-    /// last point again ends it open.
-    Polyline,
+    /// Draw connected straight segments. Dragging from a live end after the first curve appends
+    /// a tangent arc, then returns to straight continuation. The start closes the chain; clicking
+    /// the live end or pressing Enter finishes it open.
+    Line,
     /// Draw a rectangle: press one corner, drag, release at the opposite corner to
     /// append the closed four-segment loop. A degenerate (zero-span) drag draws nothing.
     Rectangle,

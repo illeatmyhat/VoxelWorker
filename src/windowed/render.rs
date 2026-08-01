@@ -361,12 +361,14 @@ impl WindowedState {
         // group-close effect folds into `merged_effect` below so a Cancel rebuilds like an edit.
         let mut sketch_effect = crate::IntentEffect::none();
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
+            self.line_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
             self.app_core.begin_sketch_group();
         }
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
+            self.line_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1458,50 +1460,135 @@ impl WindowedState {
         )
     }
 
-    /// #99: one polyline click. Resolves the cursor to a point — an existing vertex under it
-    /// (coincidence, by screen grab radius) or a fresh grid-snapped free point — then chains:
-    /// no open chain starts one at that point; an open chain connects `last → clicked` and
-    /// advances; clicking the chain's FIRST point closes the loop and ends the chain; clicking
-    /// its LAST point again ends it open. Each click that changes the store commits as one
-    /// entry in the open sketch undo group.
-    pub(super) fn sketch_polyline_click(&mut self, cursor_x: f64, cursor_y: f64) {
-        let Some(target) = self.panel_state.sketch_mode else {
-            return;
-        };
-        let Some((producer, _)) = self.sketch_node_state(target) else {
-            return;
-        };
-        // A chain endpoint deleted mid-gesture (Delete key, undo) leaves a dangling id —
-        // drop the chain rather than connect to a ghost.
-        if let Some((start, last)) = self.sketch_chain {
-            let alive = |id| producer.sketch.points().iter().any(|point| point.id == id);
-            if !alive(start) || !alive(last) {
-                self.sketch_chain = None;
-            }
-        }
+    /// Resolve the exact target shared by Line preview and commit. A grabbed existing vertex wins
+    /// over snap policy, so an off-grid closure preview cannot disagree with its release.
+    fn sketch_line_target_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<(
+        document::sketch::SketchPoint,
+        Option<document::sketch::EntityId>,
+    )> {
+        let target = self.panel_state.sketch_mode?;
+        let (producer, _) = self.sketch_node_state(target)?;
         let existing = self
             .sketch_vertex_at(cursor_x, cursor_y)
             .and_then(|index| self.sketch_point_ids.get(index).copied());
-        let (mut next, clicked) = match existing {
-            Some(id) => (producer.clone(), id),
-            None => {
-                let Some(snapped) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
-                    return;
-                };
-                producer.with_point_placed(snapped)
-            }
+        let resolved = line::resolve_target(
+            &producer,
+            existing,
+            self.sketch_snapped_point_at(cursor_x, cursor_y),
+        )?;
+        Some((resolved.at, resolved.existing))
+    }
+
+    fn validate_line_gesture(&mut self, target: document::scene::NodeId) {
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.line_gesture.reset();
+            return;
         };
-        self.sketch_chain = match self.sketch_chain {
-            None => Some((clicked, clicked)),
-            Some((_, last)) if clicked == last => None,
-            Some((start, last)) => {
-                next = next.with_segment_between(last, clicked);
-                (clicked != start).then_some((start, clicked))
-            }
+        self.line_gesture.retain_if_live(
+            target,
+            |id| producer.sketch.points().iter().any(|point| point.id == id),
+            |curve| match curve {
+                document::sketch::SketchCurve::Segment(id) => producer
+                    .sketch
+                    .segments()
+                    .iter()
+                    .any(|segment| segment.id == id),
+                document::sketch::SketchCurve::Arc(id) => {
+                    producer.sketch.arcs().iter().any(|arc| arc.id == id)
+                }
+                document::sketch::SketchCurve::Circle(_) => false,
+            },
+        );
+    }
+
+    pub(super) fn begin_line_press(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.line_gesture.reset();
+            return;
         };
-        if next != producer {
+        self.validate_line_gesture(target);
+        let hit = self
+            .sketch_vertex_at(cursor_x, cursor_y)
+            .and_then(|index| self.sketch_point_ids.get(index).copied());
+        let hit_live_end = self
+            .line_gesture
+            .chain()
+            .is_some_and(|chain| chain.owner == target && hit == Some(chain.end));
+        self.line_gesture.begin_press(hit_live_end);
+    }
+
+    pub(super) fn update_line_drag(&mut self, down: (f64, f64), current: (f64, f64)) {
+        self.line_gesture
+            .update_drag(down, current, VIEW_CUBE_DRAG_THRESHOLD_PIXELS);
+    }
+
+    pub(super) fn line_arc_is_latched(&self) -> bool {
+        self.line_gesture.arc_is_latched()
+    }
+
+    pub(super) fn line_press_is_live(&self) -> bool {
+        self.line_gesture.press_is_live()
+    }
+
+    /// Commit one ordinary Line click. A point and its segment are produced on one local clone and
+    /// reach history together; a refused segment leaves both the document and chain untouched.
+    pub(super) fn sketch_line_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        self.validate_line_gesture(target);
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let Some((at, existing)) = self.sketch_line_target_at(cursor_x, cursor_y) else {
+            return;
+        };
+        if let line::LineEdit::Document(next) =
+            self.line_gesture.click(target, &producer, at, existing)
+        {
             self.commit_sketch_profile_edit(target, next);
         }
+    }
+
+    /// Commit a latched tangent arc through the document's candidate/atomic append seam.
+    /// This explicit gesture owns its Tangent assertion; Shift inference is not consulted.
+    pub(super) fn sketch_line_arc_release(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        self.validate_line_gesture(target);
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let Some((at, existing)) = self.sketch_line_target_at(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some(context) = self.sketch_evaluation_context() else {
+            return;
+        };
+        let Ok(next) = self
+            .line_gesture
+            .append_tangent_arc(&producer, at, existing, context)
+        else {
+            return;
+        };
+        self.commit_sketch_profile_edit(target, next);
+    }
+
+    pub(super) fn end_line_press(&mut self) {
+        self.line_gesture.end_press();
+    }
+
+    pub(super) fn finish_line_chain(&mut self) -> bool {
+        self.line_gesture.accept_for_enter(
+            self.panel_state.sketch_mode.is_some()
+                && self.panel_state.sketch_tool == ui::panel::SketchTool::Line,
+            self.panel_state.armed_constraint.is_some(),
+        )
     }
 
     /// #102: one 3-point-arc click. Click 1 picks the start endpoint, click 2 the
@@ -1841,7 +1928,7 @@ impl WindowedState {
     }
 
     /// Escape's first sketch rung: drop whatever half-finished gesture the armed tool is holding
-    /// — the polyline chain, the rectangle's press corner, the marquee's anchor, the arc's
+    /// — the Line chain, the rectangle's press corner, the marquee's anchor, the arc's
     /// endpoints. Reports whether anything was actually put back, so the cancel chain can fall
     /// through when there was nothing mid-stroke. The tool stays armed: dropping a stroke is not
     /// the same act as putting the tool down.
@@ -1866,13 +1953,16 @@ impl WindowedState {
             self.panel_state.selection.clear_sketch_entities();
             self.panel_state.sketch_constraint_refusal = None;
         }
+        let line_live = self.line_gesture.cancel_for_escape(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::Line,
+            self.panel_state.armed_constraint.is_some(),
+        );
         let live = constraint_picks
-            || self.sketch_chain.is_some()
+            || line_live
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
             || self.sketch_arc_gesture.is_some()
             || self.sketch_circle_center.is_some();
-        self.sketch_chain = None;
         self.sketch_rect_anchor = None;
         self.sketch_marquee_anchor = None;
         self.sketch_arc_gesture = None;
@@ -1899,6 +1989,7 @@ impl WindowedState {
             return false;
         }
         self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
+        self.line_gesture.reset();
         true
     }
 
@@ -1946,12 +2037,14 @@ impl WindowedState {
                 // The document history. `AppCore::undo`/`redo` route into an open sketch
                 // group's fine-grained session stacks by themselves.
                 ui::shortcuts::ShortcutCommand::Undo => {
+                    self.line_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
                     );
                 }
                 ui::shortcuts::ShortcutCommand::Redo => {
+                    self.line_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -1968,11 +2061,10 @@ impl WindowedState {
                 // Leaving never writes the DEFAULT orbit type: a session override dies with the
                 // mode rather than outliving it.
                 //
-                // Inside a sketch the chain gains two rungs, innermost first (owner
-                // 2026-07-29): a half-drawn polyline / rectangle / arc goes back before
-                // anything else the mode is holding, and an armed sketch TOOL falls back to
-                // Select before the placement ghost is touched. Escape never leaves sketch
-                // mode — that is what the mode's own Cancel button is for.
+                // Inside a sketch the chain gains two rungs, innermost first: a half-drawn Line,
+                // rectangle, or arc goes back before anything else the mode is holding. An armed
+                // sketch TOOL then falls back to Select before the placement ghost is touched.
+                // Escape never leaves sketch mode; that is the mode's own Cancel button's job.
                 ui::shortcuts::ShortcutCommand::CancelCommand => {
                     if !self.cancel_orbit_center_placement()
                         && !self.cancel_sketch_gesture()
@@ -1985,7 +2077,9 @@ impl WindowedState {
                 // The other half of the universal pair. It does nothing when no command is
                 // running — Accept is not a general viewport verb.
                 ui::shortcuts::ShortcutCommand::AcceptCommand => {
-                    self.end_modal_command(ui::panel::ModeCommand::Accept);
+                    if !self.finish_line_chain() {
+                        self.end_modal_command(ui::panel::ModeCommand::Accept);
+                    }
                 }
                 // The same door the menu's Delete row goes through.
                 ui::shortcuts::ShortcutCommand::DeleteSelection => self.delete_selection(),
@@ -2844,7 +2938,7 @@ impl WindowedState {
 
         let Some(target) = self.panel_state.sketch_mode else {
             // #99 / slice 3 / #102: a drawing or marquee gesture dies with the mode.
-            self.sketch_chain = None;
+            self.line_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -2859,13 +2953,19 @@ impl WindowedState {
             .scene
             .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
         else {
+            self.line_gesture.reset();
             return;
         };
 
         let tool = self.panel_state.sketch_tool;
         // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
-        if tool != ui::panel::SketchTool::Polyline {
-            self.sketch_chain = None;
+        self.line_gesture.retain_for_context(
+            tool == ui::panel::SketchTool::Line,
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
+        if tool == ui::panel::SketchTool::Line && self.panel_state.armed_constraint.is_none() {
+            self.validate_line_gesture(target);
         }
         if tool != ui::panel::SketchTool::Rectangle {
             self.sketch_rect_anchor = None;
@@ -3010,7 +3110,7 @@ impl WindowedState {
             // Add-point has its own insert diamond; the drawing tools (#99, #102) target
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
-            | ui::panel::SketchTool::Polyline
+            | ui::panel::SketchTool::Line
             | ui::panel::SketchTool::Rectangle
             | ui::panel::SketchTool::ThreePointArc
             | ui::panel::SketchTool::CircleCenterDiameter => None,
@@ -3170,24 +3270,56 @@ impl WindowedState {
             )
         };
         match tool {
-            ui::panel::SketchTool::Polyline => {
-                // Rubber line: the chain's live end to the snapped cursor.
-                if let (Some((_, last)), Some((cursor_x, cursor_y))) =
-                    (self.sketch_chain, self.last_cursor_position)
+            ui::panel::SketchTool::Line => {
+                if let (Some(chain), Some((cursor_x, cursor_y))) =
+                    (self.line_gesture.chain(), self.last_cursor_position)
                 {
-                    let chain_end = self
-                        .sketch_point_ids
-                        .iter()
-                        .position(|&id| id == last)
-                        .and_then(|idx| self.sketch_vertex_px.get(idx).copied().flatten())
-                        .map(|px| {
-                            egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point)
-                        });
-                    let cursor = self
-                        .sketch_snapped_point_at(cursor_x, cursor_y)
-                        .and_then(|point| snapped_screen(point.in_plane()));
-                    if let (Some(a), Some(b)) = (chain_end, cursor) {
-                        self.sketch_draw_preview.extend([a, b]);
+                    let profile_of = |id| {
+                        self.sketch_node_state(target).and_then(|(producer, _)| {
+                            producer
+                                .sketch
+                                .points()
+                                .iter()
+                                .find(|point| point.id == id)
+                                .map(|point| point.at.in_plane())
+                        })
+                    };
+                    if let (Some(from), Some((point, _))) = (
+                        profile_of(chain.end),
+                        self.sketch_line_target_at(cursor_x, cursor_y),
+                    ) {
+                        let to = point.in_plane();
+                        let profile = if self.line_gesture.arc_is_latched() {
+                            chain.incoming.and_then(|_| {
+                                let (producer, _) = self.sketch_node_state(target)?;
+                                let context = self.sketch_evaluation_context()?;
+                                let candidate = self
+                                    .line_gesture
+                                    .tangent_arc_candidate(&producer, to, context)
+                                    .ok()?;
+                                let mut points = vec![from];
+                                points.extend(
+                                    document::sketch::arc_interior_points(
+                                        from,
+                                        to,
+                                        candidate.sweep_radians.to_degrees(),
+                                    )
+                                    .iter()
+                                    .map(|point| point.in_plane()),
+                                );
+                                points.push(to);
+                                Some(points)
+                            })
+                        } else {
+                            Some(vec![from, to])
+                        };
+                        if let Some(profile) = profile {
+                            let projected: Vec<egui::Pos2> =
+                                profile.iter().copied().filter_map(snapped_screen).collect();
+                            if projected.len() == profile.len() {
+                                self.sketch_draw_preview = projected;
+                            }
+                        }
                     }
                 }
             }
@@ -3429,7 +3561,7 @@ fn nearest_sketch_edge_for_requirement(
 /// Quantize a continuous in-plane profile coordinate by the sketch position snap (#96):
 /// `NoSnap` carries the sub-voxel fraction on the point (#101), `Voxel` rounds to the plane's
 /// own voxel grid, `Block` rounds to block boundaries. Every sketch vertex edit — drag,
-/// add-point split, polyline, rectangle — resolves through this one policy.
+/// add-point split, Line, rectangle — resolves through this one policy.
 fn apply_sketch_snap(
     coord: [f64; 2],
     snap: ui::panel::PositionSnap,

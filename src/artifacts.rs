@@ -126,7 +126,8 @@ enum ViewModeConfig {
 enum SketchToolConfig {
     Select,
     AddPoint,
-    Polyline,
+    #[serde(alias = "Polyline")]
+    Line,
     Rectangle,
     ThreePointArc,
     CircleCenterDiameter,
@@ -933,6 +934,25 @@ mod tests {
                 .into_state()
                 .sketch_tool,
             SketchTool::CircleCenterDiameter
+        );
+    }
+
+    #[test]
+    fn line_writes_its_current_name_and_reads_the_legacy_polyline_name() {
+        let mut state = distinctive_state();
+        state.sketch_tool = SketchTool::Line;
+        let json = Dump::from_state(&state).to_json().expect("serialize Line");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse Line");
+        assert_eq!(value["sketch_tool"], "Line");
+
+        let mut legacy = value;
+        legacy["sketch_tool"] = serde_json::Value::String("Polyline".to_string());
+        assert_eq!(
+            Dump::from_json(&serde_json::to_string(&legacy).expect("legacy json"))
+                .expect("read legacy Polyline")
+                .into_state()
+                .sketch_tool,
+            SketchTool::Line
         );
     }
 

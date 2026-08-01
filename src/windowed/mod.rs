@@ -47,6 +47,7 @@ use crate::{
 mod events;
 mod export;
 mod geometry;
+mod line;
 mod palette;
 mod render;
 mod view_cube;
@@ -381,8 +382,8 @@ struct WindowedState {
     /// Refreshed alongside the handles; drawn as a diamond on the next frame.
     sketch_insert_preview: Option<egui::Pos2>,
     /// The drawing tools' dashed preview polyline for THIS frame (egui points), drawn on the
-    /// next (#99): the polyline's rubber line from the chain's last vertex to the snapped
-    /// cursor, or the rectangle ghost's five closing corners. Empty when no drawing tool is
+    /// next (#99): Line's rubber curve from the chain's last vertex to the snapped cursor, or
+    /// the rectangle ghost's five closing corners. Empty when no drawing tool is
     /// mid-gesture. Refreshed alongside the handles.
     sketch_draw_preview: Vec<egui::Pos2>,
     /// The orbit-center marker for THIS frame: its projected screen position (egui points) and
@@ -395,7 +396,7 @@ struct WindowedState {
     /// add-point insert — the same frame `render` fed the overlay refresh, WITHOUT the wide-baseline
     /// `/w` melt the full-VP inverse suffers (a06d215). `None` before the first frame.
     last_ray_unprojection: Option<glam::Mat4>,
-    /// Whether the most recent left-press armed a sketch add-point / polyline edit (sketch
+    /// Whether the most recent left-press armed a stationary sketch edit (sketch
     /// mode, an edit tool, on the live viewport). A STATIONARY release with this set performs
     /// the edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so
     /// a click edits and a drag still rotates the view.
@@ -413,12 +414,10 @@ struct WindowedState {
     /// the only record of where one is, so what is drawn and what is clickable are one list
     ///
     sketch_constraint_badges: Vec<ui::chrome::ConstraintBadge>,
-    /// The open polyline chain (#99) as `(first point id, last point id)`, or `None` when no
-    /// chain is being drawn. Each polyline click connects `last → clicked` and advances;
-    /// clicking `first` closes the loop and ends the chain; clicking `last` again ends it
-    /// open. Cleared when the armed tool leaves Polyline or sketch mode exits — a chain is a
-    /// gesture, not workspace state.
-    sketch_chain: Option<(document::sketch::EntityId, document::sketch::EntityId)>,
+    /// The Line command's connected chain and typed press/latch state. It is session-only and
+    /// cleared when its sketch/tool/constraint context changes. Document edits revalidate its
+    /// identities, while Line's own commits intentionally advance it.
+    line_gesture: line::LineGesture,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -426,7 +425,7 @@ struct WindowedState {
     /// The 3-point arc gesture (#102): the endpoint ids clicked so far — `None` before the
     /// first click, `Some((start, None))` after it, `Some((start, Some(end)))` waiting for the
     /// through-point that solves and commits the arc. Cleared when the armed tool leaves
-    /// `ThreePointArc` or sketch mode exits: like the polyline chain, it is a gesture, not
+    /// `ThreePointArc` or sketch mode exits: like the Line chain, it is a gesture, not
     /// workspace state.
     sketch_arc_gesture: Option<(
         document::sketch::EntityId,
@@ -809,7 +808,7 @@ impl WindowedState {
             sketch_edit_press: false,
             sketch_constraint_press: false,
             sketch_constraint_badges: Vec::new(),
-            sketch_chain: None,
+            line_gesture: line::LineGesture::default(),
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1001,7 +1000,7 @@ impl WindowedState {
             sketch_edit_press: _,
             sketch_constraint_press: _,
             sketch_constraint_badges: _,
-            sketch_chain: _,
+            line_gesture: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,

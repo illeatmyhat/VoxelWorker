@@ -24,6 +24,7 @@ pub use symmetry::{
     SymmetryError, SymmetryWitness,
 };
 pub use tangent::{
-    choose_branch, tangent_contact, BranchChoiceError, InternalContainment, LineSide,
-    TangentBranch, TangentContact, TangentContactError, TangentCurve,
+    choose_branch, tangent_arc_candidate, tangent_contact, BranchChoiceError, InternalContainment,
+    LineSide, TangentArcCandidate, TangentArcCandidateError, TangentBranch, TangentContact,
+    TangentContactError, TangentCurve,
 };

@@ -120,9 +120,9 @@ impl ApplicationHandler for App {
                         && !in_chrome
                         && state.panel_state.armed_tool.is_none()
                         && state.panel_state.sketch_mode.is_none();
-                    // A sketch-mode press on the live viewport (not
-                    // egui / cube). The Select tool grabs a vertex handle; Add-point and
-                    // Polyline ARM a stationary-release edit; Rectangle pins its anchor corner.
+                    // A sketch-mode press on the live viewport (not egui / cube). Select grabs a
+                    // vertex handle; Add Point latches for a generic stationary-release edit;
+                    // Line owns a typed click/tangent-arc press; Rectangle pins its anchor corner.
                     // The view stays freely rotatable throughout via Shift+MMB, which is gated
                     // on neither sketch mode nor the armed tool.
                     if state.panel_state.sketch_mode.is_some()
@@ -155,12 +155,16 @@ impl ApplicationHandler for App {
                                                 .is_none())
                                         .then_some((cursor_x, cursor_y));
                                     }
-                                    // Arm the edit; a stationary release performs it.
+                                    // Generic click tools latch their press here; a stationary
+                                    // release dispatches the selected edit below.
                                     ui::panel::SketchTool::AddPoint
-                                    | ui::panel::SketchTool::Polyline
                                     | ui::panel::SketchTool::ThreePointArc
                                     | ui::panel::SketchTool::CircleCenterDiameter => {
                                         state.sketch_edit_press = true;
+                                    }
+                                    // Line owns a typed click-or-tangent-arc press path.
+                                    ui::panel::SketchTool::Line => {
+                                        state.begin_line_press(cursor_x, cursor_y);
                                     }
                                     // #99: the rectangle is a press-drag-release gesture — the
                                     // press pins the anchor corner; the release commits.
@@ -253,6 +257,25 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // Line owns both click and non-stationary release: a drag may be a tangent
+                    // arc, so it resolves before the generic stationary drawing-tool door.
+                    if state.panel_state.sketch_tool == ui::panel::SketchTool::Line
+                        && state.line_press_is_live()
+                    {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if state.line_arc_is_latched() {
+                                state.sketch_line_arc_release(up_x, up_y);
+                            } else if stationary {
+                                state.sketch_line_click(up_x, up_y);
+                            }
+                        }
+                        state.end_line_press();
+                    }
                     // A stationary release with a sketch edit armed
                     // performs it (the same click-vs-drag threshold placement uses; a drag
                     // no longer orbits, but a twitchy press must still not edit).
@@ -274,10 +297,6 @@ impl ApplicationHandler for App {
                                             state.commit_sketch_profile_edit(target, producer);
                                         }
                                     }
-                                    // Place or chain the clicked point; commits internally.
-                                    ui::panel::SketchTool::Polyline => {
-                                        state.sketch_polyline_click(up_x, up_y);
-                                    }
                                     // Endpoint, endpoint, then the through-point that
                                     // solves the bulge; commits internally.
                                     ui::panel::SketchTool::ThreePointArc => {
@@ -287,6 +306,7 @@ impl ApplicationHandler for App {
                                         state.sketch_circle_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Select
+                                    | ui::panel::SketchTool::Line
                                     | ui::panel::SketchTool::Rectangle => {}
                                 }
                             }
@@ -496,6 +516,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let current = (position.x, position.y);
+
+                if state.panel_state.sketch_tool == ui::panel::SketchTool::Line {
+                    if let Some((down_x, down_y)) = state.press_position {
+                        state.update_line_drag((down_x, down_y), current);
+                    }
+                }
 
                 // A press that started on the view cube becomes an orbit drag once it
                 // moves past the threshold — the cube's own affordance, kept when orbit

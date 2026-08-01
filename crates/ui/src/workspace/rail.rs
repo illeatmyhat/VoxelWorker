@@ -82,9 +82,9 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         Some(SketchTool::AddPoint),
     ),
     (
-        Icon::Polyline,
-        "Polyline — click to chain points; click the start to close",
-        Some(SketchTool::Polyline),
+        Icon::Line,
+        "Line — click for straight segments; drag the live end for a tangent arc",
+        Some(SketchTool::Line),
     ),
     (
         Icon::Rectangle,
@@ -216,7 +216,7 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
 
     rail_heading_active(ui, "Sketch");
     // The vertex tools. An armable tool (Some) lights when it is the current `sketch_tool` and
-    // selects it on click; Polyline / Rectangle (None) draw reserved until slice 3.
+    // selects it on click; unavailable entries (None) remain visibly reserved.
     for &(icon, tip, tool) in SKETCH_TOOLS {
         match tool {
             Some(tool) => {
@@ -474,5 +474,17 @@ fn cell_ink(active: bool, hovered: bool, reserved: bool) -> egui::Color32 {
         theme::TEXT_HOVER
     } else {
         theme::TEXT_MUTED
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sketch_rail_exposes_line_with_the_complete_line_glyph() {
+        assert!(SKETCH_TOOLS.iter().any(|&(icon, tip, tool)| {
+            icon == Icon::Line && tip.starts_with("Line —") && tool == Some(SketchTool::Line)
+        }));
     }
 }

@@ -134,7 +134,6 @@ mod part;
 mod polygon_circumscribed;
 mod polygon_edge;
 mod polygon_inscribed;
-mod polyline;
 mod probe;
 mod rectangle;
 mod rectangle_3_point;
@@ -745,7 +744,6 @@ pub enum Icon {
     // Sketch mode.
     SelectVertex,
     AddPoint,
-    Polyline,
     Rectangle,
     ThreePointArc,
     /// The Line tool: a segment, and the tangent arc it drags into.
@@ -875,7 +873,6 @@ impl Icon {
         Icon::Density,
         Icon::SelectVertex,
         Icon::AddPoint,
-        Icon::Polyline,
         Icon::Rectangle,
         Icon::ThreePointArc,
         Icon::Line,
@@ -1017,7 +1014,6 @@ impl Icon {
             Icon::Density => density::DRAW,
             Icon::SelectVertex => select_vertex::DRAW,
             Icon::AddPoint => add_point::DRAW,
-            Icon::Polyline => polyline::DRAW,
             Icon::Rectangle => rectangle::DRAW,
             Icon::ThreePointArc => three_point_arc::DRAW,
             Icon::Line => line::DRAW,
@@ -1143,7 +1139,6 @@ impl Icon {
             Icon::Density => "density",
             Icon::SelectVertex => "select-vertex",
             Icon::AddPoint => "add-point",
-            Icon::Polyline => "polyline",
             Icon::Rectangle => "rectangle",
             Icon::ThreePointArc => "three-point-arc",
             Icon::Line => "line",
@@ -1263,7 +1258,6 @@ impl Icon {
             | Icon::Density => Group::Tools,
             Icon::SelectVertex
             | Icon::AddPoint
-            | Icon::Polyline
             | Icon::Rectangle
             | Icon::ThreePointArc
             | Icon::CloseLoop
@@ -1595,7 +1589,6 @@ impl Icon {
                 "Sketch operator: copies swept about an axis. The cross IS the axis — the ring of \
                  elements already describes the path."
             }
-            Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
             Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",
             Icon::ThreePointArc => {
                 "Sketch: click start, end, then a point the curve passes through; the arc stores \n                 endpoints plus the solved included angle."

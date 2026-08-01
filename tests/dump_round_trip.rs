@@ -230,7 +230,7 @@ fn arbitrary_config(rng: &mut Lcg, scene: Option<Scene>) -> AppConfig {
         sketch_tool: rng.pick(&[
             SketchTool::Select,
             SketchTool::AddPoint,
-            SketchTool::Polyline,
+            SketchTool::Line,
             SketchTool::Rectangle,
         ]),
         armed_constraint: rng.flag().then(|| {
@@ -356,7 +356,7 @@ fn every_enum_variant_survives_the_full_loop() {
     for sketch_tool in [
         SketchTool::Select,
         SketchTool::AddPoint,
-        SketchTool::Polyline,
+        SketchTool::Line,
         SketchTool::Rectangle,
     ] {
         let mut config = base();

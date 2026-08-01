@@ -93,6 +93,21 @@ pub enum SketchEvaluationError {
     },
 }
 
+/// Why a connected tangent arc could not be appended without a partial document edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TangentArcRefusal {
+    UnsupportedIncoming,
+    UnknownIncoming,
+    NonIncidentIncoming,
+    UnknownEndpoint,
+    SelfLoop,
+    Candidate(parametric::sketch::TangentArcCandidateError),
+    UnrepresentableSweep,
+    ArcRefused,
+    Branch(parametric::sketch::BranchChoiceError),
+    Constraint(ConstraintRefusal),
+}
+
 /// Build the explicit sketch evaluation context at a density-bearing boundary.
 ///
 /// Zero is not a density. Returning `None` keeps a legacy [`crate::voxel::VoxelProducer`] caller from
@@ -972,6 +987,82 @@ pub struct Sketch {
 }
 
 impl Sketch {
+    fn incoming_tangent_at(
+        &self,
+        curve: SketchCurve,
+        seam: EntityId,
+        context: parametric::EvaluationContext,
+    ) -> Result<[f64; 2], TangentArcRefusal> {
+        let point = |id: EntityId| {
+            self.points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        match curve {
+            SketchCurve::Circle(_) => Err(TangentArcRefusal::UnsupportedIncoming),
+            SketchCurve::Segment(id) => {
+                let segment = self
+                    .segments
+                    .iter()
+                    .find(|segment| segment.id == id)
+                    .ok_or(TangentArcRefusal::UnknownIncoming)?;
+                let other = if segment.to == seam {
+                    segment.from
+                } else if segment.from == seam {
+                    segment.to
+                } else {
+                    return Err(TangentArcRefusal::NonIncidentIncoming);
+                };
+                let other = point(other).ok_or(TangentArcRefusal::UnknownIncoming)?;
+                let seam = point(seam).ok_or(TangentArcRefusal::UnknownEndpoint)?;
+                Ok([seam[0] - other[0], seam[1] - other[1]])
+            }
+            SketchCurve::Arc(id) => {
+                let arc = self
+                    .arcs
+                    .iter()
+                    .find(|arc| arc.id == id)
+                    .ok_or(TangentArcRefusal::UnknownIncoming)?;
+                let orientation = if arc.to == seam {
+                    arc.sweep_degrees().signum()
+                } else if arc.from == seam {
+                    -arc.sweep_degrees().signum()
+                } else {
+                    return Err(TangentArcRefusal::NonIncidentIncoming);
+                };
+                let seam_at = point(seam).ok_or(TangentArcRefusal::UnknownEndpoint)?;
+                let geometry = self
+                    .curve_geometry(curve, context)
+                    .ok_or(TangentArcRefusal::UnknownIncoming)?;
+                let parametric::sketch::CurveGeometry::Circular(circle) = geometry else {
+                    return Err(TangentArcRefusal::UnknownIncoming);
+                };
+                let radius = [seam_at[0] - circle.center[0], seam_at[1] - circle.center[1]];
+                Ok([-orientation * radius[1], orientation * radius[0]])
+            }
+        }
+    }
+
+    /// Derive the tangent arc a preview and a commit share without exposing curve orientation.
+    pub fn tangent_arc_candidate(
+        &self,
+        incoming: SketchCurve,
+        seam: EntityId,
+        target: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<parametric::sketch::TangentArcCandidate, TangentArcRefusal> {
+        let tangent = self.incoming_tangent_at(incoming, seam, context)?;
+        let seam = self
+            .points
+            .iter()
+            .find(|point| point.id == seam)
+            .map(|point| point.at.in_plane())
+            .ok_or(TangentArcRefusal::UnknownEndpoint)?;
+        parametric::sketch::tangent_arc_candidate(tangent, seam, target)
+            .map_err(TangentArcRefusal::Candidate)
+    }
+
     /// Resolve one persisted curve into continuous relation geometry at this evaluation context.
     pub fn curve_geometry(
         &self,

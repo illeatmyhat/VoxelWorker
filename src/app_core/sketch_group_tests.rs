@@ -16,7 +16,7 @@ use super::AppCore;
 use camera::OrbitCamera;
 use document::intent::Intent;
 use document::scene::{Node, NodeContent, NodeId, Scene};
-use document::sketch::{PlaneAxis, Sketch, SketchSolid};
+use document::sketch::{PlaneAxis, Sketch, SketchCurve, SketchPoint, SketchSolid};
 use voxel_core::core_geom::MaterialChoice;
 
 fn test_core() -> AppCore {
@@ -419,4 +419,52 @@ fn one_authoring_act_is_one_in_mode_undo_step() {
         5,
         "and one redo puts the whole act back"
     );
+}
+
+#[test]
+fn line_point_segment_and_atomic_tangent_arc_are_three_undo_steps() {
+    let mut scene = Scene::from_nodes(vec![Node::new(
+        "Sketch",
+        NodeContent::SketchTool {
+            producer: SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3),
+            material: MaterialChoice::Stone,
+        },
+    )]);
+    scene.ensure_node_ids();
+    let target = scene.roots[0];
+    let empty = producer_of(&scene, target);
+    let mut core = test_core();
+    core.begin_sketch_group();
+
+    let (point, start) = empty.with_point_placed(SketchPoint::new(0, 0));
+    edit(&mut core, &mut scene, target, point.clone());
+    let (with_end, end) = point.with_point_placed(SketchPoint::new(10, 0));
+    let (segment, incoming) = with_end
+        .with_segment_between_traced(start, end)
+        .expect("Line segment");
+    edit(&mut core, &mut scene, target, segment.clone());
+    let (with_arc_end, arc_end) = segment.with_point_placed(SketchPoint::new(10, 10));
+    let (arc, created) = with_arc_end
+        .with_tangent_arc_between(
+            incoming,
+            end,
+            arc_end,
+            parametric::EvaluationContext::new(std::num::NonZeroU32::new(16).expect("density")),
+        )
+        .expect("atomic tangent arc");
+    assert!(matches!(created, SketchCurve::Arc(_)));
+    assert_eq!(arc.sketch.constraints().len(), 1);
+    edit(&mut core, &mut scene, target, arc.clone());
+
+    let mut selection = selection_of_first_root(&scene);
+    core.undo(&mut scene, &mut selection);
+    assert_eq!(producer_of(&scene, target), segment);
+    core.undo(&mut scene, &mut selection);
+    assert_eq!(producer_of(&scene, target), point);
+    core.undo(&mut scene, &mut selection);
+    assert_eq!(producer_of(&scene, target), empty);
+    core.redo(&mut scene, &mut selection);
+    core.redo(&mut scene, &mut selection);
+    core.redo(&mut scene, &mut selection);
+    assert_eq!(producer_of(&scene, target), arc);
 }
