@@ -61,9 +61,9 @@ mod tests;
 
 pub use constraint::{Constraint, ConstraintKind, ConstraintRefusal};
 pub use faces::{Face, FaceKey};
+pub use parametric::sketch::{SolveOutcome, SolveReport};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
-pub use substrate::nonlinear_least_squares::{SolveOutcome, SolveReport};
 
 use parametric::units::{AngleMeasurement, Measurement};
 
@@ -695,46 +695,6 @@ pub struct Circle {
 /// of the range can never collide with a live entity.
 pub const ABSENT_CENTER: EntityId = EntityId::MAX;
 
-/// A span the drawing needs — a segment's length, an arc's chord or its radius — that closes to
-/// less than this (in-plane voxels) has collapsed: the entity is no longer what the store calls
-/// it. Far below the 1/256-block granularity a polygon is flattened at, so nothing an author
-/// draws can land under it by accident.
-const COLLAPSED_SPAN: f64 = 1e-6;
-
-/// A trial solve whose residuals close to under this (the Euclidean norm, in in-plane voxels) has
-/// **met the constraints**, whatever stopped the search.
-///
-/// The solver's own `Converged` flag is not the test. Its residual tolerance is absolute while
-/// its step tolerance is relative to the size of the parameter vector, so on a drawing with enough
-/// geometry in it the step test fires first: the search stops with the residuals at, say, 1.7e-10
-/// voxels — satisfied by any measure this document can express — and reports `Stalled`, which
-/// reads as "unsatisfiable" and would refuse the constraint. Two unrelated free points elsewhere
-/// in the sketch are enough to trigger it, which is to say it fires on nearly every real drawing.
-///
-/// So the question asked here is the one that is actually about the answer: are the residuals
-/// met? `SolveOutcome` says why the search stopped, which is a fact about the search. The same
-/// scale as [`COLLAPSED_SPAN`], and for the same reason — it is four orders below the 1/256-block
-/// granularity a profile is flattened at, so a residual under it cannot move a single voxel.
-const SATISFIED_RESIDUAL: f64 = 1e-6;
-
-/// One trial solve on a copy of the drawing: what it produced, and whether that is acceptable.
-struct Trial {
-    points: Vec<Point>,
-    verdict: TrialVerdict,
-}
-
-/// How a trial solve turned out. Three outcomes rather than two, because "converged" and
-/// "acceptable" are different questions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrialVerdict {
-    /// A real drawing that meets every assertion.
-    Solved,
-    /// No solution was reached: the assertions fight.
-    Diverged,
-    /// A solution WAS reached, and it squeezes this entity to nothing.
-    Collapsed(EntityId),
-}
-
 fn absent_center() -> EntityId {
     ABSENT_CENTER
 }
@@ -1198,32 +1158,15 @@ impl Sketch {
         if self.constraints.is_empty() {
             return true;
         }
-        let mut pulled = self.constraints.clone();
-        pulled.push(Constraint {
-            id: self.next_id,
-            kind: ConstraintKind::Fix { point: held, at },
-            redundant: false,
-        });
-        let frame = self.frame();
-        let mut points = self.points.clone();
-        // No rigidity here, unlike `trial` — see [`constraint::Rigidity`]. Rigidity answers "where
-        // should the drawing go now that this is true?", and a drag already has an answer: the
-        // hand. Its reference would be wrong anyway, since `move_point` has already put the grabbed
-        // point at the cursor by the time this runs, so every span through it reads as stretched.
-        constraint::solve_in_place(&mut points, &frame, &pulled, constraint::Rigidity::Ignored);
-        let report = constraint::solve_in_place(
-            &mut points,
-            &frame,
-            &self.constraints,
-            constraint::Rigidity::Ignored,
-        );
-        // Judged on the RESIDUALS, never on why the search stopped — see [`SATISFIED_RESIDUAL`].
-        if report.is_some_and(|report| report.residual_norm > SATISFIED_RESIDUAL) {
-            return false;
+        let prepared = constraint::prepare(self, &self.constraints);
+        match prepared.drag(held, at.in_plane()) {
+            Ok(parametric::sketch::DragOutcome::Accepted(settled)) => {
+                prepared.apply(&mut self.points, &settled.solution);
+                self.sync_arc_centers();
+                true
+            }
+            Ok(parametric::sketch::DragOutcome::Rejected(_)) | Err(_) => false,
         }
-        self.points = points;
-        self.sync_arc_centers();
-        true
     }
 
     /// Re-solve the arc at `arc_index` so its center sits as close to `target` as the canonical
@@ -1269,8 +1212,9 @@ impl Sketch {
         }
     }
 
-    /// Delete a point by id and every segment/arc incident to it. The edges' other
-    /// endpoints survive as free points. No dangling reference can result.
+    /// Delete a point by id and every segment/arc incident to it. The edges' other endpoints
+    /// survive as free points. No dangling reference can result: relations do not keep geometry
+    /// alive, so their own liveness cascade follows after every geometry cascade.
     /// Deleting an arc's CENTER deletes that arc: the center is the arc's own derived
     /// geometry, so there is no arc left for it to be the center of.
     pub fn delete_point_cascade(&mut self, id: EntityId) {
@@ -1335,325 +1279,80 @@ impl Sketch {
         &self.constraints
     }
 
-    /// The endpoint pairs the residual system needs, as `(segment id, from, to)`.
-    fn segment_ends(&self) -> Vec<(EntityId, EntityId, EntityId)> {
-        self.segments
-            .iter()
-            .map(|seg| (seg.id, seg.from, seg.to))
-            .collect()
-    }
-
-    /// The drawing as the residual system reads it: which points each edge joins, and which points
-    /// some arc derives. One value, because a solve given one half without the other would be
-    /// solving a different sketch.
-    fn frame(&self) -> constraint::Frame {
-        constraint::Frame {
-            segments: self.segment_ends(),
-            arc_centers: self.arc_centers(),
-        }
-    }
-
-    /// The drawing's connected pieces, each as the point ids it holds. Two points share a piece
-    /// when an edge joins them, directly or through others; a lone point is a piece of one.
-    ///
-    /// This is the unit the author thinks in — the shape they drew, not the coordinates it is made
-    /// of — and it is what [`anchor_for`](Self::anchor_for) weighs.
-    fn connected_pieces(&self) -> Vec<Vec<EntityId>> {
-        let mut pieces: Vec<Vec<EntityId>> =
-            self.points.iter().map(|point| vec![point.id]).collect();
-        let joins = self.segments.iter().map(|seg| (seg.from, seg.to)).chain(
-            self.arcs
-                .iter()
-                .flat_map(|arc| [(arc.from, arc.to), (arc.from, arc.center)]),
-        );
-        for (from, to) in joins {
-            let find = |id: EntityId| pieces.iter().position(|piece| piece.contains(&id));
-            let (Some(left), Some(right)) = (find(from), find(to)) else {
-                continue;
-            };
-            if left != right {
-                let merged = pieces.remove(left.max(right));
-                pieces[left.min(right)].extend(merged);
-            }
-        }
-        pieces
-    }
-
-    /// The points a candidate constraint must not move: **the heaviest piece it names**, when it
-    /// names more than one.
-    ///
-    /// Empty when every entity the constraint names is already in one piece — there is no second
-    /// group for the first to be a reference for, and the ordinary least-squares nudge is right.
-    ///
-    /// Weight is the point count, with one thing ahead of it: a piece something has already `Fix`ed
-    /// is not going to travel whatever its size, so it outranks any count.
-    ///
-    /// **Only a STRICT winner anchors.** Two pieces of equal weight give no reason to prefer either
-    /// as the reference, and inventing one — pick order, id order — would be a rule the author has
-    /// to learn rather than one they can see. Equals meet in the middle, as two loose points always
-    /// have.
-    fn anchor_for(&self, kind: ConstraintKind) -> Vec<EntityId> {
-        let named: Vec<EntityId> = kind
-            .points()
-            .iter()
-            .copied()
-            .chain(kind.segments().iter().flat_map(|segment| {
-                self.segments
-                    .iter()
-                    .filter(|seg| seg.id == *segment)
-                    .flat_map(|seg| [seg.from, seg.to])
-            }))
-            .collect();
-        let pieces = self.connected_pieces();
-        let mut reached: Vec<usize> = Vec::new();
-        for point in &named {
-            if let Some(index) = pieces.iter().position(|piece| piece.contains(point)) {
-                if !reached.contains(&index) {
-                    reached.push(index);
-                }
-            }
-        }
-        if reached.len() < 2 {
-            return Vec::new();
-        }
-        let pinned = |piece: &[EntityId]| {
-            self.constraints.iter().any(|held| match held.kind {
-                ConstraintKind::Fix { point, .. } => piece.contains(&point),
-                _ => false,
-            })
-        };
-        let weight = |index: usize| (pinned(&pieces[index]), pieces[index].len());
-        let heaviest = reached
-            .iter()
-            .copied()
-            .max_by_key(|index| weight(*index))
-            .expect("at least two pieces were reached");
-        let shared = reached
-            .iter()
-            .filter(|index| weight(**index) == weight(heaviest))
-            .count();
-        match shared {
-            1 => pieces[heaviest].clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Add a constraint, trial-solving before it is kept.
-    ///
-    /// **Unsatisfiable is refused** and nothing changes, so the system is always solvable and every
-    /// downstream feature gets to assume it rather than defend against it. **Redundant is accepted
-    /// and flagged**: a solution exists but the Jacobian loses rank, and redundancy is sometimes
-    /// the intent — symmetry asserted although the geometry already implies it is insurance
-    /// against a later edit.
-    ///
-    /// The trial runs on a copy, so a refusal leaves the drawing exactly where it was rather than
-    /// where a failed solve pushed it.
+    /// Add one persisted assertion after the parametric kernel has trial-solved it on a copy.
+    /// A refusal changes neither geometry nor the stable-id counter: a rejected click must not burn
+    /// an id, move even one point, or leave a half-created assertion for undo to discover. Only
+    /// after the typed trial has accepted do we allocate, append, and apply its solution together.
+    /// Accepted redundancy remains visible because it can express author intent even when rank adds
+    /// no new information.
     pub fn add_constraint(&mut self, kind: ConstraintKind) -> Result<EntityId, ConstraintRefusal> {
         self.check_names_live_geometry(kind)?;
         self.check_is_not_already_asserted(kind)?;
-        // The id is minted only once the trial has passed, so a refusal leaves the id space
-        // untouched rather than burning a number nothing will ever name.
-        let candidate = Constraint {
-            id: self.next_id,
-            kind,
-            redundant: false,
-        };
-
-        let mut with_candidate = self.constraints.clone();
-        with_candidate.push(candidate);
-        let anchor = self.anchor_for(kind);
-        let trial = self.trial(&with_candidate, &anchor);
-        match trial.verdict {
-            TrialVerdict::Diverged => {
+        let prepared = constraint::prepare(self, &self.constraints);
+        let trial = prepared.trial_add(kind).map_err(|error| match error {
+            constraint::TrialMapError::UnmappedGeometry
+            | constraint::TrialMapError::Request(
+                parametric::sketch::RequestError::UnknownPoint
+                | parametric::sketch::RequestError::InvalidRelation(
+                    parametric::sketch::BuildError::UnknownPoint
+                    | parametric::sketch::BuildError::UnknownSegment,
+                ),
+            ) => ConstraintRefusal::UnknownEntity,
+        })?;
+        let (settled, redundant) = match trial {
+            parametric::sketch::TrialAdd::Accepted { settled, redundant } => (settled, redundant),
+            parametric::sketch::TrialAdd::Rejected(
+                parametric::sketch::TrialRejection::Unsatisfied { conflicts },
+            ) => {
                 return Err(ConstraintRefusal::Unsatisfiable {
-                    fights: self.blame(candidate),
-                })
+                    fights: conflicts
+                        .into_iter()
+                        .filter_map(|id| prepared.constraint(id))
+                        .collect(),
+                });
             }
-            TrialVerdict::Collapsed(entity) => {
+            parametric::sketch::TrialAdd::Rejected(
+                parametric::sketch::TrialRejection::Collapsed { curve, implicated },
+            ) => {
+                let Some(entity) = prepared.curve(curve) else {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                };
                 return Err(ConstraintRefusal::WouldCollapse {
                     entity,
-                    implicated: self.constraints_acting_on(entity),
-                })
+                    implicated: implicated
+                        .into_iter()
+                        .filter_map(|id| prepared.constraint(id))
+                        .collect(),
+                });
             }
-            TrialVerdict::Solved => {}
-        }
-
-        // Rank is measured against what the system knew a moment ago: if the new constraint did
-        // not raise it, everything it says was already being said. Both readings are taken at the
-        // author's PRE-solve drawing (`constraint::witness_rank`) rather than at each system's own
-        // solution, which is what keeps a vanishing Jacobian row from reading as redundancy.
-        let frame = self.frame();
-        let witness = |constraints: &[Constraint]| {
-            constraint::witness_rank(&self.points, &frame, constraints)
         };
-        let redundant = witness(&with_candidate) <= witness(&self.constraints);
         let id = self.alloc_id();
         self.constraints.push(Constraint {
             id,
+            kind,
             redundant,
-            ..candidate
         });
-        self.points = trial.points;
+        prepared.apply(&mut self.points, &settled.solution);
         Ok(id)
     }
 
-    /// The standing constraints that act on `entity` — the ones holding the shape that is about
-    /// to be squeezed to nothing.
-    ///
-    /// Asked structurally rather than by experiment because leave-one-out cannot answer it: an
-    /// earlier solve has already moved the drawing, and releasing an assertion does not undo its
-    /// effect, so dropping the `Horizontal` that leveled a segment leaves the segment level and
-    /// `Vertical` still collapses it. "What else is holding this?" is a question about the graph,
-    /// and it always has an answer.
-    ///
-    /// A constraint counts if it names the entity itself or either of its ends.
-    fn constraints_acting_on(&self, entity: EntityId) -> Vec<EntityId> {
-        let ends: Vec<EntityId> = self
-            .segments
-            .iter()
-            .filter(|seg| seg.id == entity)
-            .flat_map(|seg| [seg.from, seg.to])
-            .chain(
-                self.arcs
-                    .iter()
-                    .filter(|arc| arc.id == entity)
-                    .flat_map(|arc| [arc.from, arc.to, arc.center]),
-            )
-            .collect();
-        self.constraints
-            .iter()
-            .filter(|held| {
-                held.kind.segments().contains(&entity)
-                    || held.kind.points().iter().any(|named| ends.contains(named))
-            })
-            .map(|held| held.id)
-            .collect()
-    }
-
-    /// Which standing constraints the candidate cannot coexist with — **leave-one-out**.
-    ///
-    /// Re-run the trial with each standing constraint dropped in turn; any drop that lets the
-    /// system succeed names a culprit. That is `n` solves of a system with at most a few dozen
-    /// parameters, which at sketch scale is free, and it is an ANSWER rather than an estimate:
-    /// the alternative — a rank heuristic picking the constraint that appears in the most
-    /// dependent groups — blames the wrong one.
-    ///
-    /// An empty result means no SINGLE removal helps — a conflict needing two, or one whose
-    /// effect on the geometry outlived the assertion that caused it. Saying nothing is right
-    /// there; naming an arbitrary member would send the author to delete something innocent.
-    fn blame(&self, candidate: Constraint) -> Vec<EntityId> {
-        self.constraints
-            .iter()
-            .filter(|standing| {
-                let mut without: Vec<Constraint> = self
-                    .constraints
-                    .iter()
-                    .filter(|held| held.id != standing.id)
-                    .copied()
-                    .collect();
-                without.push(candidate);
-                self.trial(&without, &self.anchor_for(candidate.kind))
-                    .verdict
-                    == TrialVerdict::Solved
-            })
-            .map(|standing| standing.id)
-            .collect()
-    }
-
-    /// Solve `constraints` on a COPY of the drawing and judge the result. The copy is what lets a
-    /// refusal leave the sketch exactly where it was rather than where a failed solve pushed it.
-    ///
-    /// The judgment is on the RESIDUALS, not on why the search stopped — see
-    /// [`SATISFIED_RESIDUAL`], which is where that distinction is argued and where the bug that
-    /// came of confusing the two is recorded.
-    fn trial(&self, constraints: &[Constraint], anchor: &[EntityId]) -> Trial {
-        let mut points = self.points.clone();
-        let report = constraint::settle_in_place(&mut points, &self.frame(), constraints, anchor);
-        let verdict = match report {
-            // Nothing to solve is not a failure: an empty system is met by the drawing as it is.
-            None => TrialVerdict::Solved,
-            Some(report) if report.residual_norm > SATISFIED_RESIDUAL => TrialVerdict::Diverged,
-            Some(_) => match self.collapsed_by(&points) {
-                Some(entity) => TrialVerdict::Collapsed(entity),
-                None => TrialVerdict::Solved,
-            },
-        };
-        Trial { points, verdict }
-    }
-
-    /// **One constraint of a kind per entity set.**
-    ///
-    /// Stacking `Horizontal` on a segment that is already asserted horizontal adds a residual that
-    /// says exactly what another residual already says. The rank test below would catch it and
-    /// flag it `redundant`, but flagging is for redundancy that carries INTENT — symmetry asserted
-    /// although the geometry already implies it, kept as insurance against a later edit. A literal
-    /// second copy of the same claim carries none: it cannot be told from the first, deleting
-    /// either leaves the drawing identically constrained, and two badges would stand on one
-    /// anchor saying one thing. So it is refused, and the author already has what they asked for.
-    ///
-    /// The comparison is on the KIND and the geometry, never the value: a second `Fix` on a fixed
-    /// point is refused whether or not it names the same place, because "fix this here, and also
-    /// there" is a re-fix — delete the first, assert the second — rather than two live claims.
+    /// One persisted assertion of a kind may name one entity set. This is identity policy, not a
+    /// numerical redundancy rule: the stored values deliberately do not participate, so replacing
+    /// a `Fix` is delete-then-add rather than two claims that fight about one point.
     fn check_is_not_already_asserted(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
-        let standing = self
+        match self
             .constraints
             .iter()
-            .find(|held| held.kind.is_about_the_same_as(kind));
-        match standing {
+            .find(|held| held.kind.is_about_the_same_as(kind))
+        {
             Some(held) => Err(ConstraintRefusal::AlreadyAsserted { existing: held.id }),
             None => Ok(()),
         }
     }
 
-    /// WHICH geometry the trial solve collapsed, if it collapsed any — geometry that had extent
-    /// before the solve ran and has none after.
-    ///
-    /// **A singularity solves everything.** Almost every residual in the set is a difference
-    /// between two coordinates, so putting every point in one place drives them all to zero: it is
-    /// a trivial solution, available to nearly any system, and the solver will happily converge on
-    /// it. `Horizontal` and `Vertical` on one segment is the smallest instance — the zero-length
-    /// segment satisfies both exactly — but the shape of the failure is general, so the test is
-    /// too. A drawing that met its assertions by deleting the thing they name has not met them.
-    ///
-    /// Checked as a property of the RESULT rather than as a table of forbidden pairs, so it covers
-    /// combinations the residual set does not have yet. What must stay open is every span the
-    /// drawing needs to still be itself: a segment's two ends, an arc's two ends, and an arc's
-    /// radius.
-    ///
-    /// Geometry that was ALREADY degenerate is not this test's business — an unrelated assertion
-    /// elsewhere should not be refused for a collapse that predates it.
-    fn collapsed_by(&self, trial: &[Point]) -> Option<EntityId> {
-        let span = |points: &[Point], from: EntityId, to: EntityId| -> Option<f64> {
-            let at = |id: EntityId| points.iter().find(|point| point.id == id).map(|p| p.at);
-            let (a, b) = (at(from)?.in_plane(), at(to)?.in_plane());
-            Some(((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt())
-        };
-        // Every span the drawing needs to still be itself, as `(the entity that needs it, its two
-        // ends)`.
-        let mut open: Vec<(EntityId, EntityId, EntityId)> = self
-            .segments
-            .iter()
-            .map(|seg| (seg.id, seg.from, seg.to))
-            .collect();
-        for arc in &self.arcs {
-            open.push((arc.id, arc.from, arc.to));
-            if arc.center != ABSENT_CENTER {
-                open.push((arc.id, arc.center, arc.from));
-            }
-        }
-        open.into_iter()
-            .find(|&(_, from, to)| {
-                let (Some(before), Some(after)) =
-                    (span(&self.points, from, to), span(trial, from, to))
-                else {
-                    return false;
-                };
-                before > COLLAPSED_SPAN && after <= COLLAPSED_SPAN
-            })
-            .map(|(entity, _, _)| entity)
-    }
-
-    /// Whether every entity `kind` names is in the store, and its own terms are meetable.
+    /// Whether every entity `kind` names is live in the store, and its own terms are meetable.
+    /// This preflight belongs to the document because the local solver sees only validated handles;
+    /// it gives missing geometry and self-contradictory requests distinct author-facing refusals.
     fn check_names_live_geometry(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
         let known_point = |id: EntityId| self.points.iter().any(|point| point.id == id);
         let live_segment = |id: EntityId| self.segments.iter().find(|seg| seg.id == id);
@@ -1741,11 +1440,10 @@ impl Sketch {
     /// `Derived`: they are the solver's input as well as its output, and an under-constrained
     /// sketch has freedoms only the stored position remembers.
     pub fn solve(&mut self) -> Option<SolveReport> {
-        let frame = self.frame();
-        let constraints = self.constraints.clone();
-        // No anchor: a re-solve of the whole drawing has no candidate to read a reference piece
-        // from, so rigidity is the only preference in play.
-        constraint::settle_in_place(&mut self.points, &frame, &constraints, &[])
+        let prepared = constraint::prepare(self, &self.constraints);
+        let settled = prepared.settle();
+        prepared.apply(&mut self.points, &settled.solution);
+        settled.diagnostics.report
     }
 
     /// What a solve WOULD report, without moving anything.
@@ -1753,13 +1451,10 @@ impl Sketch {
     /// Read with the constraints alone — rigidity is a preference and has no place in a rank or a
     /// residual the caller is about to judge the drawing by.
     pub fn solve_report(&self) -> Option<SolveReport> {
-        let mut trial = self.points.clone();
-        constraint::solve_in_place(
-            &mut trial,
-            &self.frame(),
-            &self.constraints,
-            constraint::Rigidity::Ignored,
-        )
+        constraint::prepare(self, &self.constraints)
+            .analyze()
+            .diagnostics
+            .report
     }
 
     /// How many ways the drawing can still move: `2 × authored points − rank(J)`.
@@ -1773,20 +1468,15 @@ impl Sketch {
     /// nothing can take up. They occupy parameter slots (which keeps write-back simple) but no
     /// residual reads them, so they contribute zero Jacobian columns and are subtracted here.
     pub fn degrees_of_freedom(&self) -> usize {
-        let derived = self
-            .points
-            .iter()
-            .filter(|point| self.is_derived_point(point.id))
-            .count();
-        let authored = (self.points.len() - derived) * 2;
-        match self.solve_report() {
-            Some(report) => report.degrees_of_freedom.saturating_sub(derived * 2),
-            None => authored,
-        }
+        constraint::prepare(self, &self.constraints)
+            .analyze()
+            .degrees_of_freedom
     }
 
-    /// Drop constraints naming geometry the store no longer holds. Called by every delete, so a
-    /// constraint never outlives what it constrains.
+    /// Drop constraints naming geometry the store no longer holds. Called by every geometry delete
+    /// and by repair, so a constraint never outlives what it constrains or leaves an orphan residual
+    /// row in the prepared local problem. A relation is an assertion about a drawing, not ownership
+    /// of the drawing it names.
     fn drop_dangling_constraints(&mut self) {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
         let segment_ids: Vec<EntityId> = self.segments.iter().map(|seg| seg.id).collect();
@@ -1971,25 +1661,13 @@ impl Sketch {
         self.arcs.iter().any(|arc| arc.center == id)
     }
 
-    /// The derived centers the residual system needs, as `(center, from, to, sweep)`.
-    fn arc_centers(&self) -> Vec<constraint::ArcCenter> {
-        self.arcs
-            .iter()
-            .map(|arc| constraint::ArcCenter {
-                center: arc.center,
-                from: arc.from,
-                to: arc.to,
-                sweep_degrees: arc.bulge.to_degrees_f64(),
-            })
-            .collect()
-    }
-
-    /// Re-derive every arc's center point from its endpoints and bulge, minting one for any
-    /// arc that has none yet. The center is a real [`Point`] so it can be selected,
-    /// snapped to and dragged like any other, but its coordinates are OWNED here — every edit
-    /// that can move an arc ends by calling this, so a center can never drift out of agreement
-    /// with the curve it belongs to. An arc whose endpoints are missing or coincident is left
-    /// alone; [`repair`](Self::repair) erases it.
+    /// Re-derive every arc's center point from its endpoints and bulge, minting one for any arc
+    /// that has none yet. The center is a real [`Point`] so it can be selected, snapped to and
+    /// dragged like any other, but its coordinates are OWNED here — every edit that can move an arc
+    /// ends by calling this, so a center can never drift out of agreement with the curve it belongs
+    /// to. Solver write-back follows the same function rather than trusting the stored center slot.
+    /// An arc whose endpoints are missing or coincident is left alone; [`repair`](Self::repair)
+    /// erases it.
     pub fn sync_arc_centers(&mut self) {
         for index in 0..self.arcs.len() {
             let arc = self.arcs[index];
@@ -2108,12 +1786,15 @@ impl Sketch {
         self.sync_arc_centers();
     }
 
-    /// Erase every structurally-invalid segment or arc — one that references a point id not
-    /// in the store, a self-loop (`from == to`), or (arcs) a degenerate bulge — returning
-    /// the number removed. The load policy is to erase invalid objects rather than fail the
-    /// load. Points are never invalid; a point left with no incident edge is a legal free point.
-    /// The resolve already tolerates a dangling reference (the missing vertex is filtered out of
-    /// the flattened loop), so this is a cleanup + audit, not a crash guard.
+    /// Erase every structurally-invalid segment or arc — one that references a point id not in the
+    /// store, a self-loop (`from == to`), or (arcs) a degenerate bulge — returning the number
+    /// removed. The load policy is to erase invalid objects rather than fail the load. Points are
+    /// never invalid; a point left with no incident edge is a legal free point. The resolve already
+    /// tolerates a dangling reference, so this is cleanup + audit rather than a crash guard.
+    ///
+    /// Repair also cascades dead relations and then settles derived centers: a loaded document can
+    /// name neither a usable curve nor its center, but after repair the surviving topology and all
+    /// derived center points agree again.
     pub fn repair(&mut self) -> usize {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
         let before = self.segments.len() + self.arcs.len() + self.circles.len();

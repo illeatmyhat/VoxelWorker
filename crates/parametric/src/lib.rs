@@ -27,9 +27,8 @@
 //! Authored values are exact rationals so a persisted document is float-free end to end and
 //! a density re-target re-evaluates losslessly.
 //!
-//! This deliberately does **not** extend to the constraint solver above, which is
-//! floating-point by nature — Newton on transcendental residuals — and whose output lands
-//! back on an exactly representable value only where a `Quantize` constraint says it must.
+//! The continuous sketch solver lives here. It owns only resolved planar geometry and
+//! relation semantics; document ids, persistence, density, and voxel evaluation remain above it.
 //!
 //! ## Why it is its own crate
 //!
@@ -41,6 +40,7 @@
 pub mod dimension;
 pub mod expression;
 pub mod quantity;
+pub mod sketch;
 pub mod units;
 
 pub use dimension::Dimension;

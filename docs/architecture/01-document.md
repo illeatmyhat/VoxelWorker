@@ -169,7 +169,9 @@ downstream assumes solvability instead of defending against it.
 draws — a line removed from a drawing must not leave behind dots the author never placed —
 and any constraint naming geometry that has gone goes with it. A constraint is not a reason
 for a point to survive: the assertion was about the geometry, and the geometry is what was
-deleted.
+deleted. The document owns those ids, persistence, deletion, repair, density conversion, and
+atomic write-back. `parametric` owns the local resolved problem, residuals, rank, diagnostics,
+and continuous solve policy; `substrate` supplies only generic numerical primitives.
 
 **Redundancy is read at the author's drawing, not at the solution.** Rows of the Jacobian
 vanish at an exactly-solved configuration — a distance residual between two points that have

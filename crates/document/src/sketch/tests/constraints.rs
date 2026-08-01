@@ -557,39 +557,6 @@ fn already_collapsed_geometry_does_not_veto_the_rest() {
         .expect("the collapsed stub is not this assertion's doing");
 }
 
-/// The witness rank reads the drawing it is HANDED, never a solution it went and computed.
-///
-/// Rows of the Jacobian can vanish at an exactly-solved configuration, so redundancy read there
-/// mistakes a solver's success for a constraint saying nothing. Read at the author's own slanted
-/// drawing — a generic configuration — a `Fix` pins two coordinates and a `Horizontal` adds a
-/// third independent row.
-#[test]
-fn the_witness_rank_is_read_at_the_drawing_it_is_given() {
-    let (sketch, tail, _, segment) = slanted();
-    let frame = sketch.frame();
-    let held = |kind| Constraint {
-        id: 99,
-        kind,
-        redundant: false,
-    };
-    let pin = held(ConstraintKind::Fix {
-        point: tail,
-        at: SketchPoint::new(0, 0),
-    });
-    let level = held(ConstraintKind::Horizontal { segment });
-
-    let rank_of =
-        |constraints: &[Constraint]| constraint::witness_rank(sketch.points(), &frame, constraints);
-    assert_eq!(rank_of(&[]), 0, "no assertions pin nothing");
-    assert_eq!(
-        rank_of(&[pin]),
-        2,
-        "a Fix pins both of a point's coordinates"
-    );
-    assert_eq!(rank_of(&[pin, level]), 3, "and leveling adds a third");
-    assert_eq!(rank_of(&[level]), 1);
-}
-
 /// The verdict does not depend on the drawing having been pre-solved onto its own assertions —
 /// the property the witness reading exists to protect.
 #[test]
@@ -931,9 +898,9 @@ fn arc_with_center() -> (Sketch, EntityId, EntityId, EntityId, EntityId) {
 /// ends and the center follows. A correction written into the center's own slot instead would do
 /// nothing visible: `sync_arc_centers` overwrites that slot on the next edit.
 ///
-/// The loose point is `Fix`ed so that IT is the reference piece and the arc is what travels — see
-/// [`Sketch::anchor_for`]. Left free, the three-point arc outweighs it and the point comes to the
-/// arc instead, which is correct but leaves this mechanism unobserved.
+/// The loose point is `Fix`ed so that it is the reference piece and the arc is what travels. Left
+/// free, the three-point arc outweighs it under the parametric anchoring policy and the point comes
+/// to the arc instead, which is correct but leaves this mechanism unobserved.
 #[test]
 fn a_constraint_on_an_arcs_center_moves_the_arc() {
     let (mut sketch, tail, head, center, loose) = arc_with_center();

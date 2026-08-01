@@ -64,6 +64,10 @@ satisfy them. The structure that makes this tractable is the one that turns ever
 assertion, of every kind, into the same thing: a number that is zero when the assertion
 holds and signed by how far off it is.
 
+**Ownership.** `parametric::sketch` owns this resolved local problem and its relation semantics.
+The document adapter maps stable persisted entity ids into deterministic local handles and applies
+an accepted solution atomically. `substrate` owns the generic numerical routine only.
+
 **Shape.** A vector of those numbers, one entry per scalar equation, laid out beside a
 vector of the drawing's free coordinates. Solving is a trust-region least-squares search
 over the coordinate vector that drives the residual vector to zero, with the sensitivity
