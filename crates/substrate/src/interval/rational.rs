@@ -25,6 +25,21 @@ pub struct Rational {
     denominator: i128,
 }
 
+/// Why an IEEE-754 value cannot enter the bounded exact-rational representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RationalFromF64Error {
+    /// `NaN` and infinities do not name rational values.
+    NonFinite,
+    /// The exact binary ratio needs an `i128` numerator or denominator outside this type's range.
+    OutOfRange,
+}
+
+const F64_FRACTION_BITS: u32 = 52;
+const F64_FRACTION_BITS_I32: i32 = 52;
+const F64_EXPONENT_BIAS: i32 = 1023;
+const F64_HIDDEN_BIT: u64 = 1_u64 << F64_FRACTION_BITS;
+const F64_FRACTION_MASK: u64 = F64_HIDDEN_BIT - 1;
+
 impl Rational {
     /// A reduced rational from a raw numerator/denominator. The sign is normalized onto the
     /// numerator so the denominator is always positive, and both are divided through by their
@@ -76,6 +91,82 @@ impl Rational {
             numerator: value,
             denominator: 1,
         }
+    }
+
+    /// Rebuild the exact binary value of a finite `f64`, without decimal conversion or rounding.
+    ///
+    /// IEEE-754 stores a finite value as a signed integer significand times a power of two. Powers
+    /// of two are stripped from the significand before this type's canonical constructor receives
+    /// the resulting ratio. `-0.0` is the same rational as `0.0`, so both become canonical `0/1`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RationalFromF64Error::NonFinite`] for `NaN` or infinity, and
+    /// [`RationalFromF64Error::OutOfRange`] when the exact ratio cannot fit the bounded `i128`
+    /// representation. Finiteness alone does not guarantee that bound: a nonzero subnormal needs
+    /// a denominator of at least `2^1023`, while this type can represent at most `2^126`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn try_from_f64_exact(value: f64) -> Result<Self, RationalFromF64Error> {
+        if !value.is_finite() {
+            return Err(RationalFromF64Error::NonFinite);
+        }
+        if value == 0.0 {
+            return Ok(Self::from_integer(0));
+        }
+
+        let bits = value.to_bits();
+        let negative = bits >> 63 != 0;
+        let raw_exponent = (bits >> F64_FRACTION_BITS) & 0x7ff;
+        let fraction = bits & F64_FRACTION_MASK;
+        let (significand, exponent) = if raw_exponent == 0 {
+            (fraction, -1074)
+        } else {
+            let exponent = i32::try_from(raw_exponent)
+                .map_err(|_| RationalFromF64Error::OutOfRange)?
+                .checked_sub(F64_EXPONENT_BIAS)
+                .and_then(|exponent| exponent.checked_sub(F64_FRACTION_BITS_I32))
+                .ok_or(RationalFromF64Error::OutOfRange)?;
+            (F64_HIDDEN_BIT | fraction, exponent)
+        };
+        let removed_twos = significand.trailing_zeros();
+        let significand = significand >> removed_twos;
+        let exponent = exponent
+            .checked_add(i32::try_from(removed_twos).map_err(|_| RationalFromF64Error::OutOfRange)?)
+            .ok_or(RationalFromF64Error::OutOfRange)?;
+
+        if exponent >= 0 {
+            let magnitude = u128::from(significand)
+                .checked_shl(u32::try_from(exponent).map_err(|_| RationalFromF64Error::OutOfRange)?)
+                .ok_or(RationalFromF64Error::OutOfRange)?;
+            let numerator = if negative {
+                negated_from_magnitude(magnitude).ok_or(RationalFromF64Error::OutOfRange)?
+            } else {
+                i128::try_from(magnitude).map_err(|_| RationalFromF64Error::OutOfRange)?
+            };
+            Self::new(numerator, 1).ok_or(RationalFromF64Error::OutOfRange)
+        } else {
+            let denominator = 1_u128
+                .checked_shl(exponent.unsigned_abs())
+                .ok_or(RationalFromF64Error::OutOfRange)?;
+            let denominator =
+                i128::try_from(denominator).map_err(|_| RationalFromF64Error::OutOfRange)?;
+            let numerator = i128::from(significand);
+            let numerator = if negative {
+                numerator
+                    .checked_neg()
+                    .ok_or(RationalFromF64Error::OutOfRange)?
+            } else {
+                numerator
+            };
+            Self::new(numerator, denominator).ok_or(RationalFromF64Error::OutOfRange)
+        }
+    }
+
+    /// The nearest IEEE-754 value to this exact ratio.
+    #[must_use]
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+    pub fn to_f64(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
     }
 
     /// The reduced numerator (sign lives here; denominator is always positive).
@@ -603,5 +694,116 @@ mod tests {
         // directly (rather than subtracting from zero) is what lets this REPORT instead of
         // overflowing on the way to the check.
         assert_eq!(Rational::from_integer(i128::MIN).negated(), None);
+    }
+
+    #[test]
+    fn finite_f64_conversion_rebuilds_accepted_binary_values_exactly() {
+        let awkward_solver_value = f64::from_bits(0x405e_dd2f_1a9f_be77);
+        for value in [
+            -180.0,
+            -0.125,
+            123.4567,
+            awkward_solver_value,
+            2f64.powi(-126),
+        ] {
+            let rational = Rational::try_from_f64_exact(value).expect("fits i128 rational");
+            assert_eq!(
+                rational.to_f64().to_bits(),
+                value.to_bits(),
+                "{value} must round-trip through its exact binary ratio"
+            );
+        }
+    }
+
+    #[test]
+    fn finite_f64_conversion_canonicalizes_zero_and_rejects_nonfinite_values() {
+        for value in [0.0, -0.0] {
+            let rational = Rational::try_from_f64_exact(value).expect("zero is finite");
+            assert_eq!((rational.numerator(), rational.denominator()), (0, 1));
+            assert_eq!(rational.to_f64().to_bits(), 0.0f64.to_bits());
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                Rational::try_from_f64_exact(value),
+                Err(RationalFromF64Error::NonFinite)
+            );
+        }
+    }
+
+    #[test]
+    fn finite_f64_conversion_reports_the_i128_representation_boundary() {
+        assert_eq!(
+            Rational::try_from_f64_exact(f64::from_bits(1)),
+            Err(RationalFromF64Error::OutOfRange),
+            "a nonzero subnormal needs a denominator beyond i128"
+        );
+        assert_eq!(
+            Rational::try_from_f64_exact(2f64.powi(-127)),
+            Err(RationalFromF64Error::OutOfRange),
+            "2^127 is one past the largest positive denominator"
+        );
+        assert_eq!(
+            Rational::try_from_f64_exact(2f64.powi(127)),
+            Err(RationalFromF64Error::OutOfRange),
+            "+2^127 has no positive i128 numerator"
+        );
+        let negative = Rational::try_from_f64_exact(-2f64.powi(127))
+            .expect("the negative i128 extreme is representable");
+        assert_eq!(
+            (negative.numerator(), negative.denominator()),
+            (i128::MIN, 1)
+        );
+    }
+
+    #[test]
+    fn finite_f64_conversion_covers_a_deterministic_ieee_normal_matrix() {
+        const EXPONENTS: [u64; 5] = [949, 1000, 1023, 1075, 1149];
+        const FRACTIONS: [u64; 3] = [0, 1, F64_FRACTION_MASK];
+
+        for sign in [0_u64, 1_u64 << 63] {
+            for exponent in EXPONENTS {
+                for fraction in FRACTIONS {
+                    let value = f64::from_bits(sign | (exponent << F64_FRACTION_BITS) | fraction);
+                    let rational = Rational::try_from_f64_exact(value)
+                        .expect("the representative normal fits the bounded rational");
+                    assert_eq!(rational.to_f64().to_bits(), value.to_bits(), "{value:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finite_f64_conversion_rejects_deliberately_outside_ieee_values() {
+        let denominator_overflow = f64::from_bits((948_u64 << F64_FRACTION_BITS) | 1);
+        let numerator_overflow = f64::from_bits((1150_u64 << F64_FRACTION_BITS) | 1);
+        for value in [
+            f64::from_bits(1),
+            denominator_overflow,
+            -denominator_overflow,
+            numerator_overflow,
+            -numerator_overflow,
+        ] {
+            assert_eq!(
+                Rational::try_from_f64_exact(value),
+                Err(RationalFromF64Error::OutOfRange),
+                "{value:?} is finite but outside the i128 ratio envelope"
+            );
+        }
+
+        let positive_limit = Rational::try_from_f64_exact(2f64.powi(126))
+            .expect("the largest positive power of two below 2^127 fits");
+        assert_eq!(
+            (positive_limit.numerator(), positive_limit.denominator()),
+            (1_i128 << 126, 1)
+        );
+        let negative_fraction = Rational::try_from_f64_exact(-2f64.powi(-126))
+            .expect("the negative denominator boundary fits");
+        assert_eq!(
+            (
+                negative_fraction.numerator(),
+                negative_fraction.denominator()
+            ),
+            (-1, 1_i128 << 126)
+        );
     }
 }

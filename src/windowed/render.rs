@@ -1507,7 +1507,8 @@ impl WindowedState {
             else {
                 return;
             };
-            let Some(bulge) = parametric::units::AngleMeasurement::from_degrees_f64(degrees) else {
+            let Ok(bulge) = parametric::units::AngleMeasurement::try_from_degrees_f64(degrees)
+            else {
                 return;
             };
             let next = producer.with_arc_between(start, end, bulge);

@@ -37,7 +37,7 @@ use std::fmt;
 /// CS primitive and lives in substrate; the domain keeps the name `ExactRational` at
 /// this seam because it is the public measurement vocabulary used across the scene and
 /// intent layers. See `docs/architecture/01-document.md` (the units/measurement core).
-pub use substrate::interval::Rational as ExactRational;
+pub use substrate::interval::{Rational as ExactRational, RationalFromF64Error};
 
 /// A parametric blocks + voxels measurement.
 ///
@@ -223,17 +223,18 @@ impl AngleMeasurement {
         Self::new(ExactRational::from_integer(i128::from(degrees)))
     }
 
-    /// Quantize a solved continuous degree value onto the exact store at 1/3600°
-    /// (arc-second) resolution — the entry for creation tools whose inputs are floats,
-    /// such as the 3-point arc solve. Exact thereafter. `None` for a non-finite input.
-    #[must_use]
-    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-    pub fn from_degrees_f64(degrees: f64) -> Option<Self> {
-        if !degrees.is_finite() {
-            return None;
-        }
-        let arc_seconds = (degrees * 3600.0).round();
-        ExactRational::new(arc_seconds as i128, 3600).map(Self::new)
+    /// Store a solved continuous degree value as its exact IEEE-754 ratio.
+    ///
+    /// A solved value is already a binary float; preserving that exact value avoids inventing an
+    /// arc-second grid the solver never used. The bounded exact-rational store still rejects a
+    /// finite value whose numerator or denominator has no `i128` representation.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`RationalFromF64Error::NonFinite`] and
+    /// [`RationalFromF64Error::OutOfRange`] from the exact-rational conversion.
+    pub fn try_from_degrees_f64(degrees: f64) -> Result<Self, RationalFromF64Error> {
+        ExactRational::try_from_f64_exact(degrees).map(Self::new)
     }
 
     /// The exact degree value.
@@ -1019,6 +1020,21 @@ mod tests {
         assert_eq!(
             restored.to_voxels(16).unwrap(),
             measurement.to_voxels(16).unwrap()
+        );
+    }
+
+    #[test]
+    fn solved_angle_keeps_the_exact_f64_value_or_reports_the_rational_boundary() {
+        let value = 123.4567;
+        let solved = AngleMeasurement::try_from_degrees_f64(value).expect("ordinary angle fits");
+        assert_eq!(solved.to_degrees_f64().to_bits(), value.to_bits());
+        assert_eq!(
+            AngleMeasurement::try_from_degrees_f64(f64::NAN),
+            Err(RationalFromF64Error::NonFinite)
+        );
+        assert_eq!(
+            AngleMeasurement::try_from_degrees_f64(f64::from_bits(1)),
+            Err(RationalFromF64Error::OutOfRange)
         );
     }
 }

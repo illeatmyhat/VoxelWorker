@@ -1204,7 +1204,7 @@ impl Sketch {
         if arc.bulge.to_degrees_f64() < 0.0 {
             degrees -= 360.0;
         }
-        let Some(bulge) = AngleMeasurement::from_degrees_f64(degrees) else {
+        let Ok(bulge) = AngleMeasurement::try_from_degrees_f64(degrees) else {
             return;
         };
         if arc_sweep_is_valid(bulge.to_degrees_f64()) {

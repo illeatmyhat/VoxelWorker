@@ -368,15 +368,13 @@ fn arcs_round_trip_through_serde_and_a_pre_arc_document_loads_clean() {
 }
 
 #[test]
-fn quantized_angle_survives_the_float_door() {
-    let exact = AngleMeasurement::from_degrees_f64(-180.0).expect("finite");
+fn solved_angle_survives_the_exact_float_door() {
+    let exact = AngleMeasurement::try_from_degrees_f64(-180.0).expect("representable");
     assert_eq!(exact, AngleMeasurement::from_degrees(-180));
-    let solved = AngleMeasurement::from_degrees_f64(123.4567).expect("finite");
-    assert!(
-        (solved.to_degrees_f64() - 123.4567).abs() <= 1.0 / 7200.0,
-        "arc-second quantization: within half a second of arc"
-    );
-    assert_eq!(AngleMeasurement::from_degrees_f64(f64::NAN), None);
+    let value = 123.4567;
+    let solved = AngleMeasurement::try_from_degrees_f64(value).expect("representable");
+    assert_eq!(solved.to_degrees_f64().to_bits(), value.to_bits());
+    assert!(AngleMeasurement::try_from_degrees_f64(f64::NAN).is_err());
 }
 
 /// The `[0,0] → [4,0]` half-turn arc: center `[2,0]`, radius 2, bulging down.
@@ -460,6 +458,32 @@ fn dragging_a_center_changes_the_radius_and_nothing_else() {
         "the sweep follows the center: {:?}",
         sketch.arcs()[0].bulge
     );
+}
+
+#[test]
+fn center_resweep_keeps_the_solver_value_without_angle_quantization() {
+    let (mut sketch, _from, _to, arc) = half_turn();
+    let center = center_of(&sketch, arc).id;
+    let requested = SketchPoint::from_continuous(2.0, 1.234_567_8);
+    let target = requested.in_plane();
+    let expected = 2.0 * 2.0f64.atan2(target[1]).to_degrees();
+
+    assert!(sketch.move_point(center, requested));
+    assert_eq!(
+        sketch.arcs()[0].bulge.to_degrees_f64().to_bits(),
+        expected.to_bits(),
+        "the persisted exact ratio must evaluate to the solved f64, not a nearby arc-second"
+    );
+}
+
+#[test]
+fn an_unrepresentable_center_resweep_leaves_the_existing_arc_unchanged() {
+    let (mut sketch, _from, _to, _arc) = half_turn();
+    let before = sketch.arcs()[0].bulge;
+
+    sketch.resweep_arc_to_center(0, [2.0, 2f64.powi(128)]);
+
+    assert_eq!(sketch.arcs()[0].bulge, before);
 }
 
 /// A center has ONE degree of freedom — the chord's perpendicular bisector. A drag with a

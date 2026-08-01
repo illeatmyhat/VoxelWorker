@@ -8,4 +8,4 @@ pub mod rational;
 
 pub use disjoint_interval_set::DisjointIntervalSet;
 pub use field_interval::{union_field_intervals, FieldClassification, FieldInterval};
-pub use rational::Rational;
+pub use rational::{Rational, RationalFromF64Error};
