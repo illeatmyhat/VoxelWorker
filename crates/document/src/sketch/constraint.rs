@@ -23,10 +23,28 @@ use super::{
     ABSENT_CENTER,
 };
 use parametric::sketch::{
-    ArcId, BuildError, CircleId, ConstraintId, CurveKey, PointId, Problem, ProblemBuilder,
-    Relation, SegmentId,
+    ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
+    SegmentId, SketchCurve as ParametricSketchCurve, TangentContactError, TangentContactFailure,
 };
+pub use parametric::sketch::{InternalContainment, LineSide, TangentBranch};
 use parametric::EvaluationContext;
+
+/// A stable reference to one authored curve. This is the document boundary equivalent of the
+/// solver's local [`ParametricSketchCurve`]: entity ids persist here, local handles do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SketchCurve {
+    Segment(EntityId),
+    Arc(EntityId),
+    Circle(EntityId),
+}
+
+impl SketchCurve {
+    pub const fn id(self) -> EntityId {
+        match self {
+            Self::Segment(id) | Self::Arc(id) | Self::Circle(id) => id,
+        }
+    }
+}
 
 /// What a constraint asserts. Every reference is a stable document entity id, never a slot.
 ///
@@ -82,9 +100,46 @@ pub enum ConstraintKind {
     /// of `second`'s ends from `first`'s line says both at once without reconciling two
     /// differently-scaled rows.
     Collinear { first: EntityId, second: EntityId },
+    /// Two finite authored curves touch at this stable solution branch. `first` and `second` are
+    /// canonicalized by stable entity id; an internal branch names that persisted order.
+    Tangent {
+        first: SketchCurve,
+        second: SketchCurve,
+        branch: TangentBranch,
+    },
 }
 
 impl ConstraintKind {
+    /// Construct a Tangent with deterministic member ordering. Internal containment follows the
+    /// members when they swap; LineSide deliberately remains tied to the segment direction.
+    /// `EntityId` is minted from Sketch's one document-wide counter, so ids order curves across
+    /// Segment/Arc/Circle stores without a kind tie-breaker.
+    pub const fn tangent(first: SketchCurve, second: SketchCurve, branch: TangentBranch) -> Self {
+        if first.id() <= second.id() {
+            Self::Tangent {
+                first,
+                second,
+                branch,
+            }
+        } else {
+            Self::Tangent {
+                first: second,
+                second: first,
+                branch: branch.remap_for_swapped_members(),
+            }
+        }
+    }
+
+    pub(super) fn normalized(self) -> Self {
+        match self {
+            Self::Tangent {
+                first,
+                second,
+                branch,
+            } => Self::tangent(first, second, branch),
+            other => other,
+        }
+    }
     /// Every point id named directly, for cascade and liveness checks.
     pub(super) fn points(&self) -> Vec<EntityId> {
         match *self {
@@ -96,7 +151,8 @@ impl ConstraintKind {
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
             | Self::Equal { .. }
-            | Self::Collinear { .. } => Vec::new(),
+            | Self::Collinear { .. }
+            | Self::Tangent { .. } => Vec::new(),
         }
     }
 
@@ -121,6 +177,10 @@ impl ConstraintKind {
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => [first.min(second), first.max(second)],
+            Self::Tangent { first, second, .. } => {
+                let (first, second) = (first.id(), second.id());
+                [first.min(second), first.max(second)]
+            }
             Self::Midpoint { point, segment } => [point, segment],
         }
     }
@@ -135,7 +195,51 @@ impl ConstraintKind {
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => vec![first, second],
+            Self::Tangent { first, second, .. } => [first, second]
+                .into_iter()
+                .filter_map(|curve| match curve {
+                    SketchCurve::Segment(id) => Some(id),
+                    SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
+                })
+                .collect(),
             Self::Fix { .. } | Self::Distance { .. } | Self::Coincident { .. } => Vec::new(),
+        }
+    }
+
+    /// Every curve id named by a generic curve relation, for cascade/repair.
+    pub(super) fn curves(&self) -> Vec<SketchCurve> {
+        match *self {
+            Self::Tangent { first, second, .. } => vec![first, second],
+            _ => Vec::new(),
+        }
+    }
+
+    pub(super) const fn tangent_is_structurally_valid(&self) -> bool {
+        match *self {
+            Self::Tangent {
+                first,
+                second,
+                branch,
+            } => {
+                first.id() != second.id()
+                    && matches!(
+                        (first, second, branch),
+                        (
+                            SketchCurve::Segment(_),
+                            SketchCurve::Arc(_) | SketchCurve::Circle(_),
+                            TangentBranch::Line(_)
+                        ) | (
+                            SketchCurve::Arc(_) | SketchCurve::Circle(_),
+                            SketchCurve::Segment(_),
+                            TangentBranch::Line(_)
+                        ) | (
+                            SketchCurve::Arc(_) | SketchCurve::Circle(_),
+                            SketchCurve::Arc(_) | SketchCurve::Circle(_),
+                            TangentBranch::External | TangentBranch::Internal { .. }
+                        )
+                    )
+            }
+            _ => true,
         }
     }
 }
@@ -149,11 +253,22 @@ pub struct Constraint {
     /// Stable identity, from the same counter as every other entity.
     pub id: EntityId,
     /// What it asserts.
+    #[serde(deserialize_with = "deserialize_constraint_kind")]
     pub kind: ConstraintKind,
     /// Whether the solver found it redundant when it was added — it holds, but adds no
     /// information. Redundancy is sometimes the intent, so it is flagged rather than refused.
     #[serde(default)]
     pub redundant: bool,
+}
+
+/// Persistence boundary for a stored constraint. Every loaded Tangent is normalized to canonical
+/// member order before repair makes the document-specific liveness/type decision.
+fn deserialize_constraint_kind<'de, D>(deserializer: D) -> Result<ConstraintKind, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <ConstraintKind as serde::Deserialize>::deserialize(deserializer)
+        .map(ConstraintKind::normalized)
 }
 
 /// Why a requested assertion cannot be retained by the document — **and what to blame**.
@@ -166,6 +281,12 @@ pub struct Constraint {
 pub enum ConstraintRefusal {
     /// A fixed curve source needs the document evaluation context; no cached voxel value is used.
     MissingEvaluationContext,
+    /// Tangent is intentionally not a relation between two line segments; Parallel owns that
+    /// authoring claim, while a malformed branch/type combination names no meaningful assertion.
+    InvalidTangent {
+        constraint: Option<EntityId>,
+        error: TangentContactError,
+    },
     /// The request names geometry the store does not hold.
     UnknownEntity,
     /// Its own terms cannot be met by any drawing: for example a negative distance or a horizontal
@@ -207,7 +328,16 @@ impl ConstraintRefusal {
     /// the refusal has no culprit or none could be isolated.
     pub fn culprits(&self) -> Vec<EntityId> {
         match self {
-            Self::MissingEvaluationContext | Self::UnknownEntity | Self::Impossible => Vec::new(),
+            Self::InvalidTangent {
+                constraint: Some(constraint),
+                ..
+            } => vec![*constraint],
+            Self::MissingEvaluationContext
+            | Self::UnknownEntity
+            | Self::Impossible
+            | Self::InvalidTangent {
+                constraint: None, ..
+            } => Vec::new(),
             Self::Unsatisfiable { fights } => fights.clone(),
             Self::WouldCollapse { implicated, .. } => implicated.clone(),
             Self::AlreadyAsserted { existing } => vec![*existing],
@@ -239,6 +369,12 @@ pub(super) enum PrepareError {
     MissingEvaluationContext,
     InvalidDocumentGeometry,
     InvalidLocalProblem(BuildError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct StandingTangentFailure {
+    pub(super) constraint: EntityId,
+    pub(super) error: TangentContactError,
 }
 
 /// Why an otherwise accepted local solution cannot be atomically written into document state.
@@ -275,6 +411,32 @@ impl PreparedProblem {
 
     pub(super) fn analyze(&self) -> parametric::sketch::Analysis {
         self.problem.analyze()
+    }
+
+    pub(super) fn validate_current(&self) -> parametric::sketch::CurrentValidation {
+        self.problem.validate_current()
+    }
+
+    pub(super) fn standing_tangent_failure(
+        &self,
+        failure: TangentContactFailure,
+    ) -> Result<StandingTangentFailure, PrepareError> {
+        self.constraint(failure.constraint)
+            .map(|constraint| StandingTangentFailure {
+                constraint,
+                error: failure.error,
+            })
+            .ok_or(PrepareError::InvalidDocumentGeometry)
+    }
+
+    pub(super) fn first_tangent_contact_failure(
+        &self,
+        solution: &parametric::sketch::Solution,
+    ) -> Result<Option<StandingTangentFailure>, PrepareError> {
+        self.problem
+            .first_tangent_contact_failure(solution)
+            .map(|failure| self.standing_tangent_failure(failure))
+            .transpose()
     }
 
     pub(super) fn trial_add(
@@ -375,19 +537,19 @@ impl PreparedProblem {
             .map(|(stable, _)| *stable)
     }
 
-    pub(super) fn curve(&self, curve: CurveKey) -> Option<EntityId> {
+    pub(super) fn curve(&self, curve: ParametricSketchCurve) -> Option<EntityId> {
         match curve {
-            CurveKey::Segment(key) => self
+            ParametricSketchCurve::Segment(key) => self
                 .segments
                 .iter()
                 .find(|(_, local)| *local == key)
                 .map(|(stable, _)| *stable),
-            CurveKey::Arc(key) => self
+            ParametricSketchCurve::Arc(key) => self
                 .arcs
                 .iter()
                 .find(|(_, local, _)| *local == key)
                 .map(|(stable, _, _)| *stable),
-            CurveKey::Circle(key) => self
+            ParametricSketchCurve::Circle(key) => self
                 .circles
                 .iter()
                 .find(|(_, local, _)| *local == key)
@@ -396,7 +558,13 @@ impl PreparedProblem {
     }
 
     fn relation(&self, kind: ConstraintKind) -> Option<Relation> {
-        relation_for(kind, &self.points, &self.segments)
+        relation_for(
+            kind,
+            &self.points,
+            &self.segments,
+            &self.arcs,
+            &self.circles,
+        )
     }
 }
 
@@ -404,6 +572,8 @@ fn relation_for(
     kind: ConstraintKind,
     points: &[(EntityId, PointId)],
     segments: &[(EntityId, SegmentId)],
+    arcs: &[(EntityId, ArcId, parametric::sketch::ParameterId)],
+    circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
 ) -> Option<Relation> {
     let point = |id| {
         points
@@ -416,6 +586,17 @@ fn relation_for(
             .iter()
             .find(|(candidate, _)| *candidate == id)
             .map(|(_, local)| *local)
+    };
+    let curve = |curve: SketchCurve| match curve {
+        SketchCurve::Segment(id) => segment(id).map(ParametricSketchCurve::Segment),
+        SketchCurve::Arc(id) => arcs
+            .iter()
+            .find(|(candidate, _, _)| *candidate == id)
+            .map(|(_, local, _)| ParametricSketchCurve::Arc(*local)),
+        SketchCurve::Circle(id) => circles
+            .iter()
+            .find(|(candidate, _, _)| *candidate == id)
+            .map(|(_, local, _)| ParametricSketchCurve::Circle(*local)),
     };
     match kind {
         ConstraintKind::Fix { point: id, at } => point(id).map(|point| Relation::Fix {
@@ -458,6 +639,17 @@ fn relation_for(
         ConstraintKind::Collinear { first, second } => segment(first)
             .zip(segment(second))
             .map(|(first, second)| Relation::Collinear { first, second }),
+        ConstraintKind::Tangent {
+            first,
+            second,
+            branch,
+        } => curve(first)
+            .zip(curve(second))
+            .map(|(first, second)| Relation::Tangent {
+                first,
+                second,
+                branch,
+            }),
     }
 }
 
@@ -466,11 +658,13 @@ fn add_constraints(
     constraints: &[Constraint],
     points: &[(EntityId, PointId)],
     segments: &[(EntityId, SegmentId)],
+    arcs: &[(EntityId, ArcId, parametric::sketch::ParameterId)],
+    circles: &[(EntityId, CircleId, parametric::sketch::ParameterId)],
 ) -> Vec<(EntityId, ConstraintId)> {
     constraints
         .iter()
         .filter_map(|constraint| {
-            relation_for(constraint.kind, points, segments)
+            relation_for(constraint.kind, points, segments, arcs, circles)
                 .map(|relation| (constraint.id, builder.add_constraint(relation)))
         })
         .collect()
@@ -548,7 +742,14 @@ pub(super) fn prepare(
         local_circles.push((circle.id, local, radius));
     }
 
-    let local_constraints = add_constraints(&mut builder, constraints, &points, &segments);
+    let local_constraints = add_constraints(
+        &mut builder,
+        constraints,
+        &points,
+        &segments,
+        &local_arcs,
+        &local_circles,
+    );
     let problem = builder
         .finish()
         .map_err(PrepareError::InvalidLocalProblem)?;

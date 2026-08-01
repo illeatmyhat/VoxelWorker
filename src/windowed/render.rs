@@ -1441,6 +1441,23 @@ impl WindowedState {
         ))
     }
 
+    /// The continuous, unsnapped profile-plane location under the cursor. Constraint branch
+    /// choice stores this only in the live gesture; snapping it would change the chosen branch.
+    fn sketch_unsnapped_profile_coord(&self, cursor_x: f64, cursor_y: f64) -> Option<[f64; 2]> {
+        let target = self.panel_state.sketch_mode?;
+        let handles = self
+            .panel_state
+            .scene
+            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+        self.cursor_to_profile_coord(
+            cursor_x,
+            cursor_y,
+            self.last_ray_unprojection?,
+            self.last_viewport_px,
+            &handles,
+        )
+    }
+
     /// #99: one polyline click. Resolves the cursor to a point — an existing vertex under it
     /// (coincidence, by screen grab radius) or a fresh grid-snapped free point — then chains:
     /// no open chain starts one at that point; an open chain connects `last → clicked` and
@@ -2278,11 +2295,18 @@ impl WindowedState {
     fn refresh_sketch_constraint_badges(
         &mut self,
         target: document::scene::NodeId,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
         pixels_per_point: f32,
     ) {
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
+        let context = self.sketch_evaluation_context();
+        let handles = self
+            .panel_state
+            .scene
+            .sketch_handles(target, self.panel_state.geometry.voxels_per_block);
         let at = |index: usize| -> Option<egui::Pos2> {
             let px = (*self.sketch_vertex_px.get(index)?)?;
             Some(egui::Pos2::new(
@@ -2394,6 +2418,26 @@ impl WindowedState {
                 // A Distance dimension draws as a dimension gizmo, not a badge — the number IS
                 // the mark, and a glyph beside it would say the same thing twice.
                 document::sketch::ConstraintKind::Distance { .. } => Vec::new(),
+                // Tangent has one derived, finite-domain-validated contact, so it gets one badge
+                // at that locus rather than one duplicate mark per member curve.
+                document::sketch::ConstraintKind::Tangent {
+                    first,
+                    second,
+                    branch,
+                } => tangent_badge_anchor(
+                    &producer.sketch,
+                    first,
+                    second,
+                    branch,
+                    context,
+                    handles
+                        .as_ref()
+                        .map(|handles| |coord| handles.profile_to_render(coord)),
+                    (view_projection, viewport_px, pixels_per_point),
+                )
+                .map(|at| (at, egui::vec2(0.707, -0.707)))
+                .into_iter()
+                .collect(),
             };
             for (anchor, direction) in placements {
                 // Anchors are keyed by their rounded bits so two constraints on the same midpoint
@@ -2430,19 +2474,11 @@ impl WindowedState {
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<document::sketch::EntityId> {
-        let scale = self.last_pixels_per_point;
-        let cursor = egui::Pos2::new(cursor_x as f32 / scale, cursor_y as f32 / scale);
-        let half = ui::chrome::SKETCH_CONSTRAINT_BADGE * 0.5;
-        // Last drawn wins: badges stack along one offset, and the later ones paint over the
-        // earlier, so the pick must agree with what is on top.
-        self.sketch_constraint_badges
-            .iter()
-            .rev()
-            .find(|badge| {
-                egui::Rect::from_center_size(badge.center, egui::Vec2::splat(half * 2.0))
-                    .contains(cursor)
-            })
-            .map(|badge| badge.constraint)
+        sketch_constraint_badge_at(
+            &self.sketch_constraint_badges,
+            egui::Pos2::new(cursor_x as f32, cursor_y as f32),
+            self.last_pixels_per_point,
+        )
     }
 
     /// Feed the entity under the cursor to the armed constraint.
@@ -2479,12 +2515,23 @@ impl WindowedState {
                 self.panel_state.sketch_constraint_refusal = Some(match slot {
                     ui::panel::SlotKind::Point => "nothing under the cursor — pick a point",
                     ui::panel::SlotKind::Segment => "nothing under the cursor — pick a line",
+                    ui::panel::SlotKind::Curve => "nothing under the cursor — pick a curve",
                 });
                 return;
             }
         };
 
-        match armed.offer(candidate, &producer.sketch) {
+        let locus = if armed.verb() == ui::panel::ConstraintVerb::Tangent {
+            let Some(locus) = self.sketch_unsnapped_profile_coord(cursor_x, cursor_y) else {
+                self.panel_state.sketch_constraint_refusal =
+                    Some("cursor is not on the sketch plane");
+                return;
+            };
+            locus
+        } else {
+            [0.0, 0.0]
+        };
+        match armed.offer_at(candidate, locus, &producer.sketch) {
             ui::panel::Offer::Refused(why) => {
                 self.panel_state.sketch_constraint_refusal = Some(why);
             }
@@ -2500,11 +2547,27 @@ impl WindowedState {
             }
             ui::panel::Offer::Complete => {
                 self.panel_state.sketch_constraint_refusal = None;
-                let Some(kind) = armed.kind(&producer.sketch) else {
+                let Some(context) = self.sketch_evaluation_context() else {
+                    self.panel_state.sketch_constraint_refusal =
+                        Some(reset_refused_sketch_constraint_completion(
+                            &mut self.panel_state.armed_constraint,
+                            &mut self.panel_state.selection,
+                            armed.verb(),
+                            &document::sketch::ConstraintRefusal::MissingEvaluationContext,
+                        ));
                     return;
                 };
-                let Some(context) = self.sketch_evaluation_context() else {
-                    return;
+                let kind = match armed.kind_at_context(&producer.sketch, context) {
+                    Ok(kind) => kind,
+                    Err(why) => {
+                        self.panel_state.sketch_constraint_refusal = Some(why);
+                        reset_failed_sketch_constraint_completion(
+                            &mut self.panel_state.armed_constraint,
+                            &mut self.panel_state.selection,
+                            armed.verb(),
+                        );
+                        return;
+                    }
                 };
                 match producer.with_constraint(kind, context) {
                     Ok((constrained, _)) => {
@@ -2525,18 +2588,18 @@ impl WindowedState {
                     // problem; a lit badge can, and it lands the culprit in the selection so
                     // Delete is the next key rather than the next search.
                     Err(why) => {
-                        self.panel_state.sketch_constraint_refusal = Some(refusal_text(&why));
-                        self.panel_state.armed_constraint =
-                            Some(ui::panel::ArmedConstraint::new(armed.verb()));
-                        self.panel_state.selection.clear_sketch_entities();
-                        for entity in why.culprits() {
-                            self.panel_state.selection.toggle(
-                                ui::panel::SelectionTarget::SketchConstraint {
-                                    sketch: target,
-                                    entity,
-                                },
-                            );
-                        }
+                        self.panel_state.sketch_constraint_refusal =
+                            Some(reset_refused_sketch_constraint_completion(
+                                &mut self.panel_state.armed_constraint,
+                                &mut self.panel_state.selection,
+                                armed.verb(),
+                                &why,
+                            ));
+                        select_sketch_constraint_refusal_culprits(
+                            &mut self.panel_state.selection,
+                            target,
+                            &why,
+                        );
                     }
                 }
             }
@@ -2554,9 +2617,8 @@ impl WindowedState {
     /// 2026-07-30, and the reason the tool read as broken). Asking only for what the slot takes
     /// has no such dead zone, and it is what Fusion does.
     ///
-    /// An arc answers `None`, so clicking one reads as clicking nothing. No shipped constraint
-    /// slot accepts an arc; the honest alternative is a refusal naming what arcs *can* carry, and
-    /// nothing can carry them until Tangent and Concentric have residuals.
+    /// Segment slots intentionally ignore arcs and circles. Curve slots preserve all three edge
+    /// identities so Tangent can accept segments, arcs, and circles through the same hit-test.
     fn sketch_entity_for_slot(
         &self,
         slot: ui::panel::SlotKind,
@@ -2572,6 +2634,9 @@ impl WindowedState {
                 SketchEdgeHit::Segment(id) => Some(ui::panel::SketchEntity::Segment(id)),
                 SketchEdgeHit::Arc(_) | SketchEdgeHit::Circle(_) => None,
             },
+            ui::panel::SlotKind::Curve => self
+                .nearest_sketch_edge(cursor_x, cursor_y)
+                .map(sketch_entity_from_curve_hit),
         }
     }
 
@@ -2657,25 +2722,13 @@ impl WindowedState {
             return;
         };
         let new_offset = new_producer.anchor_preserving_offset(&old_producer, old_offset, context);
-
-        // ONE transaction: an authoring act is one in-mode undo step, and the anchor
-        // compensation is part of the act rather than an edit of its own (owner 2026-07-29).
-        // Undoing half of it would leave the profile somewhere the author never put it.
-        let mut transaction = vec![crate::Intent::SetSketch {
-            target,
-            producer: new_producer,
-        }];
-        if new_offset != old_offset {
-            transaction.push(crate::Intent::SetOffset {
+        self.viewport_transactions
+            .push(sketch_profile_edit_transaction(
                 target,
-                offset_measurements: [
-                    parametric::units::Measurement::from_voxels(new_offset[0]),
-                    parametric::units::Measurement::from_voxels(new_offset[1]),
-                    parametric::units::Measurement::from_voxels(new_offset[2]),
-                ],
-            });
-        }
-        self.viewport_transactions.push(transaction);
+                new_producer,
+                old_offset,
+                new_offset,
+            ));
     }
 
     /// If the cursor (physical px) is over a profile-vertex handle, build the
@@ -2922,7 +2975,12 @@ impl WindowedState {
             })
         });
 
-        self.refresh_sketch_constraint_badges(target, pixels_per_point);
+        self.refresh_sketch_constraint_badges(
+            target,
+            view_projection,
+            viewport_px,
+            pixels_per_point,
+        );
 
         // The segment LINES to draw next frame: each committed edge between its two projected
         // endpoints, in egui points — an open sketch resolves to nothing, so the edges
@@ -3422,7 +3480,125 @@ fn selection_target(
         ui::panel::SketchEntity::Segment(id) => {
             ui::panel::SelectionTarget::SketchSegment { sketch, entity: id }
         }
+        ui::panel::SketchEntity::Arc(id) => {
+            ui::panel::SelectionTarget::SketchArc { sketch, entity: id }
+        }
+        ui::panel::SketchEntity::Circle(id) => {
+            ui::panel::SelectionTarget::SketchCircle { sketch, entity: id }
+        }
     }
+}
+
+/// Preserve every authored curve identity when a Tangent curve slot resolves its edge hit.
+fn sketch_entity_from_curve_hit(hit: SketchEdgeHit) -> ui::panel::SketchEntity {
+    match hit {
+        SketchEdgeHit::Segment(id) => ui::panel::SketchEntity::Segment(id),
+        SketchEdgeHit::Arc(id) => ui::panel::SketchEntity::Arc(id),
+        SketchEdgeHit::Circle(id) => ui::panel::SketchEntity::Circle(id),
+    }
+}
+
+/// Build the one undoable edit emitted for a completed sketch command. A Tangent reaches this
+/// same intent door as every other profile edit; anchor compensation remains inseparable from
+/// the authored change.
+fn sketch_profile_edit_transaction(
+    target: document::scene::NodeId,
+    producer: document::sketch::SketchSolid,
+    old_offset: [i64; 3],
+    new_offset: [i64; 3],
+) -> Vec<crate::Intent> {
+    let mut transaction = vec![crate::Intent::SetSketch { target, producer }];
+    if new_offset != old_offset {
+        transaction.push(crate::Intent::SetOffset {
+            target,
+            offset_measurements: [
+                parametric::units::Measurement::from_voxels(new_offset[0]),
+                parametric::units::Measurement::from_voxels(new_offset[1]),
+                parametric::units::Measurement::from_voxels(new_offset[2]),
+            ],
+        });
+    }
+    transaction
+}
+
+/// A failed completion gives its temporary geometry picks back but keeps the same command armed,
+/// so the next click begins a fresh question instead of colliding with a full stale slot list.
+fn reset_failed_sketch_constraint_completion(
+    armed: &mut Option<ui::panel::ArmedConstraint>,
+    selection: &mut ui::panel::Selection,
+    verb: ui::panel::ConstraintVerb,
+) {
+    *armed = Some(ui::panel::ArmedConstraint::new(verb));
+    selection.clear_sketch_entities();
+}
+
+fn reset_refused_sketch_constraint_completion(
+    armed: &mut Option<ui::panel::ArmedConstraint>,
+    selection: &mut ui::panel::Selection,
+    verb: ui::panel::ConstraintVerb,
+    refusal: &document::sketch::ConstraintRefusal,
+) -> &'static str {
+    reset_failed_sketch_constraint_completion(armed, selection, verb);
+    refusal_text(refusal)
+}
+
+fn select_sketch_constraint_refusal_culprits(
+    selection: &mut ui::panel::Selection,
+    sketch: document::scene::NodeId,
+    refusal: &document::sketch::ConstraintRefusal,
+) {
+    for entity in refusal.culprits() {
+        selection.toggle(ui::panel::SelectionTarget::SketchConstraint { sketch, entity });
+    }
+}
+
+/// Derive a Tangent's one finite contact and carry it through the exact profile→render→screen
+/// path used by the overlay. `None` deliberately covers missing evaluation/render context as
+/// well as an invalid current branch: without all three, there is no honest badge locus.
+fn tangent_badge_anchor<F>(
+    sketch: &document::sketch::Sketch,
+    first: document::sketch::SketchCurve,
+    second: document::sketch::SketchCurve,
+    branch: document::sketch::TangentBranch,
+    context: Option<parametric::EvaluationContext>,
+    profile_to_render: Option<F>,
+    projection: (glam::Mat4, [u32; 4], f32),
+) -> Option<egui::Pos2>
+where
+    F: FnOnce([f64; 2]) -> [f32; 3],
+{
+    let contact = sketch
+        .tangent_contact(first, second, branch, context?)
+        .ok()?;
+    let render = profile_to_render?(contact.at);
+    let (view_projection, viewport_px, pixels_per_point) = projection;
+    project_to_screen(
+        glam::Vec3::from_array(render),
+        view_projection,
+        viewport_px,
+        pixels_per_point,
+    )
+}
+
+/// Return the topmost generic constraint badge under a physical-pixel cursor. The badge keeps
+/// the constraint id beside its position, so every caller picks the authored relation directly.
+fn sketch_constraint_badge_at(
+    badges: &[ui::chrome::ConstraintBadge],
+    cursor_px: egui::Pos2,
+    pixels_per_point: f32,
+) -> Option<document::sketch::EntityId> {
+    let cursor = cursor_px / pixels_per_point;
+    let half = ui::chrome::SKETCH_CONSTRAINT_BADGE * 0.5;
+    // Last drawn wins: badges stack along one offset, and the later ones paint over the earlier,
+    // so the pick must agree with what is on top.
+    badges
+        .iter()
+        .rev()
+        .find(|badge| {
+            egui::Rect::from_center_size(badge.center, egui::Vec2::splat(half * 2.0))
+                .contains(cursor)
+        })
+        .map(|badge| badge.constraint)
 }
 
 /// What the top bar says about a refused constraint. `offer` screens the clerical
@@ -3450,6 +3626,9 @@ fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
         ConstraintRefusal::MissingEvaluationContext => {
             "needs the document density to resolve its fixed curve"
         }
+        ConstraintRefusal::InvalidTangent { .. } => {
+            "that tangent branch has no finite contact on both curves"
+        }
     }
 }
 
@@ -3473,17 +3652,44 @@ fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::{
         advance_circle_center_diameter_gesture, apply_sketch_snap, circle_gesture_is_current,
         circle_marquee_hit, circle_ring, closest_point_on_segment, complete_circle_center_diameter,
         nearest_sketch_edge_from_candidates, point_in_screen_polygon, point_to_segment_distance,
-        polygon_double_area, segment_touches_rect, segments_intersect, SketchEdgeHit,
+        polygon_double_area, reset_failed_sketch_constraint_completion,
+        reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
+        select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
+        sketch_entity_from_curve_hit, sketch_profile_edit_transaction, tangent_badge_anchor,
+        SketchEdgeHit,
     };
-    use document::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
+    use document::sketch::{
+        ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
+        SketchSolid, TangentBranch,
+    };
     use egui::{pos2, Rect};
+    use std::num::NonZeroU32;
     use ui::panel::PositionSnap;
+
+    fn tangent_ready_sketch() -> (
+        Sketch,
+        document::sketch::EntityId,
+        document::sketch::EntityId,
+    ) {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let from = sketch.add_free_point(SketchPoint::new(0, 0));
+        let to = sketch.add_free_point(SketchPoint::new(10, 0));
+        let segment = sketch.connect(from, to).expect("segment");
+        let circle = sketch
+            .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+            .expect("circle");
+        (sketch, segment, circle)
+    }
+
+    fn context() -> parametric::EvaluationContext {
+        parametric::EvaluationContext::new(NonZeroU32::new(16).expect("non-zero density"))
+    }
 
     #[test]
     fn the_snap_policy_quantizes_a_profile_coordinate() {
@@ -3665,6 +3871,283 @@ mod tests {
             ]),
             Some(SketchEdgeHit::Segment(1)),
             "the established segment tie break remains intact"
+        );
+        assert_eq!(
+            nearest_sketch_edge_from_candidates([
+                Some((SketchEdgeHit::Segment(1), 3.0)),
+                Some((SketchEdgeHit::Arc(2), 2.0)),
+                Some((SketchEdgeHit::Circle(3), 4.0)),
+            ]),
+            Some(SketchEdgeHit::Arc(2)),
+            "an arc remains a real curve hit between segment and circle cases"
+        );
+    }
+
+    #[test]
+    fn tangent_curve_pick_keeps_each_real_edge_identity() {
+        assert_eq!(
+            sketch_entity_from_curve_hit(SketchEdgeHit::Segment(11)),
+            ui::panel::SketchEntity::Segment(11)
+        );
+        assert_eq!(
+            sketch_entity_from_curve_hit(SketchEdgeHit::Arc(12)),
+            ui::panel::SketchEntity::Arc(12)
+        );
+        assert_eq!(
+            sketch_entity_from_curve_hit(SketchEdgeHit::Circle(13)),
+            ui::panel::SketchEntity::Circle(13)
+        );
+    }
+
+    #[test]
+    fn tangent_badge_has_one_projected_contact_anchor_or_none() {
+        let (sketch, segment, circle) = tangent_ready_sketch();
+        let anchor = tangent_badge_anchor(
+            &sketch,
+            SketchCurve::Segment(segment),
+            SketchCurve::Circle(circle),
+            TangentBranch::Line(LineSide::Left),
+            Some(context()),
+            Some(|at: [f64; 2]| [at[0] as f32 / 10.0, at[1] as f32 / 10.0, 0.0]),
+            (glam::Mat4::IDENTITY, [0, 0, 200, 100], 2.0),
+        );
+        let anchors: Vec<_> = anchor.into_iter().collect();
+        assert_eq!(anchors, vec![pos2(75.0, 25.0)]);
+
+        let mut off_domain = Sketch::empty(PlaneAxis::Z);
+        let from = off_domain.add_free_point(SketchPoint::new(0, 0));
+        let to = off_domain.add_free_point(SketchPoint::new(1, 0));
+        let short_segment = off_domain.connect(from, to).expect("short segment");
+        let off_domain_circle = off_domain
+            .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+            .expect("circle");
+        for (sketch, first, second, evaluation) in [
+            (
+                &off_domain,
+                SketchCurve::Segment(short_segment),
+                SketchCurve::Circle(off_domain_circle),
+                Some(context()),
+            ),
+            (
+                &sketch,
+                SketchCurve::Segment(segment),
+                SketchCurve::Circle(circle),
+                None,
+            ),
+        ] {
+            assert!(
+                tangent_badge_anchor(
+                    sketch,
+                    first,
+                    second,
+                    TangentBranch::Line(LineSide::Left),
+                    evaluation,
+                    Some(|at: [f64; 2]| [at[0] as f32, at[1] as f32, 0.0]),
+                    (glam::Mat4::IDENTITY, [0, 0, 200, 100], 1.0),
+                )
+                .is_none(),
+                "off-domain or missing-context Tangents have no badge anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn tangent_badge_hit_selects_and_deletes_its_constraint_id() {
+        let (sketch, segment, circle) = tangent_ready_sketch();
+        let (producer, constraint) = SketchSolid::extrude(sketch, 3)
+            .with_constraint(
+                ConstraintKind::tangent(
+                    SketchCurve::Segment(segment),
+                    SketchCurve::Circle(circle),
+                    TangentBranch::Line(LineSide::Left),
+                ),
+                context(),
+            )
+            .expect("valid tangent");
+        let badges = [ui::chrome::ConstraintBadge {
+            center: pos2(40.0, 20.0),
+            icon: ui::icons::Icon::ConstraintTangent,
+            constraint,
+            picked: false,
+        }];
+        let hit = sketch_constraint_badge_at(&badges, pos2(80.0, 40.0), 2.0)
+            .expect("the generic badge returns its constraint id");
+        assert_eq!(hit, constraint);
+
+        let owner = document::scene::NodeId(77);
+        let mut selection = ui::panel::Selection::default();
+        selection.toggle(ui::panel::SelectionTarget::SketchConstraint {
+            sketch: owner,
+            entity: hit,
+        });
+        assert_eq!(
+            selection.sketch_constraints(owner).collect::<Vec<_>>(),
+            vec![hit]
+        );
+        let deleted = producer.with_constraint_deleted(hit);
+        assert!(deleted.sketch.constraints().is_empty());
+    }
+
+    #[test]
+    fn completed_tangent_queues_its_canonical_branch_through_set_sketch() {
+        let (sketch, segment, circle) = tangent_ready_sketch();
+        let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
+        assert_eq!(
+            armed.offer_at(ui::panel::SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            ui::panel::Offer::Taken
+        );
+        assert_eq!(
+            armed.offer_at(
+                ui::panel::SketchEntity::Segment(segment),
+                [5.0, 0.0],
+                &sketch
+            ),
+            ui::panel::Offer::Complete
+        );
+        let kind = armed.kind_at_context(&sketch, context()).expect("branch");
+        assert!(matches!(
+            kind,
+            ConstraintKind::Tangent {
+                branch: TangentBranch::Line(LineSide::Left),
+                ..
+            }
+        ));
+        let (constrained, _) = SketchSolid::extrude(sketch, 3)
+            .with_constraint(kind, context())
+            .expect("tangent completion");
+        let target = document::scene::NodeId(78);
+        let transaction =
+            sketch_profile_edit_transaction(target, constrained, [0, 0, 0], [0, 0, 0]);
+        assert_eq!(transaction.len(), 1, "one completed constraint edit");
+        let Some(crate::Intent::SetSketch {
+            target: queued_target,
+            producer,
+        }) = transaction.first()
+        else {
+            return;
+        };
+        assert_eq!(*queued_target, target);
+        assert!(matches!(
+            producer
+                .sketch
+                .constraints()
+                .first()
+                .map(|constraint| constraint.kind),
+            Some(ConstraintKind::Tangent {
+                branch: TangentBranch::Line(LineSide::Left),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn failed_tangent_branch_choice_restarts_empty_and_clears_temporary_selection() {
+        let (sketch, segment, circle) = tangent_ready_sketch();
+        let mut attempted = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
+        assert_eq!(
+            attempted.offer_at(
+                ui::panel::SketchEntity::Segment(segment),
+                [f64::NAN, 0.0],
+                &sketch
+            ),
+            ui::panel::Offer::Taken
+        );
+        assert_eq!(
+            attempted.offer_at(ui::panel::SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            ui::panel::Offer::Complete
+        );
+        assert_eq!(
+            attempted.kind_at_context(&sketch, context()),
+            Err("cannot choose a tangent branch here")
+        );
+
+        let owner = document::scene::NodeId(79);
+        let mut selection = ui::panel::Selection::default();
+        selection.toggle(ui::panel::SelectionTarget::SketchSegment {
+            sketch: owner,
+            entity: segment,
+        });
+        selection.toggle(ui::panel::SelectionTarget::SketchCircle {
+            sketch: owner,
+            entity: circle,
+        });
+        let mut armed = Some(attempted);
+        reset_failed_sketch_constraint_completion(
+            &mut armed,
+            &mut selection,
+            ui::panel::ConstraintVerb::Tangent,
+        );
+        assert!(selection.is_empty());
+        assert_eq!(
+            armed.as_ref().map(ui::panel::ArmedConstraint::verb),
+            Some(ui::panel::ConstraintVerb::Tangent)
+        );
+        assert!(armed.is_some_and(|armed| armed.picked().is_empty()));
+    }
+
+    #[test]
+    fn completed_constraint_without_context_reports_and_restarts_exactly() {
+        let (sketch, segment, circle) = tangent_ready_sketch();
+        let mut attempted = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
+        assert_eq!(
+            attempted.offer_at(
+                ui::panel::SketchEntity::Segment(segment),
+                [5.0, 0.0],
+                &sketch
+            ),
+            ui::panel::Offer::Taken
+        );
+        assert_eq!(
+            attempted.offer_at(ui::panel::SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            ui::panel::Offer::Complete
+        );
+        let owner = document::scene::NodeId(80);
+        let mut selection = ui::panel::Selection::from_targets([
+            ui::panel::SelectionTarget::SketchSegment {
+                sketch: owner,
+                entity: segment,
+            },
+            ui::panel::SelectionTarget::SketchCircle {
+                sketch: owner,
+                entity: circle,
+            },
+        ]);
+        let mut armed = Some(attempted);
+
+        let refusal = reset_refused_sketch_constraint_completion(
+            &mut armed,
+            &mut selection,
+            ui::panel::ConstraintVerb::Tangent,
+            &document::sketch::ConstraintRefusal::MissingEvaluationContext,
+        );
+
+        assert_eq!(
+            refusal,
+            "needs the document density to resolve its fixed curve"
+        );
+        assert!(selection.is_empty());
+        assert!(armed.is_some_and(|armed| {
+            armed.verb() == ui::panel::ConstraintVerb::Tangent && armed.picked().is_empty()
+        }));
+    }
+
+    #[test]
+    fn invalid_standing_tangent_refusal_selects_its_badge() {
+        let owner = document::scene::NodeId(81);
+        let culprit = 912;
+        let refusal = document::sketch::ConstraintRefusal::InvalidTangent {
+            constraint: Some(culprit),
+            error: parametric::sketch::TangentContactError::OutsideSecondDomain,
+        };
+        let mut selection = ui::panel::Selection::default();
+
+        select_sketch_constraint_refusal_culprits(&mut selection, owner, &refusal);
+
+        assert!(
+            selection.contains(ui::panel::SelectionTarget::SketchConstraint {
+                sketch: owner,
+                entity: culprit,
+            })
         );
     }
 

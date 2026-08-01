@@ -23,26 +23,17 @@
 //! glyph is drawn but whose residual is absent stays off the rail — an armable verb that asserts
 //! nothing is worse than a cell that is not there.
 
-use document::sketch::{ConstraintKind, EntityId, Sketch};
+use document::sketch::{ConstraintKind, EntityId, Sketch, SketchCurve};
 
 use crate::icons::Icon;
 
-/// A sketch entity a constraint can name. Arcs are pickable geometry but no shipped constraint
-/// slot accepts one, so offering an arc is a refusal rather than a variant here.
+/// A sketch entity a constraint can name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SketchEntity {
     Point(EntityId),
     Segment(EntityId),
-}
-
-impl SketchEntity {
-    /// The slot kind this entity can fill.
-    fn kind(self) -> SlotKind {
-        match self {
-            SketchEntity::Point(_) => SlotKind::Point,
-            SketchEntity::Segment(_) => SlotKind::Segment,
-        }
-    }
+    Arc(EntityId),
+    Circle(EntityId),
 }
 
 /// What a constraint slot accepts.
@@ -50,14 +41,27 @@ impl SketchEntity {
 pub enum SlotKind {
     Point,
     Segment,
+    Curve,
 }
 
 impl SlotKind {
+    fn accepts(self, entity: SketchEntity) -> bool {
+        matches!(
+            (self, entity),
+            (Self::Point, SketchEntity::Point(_))
+                | (Self::Segment, SketchEntity::Segment(_))
+                | (
+                    Self::Curve,
+                    SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_)
+                )
+        )
+    }
     /// What the prompt asks for when this slot is the one waiting.
     pub fn wanted(self) -> &'static str {
         match self {
             SlotKind::Point => "a point",
             SlotKind::Segment => "a line",
+            SlotKind::Curve => "a curve",
         }
     }
 }
@@ -88,6 +92,8 @@ pub enum ConstraintVerb {
     Midpoint,
     /// Two picked segments lie on one infinite line.
     Collinear,
+    /// Two finite curves touch; the click loci choose the durable branch.
+    Tangent,
 }
 
 impl ConstraintVerb {
@@ -108,6 +114,7 @@ impl ConstraintVerb {
             // in the middle of THAT", and a slot order that asked for the carrier first would
             // read as picking a line and then being asked what for.
             ConstraintVerb::Midpoint => &[SlotKind::Point, SlotKind::Segment],
+            ConstraintVerb::Tangent => &[SlotKind::Curve, SlotKind::Curve],
         }
     }
 
@@ -123,6 +130,7 @@ impl ConstraintVerb {
             ConstraintVerb::Equal => "Equal — then pick two lines",
             ConstraintVerb::Midpoint => "Midpoint — then pick a point and a line",
             ConstraintVerb::Collinear => "Collinear — then pick two lines",
+            ConstraintVerb::Tangent => "Tangent — then pick two curves",
         }
     }
 
@@ -142,6 +150,7 @@ impl ConstraintVerb {
             ConstraintVerb::Equal => Icon::ConstraintEqual,
             ConstraintVerb::Midpoint => Icon::ConstraintMidpoint,
             ConstraintVerb::Collinear => Icon::ConstraintCollinear,
+            ConstraintVerb::Tangent => Icon::ConstraintTangent,
         }
     }
 }
@@ -161,6 +170,7 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Equal { .. } => Icon::ConstraintEqual,
         ConstraintKind::Midpoint { .. } => Icon::ConstraintMidpoint,
         ConstraintKind::Collinear { .. } => Icon::ConstraintCollinear,
+        ConstraintKind::Tangent { .. } => Icon::ConstraintTangent,
     }
 }
 
@@ -170,6 +180,8 @@ pub struct ArmedConstraint {
     verb: ConstraintVerb,
     /// One entity per filled slot, in slot order.
     picked: Vec<SketchEntity>,
+    /// Unsnapped profile click locations, only meaningful for Tangent and never persisted.
+    loci: Vec<[f64; 2]>,
 }
 
 /// What [`ArmedConstraint::offer`] did with a pick.
@@ -190,6 +202,7 @@ impl ArmedConstraint {
         ArmedConstraint {
             verb,
             picked: Vec::new(),
+            loci: Vec::new(),
         }
     }
 
@@ -203,7 +216,15 @@ impl ArmedConstraint {
     pub fn from_parts(verb: ConstraintVerb, picked: Vec<SketchEntity>) -> Self {
         let mut picked = picked;
         picked.truncate(verb.slots().len());
-        ArmedConstraint { verb, picked }
+        // Tangent depends on unsnapped click evidence; restored artifacts intentionally restart it.
+        if verb == ConstraintVerb::Tangent {
+            return Self::new(verb);
+        }
+        ArmedConstraint {
+            verb,
+            picked,
+            loci: Vec::new(),
+        }
     }
 
     pub fn verb(&self) -> ConstraintVerb {
@@ -243,13 +264,19 @@ impl ArmedConstraint {
     /// author places, but the residual system reads it as the function of the arc's ends that it
     /// is, so a constraint on it moves the arc and holds like any other.
     pub fn offer(&mut self, candidate: SketchEntity, sketch: &Sketch) -> Offer {
+        self.offer_at(candidate, [0.0, 0.0], sketch)
+    }
+
+    /// Offer a pick with its continuous profile locus. Non-Tangent verbs ignore the locus.
+    pub fn offer_at(&mut self, candidate: SketchEntity, locus: [f64; 2], sketch: &Sketch) -> Offer {
         let Some(slot) = self.wants() else {
             return Offer::Refused("already complete");
         };
-        if candidate.kind() != slot {
+        if !slot.accepts(candidate) {
             return Offer::Refused(match slot {
                 SlotKind::Point => "that is not a point",
                 SlotKind::Segment => "that is not a line",
+                SlotKind::Curve => "that is not a curve",
             });
         }
         if self.picked.contains(&candidate) {
@@ -258,7 +285,18 @@ impl ArmedConstraint {
         if !holds(sketch, candidate) {
             return Offer::Refused("that geometry is gone");
         }
+        if self.verb == ConstraintVerb::Tangent
+            && matches!(
+                (&self.picked[..], candidate),
+                ([SketchEntity::Segment(_)], SketchEntity::Segment(_))
+            )
+        {
+            return Offer::Refused("two lines use Parallel — pick a curve");
+        }
         self.picked.push(candidate);
+        if self.verb == ConstraintVerb::Tangent {
+            self.loci.push(locus);
+        }
         match self.wants() {
             Some(_) => Offer::Taken,
             None => Offer::Complete,
@@ -290,14 +328,14 @@ impl ArmedConstraint {
         match self.verb {
             ConstraintVerb::HorizontalOrVertical => match self.picked.first()? {
                 SketchEntity::Segment(segment) => nearer_axis(sketch, *segment),
-                SketchEntity::Point(_) => None,
+                SketchEntity::Point(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
             },
             ConstraintVerb::Fix => match self.picked.first()? {
                 SketchEntity::Point(point) => {
                     let at = sketch.points().iter().find(|p| p.id == *point)?.at;
                     Some(ConstraintKind::Fix { point: *point, at })
                 }
-                SketchEntity::Segment(_) => None,
+                SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
             },
             ConstraintVerb::Coincident => {
                 let (first, second) = point_pair()?;
@@ -328,7 +366,45 @@ impl ArmedConstraint {
                 }
                 _ => None,
             },
+            ConstraintVerb::Tangent => None,
         }
+    }
+
+    /// Complete a Tangent using the session-only loci and explicit scalar evaluation context.
+    ///
+    /// # Errors
+    ///
+    /// Returns a user-facing refusal when the gesture is incomplete or its loci cannot choose a
+    /// valid Tangent branch from the current curve geometry.
+    pub fn kind_at_context(
+        &self,
+        sketch: &Sketch,
+        context: parametric::EvaluationContext,
+    ) -> Result<ConstraintKind, &'static str> {
+        if self.verb != ConstraintVerb::Tangent {
+            return self.kind(sketch).ok_or("constraint is incomplete");
+        }
+        let (Some(first), Some(second), Some(first_locus), Some(second_locus)) = (
+            self.picked.first(),
+            self.picked.get(1),
+            self.loci.first(),
+            self.loci.get(1),
+        ) else {
+            return Err("pick two curves");
+        };
+        let curve = |entity: SketchEntity| match entity {
+            SketchEntity::Segment(id) => Some(SketchCurve::Segment(id)),
+            SketchEntity::Arc(id) => Some(SketchCurve::Arc(id)),
+            SketchEntity::Circle(id) => Some(SketchCurve::Circle(id)),
+            SketchEntity::Point(_) => None,
+        };
+        let (Some(first), Some(second)) = (curve(*first), curve(*second)) else {
+            return Err("pick two curves");
+        };
+        let branch = sketch
+            .choose_tangent_branch(first, *first_locus, second, *second_locus, context)
+            .map_err(|_| "cannot choose a tangent branch here")?;
+        Ok(ConstraintKind::tangent(first, second, branch))
     }
 }
 
@@ -364,6 +440,8 @@ fn holds(sketch: &Sketch, entity: SketchEntity) -> bool {
             .segments()
             .iter()
             .any(|segment| segment.id == id && segment.from != segment.to),
+        SketchEntity::Arc(id) => sketch.arcs().iter().any(|arc| arc.id == id),
+        SketchEntity::Circle(id) => sketch.circles().iter().any(|circle| circle.id == id),
     }
 }
 
@@ -584,6 +662,98 @@ mod tests {
             armed.kind(&sketch),
             Some(ConstraintKind::Horizontal { segment })
         );
+    }
+
+    #[test]
+    fn tangent_curve_slot_accepts_every_curve_and_refuses_two_lines() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let a = sketch.add_free_point(SketchPoint::new(0, 0));
+        let b = sketch.add_free_point(SketchPoint::new(10, 0));
+        let line = sketch.connect(a, b).expect("line");
+        let c = sketch.add_free_point(SketchPoint::new(0, 8));
+        let d = sketch.add_free_point(SketchPoint::new(10, 8));
+        let other_line = sketch.connect(c, d).expect("other line");
+        let arc = sketch
+            .connect_arc(a, b, AngleMeasurement::from_degrees(90))
+            .expect("arc");
+        let circle = sketch
+            .add_circle(
+                SketchPoint::new(5, 4),
+                document::sketch::SketchLength::new(4),
+            )
+            .expect("circle");
+        let mut tangent = ArmedConstraint::new(ConstraintVerb::Tangent);
+        assert_eq!(
+            tangent.offer_at(SketchEntity::Segment(line), [0.0, 0.0], &sketch),
+            Offer::Taken
+        );
+        assert_eq!(
+            tangent.offer_at(SketchEntity::Arc(arc), [0.0, 0.0], &sketch),
+            Offer::Complete
+        );
+        let mut lines = ArmedConstraint::new(ConstraintVerb::Tangent);
+        assert_eq!(
+            lines.offer_at(SketchEntity::Segment(line), [0.0, 0.0], &sketch),
+            Offer::Taken
+        );
+        assert_eq!(
+            lines.offer_at(SketchEntity::Segment(other_line), [0.0, 0.0], &sketch),
+            Offer::Refused("two lines use Parallel — pick a curve")
+        );
+        let mut circle_pair = ArmedConstraint::new(ConstraintVerb::Tangent);
+        assert_eq!(
+            circle_pair.offer_at(SketchEntity::Circle(circle), [5.0, 0.0], &sketch),
+            Offer::Taken
+        );
+        assert_eq!(
+            circle_pair.offer_at(SketchEntity::Segment(line), [5.0, 0.0], &sketch),
+            Offer::Complete
+        );
+    }
+
+    #[test]
+    fn tangent_branch_is_canonical_under_reversed_curve_picks() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let a = sketch.add_free_point(SketchPoint::new(0, 0));
+        let b = sketch.add_free_point(SketchPoint::new(10, 0));
+        let line = sketch.connect(a, b).expect("line");
+        let circle = sketch
+            .add_circle(
+                SketchPoint::new(5, 4),
+                document::sketch::SketchLength::new(4),
+            )
+            .expect("circle");
+        let context =
+            parametric::EvaluationContext::new(std::num::NonZeroU32::new(16).expect("density"));
+        let complete = |first, first_locus, second, second_locus| {
+            let mut armed = ArmedConstraint::new(ConstraintVerb::Tangent);
+            assert_eq!(armed.offer_at(first, first_locus, &sketch), Offer::Taken);
+            assert_eq!(
+                armed.offer_at(second, second_locus, &sketch),
+                Offer::Complete
+            );
+            armed.kind_at_context(&sketch, context).expect("branch")
+        };
+        let one = complete(
+            SketchEntity::Segment(line),
+            [5.0, 0.0],
+            SketchEntity::Circle(circle),
+            [5.0, 0.0],
+        );
+        let two = complete(
+            SketchEntity::Circle(circle),
+            [5.0, 0.0],
+            SketchEntity::Segment(line),
+            [5.0, 0.0],
+        );
+        assert_eq!(one, two);
+        assert!(matches!(
+            one,
+            ConstraintKind::Tangent {
+                branch: document::sketch::TangentBranch::Line(document::sketch::LineSide::Left),
+                ..
+            }
+        ));
     }
 
     /// The badge reports the ANSWER, not the question: a line asserted plumb carries the plain

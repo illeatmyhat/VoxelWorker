@@ -140,6 +140,7 @@ const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
     ConstraintVerb::Perpendicular,
     ConstraintVerb::Equal,
     ConstraintVerb::Collinear,
+    ConstraintVerb::Tangent,
     ConstraintVerb::Midpoint,
     ConstraintVerb::Fix,
 ];

@@ -156,12 +156,15 @@ enum ConstraintVerbConfig {
     Equal,
     Midpoint,
     Collinear,
+    Tangent,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 enum SketchEntityConfig {
     Point(document::sketch::EntityId),
     Segment(document::sketch::EntityId),
+    Arc(document::sketch::EntityId),
+    Circle(document::sketch::EntityId),
 }
 
 impl ArmedConstraintConfig {
@@ -178,15 +181,22 @@ impl ArmedConstraintConfig {
                 ui::panel::ConstraintVerb::Equal => ConstraintVerbConfig::Equal,
                 ui::panel::ConstraintVerb::Midpoint => ConstraintVerbConfig::Midpoint,
                 ui::panel::ConstraintVerb::Collinear => ConstraintVerbConfig::Collinear,
+                ui::panel::ConstraintVerb::Tangent => ConstraintVerbConfig::Tangent,
             },
-            picked: armed
-                .picked()
-                .iter()
-                .map(|entity| match *entity {
-                    ui::panel::SketchEntity::Point(id) => SketchEntityConfig::Point(id),
-                    ui::panel::SketchEntity::Segment(id) => SketchEntityConfig::Segment(id),
-                })
-                .collect(),
+            picked: if armed.verb() == ui::panel::ConstraintVerb::Tangent {
+                Vec::new()
+            } else {
+                armed
+                    .picked()
+                    .iter()
+                    .map(|entity| match *entity {
+                        ui::panel::SketchEntity::Point(id) => SketchEntityConfig::Point(id),
+                        ui::panel::SketchEntity::Segment(id) => SketchEntityConfig::Segment(id),
+                        ui::panel::SketchEntity::Arc(id) => SketchEntityConfig::Arc(id),
+                        ui::panel::SketchEntity::Circle(id) => SketchEntityConfig::Circle(id),
+                    })
+                    .collect()
+            },
         }
     }
 
@@ -202,6 +212,7 @@ impl ArmedConstraintConfig {
             ConstraintVerbConfig::Equal => ui::panel::ConstraintVerb::Equal,
             ConstraintVerbConfig::Midpoint => ui::panel::ConstraintVerb::Midpoint,
             ConstraintVerbConfig::Collinear => ui::panel::ConstraintVerb::Collinear,
+            ConstraintVerbConfig::Tangent => ui::panel::ConstraintVerb::Tangent,
         };
         let picked = self
             .picked
@@ -209,6 +220,8 @@ impl ArmedConstraintConfig {
             .map(|entity| match *entity {
                 SketchEntityConfig::Point(id) => ui::panel::SketchEntity::Point(id),
                 SketchEntityConfig::Segment(id) => ui::panel::SketchEntity::Segment(id),
+                SketchEntityConfig::Arc(id) => ui::panel::SketchEntity::Arc(id),
+                SketchEntityConfig::Circle(id) => ui::panel::SketchEntity::Circle(id),
             })
             .collect();
         ui::panel::ArmedConstraint::from_parts(verb, picked)
@@ -1054,5 +1067,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn tangent_artifact_restarts_empty_without_serializing_click_evidence() {
+        let mut sketch = document::sketch::Sketch::empty(document::sketch::PlaneAxis::Z);
+        let from = sketch.add_free_point(document::sketch::SketchPoint::new(0, 0));
+        let to = sketch.add_free_point(document::sketch::SketchPoint::new(10, 0));
+        let segment = sketch.connect(from, to).expect("live segment");
+        let mut armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Tangent);
+        assert_eq!(
+            armed.offer_at(
+                ui::panel::SketchEntity::Segment(segment),
+                [4.25, 0.0],
+                &sketch
+            ),
+            ui::panel::Offer::Taken,
+            "the captured state contains a genuine live Tangent pick and locus"
+        );
+
+        let config = ArmedConstraintConfig::capture(&armed);
+        let text = serde_json::to_string(&config).expect("serialize");
+        assert!(
+            config.picked.is_empty() && !text.contains(&segment.to_string()),
+            "no picked Tangent entity or click locus persists"
+        );
+        let restored = config.restore();
+        assert_eq!(restored.verb(), ui::panel::ConstraintVerb::Tangent);
+        assert!(restored.picked().is_empty());
     }
 }

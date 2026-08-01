@@ -19,6 +19,10 @@
 )]
 
 use super::model::{SolveOutcome, SolveReport};
+use super::tangent::{
+    residual as tangent_residual, tangent_contact, ArcDomain, CircularCurve, CurveGeometry,
+    TangentBranch, TangentContact, TangentContactError,
+};
 use crate::{AngleMeasurement, ResolvedLength};
 use std::sync::atomic::{AtomicU64, Ordering};
 use substrate::nonlinear_least_squares::{
@@ -79,7 +83,7 @@ pub struct ConstraintId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CurveKey {
+pub enum SketchCurve {
     Segment(SegmentId),
     Arc(ArcId),
     Circle(CircleId),
@@ -138,6 +142,13 @@ pub enum Relation {
     Midpoint { point: PointId, segment: SegmentId },
     /// Collinear contributes two distances to a datum line: parallel plus zero offset.
     Collinear { first: SegmentId, second: SegmentId },
+    /// Two curves touch at the persisted branch. The branch is fixed during a solve; it must never
+    /// be inferred from a transient contact or switched by the optimizer.
+    Tangent {
+        first: SketchCurve,
+        second: SketchCurve,
+        branch: TangentBranch,
+    },
 }
 
 impl Relation {
@@ -154,7 +165,8 @@ impl Relation {
             | Self::Distance { .. }
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
-            | Self::Equal { .. } => 1,
+            | Self::Equal { .. }
+            | Self::Tangent { .. } => 1,
         }
     }
 }
@@ -165,6 +177,7 @@ pub enum BuildError {
     UnknownSegment,
     UnknownParameter,
     InvalidParameter,
+    InvalidTangent,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -559,6 +572,113 @@ impl Problem {
         self.constraints.len()
     }
 
+    /// Derive and validate the contact for one Tangent relation against a solved drawing. The
+    /// result is intentionally local and transient; document code maps its stable ids separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error when the relation is not a Tangent or its current geometry is not
+    /// one coincident finite-domain contact.
+    pub fn tangent_contact(
+        &self,
+        relation: Relation,
+        solution: &Solution,
+    ) -> Result<TangentContact, TangentContactError> {
+        let Resolved::Tangent {
+            first,
+            second,
+            branch,
+        } = self
+            .resolve(relation)
+            .map_err(|_| TangentContactError::InvalidBranch)?
+        else {
+            return Err(TangentContactError::InvalidBranch);
+        };
+        self.contact_for(first, second, branch, solution)
+    }
+
+    fn contact_for(
+        &self,
+        first: ResolvedCurve,
+        second: ResolvedCurve,
+        branch: TangentBranch,
+        solution: &Solution,
+    ) -> Result<TangentContact, TangentContactError> {
+        if solution.owner != self.owner {
+            return Err(TangentContactError::NonFinite);
+        }
+        if solution.positions.len() != self.points.len() {
+            return Err(TangentContactError::NonFinite);
+        }
+        let scalars =
+            scalar_coordinates_of_solution(self, solution).ok_or(TangentContactError::NonFinite)?;
+        let mut whole = Vec::with_capacity(solution.positions.len() * 2 + scalars.len());
+        for position in &solution.positions {
+            whole.extend(*position);
+        }
+        whole.extend(scalars);
+        let at = |slot| solution.positions[slot];
+        let first_geometry =
+            curve_geometry(first, &at, &self.parameters, &whole, self.points.len());
+        let second_geometry =
+            curve_geometry(second, &at, &self.parameters, &whole, self.points.len());
+        tangent_contact(first_geometry, second_geometry, branch)
+    }
+
+    /// The first precise finite-contact failure among the standing Tangents, in constraint order.
+    /// Document adapters use this before writeback so ordinary settle and drag remain atomic.
+    pub fn first_tangent_contact_failure(
+        &self,
+        solution: &Solution,
+    ) -> Option<TangentContactFailure> {
+        self.constraints
+            .iter()
+            .find_map(|constraint| match constraint.resolved {
+                Resolved::Tangent {
+                    first,
+                    second,
+                    branch,
+                } => self
+                    .contact_for(first, second, branch, solution)
+                    .err()
+                    .map(|error| TangentContactFailure {
+                        constraint: constraint.key,
+                        error,
+                    }),
+                _ => None,
+            })
+    }
+
+    /// Check the authored configuration without invoking the numerical solver. This is for edit
+    /// operations whose contract says that they may change one intrinsic value, but may not let
+    /// the solver repair that edit by moving other geometry.
+    pub fn validate_current(&self) -> CurrentValidation {
+        let positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
+        let scalar_coordinates = self.scalar_coordinates();
+        let solution = self.solution(positions.clone(), &scalar_coordinates);
+        let tangent_failure = self.first_tangent_contact_failure(&solution);
+        let satisfied = Residuals::new(self, &scalar_coordinates, Rigidity::Ignored).map_or(
+            self.constraints.is_empty(),
+            |system| {
+                let parameters = system.guess(&positions);
+                let mut residuals = vec![0.0; system.residual_count()];
+                system.residuals(&parameters, &mut residuals);
+                residuals.iter().all(|residual| residual.is_finite())
+                    && residuals
+                        .iter()
+                        .map(|residual| residual * residual)
+                        .sum::<f64>()
+                        .sqrt()
+                        <= SATISFIED_RESIDUAL
+            },
+        );
+        CurrentValidation {
+            satisfied,
+            collapsed: self.collapsed_by(&solution),
+            tangent_failure,
+        }
+    }
+
     fn scalar_coordinates(&self) -> Vec<f64> {
         self.parameters
             .iter()
@@ -596,6 +716,7 @@ impl Problem {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve(&self, relation: Relation) -> Result<Resolved, BuildError> {
         let point = |id: PointId| {
             (id.owner == self.owner && id.index < self.points.len())
@@ -611,6 +732,35 @@ impl Problem {
                     to: segment.to.index,
                 })
                 .ok_or(BuildError::UnknownSegment)
+        };
+        let curve = |curve: SketchCurve| match curve {
+            SketchCurve::Segment(id) => segment(id).map(ResolvedCurve::Segment),
+            SketchCurve::Arc(id) => self
+                .arc_centers
+                .get(id.index)
+                .filter(|arc| id.owner == self.owner && arc.key == id)
+                .map(|arc| {
+                    ResolvedCurve::Arc(ArcCurveSlots {
+                        center: arc.center.index,
+                        from: arc.from.index,
+                        to: arc.to.index,
+                        sweep_parameter: self.arc_parameters[id.index]
+                            .map(|parameter| parameter.index),
+                        sweep_degrees: arc.sweep_degrees,
+                    })
+                })
+                .ok_or(BuildError::InvalidTangent),
+            SketchCurve::Circle(id) => self
+                .circles
+                .get(id.index)
+                .filter(|circle| id.owner == self.owner && circle.key == id)
+                .map(|circle| {
+                    ResolvedCurve::Circle(CircleSlots {
+                        center: circle.center.index,
+                        radius_parameter: circle.radius.index,
+                    })
+                })
+                .ok_or(BuildError::InvalidTangent),
         };
         match relation {
             Relation::Fix { point: id, at } => Ok(Resolved::Fix {
@@ -665,6 +815,21 @@ impl Problem {
                 datum: segment(first)?,
                 other: segment(second)?,
             }),
+            Relation::Tangent {
+                first,
+                second,
+                branch,
+            } => {
+                let (first, second) = (curve(first)?, curve(second)?);
+                if !tangent_branch_matches_types(first, second, branch) {
+                    return Err(BuildError::InvalidTangent);
+                }
+                Ok(Resolved::Tangent {
+                    first,
+                    second,
+                    branch,
+                })
+            }
         }
     }
 }
@@ -679,6 +844,7 @@ mod tests {
     )]
 
     use super::*;
+    use crate::sketch::{InternalContainment, LineSide};
 
     fn two_segments() -> (Problem, PointId, PointId, PointId, SegmentId, SegmentId) {
         let mut builder = ProblemBuilder::new();
@@ -742,6 +908,28 @@ mod tests {
     }
 
     #[test]
+    /// A special edit that promises not to move unrelated authored geometry must not accidentally
+    /// use `analyze`: it settles a copy. The current-configuration API instead reads the stored
+    /// witness exactly as it is, before any numerical repair.
+    fn current_validation_does_not_heal_an_unsatisfied_authored_witness() {
+        let mut builder = ProblemBuilder::new();
+        let from = builder.add_point([0.0, 0.0]);
+        let to = builder.add_point([10.0, 4.0]);
+        let segment = builder.add_segment(from, to);
+        builder.add_constraint(Relation::Horizontal { segment });
+        let problem = builder.finish().unwrap();
+
+        assert!(
+            !problem.validate_current().satisfied,
+            "stored slant is still authored"
+        );
+        assert!(
+            problem.analyze().diagnostics.satisfied,
+            "the solver can heal its analysis copy"
+        );
+    }
+
+    #[test]
     /// Witness rank belongs to the author’s drawing, where informative gradients have not yet
     /// vanished at an exactly solved configuration; solution rank would make a useful assertion
     /// look redundant after it has driven the drawing to a singular witness.
@@ -782,13 +970,20 @@ mod tests {
     /// A stopped search can still leave a residual below the authoring threshold; status records
     /// the numerical path, while the residual says whether the author’s relations hold.
     fn satisfaction_is_residual_based_not_search_outcome_based() {
-        let diagnostics = diagnostics(Some(SolveReport {
+        let report = Some(SolveReport {
             outcome: SolveOutcome::Stalled,
             iterations: 1,
             residual_norm: SATISFIED_RESIDUAL / 2.0,
             degrees_of_freedom: 0,
             redundant_residuals: 0,
-        }));
+        });
+        let diagnostics = Diagnostics {
+            satisfied: report
+                .as_ref()
+                .is_some_and(|report| report.residual_norm <= SATISFIED_RESIDUAL),
+            report,
+            tangent_contacts_valid: true,
+        };
         assert!(diagnostics.satisfied);
     }
 
@@ -859,7 +1054,7 @@ mod tests {
         else {
             panic!("orthogonal rows collapse one segment");
         };
-        assert_eq!(curve, CurveKey::Segment(segment));
+        assert_eq!(curve, SketchCurve::Segment(segment));
     }
 
     #[test]
@@ -1067,6 +1262,161 @@ mod tests {
             Err(BuildError::InvalidParameter)
         ));
     }
+
+    fn circle(builder: &mut ProblemBuilder, center: [f64; 2], radius: f64) -> CircleId {
+        let center = builder.add_point(center);
+        let radius = builder.add_fixed_positive_radius(radius).unwrap();
+        builder.add_circle(center, radius)
+    }
+
+    #[test]
+    fn tangent_has_one_row_and_keeps_the_segment_direction_for_line_side() {
+        let mut builder = ProblemBuilder::new();
+        let from = builder.add_point([-10.0, 0.0]);
+        let to = builder.add_point([10.0, 0.0]);
+        let line = builder.add_segment(from, to);
+        let circle = circle(&mut builder, [0.0, 4.0], 4.0);
+        builder.add_constraint(Relation::Tangent {
+            // The line is deliberately second: Left is nevertheless the segment's stored
+            // `from → to` left side, never the canonical relation member order.
+            first: SketchCurve::Circle(circle),
+            second: SketchCurve::Segment(line),
+            branch: TangentBranch::Line(LineSide::Left),
+        });
+        let problem = builder.finish().unwrap();
+        let analysis = problem.analyze();
+        assert_eq!(problem.relation_count(), 1);
+        assert_eq!(analysis.witness_rank, 1);
+        assert_eq!(
+            analysis.degrees_of_freedom, 5,
+            "six coordinates minus one Tangent row"
+        );
+        assert!(analysis.diagnostics.tangent_contacts_valid);
+        let contact = problem
+            .tangent_contact(
+                Relation::Tangent {
+                    first: SketchCurve::Circle(circle),
+                    second: SketchCurve::Segment(line),
+                    branch: TangentBranch::Line(LineSide::Left),
+                },
+                &analysis.solution,
+            )
+            .unwrap();
+        assert!((contact.at[0]).abs() < 1e-8 && (contact.at[1]).abs() < 1e-8);
+    }
+
+    #[test]
+    fn tangent_circular_branches_share_one_contact_formula() {
+        let external = {
+            let mut builder = ProblemBuilder::new();
+            let first = circle(&mut builder, [0.0, 0.0], 4.0);
+            let second = circle(&mut builder, [8.0, 0.0], 4.0);
+            builder.add_constraint(Relation::Tangent {
+                first: SketchCurve::Circle(first),
+                second: SketchCurve::Circle(second),
+                branch: TangentBranch::External,
+            });
+            (
+                builder.finish().unwrap(),
+                first,
+                second,
+                TangentBranch::External,
+                [4.0, 0.0],
+            )
+        };
+        let internal_first = {
+            let mut builder = ProblemBuilder::new();
+            let first = circle(&mut builder, [0.0, 0.0], 6.0);
+            let second = circle(&mut builder, [4.0, 0.0], 2.0);
+            let branch = TangentBranch::Internal {
+                contains: InternalContainment::First,
+            };
+            builder.add_constraint(Relation::Tangent {
+                first: SketchCurve::Circle(first),
+                second: SketchCurve::Circle(second),
+                branch,
+            });
+            (builder.finish().unwrap(), first, second, branch, [6.0, 0.0])
+        };
+        let internal_second = {
+            let mut builder = ProblemBuilder::new();
+            let first = circle(&mut builder, [4.0, 0.0], 2.0);
+            let second = circle(&mut builder, [0.0, 0.0], 6.0);
+            let branch = TangentBranch::Internal {
+                contains: InternalContainment::Second,
+            };
+            builder.add_constraint(Relation::Tangent {
+                first: SketchCurve::Circle(first),
+                second: SketchCurve::Circle(second),
+                branch,
+            });
+            (builder.finish().unwrap(), first, second, branch, [6.0, 0.0])
+        };
+        for (problem, first, second, branch, expected) in
+            [external, internal_first, internal_second]
+        {
+            let settled = problem.settle();
+            assert!(settled.diagnostics.satisfied && settled.diagnostics.tangent_contacts_valid);
+            let contact = problem
+                .tangent_contact(
+                    Relation::Tangent {
+                        first: SketchCurve::Circle(first),
+                        second: SketchCurve::Circle(second),
+                        branch,
+                    },
+                    &settled.solution,
+                )
+                .unwrap();
+            assert!(
+                ((contact.at[0] - expected[0]).powi(2) + (contact.at[1] - expected[1]).powi(2))
+                    .sqrt()
+                    < 1e-7,
+                "{branch:?} contact was {:?}",
+                contact.at
+            );
+        }
+    }
+
+    #[test]
+    fn a_supporting_line_contact_outside_a_finite_segment_is_refused_after_trial() {
+        let mut builder = ProblemBuilder::new();
+        let from = builder.add_point([-1.0, 0.0]);
+        let to = builder.add_point([1.0, 0.0]);
+        let line = builder.add_segment(from, to);
+        let circular = circle(&mut builder, [3.0, 4.0], 4.0);
+        let problem = builder.finish().unwrap();
+        let rejected = problem
+            .trial_add(Relation::Tangent {
+                first: SketchCurve::Segment(line),
+                second: SketchCurve::Circle(circular),
+                branch: TangentBranch::Line(LineSide::Left),
+            })
+            .unwrap();
+        assert!(matches!(
+            rejected,
+            TrialAdd::Rejected(TrialRejection::InvalidTangent {
+                error: TangentContactError::OutsideFirstDomain,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn segment_segment_tangent_is_not_a_solver_relation() {
+        let mut builder = ProblemBuilder::new();
+        let a = builder.add_point([0.0, 0.0]);
+        let b = builder.add_point([1.0, 0.0]);
+        let c = builder.add_point([0.0, 1.0]);
+        let d = builder.add_point([1.0, 1.0]);
+        let first = builder.add_segment(a, b);
+        let second = builder.add_segment(c, d);
+        builder.add_constraint(Relation::Tangent {
+            first: SketchCurve::Segment(first),
+            second: SketchCurve::Segment(second),
+            branch: TangentBranch::Line(LineSide::Left),
+        });
+        assert!(matches!(builder.finish(), Err(BuildError::InvalidTangent)));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1093,10 +1443,61 @@ impl Solution {
     }
 }
 
+fn scalar_coordinates_of_solution(problem: &Problem, solution: &Solution) -> Option<Vec<f64>> {
+    (solution.owner == problem.owner && solution.parameters.len() == problem.parameters.len()).then(
+        || {
+            problem
+                .parameters
+                .iter()
+                .copied()
+                .zip(solution.parameters.iter().copied())
+                .map(|(parameter, value)| {
+                    let stored = match value {
+                        ParameterValue::SweepDegrees(value)
+                            if parameter.kind == ParameterKind::SignedSweepDegrees =>
+                        {
+                            value
+                        }
+                        ParameterValue::Radius(value)
+                            if parameter.kind == ParameterKind::PositiveRadius =>
+                        {
+                            value
+                        }
+                        _ => f64::NAN,
+                    };
+                    parameter_coordinate(Parameter {
+                        stored,
+                        ..parameter
+                    })
+                })
+                .collect()
+        },
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostics {
     pub report: Option<SolveReport>,
     pub satisfied: bool,
+    /// Numerical residuals can be small while a finite authored curve no longer contains the
+    /// derived touching point. This is separate so callers never treat geometric invalidity as a
+    /// solver convergence status.
+    pub tangent_contacts_valid: bool,
+}
+
+/// Validation of the stored configuration, deliberately without numerical settlement.
+#[derive(Debug, Clone)]
+pub struct CurrentValidation {
+    pub satisfied: bool,
+    pub collapsed: Option<SketchCurve>,
+    pub tangent_failure: Option<TangentContactFailure>,
+}
+
+/// One standing Tangent whose current solution has no valid finite contact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TangentContactFailure {
+    pub constraint: ConstraintId,
+    pub error: TangentContactError,
 }
 
 #[derive(Debug, Clone)]
@@ -1125,15 +1526,22 @@ pub enum TrialRejection {
         conflicts: Vec<ConstraintId>,
     },
     Collapsed {
-        curve: CurveKey,
+        curve: SketchCurve,
         implicated: Vec<ConstraintId>,
+    },
+    /// The equations settled, but the persisted branch has no finite contact on both authored
+    /// curve domains. This is distinct from an unsatisfied system: changing branch or extending
+    /// a finite curve is a different author action from removing a fighting constraint.
+    InvalidTangent {
+        constraint: ConstraintId,
+        error: TangentContactError,
     },
 }
 
 #[derive(Debug, Clone)]
 pub enum DragOutcome {
     Accepted(Settled),
-    Rejected(Diagnostics),
+    Rejected(Settled),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1194,6 +1602,30 @@ struct SegmentSlots {
     to: usize,
 }
 
+/// A locally-resolved authored curve. This is the solver's curve seam: document ids and storage
+/// stay outside, while all relation and contact mathematics sees the same three curve forms.
+#[derive(Debug, Clone, Copy)]
+enum ResolvedCurve {
+    Segment(SegmentSlots),
+    Arc(ArcCurveSlots),
+    Circle(CircleSlots),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ArcCurveSlots {
+    center: usize,
+    from: usize,
+    to: usize,
+    sweep_parameter: Option<usize>,
+    sweep_degrees: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CircleSlots {
+    center: usize,
+    radius_parameter: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Resolved {
     Fix {
@@ -1233,6 +1665,11 @@ enum Resolved {
     Collinear {
         datum: SegmentSlots,
         other: SegmentSlots,
+    },
+    Tangent {
+        first: ResolvedCurve,
+        second: ResolvedCurve,
+        branch: TangentBranch,
     },
 }
 
@@ -1382,6 +1819,70 @@ fn unit_along(at: &impl Fn(usize) -> [f64; 2], segment: SegmentSlots) -> [f64; 2
         [0.0, 0.0]
     } else {
         [span[0] / length, span[1] / length]
+    }
+}
+
+fn physical_sweep(
+    curve: ArcCurveSlots,
+    specifications: &[Parameter],
+    whole: &[f64],
+    point_count: usize,
+) -> f64 {
+    curve.sweep_parameter.map_or(curve.sweep_degrees, |index| {
+        physical_parameter_value(specifications[index], whole[point_count * 2 + index])
+    })
+}
+
+fn curve_geometry(
+    curve: ResolvedCurve,
+    at: &impl Fn(usize) -> [f64; 2],
+    specifications: &[Parameter],
+    whole: &[f64],
+    point_count: usize,
+) -> CurveGeometry {
+    match curve {
+        ResolvedCurve::Segment(segment) => CurveGeometry::Segment {
+            from: at(segment.from),
+            to: at(segment.to),
+        },
+        ResolvedCurve::Arc(arc) => {
+            let (center, from, to) = (at(arc.center), at(arc.from), at(arc.to));
+            CurveGeometry::Circular(CircularCurve {
+                center,
+                radius: ((from[0] - center[0]).powi(2) + (from[1] - center[1]).powi(2)).sqrt(),
+                arc: Some(ArcDomain {
+                    from,
+                    to,
+                    sweep_radians: physical_sweep(arc, specifications, whole, point_count)
+                        .to_radians(),
+                }),
+            })
+        }
+        ResolvedCurve::Circle(circle) => CurveGeometry::Circular(CircularCurve {
+            center: at(circle.center),
+            radius: physical_parameter_value(
+                specifications[circle.radius_parameter],
+                whole[point_count * 2 + circle.radius_parameter],
+            ),
+            arc: None,
+        }),
+    }
+}
+
+fn tangent_branch_matches_types(
+    first: ResolvedCurve,
+    second: ResolvedCurve,
+    branch: TangentBranch,
+) -> bool {
+    let class = |curve| match curve {
+        ResolvedCurve::Segment(_) => 0_u8,
+        ResolvedCurve::Arc(_) | ResolvedCurve::Circle(_) => 1_u8,
+    };
+    match branch {
+        TangentBranch::Line(_) => matches!((class(first), class(second)), (0, 1) | (1, 0)),
+        TangentBranch::External | TangentBranch::Internal { .. } => {
+            class(first) == 1 && class(second) == 1
+        }
     }
 }
 
@@ -1588,6 +2089,30 @@ impl ResidualSystem for Residuals<'_> {
                     }
                     row += 2;
                 }
+                Resolved::Tangent {
+                    first,
+                    second,
+                    branch,
+                } => {
+                    into[row] = tangent_residual(
+                        curve_geometry(
+                            first,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        ),
+                        curve_geometry(
+                            second,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        ),
+                        branch,
+                    );
+                    row += 1;
+                }
             }
         }
         for edge in &self.rigidity {
@@ -1648,11 +2173,15 @@ fn run(
 }
 
 /// Search status diagnoses the numerical path; residual norm decides whether relations hold.
-fn diagnostics(report: Option<SolveReport>) -> Diagnostics {
+fn diagnostics(problem: &Problem, solution: &Solution, report: Option<SolveReport>) -> Diagnostics {
     let satisfied = report
         .as_ref()
         .is_none_or(|report| report.residual_norm <= SATISFIED_RESIDUAL);
-    Diagnostics { report, satisfied }
+    Diagnostics {
+        report,
+        satisfied,
+        tangent_contacts_valid: problem.first_tangent_contact_failure(solution).is_none(),
+    }
 }
 
 /// Read rank at the author's given configuration, not its solution. A row whose gradient vanishes
@@ -1691,9 +2220,11 @@ impl Problem {
             &mut scalar_coordinates,
             Rigidity::Ignored,
         );
+        let solution = self.solution(positions, &scalar_coordinates);
+        let diagnostics = diagnostics(self, &solution, report);
         Settled {
-            solution: self.solution(positions, &scalar_coordinates),
-            diagnostics: diagnostics(report),
+            solution,
+            diagnostics,
         }
     }
 
@@ -1719,9 +2250,11 @@ impl Problem {
             },
             |report| report.degrees_of_freedom,
         );
+        let solution = self.solution(positions, &scalar_coordinates);
+        let diagnostics = diagnostics(self, &solution, report);
         Analysis {
-            solution: self.solution(positions, &scalar_coordinates),
-            diagnostics: diagnostics(report),
+            solution,
+            diagnostics,
             witness_rank: witness_rank(self),
             degrees_of_freedom,
         }
@@ -1744,6 +2277,12 @@ impl Problem {
         if !settled.diagnostics.satisfied {
             return Ok(TrialAdd::Rejected(TrialRejection::Unsatisfied {
                 conflicts: self.blame(relation, candidate, &anchored),
+            }));
+        }
+        if let Some(failure) = candidate_problem.first_tangent_contact_failure(&settled.solution) {
+            return Ok(TrialAdd::Rejected(TrialRejection::InvalidTangent {
+                constraint: failure.constraint,
+                error: failure.error,
             }));
         }
         if let Some(curve) = self.collapsed_by(&settled.solution) {
@@ -1786,16 +2325,19 @@ impl Problem {
             &mut scalar_coordinates,
             Rigidity::Ignored,
         );
-        let diagnostics = diagnostics(report);
+        let solution = self.solution(positions, &scalar_coordinates);
+        let diagnostics = diagnostics(self, &solution, report);
         let settled = Settled {
-            solution: self.solution(positions, &scalar_coordinates),
+            solution,
             diagnostics: diagnostics.clone(),
         };
-        Ok(if diagnostics.satisfied {
-            DragOutcome::Accepted(settled)
-        } else {
-            DragOutcome::Rejected(diagnostics)
-        })
+        Ok(
+            if diagnostics.satisfied && diagnostics.tangent_contacts_valid {
+                DragOutcome::Accepted(settled)
+            } else {
+                DragOutcome::Rejected(settled)
+            },
+        )
     }
 
     fn settle_with(&self, anchored: &[PointId]) -> Settled {
@@ -1813,9 +2355,11 @@ impl Problem {
             &mut scalar_coordinates,
             Rigidity::Ignored,
         );
+        let solution = self.solution(positions, &scalar_coordinates);
+        let diagnostics = diagnostics(self, &solution, report);
         Settled {
-            solution: self.solution(positions, &scalar_coordinates),
-            diagnostics: diagnostics(report),
+            solution,
+            diagnostics,
         }
     }
 
@@ -1909,6 +2453,10 @@ impl Problem {
             Relation::Fix { point, .. } | Relation::Midpoint { point, .. } => vec![point],
             Relation::Distance { from, to, .. } => vec![from, to],
             Relation::Coincident { first, second } => vec![first, second],
+            Relation::Tangent { first, second, .. } => [first, second]
+                .into_iter()
+                .flat_map(|curve| self.points_of_curve(curve))
+                .collect(),
             _ => Vec::new(),
         };
         for segment in Self::named_segments(relation) {
@@ -1928,9 +2476,39 @@ impl Problem {
             | Relation::Perpendicular { first, second }
             | Relation::Equal { first, second }
             | Relation::Collinear { first, second } => vec![first, second],
+            Relation::Tangent { first, second, .. } => [first, second]
+                .into_iter()
+                .filter_map(|curve| match curve {
+                    SketchCurve::Segment(segment) => Some(segment),
+                    SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
+                })
+                .collect(),
             Relation::Fix { .. } | Relation::Distance { .. } | Relation::Coincident { .. } => {
                 Vec::new()
             }
+        }
+    }
+
+    fn points_of_curve(&self, curve: SketchCurve) -> Vec<PointId> {
+        match curve {
+            SketchCurve::Segment(segment) => self
+                .segments
+                .get(segment.index)
+                .filter(|_| segment.owner == self.owner)
+                .map(|segment| vec![segment.from, segment.to])
+                .unwrap_or_default(),
+            SketchCurve::Arc(arc) => self
+                .arc_centers
+                .get(arc.index)
+                .filter(|held| arc.owner == self.owner && held.key == arc)
+                .map(|arc| vec![arc.from, arc.to, arc.center])
+                .unwrap_or_default(),
+            SketchCurve::Circle(circle) => self
+                .circles
+                .get(circle.index)
+                .filter(|held| circle.owner == self.owner && held.key == circle)
+                .map(|circle| vec![circle.center])
+                .unwrap_or_default(),
         }
     }
 
@@ -1964,7 +2542,7 @@ impl Problem {
     /// residuals, so this is a property of the result and ignores geometry already degenerate:
     /// generic result-based collapse handles any relation that creates it without maintaining a
     /// list of relation-specific collapse rules.
-    fn collapsed_by(&self, solution: &Solution) -> Option<CurveKey> {
+    fn collapsed_by(&self, solution: &Solution) -> Option<SketchCurve> {
         let before = |point: PointId| self.points[point.index].at;
         let span = |from: [f64; 2], to: [f64; 2]| {
             ((to[0] - from[0]).powi(2) + (to[1] - from[1]).powi(2)).sqrt()
@@ -1974,7 +2552,7 @@ impl Problem {
             if span(before(segment.from), before(segment.to)) > COLLAPSED_SPAN
                 && span(after(segment.from), after(segment.to)) <= COLLAPSED_SPAN
             {
-                return Some(CurveKey::Segment(SegmentId {
+                return Some(SketchCurve::Segment(SegmentId {
                     owner: self.owner,
                     index,
                 }));
@@ -1987,7 +2565,7 @@ impl Problem {
                 || span(before(arc.center), before(arc.from)) > COLLAPSED_SPAN
                     && span(after(arc.center), after(arc.from)) <= COLLAPSED_SPAN;
             if collapsed {
-                return Some(CurveKey::Arc(arc.key));
+                return Some(SketchCurve::Arc(arc.key));
             }
         }
         for circle in &self.circles {
@@ -1997,7 +2575,7 @@ impl Problem {
                 Some(ParameterValue::SweepDegrees(_)) | None => continue,
             };
             if before > COLLAPSED_SPAN && after <= COLLAPSED_SPAN {
-                return Some(CurveKey::Circle(circle.key));
+                return Some(SketchCurve::Circle(circle.key));
             }
         }
         None
@@ -2005,17 +2583,17 @@ impl Problem {
 
     /// Collapse implication is structural, not experimental: a prior solve may have moved the
     /// drawing, so removing one relation no longer reconstructs the geometry it once produced.
-    fn constraints_acting_on(&self, curve: CurveKey) -> Vec<ConstraintId> {
+    fn constraints_acting_on(&self, curve: SketchCurve) -> Vec<ConstraintId> {
         let points = match curve {
-            CurveKey::Segment(segment) => self
+            SketchCurve::Segment(segment) => self
                 .segments
                 .get(segment.index)
                 .map(|segment| vec![segment.from, segment.to]),
-            CurveKey::Arc(arc) => self
+            SketchCurve::Arc(arc) => self
                 .arc_centers
                 .get(arc.index)
                 .map(|arc| vec![arc.from, arc.to, arc.center]),
-            CurveKey::Circle(circle) => self
+            SketchCurve::Circle(circle) => self
                 .circles
                 .get(circle.index)
                 .map(|circle| vec![circle.center]),
@@ -2024,13 +2602,12 @@ impl Problem {
         self.constraints
             .iter()
             .filter(|constraint| {
-                Self::named_segments(constraint.relation)
+                Self::named_segments(constraint.relation).iter().any(
+                    |segment| matches!(curve, SketchCurve::Segment(curve) if *segment == curve),
+                ) || self
+                    .named_points(constraint.relation)
                     .iter()
-                    .any(|segment| matches!(curve, CurveKey::Segment(curve) if *segment == curve))
-                    || self
-                        .named_points(constraint.relation)
-                        .iter()
-                        .any(|point| points.contains(point))
+                    .any(|point| points.contains(point))
             })
             .map(|constraint| constraint.key)
             .collect()

@@ -22,6 +22,15 @@ fn position(sketch: &Sketch, id: EntityId) -> [f64; 2] {
         .in_plane()
 }
 
+fn add_and_solve_tangent(sketch: &mut Sketch, kind: ConstraintKind) {
+    sketch
+        .add_constraint(kind, ctx(16))
+        .expect("document adapter accepts tangent");
+    sketch
+        .solve(ctx(16))
+        .expect("document adapter re-solves tangent");
+}
+
 /// With nothing asserted, every coordinate is free. This is the baseline "fully constrained" is
 /// measured against, and it is read off the store rather than from a solve with no residuals.
 #[test]
@@ -1404,4 +1413,830 @@ fn a_constraint_does_not_keep_a_deleted_lines_end_alive() {
         sketch.constraints().is_empty(),
         "and the fix went with the point it named"
     );
+}
+
+#[test]
+fn tangent_canonicalizes_member_order_and_rejects_branch_independent_duplicates() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let segment = sketch.connect(tail, head).expect("segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+        .expect("circle");
+    let requested = ConstraintKind::tangent(
+        SketchCurve::Circle(circle),
+        SketchCurve::Segment(segment),
+        TangentBranch::Line(LineSide::Left),
+    );
+    let ConstraintKind::Tangent {
+        first,
+        second,
+        branch,
+    } = requested
+    else {
+        panic!("tangent")
+    };
+    assert_eq!(first.id().min(second.id()), first.id());
+    assert_eq!(branch, TangentBranch::Line(LineSide::Left));
+    let id = sketch.add_constraint(requested, ctx(16)).expect("tangent");
+    assert!(matches!(
+        sketch.add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Segment(segment),
+                SketchCurve::Circle(circle),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::AlreadyAsserted { existing }) if existing == id
+    ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn tangent_load_normalizes_reversed_members_and_repair_drops_malformed_duplicates() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(6))
+        .expect("outer circle");
+    let second = sketch
+        .add_circle(SketchPoint::new(4, 0), SketchLength::new(2))
+        .expect("inner circle");
+    let segment_from = sketch.add_free_point(SketchPoint::new(-8, 0));
+    let segment_to = sketch.add_free_point(SketchPoint::new(-2, 0));
+    let segment = sketch.connect(segment_from, segment_to).expect("segment");
+    let other_from = sketch.add_free_point(SketchPoint::new(-8, 3));
+    let other_to = sketch.add_free_point(SketchPoint::new(-2, 3));
+    let other_segment = sketch.connect(other_from, other_to).expect("other segment");
+    let mut raw = serde_json::to_value(&sketch).expect("serialize source sketch");
+    raw["constraints"] = serde_json::json!([
+        {"id": 90, "kind": {"Tangent": {
+            "first": {"Circle": second}, "second": {"Circle": first},
+            "branch": {"Internal": {"contains": "Second"}}
+        }}, "redundant": false},
+        {"id": 91, "kind": {"Tangent": {
+            "first": {"Circle": first}, "second": {"Circle": second},
+            "branch": "External"
+        }}, "redundant": false},
+        {"id": 92, "kind": {"Tangent": {
+            "first": {"Circle": first}, "second": {"Circle": first},
+            "branch": "External"
+        }}, "redundant": false}
+        ,{"id": 93, "kind": {"Tangent": {
+            "first": {"Segment": segment}, "second": {"Segment": other_segment},
+            "branch": {"Line": "Left"}
+        }}, "redundant": false}
+        ,{"id": 94, "kind": {"Tangent": {
+            "first": {"Segment": segment}, "second": {"Circle": first},
+            "branch": "External"
+        }}, "redundant": false}
+        ,{"id": 95, "kind": {"Tangent": {
+            "first": {"Segment": 900}, "second": {"Circle": first},
+            "branch": {"Line": "Left"}
+        }}, "redundant": false}
+        ,{"id": 96, "kind": {"Tangent": {
+            "first": {"Arc": 901}, "second": {"Circle": first},
+            "branch": "External"
+        }}, "redundant": false}
+        ,{"id": 97, "kind": {"Tangent": {
+            "first": {"Circle": 902}, "second": {"Circle": first},
+            "branch": "External"
+        }}, "redundant": false}
+        ,{"id": 98, "kind": {"Tangent": {
+            "first": {"Segment": segment}, "second": {"Circle": first},
+            "branch": {"Line": "Left"}
+        }}, "redundant": false}
+    ]);
+    let mut loaded: Sketch = serde_json::from_value(raw).expect("structural load normalizes");
+    let ConstraintKind::Tangent {
+        first: held_first,
+        second: held_second,
+        branch,
+    } = loaded.constraints()[0].kind
+    else {
+        panic!("tangent survives load")
+    };
+    assert_eq!((held_first.id(), held_second.id()), (first, second));
+    assert_eq!(
+        branch,
+        TangentBranch::Internal {
+            contains: InternalContainment::First
+        }
+    );
+    let ConstraintKind::Tangent {
+        first: line_first,
+        second: line_second,
+        branch: line_branch,
+    } = loaded
+        .constraints()
+        .iter()
+        .find(|constraint| constraint.id == 98)
+        .expect("line tangent")
+        .kind
+    else {
+        panic!("line tangent survives load")
+    };
+    assert_eq!(
+        (line_first, line_second),
+        (SketchCurve::Circle(first), SketchCurve::Segment(segment))
+    );
+    assert_eq!(
+        line_branch,
+        TangentBranch::Line(LineSide::Left),
+        "LineSide is not remapped"
+    );
+    assert_eq!(
+        loaded.repair(ctx(16)),
+        7,
+        "duplicate, self, segment-pair, wrong branch, and every dangling curve kind drop"
+    );
+    assert_eq!(loaded.constraints().len(), 2);
+    assert_eq!(loaded.constraints()[0].id, 90, "stable first survivor");
+    assert_eq!(loaded.constraints()[1].id, 98, "later distinct survivor");
+    let saved = serde_json::to_value(&loaded).expect("canonical serialize");
+    assert_eq!(
+        saved["constraints"][0]["kind"]["Tangent"]["first"]["Circle"],
+        first
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+/// A structurally loaded payload can contain a tangent that is true on an infinite supporting
+/// line but misses the finite segment. Both ordinary solve and drag must reject it before
+/// write-back.
+fn loaded_off_domain_tangent_keeps_solve_and_drag_atomic() {
+    let mut source = Sketch::empty(PlaneAxis::Z);
+    let from = source.add_free_point(SketchPoint::new(0, 0));
+    let to = source.add_free_point(SketchPoint::new(1, 0));
+    let segment = source.connect(from, to).expect("short segment");
+    let circle = source
+        .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+        .expect("circle tangent to the supporting line");
+    let center = source.circles()[0].center;
+    for point in [from, to, center] {
+        let at = position(&source, point);
+        source
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("pin source geometry");
+    }
+    assert_eq!(
+        source
+            .add_constraint(
+                ConstraintKind::tangent(
+                    SketchCurve::Segment(segment),
+                    SketchCurve::Circle(circle),
+                    TangentBranch::Line(LineSide::Left),
+                ),
+                ctx(16),
+            )
+            .expect_err("an infinite-line-only tangent is not authorable"),
+        ConstraintRefusal::InvalidTangent {
+            constraint: None,
+            error: ::parametric::sketch::TangentContactError::OutsideFirstDomain,
+        },
+        "the finite-domain refusal reaches the document boundary unchanged"
+    );
+    let valid_from = source.add_free_point(SketchPoint::new(0, 10));
+    let valid_to = source.add_free_point(SketchPoint::new(10, 10));
+    let valid_segment = source
+        .connect(valid_from, valid_to)
+        .expect("finite tangent segment");
+    let valid_circle = source
+        .add_circle(SketchPoint::new(5, 14), SketchLength::new(4))
+        .expect("finite tangent circle");
+    let valid_center = source
+        .circles()
+        .iter()
+        .find(|held| held.id == valid_circle)
+        .expect("stored circle")
+        .center;
+    for point in [valid_from, valid_to, valid_center] {
+        let at = position(&source, point);
+        source
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("pin valid tangent geometry");
+    }
+    source
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Segment(valid_segment),
+                SketchCurve::Circle(valid_circle),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect("first standing tangent is valid");
+    let mut raw = serde_json::to_value(&source).expect("serialize source");
+    raw["constraints"]
+        .as_array_mut()
+        .expect("constraints array")
+        .push(serde_json::json!({"id": 999, "kind": {"Tangent": {
+            "first": {"Segment": segment}, "second": {"Circle": circle},
+            "branch": {"Line": "Left"}
+        }}, "redundant": false}));
+    let mut loaded: Sketch = serde_json::from_value(raw).expect("load raw tangent");
+    let before = serde_json::to_value(&loaded).expect("snapshot");
+
+    assert_eq!(
+        loaded.solve(ctx(16)),
+        Err(SketchEvaluationError::InvalidTangent {
+            constraint: 999,
+            error: ::parametric::sketch::TangentContactError::OutsideFirstDomain,
+        })
+    );
+    assert_eq!(serde_json::to_value(&loaded).expect("after solve"), before);
+
+    let refusal = loaded
+        .add_constraint(
+            ConstraintKind::Horizontal {
+                segment: valid_segment,
+            },
+            ctx(16),
+        )
+        .expect_err("a new assertion cannot hide a malformed standing Tangent");
+    assert_eq!(
+        refusal,
+        ConstraintRefusal::InvalidTangent {
+            constraint: Some(999),
+            error: ::parametric::sketch::TangentContactError::OutsideFirstDomain,
+        }
+    );
+    assert_eq!(refusal.culprits(), vec![999]);
+    assert_eq!(
+        serde_json::to_value(&loaded).expect("after refused add"),
+        before
+    );
+
+    assert_eq!(
+        loaded.move_point(valid_from, SketchPoint::new(0, 11), ctx(16)),
+        Err(SketchEvaluationError::InvalidTangent {
+            constraint: 999,
+            error: ::parametric::sketch::TangentContactError::OutsideFirstDomain,
+        }),
+        "drag reports the same offending Tangent as solve"
+    );
+    assert_eq!(serde_json::to_value(&loaded).expect("after drag"), before);
+}
+
+#[test]
+/// Resweeping an unconstrained arc is the center drag's one permitted write: its endpoints and
+/// unrelated circles are not numerical side effects of changing the authored sweep.
+fn valid_arc_center_resweep_changes_only_the_free_sweep() {
+    let (mut sketch, tail, head, center, _) = arc_with_center();
+    sketch
+        .add_circle(SketchPoint::new(50, 20), SketchLength::new(7))
+        .expect("unrelated circle");
+    let before_tail = sketch
+        .points()
+        .iter()
+        .find(|point| point.id == tail)
+        .copied()
+        .expect("tail");
+    let before_head = sketch
+        .points()
+        .iter()
+        .find(|point| point.id == head)
+        .copied()
+        .expect("head");
+    let before_circles = sketch.circles().to_vec();
+    let before_sweep = sketch.arcs()[0].bulge;
+
+    assert!(sketch
+        .move_point(center, SketchPoint::new(10, 20), ctx(16))
+        .expect("valid resweep"));
+    assert_ne!(sketch.arcs()[0].bulge, before_sweep, "sweep changed");
+    assert_eq!(
+        sketch.points().iter().find(|point| point.id == tail),
+        Some(&before_tail),
+        "tail is byte-exact"
+    );
+    assert_eq!(
+        sketch.points().iter().find(|point| point.id == head),
+        Some(&before_head),
+        "head is byte-exact"
+    );
+    assert_eq!(
+        sketch.circles(),
+        before_circles.as_slice(),
+        "circle is byte-exact"
+    );
+}
+
+#[test]
+/// An arc-center resweep cannot use NLLS to repair a standing Tangent. If the new authored sweep
+/// no longer touches its segment, every persisted field returns to the pre-drag snapshot.
+fn invalid_arc_center_resweep_with_tangent_rolls_back_exactly() {
+    let (mut sketch, tail, _head, center, _) = arc_with_center();
+    let line_from = sketch.add_free_point(SketchPoint::new(-10, 10));
+    let line = sketch
+        .connect(line_from, tail)
+        .expect("endpoint tangent segment");
+    let arc = sketch.arcs()[0].id;
+    let tangent = sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Arc(arc),
+                SketchCurve::Segment(line),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect("arc endpoint is tangent to the line");
+    let before = serde_json::to_value(&sketch).expect("snapshot");
+
+    assert!(matches!(
+        sketch.move_point(center, SketchPoint::new(10, 20), ctx(16)),
+        Err(SketchEvaluationError::InvalidTangent { constraint, .. }) if constraint == tangent
+    ));
+    assert_eq!(serde_json::to_value(&sketch).expect("after drag"), before);
+}
+
+#[test]
+/// Fixed scalar sources are authoritative inputs to every adapter path. Neither accepting a
+/// relation nor a later ordinary solve may turn them into free solved values.
+fn add_and_solve_preserve_fixed_arc_and_circle_authority_byte_exactly() {
+    let (mut sketch, tail, _head, _center, _) = arc_with_center();
+    sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
+    sketch
+        .add_circle(SketchPoint::new(50, 20), SketchLength::new(7))
+        .expect("circle");
+    sketch.circles_mut_for_test()[0].radius =
+        CircleRadius::fixed(::parametric::units::Measurement::from_voxels(7));
+    let before_arc = sketch.arcs()[0];
+    let before_circle = sketch.circles()[0];
+    let at = position(&sketch, tail);
+
+    sketch
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: tail,
+                at: SketchPoint::from_continuous(at[0], at[1]),
+            },
+            ctx(16),
+        )
+        .expect("current point can be fixed");
+    assert_eq!(sketch.arcs()[0], before_arc, "add keeps fixed sweep source");
+    assert_eq!(
+        sketch.circles()[0],
+        before_circle,
+        "add keeps fixed radius source"
+    );
+
+    sketch.solve(ctx(16)).expect("solve fixed source sketch");
+    assert_eq!(
+        sketch.arcs()[0],
+        before_arc,
+        "solve keeps fixed sweep source"
+    );
+    assert_eq!(
+        sketch.circles()[0],
+        before_circle,
+        "solve keeps fixed radius source"
+    );
+}
+
+#[test]
+/// The center-drag transaction includes preparation itself. A malformed unrelated entity can make
+/// preparation fail only after the sweep has been tentatively changed; that error must still put
+/// the authored arc back exactly where it started.
+fn arc_center_prepare_error_restores_the_tentative_resweep() {
+    let (mut source, _tail, _head, center, _) = arc_with_center();
+    source
+        .add_circle(SketchPoint::new(50, 20), SketchLength::new(7))
+        .expect("circle to corrupt in raw payload");
+    let mut raw = serde_json::to_value(&source).expect("serialize source");
+    raw["circles"][0]["center"] = serde_json::json!(EntityId::MAX);
+    let mut loaded: Sketch = serde_json::from_value(raw).expect("structural load");
+    let before = serde_json::to_value(&loaded).expect("snapshot");
+
+    assert!(matches!(
+        loaded.move_point(center, SketchPoint::new(10, 20), ctx(16)),
+        Err(SketchEvaluationError::InvalidDocumentGeometry)
+    ));
+    assert_eq!(serde_json::to_value(&loaded).expect("after error"), before);
+}
+
+#[test]
+/// Tangent reads a fixed circle radius as an immutable source while it is free to move other
+/// authored geometry. This is the adapter authority boundary, not merely a scalar serde round-trip.
+fn tangent_keeps_a_fixed_circle_radius_and_moves_allowed_geometry() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(0, 1));
+    let to = sketch.add_free_point(SketchPoint::new(10, 1));
+    let segment = sketch.connect(from, to).expect("segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+        .expect("circle");
+    sketch.circles_mut_for_test()[0].radius =
+        CircleRadius::fixed(::parametric::units::Measurement::from_voxels(4));
+    let source = sketch.circles()[0];
+    let before = (
+        position(&sketch, from),
+        position(&sketch, to),
+        position(&sketch, sketch.circles()[0].center),
+    );
+
+    sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Segment(segment),
+                SketchCurve::Circle(circle),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect("fixed-radius tangent");
+    assert_eq!(
+        sketch.circles()[0],
+        source,
+        "fixed source remains byte-exact"
+    );
+    assert_ne!(
+        (
+            position(&sketch, from),
+            position(&sketch, to),
+            position(&sketch, sketch.circles()[0].center),
+        ),
+        before,
+        "permitted non-scalar geometry moved"
+    );
+}
+
+#[test]
+/// Conversely, with its center and the finite line fixed, Tangent changes a free circle's one
+/// writable scalar and leaves it a free value rather than replacing it with a fixed source.
+fn tangent_changes_a_free_circle_radius_when_centers_and_line_are_fixed() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(10, 0));
+    let segment = sketch.connect(from, to).expect("segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(5, 6), SketchLength::new(4))
+        .expect("circle");
+    let center = sketch.circles()[0].center;
+    for point in [from, to, center] {
+        let at = position(&sketch, point);
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("fix authored geometry");
+    }
+    let before = sketch.circles()[0].radius;
+
+    sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Segment(segment),
+                SketchCurve::Circle(circle),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect("free radius can satisfy tangent");
+    let radius = &sketch.circles()[0].radius;
+    assert!(radius.free_value().is_some(), "still a free scalar");
+    assert_ne!(*radius, before, "Tangent wrote the free radius");
+    assert!((radius.free_value().expect("free").value() - 6.0).abs() < 1e-5);
+}
+
+#[test]
+fn tangent_keeps_a_fixed_arc_sweep_byte_exactly() {
+    let (mut sketch, tail, _head, _center, _) = arc_with_center();
+    let line_from = sketch.add_free_point(SketchPoint::new(-10, 10));
+    let line = sketch
+        .connect(line_from, tail)
+        .expect("endpoint tangent segment");
+    let arc = sketch.arcs()[0].id;
+    sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
+    let source = sketch.arcs()[0];
+
+    sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Arc(arc),
+                SketchCurve::Segment(line),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect("fixed-sweep tangent");
+    assert_eq!(
+        sketch.arcs()[0],
+        source,
+        "fixed sweep source remains byte-exact"
+    );
+}
+
+#[test]
+fn tangent_changes_a_free_arc_sweep_when_endpoints_and_line_are_fixed() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(10, 0));
+    let arc = sketch
+        .connect_arc(tail, head, AngleMeasurement::from_degrees(60))
+        .expect("free sweep arc");
+    let tangent_y = 5.0 - (50.0_f64).sqrt();
+    let line_from = sketch.add_free_point(SketchPoint::from_continuous(0.0, tangent_y));
+    let line_to = sketch.add_free_point(SketchPoint::from_continuous(10.0, tangent_y));
+    let line = sketch
+        .connect(line_from, line_to)
+        .expect("target tangent segment");
+    for point in [tail, head, line_from, line_to] {
+        let at = position(&sketch, point);
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("fix authored geometry");
+    }
+    let before = sketch.arcs()[0].bulge;
+
+    sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Arc(arc),
+                SketchCurve::Segment(line),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect("free sweep can satisfy endpoint tangent");
+    let sweep = sketch.arcs()[0].bulge;
+    assert!(sweep.free_value().is_some(), "still free");
+    assert_ne!(sweep, before, "Tangent wrote the free sweep");
+    assert!((sweep.to_degrees_f64() - 90.0).abs() < 1e-5, "{sweep:?}");
+}
+
+#[test]
+/// Every persisted curve pairing crosses the document adapter, not just the parametric formula
+/// layer. Circular cases cover external plus both canonical internal-containment branches.
+fn document_tangent_adapter_prepares_adds_and_solves_every_curve_pair() {
+    let (mut segment_arc, tail, _head, _center, _) = arc_with_center();
+    let line_from = segment_arc.add_free_point(SketchPoint::new(-10, 10));
+    let line = segment_arc.connect(line_from, tail).expect("line");
+    let arc = segment_arc.arcs()[0].id;
+    add_and_solve_tangent(
+        &mut segment_arc,
+        ConstraintKind::tangent(
+            SketchCurve::Segment(line),
+            SketchCurve::Arc(arc),
+            TangentBranch::Line(LineSide::Left),
+        ),
+    );
+
+    let mut segment_circle = Sketch::empty(PlaneAxis::Z);
+    let from = segment_circle.add_free_point(SketchPoint::new(0, 0));
+    let to = segment_circle.add_free_point(SketchPoint::new(10, 0));
+    let line = segment_circle.connect(from, to).expect("line");
+    let circle = segment_circle
+        .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+        .expect("circle");
+    add_and_solve_tangent(
+        &mut segment_circle,
+        ConstraintKind::tangent(
+            SketchCurve::Segment(line),
+            SketchCurve::Circle(circle),
+            TangentBranch::Line(LineSide::Left),
+        ),
+    );
+
+    // Two semicircles facing one another, touching at (5, 0).
+    let mut arc_arc = Sketch::empty(PlaneAxis::Z);
+    let a0 = arc_arc.add_free_point(SketchPoint::new(0, 5));
+    let a1 = arc_arc.add_free_point(SketchPoint::new(0, -5));
+    let first_arc = arc_arc
+        .connect_arc(a0, a1, AngleMeasurement::from_degrees(-180))
+        .expect("first arc");
+    let b0 = arc_arc.add_free_point(SketchPoint::new(10, -5));
+    let b1 = arc_arc.add_free_point(SketchPoint::new(10, 5));
+    let second_arc = arc_arc
+        .connect_arc(b0, b1, AngleMeasurement::from_degrees(-180))
+        .expect("second arc");
+    add_and_solve_tangent(
+        &mut arc_arc,
+        ConstraintKind::tangent(
+            SketchCurve::Arc(first_arc),
+            SketchCurve::Arc(second_arc),
+            TangentBranch::External,
+        ),
+    );
+
+    let mut arc_circle = Sketch::empty(PlaneAxis::Z);
+    let a0 = arc_circle.add_free_point(SketchPoint::new(0, 5));
+    let a1 = arc_circle.add_free_point(SketchPoint::new(0, -5));
+    let arc = arc_circle
+        .connect_arc(a0, a1, AngleMeasurement::from_degrees(-180))
+        .expect("arc");
+    let circle = arc_circle
+        .add_circle(SketchPoint::new(10, 0), SketchLength::new(5))
+        .expect("circle");
+    add_and_solve_tangent(
+        &mut arc_circle,
+        ConstraintKind::tangent(
+            SketchCurve::Arc(arc),
+            SketchCurve::Circle(circle),
+            TangentBranch::External,
+        ),
+    );
+
+    let mut circles = Sketch::empty(PlaneAxis::Z);
+    let outer = circles
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(10))
+        .expect("outer");
+    let inner = circles
+        .add_circle(SketchPoint::new(5, 0), SketchLength::new(5))
+        .expect("inner");
+    add_and_solve_tangent(
+        &mut circles,
+        ConstraintKind::tangent(
+            SketchCurve::Circle(outer),
+            SketchCurve::Circle(inner),
+            TangentBranch::Internal {
+                contains: InternalContainment::First,
+            },
+        ),
+    );
+
+    let mut reversed_circles = Sketch::empty(PlaneAxis::Z);
+    let outer = reversed_circles
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(10))
+        .expect("outer");
+    let inner = reversed_circles
+        .add_circle(SketchPoint::new(5, 0), SketchLength::new(5))
+        .expect("inner");
+    add_and_solve_tangent(
+        &mut reversed_circles,
+        ConstraintKind::tangent(
+            SketchCurve::Circle(inner),
+            SketchCurve::Circle(outer),
+            TangentBranch::Internal {
+                contains: InternalContainment::Second,
+            },
+        ),
+    );
+}
+
+#[test]
+/// A Tangent that follows completely fixed, already-tangent geometry is retained as durable
+/// intent and correctly marked redundant; its trial does not perturb the authored drawing.
+fn an_implied_fixed_tangent_is_kept_redundant_without_moving_geometry() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(10, 0));
+    let segment = sketch.connect(from, to).expect("segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+        .expect("circle");
+    let center = sketch.circles()[0].center;
+    sketch.circles_mut_for_test()[0].radius =
+        CircleRadius::fixed(::parametric::units::Measurement::from_voxels(4));
+    for point in [from, to, center] {
+        let at = position(&sketch, point);
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("fixed geometry");
+    }
+    let before = serde_json::to_value(&sketch).expect("snapshot");
+    let tangent = sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Segment(segment),
+                SketchCurve::Circle(circle),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect("implied tangent is retained");
+    assert!(
+        sketch
+            .constraints()
+            .iter()
+            .find(|constraint| constraint.id == tangent)
+            .expect("stored tangent")
+            .redundant
+    );
+    let after = serde_json::to_value(&sketch).expect("after tangent");
+    assert_eq!(after["points"], before["points"], "no point moved");
+    assert_eq!(
+        after["circles"], before["circles"],
+        "no scalar source changed"
+    );
+}
+
+#[test]
+/// A fixed non-tangent drawing refuses Tangent as an ordinary residual conflict and names the
+/// fixes that prevent movement. It is not a finite-contact error and the rejected trial is atomic.
+fn a_fixed_non_tangent_reports_tangent_conflict_blame_without_writeback() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(10, 0));
+    let segment = sketch.connect(from, to).expect("segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(5, 4), SketchLength::new(3))
+        .expect("non-tangent circle");
+    let center = sketch.circles()[0].center;
+    sketch.circles_mut_for_test()[0].radius =
+        CircleRadius::fixed(::parametric::units::Measurement::from_voxels(3));
+    let mut pins = Vec::new();
+    for point in [from, to, center] {
+        let at = position(&sketch, point);
+        pins.push(
+            sketch
+                .add_constraint(
+                    ConstraintKind::Fix {
+                        point,
+                        at: SketchPoint::from_continuous(at[0], at[1]),
+                    },
+                    ctx(16),
+                )
+                .expect("fixed geometry"),
+        );
+    }
+    let before = serde_json::to_value(&sketch).expect("snapshot");
+    let refusal = sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Segment(segment),
+                SketchCurve::Circle(circle),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            ctx(16),
+        )
+        .expect_err("fixed non-tangent cannot settle");
+    assert_eq!(
+        refusal,
+        ConstraintRefusal::Unsatisfiable {
+            fights: pins.clone()
+        }
+    );
+    assert_eq!(refusal.culprits(), pins);
+    assert_eq!(
+        serde_json::to_value(&sketch).expect("after refusal"),
+        before
+    );
+}
+
+#[test]
+/// A block-based fixed radius is re-evaluated through the Tangent adapter at the new density;
+/// retargeting cannot leave a cached d16 radius behind in a d32 solve.
+fn fixed_block_radius_tangent_retargets_from_density_16_to_32_without_losing_authority() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(-32, 0));
+    let to = sketch.add_free_point(SketchPoint::new(32, 0));
+    let segment = sketch.connect(from, to).expect("long segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(0, 16), SketchLength::new(16))
+        .expect("one-block circle");
+    let source =
+        ::parametric::units::Measurement::new(::parametric::ExactRational::from_integer(1), 0);
+    sketch.circles_mut_for_test()[0].radius = CircleRadius::fixed(source);
+    let before_source = sketch.circles()[0].radius;
+
+    add_and_solve_tangent(
+        &mut sketch,
+        ConstraintKind::tangent(
+            SketchCurve::Segment(segment),
+            SketchCurve::Circle(circle),
+            TangentBranch::Line(LineSide::Left),
+        ),
+    );
+    assert_eq!(sketch.circles()[0].resolved_radius(ctx(16)), 16.0);
+    sketch.retarget_density(16, 32);
+    sketch.solve(ctx(32)).expect("d32 tangent solve");
+    assert_eq!(
+        sketch.circles()[0].radius,
+        before_source,
+        "source bytes remain fixed"
+    );
+    assert!(sketch.circles()[0].radius.fixed_source().is_some());
+    assert_eq!(sketch.circles()[0].resolved_radius(ctx(32)), 32.0);
 }

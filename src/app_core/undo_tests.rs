@@ -10,7 +10,10 @@ use super::*;
 use camera::OrbitCamera;
 use document::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
 use document::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
-use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+use document::sketch::{
+    evaluation_context_from_density, ConstraintKind, LineSide, PlaneAxis, RevolveAxis, Sketch,
+    SketchCurve, SketchLength, SketchPoint, SketchSolid, TangentBranch,
+};
 use document::voxel::SdfShape;
 use parametric::units::Measurement;
 use voxel_core::core_geom::MaterialChoice;
@@ -478,6 +481,59 @@ fn set_sketch_circle_round_trips() {
     let producer = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3)
         .with_circle_center_diameter(SketchPoint::new(2, 3), SketchPoint::new(7, 3));
     assert_round_trips(&mut scene, Intent::SetSketch { target, producer });
+}
+
+#[test]
+fn set_sketch_tangent_round_trips() {
+    let mut scene = sketch_then_tool_scene();
+    let target = scene.roots[0];
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(10, 0));
+    let segment = sketch.connect(from, to).expect("segment");
+    let circle = sketch
+        .add_circle(SketchPoint::new(5, 4), SketchLength::new(4))
+        .expect("circle");
+    sketch
+        .add_constraint(
+            ConstraintKind::tangent(
+                SketchCurve::Segment(segment),
+                SketchCurve::Circle(circle),
+                TangentBranch::Line(LineSide::Left),
+            ),
+            evaluation_context_from_density(16).expect("valid density"),
+        )
+        .expect("valid tangent");
+    let intent = Intent::SetSketch {
+        target,
+        producer: SketchSolid::extrude(sketch, 3),
+    };
+    let serialized = serde_json::to_string(&intent).expect("serialize tangent SetSketch");
+    let replayed: Intent =
+        serde_json::from_str(&serialized).expect("deserialize tangent SetSketch");
+    assert_eq!(
+        replayed, intent,
+        "serialized intent preserves the complete producer"
+    );
+    let Intent::SetSketch {
+        target: replay_target,
+        producer,
+    } = &replayed
+    else {
+        panic!("replayed SetSketch")
+    };
+    assert_eq!(*replay_target, target, "stable target id survives replay");
+    assert_eq!(
+        producer.sketch.constraints().len(),
+        1,
+        "tangent survives replay"
+    );
+    assert_eq!(
+        producer.sketch.constraints()[0].id,
+        5,
+        "stable tangent constraint id survives replay"
+    );
+    assert_round_trips(&mut scene, replayed);
 }
 
 #[test]

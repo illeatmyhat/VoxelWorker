@@ -59,7 +59,10 @@ mod solid;
 #[cfg(test)]
 mod tests;
 
-pub use constraint::{Constraint, ConstraintKind, ConstraintRefusal};
+pub use constraint::{
+    Constraint, ConstraintKind, ConstraintRefusal, InternalContainment, LineSide, SketchCurve,
+    TangentBranch,
+};
 pub use faces::{Face, FaceKey};
 pub use parametric::sketch::{SolveOutcome, SolveReport};
 pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
@@ -79,6 +82,12 @@ pub enum SketchEvaluationError {
     InvalidDocumentGeometry,
     /// A local solution could not be represented in durable document scalar storage.
     ScalarWritebackFailed,
+    /// A standing Tangent settled numerically but its derived contact escaped a finite authored
+    /// curve or became singular. No candidate coordinates were applied.
+    InvalidTangent {
+        constraint: EntityId,
+        error: parametric::sketch::TangentContactError,
+    },
 }
 
 /// Build the explicit sketch evaluation context at a density-bearing boundary.
@@ -103,6 +112,22 @@ fn map_prepare_evaluation_error(error: constraint::PrepareError) -> SketchEvalua
             SketchEvaluationError::InvalidDocumentGeometry
         }
     }
+}
+
+fn validate_prepared_tangent_contacts(
+    prepared: &constraint::PreparedProblem,
+    solution: &parametric::sketch::Solution,
+) -> Result<(), SketchEvaluationError> {
+    if let Some(failure) = prepared
+        .first_tangent_contact_failure(solution)
+        .map_err(map_prepare_evaluation_error)?
+    {
+        return Err(SketchEvaluationError::InvalidTangent {
+            constraint: failure.constraint,
+            error: failure.error,
+        });
+    }
+    Ok(())
 }
 
 fn deserialize_arc_sweep<'de, D>(deserializer: D) -> Result<ArcSweep, D::Error>
@@ -930,6 +955,95 @@ pub struct Sketch {
 }
 
 impl Sketch {
+    /// Resolve one persisted curve into the semantic tangent geometry at this evaluation context.
+    /// Click loci and contacts remain session-only; this is the narrow document adapter boundary.
+    pub fn tangent_curve_geometry(
+        &self,
+        curve: SketchCurve,
+        context: parametric::EvaluationContext,
+    ) -> Option<parametric::sketch::CurveGeometry> {
+        use parametric::sketch::{ArcDomain, CircularCurve, CurveGeometry};
+        let point = |id| {
+            self.points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        match curve {
+            SketchCurve::Segment(id) => {
+                let edge = self.segments.iter().find(|edge| edge.id == id)?;
+                Some(CurveGeometry::Segment {
+                    from: point(edge.from)?,
+                    to: point(edge.to)?,
+                })
+            }
+            SketchCurve::Circle(id) => {
+                let circle = self.circles.iter().find(|circle| circle.id == id)?;
+                Some(CurveGeometry::Circular(CircularCurve {
+                    center: point(circle.center)?,
+                    radius: circle.resolved_radius(context),
+                    arc: None,
+                }))
+            }
+            SketchCurve::Arc(id) => {
+                let arc = self.arcs.iter().find(|arc| arc.id == id)?;
+                let from = point(arc.from)?;
+                let to = point(arc.to)?;
+                let sweep = arc.sweep_degrees();
+                let (center, radius) = arc_center_radius(from, to, sweep)?;
+                Some(CurveGeometry::Circular(CircularCurve {
+                    center,
+                    radius,
+                    arc: Some(ArcDomain {
+                        from,
+                        to,
+                        sweep_radians: sweep.to_radians(),
+                    }),
+                }))
+            }
+        }
+    }
+
+    /// Pick the stable Tangent branch from canonical curve/locus pairs.
+    pub fn choose_tangent_branch(
+        &self,
+        first: SketchCurve,
+        first_locus: [f64; 2],
+        second: SketchCurve,
+        second_locus: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<TangentBranch, parametric::sketch::BranchChoiceError> {
+        let (first, first_locus, second, second_locus) = if first.id() <= second.id() {
+            (first, first_locus, second, second_locus)
+        } else {
+            (second, second_locus, first, first_locus)
+        };
+        parametric::sketch::choose_branch(
+            self.tangent_curve_geometry(first, context)
+                .ok_or(parametric::sketch::BranchChoiceError::Degenerate)?,
+            first_locus,
+            self.tangent_curve_geometry(second, context)
+                .ok_or(parametric::sketch::BranchChoiceError::Degenerate)?,
+            second_locus,
+        )
+    }
+
+    /// Derive (never persist) a stored Tangent's current finite contact for overlays.
+    pub fn tangent_contact(
+        &self,
+        first: SketchCurve,
+        second: SketchCurve,
+        branch: TangentBranch,
+        context: parametric::EvaluationContext,
+    ) -> Result<parametric::sketch::TangentContact, parametric::sketch::TangentContactError> {
+        parametric::sketch::tangent_contact(
+            self.tangent_curve_geometry(first, context)
+                .ok_or(parametric::sketch::TangentContactError::InvalidBranch)?,
+            self.tangent_curve_geometry(second, context)
+                .ok_or(parametric::sketch::TangentContactError::InvalidBranch)?,
+            branch,
+        )
+    }
     /// A sketch on `plane` whose entities form ONE closed loop through the given ordered
     /// points — the common case, and the constructor every caller still uses. Builds N
     /// point entities and N segments closing `p[i] → p[i+1]` and `p[last] → p[0]`. A
@@ -1334,23 +1448,60 @@ impl Sketch {
         let Some(index) = self.point_index(id) else {
             return Ok(false);
         };
-        match self.arcs.iter().position(|arc| arc.center == id) {
-            // An arc's center is DERIVED from its ends and its sweep, so there is no pinning it:
-            // the resweep is the whole edit and no constraint can hold the result anywhere else.
-            Some(arc_index) => {
-                self.resweep_arc_to_center(arc_index, at.in_plane());
-                self.sync_arc_centers();
-            }
-            None => {
-                let before = self.points.clone();
-                self.points[index].at = at;
-                self.sync_arc_centers();
-                if !self.settle_under_the_hand(id, at, context)? {
-                    self.points = before;
+        let before_points = self.points.clone();
+        let before_arcs = self.arcs.clone();
+        let before_circles = self.circles.clone();
+        let result = (|| -> Result<bool, SketchEvaluationError> {
+            match self.arcs.iter().position(|arc| arc.center == id) {
+                // An arc's center is DERIVED from its ends and its sweep, so there is no pinning it:
+                // the resweep is the whole edit and no constraint can hold the result anywhere else.
+                Some(arc_index) => {
+                    self.resweep_arc_to_center(arc_index, at.in_plane());
+                    self.sync_arc_centers();
+                    // Center dragging owns only the arc sweep: settling here could "heal" an
+                    // invalid resweep by moving its endpoints, breaking the special center-drag
+                    // contract. Accept only the authored configuration produced by the resweep.
+                    let prepared = constraint::prepare(self, &self.constraints, Some(context))
+                        .map_err(map_prepare_evaluation_error)?;
+                    let current = prepared.validate_current();
+                    if let Some(failure) = current.tangent_failure {
+                        let failure = prepared
+                            .standing_tangent_failure(failure)
+                            .map_err(map_prepare_evaluation_error)?;
+                        Err(SketchEvaluationError::InvalidTangent {
+                            constraint: failure.constraint,
+                            error: failure.error,
+                        })
+                    } else if !current.satisfied || current.collapsed.is_some() {
+                        Ok(false)
+                    } else {
+                        Ok(true)
+                    }
+                }
+                None => {
+                    self.points[index].at = at;
+                    self.sync_arc_centers();
+                    self.settle_under_the_hand(id, at, context)
                 }
             }
+        })();
+        match result {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                self.points = before_points;
+                self.arcs = before_arcs;
+                self.circles = before_circles;
+                self.sync_arc_centers();
+                Ok(false)
+            }
+            Err(error) => {
+                self.points = before_points;
+                self.arcs = before_arcs;
+                self.circles = before_circles;
+                self.sync_arc_centers();
+                Err(error)
+            }
         }
-        Ok(true)
     }
 
     /// Re-solve the standing constraints with the hand pulling `held` toward `at`, writing the
@@ -1384,19 +1535,21 @@ impl Sketch {
         }
         let prepared = constraint::prepare(self, &self.constraints, Some(context))
             .map_err(map_prepare_evaluation_error)?;
-        match prepared.drag(held, at.in_plane()) {
-            Ok(parametric::sketch::DragOutcome::Accepted(settled)) => {
-                let Ok(plan) =
-                    prepared.plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
-                else {
-                    return Err(SketchEvaluationError::ScalarWritebackFailed);
-                };
-                plan.apply(self);
-                self.sync_arc_centers();
-                Ok(true)
-            }
-            Ok(parametric::sketch::DragOutcome::Rejected(_)) | Err(_) => Ok(false),
+        let (settled, accepted) = match prepared.drag(held, at.in_plane()) {
+            Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
+            Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
+            Err(_) => return Ok(false),
+        };
+        validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
+        if !accepted {
+            return Ok(false);
         }
+        let plan = prepared
+            .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
+            .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
+        plan.apply(self);
+        self.sync_arc_centers();
+        Ok(true)
     }
 
     /// Re-solve the arc at `arc_index` so its center sits as close to `target` as the canonical
@@ -1520,6 +1673,7 @@ impl Sketch {
         kind: ConstraintKind,
         context: parametric::EvaluationContext,
     ) -> Result<EntityId, ConstraintRefusal> {
+        let kind = kind.normalized();
         self.check_names_live_geometry(kind)?;
         self.check_is_not_already_asserted(kind)?;
         let prepared = constraint::prepare(self, &self.constraints, Some(context)).map_err(
@@ -1546,6 +1700,14 @@ impl Sketch {
                     parametric::sketch::BuildError::InvalidParameter,
                 ),
             ) => ConstraintRefusal::Impossible,
+            constraint::TrialMapError::Request(
+                parametric::sketch::RequestError::InvalidRelation(
+                    parametric::sketch::BuildError::InvalidTangent,
+                ),
+            ) => ConstraintRefusal::InvalidTangent {
+                constraint: None,
+                error: parametric::sketch::TangentContactError::InvalidBranch,
+            },
         })?;
         let (settled, redundant) = match trial {
             parametric::sketch::TrialAdd::Accepted { settled, redundant } => (settled, redundant),
@@ -1573,7 +1735,24 @@ impl Sketch {
                         .collect(),
                 });
             }
+            parametric::sketch::TrialAdd::Rejected(
+                parametric::sketch::TrialRejection::InvalidTangent { constraint, error },
+            ) => {
+                return Err(ConstraintRefusal::InvalidTangent {
+                    constraint: prepared.constraint(constraint),
+                    error,
+                });
+            }
         };
+        if let Some(failure) = prepared
+            .first_tangent_contact_failure(&settled.solution)
+            .map_err(|_| ConstraintRefusal::Impossible)?
+        {
+            return Err(ConstraintRefusal::InvalidTangent {
+                constraint: Some(failure.constraint),
+                error: failure.error,
+            });
+        }
         let Ok(plan) =
             prepared.plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
         else {
@@ -1607,6 +1786,7 @@ impl Sketch {
     /// Whether every entity `kind` names is live in the store, and its own terms are meetable.
     /// This preflight belongs to the document because the local solver sees only validated handles;
     /// it gives missing geometry and self-contradictory requests distinct author-facing refusals.
+    #[allow(clippy::too_many_lines)]
     fn check_names_live_geometry(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
         let known_point = |id: EntityId| self.points.iter().any(|point| point.id == id);
         let live_segment = |id: EntityId| self.segments.iter().find(|seg| seg.id == id);
@@ -1677,6 +1857,27 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
+            ConstraintKind::Tangent { first, second, .. } => {
+                if !kind.tangent_is_structurally_valid() {
+                    return Err(ConstraintRefusal::InvalidTangent {
+                        constraint: None,
+                        error: parametric::sketch::TangentContactError::InvalidBranch,
+                    });
+                }
+                let live = |curve: SketchCurve| match curve {
+                    SketchCurve::Segment(id) => self
+                        .segments
+                        .iter()
+                        .find(|segment| segment.id == id)
+                        .map(|segment| segment.from != segment.to)
+                        .unwrap_or(false),
+                    SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
+                    SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
+                };
+                if !live(first) || !live(second) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+            }
         }
         Ok(())
     }
@@ -1703,6 +1904,7 @@ impl Sketch {
         let prepared = constraint::prepare(self, &self.constraints, Some(context))
             .map_err(map_prepare_evaluation_error)?;
         let settled = prepared.settle();
+        validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
         let plan = prepared
             .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
@@ -1751,8 +1953,15 @@ impl Sketch {
     /// row in the prepared local problem. A relation is an assertion about a drawing, not ownership
     /// of the drawing it names.
     fn drop_dangling_constraints(&mut self) {
+        // Load/programmatic malformed order reaches this same repair door. Normalize before
+        // duplicate identity so a reversed internal relation cannot survive as a second claim.
+        for constraint in &mut self.constraints {
+            constraint.kind = constraint.kind.normalized();
+        }
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
         let segment_ids: Vec<EntityId> = self.segments.iter().map(|seg| seg.id).collect();
+        let arc_ids: Vec<EntityId> = self.arcs.iter().map(|arc| arc.id).collect();
+        let circle_ids: Vec<EntityId> = self.circles.iter().map(|circle| circle.id).collect();
         self.constraints.retain(|constraint| {
             constraint
                 .kind
@@ -1764,6 +1973,21 @@ impl Sketch {
                     .segments()
                     .iter()
                     .all(|id| segment_ids.contains(id))
+                && constraint.kind.curves().iter().all(|curve| match curve {
+                    SketchCurve::Segment(id) => segment_ids.contains(id),
+                    SketchCurve::Arc(id) => arc_ids.contains(id),
+                    SketchCurve::Circle(id) => circle_ids.contains(id),
+                })
+                && constraint.kind.tangent_is_structurally_valid()
+        });
+        let surviving = self.constraints.clone();
+        self.constraints.retain(|constraint| {
+            // Stable authored order decides the survivor, matching every other duplicate policy.
+            let duplicate = surviving
+                .iter()
+                .take_while(|held| held.id != constraint.id)
+                .any(|held| held.kind.is_about_the_same_as(constraint.kind));
+            !duplicate
         });
     }
 
