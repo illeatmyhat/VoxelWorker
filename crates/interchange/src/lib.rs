@@ -2,7 +2,7 @@
 //!
 //! This crate is the **export sink** — it takes the evaluation layer's classified two-layer
 //! chunks and writes them to formats other tools ingest — one writer so far, the
-//! MagicaVoxel [`vox_export`] `.vox` serializer.
+//! `MagicaVoxel` [`vox_export`] `.vox` serializer.
 //!
 //! ## The law: interchange is headless — it never links wgpu
 //!

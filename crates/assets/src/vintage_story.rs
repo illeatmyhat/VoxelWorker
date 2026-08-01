@@ -131,8 +131,7 @@ impl VintageStorySource {
         let assets_root = block_dir
             .ancestors()
             .nth(3)
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| block_dir.clone());
+            .map_or_else(|| block_dir.clone(), Path::to_path_buf);
         Self {
             block_dir,
             assets_root,
@@ -205,13 +204,18 @@ impl BlockSource for VintageStorySource {
 /// `game:block/x` → (`Some("game")`, `block/x`); `block/x` → (`None`, `block/x`).
 fn split_domain(reference: &str) -> (Option<String>, String) {
     let trimmed = reference.trim().trim_start_matches('/');
-    if let Some(colon) = trimmed.find(':') {
-        let domain = trimmed[..colon].to_string();
-        let path = trimmed[colon + 1..].trim_start_matches('/').to_string();
-        (Some(domain), path)
-    } else {
-        (None, trimmed.to_string())
-    }
+    trimmed.find(':').map_or_else(
+        || (None, trimmed.to_string()),
+        |colon| {
+            let domain = trimmed.get(..colon).unwrap_or_default().to_string();
+            let path = trimmed
+                .get(colon.saturating_add(1)..)
+                .unwrap_or_default()
+                .trim_start_matches('/')
+                .to_string();
+            (Some(domain), path)
+        },
+    )
 }
 
 /// An index from a texture-stem directory (e.g. `stone/rock`) to the parsed
@@ -262,7 +266,7 @@ impl BlockTypeIndex {
                 if !is_json {
                     continue;
                 }
-                parsed += 1;
+                parsed = parsed.saturating_add(1);
                 if parsed > MAX_BLOCKTYPES_PARSED {
                     break 'outer;
                 }
@@ -310,27 +314,29 @@ impl BlockTypeIndex {
         candidates
             .iter()
             .max_by_key(|&&index| {
-                let block = &self.blocks[index];
+                let Some(block) = self.blocks.get(index) else {
+                    return i32::MIN;
+                };
                 let mut score = 0i32;
                 // An exact `code == leaf` (e.g. `rock`, `drystone`) is the
                 // canonical block for this directory — weight it heavily so it
                 // beats unrelated blocks (anvil parts, querns) that merely
                 // texture with the rock and reference the directory many times.
                 if block.code == leaf {
-                    score += 100;
+                    score = score.saturating_add(100);
                 } else if block.code.starts_with(leaf) || leaf.starts_with(block.code.as_str()) {
-                    score += 20;
+                    score = score.saturating_add(20);
                 }
                 // Presence (not count) of a `<dir>/{glob}` whole-block reference.
                 if block.referenced_bases().iter().any(|base| {
                     directory_of_reference(base).as_deref() == Some(directory.as_str())
                         && (base.contains('{') || base.contains('*'))
                 }) {
-                    score += 5;
+                    score = score.saturating_add(5);
                 }
                 score
             })
-            .map(|&index| &self.blocks[index])
+            .and_then(|&index| self.blocks.get(index))
     }
 }
 
@@ -360,7 +366,7 @@ fn directory_of_reference(reference: &str) -> Option<String> {
     } else {
         // A clean file path: take its parent directory.
         let slash = path.rfind('/')?;
-        Some(path[..slash].to_string())
+        Some(path.get(..slash).unwrap_or_default().to_string())
     }
 }
 
@@ -386,7 +392,7 @@ pub(super) fn scan_block_dir(block_dir: &Path) -> Vec<ScannedTexture> {
         if !is_png {
             continue;
         }
-        walked += 1;
+        walked = walked.saturating_add(1);
         if walked > MAX_TEXTURES_WALKED {
             break;
         }

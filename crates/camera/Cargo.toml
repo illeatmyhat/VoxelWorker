@@ -3,6 +3,9 @@ name = "camera"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # Viewing + projective-geometry library: the wgpu-free graphics mathematics of the
 # orbit camera rig, projection matrices, the Autodesk ViewCube model, screen→ray
 # unprojection, and Gribb–Hartmann frustum culling. Like `substrate`, this is a

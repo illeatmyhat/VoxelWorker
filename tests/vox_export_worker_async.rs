@@ -18,6 +18,13 @@
 //!
 //! Run: `cargo test --test vox_export_worker_async`
 
+#![allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    clippy::redundant_clone
+)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 

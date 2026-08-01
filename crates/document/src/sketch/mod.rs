@@ -19,6 +19,37 @@
 //! polygon (≥3 points); a degenerate profile (fewer than 3 points, or zero area) resolves to
 //! nothing rather than panicking.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::imprecise_flops,
+    clippy::manual_midpoint,
+    clippy::doc_link_code,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::return_self_not_must_use,
+    clippy::single_match_else,
+    clippy::suboptimal_flops,
+    clippy::too_long_first_doc_paragraph,
+    clippy::unnecessary_wraps,
+    clippy::use_self,
+    clippy::similar_names
+)]
+
 mod constraint;
 mod edges;
 mod faces;

@@ -1,5 +1,21 @@
 //! The parametric SDF primitive producer: `Box`, `Sphere`, `Cylinder`, `Tube`, `Torus`.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::option_if_let_else,
+    clippy::suboptimal_flops,
+    clippy::similar_names
+)]
+
 use glam::Vec3;
 use rayon::prelude::*;
 
@@ -608,6 +624,8 @@ impl Field for SdfShape {
 /// occupied-voxel set / centering at ODD / EVEN / MIXED-parity voxel-granular sizes.
 #[cfg(test)]
 mod sdf_size_units_tests {
+    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
+
     use super::*;
     use parametric::units::{DisplayUnit, ExactRational, Measurement};
 
@@ -858,6 +876,8 @@ mod sdf_size_units_tests {
 /// resolves, and must be honest about the metric it measures in.
 #[cfg(test)]
 mod field_tests {
+    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
+
     use super::*;
     use substrate::geom2d::Metric;
 

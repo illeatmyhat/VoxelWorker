@@ -3,6 +3,27 @@
 //! block/voxel bounding-box derivations that drive extent, recentering and region
 //! sizing.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::map_unwrap_or,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::option_if_let_else,
+    clippy::return_self_not_must_use,
+    clippy::similar_names,
+    clippy::doc_markdown,
+    clippy::semicolon_if_nothing_returned,
+    clippy::too_long_first_doc_paragraph,
+    clippy::wildcard_imports
+)]
+
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -1089,6 +1110,8 @@ mod continuity_schema_tests {
     //! The continuous rotation + local offset default to identity, so a payload omitting
     //! them loads byte-identical to a pure integer placement; a rotated placement must
     //! survive a JSON round-trip.
+    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

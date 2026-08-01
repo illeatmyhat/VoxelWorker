@@ -7,7 +7,9 @@ use ui::panel::{LayerRange, ViewMode};
 
 use super::AppCore;
 
-/// The region-scoped mesh/brick layer clip for a frame. Bundles
+/// The region-scoped mesh/brick layer clip for a frame.
+///
+/// It bundles
 /// the effective [`LayerBand`] (scene-absolute layers), the optional [`RegionClip`] the
 /// band is confined to (the selected object's placed AABB, recentered voxels — `None` for a
 /// scene-wide band / no clip), and the layer-track domain the UI scrubber spans.

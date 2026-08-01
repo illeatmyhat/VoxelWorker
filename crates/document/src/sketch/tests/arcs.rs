@@ -83,7 +83,7 @@ fn tessellation_stays_on_the_circle_within_the_sagitta_tolerance() {
     // Every tessellated vertex sits ON the circle (to f32-fraction precision), below the
     // chord (+180° from (0,0) to (4,0) sweeps through the bottom).
     let mut ring: Vec<[f64; 2]> = vec![[0.0, 0.0]];
-    ring.extend(interior.iter().map(|point| point.in_plane()));
+    ring.extend(interior.iter().map(SketchPoint::in_plane));
     ring.push([4.0, 0.0]);
     for point in &ring[1..ring.len() - 1] {
         let distance = ((point[0] - 2.0).powi(2) + point[1].powi(2)).sqrt();

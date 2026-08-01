@@ -8,6 +8,16 @@
 //! (short runs vs whole rows), the popcount reduction, and the dense↔packed
 //! byte round-trip an atlas upload/readback pays.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::missing_const_for_fn
+)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use substrate::occupancy::BitCube;

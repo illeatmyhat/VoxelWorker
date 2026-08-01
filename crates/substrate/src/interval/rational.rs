@@ -16,10 +16,10 @@
 //! operations can overflow — intended for small exact ratios (measurement expressions),
 //! not arbitrary-precision arithmetic.
 
-/// An exact, always-reduced rational number backed by `i128`. The sign is normalized
-/// onto the numerator (denominator always `>= 1`) and the pair is gcd-reduced, so equal
-/// rationals compare equal bit-for-bit.
+/// An exact, always-reduced rational backed by `i128`.
+/// The denominator is positive, and equal values have identical representations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub struct Rational {
     numerator: i128,
     denominator: i128,
@@ -38,6 +38,7 @@ impl Rational {
     ///   `None`; `Rational::new(i128::MIN, -1)` is `+2^127`, likewise `None`. The mirror cases DO
     ///   have a form and are returned: `Rational::new(i128::MIN, 1)` is `i128::MIN / 1`, and
     ///   `Rational::new(i128::MIN, i128::MIN)` reduces to `1/1`.
+    #[must_use]
     pub fn new(numerator: i128, denominator: i128) -> Option<Self> {
         if denominator == 0 {
             return None;
@@ -51,8 +52,10 @@ impl Rational {
         let numerator_magnitude = numerator.unsigned_abs();
         let denominator_magnitude = denominator.unsigned_abs();
         let divisor = greatest_common_divisor(numerator_magnitude, denominator_magnitude);
-        let numerator_magnitude = numerator_magnitude / divisor;
-        let denominator_magnitude = denominator_magnitude / divisor;
+        let numerator_magnitude = numerator_magnitude.checked_div(divisor).unwrap_or_default();
+        let denominator_magnitude = denominator_magnitude
+            .checked_div(divisor)
+            .unwrap_or_default();
         // The denominator is always positive, so it must fit in `i128::MAX`; only a NEGATIVE
         // numerator can use the extra step down to `i128::MIN`.
         let numerator = if negative {
@@ -68,7 +71,7 @@ impl Rational {
     }
 
     /// A whole-number rational (`value / 1`).
-    pub fn from_integer(value: i128) -> Self {
+    pub const fn from_integer(value: i128) -> Self {
         Self {
             numerator: value,
             denominator: 1,
@@ -76,20 +79,28 @@ impl Rational {
     }
 
     /// The reduced numerator (sign lives here; denominator is always positive).
-    pub fn numerator(self) -> i128 {
+    #[must_use]
+    pub const fn numerator(self) -> i128 {
         self.numerator
     }
 
     /// The reduced denominator (always `>= 1`).
-    pub fn denominator(self) -> i128 {
+    #[must_use]
+    pub const fn denominator(self) -> i128 {
         self.denominator
     }
 
     /// `self * other`, reduced.
-    pub fn times(self, other: Rational) -> Rational {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cross-products do not fit in `i128` or the reduced result cannot be
+    /// represented by this type.
+    #[allow(clippy::arithmetic_side_effects, clippy::expect_used)]
+    pub fn times(self, other: Self) -> Self {
         // Operands are already reduced; reducing again after the cross-multiply
         // keeps the magnitudes small and the result canonical.
-        Rational::new(
+        Self::new(
             self.numerator * other.numerator,
             self.denominator * other.denominator,
         )
@@ -97,8 +108,14 @@ impl Rational {
     }
 
     /// `self + other`, reduced.
-    pub fn plus(self, other: Rational) -> Rational {
-        Rational::new(
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cross-products or their sum do not fit in `i128`, or the reduced result
+    /// cannot be represented by this type.
+    #[allow(clippy::arithmetic_side_effects, clippy::expect_used)]
+    pub fn plus(self, other: Self) -> Self {
+        Self::new(
             self.numerator * other.denominator + other.numerator * self.denominator,
             self.denominator * other.denominator,
         )
@@ -106,8 +123,14 @@ impl Rational {
     }
 
     /// `self - other`, reduced.
-    pub fn minus(self, other: Rational) -> Rational {
-        Rational::new(
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cross-products or their difference do not fit in `i128`, or the reduced
+    /// result cannot be represented by this type.
+    #[allow(clippy::arithmetic_side_effects, clippy::expect_used)]
+    pub fn minus(self, other: Self) -> Self {
+        Self::new(
             self.numerator * other.denominator - other.numerator * self.denominator,
             self.denominator * other.denominator,
         )
@@ -120,7 +143,8 @@ impl Rational {
     /// negation has no `i128` form — the same asymmetry [`new`](Self::new) documents. The
     /// value is already reduced and negating cannot change that, so this rebuilds directly
     /// rather than going through a subtraction that would overflow before it could report.
-    pub fn negated(self) -> Option<Rational> {
+    #[must_use]
+    pub fn negated(self) -> Option<Self> {
         Some(Self {
             numerator: self.numerator.checked_neg()?,
             denominator: self.denominator,
@@ -133,21 +157,23 @@ impl Rational {
     /// Unlike [`times`](Self::times) and [`plus`](Self::plus) this can genuinely fail, so it
     /// returns an `Option` rather than asserting: dividing by a user-authored expression that
     /// evaluates to zero is an ordinary authoring mistake, not a bug.
-    pub fn divided_by(self, other: Rational) -> Option<Rational> {
-        Rational::new(
-            self.numerator * other.denominator,
-            self.denominator * other.numerator,
-        )
+    #[must_use]
+    pub fn divided_by(self, other: Self) -> Option<Self> {
+        let numerator = self.numerator.checked_mul(other.denominator)?;
+        let denominator = self.denominator.checked_mul(other.numerator)?;
+        Self::new(numerator, denominator)
     }
 
     /// `true` when this rational is a whole number (denominator reduced to 1).
-    pub fn is_integer(self) -> bool {
+    #[must_use]
+    pub const fn is_integer(self) -> bool {
         self.denominator == 1
     }
 
     /// The whole-number value when [`is_integer`](Self::is_integer); otherwise
     /// `None`.
-    pub fn to_integer(self) -> Option<i128> {
+    #[must_use]
+    pub const fn to_integer(self) -> Option<i128> {
         if self.is_integer() {
             Some(self.numerator)
         } else {
@@ -156,22 +182,26 @@ impl Rational {
     }
 
     /// The largest integer `<= self` (toward negative infinity).
-    pub fn floor(self) -> i128 {
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
+    pub const fn floor(self) -> i128 {
         // Truncating division rounds toward zero; for a negative non-integer that
         // is one too large, so step down.
         let truncated = self.numerator / self.denominator;
         if self.numerator % self.denominator != 0 && self.numerator < 0 {
-            truncated - 1
+            truncated.saturating_sub(1)
         } else {
             truncated
         }
     }
 
     /// The smallest integer `>= self` (toward positive infinity).
-    pub fn ceil(self) -> i128 {
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
+    pub const fn ceil(self) -> i128 {
         let truncated = self.numerator / self.denominator;
         if self.numerator % self.denominator != 0 && self.numerator > 0 {
-            truncated + 1
+            truncated.saturating_add(1)
         } else {
             truncated
         }
@@ -187,6 +217,7 @@ impl Rational {
     /// terminate. Otherwise it scales the numerator up to a power of ten and splits off
     /// the fractional digits. Textbook elementary number theory (the terminating-decimal
     /// criterion; Hardy & Wright, *An Introduction to the Theory of Numbers*).
+    #[must_use]
     pub fn to_terminating_decimal(self) -> Option<String> {
         if self.is_integer() {
             return Some(self.numerator.to_string());
@@ -194,15 +225,15 @@ impl Rational {
         // Strip factors of 2 and 5 from the denominator; whatever remains must be 1
         // for the decimal to terminate.
         let mut denominator = self.denominator;
-        let mut factor_twos = 0;
-        let mut factor_fives = 0;
-        while denominator % 2 == 0 {
-            denominator /= 2;
-            factor_twos += 1;
+        let mut factor_twos: usize = 0;
+        let mut factor_fives: usize = 0;
+        while denominator.checked_rem(2).unwrap_or_default() == 0 {
+            denominator = denominator.checked_div(2).unwrap_or_default();
+            factor_twos = factor_twos.saturating_add(1);
         }
-        while denominator % 5 == 0 {
-            denominator /= 5;
-            factor_fives += 1;
+        while denominator.checked_rem(5).unwrap_or_default() == 0 {
+            denominator = denominator.checked_div(5).unwrap_or_default();
+            factor_fives = factor_fives.saturating_add(1);
         }
         if denominator != 1 {
             return None;
@@ -211,21 +242,20 @@ impl Rational {
         // fractional digits.
         let fractional_digits = factor_twos.max(factor_fives);
         let mut scaled_numerator = self.numerator;
-        for _ in 0..(fractional_digits - factor_twos) {
-            scaled_numerator *= 2;
+        for _ in 0..fractional_digits.saturating_sub(factor_twos) {
+            scaled_numerator = scaled_numerator.checked_mul(2)?;
         }
-        for _ in 0..(fractional_digits - factor_fives) {
-            scaled_numerator *= 5;
+        for _ in 0..fractional_digits.saturating_sub(factor_fives) {
+            scaled_numerator = scaled_numerator.checked_mul(5)?;
         }
-        let scale = 10i128.pow(fractional_digits as u32);
+        let exponent = u32::try_from(fractional_digits).unwrap_or_default();
+        let scale = 10i128.pow(exponent);
         let negative = scaled_numerator < 0;
         let magnitude = scaled_numerator.unsigned_abs();
-        let whole_part = (magnitude / scale as u128) as i128;
-        let fraction_part = (magnitude % scale as u128) as i128;
-        let mut fraction_text = format!(
-            "{fraction_part:0width$}",
-            width = fractional_digits as usize
-        );
+        let scale = u128::try_from(scale).unwrap_or_default();
+        let whole_part = magnitude.checked_div(scale)?;
+        let fraction_part = magnitude.checked_rem(scale)?;
+        let mut fraction_text = format!("{fraction_part:0fractional_digits$}");
         while fraction_text.ends_with('0') {
             fraction_text.pop();
         }
@@ -246,11 +276,11 @@ impl Rational {
 /// through `* -1` would overflow on exactly this value.
 fn negated_from_magnitude(magnitude: u128) -> Option<i128> {
     /// `|i128::MIN|` — one past `i128::MAX`, so it needs the explicit case below.
-    const MOST_NEGATIVE_MAGNITUDE: u128 = i128::MAX as u128 + 1;
+    const MOST_NEGATIVE_MAGNITUDE: u128 = 170_141_183_460_469_231_731_687_303_715_884_105_728u128;
     if magnitude == MOST_NEGATIVE_MAGNITUDE {
         return Some(i128::MIN);
     }
-    Some(-(i128::try_from(magnitude).ok()?))
+    i128::try_from(magnitude).ok()?.checked_neg()
 }
 
 /// Euclid's algorithm on unsigned magnitudes. `gcd(x, 0) == x`, so a `0`
@@ -258,7 +288,7 @@ fn negated_from_magnitude(magnitude: u128) -> Option<i128> {
 /// divisor (giving the canonical `0/1`).
 fn greatest_common_divisor(mut first: u128, mut second: u128) -> u128 {
     while second != 0 {
-        let remainder = first % second;
+        let remainder = first.checked_rem(second).unwrap_or_default();
         first = second;
         second = remainder;
     }
@@ -406,7 +436,19 @@ mod kani_proofs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::unwrap_used
+)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

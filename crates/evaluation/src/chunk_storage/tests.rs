@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::explicit_iter_loop, clippy::float_cmp, clippy::indexing_slicing, clippy::items_after_statements, clippy::manual_midpoint, clippy::panic, clippy::too_many_lines, clippy::unwrap_used)]
+
 use super::*;
 use document::scene::{DefId, Node, NodeContent, Scene, VoxelBody};
 use document::voxel::{GeometryParams, SdfShape, VoxelProducer};
@@ -19,8 +21,8 @@ impl Lcg {
     fn next_u32(&mut self) -> u32 {
         self.0 = self
             .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         (self.0 >> 33) as u32
     }
 }

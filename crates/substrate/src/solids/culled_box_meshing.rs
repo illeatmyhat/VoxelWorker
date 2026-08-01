@@ -75,21 +75,35 @@ impl CulledBoxMeshing {
         neighbor_is_solid: impl Fn([i64; 3]) -> bool,
     ) -> bool {
         // The box's inclusive extent per axis, as signed lattice bounds.
-        let box_min = [box_.min[0] as i64, box_.min[1] as i64, box_.min[2] as i64];
-        let box_max = [box_.max[0] as i64, box_.max[1] as i64, box_.max[2] as i64];
+        let [min_x, min_y, min_z] = box_.min;
+        let [max_x, max_y, max_z] = box_.max;
+        let box_min = [i64::from(min_x), i64::from(min_y), i64::from(min_z)];
+        let box_max = [i64::from(max_x), i64::from(max_y), i64::from(max_z)];
 
         // For the axis the face faces along, the neighbor plane is the single layer at the
         // box edge + direction; the other two axes scan the box's full extent.
         let scan_range = |axis: usize| -> (i64, i64) {
-            if direction[axis] != 0 {
-                let plane = if direction[axis] > 0 {
-                    box_max[axis] + 1
+            let direction_component = direction.get(axis).copied().unwrap_or_default();
+            if direction_component != 0 {
+                let plane = if direction_component > 0 {
+                    box_max
+                        .get(axis)
+                        .copied()
+                        .unwrap_or_default()
+                        .saturating_add(1)
                 } else {
-                    box_min[axis] - 1
+                    box_min
+                        .get(axis)
+                        .copied()
+                        .unwrap_or_default()
+                        .saturating_sub(1)
                 };
                 (plane, plane)
             } else {
-                (box_min[axis], box_max[axis])
+                (
+                    box_min.get(axis).copied().unwrap_or_default(),
+                    box_max.get(axis).copied().unwrap_or_default(),
+                )
             }
         };
         let (nx0, nx1) = scan_range(0);

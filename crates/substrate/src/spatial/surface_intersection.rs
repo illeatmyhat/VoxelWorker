@@ -131,11 +131,14 @@ pub const PRUNE_SLOP: f32 = 1e-2;
 /// value on the cell lies within `L · circumradius` of the center value — up to
 /// f32 rounding at the interval edges, which the prune's [`PRUNE_SLOP`] absorbs
 /// (see the `#[cfg(kani)]` lemma below for exactly what is proven).
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn lipschitz_cell_bracket(center_value: f32, lipschitz: f32, circumradius: f32) -> (f32, f32) {
     let spread = lipschitz * circumradius;
     (center_value - spread, center_value + spread)
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn gradient(field: &dyn Fn(Vec3) -> f32, point: Vec3, half_width: f32) -> Vec3 {
     let h = half_width;
     Vec3::new(
@@ -147,6 +150,7 @@ fn gradient(field: &dyn Fn(Vec3) -> f32, point: Vec3, half_width: f32) -> Vec3 {
 
 /// The curve tangent `∇F × ∇G` at `point`, with the dihedral sine it subtends.
 /// `None` when either gradient vanishes or the surfaces are tangential there.
+#[allow(clippy::arithmetic_side_effects)]
 fn curve_tangent(
     pair: &ImplicitSurfacePair<'_>,
     point: Vec3,
@@ -169,6 +173,7 @@ fn curve_tangent(
 /// One damped Newton step toward `F = 0 ∩ G = 0` through the 2×3 Jacobian's
 /// pseudo-inverse, iterated to convergence. `None` when the system is degenerate
 /// (tangential) or fails to land on the curve.
+#[allow(clippy::arithmetic_side_effects)]
 fn correct_onto_curve(
     pair: &ImplicitSurfacePair<'_>,
     start: Vec3,
@@ -189,12 +194,12 @@ fn correct_onto_curve(
         let ff = grad_f.dot(grad_f);
         let fg = grad_f.dot(grad_g);
         let gg = grad_g.dot(grad_g);
-        let determinant = ff * gg - fg * fg;
+        let determinant = ff.mul_add(gg, -(fg * fg));
         if determinant < 1e-9 {
             return None;
         }
-        let alpha = (-value_f * gg + value_g * fg) / determinant;
-        let beta = (value_f * fg - value_g * ff) / determinant;
+        let alpha = (-value_f).mul_add(gg, value_g * fg) / determinant;
+        let beta = value_f.mul_add(fg, -(value_g * ff)) / determinant;
         let delta = grad_f * alpha + grad_g * beta;
         // Damp: a corrector jump far beyond the march step means the local model
         // broke (a Chebyshev face seam) — clamp rather than fly off.
@@ -215,6 +220,7 @@ fn correct_onto_curve(
 /// collecting points until the curve closes, leaves `bounds`, or degenerates.
 /// Returns the marched points (excluding the seed) and whether it closed;
 /// `step_exhausted` is raised (never cleared) when the step cap cut the march.
+#[allow(clippy::arithmetic_side_effects)]
 fn march(
     pair: &ImplicitSurfacePair<'_>,
     seed: Vec3,
@@ -243,7 +249,14 @@ fn march(
         if step_index > 2 && next.distance(seed) < config.step * 0.75 {
             return (points, true);
         }
-        let outside = (0..3).any(|axis| next[axis] < bounds.0[axis] || next[axis] > bounds.1[axis]);
+        let next_array = next.to_array();
+        let bounds_min = bounds.0.to_array();
+        let bounds_max = bounds.1.to_array();
+        let outside = (0..3).any(|axis| {
+            let coordinate = next_array.get(axis).copied().unwrap_or_default();
+            coordinate < bounds_min.get(axis).copied().unwrap_or_default()
+                || coordinate > bounds_max.get(axis).copied().unwrap_or_default()
+        });
         if outside {
             return (points, false);
         }
@@ -259,6 +272,8 @@ fn march(
 /// overlap_max` (the pair's inflated placement overlap). Deterministic for given
 /// inputs: the octree descends in fixed child order, seeds trace in descent
 /// order, and a seed within a step of an already-traced curve is consumed.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects, clippy::too_many_lines)]
 pub fn trace_intersection_curves(
     pair: &ImplicitSurfacePair<'_>,
     overlap_min: Vec3,
@@ -280,12 +295,17 @@ pub fn trace_intersection_curves(
     }
     let mut stack = vec![(overlap_min, root_size)];
     while let Some((cell_min, size)) = stack.pop() {
-        if seeds.len() >= config.max_seeds as usize {
+        if seeds.len() >= usize::try_from(config.max_seeds).unwrap_or(usize::MAX) {
             seed_budget_exhausted = true;
             break;
         }
         // Clip to the overlap box (the root cube squares it off).
-        if (0..3).any(|axis| cell_min[axis] > overlap_max[axis]) {
+        let cell_min_array = cell_min.to_array();
+        let overlap_max_array = overlap_max.to_array();
+        if (0..3).any(|axis| {
+            cell_min_array.get(axis).copied().unwrap_or_default()
+                > overlap_max_array.get(axis).copied().unwrap_or_default()
+        }) {
             continue;
         }
         let (low_f, high_f) = (pair.bracket_f)(cell_min, size);
@@ -329,15 +349,18 @@ pub fn trace_intersection_curves(
     let bounds = (overlap_min, overlap_max);
     // A seed cell's center sits up to half its space diagonal from the curve that
     // crosses the cell — the consume radius must cover that plus a march step.
-    let consume_radius = config.seed_cell * 0.87 + config.step;
+    let consume_radius = config.seed_cell.mul_add(0.87, config.step);
     let consume_radius_squared = consume_radius * consume_radius;
     let mut curves: Vec<TracedCurve> = Vec::new();
     let mut consumed = vec![false; seeds.len()];
     for seed_index in 0..seeds.len() {
-        if consumed[seed_index] {
+        if consumed.get(seed_index).copied().unwrap_or(false) {
             continue;
         }
-        let Some(on_curve) = correct_onto_curve(pair, seeds[seed_index], config) else {
+        let Some(seed) = seeds.get(seed_index).copied() else {
+            continue;
+        };
+        let Some(on_curve) = correct_onto_curve(pair, seed, config) else {
             continue;
         };
         // Seed consumption alone cannot dedup: a bracket admits cells FARTHER from
@@ -389,14 +412,16 @@ pub fn trace_intersection_curves(
             continue;
         }
         for (other_index, other_seed) in seeds.iter().enumerate().skip(seed_index) {
-            if consumed[other_index] {
+            if consumed.get(other_index).copied().unwrap_or(false) {
                 continue;
             }
             if points
                 .iter()
                 .any(|point| point.distance_squared(*other_seed) <= consume_radius_squared)
             {
-                consumed[other_index] = true;
+                if let Some(consumed) = consumed.get_mut(other_index) {
+                    *consumed = true;
+                }
             }
         }
         curves.push(TracedCurve {
@@ -474,6 +499,17 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     fn lipschitz_pair_config() -> SurfaceIntersectionConfig {

@@ -8,6 +8,14 @@
 //! `BlockPalette` with GPU-rendered thumbnail tiles, runs the SHARED
 //! [`voxel_worker::build_panel`] (the exact function the window uses), injects a
 //! synthetic press+release pointer sequence over a tile, and asserts the
+
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::default_trait_access,
+    clippy::unwrap_used
+)]
 //! returned `PanelResponse::clicked_palette_tile` reports a tile index — i.e.
 //! the click propagates out of `build_panel` to the index the caller applies as
 //! the active material.

@@ -1,3 +1,18 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::similar_names,
+    clippy::use_self,
+    clippy::wildcard_imports
+)]
+
 //! The boolean-operand body slices of the selected subtree — the "Show booleans" viewer
 //! mode's document-side derivation.
 //!

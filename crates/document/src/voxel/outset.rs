@@ -1,5 +1,21 @@
 //! Outset: a producer decorator that dilates a body before it folds.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::option_if_let_else,
+    clippy::suboptimal_flops,
+    clippy::similar_names
+)]
+
 use super::{Field, FieldInterval, VoxelProducer};
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{BlockAttrs, BlockId, Voxel, VoxelGrid, SURFACE_ISOLEVEL};

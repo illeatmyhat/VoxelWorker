@@ -26,6 +26,13 @@
 //!
 //! Run: `cargo test --test geometry_worker_async` (skips loudly without a GPU adapter)
 
+#![allow(
+    clippy::expect_used,
+    clippy::items_after_statements,
+    clippy::manual_assert,
+    clippy::panic
+)]
+
 use std::time::{Duration, Instant};
 
 use voxel_worker::{

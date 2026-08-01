@@ -3,6 +3,9 @@ name = "display"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The DISPLAY crate: the ONE crate in the workspace that links wgpu. Every GPU sink lives
 # here — the cuboid fallback mesher (`cuboid_mesh`), the brick field build + its GPU record
 # pack (`brick_field`), the brick raymarch display pipeline (`brick_raymarch`), the material

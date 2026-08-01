@@ -1,3 +1,5 @@
+#![allow(clippy::too_long_first_doc_paragraph)]
+
 //! # substrate — the pure computer-science / mathematics library
 //!
 //! This crate holds the load-bearing data structures whose identity is purely

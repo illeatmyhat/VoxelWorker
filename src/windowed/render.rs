@@ -3208,6 +3208,7 @@ fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::{
         apply_sketch_snap, closest_point_on_segment, point_in_screen_polygon,

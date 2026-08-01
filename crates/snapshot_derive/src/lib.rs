@@ -1,4 +1,4 @@
-//! # snapshot_derive — `#[derive(Snapshot)]`
+//! # `snapshot_derive` — `#[derive(Snapshot)]`
 //!
 //! The workspace's first proc-macro crate, and it exists for a reason worth stating
 //! plainly because it is not the obvious one: **this macro does not make persistence
@@ -24,6 +24,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
+use std::fmt::Write as _;
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, Data, DeriveInput, Field, Fields};
 
@@ -157,11 +158,13 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 /// One field's `(name, StateCategory variant)` row, or the diagnostic explaining why
 /// it has none.
 fn classify(field: &Field) -> syn::Result<(String, &'static str)> {
-    let field_name = field
-        .ident
-        .as_ref()
-        .expect("named fields were checked by the caller")
-        .to_string();
+    let Some(field_ident) = field.ident.as_ref() else {
+        return Err(syn::Error::new(
+            field.span(),
+            "`#[derive(Snapshot)]` needs named fields",
+        ));
+    };
+    let field_name = field_ident.to_string();
 
     let mut found: Option<(&'static str, proc_macro2::Span)> = None;
     for attribute in field.attrs.iter().filter(|a| a.path().is_ident("snapshot")) {
@@ -175,13 +178,11 @@ fn classify(field: &Field) -> syn::Result<(String, &'static str)> {
                     CATEGORIES
                         .iter()
                         .find(|(_, variant, _)| *variant == previous)
-                        .map(|(spelling, _, _)| *spelling)
-                        .unwrap_or(previous),
+                        .map_or(previous, |(spelling, _, _)| *spelling),
                     CATEGORIES
                         .iter()
                         .find(|(_, variant, _)| *variant == category.0)
-                        .map(|(spelling, _, _)| *spelling)
-                        .unwrap_or(category.0),
+                        .map_or(category.0, |(spelling, _, _)| *spelling),
                 ),
             ));
         }
@@ -258,7 +259,7 @@ fn unclassified_field_error(field: &Field, field_name: &str) -> syn::Error {
         // rustc indents the whole block, and ragged left edges make five options look
         // like five unrelated sentences.
         let declaration = format!("#[snapshot({spelling})]");
-        message.push_str(&format!("    {declaration:<22} — {gloss}\n"));
+        let _ = writeln!(message, "    {declaration:<22} — {gloss}");
     }
     message.push_str(
         "\n`transient` and `derived` reach neither artifact and are the two ways to get this \

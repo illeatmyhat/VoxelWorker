@@ -3,6 +3,9 @@ name = "interchange"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The INTERCHANGE crate: the HEADLESS export sink (one layer above evaluation, parallel to
 # display over it). It serializes the evaluated boundary set to external formats — today the
 # MagicaVoxel `.vox` writer (`vox_export`). THE LAW: interchange NEVER links wgpu / egui / winit.

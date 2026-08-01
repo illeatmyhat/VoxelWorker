@@ -1,3 +1,25 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::similar_names,
+    clippy::expect_used,
+    clippy::items_after_statements,
+    clippy::missing_panics_doc,
+    clippy::redundant_pub_crate,
+    clippy::too_long_first_doc_paragraph,
+    clippy::too_many_lines,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::wildcard_imports
+)]
+
 //! Whole-region + cacheless streaming over resident two-layer chunks (the dense oracle, the export/measure streams).
 
 use rayon::prelude::*;

@@ -290,7 +290,7 @@ fn thumbnail_view_projection() -> glam::Mat4 {
 
 /// Upload a decoded RGBA buffer as a 2D texture in `format` (no mipmaps). The
 /// thumbnail preview's private uploader (the applied scene material uses the
-/// renderer's own D2Array uploader instead).
+/// renderer's own `D2Array` uploader instead).
 fn upload_block_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

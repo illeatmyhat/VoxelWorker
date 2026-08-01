@@ -17,10 +17,10 @@
 
 use assets::DecodedRgba;
 
-/// A runtime-loaded block material: a 6-layer texture array (one layer per cube
-/// face), bound exactly like the procedural materials so the per-voxel slice
-/// shader treats it identically. A uniform block puts the same image on all six
-/// layers; a per-face block (M7) puts each face's PNG on its own layer.
+/// A runtime-loaded block material backed by a six-layer texture array.
+///
+/// The array uses the same binding shape as the procedural materials. Uniform blocks
+/// repeat one image on all layers; per-face blocks (M7) use one PNG per layer.
 pub struct LoadedMaterial {
     pub bind_group: wgpu::BindGroup,
     /// The label of the applied block (for the panel readout).
@@ -36,8 +36,8 @@ pub struct LoadedMaterial {
 impl LoadedMaterial {
     /// Build a 6-layer material DIRECTLY from six raw RGBA8 face buffers (part of
     /// #20 verification / synthetic blocks). Each `layers[i]` is a tightly-packed
-    /// `width*height*4` RGBA8 buffer in CubeFaceSlot order (0 +X, 1 -X, 2 +Y, 3 -Y,
-    /// 4 +Z, 5 -Z); the texture is uploaded as the SAME sRGB D2Array + bind-group
+    /// `width*height*4` RGBA8 buffer in `CubeFaceSlot` order (0 +X, 1 -X, 2 +Y, 3 -Y,
+    /// 4 +Z, 5 -Z); the texture is uploaded as the SAME sRGB `D2Array` + bind-group
     /// shape `from_faces` produces, so it is interchangeable on both render paths
     /// without needing a real VS install. Used by the headless harness to apply six
     /// distinct solid-color faces and prove the cuboid path textures per-face.
@@ -218,8 +218,9 @@ fn resize_rgba_nearest(decoded: &DecodedRgba, target_width: u32, target_height: 
     out
 }
 
-/// Build the standard block-texture bind group layout (binding 0 = texture,
-/// binding 1 = sampler) — the SAME shape the voxel renderer's material layout
+/// Build the standard block-texture bind group layout.
+///
+/// Binding 0 is the texture and binding 1 is the sampler. This is the SAME shape the voxel renderer's material layout
 /// uses, so a loaded texture is interchangeable with the procedural ones. Also
 /// reused by the shell's palette-preview thumbnail renderer.
 pub fn block_texture_bind_group_layout(

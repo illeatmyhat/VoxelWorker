@@ -3,6 +3,9 @@ name = "assets"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The ASSETS crate: pluggable block-texture content sourcing + image decode. Given a game
 # install or a user-picked folder, it discovers chiselable block textures, groups them, resolves
 # per-face texture maps from Vintage Story's lenient block JSON, and decodes the chosen PNGs to

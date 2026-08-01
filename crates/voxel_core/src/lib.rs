@@ -1,4 +1,4 @@
-//! # voxel_core — the foundational value vocabulary
+//! # `voxel_core` — the foundational value vocabulary
 //!
 //! This crate holds the plain domain *values* every higher layer of the planner is
 //! phrased in: the resolved voxel cell and its sparse grid, the frame-bearing

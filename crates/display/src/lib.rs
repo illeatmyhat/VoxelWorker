@@ -24,7 +24,7 @@
 //! engagement orchestrator/routing) is work-layer, not here, and lands at the work-crate cut.
 //!
 //! The dependency edge is one-way: `evaluation ← display ← {work, shell}`, compile-enforced
-//! — an upward `use` (orchestrator, routing, workers, app_core, panel, settings, vox_export,
+//! — an upward `use` (orchestrator, routing, workers, `app_core`, panel, settings, `vox_export`,
 //! gpu) fails to build. The dependencies are `evaluation` (the two-layer chunks it renders),
 //! `document` (the Scene the resolve oracle densifies in tests + the scene-graph nouns the
 //! brick-field tests build fixtures from), `voxel_core` (the value vocabulary + block/cell
@@ -61,16 +61,104 @@
 // cross-reference stays a navigable link under `--document-private-items`. The CI doc gate
 // denies broken and redundant links but permits these.
 #![allow(rustdoc::private_intra_doc_links)]
+#![allow(
+    clippy::bool_to_int_with_if,
+    clippy::items_after_statements,
+    clippy::manual_midpoint,
+    clippy::map_unwrap_or,
+    clippy::needless_continue,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::or_fun_call,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_pub_crate,
+    clippy::single_option_map,
+    clippy::suboptimal_flops,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::tuple_array_conversions,
+    clippy::use_self,
+    clippy::useless_let_if_seq,
+    clippy::wildcard_imports,
+    clippy::while_float
+)]
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::redundant_pub_crate
+)]
 pub mod block_texture;
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::redundant_pub_crate,
+    clippy::too_many_lines
+)]
 pub mod brick;
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::many_single_char_names,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::redundant_pub_crate,
+    clippy::too_many_lines
+)]
 pub mod mesh;
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::redundant_pub_crate,
+    clippy::too_many_lines
+)]
 pub mod renderer;
 mod shaders;
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::redundant_pub_crate
+)]
 pub mod texture_atlas;
 
-/// Anything that records itself into a frame phase with one draw call. The shell
-/// groups scene draws into ordered phases — background, over-model ghosts, scaffold, on-top —
+/// A renderer that records one draw call into a frame phase.
+///
+/// The shell groups scene draws into ordered phases — background, over-model ghosts, scaffold, on-top —
 /// and records each phase's slice in turn into the single viewport pass. The solid model and
 /// the view cube are NOT scene draws (they need the material bind group / their own sub-pass);
 /// everything else drawn in the viewport is.

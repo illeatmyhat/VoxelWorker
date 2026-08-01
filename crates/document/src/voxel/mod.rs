@@ -1,3 +1,15 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::similar_names
+)]
+
 //! The producers that fill the resolved voxel grid.
 //!
 //! ## Coordinate convention (PROJECT-WIDE — Z-up, right-handed)

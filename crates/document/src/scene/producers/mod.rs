@@ -3,6 +3,8 @@
 //! paths (region resolve is a test/oracle-gated oracle), and the per-leaf stamp
 //! helpers that write a producer's voxels into an output grid or chunk.
 
+#![allow(clippy::redundant_pub_crate)]
+
 mod gather;
 mod model;
 mod pick;
@@ -12,7 +14,7 @@ mod resolve_oracle;
 mod scope_fold;
 mod walk;
 
-pub(crate) use model::{
+pub use model::{
     leaf_content_fingerprint, outset_voxels_at, AccumulatedOffset, ComposedScope, LeafBody,
     LeafVisitor, VisitedLeaf,
 };

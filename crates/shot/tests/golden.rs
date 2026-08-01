@@ -16,6 +16,16 @@
 //!
 //! Always compiled: each case probes for a wgpu adapter at runtime and skips LOUDLY
 //! (printing why) when there is none, rather than vanishing at compile time.
+
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::panic
+)]
 //!
 //! NO FLAGS ARE REQUIRED, and that is load-bearing. This test lives in `shot`'s OWN
 //! package, so Cargo builds the `shot` binary before running it — `CARGO_BIN_EXE_shot`

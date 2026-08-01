@@ -54,7 +54,9 @@
 
 use glam::{IVec3, Vec3};
 
-/// One Amanatides & Woo voxel-traversal cursor over a uniform cell lattice: the current
+/// One Amanatides & Woo voxel-traversal cursor over a uniform cell lattice.
+///
+/// It stores the current
 /// integer cell, the per-axis step sign, the per-axis distance-to-next-boundary
 /// [`t_max`](Self::t_max), the parameter at which the ray entered the current cell
 /// ([`t_cell_enter`](Self::t_cell_enter)), and the axis of the face last crossed
@@ -110,7 +112,8 @@ impl VoxelDda {
     ///
     /// `initial_entry_axis` records the face the ray entered the lattice through (the
     /// block march passes the traversal-box entry axis; the flat march the slab entry axis).
-    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
     pub fn seed(
         origin: Vec3,
         safe_direction: Vec3,
@@ -141,7 +144,8 @@ impl VoxelDda {
     /// hazard. Because the ray genuinely occupies the clamped cell at `entry_t`, the
     /// clamp is always sound; `t_max` derives from the clamped cell so an empty seed steps on
     /// correctly. MUST stay mirrored by the WGSL inner voxel-DDA seed (`gpu_parity`).
-    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
     pub fn seed_in_box(
         origin: Vec3,
         safe_direction: Vec3,
@@ -176,7 +180,12 @@ impl VoxelDda {
     /// zero and carries the raw direction's sign (`substrate::spatial::guarded_direction`
     /// preserves it), so `signum` here is always ±1 and always matches the reciprocal —
     /// by construction, for every input, including `±0.0`.
-    fn step_of(safe_direction: Vec3) -> IVec3 {
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    const fn step_of(safe_direction: Vec3) -> IVec3 {
         IVec3::new(
             safe_direction.x.signum() as i32,
             safe_direction.y.signum() as i32,
@@ -186,7 +195,7 @@ impl VoxelDda {
 
     /// Build a cursor sitting in `cell`, with `t_max` derived from the ray. The ONE place
     /// a `VoxelDda` is constructed, so every seed and every step share one `t_max` rule.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::arithmetic_side_effects, clippy::too_many_arguments)]
     fn at(
         origin: Vec3,
         safe_direction: Vec3,
@@ -197,7 +206,7 @@ impl VoxelDda {
         entry_axis: usize,
     ) -> Self {
         let inverse = Vec3::ONE / safe_direction;
-        VoxelDda {
+        Self {
             cell,
             step,
             t_max: Self::anchored_t_max(origin, inverse, cell_edge, cell, step),
@@ -218,6 +227,11 @@ impl VoxelDda {
     /// `safe_direction` so it is the same operation `clamped_box_entry` and the slab
     /// entry perform — one arithmetic definition of "where does this ray cross that
     /// plane", not two that agree only by rounding luck.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_precision_loss
+    )]
     fn anchored_t_max(
         origin: Vec3,
         inverse: Vec3,
@@ -250,6 +264,7 @@ impl VoxelDda {
     /// pure function of the cell, and the two unstepped axes' cell coordinates did not
     /// change, so their values are bit-identical either way. Recomputing the whole vector
     /// leaves no path by which a component could carry accumulated error.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn advance(&mut self) {
         if self.t_max.x <= self.t_max.y && self.t_max.x <= self.t_max.z {
             self.cell.x += self.step.x;
@@ -441,6 +456,8 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
+
     use super::*;
 
     /// A ray fired straight along +x from just outside the origin cell visits the cells
@@ -491,7 +508,7 @@ mod tests {
         ];
         let edges = [1.0f32, 8.0, 16.0, 32.0];
         let origins = [-1234.5f32, -7.25, -0.5, 0.0, 0.5, 7.25, 1234.5, 65536.0];
-        let cells = [-1048576i32, -4096, -17, -1, 0, 1, 17, 4096, 1048576];
+        let cells = [-1_048_576i32, -4096, -17, -1, 0, 1, 17, 4096, 1_048_576];
         let mut cases = 0u32;
         for &d in &directions {
             // Through the production guard: the sign agreement under test is ITS job.

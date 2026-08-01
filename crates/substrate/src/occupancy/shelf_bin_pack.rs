@@ -8,7 +8,7 @@
 //! sequence turned into a space-filling placement — specialized to rectangles laid
 //! on rows rather than cubes stacked in a grid.
 //!
-//! Shelf packing is chosen over the denser rectangle-bin packers (MaxRects, guillotine)
+//! Shelf packing is chosen over the denser rectangle-bin packers (`MaxRects`, guillotine)
 //! deliberately: for a small set of near-uniform tiles the packing-density win of a smarter
 //! packer is irrelevant, and the shelf heuristic has no failure modes. The shelf
 //! quota is `tiles_per_shelf = ceil(sqrt(count))`, so `n` equal tiles form an
@@ -45,9 +45,10 @@ pub struct TileSize {
     pub height: u32,
 }
 
-/// A borrowed source tile for the gutter blit: its pixel dimensions and its
-/// interleaved (row-major) texel bytes. `pixels` is `width · height ·
-/// bytes_per_texel` long, `bytes_per_texel` fixed by the sheet the blit targets.
+/// A borrowed source tile for the gutter blit.
+///
+/// Its interleaved row-major texel bytes have length `width · height ·
+/// bytes_per_texel`, with the stride fixed by the destination sheet.
 #[derive(Debug, Clone, Copy)]
 pub struct TileImage<'a> {
     pub width: u32,
@@ -63,9 +64,7 @@ pub struct PackedTilePlacement {
     pub inner_y: u32,
 }
 
-/// A tile's place in the sheet in normalized `[0, 1]` coordinates: the outer tile
-/// bounds (`min_*`/`max_*`, excluding the gutter) plus the half-texel-inset window
-/// (`inset_*`) a `fract`-tiling consumer samples. See the module docs.
+/// A tile's normalized sheet rectangle, including its half-texel inset window.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormalizedTileRect {
     /// Outer tile bounds in normalized sheet coordinates (excludes the gutter).
@@ -95,6 +94,13 @@ pub struct ShelfBinPack {
 impl ShelfBinPack {
     /// The shelf quota `ceil(sqrt(tile_count))` (at least `1`): capping a shelf at
     /// this many near-uniform tiles lays them into an `r × c` grid with `r ≈ c`.
+    #[must_use]
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn tiles_per_shelf(tile_count: usize) -> usize {
         ((tile_count as f32).sqrt().ceil() as usize).max(1)
     }
@@ -106,32 +112,35 @@ impl ShelfBinPack {
     /// height is its tallest padded tile and the sheet's width is its widest padded
     /// shelf. Returns placements of each tile's inner (gutter-excluded) corner. An
     /// empty tile list yields a `1 × 1` sheet with no placements.
-    pub fn plan(tiles: &[TileSize], gutter: u32) -> ShelfBinPack {
+    #[must_use]
+    pub fn plan(tiles: &[TileSize], gutter: u32) -> Self {
         let tile_count = tiles.len();
         let tiles_per_shelf = Self::tiles_per_shelf(tile_count);
-        let padded = |dimension: u32| -> u32 { dimension + 2 * gutter };
+        let padded = |dimension: u32| -> u32 { dimension.saturating_add(gutter.saturating_mul(2)) };
 
         let mut placements: Vec<PackedTilePlacement> = Vec::with_capacity(tile_count);
         let mut sheet_width: u32 = 0;
         let mut shelf_origin_y: u32 = 0;
         let mut index = 0;
         while index < tile_count {
-            let shelf_end = (index + tiles_per_shelf).min(tile_count);
+            let shelf_end = index.saturating_add(tiles_per_shelf).min(tile_count);
             let mut shelf_cursor_x: u32 = 0;
             let mut shelf_height: u32 = 0;
-            for tile in &tiles[index..shelf_end] {
-                let inner_x = shelf_cursor_x + gutter;
-                let inner_y = shelf_origin_y + gutter;
-                placements.push(PackedTilePlacement { inner_x, inner_y });
-                shelf_cursor_x += padded(tile.width);
-                shelf_height = shelf_height.max(padded(tile.height));
+            if let Some(shelf) = tiles.get(index..shelf_end) {
+                for tile in shelf {
+                    let inner_x = shelf_cursor_x.saturating_add(gutter);
+                    let inner_y = shelf_origin_y.saturating_add(gutter);
+                    placements.push(PackedTilePlacement { inner_x, inner_y });
+                    shelf_cursor_x = shelf_cursor_x.saturating_add(padded(tile.width));
+                    shelf_height = shelf_height.max(padded(tile.height));
+                }
             }
             sheet_width = sheet_width.max(shelf_cursor_x);
-            shelf_origin_y += shelf_height;
+            shelf_origin_y = shelf_origin_y.saturating_add(shelf_height);
             index = shelf_end;
         }
 
-        ShelfBinPack {
+        Self {
             sheet_width: sheet_width.max(1),
             sheet_height: shelf_origin_y.max(1),
             placements,
@@ -141,6 +150,7 @@ impl ShelfBinPack {
     /// The normalized `[0, 1]` sheet rect of a tile at `placement` with the given
     /// pixel size, including the half-texel-inset sampling window (see the module
     /// docs). Pure function of the placement, the tile size, and the sheet size.
+    #[must_use]
     pub fn normalized_rect(
         placement: &PackedTilePlacement,
         tile_width: u32,
@@ -148,13 +158,13 @@ impl ShelfBinPack {
         sheet_width: u32,
         sheet_height: u32,
     ) -> NormalizedTileRect {
-        let sheet_w = sheet_width as f32;
-        let sheet_h = sheet_height as f32;
+        let sheet_w = u32_to_f32(sheet_width);
+        let sheet_h = u32_to_f32(sheet_height);
         // Outer tile bounds in normalized coordinates (the inner region, no gutter).
-        let min_u = placement.inner_x as f32 / sheet_w;
-        let min_v = placement.inner_y as f32 / sheet_h;
-        let max_u = (placement.inner_x + tile_width) as f32 / sheet_w;
-        let max_v = (placement.inner_y + tile_height) as f32 / sheet_h;
+        let min_u = u32_to_f32(placement.inner_x) / sheet_w;
+        let min_v = u32_to_f32(placement.inner_y) / sheet_h;
+        let max_u = u32_to_f32(placement.inner_x.saturating_add(tile_width)) / sheet_w;
+        let max_v = u32_to_f32(placement.inner_y.saturating_add(tile_height)) / sheet_h;
         // Half-texel inset: pull each edge in by half a texel so a fract-tiling
         // consumer lands on texel centers, never the outermost edge (which could
         // round into the gutter under interpolation/derivatives).
@@ -187,36 +197,80 @@ impl ShelfBinPack {
         placement: PackedTilePlacement,
         gutter: u32,
     ) {
-        let gutter = gutter as i64;
-        let tile_w = tile.width as i64;
-        let tile_h = tile.height as i64;
+        let gutter = i64::from(gutter);
+        let tile_w = i64::from(tile.width);
+        let tile_h = i64::from(tile.height);
 
         // Fill the padded cell (tile + gutter on every side). For a destination
         // texel, clamp its tile-local coordinate into the tile so border texels
         // replicate outward.
-        for cell_dy in -gutter..(tile_h + gutter) {
-            for cell_dx in -gutter..(tile_w + gutter) {
-                let source_x = cell_dx.clamp(0, tile_w - 1);
-                let source_y = cell_dy.clamp(0, tile_h - 1);
-                let source_index = ((source_y * tile_w + source_x) as usize) * bytes_per_texel;
+        let Some(start) = gutter.checked_neg() else {
+            return;
+        };
+        let Some(end_y) = tile_h.checked_add(gutter) else {
+            return;
+        };
+        let Some(end_x) = tile_w.checked_add(gutter) else {
+            return;
+        };
+        for cell_dy in start..end_y {
+            for cell_dx in start..end_x {
+                let source_x = cell_dx.clamp(0, tile_w.saturating_sub(1));
+                let source_y = cell_dy.clamp(0, tile_h.saturating_sub(1));
+                let Some(source_cell) = source_y
+                    .checked_mul(tile_w)
+                    .and_then(|row| row.checked_add(source_x))
+                else {
+                    continue;
+                };
+                let Some(source_index) = usize::try_from(source_cell)
+                    .ok()
+                    .and_then(|index| index.checked_mul(bytes_per_texel))
+                else {
+                    continue;
+                };
 
-                let dest_x = placement.inner_x as i64 + cell_dx;
-                let dest_y = placement.inner_y as i64 + cell_dy;
+                let Some(dest_x) = i64::from(placement.inner_x).checked_add(cell_dx) else {
+                    continue;
+                };
+                let Some(dest_y) = i64::from(placement.inner_y).checked_add(cell_dy) else {
+                    continue;
+                };
                 if dest_x < 0 || dest_y < 0 {
                     continue;
                 }
-                let dest_index =
-                    ((dest_y * sheet_width as i64 + dest_x) as usize) * bytes_per_texel;
-                if dest_index + bytes_per_texel > sheet.len()
-                    || source_index + bytes_per_texel > tile.pixels.len()
-                {
+                let Some(dest_cell) = dest_y
+                    .checked_mul(i64::from(sheet_width))
+                    .and_then(|row| row.checked_add(dest_x))
+                else {
                     continue;
+                };
+                let Some(dest_index) = usize::try_from(dest_cell)
+                    .ok()
+                    .and_then(|index| index.checked_mul(bytes_per_texel))
+                else {
+                    continue;
+                };
+                let Some(dest_end) = dest_index.checked_add(bytes_per_texel) else {
+                    continue;
+                };
+                let Some(source_end) = source_index.checked_add(bytes_per_texel) else {
+                    continue;
+                };
+                if let (Some(destination), Some(source)) = (
+                    sheet.get_mut(dest_index..dest_end),
+                    tile.pixels.get(source_index..source_end),
+                ) {
+                    destination.copy_from_slice(source);
                 }
-                sheet[dest_index..dest_index + bytes_per_texel]
-                    .copy_from_slice(&tile.pixels[source_index..source_index + bytes_per_texel]);
             }
         }
     }
+}
+
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+const fn u32_to_f32(value: u32) -> f32 {
+    value as f32
 }
 
 /// Kani bounded-model-checking proof of [`ShelfBinPack::normalized_rect`]'s **half-texel inset
@@ -290,7 +344,29 @@ mod kani_proofs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::unwrap_used
+)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     const GUTTER: u32 = 1;

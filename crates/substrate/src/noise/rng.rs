@@ -15,7 +15,8 @@ pub struct SmallRng {
 impl SmallRng {
     /// Seed the generator. The seed is pre-mixed (Knuth multiplicative hash) so
     /// nearby seeds diverge immediately.
-    pub fn new(seed: u32) -> Self {
+    #[must_use]
+    pub const fn new(seed: u32) -> Self {
         Self {
             state: seed.wrapping_mul(2_654_435_761).wrapping_add(1),
         }
@@ -23,7 +24,7 @@ impl SmallRng {
 
     /// The next raw `u32` (advances the state with the Numerical Recipes LCG
     /// constants).
-    pub fn next_u32(&mut self) -> u32 {
+    pub const fn next_u32(&mut self) -> u32 {
         self.state = self
             .state
             .wrapping_mul(1_664_525)
@@ -32,13 +33,14 @@ impl SmallRng {
     }
 
     /// A uniform `f32` in `[0, 1)` (24-bit mantissa's worth of precision).
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn unit(&mut self) -> f32 {
         (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
     }
 
     /// A uniform `f32` in `[-1, 1)`.
     pub fn signed_unit(&mut self) -> f32 {
-        self.unit() * 2.0 - 1.0
+        self.unit().mul_add(2.0, -1.0)
     }
 
     /// Fisher–Yates in place: for `i` from `len − 1` down to `1`, swap element `i`
@@ -48,6 +50,7 @@ impl SmallRng {
     pub fn shuffle<T>(&mut self, slice: &mut [T]) {
         let len = slice.len();
         for i in (1..len).rev() {
+            #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
             let j = (self.next_u32() as usize) % (i + 1);
             slice.swap(i, j);
         }

@@ -1,10 +1,9 @@
 use super::*;
 
-/// A built CPU mesh of a WHOLE grid's exposed cuboid faces (one flat vertex/index
-/// list). This is the structural REFERENCE for the per-chunk apron mesher — the
-/// parity test asserts the per-chunk-with-apron exposed-face SET equals this — and
-/// the CPU adapter the `build_cuboid_mesh*` tests exercise. The live GPU path
-/// uses [`build_chunk_meshes_with_apron`] + per-chunk buffers, not this struct.
+/// A built CPU mesh of a whole grid's exposed cuboid faces.
+///
+/// This is the structural reference for the per-chunk apron mesher and the CPU adapter used by
+/// the `build_cuboid_mesh*` tests. The live GPU path uses per-chunk buffers.
 #[derive(Debug, Default, Clone)]
 pub struct CuboidMesh {
     pub(crate) vertices: Vec<CuboidVertex>,
@@ -45,10 +44,10 @@ impl CuboidMesh {
     }
 }
 
-/// Build the exposed-face mesh for a whole [`VoxelGrid`] as ONE flat vertex/index
-/// list with no chunk partition — this is the per-chunk apron mesher's structural
-/// REFERENCE (see `CuboidMesh`'s doc above), not a render path in its own right;
-/// the live GPU path chunks via [`build_chunk_meshes_with_apron`] instead.
+/// Build the exposed-face mesh for a whole [`VoxelGrid`].
+///
+/// The result is one flat vertex/index list with no chunk partition. It is the structural
+/// reference for the apron mesher; the live GPU path uses [`build_chunk_meshes_with_apron`].
 ///
 /// Exposed-face culling: the grid is decomposed into single-material boxes, then
 /// for each box face we emit a quad only when the voxel cell on the far side of
@@ -69,7 +68,7 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
 /// leave the displayed slab open-topped. Masking makes the cells just outside the
 /// band air, so the greedy mesher caps the slab exactly like a per-voxel top/bottom.
 ///
-/// `LayerBand::FULL` (band_max = u32::MAX) masks nothing — the full model is built,
+/// `LayerBand::FULL` (`band_max` = `u32::MAX`) masks nothing — the full model is built,
 /// byte-identical to the unbanded path.
 pub fn build_cuboid_mesh_banded(
     grid: &VoxelGrid,
@@ -240,10 +239,10 @@ pub(crate) fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3
     (region, world_offset)
 }
 
-/// A built CPU mesh of ONE render chunk's exposed cuboid faces:
-/// the chunk's absolute coord, its vertex/index buffers, and its world AABB for
-/// frustum culling. Produced by [`build_chunk_meshes_with_apron`] and uploaded to
-/// one [`CuboidChunkBuffers`] per chunk.
+/// A built CPU mesh for one render chunk.
+///
+/// It contains the chunk's absolute coordinate, vertex/index buffers, and world AABB for
+/// frustum culling. It is produced by [`build_chunk_meshes_with_apron`].
 #[derive(Debug, Clone)]
 pub struct CuboidChunkMesh {
     /// Absolute chunk coord (the coord `resident_render_chunks` reports).
@@ -358,8 +357,9 @@ pub struct CuboidRebuildPlan {
     pub evict: Vec<[i32; 3]>,
 }
 
-/// Decide which chunks an edit forces the cuboid mesher to re-mesh, ACCOUNTING FOR THE
-/// 1-VOXEL APRON: a chunk's boundary faces are culled against its neighbors
+/// Decide which chunks an edit forces the cuboid mesher to re-mesh.
+///
+/// The one-voxel apron means a chunk's boundary faces are culled against its neighbors
 /// ([`build_chunk_meshes_with_apron`]), so a neighbor's occupancy change can alter
 /// this chunk's mesh, so the dirty set is DILATED by the 26-neighborhood (unlike
 /// [`evaluation::store::incremental_rebuild_plan`], which has no inter-chunk dependency).

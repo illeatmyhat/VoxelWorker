@@ -8,6 +8,19 @@
 //!   in this layer may change a value, however extreme, so it runs on the full space
 //!   (`u32::MAX`, `f32::MAX`, `i64::MIN`, …). Catches serde rot: a renamed key, a shim
 //!   variant collapsing, a swapped field pair, float precision loss.
+
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::doc_markdown,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::panic,
+    clippy::too_many_lines,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps
+)]
 //! * **Apply/capture identity** — the format loop continued through
 //!   `to_panel_state`/`apply_camera`/`home_view` and back out via `AppConfig::capture`.
 //!   This is the seam where fields die: classified as reaching the dump, and hard-coded to

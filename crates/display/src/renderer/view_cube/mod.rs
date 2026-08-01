@@ -32,13 +32,10 @@ pub const VIEW_CUBE_VIEWPORT_PIXELS: u32 = 144;
 /// Margin (pixels) from the viewport's top-right corner to the cube.
 pub const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 
-/// The cube's top-left origin (physical pixels) within the central 3D `viewport`
-/// (`[x, y, w, h]`), placed in the **top-right** just left of the side-panel edge.
-/// Both the renderer and the shell's hit-testing derive the cube rect from this ONE
-/// function so the drawn cube and the pick rect always coincide. Returns `None` when
-/// the viewport is smaller than the cube + margin on either axis — the **minimum
-/// on-screen size** rule that keeps the 68 %-center slice lines' 16 % edge strips
-/// (≈ `0.16 · 144 ≈ 23 px`) comfortably hittable; below it the cube is not drawn.
+/// Compute the view cube's top-left origin in physical pixels.
+///
+/// The renderer and shell hit-testing share this rectangle. `None` means the viewport is too
+/// small to keep the cube's edge strips hittable.
 pub fn view_cube_corner(viewport: [u32; 4], right_inset_px: u32) -> Option<(u32, u32)> {
     let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
     let margin = VIEW_CUBE_VIEWPORT_MARGIN;
@@ -112,10 +109,10 @@ struct CubeLineUniforms {
 const CUBE_LINE_HALF_WIDTH_PX: f32 = 0.7;
 const CUBE_LINE_FEATHER_PX: f32 = 1.0;
 
-/// The corner view cube: a labeled cube mirroring the main camera's orientation, plus
-/// a silhouette + axis-colored edge wireframe (Signal style, see the module doc).
-/// Rendered into a scissored top-right viewport in its own pass (depth cleared there
-/// first).
+/// The corner view cube.
+///
+/// It mirrors the main camera's orientation and draws a labeled silhouette with axis-colored
+/// edges in a scissored top-right pass.
 pub struct ViewCubeRenderer {
     face_pipeline: wgpu::RenderPipeline,
     /// The anti-aliased screen-space thick-line pipeline: silhouette,

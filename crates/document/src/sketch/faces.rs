@@ -1,3 +1,9 @@
+#![allow(
+    clippy::large_types_passed_by_value,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate
+)]
+
 //! Planar-face derivation for a sketch.
 //!
 //! A region is a bounded face of the **geometric arrangement** of the sketch's curves: every curve

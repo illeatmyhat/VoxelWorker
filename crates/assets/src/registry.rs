@@ -7,6 +7,7 @@
 use super::{vintage_story::VintageStoryDetector, BlockSource, SourceDetector};
 
 /// Run all known detectors and return every source they found.
+#[must_use]
 pub fn detect_all_sources() -> Vec<Box<dyn BlockSource>> {
     let detectors: Vec<Box<dyn SourceDetector>> = vec![Box::new(VintageStoryDetector)];
     let mut sources = Vec::new();

@@ -3,6 +3,9 @@ name = "shot"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The `shot` GOLDEN REFERENCE TOOL, in its own package.
 #
 # WHY A PACKAGE AND NOT A `[[bin]]` IN THE ROOT: `shot` renders through the dense

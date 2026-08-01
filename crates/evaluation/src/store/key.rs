@@ -1,3 +1,5 @@
+#![allow(clippy::missing_const_for_fn, clippy::must_use_candidate)]
+
 //! The resolve cache's key: a `(chunk_coord, lod)` pair addressing one resolved chunk.
 
 /// The cache key: a chunk coordinate (in `CHUNK_BLOCKS`-cell space) plus its

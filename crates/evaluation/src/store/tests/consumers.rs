@@ -64,9 +64,8 @@ fn assert_render_chunks_match_resolve_region(scene: &Scene, voxels_per_block: u3
                 let owner = absolute.div_euclid(chunk_extent) as i32;
                 assert_eq!(
                     owner, coord[axis],
-                    "[{label}] voxel at {:?} (axis {axis}) must be owned by chunk \
-                         coord {coord:?}, not {owner}",
-                    position
+                    "[{label}] voxel at {position:?} (axis {axis}) must be owned by chunk \
+                         coord {coord:?}, not {owner}"
                 );
             }
         }
@@ -192,8 +191,7 @@ fn far_offset_resolves_byte_identical_to_near_after_rebase() {
             let frac = position[axis].fract().abs();
             assert!(
                 (frac - 0.5).abs() < 1e-4,
-                "far voxel center lost its .5 fraction (f32 jitter): {:?}",
-                position
+                "far voxel center lost its .5 fraction (f32 jitter): {position:?}"
             );
         }
     }

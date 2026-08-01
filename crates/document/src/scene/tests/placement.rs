@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 use crate::scene::producers::{outset_voxels_at, VisitedLeaf};
 use crate::voxel::GeometryParams;
 use crate::voxel::SdfShape;
@@ -653,8 +654,7 @@ fn odd_extent_at_odd_density_lands_on_voxel_lattice() {
 
     // The recovered cells (floor of the recentered center) are the symmetric set
     // {−1, 0, 1} on X/Z and {0} on Y.
-    use std::collections::BTreeSet;
-    let cells: BTreeSet<[i64; 3]> = grid
+    let cells: std::collections::BTreeSet<[i64; 3]> = grid
         .occupied
         .iter()
         .map(|voxel| {

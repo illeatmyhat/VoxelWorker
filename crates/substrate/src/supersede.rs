@@ -72,6 +72,13 @@ impl<Request: Send + 'static, Response: Send + 'static> CoalescingWorker<Request
     /// has dropped the result receiver (its `send` errors). `build` takes the request by
     /// value and returns the full `Response`, so a caller that must survive a build panic
     /// wraps its own body in a catch (see [`catch_unwind_or_log`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system refuses to create the named worker thread. A worker is
+    /// part of the owning object’s protocol; returning an inert object would silently discard
+    /// every dispatched request.
+    #[allow(clippy::panic)]
     pub fn spawn(
         thread_name: &str,
         mut build: impl FnMut(Request) -> Response + Send + 'static,
@@ -112,6 +119,7 @@ impl<Request: Send + 'static, Response: Send + 'static> CoalescingWorker<Request
     /// has arrived, else `None`. Called each frame in an event loop. Drains to the newest
     /// available (an in-flight supersede can leave more than one queued) so the caller never
     /// integrates a stale build when a newer one is ready.
+    #[must_use]
     pub fn try_recv_result(&self) -> Option<Response> {
         let mut latest = None;
         while let Ok(result) = self.result_receiver.try_recv() {
@@ -131,21 +139,23 @@ impl<Request: Send + 'static, Response: Send + 'static> CoalescingWorker<Request
 /// so a test can inject a panicking closure with a trivial type. `generation` is the
 /// supersede key of the build, carried only into the diagnostic so a dropped build is
 /// identifiable in a log.
+#[must_use]
 pub fn catch_unwind_or_log<T>(generation: u64, build: impl FnOnce() -> T) -> Option<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
-        Ok(value) => Some(value),
-        Err(_) => {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)).map_or_else(
+        |_| {
             eprintln!(
                 "supersede worker: build for generation {generation} PANICKED — caught; the \
                  worker survived, this result is dropped, and the caller keeps its current \
                  value. The next request re-dispatches."
             );
             None
-        }
-    }
+        },
+        Some,
+    )
 }
 
 /// Collapse any additional queued requests into the newest one (drain-to-latest), starting
+///
 /// from `first`. Non-blocking after `first` — takes whatever is already queued. The worker
 /// never backlogs: it builds only the latest pending request. Generic over the request type
 /// so every worker loop shares the ONE contract.
@@ -175,7 +185,8 @@ pub struct GenerationTracker {
 
 impl GenerationTracker {
     /// A fresh tracker (no request dispatched yet).
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             latest_dispatched: 0,
         }
@@ -184,8 +195,9 @@ impl GenerationTracker {
     /// Mint the next generation for a dispatch and record it as the newest outstanding.
     /// Generations are strictly increasing from 1, so a later dispatch always outranks an
     /// earlier one still in flight.
-    pub fn next_generation(&mut self) -> u64 {
-        self.latest_dispatched += 1;
+    #[must_use]
+    pub const fn next_generation(&mut self) -> u64 {
+        self.latest_dispatched = self.latest_dispatched.saturating_add(1);
         self.latest_dispatched
     }
 
@@ -193,27 +205,29 @@ impl GenerationTracker {
     /// stale. Accepted iff it matches the newest dispatched generation — a result from a
     /// superseded (older) request is discarded. A result arriving before any dispatch (or
     /// after the counter moved past it) is never accepted.
-    pub fn accepts(&self, generation: u64) -> bool {
+    #[must_use]
+    pub const fn accepts(&self, generation: u64) -> bool {
         generation != 0 && generation == self.latest_dispatched
     }
 
     /// The newest dispatched generation (diagnostic / test support).
-    pub fn latest_dispatched(&self) -> u64 {
+    #[must_use]
+    pub const fn latest_dispatched(&self) -> u64 {
         self.latest_dispatched
     }
 }
 
 /// Kani probe of the MACHINE-INTEGER edge the Verus proof assumed away. That proof
 /// (`verification/verus/generation_supersede.rs`) requires `latest_dispatched < u64::MAX` so it can
-/// reason about the monotonic counter; this asks what the real `+= 1` does AT that bound.
+/// reason about the monotonic counter; this asks what the saturating increment does at that bound.
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
 
-    /// `next_generation` does an unchecked `+= 1`. Saturating the counter needs 2^64 dispatches —
-    /// at a dispatch every microsecond that is ~585,000 years — so this is a characterization of
-    /// the boundary, not a reachable defect. It is recorded because the Verus precondition made the
-    /// bound an assumption rather than a checked fact.
+    /// Saturating the counter needs 2^64 dispatches — at a dispatch every microsecond that is
+    /// ~585,000 years — so this is a characterization of the boundary, not a reachable defect.
+    /// It is recorded because the Verus precondition made the bound an assumption rather than a
+    /// checked fact.
     #[kani::proof]
     fn next_generation_below_the_ceiling_never_overflows() {
         let start: u64 = kani::any();
@@ -229,6 +243,17 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     /// The worker body's liveness escape hatch: a build that PANICS is caught and mapped to

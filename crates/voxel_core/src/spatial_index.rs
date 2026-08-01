@@ -30,6 +30,7 @@
 //! dominates.
 
 use crate::core_geom::CHUNK_BLOCKS;
+use std::collections::HashMap;
 
 /// The domain name for the substrate half-open integer box [`substrate::spatial::LatticeAabb`],
 /// read as an **absolute-voxel** box `[min, max)` — the frame the chunk decomposition
@@ -53,8 +54,9 @@ pub use substrate::spatial::LatticeAabb as VoxelAabb;
 /// `docs/architecture/02-evaluation.md`.
 pub use substrate::spatial::Bvh as EditBroadphaseBvh;
 
-/// The domain reading of a [`VoxelAabb`]: the inclusive chunk-coordinate range
-/// `[min_chunk, max_chunk]` whose half-open chunk boxes the AABB intersects, at a given
+/// The domain reading of a [`VoxelAabb`]: the inclusive chunk-coordinate range.
+///
+/// `[min_chunk, max_chunk]` names the half-open chunk boxes the AABB intersects, at a given
 /// density. This lives in the domain (not on substrate's pure box) because it is
 /// defined by the chunk decomposition — `CHUNK_BLOCKS` and the density — see
 /// `docs/architecture/02-evaluation.md` (chunk addressing).
@@ -73,26 +75,33 @@ impl ChunkCoverage for VoxelAabb {
         // Voxel corners are i64 (a far-placed leaf); the chunk extent is small, so
         // the division happens in i64 and the chunk-coord QUOTIENT narrows to i32
         // safely (≤ ±2.5×10⁸ for offsets up to ±10⁹ blocks).
-        let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let chunk_extent_voxels = i64::from(CHUNK_BLOCKS)
+            .saturating_mul(i64::from(voxels_per_block.max(1)));
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
         for axis in 0..3 {
-            min_chunk[axis] = narrow_chunk_coord(self.min[axis].div_euclid(chunk_extent_voxels));
-            max_chunk[axis] =
-                narrow_chunk_coord((self.max[axis] - 1).div_euclid(chunk_extent_voxels));
+            let min = self.min.get(axis).copied().unwrap_or_default();
+            let max = self.max.get(axis).copied().unwrap_or_default();
+            if let Some(slot) = min_chunk.get_mut(axis) {
+                *slot = narrow_chunk_coord(min.div_euclid(chunk_extent_voxels));
+            }
+            if let Some(slot) = max_chunk.get_mut(axis) {
+                *slot = narrow_chunk_coord(max.saturating_sub(1).div_euclid(chunk_extent_voxels));
+            }
         }
         Some((min_chunk, max_chunk))
     }
 }
 
-/// A content fingerprint distinguishing two leaves that occupy the SAME world-AABB
-/// but emit DIFFERENT voxels (e.g. a recolored Tool, or a swapped shape kind at an
-/// identical bounding box). The edit diff ([`LeafSpatialIndex::edit_aabb_since`])
+/// A content fingerprint distinguishes leaves that occupy the SAME world-AABB
+/// but emit DIFFERENT voxels.
+///
+/// The edit diff ([`LeafSpatialIndex::edit_aabb_since`])
 /// must dirty a leaf whose voxels changed even when its box did not, so the
 /// fingerprint is compared alongside the AABB.
 ///
 /// It is derived from the bytes of the leaf's `NodeContent` that affect the
-/// resolved voxels. `RegionSpanning` marks a leaf with no intrinsic AABB (a VoxelBody
+/// resolved voxels. `RegionSpanning` marks a leaf with no intrinsic AABB (a `VoxelBody`
 /// such as the debug-cloud field, whose voxels fill the whole composite region):
 /// such a leaf cannot be localized to chunks, so any edit touching it forces a
 /// wholesale clear (see [`LeafSpatialIndex::edit_aabb_since`]).
@@ -110,8 +119,8 @@ pub enum LeafFingerprint {
     /// only its presence in an edit DIFF forces a wholesale clear, like
     /// [`RegionSpanning`](Self::RegionSpanning).
     MasksBeyondItsBox(String),
-    /// A leaf with no intrinsic AABB (region-spanning), e.g. a VoxelBody. Carries its
-    /// content bytes so a VoxelBody edit is still seen as a change, but its presence in a
+    /// A leaf with no intrinsic AABB (region-spanning), e.g. a `VoxelBody`. Carries its
+    /// content bytes so a `VoxelBody` edit is still seen as a change, but its presence in a
     /// diff forces a wholesale clear (it cannot be chunk-localized).
     RegionSpanning(String),
 }
@@ -141,8 +150,8 @@ pub struct LeafSpatialIndex {
     /// The density the AABBs were computed at (an index is only comparable to
     /// another at the same density).
     pub voxels_per_block: u32,
-    /// Whether the scene contains a region-spanning leaf (a VoxelBody). When `true`, a
-    /// precise edit AABB can't always be computed; see `edit_aabb_since`.
+    /// Whether the scene contains a region-spanning leaf (a `VoxelBody`). When `true`, a
+    /// precise edit AABB can't always be computed; see [`Self::edit_aabb_since`].
     pub has_region_spanning_leaf: bool,
 }
 
@@ -151,6 +160,7 @@ impl LeafSpatialIndex {
     /// Region-spanning leaves (empty AABB) never match an AABB query — they are not
     /// localizable; callers that must account for them use
     /// [`has_region_spanning_leaf`](Self::has_region_spanning_leaf).
+    #[must_use]
     pub fn leaves_intersecting(&self, query: &VoxelAabb) -> Vec<&LeafEntry> {
         self.entries
             .iter()
@@ -183,11 +193,12 @@ impl LeafSpatialIndex {
     /// * `None` — a **conservative fallback**: the caller must `clear()` the whole
     ///   cache. This happens when (a) the two indices were built at different
     ///   densities (every chunk's voxel extent changed), (b) a **region-spanning**
-    ///   leaf (a VoxelBody) was added, removed, or edited — it has no localizable box, so
+    ///   leaf (a `VoxelBody`) was added, removed, or edited — it has no localizable box, so
     ///   its dirty region is "everywhere" — or (c) an **Intersect-influence** leaf
     ///   ([`LeafFingerprint::MasksBeyondItsBox`]) appears in the diff:
     ///   its mask effect reaches beyond its box, so the box union under-dirties.
-    pub fn edit_aabb_since(&self, previous: &LeafSpatialIndex) -> Option<VoxelAabb> {
+    #[must_use]
+    pub fn edit_aabb_since(&self, previous: &Self) -> Option<VoxelAabb> {
         if self.voxels_per_block != previous.voxels_per_block {
             // A density change resizes every chunk; nothing is reusable.
             return None;
@@ -197,17 +208,18 @@ impl LeafSpatialIndex {
         // byte-identical in placement AND content cancel out; everything else is a
         // change that must be dirtied. A region-spanning leaf appearing in the
         // difference forces a wholesale clear.
-        use std::collections::HashMap;
         let mut counts: HashMap<(VoxelAabbKey, &LeafFingerprint), i64> = HashMap::new();
         for entry in &self.entries {
-            *counts
+            let count = counts
                 .entry((VoxelAabbKey::from(entry.world_aabb), &entry.fingerprint))
-                .or_insert(0) += 1;
+                .or_insert(0);
+            *count = count.saturating_add(1);
         }
         for entry in &previous.entries {
-            *counts
+            let count = counts
                 .entry((VoxelAabbKey::from(entry.world_aabb), &entry.fingerprint))
-                .or_insert(0) -= 1;
+                .or_insert(0);
+            *count = count.saturating_sub(1);
         }
 
         let mut dirty = VoxelAabb::new([0; 3], [0; 3]);
@@ -216,19 +228,9 @@ impl LeafSpatialIndex {
                 continue; // unchanged leaf — cancels between the two indices.
             }
             match fingerprint {
-                LeafFingerprint::RegionSpanning(_) => {
-                    // A VoxelBody changed (added/removed/edited): its dirty region is the
-                    // whole scene — fall back to a wholesale clear.
-                    return None;
-                }
-                LeafFingerprint::MasksBeyondItsBox(_) => {
-                    // An Intersect-influence leaf changed (added /
-                    // removed / edited / moved, or a flip to/from Intersect — the flip
-                    // puts old and new entries in the diff and at least one carries
-                    // this kind). Its mask effect reaches cells outside its box (the
-                    // enclosing scope's whole extent in the worst case), which this
-                    // index cannot bound — fall back to a wholesale clear.
-                    // Conservative, never narrow.
+                LeafFingerprint::RegionSpanning(_) | LeafFingerprint::MasksBeyondItsBox(_) => {
+                    // A region-spanning or Intersect-influence leaf changed. Its effect
+                    // reaches outside a local box, so fall back to a wholesale clear.
                     return None;
                 }
                 LeafFingerprint::Bounded(_) => {
@@ -250,13 +252,15 @@ struct VoxelAabbKey {
 /// Narrow an `i64` chunk coordinate to `i32` (the cache-key / chunk-index width).
 /// The absolute-voxel math is i64, but the chunk coordinate stays well inside i32 for
 /// the supported offset range — see `core_geom::max_supported_block_offset`.
+#[allow(clippy::as_conversions, clippy::checked_conversions)]
 fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
     debug_assert!(
-        chunk_coord >= i32::MIN as i64 && chunk_coord <= i32::MAX as i64,
+        chunk_coord >= i64::from(i32::MIN) && chunk_coord <= i64::from(i32::MAX),
         "chunk coordinate {chunk_coord} overflows i32 — block offset past the \
          supported range (S4a)"
     );
-    chunk_coord.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    i32::try_from(chunk_coord.clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
+        .unwrap_or_default()
 }
 
 impl From<VoxelAabb> for VoxelAabbKey {
@@ -270,12 +274,14 @@ impl From<VoxelAabb> for VoxelAabbKey {
 
 impl From<VoxelAabbKey> for VoxelAabb {
     fn from(key: VoxelAabbKey) -> Self {
-        VoxelAabb::new(key.min, key.max)
+        Self::new(key.min, key.max)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::as_conversions, clippy::cast_possible_wrap)]
+
     use super::*;
 
     #[test]

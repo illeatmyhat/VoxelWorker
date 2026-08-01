@@ -1,3 +1,17 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::similar_names,
+    clippy::expect_used,
+    clippy::wildcard_imports
+)]
+
 //! Rotated / sub-voxel placement for the dense oracle: the continuous
 //! [`substrate::spatial::LeafPlacement`] construction ([`dense_leaf_placement`]), the
 //! out-of-phase predicate ([`leaf_is_out_of_phase`]), and the inverse-resample gather

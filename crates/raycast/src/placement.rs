@@ -107,16 +107,19 @@ pub enum WorldPlane {
 
 impl WorldPlane {
     /// The plane's unit outward normal.
-    pub fn normal(self) -> Vec3 {
+    #[must_use]
+    pub const fn normal(self) -> Vec3 {
         match self {
-            WorldPlane::Ground => Vec3::Z,
-            WorldPlane::VerticalFacingX => Vec3::X,
-            WorldPlane::VerticalFacingY => Vec3::Y,
+            Self::Ground => Vec3::Z,
+            Self::VerticalFacingX => Vec3::X,
+            Self::VerticalFacingY => Vec3::Y,
         }
     }
 }
 
-/// Choose which world plane an empty-space placement lands on: the **ground**, unless the ray
+/// Choose which world plane an empty-space placement lands on: the **ground**.
+///
+/// The ray
 /// grazes it more shallowly than `min_ground_facing`, in which case whichever **vertical** the ray
 /// faces more squarely.
 ///
@@ -133,6 +136,7 @@ impl WorldPlane {
 /// grazing case to clamp. The bound holds because a unit vector cannot have all three components
 /// small: when the ground is rejected (`|z| < m`), `x² + y² > 1 − m²`, so the larger of `|x|, |y|`
 /// is at least `√((1−m²)/2) >= m` exactly when `m <= 1/√3`.
+#[must_use]
 pub fn select_world_plane(ray_direction: Vec3, min_ground_facing: f32) -> WorldPlane {
     if ray_direction.z.abs() >= min_ground_facing {
         WorldPlane::Ground
@@ -149,6 +153,8 @@ pub fn select_world_plane(ray_direction: Vec3, min_ground_facing: f32) -> WorldP
 /// Call only on a plane [`select_world_plane`] chose for this ray, whose denominator the selection
 /// bounds away from zero — that is what makes the division safe. With a unit ray direction `t` is
 /// the distance from the origin to the point.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn world_plane_hit(ray: Ray, plane: WorldPlane) -> (Vec3, f32) {
     let normal = plane.normal();
     // Plane through the origin, so its offset term is zero: (origin + t·dir)·n = 0.
@@ -167,6 +173,8 @@ pub fn world_plane_hit(ray: Ray, plane: WorldPlane) -> (Vec3, f32) {
 ///
 /// Custom (user-created) planes are a future second tier between geometry and the world planes;
 /// they are not wired here yet.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn resolve_placement(
     surface: Option<(Vec3, [i32; 3])>,
     ray: Ray,
@@ -201,6 +209,13 @@ pub fn resolve_placement(
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        clippy::panic
+    )]
+
     use super::*;
 
     fn ray(origin: [f32; 3], direction: [f32; 3]) -> Ray {

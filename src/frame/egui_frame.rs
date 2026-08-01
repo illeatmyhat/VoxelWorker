@@ -1,7 +1,8 @@
-//! The egui half of the per-frame pipeline: build the panel, tessellate the UI
-//! ([`run_egui_frame`]), the persistent
-//! [`EguiPaintBridge`], the [`PreparedEguiFrame`] it produces, and the view-cube context-menu
-//! request. GPU pass recording is handled by the sibling [`render`](super::render).
+//! The `egui` half of the per-frame pipeline.
+//!
+//! It builds and tessellates the panel through [`run_egui_frame`], owns the persistent
+//! [`EguiPaintBridge`] and [`PreparedEguiFrame`], and reports view-cube context-menu requests.
+//! GPU pass recording is handled by the sibling [`render`](super::render).
 
 use crate::*;
 
@@ -40,8 +41,9 @@ impl EguiPaintBridge {
     }
 }
 
-/// A ViewCube right-click context-menu item the user chose this frame (#13
-/// Step 3). The windowed caller executes it after `run_egui_frame` returns; egui
+/// A `ViewCube` right-click context-menu item chosen during this frame.
+///
+/// The windowed caller executes it after `run_egui_frame` returns; `egui`
 /// draws the menu and swallows its own clicks, so these never leak to the
 /// left-click snap path. `OrthographicToggle` is handled INSIDE `run_egui_frame`
 /// (it just flips `panel_state.projection_mode`, the same field the side panel
@@ -77,7 +79,7 @@ pub struct PreparedEguiFrame {
     /// cube) to this rect, so the model is centered in the VISIBLE 3D area instead
     /// of the whole window (which the panels would otherwise cover).
     pub viewport_px: [u32; 4],
-    /// The ViewCube context-menu item chosen this frame (#13 Step 3), if any. The
+    /// The `ViewCube` context-menu item chosen this frame (#13 Step 3), if any. The
     /// caller runs Home/Fit/SetHome; the ortho toggle is applied in-place to
     /// `panel_state.projection_mode` and is not reported here.
     pub cube_menu_request: Option<ViewCubeMenuRequest>,

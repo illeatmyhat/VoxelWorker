@@ -1,3 +1,18 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::similar_names,
+    clippy::doc_markdown,
+    clippy::too_many_lines,
+    clippy::wildcard_imports
+)]
+
 //! Tree walk + scope pre-composition: the depth-first [`Scene::for_each_leaf`] /
 //! [`Scene::walk_nodes`] traversal that composes placed leaves, the flat
 //! [`Scene::leaf_producers`] op-stack it feeds, and the sealed-scope pre-composition

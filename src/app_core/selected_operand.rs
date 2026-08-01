@@ -1,13 +1,13 @@
 //! Boolean-operand ghost derivation for "Show booleans" mode: selection → ghost bodies
 //! + frame.
 //!
-//! The app_core half of the seam: read the boolean-operand body slices of the ACTIVE
+//! The `app_core` half of the seam: read the boolean-operand body slices of the ACTIVE
 //! selection's subtree from the document ([`Scene::boolean_operand_body_slices`]) —
 //! every Subtract/Intersect operand within the selected subtree (the root part selects
 //! the whole scene) — evaluate each through the two-layer evaluator (bounded by that
 //! operand's covering chunks — never a whole-scene resolve, and never a dense grid), and
 //! hand the display layer plain meshes-to-be + styles
-//! ([`display::mesh::SelectedOperandGhostBody`]). Display renders, app_core derives, the
+//! ([`display::mesh::SelectedOperandGhostBody`]). `Display` renders, `app_core` derives, the
 //! document stays pure.
 //!
 //! Re-derived only on selection / geometry / MODE change (the shell + `shot` call this at
@@ -23,10 +23,10 @@ use voxel_core::voxel::RecenterVoxels;
 
 use super::AppCore;
 
-/// Everything the display's [`SelectedOperandGhostRenderer`] rebuild needs: the ghost
-/// bodies plus the COMPOSED scene's frame — the slice chunks are in absolute composite
-/// coords, so meshing them against the composed recenter lands the ghost voxel-exact on the
-/// operand's place in the render frame.
+/// The ghost bodies and composed frame needed by the display rebuild.
+///
+/// Slice chunks use absolute composite coordinates, so meshing them against the composed
+/// recenter places the ghost exactly over its operand in the render frame.
 ///
 /// [`SelectedOperandGhostRenderer`]: display::mesh::SelectedOperandGhostRenderer
 pub struct SelectedOperandGhost {
@@ -53,7 +53,11 @@ fn operand_ghost_style_for(operation: CombineOp) -> OperandGhostStyle {
         // earn an x-ray ghost of its own later, but it would need its own style rather than
         // borrowing a mask's — it neither removes nor keeps, it MOVES the surface.
         CombineOp::Union | CombineOp::Emboss { .. } => {
-            unreachable!("the boolean-operand walk only emits Subtract/Intersect operands")
+            debug_assert!(
+                false,
+                "the boolean-operand walk only emits Subtract/Intersect operands"
+            );
+            OperandGhostStyle::Subtract
         }
     }
 }
@@ -209,18 +213,18 @@ fn collect_junction_segments_true_world(
     // sample through the placement's inverse; the bracket maps the world cube's
     // corners to a local enclosing cell and asks the producer's own conservative
     // interval (an unknown interval keeps the cell — never prunes).
-    fn world_field(side: &PairSide, density: u32) -> impl Fn(glam::Vec3) -> f32 + '_ {
+    fn world_field(side: &PairSide, density: u32) -> Box<dyn Fn(glam::Vec3) -> f32 + '_> {
         let placement = side.placement;
-        let field = side
-            .producer
-            .as_field()
-            .expect("filtered to field-bearing producers");
-        move |point: glam::Vec3| -> f32 {
+        let Some(field) = side.producer.as_field() else {
+            debug_assert!(false, "filtered to field-bearing producers");
+            return Box::new(move |_point: glam::Vec3| f32::INFINITY);
+        };
+        Box::new(move |point: glam::Vec3| -> f32 {
             let local = placement
                 .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(point))
                 .voxels();
             field.signed_distance(local.to_array(), density)
-        }
+        })
     }
     fn world_bracket(side: &PairSide, density: u32) -> impl Fn(glam::Vec3, f32) -> (f32, f32) + '_ {
         let placement = side.placement;
@@ -300,7 +304,7 @@ fn collect_junction_segments_true_world(
             );
             truncated |= outcome.seed_budget_exhausted || outcome.step_budget_exhausted;
             for curve in outcome.curves {
-                for pair in curve.points.array_windows::<2>() {
+            for pair in curve.points.array_windows::<2>() {
                     out.push(pair[0].to_array());
                     out.push(pair[1].to_array());
                 }
@@ -435,6 +439,12 @@ fn evaluate_operand_ghost_slices(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::iter_on_single_items,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use document::scene::{DefId, Node, NodeContent, NodeTransform, ROOT_NODE_ID};

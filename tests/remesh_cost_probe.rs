@@ -47,6 +47,17 @@
 //!
 //! Run: `cargo test --release --test remesh_cost_probe -- --ignored --nocapture --test-threads=1`
 
+#![allow(
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::too_many_lines
+)]
+
 use ui::panel::{Selection, SelectionTarget};
 
 /// The workspace selection a fixture arrives with: its first top-level node picked

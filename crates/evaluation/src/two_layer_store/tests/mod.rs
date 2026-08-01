@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::doc_markdown, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::items_after_statements, clippy::manual_midpoint, clippy::panic, clippy::redundant_clone, clippy::single_match_else, clippy::too_many_lines, clippy::unwrap_used)]
+
 //! Two-layer chunk classifier parity, residency, incremental-edit, and stream tests.
 
 use document::scene::{LeafProducer, Scene};

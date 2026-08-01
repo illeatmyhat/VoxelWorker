@@ -1,8 +1,8 @@
-//! wgpu instance/adapter/device setup shared by both render paths.
+//! `wgpu` instance/adapter/device setup shared by both render paths.
 //!
 //! The windowed binary passes `Some(&surface)` as the compatible surface so the
 //! adapter is guaranteed presentable; the headless binary passes `None` and
-//! never creates a surface at all (DEV_NOTES "Headless capture").
+//! never creates a surface at all (`DEV_NOTES` "Headless capture").
 
 /// Owns the wgpu objects that outlive any single frame.
 pub struct GpuContext {
@@ -28,6 +28,12 @@ impl GpuContext {
     /// The windowed path must create the instance and surface together (so the
     /// adapter can be selected as compatible with that surface), then hand the
     /// instance here. The headless path uses [`GpuContext::new`] instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no adapter is compatible with `compatible_surface`, or when the selected
+    /// adapter cannot create the requested device.
+    #[allow(clippy::expect_used)]
     pub async fn new_with_instance(
         instance: wgpu::Instance,
         compatible_surface: Option<&wgpu::Surface<'_>>,

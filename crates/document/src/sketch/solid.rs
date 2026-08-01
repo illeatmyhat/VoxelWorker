@@ -1,3 +1,26 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::imprecise_flops,
+    clippy::items_after_statements,
+    clippy::missing_errors_doc,
+    clippy::missing_const_for_fn,
+    clippy::return_self_not_must_use,
+    clippy::suboptimal_flops,
+    clippy::too_long_first_doc_paragraph,
+    clippy::use_self,
+    clippy::wildcard_imports,
+    clippy::tuple_array_conversions,
+    clippy::similar_names
+)]
+
 use super::produce::{revolve_box_within_sweep_arc, to_region_curve_bounds, to_region_points};
 use super::*;
 use rayon::prelude::*;

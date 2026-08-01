@@ -40,9 +40,10 @@ pub struct VoxelPick {
     pub face_normal: [i32; 3],
 }
 
-/// Everything a pick needs about the frame it is picking in — all of it produced by the last
-/// [`rebuild`](AppCore::rebuild), which is why it travels as one value rather than as five
-/// parameters that must be kept mutually consistent by every caller.
+/// The frame data needed to perform a pick.
+///
+/// All fields come from the last [`rebuild`](AppCore::rebuild), so callers pass one consistent
+/// value instead of keeping five independent parameters synchronized.
 pub struct PickFrame<'a> {
     /// The region's voxel dimensions, whose floored half corner-anchors the render frame.
     pub region_dimensions: [u32; 3],
@@ -199,6 +200,7 @@ impl AppCore {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use camera::OrbitCamera;

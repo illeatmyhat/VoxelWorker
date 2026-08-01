@@ -3,6 +3,9 @@ name = "document"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The authored-truth crate: the scene graph, authoring producers, 2D sketches,
 # serializable intents, and inverse-command undo stack. It contains what the user
 # authors, without evaluation, display, or wgpu concerns. Its one-way dependency

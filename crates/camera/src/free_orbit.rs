@@ -81,6 +81,7 @@ impl OrbitCamera {
     /// answer anyway, so the ordered form is fine. If input handling ever coalesces deltas
     /// per FRAME, switch to one `Quat::from_axis_angle` about `(-delta_y, -delta_x, 0)` —
     /// at a large single delta the two forms visibly diverge.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn orbit_free_by_drag(&mut self, delta_x: f32, delta_y: f32) {
         self.ensure_free();
         let Some(orientation) = self.free_orientation else {
@@ -121,6 +122,7 @@ impl OrbitCamera {
     /// Idempotent, like its opposite. Returns whether it converted.
     ///
     /// [`SnapTween`]: crate::tween::SnapTween
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn ensure_constrained(&mut self) -> bool {
         let Some(orientation) = self.free_orientation.take() else {
             return false;
@@ -153,6 +155,7 @@ impl OrbitCamera {
     /// Orbit is active would write whatever `theta`/`phi` were last true, which is a view the user
     /// left some time ago; a repro that opens on a different pose than the one the bug was seen
     /// at is worse than no repro. Non-mutating on purpose, so a capture stays a capture.
+    #[must_use]
     pub fn as_chart(&self) -> Self {
         let mut settled = *self;
         settled.ensure_constrained();
@@ -167,6 +170,7 @@ impl OrbitCamera {
     /// and `roll` are interchangeable there, so *every* up is a canonical up. Returning the
     /// actual up says exactly that, and makes "upright" true at the top and bottom face views —
     /// which is right, because those are face views like any other.
+    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn roll_free_up_for(&self, direction: Vec3) -> Vec3 {
         let vertical = Vec3::Z - direction * Vec3::Z.dot(direction);
         if vertical.length_squared() > POLE_PROJECTION_EPSILON {
@@ -180,6 +184,7 @@ impl OrbitCamera {
 /// The signed angle from `from` to `to` about `axis`, both measured in the plane perpendicular to
 /// it. Matches the sense `up_vector` rolls in (`Quat::from_axis_angle(forward, roll) * base`), so
 /// feeding the result back through it reproduces `to`.
+#[allow(clippy::arithmetic_side_effects)]
 fn signed_twist_about(axis: Vec3, from: Vec3, to: Vec3) -> f32 {
     let flatten = |vector: Vec3| (vector - axis * vector.dot(axis)).normalize_or_zero();
     let from = flatten(from);
@@ -198,6 +203,8 @@ fn orientation_of(basis: glam::Mat3) -> Quat {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::float_cmp)]
+
     use super::*;
     use crate::orbit::ProjectionMode;
     use glam::Mat3;

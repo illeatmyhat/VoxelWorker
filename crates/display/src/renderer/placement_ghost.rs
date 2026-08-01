@@ -44,10 +44,10 @@ struct PlacementGhostUniforms {
     orientation_inverse: [[f32; 4]; 3],
 }
 
-/// The `ShapeKind` discriminant the shader switches on. **MUST match `ShapeKind`'s
-/// declaration order** in `voxel_core::voxel` (0 Cylinder, 1 Tube, 2 Sphere, 3 Torus,
-/// 4 Box) — the one place a hand-written mirror drifts without any distance ever being
-/// wrong. The exhaustive `match` makes a new variant a compile error here.
+/// Return the shader discriminant for a `ShapeKind`.
+///
+/// The values match `ShapeKind` declaration order in `voxel_core::voxel`; the exhaustive match
+/// makes a new variant a compile error here.
 pub fn placement_ghost_shape_discriminant(kind: voxel_core::voxel::ShapeKind) -> u32 {
     use voxel_core::voxel::ShapeKind;
     match kind {
@@ -64,9 +64,10 @@ pub fn placement_ghost_shape_discriminant(kind: voxel_core::voxel::ShapeKind) ->
 /// Linear RGB + source alpha.
 pub const PLACEMENT_GHOST_TINT: [f32; 4] = [0.32, 0.78, 0.92, 0.55];
 
-/// The analytic placement-ghost overlay: it draws ONE fullscreen triangle whose fragment
-/// sphere-traces the armed primitive's field and writes `@builtin(frag_depth)`, so the
-/// voxels drawn earlier in the SAME MSAA pass occlude it wherever they are in front.
+/// The analytic placement-ghost overlay.
+///
+/// A fullscreen triangle sphere-traces the armed primitive and writes `@builtin(frag_depth)`, so
+/// voxels drawn earlier in the same MSAA pass occlude it when they are in front.
 ///
 /// The renderer is deliberately dumb: the frame math (`center_world = world_offset +
 /// grid/2 - recenter`) lives in the CALLER, which passes a resolved
@@ -279,10 +280,10 @@ mod tests {
         assert_eq!(placement_ghost_shape_discriminant(ShapeKind::Box), 4);
     }
 
-    /// The Rust twin's size is a multiple of 16 bytes (std140 uniform alignment) and
-    /// matches the blocks the WGSL struct declares: two mat4 (128) + six vec4 (ray_eye,
-    /// viewport, center_and_kind, semi_axes_and_wall, tint, params = 96) + a mat3x3 (three padded
-    /// vec4 columns = 48, the inverse orientation) = 272 bytes.
+    /// The Rust twin's size is a multiple of 16 bytes (`std140` uniform alignment) and
+    /// matches the blocks the WGSL struct declares: two `mat4` (128) + six `vec4` (`ray_eye`,
+    /// viewport, `center_and_kind`, `semi_axes_and_wall`, tint, params = 96) + a `mat3x3` (three padded
+    /// `vec4` columns = 48, the inverse orientation) = 272 bytes.
     #[test]
     fn uniform_layout_is_std140_sized() {
         assert_eq!(std::mem::size_of::<PlacementGhostUniforms>(), 272);

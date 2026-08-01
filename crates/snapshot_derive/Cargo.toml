@@ -3,6 +3,9 @@ name = "snapshot_derive"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The workspace's proc-macro crate for state classification.
 # It is a BUILD-TIME crate: it runs in the compiler, produces tokens, and links into
 # no binary, so it is orthogonal to the eight-layer stack rather than a member of it.

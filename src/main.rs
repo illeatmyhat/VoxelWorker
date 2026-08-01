@@ -1,4 +1,4 @@
-//! VoxelWorker — the windowed application (default binary).
+//! `VoxelWorker` — the windowed application (default binary).
 //!
 //! A thin entry point: all the windowed logic (`WindowedState`, `App`, the winit
 //! `ApplicationHandler`, the per-frame render, and the async-worker poll seams) lives in the

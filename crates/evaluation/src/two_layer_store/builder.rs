@@ -1,3 +1,21 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::similar_names,
+    clippy::doc_markdown,
+    clippy::redundant_pub_crate,
+    clippy::too_long_first_doc_paragraph,
+    clippy::wildcard_imports
+)]
+
 //! The TwoLayerStore builder + the per-chunk covering/broadphase/candidate-leaf helpers and the chunk build.
 
 use std::sync::Arc;

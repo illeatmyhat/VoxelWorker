@@ -83,6 +83,7 @@ pub const SLAB_ZERO_DIRECTION_GUARD: f32 = 1e-20;
 /// axis marched backwards indefinitely. Kani surfaced it as a monotonicity violation in
 /// `raycast`'s `advance_is_monotone_in_t_and_preserves_the_invariant` — no differential
 /// render did, because it takes an exactly-axis-aligned ray to bite.
+#[must_use]
 pub fn guarded_direction(direction: Vec3) -> Vec3 {
     let guard = |component: f32| -> f32 {
         if component.abs() < SLAB_ZERO_DIRECTION_GUARD {
@@ -120,7 +121,8 @@ pub struct RayBoxIntersection {
 
 impl Ray {
     /// A ray from `origin` along `direction`.
-    pub fn new(origin: Vec3, direction: Vec3) -> Self {
+    #[must_use]
+    pub const fn new(origin: Vec3, direction: Vec3) -> Self {
         Self { origin, direction }
     }
 
@@ -129,6 +131,7 @@ impl Ray {
     /// guard so the reciprocal stays finite (see the module docs). Exposed so a
     /// traversal that reuses the same reciprocal for its stepping seeds derives it
     /// identically to the slab test.
+    #[must_use]
     pub fn slab_inverse_direction(&self) -> Vec3 {
         guarded_direction(self.direction).recip()
     }
@@ -139,6 +142,8 @@ impl Ray {
     /// clamped to `0`, so a ray starting inside the box enters at `t = 0`. Zero
     /// direction components are handled by the guard described in the module docs
     /// (no `NaN`).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn intersect_box_slab(&self, aabb: &RealAabb) -> Option<RayBoxIntersection> {
         let inverse = self.slab_inverse_direction();
         let t_a = (aabb.min - self.origin) * inverse;
@@ -157,6 +162,17 @@ impl Ray {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     const UNIT_BOX: RealAabb = RealAabb {

@@ -13,8 +13,8 @@
 //! Everything here is pure geometry and screen arithmetic — no winit, no egui, no
 //! rendering. The cube's rendered chrome and its mouse plumbing stay in the app.
 //!
-//! Cite: Khan, Mordatch, Fitzmaurice, Matejka & Kurtenbach, "ViewCube: a 3D
-//! orientation indicator and controller" (ACM I3D 2008), for the 26-orientation
+//! Cite: Khan, Mordatch, Fitzmaurice, Matejka & Kurtenbach, “`ViewCube`: a 3D
+//! orientation indicator and controller” (ACM I3D 2008), for the 26-orientation
 //! hot-zone model; the spherical `(theta, phi)` conversion is the standard Z-up
 //! spherical parameterisation (Akenine-Möller, Haines & Hoffman, *Real-Time
 //! Rendering*).
@@ -63,6 +63,7 @@ pub const CUBE_FACES: [(CubeFace, &str); 6] = [
 impl CubeFace {
     /// Map a 0..5 material index (raycast hit) to a face, matching the GEOMETRIC
     /// `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z) under the Z-up convention.
+    #[must_use]
     pub fn from_material_index(index: usize) -> Option<Self> {
         CUBE_FACES.get(index).map(|(face, _)| *face)
     }
@@ -70,25 +71,29 @@ impl CubeFace {
     /// The snap target `(theta, phi)` for this face. Polar values use the exact
     /// poles at TOP/BOTTOM; the view matrix never degenerates there because
     /// [`OrbitCamera::up_vector`] supplies a true singular-frame up.
+    #[must_use]
     pub fn snap_angles(self) -> (f32, f32) {
         ViewCubeElement::from_face(self).snap_angles()
     }
 
     /// The outward unit normal of this face, Z-up: RIGHT/LEFT = ±X, TOP/BOTTOM =
     /// ±Z, FRONT/BACK = ∓Y (front = −Y, the front view looks along +Y).
-    pub fn normal(self) -> Vec3 {
+    #[must_use]
+    pub const fn normal(self) -> Vec3 {
         match self {
-            CubeFace::Right => Vec3::X,
-            CubeFace::Left => Vec3::NEG_X,
-            CubeFace::Top => Vec3::Z,
-            CubeFace::Bottom => Vec3::NEG_Z,
-            CubeFace::Front => Vec3::NEG_Y,
-            CubeFace::Back => Vec3::Y,
+            Self::Right => Vec3::X,
+            Self::Left => Vec3::NEG_X,
+            Self::Top => Vec3::Z,
+            Self::Bottom => Vec3::NEG_Z,
+            Self::Front => Vec3::NEG_Y,
+            Self::Back => Vec3::Y,
         }
     }
 }
 
-/// A clickable element of the view cube: a single **face** (1 normal), an **edge**
+/// A clickable element of the view cube.
+///
+/// It is a single **face** (1 normal), an **edge**
 /// (2 adjacent face normals) or a **corner** (3 face normals). The hot-zone model
 /// divides each face into a 3×3 grid — the center
 /// zone is the face, the 4 edge zones are edges (45° edge-on views shared with the
@@ -107,7 +112,8 @@ pub struct ViewCubeElement {
 
 impl ViewCubeElement {
     /// A single-face element (center zone of a face).
-    pub fn from_face(face: CubeFace) -> Self {
+    #[must_use]
+    pub const fn from_face(face: CubeFace) -> Self {
         Self {
             faces: [face, face, face],
             count: 1,
@@ -115,7 +121,8 @@ impl ViewCubeElement {
     }
 
     /// An edge element shared by two adjacent faces.
-    pub fn from_edge(first: CubeFace, second: CubeFace) -> Self {
+    #[must_use]
+    pub const fn from_edge(first: CubeFace, second: CubeFace) -> Self {
         Self {
             faces: [first, second, second],
             count: 2,
@@ -123,7 +130,8 @@ impl ViewCubeElement {
     }
 
     /// A corner element shared by three mutually-adjacent faces.
-    pub fn from_corner(first: CubeFace, second: CubeFace, third: CubeFace) -> Self {
+    #[must_use]
+    pub const fn from_corner(first: CubeFace, second: CubeFace, third: CubeFace) -> Self {
         Self {
             faces: [first, second, third],
             count: 3,
@@ -131,8 +139,11 @@ impl ViewCubeElement {
     }
 
     /// The faces composing this element (`&faces[..count]`).
+    #[must_use]
     pub fn faces(&self) -> &[CubeFace] {
-        &self.faces[..self.count as usize]
+        self.faces
+            .get(..usize::from(self.count))
+            .unwrap_or_default()
     }
 
     /// The per-axis sign selector `[sx, sy, sz]` (each in `{-1, 0, +1}`) describing
@@ -144,6 +155,7 @@ impl ViewCubeElement {
     /// iff, on every axis `a`, `p[a]` lies on the selector's side of the center patch
     /// (`sel[a]·p[a] ≥ threshold`, or `|p[a]| ≤ threshold` when `sel[a] = 0`) — which
     /// lights exactly the 1/2/3 across-the-fold facets of the hovered element.
+    #[must_use]
     pub fn axis_selectors(&self) -> [f32; 3] {
         let mut selectors = [0.0f32; 3];
         for face in self.faces() {
@@ -163,12 +175,14 @@ impl ViewCubeElement {
 
     /// Is this a pure pole element (the TOP-only or BOTTOM-only face)? At the
     /// poles azimuth is undefined, so we special-case theta below.
-    fn is_pole(&self) -> bool {
+    const fn is_pole(self) -> bool {
         self.count == 1 && matches!(self.faces[0], CubeFace::Top | CubeFace::Bottom)
     }
 
     /// The unnormalized view direction: the sum of the element's face normals.
     /// Pointing from the target toward the eye, so the camera looks back along it.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn snap_direction(&self) -> Vec3 {
         self.faces()
             .iter()
@@ -184,6 +198,7 @@ impl ViewCubeElement {
     /// [`OrbitCamera::up_vector`] supplies a true singular-frame up. Theta takes
     /// the TOP/BOTTOM convention (`−π/2`) so the pole-up limit
     /// `(−cos θ, −sin θ, 0)` lands on a stable screen orientation.
+    #[must_use]
     pub fn snap_angles(&self) -> (f32, f32) {
         use std::f32::consts::{FRAC_PI_2, PI};
         if self.is_pole() {
@@ -199,7 +214,7 @@ impl ViewCubeElement {
     }
 }
 
-/// Screen direction of a ViewCube **rotate arrow** (90° step to the adjacent
+/// Screen direction of a `ViewCube` **rotate arrow** (90° step to the adjacent
 /// face). `Up`/`Down`/`Left`/`Right` are *screen-relative* — the direction the
 /// arrow points in the cube's gutter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,17 +227,18 @@ pub enum ArrowDir {
 
 impl ArrowDir {
     /// The opposite screen direction (Up↔Down, Left↔Right).
-    pub fn opposite(self) -> ArrowDir {
+    #[must_use]
+    pub const fn opposite(self) -> Self {
         match self {
-            ArrowDir::Up => ArrowDir::Down,
-            ArrowDir::Down => ArrowDir::Up,
-            ArrowDir::Left => ArrowDir::Right,
-            ArrowDir::Right => ArrowDir::Left,
+            Self::Up => Self::Down,
+            Self::Down => Self::Up,
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
         }
     }
 }
 
-/// Screen direction of a ViewCube **roll arrow** (90° roll about the view axis).
+/// Screen direction of a `ViewCube` **roll arrow** (90° roll about the view axis).
 /// `Cw` = clockwise, `Ccw` = counter-clockwise (as seen on screen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RollDir {
@@ -230,7 +246,7 @@ pub enum RollDir {
     Ccw,
 }
 
-/// The neighbor face reached by a 90° ViewCube rotate in screen direction
+/// The neighbor face reached by a 90° `ViewCube` rotate in screen direction
 /// `dir`, starting from the current nearest face.
 ///
 /// **Convention** (pinned here; the renderer + wiring MUST match). A rotate arrow
@@ -264,7 +280,9 @@ pub enum RollDir {
 /// equatorial faces. (A *full* memoryless inverse over all 6×4 is geometrically
 /// impossible — stepping off and back onto a circle rolls the cube — so the
 /// inverse property is asserted only on each direction's own great circle.)
-pub fn adjacent_face(current: CubeFace, dir: ArrowDir) -> CubeFace {
+#[must_use]
+#[allow(clippy::match_same_arms)]
+pub const fn adjacent_face(current: CubeFace, dir: ArrowDir) -> CubeFace {
     use ArrowDir as A;
     use CubeFace as F;
     match (current, dir) {
@@ -300,7 +318,9 @@ pub fn adjacent_face(current: CubeFace, dir: ArrowDir) -> CubeFace {
     }
 }
 
-/// A rectangle in window pixels (the ViewCube's on-screen region). `x`/`y` are
+/// A rectangle in window pixels (the `ViewCube`'s on-screen region).
+///
+/// `x`/`y` are
 /// the top-left corner; `size` is the side length (the cube viewport is square).
 /// Used by [`classify_cube_point`] so the chrome hit-zones and the renderer share
 /// one layout definition.
@@ -311,7 +331,9 @@ pub struct CubeRect {
     pub size: f32,
 }
 
-/// A classified hit zone within (or just around) the ViewCube's screen rect. The
+/// A classified hit zone within (or just around) the `ViewCube`'s screen rect.
+///
+/// The
 /// renderer draws the chrome in the SAME rects and the app wires them to mouse
 /// events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,7 +350,7 @@ pub enum CubeChromeZone {
 /// The readout order rank of a face for the [`view_cube_zone_readout`] label:
 /// vertical faces first (TOP/BOTTOM), then depth (FRONT/BACK), then horizontal
 /// (RIGHT/LEFT), so a corner reads `TOP·FRONT·RIGHT` (Signal spec order).
-fn face_readout_rank(face: CubeFace) -> u8 {
+const fn face_readout_rank(face: CubeFace) -> u8 {
     match face {
         CubeFace::Top | CubeFace::Bottom => 0,
         CubeFace::Front | CubeFace::Back => 1,
@@ -342,15 +364,17 @@ fn face_label(face: CubeFace) -> &'static str {
     CUBE_FACES
         .iter()
         .find(|(f, _)| *f == face)
-        .map(|(_, label)| *label)
-        .unwrap_or("")
+        .map_or("", |(_, label)| *label)
 }
 
 /// The dot-joined zone name for a hovered chrome `zone`, e.g. `TOP·FRONT` (edge) or
-/// `TOP·FRONT·RIGHT` (corner), or a single face name. Returns `None` for the
+/// `TOP·FRONT·RIGHT` (corner).
+///
+/// It returns `None` for the
 /// non-element chrome zones (arrows / badges), which have no cube-zone readout. Used
 /// by the faint readout line under the cube. Faces are ordered vertical → depth →
 /// horizontal so the label reads TOP·FRONT·RIGHT regardless of pick order.
+#[must_use]
 pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
     let CubeChromeZone::Element(element) = zone else {
         return None;
@@ -366,8 +390,10 @@ pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
     )
 }
 
-/// **ViewCube chrome layout** — pure screen-space hit-testing over the cube's
-/// square `rect`. All zones are expressed as fractions of `rect.size` so the
+/// **`ViewCube` chrome layout** — pure screen-space hit-testing over the cube's
+/// square `rect`.
+///
+/// All zones are expressed as fractions of `rect.size` so the
 /// renderer draws them in the identical pixels. Documented fractions (origin = rect
 /// top-left, x right, y down):
 ///
@@ -394,12 +420,18 @@ pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
 ///
 /// `body_picker` is the caller's raycast; it is invoked only for the central body
 /// region. In tests a stub picker stands in, keeping this function fully headless.
+#[must_use]
 pub fn classify_cube_point(
     rect: CubeRect,
     cursor_x: f32,
     cursor_y: f32,
     body_picker: impl FnOnce() -> Option<ViewCubeElement>,
 ) -> Option<CubeChromeZone> {
+    const ROLL_TOP: f32 = 0.00;
+    const ROLL_BOTTOM: f32 = 0.13;
+    const GUTTER_LO: f32 = 0.38;
+    const GUTTER_HI: f32 = 0.62;
+
     // Normalized position within the rect (0..1 across each axis).
     let u = (cursor_x - rect.x) / rect.size;
     let v = (cursor_y - rect.y) / rect.size;
@@ -408,8 +440,6 @@ pub fn classify_cube_point(
     }
 
     // --- Roll arrows: two small rects in the top-right corner. ---
-    const ROLL_TOP: f32 = 0.00;
-    const ROLL_BOTTOM: f32 = 0.13;
     if (ROLL_TOP..ROLL_BOTTOM).contains(&v) {
         if (0.74..0.87).contains(&u) {
             return Some(CubeChromeZone::RollArrow(RollDir::Ccw));
@@ -433,8 +463,6 @@ pub fn classify_cube_point(
 
     // --- Rotate arrows: 4 rects in the gutters just outside the cube body. Reached only
     // when the ray missed the cube (a true margin hover). ---
-    const GUTTER_LO: f32 = 0.38; // along-side span of each rotate arrow
-    const GUTTER_HI: f32 = 0.62;
     // UP gutter: hugging the TOP rect edge, horizontally centered.
     if (0.00..0.13).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Up));
@@ -455,8 +483,9 @@ pub fn classify_cube_point(
     None
 }
 
-/// The camera-side outcome of a **left-click on a ViewCube chrome zone**. This is
-/// the PURE half of the click dispatch: given a classified [`CubeChromeZone`] and
+/// The camera-side outcome of a **left-click on a `ViewCube` chrome zone**.
+///
+/// This is the PURE half of the click dispatch: given a classified [`CubeChromeZone`] and
 /// the current camera, [`chrome_zone_left_click_action`] resolves *what should
 /// happen* without touching any winit/state plumbing, so the mapping is
 /// unit-testable headlessly. The windowed caller then EXECUTES the action (starts
@@ -482,10 +511,13 @@ pub enum ChromeClickAction {
     Fit,
 }
 
-/// Resolve a left-click on a ViewCube chrome `zone` into a [`ChromeClickAction`]
+/// Resolve a left-click on a `ViewCube` chrome `zone` into a [`ChromeClickAction`].
+///
+/// Resolve it
 /// against the current `camera` (the PURE dispatch). See [`ChromeClickAction`] for
 /// the per-zone mapping. This never mutates the camera; the caller executes the
 /// returned action.
+#[must_use]
 pub fn chrome_zone_left_click_action(
     zone: CubeChromeZone,
     camera: &OrbitCamera,
@@ -507,6 +539,8 @@ pub fn chrome_zone_left_click_action(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::float_cmp, clippy::panic, clippy::suboptimal_flops)]
+
     use super::*;
     use crate::tween::nearest_equivalent_theta;
     use std::f32::consts::{FRAC_PI_2, PI};

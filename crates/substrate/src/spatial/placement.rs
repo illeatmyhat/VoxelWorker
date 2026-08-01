@@ -15,7 +15,8 @@ use crate::spatial::voxel_frames::{ProducerLocalVoxelPoint, TrueWorldVoxelPoint}
 use glam::{Quat, Vec3};
 
 /// The 8 corners of the local box `[0, full]`, in a fixed order.
-pub fn box_corners(full: Vec3) -> [Vec3; 8] {
+#[must_use]
+pub const fn box_corners(full: Vec3) -> [Vec3; 8] {
     [
         Vec3::new(0.0, 0.0, 0.0),
         Vec3::new(full.x, 0.0, 0.0),
@@ -35,6 +36,33 @@ pub fn box_corners(full: Vec3) -> [Vec3; 8] {
 /// an integer is treated as landing exactly on it (absorbs `world_of`/`local_of` float round-off).
 const CORNER_SNAP_TOLERANCE: f32 = 1e-3;
 
+/// Convert a bounded floating-point coordinate at the integer-grid boundary. The enclosing-box
+/// callers have already selected `floor`, `ceil`, or a near-integer value; the cast is therefore a
+/// deliberate representation change at the frame boundary, not an unchecked array/index cast.
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+const fn f32_to_i64(value: f32) -> i64 {
+    value as i64
+}
+
+/// Convert an integer coordinate for the small, float-only affine frame. The placement keeps its
+/// large translation in `i64`; this helper is used only after the caller has intentionally rebased
+/// a point near the leaf or accepted the near-frame convenience path.
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+const fn i64_to_f32(value: i64) -> f32 {
+    value as f32
+}
+
+/// Convert a local signed index for the float affine. Local extents are bounded by the producer
+/// domain before this conversion, and the result is used only in the float residual calculation.
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+const fn i32_to_f32(value: i32) -> f32 {
+    value as f32
+}
+
 /// The integer `[min, max)` box conservatively enclosing the real interval `[low, high]` per axis:
 /// a coordinate within [`CORNER_SNAP_TOLERANCE`] of an integer snaps to it (so an integer-landing
 /// box is recovered EXACTLY — bit-identical to round-to-nearest, every golden holds); otherwise the
@@ -45,17 +73,17 @@ fn conservative_box(low: Vec3, high: Vec3) -> ([i64; 3], [i64; 3]) {
     let snap_floor = |value: f32| {
         let nearest = value.round();
         if (value - nearest).abs() < CORNER_SNAP_TOLERANCE {
-            nearest as i64
+            f32_to_i64(nearest)
         } else {
-            value.floor() as i64
+            f32_to_i64(value.floor())
         }
     };
     let snap_ceil = |value: f32| {
         let nearest = value.round();
         if (value - nearest).abs() < CORNER_SNAP_TOLERANCE {
-            nearest as i64
+            f32_to_i64(nearest)
         } else {
-            value.ceil() as i64
+            f32_to_i64(value.ceil())
         }
     };
     (
@@ -68,6 +96,8 @@ fn conservative_box(low: Vec3, high: Vec3) -> ([i64; 3], [i64; 3]) {
 /// `rotation · {X, Y, Z}` lands on a signed unit axis (exactly one component `≈ ±1`, the other two
 /// `≈ 0`). An axis-aligned leaf takes the EXACT integer paths (byte-identical to the lattice-turn
 /// permutation, which the golden suite pins); a genuinely-rotated one resamples.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn is_axis_aligned(rotation: Quat) -> bool {
     const TOLERANCE: f32 = 1e-4;
     [Vec3::X, Vec3::Y, Vec3::Z].into_iter().all(|axis| {
@@ -93,6 +123,7 @@ pub fn is_axis_aligned(rotation: Quat) -> bool {
 /// be inverse-resampled by gather. The dense oracle (`document`) and the live two-layer classifier
 /// (`evaluation`) MUST agree on this split or the two paths disagree on rotated / sub-voxel seats,
 /// so the predicate lives beside [`is_axis_aligned`] as the ONE definition both fold through.
+#[must_use]
 pub fn is_in_phase(rotation: Quat, offset_local_voxels: [f32; 3]) -> bool {
     is_axis_aligned(rotation) && offset_local_voxels.iter().all(|slide| slide.fract() == 0.0)
 }
@@ -130,6 +161,7 @@ impl LeafPlacement {
     /// door: the integer origin stays `i64`, so a leaf arbitrarily far from the world origin never
     /// loses sub-voxel precision. `min_rotated_corner` is derived so the low rotated
     /// corner anchors on the world offset.
+    #[must_use]
     pub fn from_origin_and_local(
         rotation: Quat,
         full: Vec3,
@@ -151,29 +183,34 @@ impl LeafPlacement {
     /// combined offset is split into its integer floor (the wandering origin) and fractional
     /// remainder; a far-out caller should use [`from_origin_and_local`](Self::from_origin_and_local)
     /// with the offset already split so no precision is lost in the split.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn new(rotation: Quat, full: Vec3, world_offset: TrueWorldVoxelPoint) -> Self {
         let offset = world_offset.voxels();
         let floor = offset.floor();
         Self::from_origin_and_local(
             rotation,
             full,
-            [floor.x as i64, floor.y as i64, floor.z as i64],
+            floor.to_array().map(f32_to_i64),
             (offset - floor).to_array(),
         )
     }
 
     /// The leaf's rotation.
-    pub fn rotation(&self) -> Quat {
+    #[must_use]
+    pub const fn rotation(&self) -> Quat {
         self.rotation
     }
 
     /// The producer's local `full` extent, in voxels.
-    pub fn full(&self) -> Vec3 {
+    #[must_use]
+    pub const fn full(&self) -> Vec3 {
         self.full
     }
 
     /// The wandering integer origin (`world_offset_voxels`), in absolute voxels.
-    pub fn origin_voxels(&self) -> [i64; 3] {
+    #[must_use]
+    pub const fn origin_voxels(&self) -> [i64; 3] {
         self.origin_voxels
     }
 
@@ -182,17 +219,14 @@ impl LeafPlacement {
     /// or input a caller has already accepted as small. The precision-critical integer paths
     /// (`world_aabb`, `world_cell_of_local_center`, …) add the origin in `i64` instead.
     fn origin_vec3(&self) -> Vec3 {
-        Vec3::new(
-            self.origin_voxels[0] as f32,
-            self.origin_voxels[1] as f32,
-            self.origin_voxels[2] as f32,
-        )
+        Vec3::from_array(self.origin_voxels.map(i64_to_f32))
     }
 
     /// The forward affine in the ORIGIN-RELATIVE frame: a producer-local point mapped to its world
     /// position **minus** `origin_voxels` (`rotation·local − min_rotated_corner + offset_local`).
     /// Magnitude `≈ full`, so it never loses precision however far out the leaf sits; the integer
     /// origin is re-added afterwards (in `i64` where the result must stay exact).
+    #[allow(clippy::arithmetic_side_effects)]
     fn forward_local_relative(&self, local: Vec3) -> Vec3 {
         self.rotation * local - self.min_rotated_corner + self.offset_local
     }
@@ -200,6 +234,7 @@ impl LeafPlacement {
     /// The inverse affine from an ORIGIN-RELATIVE world position (`world − origin_voxels`) back to
     /// the producer-local frame. The caller rebases the world point against `origin_voxels` in
     /// `i64` first (exact), so this only ever rotates a small residual.
+    #[allow(clippy::arithmetic_side_effects)]
     fn local_of_relative(&self, world_relative: Vec3) -> Vec3 {
         self.rotation.inverse() * (world_relative - self.offset_local + self.min_rotated_corner)
     }
@@ -208,6 +243,8 @@ impl LeafPlacement {
     /// producer-local/true-world mix-up a compile error. Near-frame convenience (the origin is
     /// re-added through `f32`); the precision-critical integer twin is
     /// [`world_cell_of_local_center`](Self::world_cell_of_local_center).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn world_of(&self, local: ProducerLocalVoxelPoint) -> TrueWorldVoxelPoint {
         TrueWorldVoxelPoint::from_voxels(
             self.forward_local_relative(local.voxels()) + self.origin_vec3(),
@@ -219,6 +256,8 @@ impl LeafPlacement {
     /// round-off, which the classifier's `+0.5` center-sample margins absorb). Near-frame
     /// convenience; the precision-critical twin is
     /// [`local_of_abs_cell_center`](Self::local_of_abs_cell_center).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn local_of(&self, world: TrueWorldVoxelPoint) -> ProducerLocalVoxelPoint {
         ProducerLocalVoxelPoint::from_voxels(
             self.local_of_relative(world.voxels() - self.origin_vec3()),
@@ -230,17 +269,14 @@ impl LeafPlacement {
     /// far from the world origin (the wandering-origin fold). Bit-identical to the near-frame
     /// `world_of(index + 0.5).floor()` for a small origin, and the precision-preserving replacement
     /// for it everywhere a far-out leaf's cells are emitted.
+    #[must_use]
     pub fn world_cell_of_local_center(&self, local_index: [i32; 3]) -> [i64; 3] {
-        let center = Vec3::new(
-            local_index[0] as f32 + 0.5,
-            local_index[1] as f32 + 0.5,
-            local_index[2] as f32 + 0.5,
-        );
+        let center = Vec3::from_array(local_index.map(|value| i32_to_f32(value) + 0.5));
         let relative = self.forward_local_relative(center);
         [
-            self.origin_voxels[0] + relative.x.floor() as i64,
-            self.origin_voxels[1] + relative.y.floor() as i64,
-            self.origin_voxels[2] + relative.z.floor() as i64,
+            self.origin_voxels[0].saturating_add(f32_to_i64(relative.x.floor())),
+            self.origin_voxels[1].saturating_add(f32_to_i64(relative.y.floor())),
+            self.origin_voxels[2].saturating_add(f32_to_i64(relative.z.floor())),
         ]
     }
 
@@ -249,12 +285,14 @@ impl LeafPlacement {
     /// only rotates a small residual and keeps full precision however far out the leaf sits. The
     /// precision-preserving replacement for `local_of((abs_cell + 0.5).into())` at the resample
     /// gather sites.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn local_of_abs_cell_center(&self, abs_cell: [i64; 3]) -> ProducerLocalVoxelPoint {
-        let relative = Vec3::new(
-            (abs_cell[0] - self.origin_voxels[0]) as f32 + 0.5,
-            (abs_cell[1] - self.origin_voxels[1]) as f32 + 0.5,
-            (abs_cell[2] - self.origin_voxels[2]) as f32 + 0.5,
-        );
+        let relative = Vec3::from_array(std::array::from_fn(|axis| {
+            let cell = abs_cell.get(axis).copied().unwrap_or_default();
+            let origin = self.origin_voxels.get(axis).copied().unwrap_or_default();
+            i64_to_f32(cell.saturating_sub(origin)) + 0.5
+        }));
         ProducerLocalVoxelPoint::from_voxels(self.local_of_relative(relative))
     }
 
@@ -269,22 +307,21 @@ impl LeafPlacement {
     ///
     /// The enclosing box is computed in the ORIGIN-RELATIVE frame and the integer origin is added
     /// back in `i64`, so a far-out leaf's extent stays exact (the wandering-origin fold).
+    #[must_use]
     pub fn world_aabb(&self) -> ([i64; 3], [i64; 3]) {
         let (rel_min, rel_max) = enclosing_box(self.rotation, box_corners(self.full), |corner| {
             self.forward_local_relative(corner)
         });
-        (
-            [
-                rel_min[0] + self.origin_voxels[0],
-                rel_min[1] + self.origin_voxels[1],
-                rel_min[2] + self.origin_voxels[2],
-            ],
-            [
-                rel_max[0] + self.origin_voxels[0],
-                rel_max[1] + self.origin_voxels[1],
-                rel_max[2] + self.origin_voxels[2],
-            ],
-        )
+        let add_origin = |relative: [i64; 3]| {
+            std::array::from_fn(|axis| {
+                relative
+                    .get(axis)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(self.origin_voxels.get(axis).copied().unwrap_or_default())
+            })
+        };
+        (add_origin(rel_min), add_origin(rel_max))
     }
 
     /// The producer-LOCAL integer box `[min, max)` enclosing the inverse image of an absolute voxel
@@ -298,22 +335,24 @@ impl LeafPlacement {
     /// Each absolute corner is rebased against the integer origin in `i64` before the rotation, so
     /// a far-out box maps to producer-local without precision loss (the output is producer-local,
     /// magnitude `≈ full`, so no origin is re-added).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn local_aabb(&self, abs_min: [i64; 3], abs_max: [i64; 3]) -> ([i64; 3], [i64; 3]) {
         // The 8 integer corners of `[abs_min, abs_max]`, rebased against the origin in i64 (exact)
         // then rotated into the local frame — the same enclosing floor/ceil as `world_aabb`.
         let corners: [Vec3; 8] = std::array::from_fn(|i| {
             let pick = |axis: usize| {
                 if (i >> axis) & 1 == 0 {
-                    abs_min[axis]
+                    abs_min.get(axis).copied().unwrap_or_default()
                 } else {
-                    abs_max[axis]
+                    abs_max.get(axis).copied().unwrap_or_default()
                 }
             };
-            self.local_of_relative(Vec3::new(
-                (pick(0) - self.origin_voxels[0]) as f32,
-                (pick(1) - self.origin_voxels[1]) as f32,
-                (pick(2) - self.origin_voxels[2]) as f32,
-            ))
+            let relative = std::array::from_fn(|axis| {
+                let origin = self.origin_voxels.get(axis).copied().unwrap_or_default();
+                i64_to_f32(pick(axis).saturating_sub(origin))
+            });
+            self.local_of_relative(Vec3::from_array(relative))
         });
         // `enclosing_box`'s transform is identity here — the corners are already the local images.
         enclosing_box(self.rotation, corners, |mapped| mapped)
@@ -324,6 +363,7 @@ impl LeafPlacement {
 /// whole corner-anchor convention depends on (module docs call it load-bearing), so
 /// [`LeafPlacement::new`] and [`seat_center_at`] read it from ONE definition rather
 /// than each re-running the fold.
+#[allow(clippy::arithmetic_side_effects)]
 fn min_rotated_corner(rotation: Quat, full: Vec3) -> Vec3 {
     let mut low = Vec3::splat(f32::INFINITY);
     for corner in box_corners(full) {
@@ -356,14 +396,14 @@ fn enclosing_box(
     } else {
         (
             [
-                low.x.floor() as i64,
-                low.y.floor() as i64,
-                low.z.floor() as i64,
+                f32_to_i64(low.x.floor()),
+                f32_to_i64(low.y.floor()),
+                f32_to_i64(low.z.floor()),
             ],
             [
-                high.x.ceil() as i64,
-                high.y.ceil() as i64,
-                high.z.ceil() as i64,
+                f32_to_i64(high.x.ceil()),
+                f32_to_i64(high.y.ceil()),
+                f32_to_i64(high.z.ceil()),
             ],
         )
     }
@@ -372,13 +412,26 @@ fn enclosing_box(
 /// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`, rotated
 /// by `rotation`, so its local CENTER `full/2` lands at world `target_center` under the SAME
 /// corner-anchored [`LeafPlacement`] the classifier folds through. It is
-/// the inverse of [`LeafPlacement::new`]`(rotation, full, result).world_of(full/2) == target_center`.
+/// the inverse of `LeafPlacement::new(rotation, full, result).world_of(full / 2) == target_center`.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn seat_center_at(rotation: Quat, full: Vec3, target_center: Vec3) -> Vec3 {
     target_center - rotation * (full * 0.5) + min_rotated_corner(rotation, full)
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     /// A voxel offset (`> 2^24`) at which collapsing the integer origin into an `f32` world

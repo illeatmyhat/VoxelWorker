@@ -1,4 +1,4 @@
-//! The shell's ViewCube + framing camera actions: Home snap/set, Fit, the cube viewport
+//! The shell's `ViewCube` and framing camera actions: Home snap/set, Fit, the cube viewport
 //! hit-rect, chrome-zone dispatch, and the ray-cast element picker that maps a cube click to a
 //! face/edge/corner.
 
@@ -22,7 +22,7 @@ impl WindowedState {
     /// Bring the camera back to the spherical chart before a **chart-native** camera op runs,
     /// re-leveling the horizon with an eased tween if it had to convert.
     ///
-    /// The ViewCube, Home and Fit all speak `theta`/`phi` — snap tables, saved angles, eased
+    /// The `ViewCube`, Home and Fit all speak `theta`/`phi` — snap tables, saved angles, eased
     /// interpolation — so none of them can act on a live trackball, whose chart fields are stale
     /// by definition. Converting is view-preserving on its own (`ensure_constrained` hands the
     /// tilted horizon to `roll`); the tween is the owner ruling that returning to Constrained
@@ -109,7 +109,7 @@ impl WindowedState {
             .any(|[rx, ry, rw, rh]| x >= *rx && x < rx + rw && y >= *ry && y < ry + rh)
     }
 
-    /// The ViewCube's on-screen square in window pixels, so the chrome hit-math
+    /// The `ViewCube`'s on-screen square in window pixels, so the chrome hit-math
     /// ([`classify_cube_point`]) shares the SAME rect as [`Self::position_in_view_cube`]
     /// and the renderer (both via [`view_cube_corner`]). A degenerate rect (size 0) is
     /// returned when the cube isn't drawn (viewport below the minimum size), so every

@@ -103,33 +103,33 @@ impl StateCategory {
     /// The spelling accepted inside `#[snapshot(...)]`, and the one used in
     /// diagnostics. Kept as the single source of truth for the vocabulary so the
     /// derive's error text and this enum can never name different category sets.
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            StateCategory::Settings => "settings",
-            StateCategory::Document => "document",
-            StateCategory::View => "view",
-            StateCategory::Session => "session",
-            StateCategory::Transient => "transient",
-            StateCategory::Derived => "derived",
+            Self::Settings => "settings",
+            Self::Document => "document",
+            Self::View => "view",
+            Self::Session => "session",
+            Self::Transient => "transient",
+            Self::Derived => "derived",
         }
     }
 
     /// Whether state in this category is written to the **document** — the shared,
     /// versioned project artifact. Only [`Document`](Self::Document) is.
+    #[must_use]
     pub const fn reaches_document(self) -> bool {
-        matches!(self, StateCategory::Document)
+        matches!(self, Self::Document)
     }
 
     /// Whether state in this category is written to the **dump** — the unversioned
     /// debugging artifact from which a scene must be completely reproducible. Settings,
     /// document, view and session state all are; the two escape hatches are not.
+    #[must_use]
     pub const fn reaches_dump(self) -> bool {
         matches!(
             self,
-            StateCategory::Settings
-                | StateCategory::Document
-                | StateCategory::View
-                | StateCategory::Session
+            Self::Settings | Self::Document | Self::View | Self::Session
         )
     }
 }
@@ -164,6 +164,7 @@ pub trait Snapshot {
     /// The category of a named field, or `None` if the struct has no such field.
     /// A linear scan: these tables are tens of entries and are read by tests and
     /// tooling, never in a frame.
+    #[must_use]
     fn category_of(field_name: &str) -> Option<StateCategory> {
         Self::CLASSIFIED_FIELDS
             .iter()
@@ -172,6 +173,7 @@ pub trait Snapshot {
     }
 
     /// The fields reaching the document, in declaration order.
+    #[must_use]
     fn document_fields() -> Vec<ClassifiedField> {
         Self::CLASSIFIED_FIELDS
             .iter()
@@ -181,6 +183,7 @@ pub trait Snapshot {
     }
 
     /// The fields reaching the dump, in declaration order.
+    #[must_use]
     fn dump_fields() -> Vec<ClassifiedField> {
         Self::CLASSIFIED_FIELDS
             .iter()

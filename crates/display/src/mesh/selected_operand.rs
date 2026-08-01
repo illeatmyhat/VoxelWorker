@@ -33,12 +33,11 @@
 use super::*;
 use crate::renderer::{operand_ghost_loud_tint, operand_ghost_quiet_tint, OperandGhostStyle};
 
-/// One ghost body: an operation style plus the body's two-layer covering chunks, ALREADY
-/// in the composed scene's absolute chunk coords (the app_core derivation resolves the
-/// selected subtree standalone but keeps its absolute placement, so meshing with the
-/// COMPOSED scene's recenter lands the ghost exactly on the node's voxels — the frame
-/// is carried, never re-derived). A plain selection is one body; a fixture-
-/// instance selection is one body per spliced child (each under its own operation).
+/// One selected-operand ghost body.
+///
+/// Its chunks use composed-scene absolute coordinates while retaining the selected subtree's
+/// placement. A plain selection is one body; a fixture-instance selection has one body per
+/// spliced child.
 pub struct SelectedOperandGhostBody {
     /// How the body folds — picks the ghost hue (red / amber / subtle).
     pub style: OperandGhostStyle,

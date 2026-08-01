@@ -11,6 +11,8 @@ pub use crate::store::{ChunkCacheKey, ChunkResolveCache, Store};
 // the app's dev-dependency on `document`'s `oracle` feature (test builds only).
 #[cfg(test)]
 mod scene_cache_equivalence_tests {
+    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::items_after_statements, clippy::manual_midpoint, clippy::panic, clippy::redundant_clone, clippy::too_many_lines, clippy::unwrap_used)]
+
     use crate::store::ChunkResolveCache;
     use document::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
     use document::voxel::{GeometryParams, SdfShape};
@@ -238,8 +240,7 @@ mod scene_cache_equivalence_tests {
                         assert_eq!(
                         position[axis].fract().abs(),
                         0.5,
-                        "[{label}] center {:?} axis {axis} must be a half-integer (on the lattice)",
-                        position
+                        "[{label}] center {position:?} axis {axis} must be a half-integer (on the lattice)"
                     );
                     }
                 }
@@ -251,8 +252,7 @@ mod scene_cache_equivalence_tests {
                         let index = (position[axis] + half - 0.5).round() as i64;
                         assert!(
                         index >= 0 && index < dim as i64,
-                        "[{label}] voxel {:?} axis {axis} decodes to {index} OUTSIDE [0, {dim})",
-                        position
+                        "[{label}] voxel {position:?} axis {axis} decodes to {index} OUTSIDE [0, {dim})"
                     );
                     }
                 }

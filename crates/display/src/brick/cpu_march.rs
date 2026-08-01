@@ -1,9 +1,9 @@
 use super::*;
 
-/// A CPU march hit: the hit voxel in ABSOLUTE voxel coordinates (the exact
-/// evaluator's frame), plus the entered face's outward normal as an exact ±1 axis
-/// vector (`[i32; 3]`, so `Eq` still derives). The normal drives the loaded-material
-/// shading rule (`face_layer`) the color-parity test cross-checks.
+/// A CPU march hit containing the hit voxel and entered-face normal.
+///
+/// Coordinates use the evaluator's absolute frame. The exact ±1 normal drives the
+/// loaded-material `face_layer` rule used by the color-parity test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuMarchHit {
     pub absolute_voxel: [i32; 3],
@@ -97,12 +97,11 @@ pub(crate) fn cpu_clipmap_cell_occupied(level: &ClipmapLevel, absolute_block: gl
     )
 }
 
-/// March one pixel-center ray through the brick field on the CPU — a step-for-step
-/// f32 mirror of the WGSL `march_brick_field` (same op order, same tie-breaks, same
-/// clamped boxes, residency-miss branch, and hierarchical clip-map skip),
-/// returning the hit voxel in absolute coordinates. The parity net asserts the GPU
-/// hit-identity image equals this. `pyramid` with empty levels is the "pyramid off"
-/// form (the flat block-DDA) — the A/B baseline the pyramid-on == off parity uses.
+/// March one pixel-center ray through the brick field on the CPU.
+///
+/// This is a step-for-step f32 mirror of WGSL `march_brick_field`, including operation order,
+/// tie-breaks, clamped boxes, residency misses, and hierarchical clip-map skips. Empty pyramid
+/// levels select the flat block-DDA baseline.
 pub fn cpu_march_brick_field(
     frame: &BrickMarchFrame,
     records: &[BrickGpuRecord],
@@ -113,9 +112,10 @@ pub fn cpu_march_brick_field(
     cpu_march_brick_field_counted(frame, records, build, pyramid, pixel).0
 }
 
-/// [`cpu_march_brick_field`] plus the number of block-DDA loop iterations the ray
-/// took (each iteration is one hierarchical jump OR one per-block step) — the
-/// empty-space-skip metric the scattered-scene perf probe reports pyramid on vs off.
+/// Run [`cpu_march_brick_field`] and count its block-DDA iterations.
+///
+/// Each iteration is one hierarchical jump or one per-block step; the count is the
+/// empty-space-skip metric used by the scattered-scene performance probe.
 pub fn cpu_march_brick_field_counted(
     frame: &BrickMarchFrame,
     records: &[BrickGpuRecord],
@@ -132,12 +132,10 @@ pub fn cpu_march_brick_field_counted(
     )
 }
 
-/// The core hierarchical-DDA CPU march, generalized over an arbitrary set of
-/// clip-map levels ordered COARSEST → FINEST (the shader's else-if descent, as a
-/// loop). `cpu_march_brick_field_counted` passes the production pyramid's three
-/// levels; the perf probe passes custom level sets (L2-only, +L3, +L4) to measure
-/// each configuration's block-steps/ray honestly. An empty level (off) is skipped
-/// over. Returns the hit voxel (absolute) plus the block-DDA iteration count.
+/// Run the core hierarchical-DDA CPU march over arbitrary clip-map levels.
+///
+/// Levels are ordered coarsest to finest, matching the shader's descent. Empty levels are
+/// skipped, and the result contains the absolute hit voxel plus the block-DDA iteration count.
 pub fn cpu_march_levels_counted(
     frame: &BrickMarchFrame,
     records: &[BrickGpuRecord],
@@ -201,10 +199,10 @@ pub fn cpu_march_levels_counted(
     )
 }
 
-/// March one pixel-center ray over the EXACT evaluator's occupancy — a plain
-/// voxel-level DDA (no bricks, no records) inside the same frame/band, querying
-/// `occupied(absolute_voxel)`. This is the parity net's INDEPENDENT content
-/// oracle: the brick march's hit-voxel set must equal this march's hit-voxel set.
+/// March a pixel-center ray over the evaluator's occupancy.
+///
+/// This plain voxel-level DDA uses the same frame and band without bricks or records. It is the
+/// independent parity oracle for the brick march's hit-voxel set.
 pub fn cpu_march_exact_occupancy(
     frame: &BrickMarchFrame,
     occupied: &dyn Fn([i64; 3]) -> bool,
@@ -231,12 +229,11 @@ pub fn cpu_march_exact_occupancy(
     })
 }
 
-/// The MATERIAL a brick hit shades from — the CPU-march reference for per-voxel
-/// mixed shading (`docs/architecture/03-display.md`, the brick-field atlas). For a MIXED brick
-/// (kind 2 with a resident cell-key slot) it samples the SAME cell-key tile at the SAME hit
-/// voxel the shader's `mixed_voxel_material` reads and returns its clean block id; for a coarse
-/// or sculpted-UNIFORM block it returns the per-record material. `tests/gpu_parity.rs` asserts
-/// [`BrickRaymarchRenderer::render_material_identity_image`] equals this at every agreeing pixel.
+/// Resolve the material used to shade a brick hit.
+///
+/// Mixed bricks read the same cell-key tile and hit voxel as the shader; coarse and
+/// sculpted-uniform bricks use their per-record material. The GPU parity test compares this
+/// result with [`BrickRaymarchRenderer::render_material_identity_image`].
 ///
 /// The material is a DOMAIN fact (a cell key, a palette id, an overlay bit); the `raycast` kernel
 /// stays material-free, so this resolves off the returned [`CpuMarchHit::absolute_voxel`] — the

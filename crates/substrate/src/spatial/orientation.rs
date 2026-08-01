@@ -58,13 +58,15 @@ impl LatticeOrientation {
     /// (the document serializes it through here) stores these six small integers and rebuilds
     /// via [`from_gather`](Self::from_gather), which re-validates. Substrate itself stays
     /// serde-free (the crate's boundary law), so the serde adapter lives at the domain seam.
-    pub fn to_gather(&self) -> ([u8; 3], [i8; 3]) {
+    #[must_use]
+    pub const fn to_gather(&self) -> ([u8; 3], [i8; 3]) {
         (self.source, self.sign)
     }
 
     /// Construct from the gather form, if it is a valid proper rotation (`source` a
     /// permutation and `det = +1`); `None` otherwise. The invariant every other constructor
     /// upholds, and the re-validation a deserialized orientation passes through.
+    #[must_use]
     pub fn from_gather(source: [u8; 3], sign: [i8; 3]) -> Option<Self> {
         let is_permutation = {
             let [a, b, c] = source;
@@ -80,40 +82,65 @@ impl LatticeOrientation {
 
     /// The determinant of the rotation matrix (`+1` for a proper rotation, `-1` for a
     /// reflection). The sign of the permutation times the product of the axis signs.
-    fn determinant(&self) -> i32 {
+    fn determinant(self) -> i32 {
         // Parity of the permutation `source`: +1 if even, -1 if odd. With three elements a
         // permutation is odd iff it is a single transposition (exactly one fixed point) or
         // the reverse; counting inversions is simplest and unambiguous.
-        let [a, b, c] = self.source.map(|s| s as i32);
-        let inversions = (a > b) as i32 + (a > c) as i32 + (b > c) as i32;
-        let permutation_sign = if inversions % 2 == 0 { 1 } else { -1 };
-        permutation_sign * self.sign.iter().map(|&s| s as i32).product::<i32>()
+        let [a, b, c] = self.source.map(i32::from);
+        let inversions = i32::from(a > b)
+            .saturating_add(i32::from(a > c))
+            .saturating_add(i32::from(b > c));
+        let permutation_sign: i32 = if inversions % 2 == 0 { 1 } else { -1 };
+        let sign_product = self
+            .sign
+            .iter()
+            .map(|&s| i32::from(s))
+            .fold(1, i32::saturating_mul);
+        permutation_sign.saturating_mul(sign_product)
     }
 
     /// Apply the turn to an integer vector: `out[o] = sign[o] · v[source[o]]`. Exact.
+    #[must_use]
     pub fn apply(&self, v: [i64; 3]) -> [i64; 3] {
-        std::array::from_fn(|o| self.sign[o] as i64 * v[self.source[o] as usize])
+        std::array::from_fn(|o| {
+            let sign = self.sign.get(o).copied().unwrap_or_default();
+            let source = usize::from(self.source.get(o).copied().unwrap_or_default());
+            i64::from(sign).saturating_mul(v.get(source).copied().unwrap_or_default())
+        })
     }
 
     /// Apply the turn to a real vector — the same relabel-and-negate, for the ghost preview's
     /// analytic sample and any float-frame caller.
+    #[must_use]
     pub fn apply_f32(&self, v: [f32; 3]) -> [f32; 3] {
-        std::array::from_fn(|o| self.sign[o] as f32 * v[self.source[o] as usize])
+        std::array::from_fn(|o| {
+            let sign = self.sign.get(o).copied().unwrap_or_default();
+            let source = usize::from(self.source.get(o).copied().unwrap_or_default());
+            f32::from(sign) * v.get(source).copied().unwrap_or_default()
+        })
     }
 
     /// Permute a non-negative **extent** (grid dimensions) by the turn, ignoring sign — a
     /// box's side lengths are orientation-invariant in magnitude, only relabeled. `out[o]`
     /// is the input extent along the axis that lands on output `o`. This is the world span of
     /// a turned producer grid, still corner-anchored at its world offset.
+    #[must_use]
     pub fn turn_extent(&self, extent: [u32; 3]) -> [u32; 3] {
-        std::array::from_fn(|o| extent[self.source[o] as usize])
+        std::array::from_fn(|o| {
+            let source = usize::from(self.source.get(o).copied().unwrap_or_default());
+            extent.get(source).copied().unwrap_or_default()
+        })
     }
 
     /// [`turn_extent`](Self::turn_extent) for an `i64` span — the domain carries grid extents
     /// as `i64` for its offset arithmetic; the values are magnitudes, so this is
     /// the same sign-ignoring permutation.
+    #[must_use]
     pub fn turn_extent_i64(&self, extent: [i64; 3]) -> [i64; 3] {
-        std::array::from_fn(|o| extent[self.source[o] as usize])
+        std::array::from_fn(|o| {
+            let source = usize::from(self.source.get(o).copied().unwrap_or_default());
+            extent.get(source).copied().unwrap_or_default()
+        })
     }
 
     /// Turn a **local cell index** in the corner-anchored box `[0, extent)` to its cell index
@@ -121,13 +148,17 @@ impl LatticeOrientation {
     /// origin. A positive axis passes through; a negated axis is **reversed in place**
     /// (`ext−1−l`) rather than sent negative — which is what keeps a turned producer grid
     /// corner-anchored at its world offset, exactly like an un-turned one.
+    #[must_use]
     pub fn turn_point_in_box(&self, local: [i64; 3], extent: [u32; 3]) -> [i64; 3] {
         std::array::from_fn(|o| {
-            let s = self.source[o] as usize;
-            if self.sign[o] > 0 {
-                local[s]
+            let s = usize::from(self.source.get(o).copied().unwrap_or_default());
+            let local_axis = local.get(s).copied().unwrap_or_default();
+            if self.sign.get(o).copied().unwrap_or_default() > 0 {
+                local_axis
             } else {
-                extent[s] as i64 - 1 - local[s]
+                i64::from(extent.get(s).copied().unwrap_or_default())
+                    .saturating_sub(1)
+                    .saturating_sub(local_axis)
             }
         })
     }
@@ -138,6 +169,7 @@ impl LatticeOrientation {
     /// axis reverses the interval — `[lo, hi)` becomes `[ext−hi, ext−lo)` — so the result is a
     /// proper half-open box the producer can bound. This is the map the classifier applies to
     /// send a world block/voxel cell into the producer's unturned frame.
+    #[must_use]
     pub fn unturn_box(
         &self,
         world_min: [i64; 3],
@@ -147,15 +179,24 @@ impl LatticeOrientation {
         let mut local_min = [0i64; 3];
         let mut local_max = [0i64; 3];
         for o in 0..3 {
-            let s = self.source[o] as usize;
-            let (wlo, whi) = (world_min[o], world_max[o]);
-            let (lo, hi) = if self.sign[o] > 0 {
+            let s = usize::from(self.source.get(o).copied().unwrap_or_default());
+            let wlo = world_min.get(o).copied().unwrap_or_default();
+            let whi = world_max.get(o).copied().unwrap_or_default();
+            let local_extent = i64::from(extent.get(s).copied().unwrap_or_default());
+            let (lo, hi) = if self.sign.get(o).copied().unwrap_or_default() > 0 {
                 (wlo, whi)
             } else {
-                (extent[s] as i64 - whi, extent[s] as i64 - wlo)
+                (
+                    local_extent.saturating_sub(whi),
+                    local_extent.saturating_sub(wlo),
+                )
             };
-            local_min[s] = lo;
-            local_max[s] = hi;
+            if let Some(value) = local_min.get_mut(s) {
+                *value = lo;
+            }
+            if let Some(value) = local_max.get_mut(s) {
+                *value = hi;
+            }
         }
         (local_min, local_max)
     }
@@ -163,35 +204,57 @@ impl LatticeOrientation {
     /// The composition `self ∘ other` — the turn that applies `other` first, then `self`
     /// (matrix product `self · other`). Closed over the 24: the result is always another
     /// proper rotation.
-    pub fn compose(&self, other: &LatticeOrientation) -> LatticeOrientation {
+    #[must_use]
+    pub fn compose(&self, other: &Self) -> Self {
         // (A·B) as a gather: out o reads A's source o, whose input is B's output `k = A.source[o]`,
         // which itself reads B's source k with B's sign. So source = B.source[A.source[o]] and
         // sign = A.sign[o] · B.sign[A.source[o]].
-        let source = std::array::from_fn(|o| other.source[self.source[o] as usize]);
-        let sign = std::array::from_fn(|o| self.sign[o] * other.sign[self.source[o] as usize]);
-        LatticeOrientation { source, sign }
+        let source = std::array::from_fn(|o| {
+            let intermediate = usize::from(self.source.get(o).copied().unwrap_or_default());
+            other.source.get(intermediate).copied().unwrap_or_default()
+        });
+        let sign = std::array::from_fn(|o| {
+            let intermediate = usize::from(self.source.get(o).copied().unwrap_or_default());
+            self.sign
+                .get(o)
+                .copied()
+                .unwrap_or_default()
+                .saturating_mul(other.sign.get(intermediate).copied().unwrap_or_default())
+        });
+        Self { source, sign }
     }
 
     /// The inverse turn — `self.inverse().apply(self.apply(v)) == v`. A rotation matrix's
     /// inverse is its transpose; for the gather form the transpose sends output axis `o` back
     /// to input `source[o]` carrying the same sign.
-    pub fn inverse(&self) -> LatticeOrientation {
+    #[must_use]
+    pub fn inverse(&self) -> Self {
         let mut source = [0u8; 3];
         let mut sign = [1i8; 3];
         for o in 0..3 {
-            let s = self.source[o] as usize;
-            source[s] = o as u8;
-            sign[s] = self.sign[o];
+            let s = usize::from(self.source.get(o).copied().unwrap_or_default());
+            if let Some(value) = source.get_mut(s) {
+                *value = u8::try_from(o).unwrap_or_default();
+            }
+            if let Some(value) = sign.get_mut(s) {
+                *value = self.sign.get(o).copied().unwrap_or_default();
+            }
         }
-        LatticeOrientation { source, sign }
+        Self { source, sign }
     }
 
     /// The 3×3 rotation matrix, row-major, entries in `{-1, 0, 1}` — for a GPU uniform or any
     /// caller that wants the dense form. Row `o` has `sign[o]` in column `source[o]`.
+    #[must_use]
     pub fn to_matrix(&self) -> [[i32; 3]; 3] {
         let mut m = [[0i32; 3]; 3];
         for o in 0..3 {
-            m[o][self.source[o] as usize] = self.sign[o] as i32;
+            let source = usize::from(self.source.get(o).copied().unwrap_or_default());
+            if let Some(row) = m.get_mut(o) {
+                if let Some(value) = row.get_mut(source) {
+                    *value = i32::from(self.sign.get(o).copied().unwrap_or_default());
+                }
+            }
         }
         m
     }
@@ -205,9 +268,13 @@ impl LatticeOrientation {
     /// curved primitives are symmetric about their axis, so it is unobservable for them; a box
     /// is symmetric under 90° twists, so it is unobservable for it too at authoring sizes.
     ///
+    /// # Panics
+    ///
     /// Panics on a non-axis `normal` (not exactly one `±1` component) — placement only ever
     /// derives this from a voxel face normal, which is always axis-aligned.
-    pub fn from_face_normal(normal: [i32; 3]) -> LatticeOrientation {
+    #[allow(clippy::panic)]
+    #[must_use]
+    pub fn from_face_normal(normal: [i32; 3]) -> Self {
         let parts = match normal {
             [0, 0, 1] => ([0, 1, 2], [1, 1, 1]),    // +Z: identity
             [0, 0, -1] => ([0, 1, 2], [1, -1, -1]), // -Z: 180° about X
@@ -217,11 +284,12 @@ impl LatticeOrientation {
             [0, -1, 0] => ([0, 2, 1], [1, -1, 1]),  // -Y: +90° about X
             other => panic!("face normal must be an axis vector, got {other:?}"),
         };
-        Self::from_gather(parts.0, parts.1).expect("the six face-normal turns are proper rotations")
+        Self::from_gather(parts.0, parts.1).unwrap_or(Self::IDENTITY)
     }
 
     /// Whether this is the identity turn (world-aligned). The world-plane placement path
     /// asserts this — those planes position only, never orient.
+    #[must_use]
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
     }
@@ -229,6 +297,17 @@ impl LatticeOrientation {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     /// All 24 proper cube rotations, built by filtering the 48 signed permutations down to

@@ -1,8 +1,9 @@
 use super::*;
 
-/// What an [`IncrementalBrickField::apply_dirty_update`] touched — the per-edit "dirty
-/// region" made observable so the GPU sink patches ONLY these atlas slots (never the
-/// untouched ones) and the parity net can assert the cost is proportional to the edit.
+/// Describe the region touched by one incremental update.
+///
+/// The GPU sink uses this information to patch only affected atlas slots, while parity tests
+/// use it to verify that work remains proportional to the edit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BrickFieldUpdate {
     /// Atlas slots (re)written this edit — newly allocated or overwritten sculpted
@@ -29,10 +30,10 @@ pub struct BrickFieldUpdate {
     pub cell_key_atlas_grew: bool,
 }
 
-/// The PERSISTENT incremental brick field. Maintains the sorted
-/// [`BrickRecord`] array + a slot-allocated atlas ACROSS edits so a per-edit update
-/// re-evaluates only the DIRTY chunks' blocks and patches only their slots, so the
-/// per-edit cost is proportional to the dirty region, not the scene.
+/// The persistent incremental brick field.
+///
+/// It maintains sorted records and a slot-allocated atlas across edits. Each update evaluates
+/// only dirty chunks and patches only their slots, keeping cost proportional to the dirty region.
 ///
 /// Slots are managed by a **free-list** (allocate on a new sculpted brick, free when a
 /// brick becomes air/coarse or its chunk is dirtied away), so slot numbers are STABLE
@@ -283,7 +284,7 @@ impl IncrementalBrickField {
         }
     }
 
-    /// The brick edge (voxels_per_block) the field is bound to.
+    /// The brick edge (`voxels_per_block`) the field is bound to.
     pub fn brick_edge_voxels(&self) -> u32 {
         self.brick_edge_voxels
     }
@@ -332,7 +333,7 @@ impl IncrementalBrickField {
     ///
     /// Byte-equality vs a from-scratch surface-only [`build_brick_field`] after every edit is
     /// the acceptance bar (`incremental_dirty_update_equals_wholesale_after_every_step`, the
-    /// cross-chunk carve case, and the gpu_parity render gate). Returns the
+    /// cross-chunk carve case, and the `gpu_parity` render gate). Returns the
     /// [`BrickFieldUpdate`] describing exactly which slots were touched (the GPU patch's
     /// work-list).
     pub fn apply_dirty_update(

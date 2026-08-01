@@ -1,3 +1,19 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::similar_names,
+    clippy::too_long_first_doc_paragraph,
+    clippy::doc_markdown
+)]
+
 //! The store — a per-chunk resolve cache keyed by
 //! `(chunk_coord, lod)` that resolves a chunk **on demand** (lazily) and stores the
 //! result, so a second request for the same chunk is a map lookup instead of a

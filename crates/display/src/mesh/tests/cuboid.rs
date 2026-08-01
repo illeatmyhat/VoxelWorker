@@ -1,3 +1,5 @@
+#![allow(clippy::cloned_instead_of_copied, clippy::float_cmp)]
+
 use super::*;
 use voxel_core::voxel::Voxel;
 
@@ -158,7 +160,7 @@ fn merged_face_spans_one_uv_unit_per_voxel() {
 }
 
 /// E3b-2: the face-normal → texture-array layer mapping must match the loaded
-/// shader's `face_layer` (cuboid_loaded.wgsl) EXACTLY. Z-up: +Z = up (2), -Z =
+/// shader's `face_layer` (`cuboid_loaded.wgsl`) EXACTLY. Z-up: +Z = up (2), -Z =
 /// down (3); ±X = east/west (0/1); -Y = south/front (4), +Y = north/back (5).
 /// Replicated here as a pure function so the shader↔CPU mapping is regression-
 /// guarded (the vertical texture axis is Z, not Y).

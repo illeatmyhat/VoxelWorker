@@ -4,6 +4,14 @@
 //! Layout rules are the design's own: zero corner radius, 1 px hairlines, flat fills, monospace
 //! throughout, UPPERCASE micro-labels at ~2 px letter-spacing, and exactly one accent.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::needless_pass_by_ref_mut,
+    clippy::too_many_lines,
+    clippy::unused_self,
+    clippy::while_float
+)]
+
 use egui::{
     Align, Color32, FontId, Layout, Painter, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
 };

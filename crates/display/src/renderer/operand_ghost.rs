@@ -13,9 +13,10 @@
 
 use super::*;
 
-/// The operation role a selected-operand ghost body renders as. Display's
-/// OWN vocabulary — the app_core derivation maps the document's `CombineOp` onto it, so
-/// the display layer renders a style without reading document state.
+/// The operation role rendered by a selected-operand ghost.
+///
+/// This is display's own vocabulary. The `app_core` derivation maps the document's `CombineOp`
+/// onto it, so the display layer need not read document state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperandGhostStyle {
     /// The operand carves — translucent red.

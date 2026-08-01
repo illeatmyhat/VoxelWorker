@@ -1,12 +1,9 @@
 use super::*;
 
-/// Build the **surface-only** brick field from a scene's two-layer boundary set (the
-/// `build_covering_chunks` / resident-cache output): walk every chunk's block partition,
-/// emit one record per SURFACE non-air block — a fully-occluded coarse interior block
-/// emits nothing (interior elision, fused into the build via
-/// [`BrickOcclusionOracle`]; interiors stay queryable through the chunks) — rasterize each
-/// boundary block's cuboids into its atlas slot, and sort the records by packed
-/// world-block key.
+/// Build the **surface-only** brick field from a scene's two-layer boundary set.
+///
+/// The builder emits records for visible non-air blocks, elides fully occluded coarse interior
+/// blocks, rasterizes boundary cuboids, and sorts records by packed world-block key.
 ///
 /// **O(surface), not O(volume) (the 8000³-freeze fix):** an all-interior chunk (fully
 /// solid, fully-solid face-neighbors) is skipped whole without visiting its blocks, so a
@@ -38,13 +35,11 @@ pub fn build_brick_field(
     build_brick_field_with_tiles(two_layer_chunks, voxels_per_block).0
 }
 
-/// Like [`build_brick_field`] but ALSO returns the per-sculpted-slot occupancy tiles it
-/// rasterized (dense slot order — the `atlas_slot` numbering baked into the records), so a
-/// wholesale reset can MOVE them straight into the incremental mirror
-/// ([`IncrementalBrickField::from_wholesale_with_tiles`]) instead of re-gathering + re-bit-
-/// packing them out of the flat atlas bytes the packer just produced. The `BrickFieldBuild`
-/// is byte-identical to [`build_brick_field`]'s (same records, same packed atlas bytes) —
-/// this only hands back the intermediate the plain entry discards.
+/// Build a brick field and return its per-sculpted-slot occupancy tiles.
+///
+/// The tiles use dense `atlas_slot` order so a wholesale reset can move them directly into the
+/// incremental mirror instead of re-gathering them from the packed atlas bytes. The returned
+/// [`BrickFieldBuild`] is byte-identical to [`build_brick_field`].
 pub fn build_brick_field_with_tiles(
     two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     voxels_per_block: u32,
@@ -175,11 +170,10 @@ pub(crate) fn sculpted_payload_dense(
     }
 }
 
-/// The interior-INCLUSIVE brick-field build: one record per NON-AIR block (coarse-solid or
-/// boundary), the pre-elision reference. **Oracle only** — the live sink uses the surface-only
-/// [`build_brick_field`]; this stays as the parity oracle for the interior-elision gates
-/// (`brick_surface_elision_hit_set_unchanged`, `clipmap_from_chunks_equals_from_full_records`)
-/// and any consumer that genuinely needs every block (none on the live path).
+/// Build the interior-inclusive brick field used as a reference oracle.
+///
+/// It emits one record per non-air block. The live sink uses surface-only
+/// [`build_brick_field`]; this version remains for interior-elision parity checks.
 pub fn build_brick_field_all_blocks(
     two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     voxels_per_block: u32,

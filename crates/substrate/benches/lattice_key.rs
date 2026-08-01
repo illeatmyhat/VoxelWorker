@@ -8,6 +8,15 @@
 //! deterministic coordinates: the per-record work an edit multiplies by its
 //! record count.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::missing_const_for_fn
+)]
+
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::hint::black_box;
 use substrate::spatial::lattice_key::{pack_lattice_key, split_key_hi_lo, unpack_lattice_key};
@@ -21,8 +30,8 @@ impl Lcg {
     fn next_axis(&mut self) -> i64 {
         self.0 = self
             .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         // Keep inside the ±2^19 lane the tests exercise (well within the bias).
         ((self.0 >> 33) as i64).rem_euclid(1 << 20) - (1 << 19)
     }

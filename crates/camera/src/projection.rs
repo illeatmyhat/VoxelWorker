@@ -5,7 +5,7 @@
 //! matrix the shaders consume, choosing the near/far planes to ENCLOSE the scene's
 //! bounding sphere so no in-scene geometry is ever depth-clipped.
 //! [`OrbitCamera::view_cube_view_projection`] is the small independent orthographic
-//! matrix for the corner ViewCube. [`unproject_screen_point_to_ray`] runs the
+//! matrix for the corner `ViewCube`. [`unproject_screen_point_to_ray`] runs the
 //! inverse: it maps a normalized-device-coordinate screen point back through the
 //! inverse `view_projection` to the pair of world points on the near and far clip
 //! planes, and returns the [`Ray`] through them — the generic operation behind
@@ -22,7 +22,9 @@ use substrate::spatial::Ray;
 
 use crate::orbit::{OrbitCamera, ProjectionMode, ORTHO_HALF_HEIGHT_FACTOR, PERSPECTIVE_FOV_Y};
 
-/// The scene camera matrices one frame renders with, bundled so the full and
+/// The scene camera matrices one frame renders with.
+///
+/// They are bundled so the full and
 /// camera-relative forms can never drift apart: `view_projection` for
 /// forward-projected geometry (the view multiply makes vertices eye-relative before
 /// any precision-losing arithmetic), `camera_relative_view_projection` for the
@@ -43,7 +45,7 @@ pub struct SceneMatrices {
     pub ray_view_projection: Mat4,
     /// The RAY-RECONSTRUCTION matrix (same frame as `ray_view_projection`), whose
     /// inverse the passes unproject through. Under PERSPECTIVE its near/far come from
-    /// the CAMERA (a 2·orbit_distance sphere around the target), not the scene: a
+    /// the `CAMERA` (a `2·orbit_distance` sphere around the target), not the scene: a
     /// compact scene viewed from 10^5 voxels away makes the scene bracket a thin
     /// distant slab whose z=0/z=1 unprojections are two huge nearly-equal points —
     /// their difference, the ray direction, cancels catastrophically. Ray geometry is
@@ -60,7 +62,9 @@ pub struct SceneMatrices {
     pub ndc_depth: NdcDepthMapping,
 }
 
-/// The two z-row coefficients of the projection matrix, exposed so a screen-space
+/// The two z-row coefficients of the projection matrix.
+///
+/// They are exposed so a screen-space
 /// pass can convert a world-length tolerance into an NDC-depth tolerance AT a
 /// sampled depth — comparing hardware z against hardware z directly. Never
 /// linearize a hardware depth to compare in view space: the inverse map amplifies
@@ -108,6 +112,8 @@ impl OrbitCamera {
     /// The projection branch is chosen by [`OrbitCamera::projection_mode`]; the
     /// orthographic frustum's half-height tracks `orbit_distance` so zoom keeps
     /// working and the framing is preserved when toggling.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn view_projection(
         &self,
         aspect_ratio: f32,
@@ -126,6 +132,8 @@ impl OrbitCamera {
     /// at wide-baseline coordinates. Recover render-frame positions by adding the eye
     /// back OUTSIDE the matrix math; symmetrically, forward-project points translated
     /// by `−eye`.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn camera_relative_view_projection(
         &self,
         aspect_ratio: f32,
@@ -142,6 +150,8 @@ impl OrbitCamera {
 
     /// Both scene matrices + the eye as one [`SceneMatrices`] bundle — the form the
     /// per-fragment-unprojecting display passes consume.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn scene_matrices(
         &self,
         aspect_ratio: f32,
@@ -191,6 +201,7 @@ impl OrbitCamera {
     /// placed a sphere-radius (plus margin) either side of the bounding-sphere
     /// center's view depth. Eye-position-independent apart from that depth, so the
     /// full and camera-relative view-projections share it verbatim.
+    #[allow(clippy::arithmetic_side_effects, clippy::suboptimal_flops)]
     fn projection_enclosing_sphere(
         &self,
         aspect_ratio: f32,
@@ -235,6 +246,8 @@ impl OrbitCamera {
     /// copies the MAIN camera's *direction* (`pos = direction * 4`, look at origin),
     /// so the small cube mirrors the current main view. Independent of
     /// `orbit_distance` / projection mode.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn view_cube_view_projection(&self) -> Mat4 {
         let eye = self.direction() * 4.0;
         // MUST share the main camera's up (`up_vector`) or the cube and the scene
@@ -257,6 +270,8 @@ impl OrbitCamera {
 /// their world positions, and the ray runs from the near point toward the far one.
 /// Returns `None` only if the two unprojected points coincide (a degenerate matrix),
 /// so the direction cannot be normalized.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn unproject_screen_point_to_ray(view_projection: Mat4, ndc_x: f32, ndc_y: f32) -> Option<Ray> {
     let inverse = view_projection.inverse();
     let near = inverse * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
@@ -273,6 +288,8 @@ pub fn unproject_screen_point_to_ray(view_projection: Mat4, ndc_x: f32, ndc_y: f
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::suboptimal_flops)]
+
     use super::*;
     use std::f32::consts::{FRAC_PI_2, PI};
 

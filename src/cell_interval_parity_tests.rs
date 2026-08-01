@@ -1,3 +1,15 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    clippy::unreadable_literal
+)]
+
 //! The STANDALONE exactness parity for the conservative cell-interval
 //! bound primitive ([`VoxelProducer::cell_field_interval`]).
 //!

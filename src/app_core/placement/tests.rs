@@ -1,3 +1,10 @@
+#![allow(
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+
 use std::sync::Arc;
 
 use crate::app_core::selection_of_first_root;

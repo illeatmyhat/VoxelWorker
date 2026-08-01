@@ -12,6 +12,7 @@ pub type DecodedRgba = (u32, u32, Vec<u8>);
 
 /// Decode an image file to a tightly-packed RGBA8 buffer (CPU work). Returns
 /// `None` on any decode error, in which case the caller skips the group.
+#[must_use]
 pub fn decode_rgba(path: &std::path::Path) -> Option<DecodedRgba> {
     let image = image::open(path).ok()?;
     let rgba = image.to_rgba8();

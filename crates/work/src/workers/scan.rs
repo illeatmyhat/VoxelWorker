@@ -66,6 +66,7 @@ pub fn spawn_custom_folder_scan(folder: std::path::PathBuf) -> ScanHandle {
 }
 
 /// Shared spawn: run `make_sources` on the worker, scan each, decode + stream.
+#[allow(clippy::expect_used)]
 fn spawn_with<F>(make_sources: F) -> ScanHandle
 where
     F: FnOnce() -> Vec<Box<dyn BlockSource>> + Send + 'static,

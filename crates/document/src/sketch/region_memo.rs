@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_pub_crate)]
+
 //! The derived region, remembered between queries.
 //!
 //! [`SketchSolid::signed_distance`](super::solid::SketchSolid::signed_distance) is asked once per
@@ -22,7 +24,7 @@ use substrate::geom2d::{LoopRole, RegionEdge};
 use super::{Arc as ArcEntity, Circle, FaceKey, PlaneAxis, Point, ProfileLoop, Segment, Sketch};
 
 /// Everything the per-sample paths ask of the entity store, derived once.
-pub(crate) struct Derived {
+pub struct Derived {
     /// The tagged loops — what [`Sketch::region`] hands out.
     pub region: Vec<ProfileLoop>,
     /// The same region in the measurement width, which the field folds per sample.

@@ -84,7 +84,8 @@ pub struct CellContribution {
 impl CellContribution {
     /// A contribution that folds by CSG **union** (the only combine role a union-only op stack
     /// emits). `field_interval` is `None` when the operation cannot bound the cell.
-    pub fn union(field_interval: Option<FieldInterval>) -> Self {
+    #[must_use]
+    pub const fn union(field_interval: Option<FieldInterval>) -> Self {
         Self {
             field_interval,
             combine: CellCombineOp::Union,
@@ -102,7 +103,7 @@ impl CellClassification {
     /// classify it against `isolevel` (occupancy convention "inside where `field <= isolevel`").
     ///
     /// Returns:
-    /// * `Some(`[`FieldClassification`]`)` — the three-way verdict (`Air` all-outside / `CoarseSolid`
+    /// * <code>Some([FieldClassification])</code> — the three-way verdict (`Air` all-outside / `CoarseSolid`
     ///   all-inside / `Boundary` straddling) when every contribution was boundable.
     /// * `None` — **cannot classify coarsely**: the contribution list was empty, or some operation
     ///   was unboundable (`field_interval == None`). The caller must resolve the cell per-sample.
@@ -119,16 +120,14 @@ impl CellClassification {
             any = true;
             // A single unboundable operand collapses the entire fold to "cannot classify".
             let interval = contribution.field_interval?;
-            accumulated = Some(match accumulated {
-                // The first bounded operand seeds the running interval (the op-stack base); its own
-                // combine role is not applied against an empty accumulator.
-                None => interval,
-                Some(running) => match contribution.combine {
+            accumulated = Some(accumulated.map_or(
+                interval,
+                |running| match contribution.combine {
                     CellCombineOp::Union => running.union(interval),
                     CellCombineOp::Intersect => running.intersect(interval),
                     CellCombineOp::Subtract => running.subtract(interval),
                 },
-            });
+            ));
         }
         if !any {
             // Empty contribution list ⇒ nothing to classify.

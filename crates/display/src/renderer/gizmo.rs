@@ -11,13 +11,16 @@ pub(crate) const GIZMO_AXIS_Z_HEX: u32 = 0x5a_8c_ff;
 /// Right-angle square color `#bdb39a`.
 const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
 
-/// The fraction of the viewport height a manipulator gizmo's axis spans — the one place the
-/// screen-stable size of the transform gizmos (and every future W/E/R manipulator) is set.
+/// The fraction of viewport height spanned by a manipulator gizmo axis.
+///
+/// This is the single size control for transform gizmos and future W/E/R manipulators.
 /// Fed to [`OrbitCamera::screen_stable_model`](camera::OrbitCamera::screen_stable_model).
 pub const GIZMO_SCREEN_FRACTION: f32 = 0.16;
 
-/// The transform gizmo: three colored axis lines and three
-/// perpendicular square line-loops, drawn with **depth-test disabled** so it
+/// The transform gizmo.
+///
+/// It draws three colored axis lines and three perpendicular square line-loops with
+/// **depth-test disabled** so it
 /// shows through a solid model (correct manipulator behavior). Drawn in the MSAA
 /// pass, after the voxels. The geometry is a fixed **unit** gizmo; it FOLLOWS the
 /// selected node and holds a **fixed screen size** at any zoom, because the caller

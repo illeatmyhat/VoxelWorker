@@ -21,11 +21,13 @@
 //! `1/2.4`-power encode if a linear→sRGB path ever wants it.
 
 /// Decode one 8-bit sRGB component to linear light in `[0, 1]`, via the piecewise
+///
 /// IEC 61966-2-1 EOTF (linear toe below `0.04045`, `2.4`-power above). This is the
 /// same decode a GPU applies when sampling an sRGB-format texture, so colors
 /// computed through it mix in the same space as textured surfaces.
+#[must_use]
 pub fn srgb_component_to_linear(byte: u8) -> f32 {
-    let value = byte as f32 / 255.0;
+    let value = f32::from(byte) / 255.0;
     if value <= 0.04045 {
         value / 12.92
     } else {
@@ -35,11 +37,12 @@ pub fn srgb_component_to_linear(byte: u8) -> f32 {
 
 /// Decode a packed `0xRRGGBB` sRGB color to a linear `[r, g, b]`, each channel
 /// through [`srgb_component_to_linear`].
+#[must_use]
 pub fn srgb_hex_to_linear(hex: u32) -> [f32; 3] {
     [
-        srgb_component_to_linear(((hex >> 16) & 0xff) as u8),
-        srgb_component_to_linear(((hex >> 8) & 0xff) as u8),
-        srgb_component_to_linear((hex & 0xff) as u8),
+        srgb_component_to_linear(u8::try_from((hex >> 16) & 0xff).unwrap_or_default()),
+        srgb_component_to_linear(u8::try_from((hex >> 8) & 0xff).unwrap_or_default()),
+        srgb_component_to_linear(u8::try_from(hex & 0xff).unwrap_or_default()),
     ]
 }
 
@@ -50,8 +53,8 @@ mod tests {
     /// The endpoints of the encoding map to the endpoints of linear light.
     #[test]
     fn black_and_white_are_exact_endpoints() {
-        assert_eq!(srgb_component_to_linear(0), 0.0);
-        assert_eq!(srgb_component_to_linear(255), 1.0);
+        assert_eq!(srgb_component_to_linear(0).to_bits(), 0.0f32.to_bits());
+        assert_eq!(srgb_component_to_linear(255).to_bits(), 1.0f32.to_bits());
     }
 
     /// Around the `0.04045` breakpoint the two pieces agree (the curve is
@@ -61,15 +64,18 @@ mod tests {
     fn piecewise_branches_match_their_formulas() {
         // Byte 10 → 0.039216 ≤ 0.04045, linear toe: value / 12.92.
         let toe = 10u8;
-        let toe_value = toe as f32 / 255.0;
-        assert_eq!(srgb_component_to_linear(toe), toe_value / 12.92);
+        let toe_value = f32::from(toe) / 255.0;
+        assert_eq!(
+            srgb_component_to_linear(toe).to_bits(),
+            (toe_value / 12.92).to_bits()
+        );
 
         // Byte 11 → 0.043137 > 0.04045, power segment.
         let power = 11u8;
-        let power_value = power as f32 / 255.0;
+        let power_value = f32::from(power) / 255.0;
         assert_eq!(
-            srgb_component_to_linear(power),
-            ((power_value + 0.055) / 1.055).powf(2.4)
+            srgb_component_to_linear(power).to_bits(),
+            ((power_value + 0.055) / 1.055).powf(2.4).to_bits()
         );
     }
 
@@ -86,10 +92,10 @@ mod tests {
     #[test]
     fn hex_splits_channels_and_decodes() {
         let rgb = srgb_hex_to_linear(0x00_80_ff);
-        assert_eq!(rgb[0], srgb_component_to_linear(0x00));
-        assert_eq!(rgb[1], srgb_component_to_linear(0x80));
-        assert_eq!(rgb[2], srgb_component_to_linear(0xff));
-        assert_eq!(rgb[0], 0.0);
-        assert_eq!(rgb[2], 1.0);
+        assert_eq!(rgb[0].to_bits(), srgb_component_to_linear(0x00).to_bits());
+        assert_eq!(rgb[1].to_bits(), srgb_component_to_linear(0x80).to_bits());
+        assert_eq!(rgb[2].to_bits(), srgb_component_to_linear(0xff).to_bits());
+        assert_eq!(rgb[0].to_bits(), 0.0f32.to_bits());
+        assert_eq!(rgb[2].to_bits(), 1.0f32.to_bits());
     }
 }

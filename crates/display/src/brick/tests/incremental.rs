@@ -3,6 +3,12 @@
 //! re-evaluated, slots free-listed) is byte-exact vs a from-scratch [`build_brick_field`]
 //! of the SAME scene, after EVERY step, across explicit block-kind transitions
 //! (air↔sculpted↔coarse) and add / move / recolor / delete edits.
+#![allow(
+    clippy::panic,
+    clippy::redundant_clone,
+    clippy::similar_names,
+    clippy::single_match_else
+)]
 use crate::brick::*;
 use document::scene::{Node, NodeContent, NodeTransform, Scene};
 use document::voxel::SdfShape;

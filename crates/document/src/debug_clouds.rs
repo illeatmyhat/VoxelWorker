@@ -13,6 +13,22 @@
 //! Deterministic: a fixed `seed` drives both the cloud placement and the noise
 //! permutation, so the same parameters always resolve to the same field.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::imprecise_flops,
+    clippy::suboptimal_flops,
+    clippy::too_long_first_doc_paragraph,
+    clippy::similar_names
+)]
+
 use crate::voxel::VoxelProducer;
 use glam::Vec3;
 use rayon::prelude::*;

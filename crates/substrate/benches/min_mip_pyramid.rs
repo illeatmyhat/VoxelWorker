@@ -7,6 +7,15 @@
 //! We bench `SparseMinMipPyramid::from_keys` over a deterministic scattered key set at the domain's
 //! real edge progression, at 10k and 100k keys — the per-edit occupancy counts the fold meets.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::missing_const_for_fn
+)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use substrate::spatial::lattice_key::pack_lattice_key;
@@ -21,8 +30,8 @@ impl Lcg {
     fn next_axis(&mut self) -> i64 {
         self.0 = self
             .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         // A ±few-thousand-block span, so the fold collapses many keys into shared coarse cells
         // (the scattered scene the LOD targets), staying well inside the packing lane.
         ((self.0 >> 33) as i64).rem_euclid(1 << 13) - (1 << 12)

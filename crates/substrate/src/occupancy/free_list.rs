@@ -30,9 +30,7 @@
 
 use std::ops::Index;
 
-/// A stable-index slot allocator over payloads of type `T`. Slot indices are `u32`; the
-/// backing store grows monotonically and freed indices are recycled in deterministic order
-/// (the free set is kept sorted ascending; reuse pops the largest free index first).
+/// A stable-index slot allocator over payloads of type `T`.
 #[derive(Debug, Clone)]
 pub struct SlotFreeList<T> {
     /// Payloads indexed by slot. A freed slot's entry is retained (dead) until the slot is
@@ -51,7 +49,8 @@ impl<T> Default for SlotFreeList<T> {
 
 impl<T> SlotFreeList<T> {
     /// An empty allocator (no slots, no free indices).
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             slots: Vec::new(),
             free_indices: Vec::new(),
@@ -61,7 +60,8 @@ impl<T> SlotFreeList<T> {
     /// An allocator seeded with `slots` all considered LIVE (an empty free set): slot `i`
     /// holds `slots[i]`, and the next allocation appends at `slots.len()`. The dense-seed
     /// entry for a consumer that already holds a packed `0..count` payload vector.
-    pub fn from_slots(slots: Vec<T>) -> Self {
+    #[must_use]
+    pub const fn from_slots(slots: Vec<T>) -> Self {
         Self {
             slots,
             free_indices: Vec::new(),
@@ -70,17 +70,20 @@ impl<T> SlotFreeList<T> {
 
     /// The high-water slot count (live + freed holes) — the length of the backing store,
     /// i.e. the number of distinct indices ever allocated and not yet reused past.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.slots.len()
     }
 
     /// Whether the backing store is empty (no slot has ever been allocated).
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
 
     /// The backing payloads in slot order (freed slots included, holding their dead
     /// payloads) — the contiguous view a bulk consumer scatters.
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.slots
     }
@@ -90,17 +93,17 @@ impl<T> SlotFreeList<T> {
     /// a new slot. Reuse pops the LARGEST free index (the free set is sorted ascending), so
     /// the reuse order is a deterministic function of the free/allocate sequence.
     pub fn allocate(&mut self, payload: T) -> u32 {
-        match self.free_indices.pop() {
-            Some(slot) => {
-                self.slots[slot as usize] = payload;
-                slot
-            }
-            None => {
-                let slot = self.slots.len() as u32;
-                self.slots.push(payload);
-                slot
+        if let Some(slot) = self.free_indices.pop() {
+            if let Ok(index) = usize::try_from(slot) {
+                if let Some(existing) = self.slots.get_mut(index) {
+                    *existing = payload;
+                    return slot;
+                }
             }
         }
+        let slot = u32::try_from(self.slots.len()).unwrap_or(u32::MAX);
+        self.slots.push(payload);
+        slot
     }
 
     /// Return `indices` to the free set, then re-sort+dedup the WHOLE set so reuse stays
@@ -119,7 +122,10 @@ impl<T> Index<u32> for SlotFreeList<T> {
     type Output = T;
 
     fn index(&self, slot: u32) -> &T {
-        &self.slots[slot as usize]
+        #[allow(clippy::indexing_slicing)]
+        {
+            &self.slots[usize::try_from(slot).unwrap_or_default()]
+        }
     }
 }
 

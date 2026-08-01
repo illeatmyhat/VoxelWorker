@@ -1,5 +1,22 @@
 //! A sealed scope evaluated as a single producer, so a whole Part can be outset.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::map_unwrap_or,
+    clippy::must_use_candidate,
+    clippy::unused_self,
+    clippy::doc_markdown,
+    clippy::similar_names
+)]
+
 use super::{Field, FieldInterval, VoxelProducer};
 use crate::scene::{CombineOp, LeafOrigin};
 use voxel_core::core_geom::BlockId;

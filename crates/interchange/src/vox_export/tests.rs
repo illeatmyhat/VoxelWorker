@@ -1,3 +1,12 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::cast_lossless,
+    clippy::expect_used,
+    clippy::indexing_slicing
+)]
+
 use super::*;
 use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
@@ -194,7 +203,7 @@ use evaluation::chunk_cache::ChunkResolveCache;
 /// Parse a `.vox` byte stream into a per-model SORTED multiset of
 /// `(size, voxel (x, y, z, color))`, so two exports compare equal regardless of
 /// per-model voxel emission ORDER (chunk-iteration order vs monolithic stamp
-/// order) — a MagicaVoxel reader treats reordered voxels as the same model.
+/// order) — a `MagicaVoxel` reader treats reordered voxels as the same model.
 type ModelVoxelSet = std::collections::BTreeSet<(u8, u8, u8, u8)>;
 type ModelSets = std::collections::BTreeSet<([u32; 3], ModelVoxelSet)>;
 fn parsed_model_sets(bytes: &[u8]) -> ModelSets {
@@ -215,7 +224,7 @@ fn parsed_model_sets(bytes: &[u8]) -> ModelSets {
 }
 
 /// Parse a `.vox` byte stream into a per-model **last-writer-wins** map
-/// `(x, y, z) -> color` — the occupancy a MagicaVoxel reader actually renders. The
+/// `(x, y, z) -> color` — the occupancy a `MagicaVoxel` reader actually renders. The
 /// dense-path export writes DUPLICATE voxels at positions where leaves overlap (the
 /// dense occupied Vec keeps both leaves' entries; the LATER one in document order is
 /// the resolved winner a reader shows); the streamed two-layer export is one-id-per-

@@ -36,25 +36,27 @@ pub enum GizmoAxis {
 
 impl GizmoAxis {
     /// The unit direction this handle runs along.
-    pub fn direction(self) -> Vec3 {
+    #[must_use]
+    pub const fn direction(self) -> Vec3 {
         match self {
-            GizmoAxis::X => Vec3::X,
-            GizmoAxis::Y => Vec3::Y,
-            GizmoAxis::Z => Vec3::Z,
+            Self::X => Vec3::X,
+            Self::Y => Vec3::Y,
+            Self::Z => Vec3::Z,
         }
     }
 
     /// The index this axis occupies in a `[_; 3]` — Z-up world, so Z is index 2.
-    pub fn index(self) -> usize {
+    #[must_use]
+    pub const fn index(self) -> usize {
         match self {
-            GizmoAxis::X => 0,
-            GizmoAxis::Y => 1,
-            GizmoAxis::Z => 2,
+            Self::X => 0,
+            Self::Y => 1,
+            Self::Z => 2,
         }
     }
 
     /// Every handle, in axis order.
-    pub const ALL: [GizmoAxis; 3] = [GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z];
+    pub const ALL: [Self; 3] = [Self::X, Self::Y, Self::Z];
 }
 
 /// Below this, the cursor ray and the handle are treated as parallel: sighting down a handle
@@ -66,6 +68,7 @@ const PARALLEL_EPSILON: f32 = 1.0e-4;
 /// [`PARALLEL_EPSILON`].
 ///
 /// `t_on_axis` is a signed distance from `pivot` in the caller's units (voxels, here).
+#[allow(clippy::arithmetic_side_effects, clippy::many_single_char_names)]
 fn closest_approach(ray: &Ray, pivot: Vec3, axis: GizmoAxis) -> Option<(f32, f32)> {
     let d = ray.direction.normalize_or_zero();
     if d == Vec3::ZERO {
@@ -76,15 +79,15 @@ fn closest_approach(ray: &Ray, pivot: Vec3, axis: GizmoAxis) -> Option<(f32, f32
 
     // The 2x2 solve: with |d| = |a| = 1 the determinant reduces to 1 - (d·a)².
     let b = d.dot(a);
-    let determinant = 1.0 - b * b;
+    let determinant = (-b).mul_add(b, 1.0);
     if determinant.abs() < PARALLEL_EPSILON {
         return None;
     }
     let d_dot_w0 = d.dot(w0);
     let a_dot_w0 = a.dot(w0);
 
-    let t = (a_dot_w0 - b * d_dot_w0) / determinant;
-    let s = (b * a_dot_w0 - d_dot_w0) / determinant;
+    let t = (-b).mul_add(d_dot_w0, a_dot_w0) / determinant;
+    let s = b.mul_add(a_dot_w0, -d_dot_w0) / determinant;
 
     let on_ray = ray.origin + d * s;
     let on_axis = pivot + a * t;
@@ -97,6 +100,8 @@ fn closest_approach(ray: &Ray, pivot: Vec3, axis: GizmoAxis) -> Option<(f32, f32
 /// close the ray must pass to count as a hit. The nearest qualifying handle wins, so the
 /// crowded region near the pivot — where all three handles are within a radius of each other —
 /// resolves to whichever the cursor is genuinely closest to rather than to axis order.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn pick_gizmo_axis(
     ray: &Ray,
     pivot: Vec3,
@@ -132,6 +137,7 @@ pub fn pick_gizmo_axis(
 /// Unclamped: a drag may legitimately run past the handle's drawn end. `None` when the cursor
 /// is sighting down the handle, where the gesture is degenerate — the caller should hold the
 /// last good value rather than snapping the object to an arbitrary place.
+#[must_use]
 pub fn drag_distance_along_axis(ray: &Ray, pivot: Vec3, axis: GizmoAxis) -> Option<f32> {
     closest_approach(ray, pivot, axis).map(|(t, _)| t)
 }
@@ -141,10 +147,19 @@ pub fn drag_distance_along_axis(ray: &Ray, pivot: Vec3, axis: GizmoAxis) -> Opti
 /// This is what reconciles direct manipulation with exact authoring: the gesture is
 /// continuous, the result is an integer voxel count, and there is no float left for a caller
 /// to commit by accident. `step` of 0 is treated as 1 (voxel granularity).
+#[must_use]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn snap_voxels(distance_voxels: f32, step_voxels: u32) -> i64 {
-    let step = step_voxels.max(1) as f32;
+    let step_count = step_voxels.max(1);
+    let step = step_count as f32;
     let steps = (distance_voxels / step).abs() + 0.5;
-    let magnitude = (steps.floor() as i64) * step_voxels.max(1) as i64;
+    let magnitude = steps.floor() as i64 * i64::from(step_count);
     if distance_voxels.is_sign_negative() {
         -magnitude
     } else {
@@ -154,6 +169,8 @@ pub fn snap_voxels(distance_voxels: f32, step_voxels: u32) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::arithmetic_side_effects, clippy::expect_used)]
+
     use super::*;
 
     /// A ray aimed at a point, from far enough away that the origin never lands inside the

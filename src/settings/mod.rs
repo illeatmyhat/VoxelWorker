@@ -28,9 +28,10 @@ use ui::shortcuts::{ShortcutCommand, Shortcuts};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 
-/// The serde-able mirror of the armed tool [`ArmedTool`] — the authority, with
-/// its pending drop nested inside — carried in the session dump so a repro taken
-/// mid-gesture re-arms the same tool and replays the pending drop.
+/// The serde-able mirror of the armed tool [`ArmedTool`].
+///
+/// It carries the pending drop in the session dump so a repro taken mid-gesture can re-arm the
+/// same tool and replay that drop.
 ///
 /// [`ArmedTool`] lives in the `ui` crate, which links no serde, so —
 /// like [`ViewMode`] and the Signal stack — it is persisted from out here. It stores the
@@ -56,9 +57,10 @@ fn default_wall_blocks() -> u32 {
     1
 }
 
-/// The serde-able mirror of one PERSISTED [`SelectionTarget`] kind. Kept in step with the
-/// `ui` enum by the exhaustive matches in [`SelectionConfig`]'s two conversions — the sketch
-/// kinds are named there and dropped, so adding a kind to `ui` still breaks this build.
+/// The serde-able mirror of one persisted [`SelectionTarget`] kind.
+///
+/// Exhaustive conversions in [`SelectionConfig`] keep it synchronized with the `ui` enum; adding
+/// a kind to `ui` still breaks this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SelectionTargetConfig {
     /// A scene-graph node, by its stable id.
@@ -829,6 +831,10 @@ impl AppConfig {
     /// F9 `export_repro` dump). Unlike [`load`](Self::load) this is fallible-loud: an unreadable
     /// or malformed file returns the parse/IO error so the harness can exit with a clear message
     /// (a headless repro must not silently fall back to a different scene).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read or its contents are not valid dump JSON.
     pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -840,6 +846,10 @@ impl AppConfig {
     /// Both on-disk artifacts are dumps, so both loads land here. Keeping the parse in one
     /// place is what stops the F9 file and the config file from drifting into two formats
     /// that happen to look alike — the failure this split is meant to prevent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `text` is not valid JSON or does not match the dump schema.
     pub fn from_dump_json(text: &str) -> Result<Self, serde_json::Error> {
         Dump::from_json(text).map(Dump::into_state)
     }
@@ -854,6 +864,10 @@ impl AppConfig {
     /// [`SettingsArtifact`](crate::artifacts::SettingsArtifact)) are the parts this is
     /// composed of; giving either its own file would be a save/open workflow, which is a
     /// product decision and not this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when one of the dump components cannot be serialized.
     pub fn to_dump_json(&self) -> Result<String, String> {
         Dump::from_state(self).to_json()
     }

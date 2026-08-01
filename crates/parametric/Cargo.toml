@@ -3,6 +3,9 @@ name = "parametric"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The authored-quantity crate: everything the author *types*
 # and the document *retains* as an expression rather than a number — the blocks/voxels
 # measurement core, the dimension algebra that keeps a length from being added to an

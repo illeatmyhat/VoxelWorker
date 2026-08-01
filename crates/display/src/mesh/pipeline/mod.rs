@@ -84,7 +84,7 @@ pub struct CuboidMeshRenderer {
     /// Selected in `draw` when `debug_face_mode` is on.
     debug_pipeline: wgpu::RenderPipeline,
     /// Loaded-block pipelines: same vertex layout + uniform group, but group(1) is a
-    /// 6-layer D2Array (the block's per-face textures) instead of the procedural atlas,
+    /// 6-layer `D2Array` (the block's per-face textures) instead of the procedural atlas,
     /// and the shader (`cuboid_loaded.wgsl`) selects the face layer FROM THE FACE
     /// NORMAL. Selected in `draw` when a loaded material's bind group is supplied (else the procedural
     /// atlas pipelines above run, unchanged). The debug variant is cull-off.
@@ -151,7 +151,7 @@ pub struct CuboidMeshRenderer {
     /// scene-wide band / no clip. Part of the reclip key alongside `current_band` (a
     /// selection change re-meshes exactly like a band scrub).
     current_region: Option<RegionClip>,
-    /// The loaded-block material bind-group layout (a 6-layer D2Array + sampler,
+    /// The loaded-block material bind-group layout (a 6-layer `D2Array` + sampler,
     /// from [`crate::renderer::build_face_material_layout`]). Retained so a
     /// runtime-loaded block can build a bind group of the SAME shape via
     /// [`Self::material_bind_group_layout`] and be drawn by the loaded pipeline.
@@ -911,7 +911,7 @@ impl CuboidMeshRenderer {
         self.visible_chunks.sort_unstable();
     }
 
-    /// The loaded-VS-block material bind-group layout (6-layer D2Array texture +
+    /// The loaded-VS-block material bind-group layout (6-layer `D2Array` texture +
     /// sampler). Exposed so a runtime-loaded block (M6) can build a bind group of the
     /// SAME shape (via `LoadedMaterial`) and be drawn by the loaded pipeline.
     pub fn material_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -1092,7 +1092,7 @@ impl CuboidMeshRenderer {
     /// the Display toggle. `bound` is the active procedural material: it selects
     /// the bound texture AND drives the relative base-color modulation. `None` means a
     /// loaded block is active: modulation is disabled here, and the loaded-block pipeline
-    /// selected in `draw` (when its 6-layer D2Array bind group is supplied) ignores the
+    /// selected in `draw` (when its 6-layer `D2Array` bind group is supplied) ignores the
     /// procedural atlas/modulation uniforms entirely.
     #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
@@ -1226,8 +1226,8 @@ impl CuboidMeshRenderer {
     /// vertex/index buffer.
     ///
     /// `loaded_material`: when an applied/loaded block is active, the caller passes the
-    /// block's 6-layer D2Array bind group (`LoadedMaterial::bind_group`); the cuboid path
-    /// then selects the loaded-block pipeline + shader, binding that D2Array at group(1)
+    /// block's 6-layer `D2Array` bind group (`LoadedMaterial::bind_group`); the cuboid path
+    /// then selects the loaded-block pipeline + shader, binding that `D2Array` at group(1)
     /// and selecting the per-face layer by the face normal. `None` (no block applied)
     /// keeps the procedural-atlas path.
     pub fn draw(

@@ -19,7 +19,7 @@
 //! arbitrary folder the user points the OS picker at (the only user-action path).
 //!
 //! THE LAW — this is a pure-CPU content loader, a LEAF below everything: it links no
-//! wgpu/egui/winit and names no domain crate (voxel_core / document / evaluation). It deals
+//! `wgpu`/`egui`/`winit` and names no domain crate (`voxel_core` / `document` / `evaluation`). It deals
 //! only in filesystem paths, byte buffers, and decoded RGBA pixels; display, work, and the
 //! shell sit above it and import downward.
 //!
@@ -163,6 +163,7 @@ pub const EXCLUDE_SUBSTRINGS: &[&str] = &[
 ///
 /// Order matters: EXCLUDE wins first, then anything under a `/rock/` segment is
 /// always accepted, then the ALLOW list.
+#[must_use]
 pub fn is_chiselable(relative_path: &str) -> bool {
     let lowercased = relative_path.to_ascii_lowercase();
     if EXCLUDE_SUBSTRINGS
@@ -191,6 +192,7 @@ fn group_key_for(relative_path: &str) -> String {
 }
 
 /// Title-Case the last path segment, with `-`/`_` → space.
+#[must_use]
 pub fn prettify_label(group_key: &str) -> String {
     let last_segment = group_key.rsplit('/').next().unwrap_or(group_key);
     let spaced: String = last_segment
@@ -239,6 +241,7 @@ pub struct ScannedTexture {
 /// Neither a cap nor a label de-dup belongs here: two distinct texture-sets can
 /// prettify to the same label, and the real VS tree yields a few hundred groups the
 /// palette shows in full.
+#[must_use]
 pub fn group_block_textures(textures: Vec<ScannedTexture>) -> Vec<BlockGroup> {
     use std::collections::BTreeMap;
 
@@ -268,6 +271,8 @@ pub fn group_block_textures(textures: Vec<ScannedTexture>) -> Vec<BlockGroup> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]
@@ -346,8 +351,10 @@ mod tests {
         // separate (numbered variants of one stem would correctly merge).
         let textures: Vec<ScannedTexture> = (0..200)
             .map(|i| {
-                let stem =
-                    format!("kind_{}", (b'a' + (i % 26) as u8) as char) + &i.to_string() + "x";
+                let letter = u8::try_from(i % 26).unwrap_or_default();
+                let stem = format!("kind_{}", char::from(b'a'.saturating_add(letter)))
+                    + &i.to_string()
+                    + "x";
                 ScannedTexture {
                     absolute_path: format!("/x/stone/rock/{stem}.png").into(),
                     relative_path: format!("stone/rock/{stem}.png"),

@@ -1,14 +1,14 @@
-//! VoxelWorker windowed application shell.
+//! `VoxelWorker` windowed application shell.
 //!
-//! winit 0.30 `ApplicationHandler` + wgpu 29 surface + egui 0.34 panel. Shows the warm-dark
-//! workshop clear color and the shared right-hand egui side panel. It uses the exact same
+//! `winit` 0.30 `ApplicationHandler` + `wgpu` 29 surface + `egui` 0.34 panel. Shows the warm-dark
+//! workshop clear color and the shared right-hand `egui` side panel. It uses the exact same
 //! [`render_frame`]/[`run_egui_frame`] code as the headless `shot` binary, so the live window
 //! and the captured PNG match.
 //!
 //! The thin `src/main.rs` binary just calls [`run`]. The logic is split across this module tree:
 //! the [`WindowedState`] struct lives here, its impl is spread over sibling files
 //! (`geometry`, `workers`, `palette`, `export`, `view_cube`, `render`) as descendant modules that
-//! reach its private fields, and the winit event pump (`impl ApplicationHandler for App`) lives in
+//! reach its private fields, and the `winit` event pump (`impl ApplicationHandler for App`) lives in
 //! `events`.
 
 use std::sync::Arc;
@@ -59,7 +59,7 @@ const VIEW_CUBE_DRAG_THRESHOLD_PIXELS: f64 = 5.0;
 /// State that exists only once the window and GPU have been created (on first
 /// `resumed`). Kept in its own struct so `App` can start as `None` before then.
 struct WindowedState {
-    /// Stored as Arc so the surface can be `Surface<'static>` (DEV_NOTES /
+    /// Stored as `Arc` so the surface can be `Surface<'static>` (`DEV_NOTES` /
     /// Hard requirement #6): the surface is created from `window.clone()`.
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -285,7 +285,7 @@ struct WindowedState {
     /// in egui's root ui (the #88 full-width dead-band regression), so egui's own
     /// pointer-consumption heuristic no longer covers this chrome and the shell must.
     last_chrome_rects_px: Vec<[f32; 4]>,
-    /// #13 Step 3: the screen position (window pixels) of an open ViewCube
+    /// #13 Step 3: the screen position (window pixels) of an open `ViewCube`
     /// right-click context menu, or `None` when no menu is open. Set on a
     /// right-press inside the cube rect; the egui pass draws a small menu there and
     /// clears it on selection or click-away.
@@ -297,7 +297,7 @@ struct WindowedState {
     /// tool-modes-and-navigation.md`) and clears it on selection or click-away. Distinct from the
     /// cube's [`context_menu_open_at`](Self::context_menu_open_at); the two never open together.
     viewport_menu_at: Option<egui::Pos2>,
-    /// #13 Step 4: the ViewCube chrome zone currently under the cursor (a rotate
+    /// #13 Step 4: the `ViewCube` chrome zone currently under the cursor (a rotate
     /// or roll arrow / Home / Fit), driving the live hover highlight in
     /// [`ViewCubeRenderer::draw`]. Recomputed cheaply on every `CursorMoved`; held
     /// at `None` while orbiting/dragging, when the cursor leaves the cube rect, or
@@ -418,13 +418,13 @@ struct WindowedState {
     /// gesture, not workspace state.
     sketch_chain: Option<(document::sketch::EntityId, document::sketch::EntityId)>,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
-    /// (#96: sub-voxel under NoSnap), or `None`. The release at the opposite corner commits
+    /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
     sketch_rect_anchor: Option<document::sketch::SketchPoint>,
     /// The 3-point arc gesture (#102): the endpoint ids clicked so far — `None` before the
     /// first click, `Some((start, None))` after it, `Some((start, Some(end)))` waiting for the
     /// through-point that solves and commits the arc. Cleared when the armed tool leaves
-    /// ThreePointArc or sketch mode exits: like the polyline chain, it is a gesture, not
+    /// `ThreePointArc` or sketch mode exits: like the polyline chain, it is a gesture, not
     /// workspace state.
     sketch_arc_gesture: Option<(
         document::sketch::EntityId,
@@ -494,6 +494,7 @@ struct App {
 }
 
 impl WindowedState {
+    #[allow(clippy::expect_used)]
     fn new(event_loop: &ActiveEventLoop) -> Self {
         // M8: load persisted config (geometry, display, material, camera, window
         // size). Missing/invalid config falls back to defaults (never panics).
@@ -1072,6 +1073,12 @@ impl WindowedState {
 /// Run the windowed application: start the (optional) Tracy client, create the winit event
 /// loop, and pump the [`App`] handler until exit. The thin `src/main.rs` binary is just a
 /// call to this.
+///
+/// # Panics
+///
+/// Panics if winit cannot create the event loop or if the event loop reports an error while
+/// running the application.
+#[allow(clippy::expect_used)]
 pub fn run() {
     // Start the Tracy client and hold the guard alive for the whole program so it
     // stays connectable from the external Tracy profiler app. No-op / absent unless

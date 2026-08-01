@@ -1,4 +1,4 @@
-//! Headless orchestrator owning store + camera — the AppCore keystone.
+//! Headless orchestrator owning store + camera — the `AppCore` keystone.
 //!
 //! `AppCore` is the headless half of the app: it owns the [`TwoLayerResidentCache`]
 //! (boundary-aware residency + per-chunk resolve — the SOLE runtime display path) and the
@@ -86,8 +86,9 @@ pub struct AppCore {
     command_stack: CommandStack,
 }
 
-/// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild). Holds ONLY the
-/// **two-layer** covering chunks (owned) the shell meshes through
+/// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild).
+///
+/// It holds the **two-layer** covering chunks (owned) that the shell meshes through
 /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks),
 /// plus the region dimensions + recenter the display frame is sized from.
 ///
@@ -128,7 +129,7 @@ pub struct RebuildOutput {
     /// via [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`], keeping every
     /// other chunk's GPU buffers in place. `None` when the edit could NOT localize — the first
     /// build (no previous index, wholesale [`clear`](TwoLayerResidentCache::clear)), a density
-    /// change (re-keys every chunk's voxel extent), or a region-spanning VoxelBody edit (no
+    /// change (re-keys every chunk's voxel extent), or a region-spanning `VoxelBody` edit (no
     /// localizable box) — in which case the shell re-meshes WHOLESALE via
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]. This is the same split the resident
     /// cache itself uses (`invalidate_aabb` vs `clear`), surfaced to the GPU-buffer layer.
@@ -150,7 +151,9 @@ pub struct RebuildOutput {
 }
 
 /// Outcome of [`AppCore::rebuild`]: either the resolve output, or a rejection when
-/// the density's PER-CHUNK voxel bound is exceeded. AppCore never writes panel
+/// the density's PER-CHUNK voxel bound is exceeded.
+///
+/// `AppCore` never writes panel
 /// state, so the shell surfaces the cap warning from the returned figure.
 pub enum RebuildOutcome {
     /// The resolve succeeded; the cache holds the freshly resolved covering chunks.

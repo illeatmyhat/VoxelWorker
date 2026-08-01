@@ -4,13 +4,15 @@
 /// Depth format used by the voxel pass and the depth texture.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Sample count for the 3D voxel pass (4× MSAA). The depth texture, the
-/// multisampled color texture and the pipeline all share this count; the shell's
+/// The sample count for the 3D voxel pass.
+///
+/// The depth texture, multisampled color texture, and pipeline share this count; the shell's
 /// UI pass still renders at 1 sample onto the resolved target.
 pub const MSAA_SAMPLE_COUNT: u32 = 4;
 
-/// Create a 4-sample (MSAA) color texture view for the 3D pass, sized to a
-/// render target. Recreated on window resize / created at the offscreen size for
+/// Create a four-sample MSAA color texture view for the 3D pass.
+///
+/// The view is sized to the render target and recreated on resize or at the offscreen capture
 /// the headless capture. `format` matches the resolve target.
 pub fn create_msaa_color_view(
     device: &wgpu::Device,

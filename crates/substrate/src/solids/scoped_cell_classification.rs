@@ -12,7 +12,7 @@
 //! Input is a plain iterator of [`ScopedCellEvent`]s in depth-first order: a
 //! [`Contribution`](ScopedCellEvent::Contribution) folds into the CURRENT (innermost open)
 //! accumulator under its own role; [`OpenScope`](ScopedCellEvent::OpenScope) pushes a fresh
-//! empty accumulator; [`CloseScope`](ScopedCellEvent::CloseScope)`(role)` pops the innermost
+//! empty accumulator; <code>[CloseScope](ScopedCellEvent::CloseScope)(role)</code> pops the innermost
 //! accumulator and folds it into the new top under `role`. Events MUST be balanced (every open
 //! matched by a close before the iterator ends); an unbalanced list is a caller bug
 //! (debug-asserted, and the excess is ignored conservatively in release).
@@ -78,11 +78,16 @@ impl ScopedCellClassification {
     /// "inside where `field <= isolevel`").
     ///
     /// Returns:
-    /// * `Some(`[`FieldClassification`]`)` — the three-way verdict when every contribution was
+    /// * <code>Some([FieldClassification])</code> — the three-way verdict when every contribution was
     ///   boundable. A root accumulator that ends at ∅ (nothing contributed, or everything
     ///   annihilated by the set identities) is `Some(Air)` — exact, per the module doc.
     /// * `None` — **cannot classify coarsely**: some operand was unboundable
     ///   (`field_interval == None`). The caller must resolve the cell per-sample.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds assert that scope events are balanced. In release builds,
+    /// excess closing events are ignored and open scopes are handled conservatively.
     pub fn classify(
         events: impl IntoIterator<Item = ScopedCellEvent>,
         isolevel: f32,
@@ -96,7 +101,7 @@ impl ScopedCellClassification {
                     // A single unboundable operand collapses the entire fold to
                     // "cannot classify", regardless of scope depth.
                     let interval = contribution.field_interval?;
-                    let top = stack.last_mut().expect("the root level is never popped");
+                    let top = stack.last_mut()?;
                     *top = fold_into(*top, interval, contribution.combine);
                 }
                 ScopedCellEvent::OpenScope => stack.push(None),
@@ -110,8 +115,8 @@ impl ScopedCellClassification {
                         // excess close rather than corrupt the root accumulator.
                         continue;
                     }
-                    let closed = stack.pop().expect("len checked above");
-                    let top = stack.last_mut().expect("the root level remains");
+                    let closed = stack.pop()?;
+                    let top = stack.last_mut()?;
                     match closed {
                         // The scope composed a real body: fold it into the parent as one
                         // operand under the SCOPE's role.
@@ -130,28 +135,32 @@ impl ScopedCellClassification {
             stack.len(),
             1,
             "unbalanced ScopedCellEvent list: {} scope(s) left open",
-            stack.len() - 1
+            stack.len().saturating_sub(1)
         );
         // A root that ended at ∅ is exactly empty (Air); a composed interval classifies
         // three-way as in the linear kernel.
-        Some(match stack.pop().flatten() {
-            Some(interval) => interval.classify(isolevel),
-            None => FieldClassification::Air,
-        })
+        Some(
+            stack
+                .pop()
+                .flatten()
+                .map_or(FieldClassification::Air, |interval| {
+                    interval.classify(isolevel)
+                }),
+        )
     }
 }
 
 /// Fold one operand interval into an accumulator level under `role`, honoring the ∅
 /// identities of the module doc: union seeds an empty level; difference/intersection against
 /// an empty level stay empty (`∅ − B = ∅`, `∅ ∩ B = ∅`).
-fn fold_into(
+const fn fold_into(
     accumulated: Option<FieldInterval>,
     operand: FieldInterval,
     role: CellCombineOp,
 ) -> Option<FieldInterval> {
     match (accumulated, role) {
         (None, CellCombineOp::Union) => Some(operand),
-        (None, CellCombineOp::Subtract) | (None, CellCombineOp::Intersect) => None,
+        (None, CellCombineOp::Subtract | CellCombineOp::Intersect) => None,
         (Some(running), CellCombineOp::Union) => Some(running.union(operand)),
         (Some(running), CellCombineOp::Subtract) => Some(running.subtract(operand)),
         (Some(running), CellCombineOp::Intersect) => Some(running.intersect(operand)),

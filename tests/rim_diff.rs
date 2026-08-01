@@ -9,6 +9,19 @@
 //!
 //! Run: cargo test --test rim_diff -- --nocapture (skips loudly without a GPU adapter)
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::if_not_else,
+    clippy::indexing_slicing,
+    clippy::option_if_let_else,
+    clippy::too_many_lines
+)]
+
 mod common;
 
 use document::voxel::{GeometryParams, SdfShape};

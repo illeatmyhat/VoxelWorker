@@ -1,4 +1,6 @@
-//! The composed ray–volume march: a slab entry, a block-scale [`VoxelDda`] with a
+//! The composed ray–volume march.
+//!
+//! It combines a slab entry, a block-scale [`VoxelDda`] with a
 //! hierarchical empty-space skip, a per-block descent to an inner voxel-scale DDA, and
 //! the entry-face normal — plus the flat exact-occupancy reference march.
 //!
@@ -17,7 +19,7 @@
 //! * **DDA**: Amanatides & Woo (1987) — see [`crate::voxel_dda`], stepped at block edge
 //!   and at voxel edge 1.
 //! * **Hierarchical empty-space skip**: Crassin, Neyret, Lefebvre & Eisemann,
-//!   *GigaVoxels* (I3D 2009); Museth, *VDB* (SIGGRAPH 2013) — descend a min-mip
+//!   *`GigaVoxels`* (I3D 2009); Museth, *`VDB`* (SIGGRAPH 2013) — descend a min-mip
 //!   occupancy pyramid coarsest-first and, at the coarsest EMPTY level covering the
 //!   current cell, leap the ray to that cell's far face in one stride instead of
 //!   stepping block by block. The pyramid's cell-key search is
@@ -38,31 +40,43 @@ use substrate::spatial::{guarded_direction, Ray, RealAabb};
 
 use crate::voxel_dda::VoxelDda;
 
-/// The hair the hierarchical skip steps PAST a coarse-cell exit face before re-deriving
+/// The hair the hierarchical skip steps PAST a coarse-cell exit face.
+///
+/// It is applied before re-deriving
 /// the block cell — larger than the per-block `1e-4` entry nudge so the jump reliably
 /// lands in the next cell. MUST match `CLIPMAP_JUMP_EPSILON` in the WGSL mirror
 /// (`shaders/brick_raymarch.wgsl`).
 pub const CLIPMAP_JUMP_EPSILON: f32 = 1e-3;
 
-/// Block-DDA step budget — the CPU mirror of the shader's `MAX_BLOCK_STEPS`. The pyramid
+/// Block-DDA step budget — the CPU mirror of the shader's `MAX_BLOCK_STEPS`.
+///
+/// The pyramid
 /// collapses empty space to a handful of strides; this ceiling only bounds the flat
 /// fallback (pyramid off) crossing a wide traversal AABB. MUST match the WGSL constant.
 pub const MAX_BLOCK_STEPS: u32 = 4096;
 
-/// Per-block inner voxel-DDA step budget — an edge³ sculpted brick is crossed in at most
+/// Per-block inner voxel-DDA step budget.
+///
+/// An edge³ sculpted brick is crossed in at most
 /// its voxel-diagonal steps; MUST match the shader's inner loop bound.
 pub const MAX_VOXEL_STEPS: u32 = 256;
 
-/// The flat exact-occupancy march's step budget — the traversal AABB's voxel diagonal
+/// The flat exact-occupancy march's step budget.
+///
+/// It is the traversal AABB's voxel diagonal
 /// for every gated scene; MUST match the shader's flat march bound.
 pub const MAX_EXACT_VOXEL_STEPS: u32 = 4096;
 
-/// The small parameter nudge past a face before flooring to a cell, so a hit exactly on
+/// The small parameter nudge past a face before flooring to a cell.
+///
+/// A hit exactly on
 /// a boundary lands inside the entered cell rather than on its edge. MUST match the
 /// shader's `1e-4` entry offsets.
 const ENTRY_NUDGE: f32 = 1e-4;
 
-/// A march hit: the hit voxel in ABSOLUTE lattice coordinates (the frame's absolute
+/// A march hit: the hit voxel in ABSOLUTE lattice coordinates.
+///
+/// The frame's absolute
 /// frame, `cell + bias`), plus the entered face's outward normal as an exact `±1` axis
 /// vector (`[i32; 3]`, so `Eq` derives).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +87,9 @@ pub struct MarchHit {
     pub face_normal: [i32; 3],
 }
 
-/// What a block cell contains, as the injected classifier reports it. A sculpted block
+/// What a block cell contains, as the injected classifier reports it.
+///
+/// A sculpted block
 /// carries its own per-voxel occupancy closure `Fn(brick_local) -> bool` (the app closes
 /// over the block's atlas slot); the kernel runs the inner voxel DDA against it.
 pub enum BlockContents<VoxelOccupied> {
@@ -86,7 +102,9 @@ pub enum BlockContents<VoxelOccupied> {
     Sculpted(VoxelOccupied),
 }
 
-/// The plain-numeric frame the hierarchical march runs in (everything the shader's
+/// The plain-numeric frame the hierarchical march runs in.
+///
+/// This contains everything the shader's
 /// uniforms carry that is not a closure). The block/voxel biases convert the shifted
 /// march-frame cells to absolute lattice coordinates.
 pub struct HierarchicalMarchParams {
@@ -118,18 +136,30 @@ pub struct ExactMarchParams {
     pub voxel_bias: [i32; 3],
 }
 
-/// The outward face normal (an exact `±1` axis vector) for a march that ENTERED a box
+/// The outward face normal (an exact `±1` axis vector) for a march that ENTERED a box.
+///
+/// It
 /// through face `axis`: the normal opposes the ray's motion on that axis (mirrors the
 /// shader's `normal_sign = -sign(direction[axis])`).
+#[must_use]
 pub fn entry_face_normal(axis: usize, direction: Vec3) -> [i32; 3] {
-    let mut normal = [0i32; 3];
-    normal[axis] = if direction[axis] > 0.0 { -1 } else { 1 };
-    normal
+    let component = match axis {
+        0 => direction.x,
+        1 => direction.y,
+        _ => direction.z,
+    };
+    let normal_component = if component > 0.0 { -1 } else { 1 };
+    match axis {
+        0 => [normal_component, 0, 0],
+        1 => [0, normal_component, 0],
+        _ => [0, 0, normal_component],
+    }
 }
 
 /// The clamped-box entry: the ray's entry parameter, entry-face axis (x → y → z ties),
 /// and exit parameter for the axis-aligned box `[lo, hi]`, using the shared `inverse`
 /// reciprocal. Mirrors the shader's `clamped_box_entry`.
+#[allow(clippy::arithmetic_side_effects)]
 fn clamped_box_entry(origin: Vec3, inverse: Vec3, lo: Vec3, hi: Vec3) -> (usize, f32, f32) {
     let t_a = (lo - origin) * inverse;
     let t_b = (hi - origin) * inverse;
@@ -150,6 +180,7 @@ fn clamped_box_entry(origin: Vec3, inverse: Vec3, lo: Vec3, hi: Vec3) -> (usize,
 /// per axis) containing `absolute_block`, plus the [`CLIPMAP_JUMP_EPSILON`] hair — the
 /// jump target of the hierarchical skip. Mirrors the shader's `clipmap_try_skip` cell
 /// bound. `blocks_per_cell` is at least 1.
+#[allow(clippy::arithmetic_side_effects)]
 fn clipmap_cell_exit_t(
     origin: Vec3,
     inverse: Vec3,
@@ -173,7 +204,9 @@ fn clipmap_cell_exit_t(
     cell_exit + CLIPMAP_JUMP_EPSILON
 }
 
-/// March one ray through the brick field with the hierarchical empty-space skip — the
+/// March one ray through the brick field with the hierarchical empty-space skip.
+///
+/// This is the
 /// pure kernel behind `voxel_worker::brick::cpu_march_levels_counted`, a
 /// step-for-step mirror of the WGSL `march_brick_field`. Returns the hit voxel (absolute)
 /// and the number of block-DDA loop iterations (each iteration is one hierarchical jump
@@ -185,6 +218,14 @@ fn clipmap_cell_exit_t(
 /// `classify_block(absolute_block)` — [`BlockContents`], carrying a sculpted block's
 /// per-voxel occupancy closure; and, through the sculpted variant, `brick_local`
 /// occupancy. `ray` is the pixel-center ray in the shifted march frame.
+#[must_use]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    clippy::unreachable
+)]
 pub fn march_brick_hierarchy<LevelFn, ClassifyFn, VoxelFn>(
     ray: Ray,
     params: &HierarchicalMarchParams,
@@ -214,9 +255,8 @@ where
         min: bounds_lo,
         max: bounds_hi,
     };
-    let entry = match ray.intersect_box_slab(&traversal_box) {
-        Some(interval) => interval,
-        None => return (None, 0),
+    let Some(entry) = ray.intersect_box_slab(&traversal_box) else {
+        return (None, 0);
     };
     let t_enter = entry.t_enter;
     let t_exit = entry.t_exit;
@@ -363,11 +403,15 @@ where
     (None, steps)
 }
 
-/// March one ray over an EXACT occupancy predicate — a flat voxel-level DDA (no blocks,
+/// March one ray over an EXACT occupancy predicate.
+///
+/// This is a flat voxel-level DDA (no blocks,
 /// no records) inside the same frame/band, querying `occupied(absolute_voxel)`. The pure
 /// kernel behind `voxel_worker::brick::cpu_march_exact_occupancy`, the parity
 /// net's INDEPENDENT content oracle: the brick march's hit-voxel set must equal this
 /// march's hit-voxel set. `ray` is the pixel-center ray in the shifted march frame.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn march_exact_occupancy<OccupiedFn>(
     ray: Ray,
     params: &ExactMarchParams,
@@ -419,9 +463,9 @@ where
         // float-edge voxels honest, mirroring the brick march's bound).
         if dda.cell.z >= params.band_voxel_sv[0] && dda.cell.z < params.band_voxel_sv[1] {
             let absolute = [
-                (dda.cell.x + voxel_bias_x) as i64,
-                (dda.cell.y + voxel_bias_y) as i64,
-                (dda.cell.z + voxel_bias_z) as i64,
+                i64::from(dda.cell.x + voxel_bias_x),
+                i64::from(dda.cell.y + voxel_bias_y),
+                i64::from(dda.cell.z + voxel_bias_z),
             ];
             if occupied(absolute) {
                 return Some(MarchHit {
@@ -445,6 +489,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        clippy::expect_used
+    )]
+
     use super::*;
 
     /// A single occupied voxel on the exact march: a ray fired straight at it along +x

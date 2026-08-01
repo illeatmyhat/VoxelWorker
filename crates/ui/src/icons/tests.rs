@@ -1,5 +1,7 @@
 //! Tests for the glyph families as a whole.
 
+#![allow(clippy::duration_subsec, clippy::expect_used, clippy::float_cmp, clippy::match_same_arms, clippy::panic, clippy::semicolon_if_nothing_returned, clippy::unwrap_used, clippy::while_float)]
+
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -283,7 +285,7 @@ fn every_glyph_paints_at_every_size_and_terminates() {
         let _ = painted.send(());
     });
 
-    match finished.recv_timeout(Duration::from_secs(60)) {
+    match finished.recv_timeout(Duration::from_mins(1)) {
         Ok(()) => {}
         Err(mpsc::RecvTimeoutError::Timeout) => {
             panic!("a glyph never finished painting — the dash walk is stalling again")

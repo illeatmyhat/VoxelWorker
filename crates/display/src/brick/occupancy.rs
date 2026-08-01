@@ -10,9 +10,10 @@ use super::*;
 // band-clip interior fallback) for how the packed cells feed the raymarch.
 use substrate::occupancy::bitmask_map::{set_mask_bit, SortedKeyBitmaskMap};
 
-/// The clip-map cell edge (in blocks) the [`BlockOccupancyMasks`] bitmask cells use —
-/// the same 8-block granule as the pyramid's [`ClipmapLevel`] L1, so a `512`-block
-/// interior-occupancy cell is one `u32[16]` bitmask.
+/// The clip-map cell edge used by [`BlockOccupancyMasks`].
+///
+/// It matches the pyramid's eight-block L1 granule, so an interior-occupancy cell covers 512
+/// blocks in one `u32[16]` bitmask.
 pub const BLOCK_OCCUPANCY_CELL_BLOCKS: u32 = CLIPMAP_LEVEL_1_BLOCKS_PER_CELL;
 /// Blocks per [`BlockOccupancyMasks`] cell (`8³ = 512`) — the bitmask's bit count.
 pub(crate) const BLOCK_OCCUPANCY_BITS_PER_CELL: usize = (BLOCK_OCCUPANCY_CELL_BLOCKS
@@ -21,9 +22,10 @@ pub(crate) const BLOCK_OCCUPANCY_BITS_PER_CELL: usize = (BLOCK_OCCUPANCY_CELL_BL
 /// `u32` words in one cell's occupancy bitmask (`512 / 32 = 16`).
 pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32;
 
-/// **The band-clip interior-occupancy signal.** A block-granular,
-/// bitpacked occupancy map over the two-layer chunks, consulted by the raymarch ONLY when a
-/// LAYER-BAND clip is active AND the surface-only record search misses.
+/// **The band-clip interior-occupancy signal.**
+///
+/// This block-granular bitpacked map is consulted only when a layer-band clip is active and the
+/// surface-only record search misses.
 ///
 /// The surface-only record set (interior elision) omits fully-occluded
 /// interior blocks. Under a FULL band that is hit-identical (a ray reaches an interior block
@@ -51,7 +53,7 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 /// `cell_masks` ∥ `cell_materials` — the fallback
 /// scalar IS the render-cell material color index) and owning the domain `from_chunks` builder.
 /// The bit of a fallback word carrying the interior block's on-face-grid overlay flag, above
-/// the material color index (which is tiny — 0..MATERIAL_COUNT). The interior-elision fallback
+/// the material color index (which is tiny — `0..MATERIAL_COUNT`). The interior-elision fallback
 /// stores one `u32` per cell, so material and overlay are packed together and split apart at the
 /// GPU seam ([`OccupancyCellPod`](crate::brick) reads them as two fields). An
 /// interior-elision coarse hit sources its overlay from here.

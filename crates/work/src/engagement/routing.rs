@@ -47,10 +47,10 @@
 /// rebuilds consult it.)
 pub const ASYNC_REBUILD_CHUNK_THRESHOLD: usize = 128;
 
-/// The shape of the edit the resolve produced, consumed by
-/// [`route_geometry_rebuild`]. Either the edit localized to a few dirty chunks (an inline
-/// incremental fast-path candidate) or it needs a wholesale rebuild of `chunk_count`
-/// covering chunks (threshold-gated between inline and async).
+/// The shape of an edit returned by resolve.
+///
+/// An edit is either localized to dirty chunks or requires a wholesale rebuild of a covering
+/// chunk set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditShape {
     /// The edit localized — the resolve returned `incremental_dirty_chunks = Some(..)`.
@@ -60,9 +60,9 @@ pub enum EditShape {
     Wholesale { chunk_count: usize },
 }
 
-/// Where an edit's geometry rebuild is routed. Extracted as a pure decision
-/// so the interlock — "do NOT inline-patch the currently-installed renderer while an
-/// async wholesale build is OUTSTANDING" — is unit-testable without a live window.
+/// The route selected for an edit's geometry rebuild.
+///
+/// This pure decision captures the stale-artifact interlock and is testable without a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildRoute {
     /// Apply an incremental dirty-chunk re-mesh to the CURRENTLY-installed renderer in
@@ -83,11 +83,10 @@ pub enum RebuildRoute {
     WholesaleAsync,
 }
 
-/// The routing-relevant state of ONE derived display artifact — the cuboid fallback mesh, the
-/// brick raymarch field, and every future one the display grows (the per-voxel material atlas,
-/// an export snapshot, a nav/occupancy summary for agents). The four booleans are the entire
-/// input surface the shared routing policy needs; each artifact's wrapper fills them from its
-/// own residency bookkeeping. See [`route_derived_artifact`] for the policy that consumes them.
+/// The routing state of one derived display artifact.
+///
+/// The shared policy uses these four booleans for the cuboid mesh, brick field, and future
+/// derived artifacts. Each wrapper fills them from its own residency bookkeeping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedArtifactState {
     /// The resident artifact reflects the LATEST resolve — it is neither stale nor a
@@ -113,13 +112,10 @@ pub struct DerivedArtifactState {
     pub inline_install_supersedes_in_flight: bool,
 }
 
-/// The one routing policy shared by every derived display artifact — the single rule the three
-/// per-artifact wrappers ([`route_geometry_rebuild`], [`route_mesh_build`],
-/// [`route_brick_rebuild`]) now express: *patch inline iff the resident artifact is current and
-/// the edit is localized; otherwise rebuild wholesale — inline below the chunk threshold, async
-/// above it; while the resident copy is stale (outstanding OR not current) never patch, and —
-/// unless this artifact's inline install seam supersedes an in-flight result — never build a
-/// wholesale inline either.* Pure (no GPU, no window) so the interlock is unit-testable.
+/// Apply the shared routing policy for derived display artifacts.
+///
+/// Localized edits patch only a current, patchable artifact. Other edits rebuild wholesale,
+/// choosing inline or asynchronous work by threshold and stale-artifact interlocks.
 ///
 /// The decision, in table form:
 /// * `Incremental` edit AND the resident copy is current AND patchable AND nothing outstanding →
@@ -163,11 +159,10 @@ pub fn route_derived_artifact(
     }
 }
 
-/// Decide where an edit's geometry rebuild is routed, given whether an async
-/// wholesale build is currently OUTSTANDING (dispatched but not yet accepted/installed) and the
-/// [`EditShape`] the resolve produced. A thin wrapper over [`route_derived_artifact`]: the
-/// installed renderer is always current and always inline-patchable, so an outstanding build is
-/// geometry's only stale-forcing input (the interlock). Pure — no GPU, no window.
+/// Route a geometry rebuild using the shared artifact policy.
+///
+/// The installed renderer is current and patchable; an outstanding wholesale build is the
+/// geometry-specific stale condition.
 pub fn route_geometry_rebuild(
     async_outstanding: bool,
     edit: EditShape,
@@ -188,11 +183,10 @@ pub fn route_geometry_rebuild(
     )
 }
 
-/// Whether — and how — an edit must (re)build the fallback CUBOID MESH, given that the
-/// brick raymarch is the actual display sink. The
-/// mesh is drawn ONLY when the brick raymarch is not engaged (no installed field, debug-face
-/// mode, or a loaded VS material); when the brick IS the display the mesh is pure redundant
-/// per-edit work — the ~333ms serial build on a big scene — and is SKIPPED, leaving it stale.
+/// Decide whether an edit rebuilds the fallback cuboid mesh.
+///
+/// When the brick raymarch is engaged, the mesh is redundant and is skipped; otherwise the
+/// shared route decides between an inline patch, inline wholesale build, and asynchronous build.
 ///
 /// A skipped-stale mesh is exactly as untrustworthy as a still-building async result: it does
 /// NOT reflect the latest resolve, so an incremental edit must NOT inline-patch it (that would
@@ -244,9 +238,10 @@ pub fn route_mesh_build(
     ))
 }
 
-/// The brick display's fate when a rebuild did NOT (re)install it — the deferred-handover
-/// decision. Pure so the "keep the stale brick
-/// drawing until the async replacement mesh installs" rule is unit-testable without a window.
+/// The brick display's fate when a rebuild does not install a new field.
+///
+/// This pure decision controls whether a stale field remains visible until an asynchronous
+/// replacement mesh is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrickDisplayHandover {
     /// The brick raymarch is (still) the live display this rebuild — no handover; any pending
@@ -338,10 +333,10 @@ pub enum BrickRebuildAction {
     WholesaleAsync,
 }
 
-/// Decide where an edit's brick rebuild is routed. A thin wrapper over the shared
-/// [`route_derived_artifact`] policy, translating the brick's residency inputs into a
-/// [`DerivedArtifactState`] and mapping the result to the brick's action enum. Pure — no GPU, no
-/// window — so the interlock is unit-testable.
+/// Route a brick rebuild through the shared artifact policy.
+///
+/// The wrapper translates brick residency into [`DerivedArtifactState`] and maps the result to
+/// the brick-specific action enum.
 ///
 /// The load-bearing divergence from the mesh/geometry artifacts, carried through the shared
 /// policy as `inline_install_supersedes_in_flight: true`: while an async brick build is
@@ -394,6 +389,7 @@ pub fn route_brick_rebuild(
 }
 
 #[cfg(test)]
+#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
 

@@ -2,15 +2,15 @@
 
 use super::*;
 
-/// The recentered-Z spans of one onion frame, derived by `AppCore::onion_fog_params`:
-/// the onion-band Z range (the ghosted layers OUTSIDE the solid band) and the solid
-/// band Z range. Both display paths (brick raymarch + cuboid mesh) select their ghost
-/// slabs from these edges — Z-up, layers are Z-slices.
+/// The recentered-Z spans of one onion frame.
+///
+/// The spans identify the ghosted layers outside the solid band and the solid band itself. Both
+/// display paths use these edges in the Z-up voxel frame.
 #[derive(Debug, Clone, Copy)]
 pub struct OnionFogParams {
     /// Inverse camera view-projection (to unproject screen → world rays).
     pub inverse_view_projection: glam::Mat4,
-    /// Inscribed semi-axes (= grid_dimensions / 2); maps world → normalized grid.
+    /// Inscribed semi-axes (= `grid_dimensions` / 2); maps world → normalized grid.
     pub semi_axes: [f32; 3],
     /// World-space Z extent of the onion band (the ghosted layers).
     pub onion_z_min: f32,
@@ -34,8 +34,9 @@ const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 /// Linear-space, matching the linear shading both cuboid + brick shaders work in.
 const ONION_GHOST_ALPHA: f32 = 0.5;
 
-/// The onion ghost tint as linear `[r, g, b, a]`. Both display paths read
-/// this ONE constant, so the raymarch haze and the mesh ghost always share the same hue
+/// The onion ghost tint as linear `[r, g, b, a]`.
+///
+/// Both display paths use this constant, so raymarch haze and mesh ghost share one hue
 /// — but NOT the same alpha (the raymarch path discards `a` for its own computed haze
 /// opacity, see `ONION_GHOST_ALPHA`'s doc above), so the two paths' onion aesthetics
 /// legitimately differ (haze vs crisp). The cross-path golden parity

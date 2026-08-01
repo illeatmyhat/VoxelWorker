@@ -1,6 +1,7 @@
-//! The display-state machine — the window-free owner of the two display pipelines
-//! (the cuboid fallback mesh and the brick raymarch) and every piece of display state
-//! that decides which of them draws each frame.
+//! The window-free display-state machine.
+//!
+//! It owns the cuboid fallback mesh, brick raymarch, and the state that selects which pipeline
+//! draws each frame.
 //!
 //! This is the *actor* on the pure decisions in [`super::routing`]: it holds the two
 //! renderers, the two async workers, their generation trackers + outstanding flags, the
@@ -43,12 +44,10 @@ use crate::engagement::routing::{
 };
 use display::brick::{pack_gpu_records, ClipmapPyramid};
 
-/// The per-refresh context the shell hands the orchestrator whenever a display-mesh
-/// rebuild might be needed off the main edit path (the per-frame polls and the
-/// `ensure_display_mesh_current` seam). It bundles the borrows the orchestrator needs to
-/// re-mesh the stale fallback from the RESIDENT two-layer cache (scene unchanged — an
-/// O(chunks) `Arc` handout, not a from-scratch re-resolve) without owning any of the
-/// shell's scene / panel / camera state. See `docs/architecture/03-display.md`.
+/// The shell's borrowed context for refreshing a display mesh.
+///
+/// It provides the unchanged scene, resident two-layer cache, frame parameters, and effective
+/// display settings without taking ownership of shell state.
 pub struct DisplayRefreshContext<'a> {
     /// The current scene (for the resident-cache chunk handout — the scene is unchanged
     /// on these paths, so the cache returns the last resolve's set as `Arc` bumps).
@@ -74,9 +73,10 @@ pub struct DisplayRefreshContext<'a> {
     pub debug_face_orientation: bool,
 }
 
-/// The display-state machine extracted from the winit shell. Owns both display renderers,
-/// both async rebuild workers, and all the per-edit display bookkeeping that decides which
-/// pipeline draws — constructible without a window (see the module doc).
+/// The display-state machine extracted from the winit shell.
+///
+/// It owns both display renderers, both asynchronous rebuild workers, and the per-edit
+/// bookkeeping that selects the active pipeline. It is constructible without a window.
 pub struct DisplayOrchestrator {
     /// A clone of the wgpu device (wgpu 29 `Device` is `Send + Sync + Clone`, `Arc`-backed),
     /// so the orchestrator builds/patches its GPU renderers without borrowing the shell's
@@ -349,7 +349,7 @@ impl DisplayOrchestrator {
     ///
     /// A loaded VS material does NOT disengage the brick display: the block
     /// texture is a pure function of the lattice (the owner's determinism rule), so the
-    /// raymarch shades solid hits per-face from the block's 6-layer D2Array by the SAME rule
+    /// raymarch shades solid hits per-face from the block's 6-layer `D2Array` by the SAME rule
     /// the merged mesh uses (`face_layer` + per-face UV + `fract`), with zero per-brick data.
     /// With the representability gate deleted (material atlas), the mesh is the fallback ONLY for
     /// debug-face mode (it needs the mesh's per-vertex face colors) and for machines/scenes with
@@ -415,7 +415,7 @@ impl DisplayOrchestrator {
     /// resolve), and complete any deferred brick-display handover. This is the SOLE writer
     /// that clears `mesh_stale`; the only other `mesh_stale` writer is the Skip arm's set-true.
     fn finish_mesh_install(&mut self) {
-        self.geometry_generation.next_generation();
+        let _ = self.geometry_generation.next_generation();
         self.geometry_async_outstanding = false;
         self.mesh_stale = false;
         self.complete_brick_display_handover();
@@ -428,7 +428,7 @@ impl DisplayOrchestrator {
     /// inline-wholesale-while-outstanding route sound — see `route_brick_rebuild`'s
     /// divergence note), and drop the outstanding flag so the patch fast-path resumes.
     fn finish_brick_install(&mut self) {
-        self.brick_generation.next_generation();
+        let _ = self.brick_generation.next_generation();
         self.brick_async_outstanding = false;
     }
 
@@ -437,7 +437,7 @@ impl DisplayOrchestrator {
     /// result installs), and send the `Arc`-shared covering set. An associated function over
     /// the individual fields (not `&mut self`) so BOTH dispatch sites within the orchestrator
     /// share it: [`Self::first_build`], where the fields are still locals ahead of `Self`
-    /// construction, and [`Self::rebuild`]'s WholesaleAsync arm.
+    /// construction, and [`Self::rebuild`]'s `WholesaleAsync` arm.
     fn dispatch_wholesale_brick_rebuild(
         brick_worker: &BrickWorker,
         brick_generation: &mut GenerationTracker,
@@ -463,7 +463,7 @@ impl DisplayOrchestrator {
     /// generation, mark the build OUTSTANDING (the interlock — every edit routes wholesale
     /// until the result installs), and send the owned covering set + frame params. The mesh
     /// analog of [`Self::dispatch_wholesale_brick_rebuild`], shared by [`Self::rebuild`]'s
-    /// WholesaleAsync arm and [`Self::rebuild_stale_display_mesh`]. The generation is minted
+    /// `WholesaleAsync` arm and [`Self::rebuild_stale_display_mesh`]. The generation is minted
     /// BEFORE the outstanding flag is set BEFORE the dispatch — the interlock depends on
     /// that exact ordering.
     fn dispatch_wholesale_mesh_rebuild(
@@ -494,6 +494,11 @@ impl DisplayOrchestrator {
     /// params, and computed the effective `band`; it hands the owned covering set + the edit's
     /// dirty-chunk hint here. See `docs/architecture/03-display.md` for the two-pipeline model
     /// and `docs/architecture/04-work.md` for the interlock this preserves.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if a routing decision violates the state-machine invariants
+    /// that connect an incremental route to its dirty chunks, mirror, renderer, or update.
     #[allow(clippy::too_many_arguments)] // one rebuild's frame parameters are irreducibly plural.
     pub fn rebuild(
         &mut self,
@@ -602,13 +607,14 @@ impl DisplayOrchestrator {
                     Option<BrickFieldUpdate>,
                     Option<SculptedAtlasPayload>,
                 ) = if patch_mirror {
-                    let dirty = incremental_dirty_chunks
-                        .as_ref()
-                        .expect("PatchInline ⇒ incremental_dirty_chunks is Some");
-                    let field = self
-                        .incremental_brick_field
-                        .as_mut()
-                        .expect("patch_mirror ⇒ Some");
+                    let Some(dirty) = incremental_dirty_chunks.as_ref() else {
+                        debug_assert!(false, "PatchInline requires incremental dirty chunks");
+                        return;
+                    };
+                    let Some(field) = self.incremental_brick_field.as_mut() else {
+                        debug_assert!(false, "PatchInline requires a resident mirror");
+                        return;
+                    };
                     debug_assert_eq!(
                         field.brick_edge_voxels(),
                         density,
@@ -654,10 +660,10 @@ impl DisplayOrchestrator {
                         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
                         // The single-owner mirror is the truth for records + atlas geometry;
                         // the renderer seams read straight from it (item 9).
-                        let mirror = self
-                            .incremental_brick_field
-                            .as_ref()
-                            .expect("records_empty false ⇒ a resident mirror");
+                        let Some(mirror) = self.incremental_brick_field.as_ref() else {
+                            debug_assert!(false, "non-empty records require a resident mirror");
+                            return;
+                        };
                         // Interior elision: the record set is SURFACE-ONLY by
                         // construction (`build_brick_field` fuses the occlusion decision
                         // into emission — a fully-occluded interior block never becomes a
@@ -681,19 +687,20 @@ impl DisplayOrchestrator {
                             renderer_holds_live_field,
                             self.brick_display_pending_clear,
                         ) {
-                            let update = update
-                                .as_ref()
-                                .expect("brick_patch_in_place true ⇒ an update was produced");
+                            let Some(update) = update.as_ref() else {
+                                debug_assert!(false, "patching requires an update");
+                                return;
+                            };
                             if update.atlas_grew {
                                 println!(
                                     "brick: atlas grew — full re-pack ({} sculpted slots)",
                                     mirror.sculpted_brick_count()
                                 );
                             }
-                            let renderer = self
-                                .brick_raymarch_renderer
-                                .as_mut()
-                                .expect("brick_patch_in_place true ⇒ a live field is resident");
+                            let Some(renderer) = self.brick_raymarch_renderer.as_mut() else {
+                                debug_assert!(false, "patching requires a live brick renderer");
+                                return;
+                            };
                             // `patch_brick_field` patches the cell-key side atlas from the
                             // mirror too (its own dirty-slot list), so mixed bricks stay current.
                             renderer.patch_brick_field(
@@ -790,7 +797,7 @@ impl DisplayOrchestrator {
                 // stale so the next edit that needs it rebuilds wholesale. Bump the generation
                 // and drop any outstanding async so a stale in-flight mesh result is discarded on
                 // arrival (`poll_geometry_worker`) instead of being swapped in behind the brick.
-                self.geometry_generation.next_generation();
+                let _ = self.geometry_generation.next_generation();
                 self.geometry_async_outstanding = false;
                 self.mesh_stale = true;
             }
@@ -802,8 +809,10 @@ impl DisplayOrchestrator {
                 //
                 // `finish_mesh_install` bumps the generation so any (phantom) in-flight result is
                 // discarded on arrival — the tracker rejects a non-newest generation.
-                let dirty = incremental_dirty_chunks
-                    .expect("InlineIncremental is only routed for an incremental edit");
+                let Some(dirty) = incremental_dirty_chunks else {
+                    debug_assert!(false, "InlineIncremental requires incremental dirty chunks");
+                    return;
+                };
                 profiling::scope!("cuboid_incremental_two_layer");
                 self.cuboid_mesh_renderer
                     .incremental_rebuild_from_two_layer_chunks(

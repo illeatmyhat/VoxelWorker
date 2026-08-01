@@ -1,3 +1,17 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::must_use_candidate,
+    clippy::similar_names
+)]
+
 //! Structural edits over the assembly graph: add / remove / group / ungroup, the
 //! definition + instance workflow, fixtures, and the subtree capture/reinsert
 //! primitives the undo path relies on.

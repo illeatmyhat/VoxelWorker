@@ -1,3 +1,23 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::derive_partial_eq_without_eq,
+    clippy::doc_markdown,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_long_first_doc_paragraph,
+    clippy::use_self,
+    clippy::wildcard_imports
+)]
+
 //! The node-graph data model: identifiers, the [`Node`] and its by-value
 //! [`NodeBuilder`] spec, the [`CombineOp`] fold operation, per-node grids,
 //! reusable [`AssemblyDef`]s, and reference [`Point`]s.

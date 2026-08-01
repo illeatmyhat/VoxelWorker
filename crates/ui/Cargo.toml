@@ -3,6 +3,9 @@ name = "ui"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The UI crate is the egui control surface. It owns the inspector and palette state,
 # reads the authored document, and emits Intents. It does not depend on rendering or
 # GPU resources; the shell supplies registered thumbnail TextureIds and owns drawing.

@@ -1,3 +1,23 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::similar_names,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::option_if_let_else,
+    clippy::too_long_first_doc_paragraph,
+    clippy::wildcard_imports
+)]
+
 //! Lossless compressed storage for a single resolved chunk grid.
 //!
 //! The out-of-core store needs a compact, serializable on-disk form for a

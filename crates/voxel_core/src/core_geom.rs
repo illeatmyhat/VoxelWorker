@@ -2,6 +2,7 @@
 //! nothing else in the crate.
 
 /// Edge length of a render chunk, in BLOCKS.
+///
 /// A chunk therefore spans `CHUNK_BLOCKS * voxels_per_block` voxels per axis
 /// (e.g. 4 blocks × density 16 = 64 voxels/axis). Chosen as a small whole-block
 /// multiple so a chunk stays a phase-aligned, frustum-cullable unit while the
@@ -10,13 +11,17 @@
 /// AABB intersects the camera frustum are drawn.
 pub const CHUNK_BLOCKS: u32 = 4;
 
-/// The largest absolute voxel index a resolved [`crate::voxel::Voxel::local_index`] can
-/// carry — it is an `i32`, and the two-layer expansion stamps it with an unchecked
+/// The largest absolute voxel index a resolved [`crate::voxel::Voxel::local_index`] can carry.
+///
+/// It is an `i32`, and the two-layer expansion stamps it with an unchecked
 /// `as i32` after rebasing in `i64` (`two_layer_store::chunk::stamped_voxel`).
+#[allow(clippy::as_conversions)]
 pub const MAX_LOCAL_VOXEL_INDEX: i64 = i32::MAX as i64;
 
 /// The furthest block offset from the resolve frame's origin whose voxels still fit
-/// [`MAX_LOCAL_VOXEL_INDEX`], at `voxels_per_block`. **This is the real supported
+/// [`MAX_LOCAL_VOXEL_INDEX`], at `voxels_per_block`.
+///
+/// **This is the real supported
 /// placement range of the resolve/expand path**, and it is much smaller than the
 /// ±~8×10⁹-block range `narrow_chunk_coord` is bounded over.
 ///
@@ -35,15 +40,20 @@ pub const MAX_LOCAL_VOXEL_INDEX: i64 = i32::MAX as i64;
 /// chiselling scene is tens to thousands. It is recorded and proved rather than fixed
 /// because the cast sits in the innermost expansion loop, and because the useful output
 /// is the honest bound, not a branch. See the `kani_proofs` module below.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn max_supported_block_offset(voxels_per_block: u32) -> i64 {
-    MAX_LOCAL_VOXEL_INDEX / voxels_per_block.max(1) as i64
+    MAX_LOCAL_VOXEL_INDEX / i64::from(voxels_per_block.max(1))
 }
 
-/// Whether a rebased absolute voxel index still fits the `i32`
-/// [`crate::voxel::Voxel::local_index`] — i.e. whether the expansion's `as i32` is
+/// Whether a rebased absolute voxel index still fits the `i32` local index.
+///
+/// This is whether the expansion's `as i32` is
 /// lossless for it. The bound [`max_supported_block_offset`] names in blocks, in voxels.
 #[inline]
-pub fn local_voxel_index_fits(absolute_voxel_index: i64) -> bool {
+#[must_use]
+#[allow(clippy::as_conversions)]
+pub const fn local_voxel_index_fits(absolute_voxel_index: i64) -> bool {
     absolute_voxel_index >= i32::MIN as i64 && absolute_voxel_index <= MAX_LOCAL_VOXEL_INDEX
 }
 
@@ -149,6 +159,13 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod frame_envelope_tests {
+    #![allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_lossless,
+        clippy::cast_sign_loss
+    )]
+
     use super::*;
 
     /// The Kani harnesses above are `#[cfg(kani)]` and therefore invisible to `cargo test`;
@@ -218,29 +235,31 @@ impl MaterialChoice {
     /// Stable, dense (`0..MATERIAL_COUNT`), so it indexes both
     /// the renderer's base-color uniform array and the procedural-texture table.
     /// Stone = 0, Wood = 1, Plain = 2.
-    pub fn material_id(self) -> u16 {
+    #[must_use]
+    pub const fn material_id(self) -> u16 {
         match self {
-            MaterialChoice::Stone => 0,
-            MaterialChoice::Wood => 1,
-            MaterialChoice::Plain => 2,
+            Self::Stone => 0,
+            Self::Wood => 1,
+            Self::Plain => 2,
         }
     }
 
     /// The inverse of [`material_id`](Self::material_id): the choice for a stamped
     /// id. Ids outside the known set fall back to [`Stone`](Self::Stone).
-    pub fn from_material_id(id: u16) -> Self {
+    #[must_use]
+    pub const fn from_material_id(id: u16) -> Self {
         match id {
-            0 => MaterialChoice::Stone,
-            1 => MaterialChoice::Wood,
-            2 => MaterialChoice::Plain,
-            _ => MaterialChoice::Stone,
+            1 => Self::Wood,
+            2 => Self::Plain,
+            _ => Self::Stone,
         }
     }
 
     /// The categorical [`BlockId`] this material maps to in the block palette. The three
     /// procedural materials ARE the palette, so the id is the same dense
     /// `0..MATERIAL_COUNT` value [`material_id`](Self::material_id) returns.
-    pub fn block_id(self) -> BlockId {
+    #[must_use]
+    pub const fn block_id(self) -> BlockId {
         BlockId(self.material_id())
     }
 }
@@ -259,12 +278,13 @@ pub struct BlockId(pub u16);
 impl BlockId {
     /// The default block id a bare producer emits before a Tool overrides it — Stone in
     /// the procedural palette.
-    pub const DEFAULT: BlockId = BlockId(0);
+    pub const DEFAULT: Self = Self(0);
 
     /// The color / atlas index the renderer + `.vox` export use for this id. The palette
     /// is the three procedural materials, so the index IS the id; a clamp keeps it inside
     /// the shader's `[0, MATERIAL_COUNT)` color range for any stray id.
-    pub fn color_index(self) -> u16 {
+    #[must_use]
+    pub const fn color_index(self) -> u16 {
         self.0
     }
 }
@@ -295,7 +315,8 @@ impl CellKey {
     /// Compose a key from a clean categorical `block_id` (low 15 bits) and a transient
     /// on-face-grid `overlay` marker (high bit).
     #[inline]
-    pub fn compose(block_id: u16, overlay: bool) -> Self {
+    #[must_use]
+    pub const fn compose(block_id: u16, overlay: bool) -> Self {
         let mut key = block_id;
         if overlay {
             key |= Self::OVERLAY_BIT;
@@ -305,13 +326,15 @@ impl CellKey {
 
     /// Wrap a raw packed `u16` (as stored in the store/mesh cell arrays) as a key.
     #[inline]
-    pub fn from_raw(raw: u16) -> Self {
+    #[must_use]
+    pub const fn from_raw(raw: u16) -> Self {
         Self(raw)
     }
 
     /// The raw packed `u16`, for storing back into a cell array.
     #[inline]
-    pub fn raw(self) -> u16 {
+    #[must_use]
+    pub const fn raw(self) -> u16 {
         self.0
     }
 
@@ -319,7 +342,8 @@ impl CellKey {
     /// needs the categorical id without the transient render flag (the two-layer occupancy
     /// expansion, the raymarch shade).
     #[inline]
-    pub fn block_id(self) -> u16 {
+    #[must_use]
+    pub const fn block_id(self) -> u16 {
         self.0 & !Self::OVERLAY_BIT
     }
 
@@ -327,7 +351,8 @@ impl CellKey {
     /// the render flag back out (the two-layer occupancy expansion carries it onto the
     /// expanded `Voxel::grid_overlay`).
     #[inline]
-    pub fn has_overlay(self) -> bool {
+    #[must_use]
+    pub const fn has_overlay(self) -> bool {
         self.0 & Self::OVERLAY_BIT != 0
     }
 }
@@ -354,5 +379,5 @@ pub struct BlockAttrs;
 
 impl BlockAttrs {
     /// The default (empty) attributes — the only inhabitant of the placeholder schema.
-    pub const DEFAULT: BlockAttrs = BlockAttrs;
+    pub const DEFAULT: Self = Self;
 }

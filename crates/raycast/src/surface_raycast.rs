@@ -1,4 +1,6 @@
-//! **Sliding a contact on a composed signed-distance surface** — the CPU counterpart of the
+//! **Sliding a contact on a composed signed-distance surface**.
+//!
+//! This is the CPU counterpart of the
 //! GPU placement ghost's sphere-trace (`crates/display/src/shaders/placement_ghost.wgsl`,
 //! `fn trace`), and the solver continuous placement runs on.
 //!
@@ -129,6 +131,7 @@ const SLIDE_MIN_STEP: f32 = 1.0e-5;
 /// its direction is the outward normal and its magnitude is the field's local slope (unit for a
 /// true distance field). [`gradient_normal`] normalizes it; the Newton step divides by its
 /// squared length so the non-unit magnitude of a non-true-distance field cancels.
+#[allow(clippy::arithmetic_side_effects)]
 fn field_gradient(point: Vec3, field: &impl Fn(Vec3) -> f32) -> Vec3 {
     let dx = Vec3::new(GRADIENT_EPSILON, 0.0, 0.0);
     let dy = Vec3::new(0.0, GRADIENT_EPSILON, 0.0);
@@ -146,6 +149,8 @@ fn field_gradient(point: Vec3, field: &impl Fn(Vec3) -> f32) -> Vec3 {
 /// For a **true** distance field the gradient is already the exact unit normal (a sphere's is
 /// its radial direction). A degenerate gradient (a flat interior, a discontinuity where both
 /// samples agree) falls back to world-up `+Z`, matching the GPU shader's guard.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn gradient_normal(point: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
     let gradient = field_gradient(point, &field);
     let magnitude = gradient.length();
@@ -160,6 +165,7 @@ pub fn gradient_normal(point: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
 /// `p -= field(p) * gradient / |gradient|^2`, with the step magnitude clamped to
 /// `field(p).abs()` — the scale-free damping (see the module docs). Returns the moved point, or
 /// the input unchanged when the gradient has collapsed.
+#[allow(clippy::arithmetic_side_effects)]
 fn newton_step_to_surface(point: Vec3, value: f32, field: &impl Fn(Vec3) -> f32) -> Vec3 {
     let gradient = field_gradient(point, field);
     let squared_length = gradient.dot(gradient);
@@ -184,6 +190,8 @@ fn newton_step_to_surface(point: Vec3, value: f32, field: &impl Fn(Vec3) -> f32)
 /// non-true-distance field the `/|gradient|^2` form and the step-magnitude clamp keep it stable.
 /// Because it descends the composed field it cannot converge into a carved-away region — the
 /// field is positive there.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn project_to_surface(point: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
     let mut current = point;
     for _ in 0..PROJECTION_MAX_ITERATIONS {
@@ -200,7 +208,9 @@ pub fn project_to_surface(point: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
     current
 }
 
-/// **The angle-to-position slide**, under position-dominant precedence: given a `seat`
+/// **The angle-to-position slide**, under position-dominant precedence.
+///
+/// Given a `seat`
 /// point on the surface and a wanted `target_normal` direction, slide the contact *along* the
 /// surface to where the surface normal best matches `target_normal`, and return that seated
 /// point.
@@ -216,6 +226,8 @@ pub fn project_to_surface(point: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
 /// progress and returns the best-effort point — the nearest reachable contact, or the seat.
 /// It works on any composed field (sphere, cylinder, their booleans) because it only calls
 /// the closure.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn snap_slide_to_normal(seat: Vec3, target_normal: Vec3, field: impl Fn(Vec3) -> f32) -> Vec3 {
     let target = {
         let length = target_normal.length();
@@ -263,6 +275,8 @@ pub fn snap_slide_to_normal(seat: Vec3, target_normal: Vec3, field: impl Fn(Vec3
 /// — 24 steps per turn, with the pleasant set 0/30/45/60/90 as a subset. A near-vertical normal
 /// has an ill-defined azimuth, so a tilt that rounds to 0 (or to a half-turn) collapses to exactly
 /// `+Z` (or `-Z`). The result is a unit vector.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn quantize_normal_to_15deg(normal: Vec3) -> Vec3 {
     // 15° in radians. Both the tilt and the azimuth round to a multiple of this.
     const STEP: f32 = core::f32::consts::PI / 12.0;
@@ -298,6 +312,8 @@ pub fn quantize_normal_to_15deg(normal: Vec3) -> Vec3 {
 /// non-positive step is a no-op guard: the raw point is projected and returned. Rounding pulls
 /// the contact to the lattice; the re-projection pulls it back onto the surface, so the snapped
 /// contact is both quantized and seated.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn snap_to_lattice_then_reproject(
     hit_point: Vec3,
     lattice_step: f32,
@@ -321,6 +337,8 @@ pub fn snap_to_lattice_then_reproject(
 /// same signed test the GPU shader uses. It misses after [`MarchParams::max_steps`] or once the
 /// ray parameter passes [`MarchParams::max_distance`]. A zero-length direction is a guaranteed
 /// miss.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn raymarch(
     origin: Vec3,
     direction: Vec3,
@@ -354,6 +372,13 @@ pub fn raymarch(
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::expect_used,
+        clippy::imprecise_flops,
+        clippy::suboptimal_flops
+    )]
+
     use super::*;
 
     /// A true distance field for a sphere: `|p - center| - radius`. Its gradient is the exact
@@ -365,7 +390,7 @@ mod tests {
     /// A true distance field for an infinite cylinder about the world Z axis: the 2D distance
     /// in the XY plane, `radius` from the axis. Gradient is the radial XY unit normal.
     fn z_axis_cylinder_field(radius: f32) -> impl Fn(Vec3) -> f32 {
-        move |point: Vec3| (point.x * point.x + point.y * point.y).sqrt() - radius
+        move |point: Vec3| point.x.hypot(point.y) - radius
     }
 
     #[test]

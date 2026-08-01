@@ -67,6 +67,7 @@ impl Dimension {
     };
 
     /// Whether this is a pure number, and so usable as a scale factor on anything.
+    #[must_use]
     pub fn is_dimensionless(self) -> bool {
         self == Self::DIMENSIONLESS
     }
@@ -75,7 +76,8 @@ impl Dimension {
     ///
     /// Saturating, so a runaway expression clamps at `i8`'s bounds rather than wrapping a
     /// `length⁵⁰⁰` back around to something that would compare equal to a length.
-    pub fn multiplied(self, other: Self) -> Self {
+    #[must_use]
+    pub const fn multiplied(self, other: Self) -> Self {
         Self {
             length: self.length.saturating_add(other.length),
             angle: self.angle.saturating_add(other.angle),
@@ -85,7 +87,8 @@ impl Dimension {
     /// The dimension of a quotient: exponents subtract. `length / length` cancels to
     /// [`DIMENSIONLESS`](Self::DIMENSIONLESS), which is the rule that makes a ratio usable
     /// as a scale factor.
-    pub fn divided(self, other: Self) -> Self {
+    #[must_use]
+    pub const fn divided(self, other: Self) -> Self {
         Self {
             length: self.length.saturating_sub(other.length),
             angle: self.angle.saturating_sub(other.angle),
@@ -98,12 +101,14 @@ impl Dimension {
     /// Addition is the only operation that can *fail* to have a dimension, which is why it
     /// returns an `Option` where [`multiplied`](Self::multiplied) and
     /// [`divided`](Self::divided) do not.
+    #[must_use]
     pub fn added(self, other: Self) -> Option<Self> {
         (self == other).then_some(self)
     }
 
     /// How this reads in an error message: `"length"`, `"angle"`, `"a pure number"`, or the
     /// exponent form for anything exotic.
+    #[must_use]
     pub fn describe(self) -> String {
         match (self.length, self.angle) {
             (0, 0) => "a pure number".to_string(),

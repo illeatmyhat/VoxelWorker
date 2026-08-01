@@ -17,6 +17,23 @@
 //! therefore represent the 2D PROFILE on its plane (the authoring surface), independent
 //! of which operation later lifts it into a volume.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::must_use_candidate,
+    clippy::similar_names,
+    clippy::doc_link_code,
+    clippy::missing_const_for_fn,
+    clippy::too_many_lines,
+    clippy::wildcard_imports
+)]
+
 use super::*;
 use crate::sketch::{EntityId, EntityRole, Operation};
 use glam::Vec3;
@@ -290,6 +307,8 @@ fn unit_axis(axis: usize) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
+
     use super::Scene;
     use crate::scene::{Node, NodeContent, NodeId, NodeTransform};
     use crate::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};

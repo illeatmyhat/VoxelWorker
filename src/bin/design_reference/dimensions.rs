@@ -8,6 +8,8 @@
 //! composition is the point: a dimension never draws the geometry it measures, so a sheet showing
 //! one alone would be showing half of it.
 
+#![allow(clippy::arithmetic_side_effects, clippy::too_many_lines)]
+
 use egui::{Painter, Pos2, Stroke, Ui, Vec2};
 use ui::gizmos::dimension::{self, Rank};
 use ui::gizmos::{self};

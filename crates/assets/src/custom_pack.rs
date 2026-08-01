@@ -24,11 +24,14 @@ impl CustomFolderSource {
     /// Point a source at `folder`. If `folder` (or a descendant) is itself a
     /// `textures/block` tree, paths below it still filter correctly because the
     /// chiselable test is a substring match.
+    #[must_use]
     pub fn new(folder: PathBuf) -> Self {
         let leaf = folder
             .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| folder.to_string_lossy().into_owned());
+            .map_or_else(
+                || folder.to_string_lossy().into_owned(),
+                |name| name.to_string_lossy().into_owned(),
+            );
         Self {
             display_name: format!("Custom folder ({leaf})"),
             folder,
@@ -36,6 +39,7 @@ impl CustomFolderSource {
     }
 
     /// The picked folder.
+    #[must_use]
     pub fn folder(&self) -> &Path {
         &self.folder
     }

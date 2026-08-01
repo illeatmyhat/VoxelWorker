@@ -1,6 +1,7 @@
-//! The GPU half of the per-frame pipeline: [`render_frame`] records the viewport
-//! MSAA pass as ordered [`FramePhases`] (background → model → over-model → scaffold → on-top),
-//! then the view cube in its own corner pass. The egui pass is the sibling
+//! The GPU half of the per-frame pipeline.
+//!
+//! [`render_frame`] records the viewport `MSAA` pass as ordered [`FramePhases`], then records
+//! the view cube in its own corner pass. The `egui` pass is the sibling
 //! [`egui_frame`](super::egui_frame).
 
 use super::egui_frame::{EguiPaintBridge, PreparedEguiFrame};
@@ -72,10 +73,10 @@ pub struct FramePhases<'a> {
     pub selection_outline: Option<&'a display::mesh::SelectionOutlineRenderer>,
     /// The corner view cube (its own scissored pass). `None` when its Display toggle is off.
     pub view_cube: Option<&'a display::renderer::ViewCubeRenderer>,
-    /// The ViewCube chrome zone under the cursor. Drives which hover
+    /// The `ViewCube` chrome zone under the cursor. Drives which hover
     /// arrows the cube draws and which glyph is highlighted. `None` = nothing hovered.
     pub cube_hovered_zone: Option<camera::CubeChromeZone>,
-    /// Draw all four ViewCube rotate arrows when
+    /// Draw all four `ViewCube` rotate arrows when
     /// when the view is face-constrained), with the hovered one brightened. `false`
     /// (off-face view) draws no rotate arrows.
     pub cube_rotate_arrows_visible: bool,
@@ -88,7 +89,8 @@ pub struct FramePhases<'a> {
     pub target_height: u32,
 }
 
-/// Upload the per-frame **scene scaffold** uniforms shared by the windowed shell and `shot`
+/// Upload the per-frame **scene scaffold** uniforms shared by the windowed shell and `shot`.
+///
 /// The per-object scene grid, the world-reference Points (screen-stable axes +
 /// planes), and the analytic infinite grid. Both paths previously drove these renderers with
 /// byte-identical orchestration inline — the drift that let the overlay matrix diverge between
@@ -140,7 +142,8 @@ pub fn upload_scene_scaffold(
     );
 }
 
-/// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot`:
+/// Upload the per-frame **overlay** uniforms shared by the windowed shell and `shot`.
+///
 /// the selection-follow transform gizmo, the boolean-operand x-ray ghost, the selection
 /// outline+wash, and the corner view cube. Each is a pure camera upload with no scene
 /// rebuild — the drift these previously risked (a gizmo matrix or cube projection computed two
@@ -183,11 +186,12 @@ pub fn upload_overlay_uniforms(
     view_cube.update_uniforms(queue, camera.view_cube_view_projection());
 }
 
-/// Upload the per-frame **voxel-model** uniforms shared by the windowed shell and `shot`
+/// Upload the per-frame **voxel-model** uniforms shared by the windowed shell and `shot`.
+///
 /// the cuboid mesh path and, when engaged, the brick raymarch that REPLACES the mesh
 /// draw for this frame. Both consume the same camera + band + region + grid-overlay-master +
 /// bound-material inputs, so a single call keeps the two render paths pixel-comparable — the whole
-/// premise of the gpu_parity net. Returns whether the brick path is engaged (`brick.is_some()`),
+/// premise of the `gpu_parity` net. Returns whether the brick path is engaged (`brick.is_some()`),
 /// which the caller feeds to [`FramePhases::brick_raymarch`].
 ///
 /// The caller decides engagement (`DisplayOrchestrator::brick_display_engaged` in the shell, the

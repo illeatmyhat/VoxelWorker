@@ -50,17 +50,17 @@ pub struct DiameterResult {
     pub diameter: u32,
 }
 
-/// The background diameter worker: a [`Worker`] whose build closure streams the widest run.
-/// Spawn it via [`spawn_diameter_worker`]. The shell dispatches [`DiameterRequest`]s and
-/// polls each frame; the shared drain-to-latest/supersede loop is [`Worker`]'s.
+/// The background diameter worker.
+///
+/// Its [`Worker`] closure streams the widest run; the shell dispatches requests and polls the
+/// shared drain-to-latest loop each frame.
 pub type DiameterWorker = Worker<DiameterRequest, DiameterResult>;
 
-/// Spawn the diameter worker on a dedicated thread. The closure streams the widest run via
-/// the SAME [`streamed_widest_run_in_band`] call the synchronous readout made — `unwrap_or(0)`
-/// covers the VoxelBody-only / empty scene (no covering chunk range); the two-layer capability is
-/// always ON. Unlike the geometry/brick workers this build cannot panic on bad input, so it
-/// carries no `build_catching` — preserving the measure path's original (containment-free)
-/// behavior.
+/// Spawn the diameter worker on a dedicated thread.
+///
+/// It uses [`streamed_widest_run_in_band`] with the same two-layer capability as the synchronous
+/// readout. Empty or VoxelBody-only scenes produce zero; unlike geometry and brick builds, this
+/// measurement does not use `build_catching`.
 pub fn spawn_diameter_worker() -> DiameterWorker {
     Worker::spawn(
         "voxel-worker diameter measure",

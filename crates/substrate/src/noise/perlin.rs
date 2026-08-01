@@ -25,74 +25,127 @@ pub struct PerlinNoise {
 impl PerlinNoise {
     /// Build the noise from a seed: an identity table shuffled deterministically
     /// (Fisher–Yates with an LCG), then duplicated to 512.
+    #[must_use]
     pub fn new(seed: u32) -> Self {
-        let mut table: [u8; 256] = std::array::from_fn(|i| i as u8);
+        let mut table: [u8; 256] = std::array::from_fn(|i| u8::try_from(i).unwrap_or_default());
         let mut random = SmallRng::new(seed);
         random.shuffle(&mut table);
         let mut permutation = [0u8; 512];
-        for i in 0..512 {
-            permutation[i] = table[i & 255];
+        for (index, slot) in permutation.iter_mut().enumerate() {
+            *slot = table.get(index & 255).copied().unwrap_or_default();
         }
         Self { permutation }
     }
 
     /// The seed-shuffled permutation table (512 entries). Exposed so a GPU mirror
     /// can index the SAME table as this CPU implementation.
-    pub fn permutation(&self) -> [u8; 512] {
+    #[must_use]
+    pub const fn permutation(&self) -> [u8; 512] {
         self.permutation
     }
 
     /// Improved-Perlin 3D noise in roughly `[-1, 1]`.
+    #[must_use]
     pub fn noise(&self, point: Vec3) -> f32 {
         let xi = point.x.floor();
         let yi = point.y.floor();
         let zi = point.z.floor();
-        let cube_x = (xi as i32 & 255) as usize;
-        let cube_y = (yi as i32 & 255) as usize;
-        let cube_z = (zi as i32 & 255) as usize;
+        let cube_x = lattice_index(xi);
+        let cube_y = lattice_index(yi);
+        let cube_z = lattice_index(zi);
 
         let fx = point.x - xi;
         let fy = point.y - yi;
         let fz = point.z - zi;
 
-        let u = fade(fx);
-        let v = fade(fy);
-        let w = fade(fz);
+        let fade_x = fade(fx);
+        let fade_y = fade(fy);
+        let fade_z = fade(fz);
 
-        let p = &self.permutation;
-        let a = p[cube_x] as usize + cube_y;
-        let aa = p[a] as usize + cube_z;
-        let ab = p[a + 1] as usize + cube_z;
-        let b = p[cube_x + 1] as usize + cube_y;
-        let ba = p[b] as usize + cube_z;
-        let bb = p[b + 1] as usize + cube_z;
+        let permutation = &self.permutation;
+        let cube_base = usize::from(permutation_value(permutation, cube_x)).saturating_add(cube_y);
+        let cube_base_z =
+            usize::from(permutation_value(permutation, cube_base)).saturating_add(cube_z);
+        let cube_base_next_z =
+            usize::from(permutation_value(permutation, cube_base.saturating_add(1)))
+                .saturating_add(cube_z);
+        let next_cube_base = usize::from(permutation_value(permutation, cube_x.saturating_add(1)))
+            .saturating_add(cube_y);
+        let next_cube_base_z =
+            usize::from(permutation_value(permutation, next_cube_base)).saturating_add(cube_z);
+        let next_cube_base_next_z = usize::from(permutation_value(
+            permutation,
+            next_cube_base.saturating_add(1),
+        ))
+        .saturating_add(cube_z);
 
-        let x1 = lerp(grad(p[aa], fx, fy, fz), grad(p[ba], fx - 1.0, fy, fz), u);
-        let x2 = lerp(
-            grad(p[ab], fx, fy - 1.0, fz),
-            grad(p[bb], fx - 1.0, fy - 1.0, fz),
-            u,
+        let x1 = lerp(
+            grad(permutation_value(permutation, cube_base_z), fx, fy, fz),
+            grad(
+                permutation_value(permutation, next_cube_base_z),
+                fx - 1.0,
+                fy,
+                fz,
+            ),
+            fade_x,
         );
-        let y1 = lerp(x1, x2, v);
+        let x2 = lerp(
+            grad(
+                permutation_value(permutation, cube_base_next_z),
+                fx,
+                fy - 1.0,
+                fz,
+            ),
+            grad(
+                permutation_value(permutation, next_cube_base_next_z),
+                fx - 1.0,
+                fy - 1.0,
+                fz,
+            ),
+            fade_x,
+        );
+        let y1 = lerp(x1, x2, fade_y);
 
         let x3 = lerp(
-            grad(p[aa + 1], fx, fy, fz - 1.0),
-            grad(p[ba + 1], fx - 1.0, fy, fz - 1.0),
-            u,
+            grad(
+                permutation_value(permutation, cube_base_z.saturating_add(1)),
+                fx,
+                fy,
+                fz - 1.0,
+            ),
+            grad(
+                permutation_value(permutation, next_cube_base_z.saturating_add(1)),
+                fx - 1.0,
+                fy,
+                fz - 1.0,
+            ),
+            fade_x,
         );
         let x4 = lerp(
-            grad(p[ab + 1], fx, fy - 1.0, fz - 1.0),
-            grad(p[bb + 1], fx - 1.0, fy - 1.0, fz - 1.0),
-            u,
+            grad(
+                permutation_value(permutation, cube_base_next_z.saturating_add(1)),
+                fx,
+                fy - 1.0,
+                fz - 1.0,
+            ),
+            grad(
+                permutation_value(permutation, next_cube_base_next_z.saturating_add(1)),
+                fx - 1.0,
+                fy - 1.0,
+                fz - 1.0,
+            ),
+            fade_x,
         );
-        let y2 = lerp(x3, x4, v);
+        let y2 = lerp(x3, x4, fade_y);
 
-        lerp(y1, y2, w)
+        lerp(y1, y2, fade_z)
     }
 
     /// Fractional Brownian motion: summed octaves of [`noise`](Self::noise) at
     /// frequency scaled by `lacunarity` and amplitude by `gain` each octave,
     /// normalized back to roughly `[-1, 1]`.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn fractal_noise(&self, point: Vec3, octaves: u32, lacunarity: f32, gain: f32) -> f32 {
         let mut frequency = 1.0;
         let mut amplitude = 1.0;
@@ -104,7 +157,7 @@ impl PerlinNoise {
             amplitude *= gain;
             frequency *= lacunarity;
         }
-        if normalization == 0.0 {
+        if normalization.abs() <= f32::EPSILON {
             0.0
         } else {
             sum / normalization
@@ -115,31 +168,75 @@ impl PerlinNoise {
 /// The quintic fade curve `6t⁵ − 15t⁴ + 10t³` (Perlin 2002) — C² continuous, so
 /// the interpolated field has no second-derivative creases at cell boundaries.
 fn fade(t: f32) -> f32 {
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+    let cubic = t.mul_add(t.mul_add(6.0, -15.0), 10.0);
+    t * t * t * cubic
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + t * (b - a)
+    t.mul_add(b - a, a)
+}
+
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
+fn lattice_index(value: f32) -> usize {
+    value.floor().rem_euclid(256.0) as usize
+}
+
+fn permutation_value(permutation: &[u8; 512], index: usize) -> u8 {
+    permutation.get(index).copied().unwrap_or_default()
 }
 
 /// Perlin's gradient: pick one of 12 edge directions from the low hash bits.
-fn grad(hash: u8, x: f32, y: f32, z: f32) -> f32 {
-    let h = hash & 15;
-    let u = if h < 8 { x } else { y };
-    let v = if h < 4 {
-        y
-    } else if h == 12 || h == 14 {
-        x
+fn grad(hash: u8, x_offset: f32, y_offset: f32, z_offset: f32) -> f32 {
+    let hash_low = hash & 15;
+    let first_component = if hash_low < 8 { x_offset } else { y_offset };
+    let second_component = if hash_low < 4 {
+        y_offset
+    } else if hash_low == 12 || hash_low == 14 {
+        x_offset
     } else {
-        z
+        z_offset
     };
-    let u_term = if h & 1 == 0 { u } else { -u };
-    let v_term = if h & 2 == 0 { v } else { -v };
-    u_term + v_term
+    let first_term = if hash_low & 1 == 0 {
+        first_component
+    } else {
+        -first_component
+    };
+    let second_term = if hash_low & 2 == 0 {
+        second_component
+    } else {
+        -second_component
+    };
+    first_term + second_term
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::unwrap_used
+)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     #[test]

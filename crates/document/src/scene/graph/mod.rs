@@ -2,6 +2,8 @@
 //! edits (add / remove / group / ungroup / definition / instance), and reference Points.
 //! Selection is NOT here — it is workspace state (`ui::panel::Selection`).
 
+#![allow(clippy::wildcard_imports)]
+
 use super::*;
 
 mod construct;

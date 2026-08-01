@@ -1,3 +1,5 @@
+#![allow(clippy::missing_const_for_fn, clippy::must_use_candidate)]
+
 //! The store's pure, GPU-free residency planner: the set-difference over coord sets
 //! that decides which chunks a per-chunk render cache must (re)build and which to drop.
 

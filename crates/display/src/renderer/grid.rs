@@ -29,7 +29,7 @@ const FLOOR_VOXEL_ALPHA: f32 = 0.16;
 ///
 /// Each frame the caller
 /// walks the scene and, for every node whose grids are enabled (the scene master
-/// ANDed with the node's own toggle), appends that node's block lattice and/or
+/// `ANDed` with the node's own toggle), appends that node's block lattice and/or
 /// floor lines into the renderer's per-frame batch via `Self::set_batch`. A
 /// lattice box is a 3D box lattice with lines at every BLOCK boundary (spacing =
 /// density) spanning the node's enclosing-block AABB; the floor is the horizontal
@@ -133,14 +133,14 @@ impl SceneGridRenderer {
 
     /// Rebuild this frame's lattice + floor line batches by walking `scene` (issue
     /// #29 S3). For every visible node whose grids are enabled — the scene-wide
-    /// master ANDed with that node's own per-object toggle — the node's
+    /// master `ANDed` with that node's own per-object toggle — the node's
     /// enclosing-block lattice box ([`Scene::node_block_lattice_box_recentered`]) is
     /// appended to the corresponding batch:
     ///
     /// * `master_block_lattice && node.grids.block_lattice` → block lattice lines.
     /// * `master_floor_grid && node.grids.floor_grid` → base-plane floor lines.
     ///
-    /// A node with no intrinsic extent (size-less VoxelBody / empty subtree) yields no
+    /// A node with no intrinsic extent (size-less `VoxelBody` / empty subtree) yields no
     /// box and is skipped. When NOTHING is enabled both batches are empty and
     /// [`Self::draw`] becomes a no-op — the new default, where per-object grids are
     /// off until the user turns them on.
@@ -224,7 +224,7 @@ impl SceneGridRenderer {
 /// The per-object grid boxes for a scene, gated CPU-side so the walk
 /// is unit-testable without a GPU. Returns `(lattice_boxes, floor_boxes)` where each
 /// box is the `(min, max)` enclosing-block AABB (recentered voxels) of a node whose
-/// grid is enabled — the scene-wide master ANDed with the node's own per-object
+/// grid is enabled — the scene-wide master `ANDed` with the node's own per-object
 /// toggle. A node with no intrinsic extent contributes no box. When a master is off,
 /// or a node's flag is off, that node contributes nothing to that batch (gating).
 #[allow(clippy::type_complexity)]

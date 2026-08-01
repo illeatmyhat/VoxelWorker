@@ -1,19 +1,19 @@
-//! MagicaVoxel `.vox` export.
+//! `MagicaVoxel` `.vox` export.
 //!
-//! Serializes a resolved [`VoxelGrid`] to a MagicaVoxel `.vox` file. The chunked binary
+//! Serializes a resolved [`VoxelGrid`] to a `MagicaVoxel` `.vox` file. The chunked binary
 //! is hand-written (no crate dependency) — it is a `VOX ` magic + version 150 header
 //! followed by one `MAIN` chunk that contains, per model, a `SIZE` and an `XYZI` chunk,
 //! plus a single trailing `RGBA` palette chunk.
 //!
 //! ## Axis convention (documented, the bit that bites)
 //!
-//! MagicaVoxel uses a **Z-up** right-handed coordinate system; our world is **also
+//! `MagicaVoxel` uses a **Z-up** right-handed coordinate system; our world is **also
 //! Z-up** (vertical = +Z, index 2). So our grid index `(i, j, k)` maps DIRECTLY to
 //! a vox coordinate `(x, y, z) = (i, j, k)` — **no axis swap**.
 //!
 //! ## 256 limit
 //!
-//! A single MagicaVoxel model caps at 256 voxels per axis (coords are `u8`). If
+//! A single `MagicaVoxel` model caps at 256 voxels per axis (coords are `u8`). If
 //! any grid dimension exceeds 256 we **split** along that axis into a tiled set
 //! of models inside the one MAIN chunk (each ≤ 256), rather than truncating.
 //! Typical grids (e.g. 80×16×80) are a single model. The split is documented in
@@ -29,12 +29,14 @@
 
 use voxel_core::voxel::VoxelGrid;
 
-/// The per-`block_id` RGBA palette the `.vox` export writes. Index `i` is the color for
-/// `block_id == i`; it is written to `.vox` file palette slot `i + 1` (MagicaVoxel
-/// palette is 1-based, 0 = empty). Sized to the procedural material set.
+/// The per-`block_id` RGBA palette written to the `.vox` export.
+///
+/// Index `i` is the color for `block_id == i`; it is written to `.vox` file palette slot
+/// `i + 1` (`MagicaVoxel` uses 1-based palette indices, with 0 meaning empty).
+/// The palette is sized to the procedural material set.
 pub type BlockPaletteColors = [[u8; 4]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
 
-/// MagicaVoxel per-axis maximum (coordinates are stored as `u8`, 0..=255).
+/// `MagicaVoxel` per-axis maximum (coordinates are stored as `u8`, 0..=255).
 pub const VOX_AXIS_MAX: u32 = 256;
 
 /// One occupied voxel placed into vox (Z-up) coordinate space, ready to write.
@@ -64,7 +66,7 @@ pub struct VoxExport {
     /// Per-`block_id` RGBA palette: slot `block_id` written to `.vox`
     /// file palette index `block_id + 1`, which each voxel of that block references.
     palette_colors: BlockPaletteColors,
-    /// Total occupied voxels written across all models (== grid.occupied.len()).
+    /// Total occupied voxels written across all models (== `grid.occupied.len()`).
     voxel_count: usize,
 }
 
@@ -75,6 +77,7 @@ impl VoxExport {
     /// `palette_colors` maps each `block_id` to its RGBA palette color — build it with
     /// `block_palette_from_active` or pass the procedural material colors. Each voxel
     /// references `block_id + 1` in the `.vox` palette.
+    #[must_use]
     pub fn from_grid(grid: &VoxelGrid, palette_colors: BlockPaletteColors) -> Self {
         // One bucketing path: the whole-grid case is the region case with a single
         // grid covering the whole region, so the region-scoped export cannot drift
@@ -90,13 +93,18 @@ impl VoxExport {
     /// `representative_rgba` and the other procedural materials carry a neutral gray.
     /// A single-material scene (every voxel `block_id == active`) therefore references
     /// exactly one slot.
-    pub fn block_palette_from_active(
+    #[must_use]
+    pub const fn block_palette_from_active(
         active: voxel_core::core_geom::MaterialChoice,
         representative_rgba: [u8; 4],
     ) -> BlockPaletteColors {
         let mut palette =
             [[0x80, 0x80, 0x80, 0xff]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
-        palette[active.material_id() as usize] = representative_rgba;
+        match active {
+            voxel_core::core_geom::MaterialChoice::Stone => palette[0] = representative_rgba,
+            voxel_core::core_geom::MaterialChoice::Wood => palette[1] = representative_rgba,
+            voxel_core::core_geom::MaterialChoice::Plain => palette[2] = representative_rgba,
+        }
         palette
     }
 
@@ -121,7 +129,7 @@ impl VoxExport {
     /// `region_dimensions`. Each voxel therefore lands in the same model at the same
     /// local coordinate. The per-model voxel SET (and the model sizes, palette and
     /// counts) is identical; only the per-model voxel emission ORDER may differ
-    /// (chunk-iteration order vs the monolithic stamp order), which a MagicaVoxel
+    /// (chunk-iteration order vs the monolithic stamp order), which a `MagicaVoxel`
     /// reader treats as the same model. The region export test asserts model-set
     /// equality.
     pub fn from_region_voxels<'voxels>(
@@ -182,16 +190,19 @@ impl VoxExport {
     }
 
     /// Number of models written (1 unless the 256-limit forced a tiled split).
-    pub fn model_count(&self) -> usize {
+    #[must_use]
+    pub const fn model_count(&self) -> usize {
         self.models.len()
     }
 
     /// Total occupied voxels written across all models.
-    pub fn voxel_count(&self) -> usize {
+    #[must_use]
+    pub const fn voxel_count(&self) -> usize {
         self.voxel_count
     }
 
     /// Serialize to the in-memory `.vox` byte stream.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         // Header: "VOX " + version 150.
@@ -203,8 +214,8 @@ impl VoxExport {
         // PACK chunk (number of models) — required when >1 model.
         if self.models.len() > 1 {
             let mut pack = Vec::new();
-            write_u32(&mut pack, self.models.len() as u32);
-            write_chunk(&mut children, b"PACK", &pack, &[]);
+            write_u32(&mut pack, usize_to_u32(self.models.len()));
+            write_chunk(&mut children, *b"PACK", &pack, &[]);
         }
         for model in &self.models {
             // SIZE chunk.
@@ -212,19 +223,19 @@ impl VoxExport {
             write_u32(&mut size, model.size[0]);
             write_u32(&mut size, model.size[1]);
             write_u32(&mut size, model.size[2]);
-            write_chunk(&mut children, b"SIZE", &size, &[]);
+            write_chunk(&mut children, *b"SIZE", &size, &[]);
 
             // XYZI chunk: count then (x, y, z, colorIndex) per voxel. The file
             // color index is 1-based.
             let mut xyzi = Vec::new();
-            write_u32(&mut xyzi, model.voxels.len() as u32);
+            write_u32(&mut xyzi, usize_to_u32(model.voxels.len()));
             for voxel in &model.voxels {
                 xyzi.push(voxel.x);
                 xyzi.push(voxel.y);
                 xyzi.push(voxel.z);
                 xyzi.push(voxel.color_index);
             }
-            write_chunk(&mut children, b"XYZI", &xyzi, &[]);
+            write_chunk(&mut children, *b"XYZI", &xyzi, &[]);
         }
 
         // RGBA palette chunk: 256 entries. MagicaVoxel reads palette[i] for file index
@@ -232,17 +243,14 @@ impl VoxExport {
         // reads array entry `block_id`. The procedural block colors fill the leading
         // slots; the rest are a neutral gray so the file stays valid.
         let mut rgba = Vec::with_capacity(256 * 4);
+        let neutral = [0x80, 0x80, 0x80, 0xff];
         for entry in 0..256 {
-            if entry < self.palette_colors.len() {
-                rgba.extend_from_slice(&self.palette_colors[entry]);
-            } else {
-                rgba.extend_from_slice(&[0x80, 0x80, 0x80, 0xff]);
-            }
+            rgba.extend_from_slice(self.palette_colors.get(entry).unwrap_or(&neutral));
         }
-        write_chunk(&mut children, b"RGBA", &rgba, &[]);
+        write_chunk(&mut children, *b"RGBA", &rgba, &[]);
 
         // MAIN chunk: empty content, all of `children` as child content.
-        write_chunk(&mut out, b"MAIN", &[], &children);
+        write_chunk(&mut out, *b"MAIN", &[], &children);
         out
     }
 
@@ -264,6 +272,12 @@ impl VoxExport {
     ///   so we fall back to `fs::copy` (an in-place overwrite) to preserve that behavior.
     /// - **On total failure the complete temp is KEPT**, and its path is named in the error
     ///   so the user can recover the export by hand rather than silently losing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying filesystem error if the export cannot be written or moved
+    /// into place. When both placement attempts fail, the complete temporary export is
+    /// retained and its path is included in the error.
     pub fn write(&self, path: &std::path::Path) -> std::io::Result<usize> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -311,12 +325,12 @@ impl VoxExport {
     fn unique_temp_path(path: &std::path::Path) -> std::path::PathBuf {
         let final_name = path
             .file_name()
-            .map(|name| name.to_os_string())
+            .map(std::ffi::OsStr::to_os_string)
             .unwrap_or_default();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |nanos| nanos);
         let mut temp_name = std::ffi::OsString::from(".");
         temp_name.push(&final_name);
         temp_name.push(format!(".{}-{nanos}.tmp", std::process::id()));
@@ -327,8 +341,9 @@ impl VoxExport {
     }
 }
 
-/// **Incremental streaming `.vox` builder.** Buckets a stream of occupied voxels into
-/// the `.vox` 256-tile model set ONE chunk (or one voxel) at a time, so the export never
+/// **Incremental streaming `.vox` builder.**
+///
+/// The builder processes one chunk (or one voxel) at a time, so the export never
 /// holds more than a single streamed chunk's voxels plus the per-model output buffers —
 /// the inherent `.vox` output cost. This is the seam the export button drives over
 /// [`evaluation::two_layer_store::stream_vox_occupancy`]: each covering chunk's
@@ -357,7 +372,7 @@ pub struct VoxExportBuilder {
     /// Corner-anchoring half-extents (FLOORED `dim/2`) reused per voxel: the decode
     /// `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim too.
     half: [f32; 3],
-    /// The pre-created 256-tile model set (tile_x, tile_y, tile_z order), each growing
+    /// The pre-created 256-tile model set (`tile_x`, `tile_y`, `tile_z` order), each growing
     /// only its own per-model voxel buffer as voxels are ingested.
     models: Vec<VoxModel>,
     /// `(tile_x, tile_y, tile_z) -> models[index]` so a decoded voxel finds its model.
@@ -370,6 +385,8 @@ impl VoxExportBuilder {
     /// Pre-create the full 256-tile model set for `region_dimensions` (empty voxel
     /// buffers) and the palette, ready to [`ingest_chunk`](Self::ingest_chunk) a stream.
     /// The model sizes/count are fixed here — they are a pure function of the region.
+    #[must_use]
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn new(region_dimensions: [u32; 3], palette_colors: BlockPaletteColors) -> Self {
         let [grid_x, grid_y, grid_z] = region_dimensions;
         // Corner-anchoring decode: FLOORED half (`dim/2` integer division), so
@@ -389,8 +406,8 @@ impl VoxExportBuilder {
         // Each tile's grid-space size (≤ 256); the last tile on an axis is the
         // remainder.
         let tile_size = |total: u32, index: u32| -> u32 {
-            let origin = index * VOX_AXIS_MAX;
-            (total - origin).min(VOX_AXIS_MAX)
+            let origin = index.saturating_mul(VOX_AXIS_MAX);
+            total.saturating_sub(origin).min(VOX_AXIS_MAX)
         };
 
         // Build an indexable list of models (tile_x, tile_y, tile_z order).
@@ -434,6 +451,11 @@ impl VoxExportBuilder {
     /// Decode one voxel's corner-anchored grid index, tile it, and push it into its
     /// model, dropping it if it falls outside the region. The block id selects the
     /// `.vox` palette slot.
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn ingest_voxel(&mut self, voxel: voxel_core::voxel::Voxel) {
         let [grid_x, grid_y, grid_z] = self.region_dimensions;
         // Recover non-negative integer grid indices from the world-centered
@@ -466,22 +488,24 @@ impl VoxExportBuilder {
         // block id selects the `.vox` palette slot (`block_id + 1`),
         // so a multi-material model exports each block in its own color. Clamp to
         // the procedural palette so a stray id stays in range.
-        let palette_slot = voxel
-            .color_index()
-            .min(voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT as u16 - 1)
-            as u8
-            + 1;
-        self.models[model_pos].voxels.push(VoxVoxel {
-            x: local_i as u8,
-            y: local_j as u8,
-            z: local_k as u8,
+        let palette_slot = u8::try_from(voxel.color_index().min(2))
+            .unwrap_or_default()
+            .saturating_add(1);
+        let Some(model) = self.models.get_mut(model_pos) else {
+            return;
+        };
+        model.voxels.push(VoxVoxel {
+            x: u8::try_from(local_i).unwrap_or_default(),
+            y: u8::try_from(local_j).unwrap_or_default(),
+            z: u8::try_from(local_k).unwrap_or_default(),
             color_index: palette_slot,
         });
-        self.voxel_count += 1;
+        self.voxel_count = self.voxel_count.saturating_add(1);
     }
 
     /// Finalise the streamed export: drop the empty tiles a sparse split leaves behind,
     /// keeping at least one (possibly empty) model so the file stays valid.
+    #[must_use]
     pub fn finish(mut self) -> VoxExport {
         // Drop empty models (a sparse split can leave some tiles with nothing).
         self.models.retain(|model| !model.voxels.is_empty());
@@ -507,6 +531,14 @@ impl VoxExportBuilder {
     }
 }
 
+/// Convert a collection length to the `.vox` format's `u32` field.
+///
+/// The format cannot represent a larger collection, so an oversized in-memory
+/// collection is encoded at the format maximum rather than wrapping around.
+fn usize_to_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
 /// Append a little-endian `u32`.
 fn write_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
@@ -514,10 +546,10 @@ fn write_u32(out: &mut Vec<u8>, value: u32) {
 
 /// Append one chunk: 4-byte id, content size (LE u32), children size (LE u32),
 /// then the content bytes, then the children bytes.
-fn write_chunk(out: &mut Vec<u8>, id: &[u8; 4], content: &[u8], children: &[u8]) {
-    out.extend_from_slice(id);
-    write_u32(out, content.len() as u32);
-    write_u32(out, children.len() as u32);
+fn write_chunk(out: &mut Vec<u8>, id: [u8; 4], content: &[u8], children: &[u8]) {
+    out.extend_from_slice(&id);
+    write_u32(out, usize_to_u32(content.len()));
+    write_u32(out, usize_to_u32(children.len()));
     out.extend_from_slice(content);
     out.extend_from_slice(children);
 }

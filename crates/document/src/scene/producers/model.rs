@@ -1,3 +1,22 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::format_push_string,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::doc_markdown,
+    clippy::similar_names,
+    clippy::too_long_first_doc_paragraph,
+    clippy::unnecessary_wraps,
+    clippy::wildcard_imports
+)]
+
 //! Leaf model + keying: the leaf content kinds ([`VoxelBody`] / [`NodeContent`]),
 //! the walk's scope frames and visitor body ([`ScopeFrame`] / [`LeafBody`] /
 //! [`LeafVisitor`] / [`ComposedScope`]), the flat op-stack entry ([`LeafProducer`]),
@@ -104,7 +123,7 @@ pub struct ScopeFrame {
 /// nothing without the integer origin it is relative to, and two adjacent `[_; 3]`
 /// arguments are exactly the confusion the carried-frame discipline exists to prevent.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AccumulatedOffset {
+pub struct AccumulatedOffset {
     /// The accumulated world VOXEL offset — the corner-anchored low corner in the scene's
     /// absolute voxel frame.
     pub world_voxels: [i64; 3],
@@ -143,7 +162,7 @@ impl AccumulatedOffset {
 /// exactly what the carried-frame discipline exists to stop being confused. Consumers
 /// destructure the fields they want and `..` the rest, so adding a field touches only the
 /// sites that need it.
-pub(crate) struct VisitedLeaf<'walk> {
+pub struct VisitedLeaf<'walk> {
     /// The accumulated world VOXEL offset (integer) — the leaf's corner-anchored low corner
     /// in the scene's absolute voxel frame.
     pub world_offset_voxels: [i64; 3],
@@ -176,7 +195,7 @@ pub(crate) struct VisitedLeaf<'walk> {
 
 /// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
 /// enabled leaf with the [`VisitedLeaf`] describing it.
-pub(crate) type LeafVisitor<'walk> = dyn FnMut(VisitedLeaf<'_>) + 'walk;
+pub type LeafVisitor<'walk> = dyn FnMut(VisitedLeaf<'_>) + 'walk;
 
 /// What a visited leaf actually IS: ordinary document content, or a sealed scope that has
 /// been pre-composed into one producer because it carries an outset.
@@ -186,7 +205,7 @@ pub(crate) type LeafVisitor<'walk> = dyn FnMut(VisitedLeaf<'_>) + 'walk;
 /// "pre-compose the children into one body", so the walk hands it over as a single leaf and
 /// every consumer treats it like any other producer. There is no `NodeContent` for it: it is
 /// a derived runtime body, never document data.
-pub(crate) enum LeafBody<'walk> {
+pub enum LeafBody<'walk> {
     Content(&'walk NodeContent),
     Composed {
         producer: crate::voxel::CompositeProducer,
@@ -197,7 +216,7 @@ pub(crate) enum LeafBody<'walk> {
 }
 
 /// A sealed scope pre-composed into one producer, with the world offset of its low corner.
-pub(crate) struct ComposedScope {
+pub struct ComposedScope {
     pub origin_voxels: [i64; 3],
     pub fingerprint: String,
     pub producer: crate::voxel::CompositeProducer,
@@ -210,7 +229,7 @@ impl LeafBody<'_> {
     /// This is the ONE place content maps to a producer: without it the same `match` is
     /// repeated in `leaf_producers`, `resolve_region` and `resolve_chunk`, and a new body
     /// kind has to be added in three places.
-    pub(crate) fn into_producer(
+    pub fn into_producer(
         self,
         region_dimensions: [u32; 3],
         voxels_per_block: u32,
@@ -253,7 +272,7 @@ impl LeafBody<'_> {
 
     /// The leaf's emitted grid extent in voxels, grown by its outset — `None` for a body with
     /// no localizable extent.
-    pub(crate) fn grid_voxels(
+    pub fn grid_voxels(
         &self,
         voxels_per_block: u32,
         outset_voxels: i64,
@@ -276,7 +295,7 @@ impl LeafBody<'_> {
 /// ([`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since))
 /// treats them as unchanged. `world_offset` is included so a moved Tool whose box
 /// happens to coincide with another's still reads as distinct.
-pub(crate) fn leaf_content_fingerprint(
+pub fn leaf_content_fingerprint(
     world_offset_voxels: [i64; 3],
     body: &LeafBody<'_>,
     grid_on_faces: bool,
@@ -517,7 +536,7 @@ pub fn operation_masks_beyond_bounds(operation: CombineOp, scope_path: &[ScopeFr
 ///
 /// [`SketchTool`]: NodeContent::SketchTool
 /// [`Scene::build_leaf_spatial_index`]: crate::scene::Scene::build_leaf_spatial_index
-pub(crate) fn leaf_producer_grid_voxels(
+pub fn leaf_producer_grid_voxels(
     content: &NodeContent,
     _voxels_per_block: u32,
     outset_voxels: i64,
@@ -550,7 +569,7 @@ pub(crate) fn leaf_producer_grid_voxels(
 ///
 /// Falling back to zero is the safe direction: an unresolvable outset leaves the body
 /// undilated rather than dilating it by a wrong amount.
-pub(crate) fn outset_voxels_at(
+pub fn outset_voxels_at(
     outset: parametric::units::Measurement,
     voxels_per_block: u32,
 ) -> i64 {

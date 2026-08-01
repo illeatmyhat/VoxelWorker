@@ -124,7 +124,7 @@ impl Default for SolveSettings {
     /// Tuned for a sketch measured in voxels: converge to well under a thousandth of a voxel, and
     /// give up after a budget that is generous for a drawing and instant for a machine.
     fn default() -> Self {
-        SolveSettings {
+        Self {
             gradient_tolerance: 1.0e-12,
             step_tolerance: 1.0e-12,
             residual_tolerance: 1.0e-10,
@@ -141,6 +141,10 @@ impl Default for SolveSettings {
 /// For a sketch that is exactly right — the author's drawing is the guess, so the solver moves the
 /// geometry as little as it can, which is what makes a solve feel like a nudge rather than a
 /// rearrangement.
+///
+/// # Panics
+///
+/// Panics if `parameters.len()` does not match `system.parameter_count()`.
 pub fn solve(
     system: &dyn ResidualSystem,
     parameters: &mut [f64],
@@ -161,7 +165,7 @@ pub fn solve(
     let mut jacobian_matrix = jacobian(system, parameters);
 
     for iteration in 0..settings.maximum_iterations {
-        iterations = iteration + 1;
+        iterations = iteration.saturating_add(1);
         if euclidean_norm(&residuals) <= settings.residual_tolerance {
             outcome = SolveOutcome::Converged;
             break;
@@ -250,8 +254,8 @@ pub fn solve(
         outcome,
         iterations,
         residual_norm: euclidean_norm(&residuals),
-        degrees_of_freedom: parameter_count - rank,
-        redundant_residuals: residual_count - rank,
+        degrees_of_freedom: parameter_count.saturating_sub(rank),
+        redundant_residuals: residual_count.saturating_sub(rank),
     }
 }
 
@@ -263,22 +267,36 @@ pub fn solve(
 /// residual is nearly zero and the whole answer is in their differences — that error is the
 /// answer. The step is scaled to each parameter's own magnitude so a coordinate of 1000 and one of
 /// 0.001 are both differenced sensibly.
+#[must_use]
 pub fn jacobian(system: &dyn ResidualSystem, parameters: &[f64]) -> Vec<f64> {
     let parameter_count = system.parameter_count();
     let residual_count = system.residual_count();
-    let mut matrix = vec![0.0; residual_count * parameter_count];
+    let mut matrix = vec![0.0; residual_count.saturating_mul(parameter_count)];
     let mut moved = parameters.to_vec();
     let mut ahead = vec![0.0; residual_count];
     let mut behind = vec![0.0; residual_count];
-    for column in 0..parameter_count {
-        let step = DIFFERENCE_STEP * parameters[column].abs().max(1.0);
-        moved[column] = parameters[column] + step;
+    for (column, &parameter) in parameters.iter().take(parameter_count).enumerate() {
+        let step = DIFFERENCE_STEP * parameter.abs().max(1.0);
+        if let Some(slot) = moved.get_mut(column) {
+            *slot = parameter + step;
+        }
         system.residuals(&moved, &mut ahead);
-        moved[column] = parameters[column] - step;
+        if let Some(slot) = moved.get_mut(column) {
+            *slot = parameter - step;
+        }
         system.residuals(&moved, &mut behind);
-        moved[column] = parameters[column];
-        for row in 0..residual_count {
-            matrix[row * parameter_count + column] = (ahead[row] - behind[row]) / (2.0 * step);
+        if let Some(slot) = moved.get_mut(column) {
+            *slot = parameter;
+        }
+        for ((row, &ahead_value), &behind_value) in matrix
+            .chunks_exact_mut(parameter_count)
+            .zip(ahead.iter())
+            .zip(behind.iter())
+            .take(residual_count)
+        {
+            if let Some(slot) = row.get_mut(column) {
+                *slot = (ahead_value - behind_value) / (2.0 * step);
+            }
         }
     }
     matrix
@@ -295,21 +313,26 @@ const DIFFERENCE_STEP: f64 = 6.0e-6;
 /// This is what the degrees-of-freedom report is made of. The tolerance is relative to the largest
 /// pivot seen, so it scales with the matrix rather than assuming anything about the units the
 /// caller's parameters are in.
+#[must_use]
 pub fn rank(matrix: &[f64], rows: usize, columns: usize) -> usize {
     if rows == 0 || columns == 0 {
         return 0;
     }
     let mut work = matrix.to_vec();
+    let mut row_slices: Vec<&mut [f64]> = work.chunks_exact_mut(columns).take(rows).collect();
     let mut rank = 0;
     let mut largest_pivot = 0.0f64;
     for column in 0..columns {
-        if rank == rows {
+        if rank == row_slices.len() {
             break;
         }
         // The largest remaining entry in this column is the pivot — anything smaller amplifies
         // rounding error into the rows below it.
-        let (pivot_row, pivot) = (rank..rows)
-            .map(|row| (row, work[row * columns + column].abs()))
+        let (pivot_row, pivot) = row_slices
+            .iter()
+            .enumerate()
+            .skip(rank)
+            .map(|(row, values)| (row, values.get(column).copied().unwrap_or_default().abs()))
             .fold(
                 (rank, 0.0),
                 |best, here| if here.1 > best.1 { here } else { best },
@@ -318,20 +341,31 @@ pub fn rank(matrix: &[f64], rows: usize, columns: usize) -> usize {
         if pivot <= RANK_TOLERANCE * largest_pivot.max(1.0) {
             continue;
         }
-        for index in 0..columns {
-            work.swap(rank * columns + index, pivot_row * columns + index);
-        }
-        let scale = work[rank * columns + column];
-        for row in (rank + 1)..rows {
-            let factor = work[row * columns + column] / scale;
+        row_slices.swap(rank, pivot_row);
+        let (before_and_rank, below) = row_slices.split_at_mut(rank.saturating_add(1));
+        let Some(pivot_values) = before_and_rank.last() else {
+            break;
+        };
+        let Some(&scale) = pivot_values.get(column) else {
+            continue;
+        };
+        for values in below {
+            let Some(&value) = values.get(column) else {
+                continue;
+            };
+            let factor = value / scale;
             if factor == 0.0 {
                 continue;
             }
-            for index in column..columns {
-                work[row * columns + index] -= factor * work[rank * columns + index];
+            for (target, pivot_value) in values
+                .iter_mut()
+                .skip(column)
+                .zip(pivot_values.iter().skip(column))
+            {
+                *target = (-factor).mul_add(*pivot_value, *target);
             }
         }
-        rank += 1;
+        rank = rank.saturating_add(1);
     }
     rank
 }
@@ -384,8 +418,8 @@ fn dog_leg_step(
         .collect();
     let a = sum_of_squares(&leg);
     let b = 2.0 * dot(&steepest, &leg);
-    let c = steepest_length * steepest_length - trust_radius * trust_radius;
-    let discriminant = (b * b - 4.0 * a * c).max(0.0);
+    let c = trust_radius.mul_add(-trust_radius, steepest_length * steepest_length);
+    let discriminant = (4.0 * a).mul_add(-c, b * b).max(0.0);
     let beta = if a > 0.0 {
         (-b + discriminant.sqrt()) / (2.0 * a)
     } else {
@@ -429,14 +463,17 @@ fn gauss_newton_step(
         return Some(step);
     }
     let scale = (0..columns)
-        .map(|index| normal[index * columns + index])
+        .zip(normal.chunks_exact(columns))
+        .map(|(index, row)| row.get(index).copied().unwrap_or_default())
         .fold(0.0f64, f64::max)
         .max(1.0);
     let mut damping = DAMPING_SEED * scale;
     for _ in 0..DAMPING_ATTEMPTS {
         let mut damped = normal.clone();
-        for index in 0..columns {
-            damped[index * columns + index] += damping;
+        for (index, row) in damped.chunks_exact_mut(columns).take(columns).enumerate() {
+            if let Some(diagonal) = row.get_mut(index) {
+                *diagonal += damping;
+            }
         }
         if let Some(step) = cholesky_solve(&damped, &negative_gradient, columns) {
             return Some(step);
@@ -457,12 +494,27 @@ const DAMPING_ATTEMPTS: usize = 12;
 /// factorisation. `None` when `A` is not positive definite, which is the signal the caller damps
 /// on rather than an error.
 fn cholesky_solve(matrix: &[f64], vector: &[f64], size: usize) -> Option<Vec<f64>> {
-    let mut lower = vec![0.0; size * size];
+    let mut lower: Vec<Vec<f64>> = (0..size).map(|_| vec![0.0; size]).collect();
     for row in 0..size {
         for column in 0..=row {
-            let mut sum = matrix[row * size + column];
+            let mut sum = matrix
+                .chunks_exact(size)
+                .nth(row)
+                .and_then(|values| values.get(column))
+                .copied()
+                .unwrap_or_default();
             for index in 0..column {
-                sum -= lower[row * size + index] * lower[column * size + index];
+                let row_value = lower
+                    .get(row)
+                    .and_then(|values| values.get(index))
+                    .copied()
+                    .unwrap_or_default();
+                let column_value = lower
+                    .get(column)
+                    .and_then(|values| values.get(index))
+                    .copied()
+                    .unwrap_or_default();
+                sum = (-column_value).mul_add(row_value, sum);
             }
             if row == column {
                 // A non-positive or non-finite pivot is exactly "not positive definite" — the
@@ -470,27 +522,45 @@ fn cholesky_solve(matrix: &[f64], vector: &[f64], size: usize) -> Option<Vec<f64
                 if sum.is_nan() || sum <= 0.0 || sum.is_infinite() {
                     return None;
                 }
-                lower[row * size + column] = sum.sqrt();
+                let values = lower.get_mut(row)?;
+                let slot = values.get_mut(column)?;
+                *slot = sum.sqrt();
             } else {
-                lower[row * size + column] = sum / lower[column * size + column];
+                let divisor = lower
+                    .get(column)
+                    .and_then(|values| values.get(column))
+                    .copied()?;
+                let values = lower.get_mut(row)?;
+                let slot = values.get_mut(column)?;
+                *slot = sum / divisor;
             }
         }
     }
     // Forward substitution through L, then back substitution through Lᵀ.
     let mut solution = vec![0.0; size];
     for row in 0..size {
-        let mut sum = vector[row];
-        for index in 0..row {
-            sum -= lower[row * size + index] * solution[index];
+        let mut sum = vector.get(row).copied().unwrap_or_default();
+        let values = lower.get(row)?;
+        for (&coefficient, &value) in values.iter().zip(solution.iter()).take(row) {
+            sum = (-coefficient).mul_add(value, sum);
         }
-        solution[row] = sum / lower[row * size + row];
+        let &diagonal = values.get(row)?;
+        let slot = solution.get_mut(row)?;
+        *slot = sum / diagonal;
     }
     for row in (0..size).rev() {
-        let mut sum = solution[row];
-        for index in (row + 1)..size {
-            sum -= lower[index * size + row] * solution[index];
+        let mut sum = solution.get(row).copied().unwrap_or_default();
+        for (index, &value) in solution.iter().enumerate().skip(row.saturating_add(1)) {
+            let coefficient = lower
+                .get(index)
+                .and_then(|values| values.get(row))
+                .copied()
+                .unwrap_or_default();
+            sum = (-coefficient).mul_add(value, sum);
         }
-        solution[row] = sum / lower[row * size + row];
+        let diagonal = lower.get(row).and_then(|values| values.get(row)).copied()?;
+        let slot = solution.get_mut(row)?;
+        *slot = sum / diagonal;
     }
     solution
         .iter()
@@ -518,10 +588,14 @@ fn predicted_reduction(
 
 /// `M · v` for a `rows × columns` row-major `M`.
 fn times(matrix: &[f64], vector: &[f64], rows: usize, columns: usize) -> Vec<f64> {
-    (0..rows)
+    matrix
+        .chunks_exact(columns)
+        .take(rows)
         .map(|row| {
-            (0..columns)
-                .map(|column| matrix[row * columns + column] * vector[column])
+            row.iter()
+                .zip(vector.iter())
+                .take(columns)
+                .map(|(&matrix_value, &vector_value)| matrix_value * vector_value)
                 .sum()
         })
         .collect()
@@ -531,8 +605,14 @@ fn times(matrix: &[f64], vector: &[f64], rows: usize, columns: usize) -> Vec<f64
 fn transpose_times(matrix: &[f64], vector: &[f64], rows: usize, columns: usize) -> Vec<f64> {
     (0..columns)
         .map(|column| {
-            (0..rows)
-                .map(|row| matrix[row * columns + column] * vector[row])
+            matrix
+                .chunks_exact(columns)
+                .take(rows)
+                .zip(vector.iter())
+                .filter_map(|(row, &vector_value)| {
+                    row.get(column)
+                        .map(|&matrix_value| matrix_value * vector_value)
+                })
                 .sum()
         })
         .collect()
@@ -540,17 +620,28 @@ fn transpose_times(matrix: &[f64], vector: &[f64], rows: usize, columns: usize) 
 
 /// `MᵀM` for a `rows × columns` row-major `M`, as a `columns × columns` row-major matrix.
 fn transpose_times_self(matrix: &[f64], rows: usize, columns: usize) -> Vec<f64> {
-    let mut product = vec![0.0; columns * columns];
+    let mut product: Vec<Vec<f64>> = (0..columns).map(|_| vec![0.0; columns]).collect();
     for left in 0..columns {
         for right in left..columns {
-            let sum: f64 = (0..rows)
-                .map(|row| matrix[row * columns + left] * matrix[row * columns + right])
+            let sum: f64 = matrix
+                .chunks_exact(columns)
+                .take(rows)
+                .filter_map(|row| row.get(left).zip(row.get(right)))
+                .map(|(&left_value, &right_value)| left_value * right_value)
                 .sum();
-            product[left * columns + right] = sum;
-            product[right * columns + left] = sum;
+            if let Some(row) = product.get_mut(left) {
+                if let Some(slot) = row.get_mut(right) {
+                    *slot = sum;
+                }
+            }
+            if let Some(row) = product.get_mut(right) {
+                if let Some(slot) = row.get_mut(left) {
+                    *slot = sum;
+                }
+            }
         }
     }
-    product
+    product.into_iter().flat_map(Vec::into_iter).collect()
 }
 
 /// The sum of the squares of a vector's entries.
@@ -576,6 +667,22 @@ fn dot(left: &[f64], right: &[f64]) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::imprecise_flops,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::suboptimal_flops,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
 

@@ -35,5 +35,25 @@
 // The CI doc gate denies broken and redundant links but permits these.
 #![allow(rustdoc::private_intra_doc_links)]
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::fn_params_excessive_bools,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::needless_pass_by_value,
+    clippy::redundant_closure_for_method_calls,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::unnested_or_patterns
+)]
 pub mod engagement;
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::needless_pass_by_value,
+    clippy::redundant_closure_for_method_calls
+)]
 pub mod workers;

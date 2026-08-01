@@ -10,6 +10,8 @@
 //!
 //! Run: `cargo test --test display_orchestrator` (skips loudly without a GPU adapter)
 
+#![allow(clippy::missing_const_for_fn)]
+
 use std::sync::Arc;
 use std::time::Duration;
 

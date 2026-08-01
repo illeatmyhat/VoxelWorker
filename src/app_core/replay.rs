@@ -6,8 +6,9 @@ use document::scene::Scene;
 
 use super::AppCore;
 
-/// The **default seed scene** the windowed app starts from — the base a `shot
-/// --replay` script is applied against. A single Tool node
+/// The default seed scene used by the windowed app and `shot --replay`.
+///
+/// It contains a single `Tool` node
 /// from the default geometry/material, the Origin Point synthesized, stable
 /// [`NodeId`](document::scene::NodeId)s minted — i.e. exactly `PanelState::with_view_cube_default().scene`
 /// (which runs `Scene::from_geometry(default)` + `ensure_origin_point` +
@@ -29,6 +30,10 @@ pub fn default_replay_seed_scene() -> Scene {
 /// 1-based line number and the offending line (no panic) — the caller prints it and
 /// exits non-zero. `bin/shot` reads the file then calls this; the lib tests feed a
 /// string directly (keeping the GPU render out of the unit test).
+///
+/// # Errors
+///
+/// Returns an error when a non-empty line is not valid JSON for an [`Intent`].
 pub fn replay_intent_script(script: &str) -> Result<Scene, String> {
     let mut scene = default_replay_seed_scene();
     let mut app_core = AppCore::new(OrbitCamera::default());

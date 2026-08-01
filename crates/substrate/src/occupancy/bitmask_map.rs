@@ -37,21 +37,24 @@
 /// Set the bit at cell-local `linear_index` in a fixed-width bitmask word array — the word/bit
 /// split `mask[index / 32] |= 1 << (index % 32)` (Warren, *Hacker's Delight* ch. 2). Used to
 /// scatter bits into a per-key mask *before* the triples are assembled into a
-/// [`SortedKeyBitmaskMap`]. Panics (in debug) on an out-of-range index, exactly as an array index
-/// would — the caller's cell geometry guarantees `linear_index < MASK_WORDS * 32`.
+/// [`SortedKeyBitmaskMap`]. Out-of-range indices are ignored by this implementation.
 #[inline]
 pub fn set_mask_bit<const MASK_WORDS: usize>(mask: &mut [u32; MASK_WORDS], linear_index: usize) {
-    mask[linear_index / 32] |= 1u32 << (linear_index % 32);
+    if let Some(word) = mask.get_mut(linear_index / 32) {
+        *word |= 1u32 << (linear_index % 32);
+    }
 }
 
 /// Test the bit at cell-local `linear_index` in a fixed-width bitmask word array (the read
-/// counterpart of [`set_mask_bit`]).
+/// counterpart of [`set_mask_bit`]). Out-of-range indices return `false`.
 #[inline]
+#[must_use]
 pub fn mask_bit_is_set<const MASK_WORDS: usize>(
     mask: &[u32; MASK_WORDS],
     linear_index: usize,
 ) -> bool {
-    mask[linear_index / 32] & (1u32 << (linear_index % 32)) != 0
+    mask.get(linear_index / 32)
+        .is_some_and(|word| word & (1u32 << (linear_index % 32)) != 0)
 }
 
 /// A sorted-key associative map with fixed-width [`MASK_WORDS`](Self::masks)-word bitmask values and
@@ -74,8 +77,9 @@ pub struct SortedKeyBitmaskMap<const MASK_WORDS: usize> {
 
 impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
     /// The empty map (no keys). All three parallel arrays are empty.
+    #[must_use]
     pub fn empty() -> Self {
-        SortedKeyBitmaskMap::default()
+        Self::default()
     }
 
     /// Assemble a map from `(key, mask, fallback)` triples, **sorted by key** and split into the
@@ -83,6 +87,7 @@ impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
     /// mask union, fallback policy — before handing over triples); this constructor only sorts and
     /// splits, it does not merge or deduplicate. The sort is stable, so equal keys (a caller bug)
     /// keep their input order rather than the result being undefined.
+    #[must_use]
     pub fn from_triples(mut triples: Vec<(u64, [u32; MASK_WORDS], u32)>) -> Self {
         triples.sort_by_key(|(key, _, _)| *key);
         let mut keys = Vec::with_capacity(triples.len());
@@ -93,7 +98,7 @@ impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
             masks.push(mask);
             fallbacks.push(fallback);
         }
-        SortedKeyBitmaskMap {
+        Self {
             keys,
             masks,
             fallbacks,
@@ -108,9 +113,14 @@ impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
     /// with a [`debug_assert!`]; in release it is trusted, exactly as the binary search trusts the
     /// key order. Output is byte-identical to [`from_triples`](Self::from_triples) on the same
     /// already-sorted input.
+    #[must_use]
     pub fn from_sorted_unique_triples(triples: Vec<(u64, [u32; MASK_WORDS], u32)>) -> Self {
         debug_assert!(
-            triples.array_windows::<2>().all(|pair| pair[0].0 < pair[1].0),
+            triples.array_windows::<2>().all(|pair| {
+                pair.first()
+                    .zip(pair.get(1))
+                    .is_some_and(|(first, second)| first.0 < second.0)
+            }),
             "from_sorted_unique_triples requires keys strictly ascending and unique"
         );
         let mut keys = Vec::with_capacity(triples.len());
@@ -121,7 +131,7 @@ impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
             masks.push(mask);
             fallbacks.push(fallback);
         }
-        SortedKeyBitmaskMap {
+        Self {
             keys,
             masks,
             fallbacks,
@@ -129,33 +139,60 @@ impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
     }
 
     /// The number of keys in the map (== the length of each parallel array).
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.keys.len()
     }
 
     /// Whether the map holds no keys.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
 
     /// Binary-search the sorted key array for `key`, returning its parallel-array index, or `None`
     /// if absent. The result indexes both [`masks`](Self::masks) and [`fallbacks`](Self::fallbacks).
+    #[must_use]
     pub fn find(&self, key: u64) -> Option<usize> {
         self.keys.binary_search(&key).ok()
     }
 
     /// Whether the bit at cell-local `linear_index` is set in the mask for `key` — a binary search
     /// for the key followed by a [`mask_bit_is_set`] on its mask. `false` if the key is absent.
+    #[must_use]
     pub fn contains_bit(&self, key: u64, linear_index: usize) -> bool {
-        match self.find(key) {
-            Some(index) => mask_bit_is_set(&self.masks[index], linear_index),
-            None => false,
-        }
+        self.find(key).is_some_and(|index| {
+            self.masks
+                .get(index)
+                .is_some_and(|mask| mask_bit_is_set(mask, linear_index))
+        })
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::unwrap_used
+)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     const WORDS: usize = 16; // 512-bit masks — the domain's 8³-cell width, exercised as a plain number.

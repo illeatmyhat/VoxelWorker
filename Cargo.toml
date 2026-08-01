@@ -22,6 +22,29 @@ edition = "2021"
 [workspace]
 members = [".", "crates/snapshot", "crates/snapshot_derive", "crates/substrate", "crates/parametric", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/assets", "crates/display", "crates/interchange", "crates/work", "crates/ui", "crates/shot"]
 
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[lints]
+workspace = true
+
 [lib]
 name = "voxel_worker"
 path = "src/lib.rs"

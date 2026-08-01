@@ -1,3 +1,17 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::expect_used,
+    clippy::similar_names,
+    clippy::wildcard_imports
+)]
+
 //! The dense resolvers' **scope stack**: reconstructing the stack-evaluated depth-first
 //! fold ([`sync_grid_scope_stack`]) and folding one CLOSED scope's composed body into its
 //! parent ([`fold_closed_scope_into`]). Shared by the runtime chunk resolve and the

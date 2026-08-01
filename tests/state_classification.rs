@@ -9,6 +9,9 @@
 //! the two ways to make the compiler stop complaining without deciding anything, and whether
 //! they stay honest depends on review. A test that names each one by hand is how a new one
 //! gets noticed — adding an escape hatch should cost a deliberate edit here.
+
+#![allow(clippy::expect_used)]
+
 //!
 //! Third, that every field classified as reaching the dump has an actual route into it. The
 //! compiler delivers that on `AppConfig`, whose captures destructure exhaustively, and cannot

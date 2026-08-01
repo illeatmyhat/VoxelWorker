@@ -369,6 +369,8 @@ fn holds(sketch: &Sketch, entity: SketchEntity) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::duration_subsec, clippy::expect_used, clippy::float_cmp, clippy::match_same_arms, clippy::panic, clippy::semicolon_if_nothing_returned, clippy::unwrap_used, clippy::while_float)]
+
     use super::*;
     use document::sketch::{PlaneAxis, SketchPoint};
     use parametric::units::AngleMeasurement;

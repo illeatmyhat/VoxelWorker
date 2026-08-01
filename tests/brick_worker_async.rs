@@ -21,6 +21,14 @@
 //!
 //! Run: `cargo test --test brick_worker_async`
 
+#![allow(
+    clippy::duration_suboptimal_units,
+    clippy::expect_used,
+    clippy::items_after_statements,
+    clippy::manual_assert,
+    clippy::panic
+)]
+
 use std::time::{Duration, Instant};
 
 use voxel_worker::{

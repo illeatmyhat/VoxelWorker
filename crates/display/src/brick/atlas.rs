@@ -7,11 +7,10 @@ pub(crate) fn sculpted_atlas_bricks_per_axis(slot_count: usize) -> u32 {
     CubeTilePacking::tiles_per_axis(slot_count)
 }
 
-/// Land the sculpted-brick atlas bytes in an R8Unorm 3D texture via a plain `write_texture`
-/// upload — no row-padding requirement (unlike `copy_texture_to_buffer`'s 256-byte alignment,
-/// see `read_back_brick_atlas` below). `COPY_SRC` is set so the parity net can read the texture
-/// back; a build with no sculpted brick returns a 1³ placeholder (nothing samples it — every
-/// record is coarse/air).
+/// Upload the sculpted-brick atlas to an `R8Unorm` 3D texture.
+///
+/// The direct upload has no row-padding requirement. `COPY_SRC` is enabled for parity readback;
+/// an empty build receives a 1³ placeholder because no record samples it.
 pub fn upload_brick_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -58,14 +57,11 @@ pub fn upload_brick_atlas(
     texture
 }
 
-/// Land the MATERIAL SIDE ATLAS's cell-key bytes in an **R16Uint** 3D texture — the second,
-/// independently pooled atlas beside [`upload_brick_atlas`]'s R8 occupancy one. `R16Uint`
-/// because the texel IS the `u16` cell key verbatim (palette id + overlay bit): an integer
-/// sampled with `textureLoad` and compared exactly, never filtered or normalized — a float
-/// format would round the id. Two bytes per texel (little-endian, the packer's order), so a
-/// row is `2 · edge` bytes. `COPY_SRC` is set for the parity net's readback; a field with no
-/// MIXED brick returns a 1³ placeholder (nothing samples it — every record carries its one
-/// cell key).
+/// Upload the material side atlas's cell-key bytes to an `R16Uint` 3D texture.
+///
+/// This independently pooled atlas stores each `u16` key verbatim, so integer sampling avoids
+/// the rounding a float format could introduce. Rows contain `2 · edge` little-endian bytes;
+/// `COPY_SRC` supports parity readback, and an empty field receives a 1³ placeholder.
 ///
 /// Known limit (inherited from the occupancy atlas, not introduced here): the app requests
 /// `Limits::default()`, so `max_texture_dimension_3d` is 2048 and there is no pre-allocation
@@ -117,7 +113,7 @@ pub fn upload_brick_cell_key_atlas(
     texture
 }
 
-/// Bytes per cell-key texel — the R16Uint stride (one little-endian `u16` per voxel). The ONE
+/// Bytes per cell-key texel — the `R16Uint` stride (one little-endian `u16` per voxel). The ONE
 /// name for the "2" every side-atlas row/extent arithmetic multiplies by.
 pub const CELL_KEY_TEXEL_BYTES: u32 = 2;
 

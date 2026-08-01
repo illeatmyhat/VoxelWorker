@@ -18,6 +18,7 @@ use glam::Vec3;
 pub const SURFACE_ISOLEVEL: f32 = 0.0;
 
 /// Stability cap on a single shape's sampling grid volume. If
+///
 /// `grid_x * grid_y * grid_z` exceeds this, the 3D rebuild is skipped (the panel
 /// shows a warning) so dragging a sphere to 16×16×16 @32 can't freeze the app.
 ///
@@ -25,8 +26,9 @@ pub const SURFACE_ISOLEVEL: f32 = 0.0;
 /// chunked resolve is bounded per chunk instead, by [`MAX_CHUNK_VOXELS`].
 pub const MAX_GRID_VOXELS: u64 = 6_000_000;
 
-/// Per-chunk voxel bound: the most voxels a SINGLE chunk may hold. The deep chunked
-/// resolve (the app-crate `chunk_cache`) caps each chunk, not the whole scene — so total
+/// Per-chunk voxel bound: the most voxels a SINGLE chunk may hold.
+///
+/// The deep chunked resolve (the app-crate `chunk_cache`) caps each chunk, not the whole scene — so total
 /// scene size is bounded only by how many chunks resolve.
 ///
 /// One chunk's voxel CAPACITY is `(CHUNK_BLOCKS × voxels_per_block)³`: at the app
@@ -35,13 +37,16 @@ pub const MAX_GRID_VOXELS: u64 = 6_000_000;
 /// would blow memory) is still rejected — see [`chunk_extent_exceeds_bound`].
 pub const MAX_CHUNK_VOXELS: u64 = 6_000_000;
 
-/// Whether one chunk's voxel CAPACITY at `voxels_per_block`
-/// (`(CHUNK_BLOCKS × voxels_per_block)³`) exceeds the per-chunk bound
-/// [`MAX_CHUNK_VOXELS`]. The chunked-resolve call sites reject a
+/// Whether one chunk's voxel capacity exceeds the per-chunk bound.
+///
+/// The capacity is `(CHUNK_BLOCKS × voxels_per_block)³`, and the chunked-resolve call sites reject a
+/// density this large (a single chunk alone would exceed the bound) instead of
 /// density this large (a single chunk alone would exceed the bound) instead of
 /// resolving it.
+#[must_use]
 pub fn chunk_extent_exceeds_bound(voxels_per_block: u32) -> bool {
-    let extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as u64;
+    let extent = u64::from(crate::core_geom::CHUNK_BLOCKS)
+        .saturating_mul(u64::from(voxels_per_block.max(1)));
     extent.saturating_mul(extent).saturating_mul(extent) > MAX_CHUNK_VOXELS
 }
 
@@ -65,13 +70,12 @@ impl ShapeKind {
     ///   cross-section (X = Y) taller than it is wide reads as a pillar / pipe.
     /// * **Torus** sweeps its ring in the XY ground plane about +Z with `tube_radius` on Z, so
     ///   it wants wide X/Y and a small Z — a flat donut.
+    #[must_use]
     pub const fn default_size_blocks(self) -> [u32; 3] {
         match self {
-            ShapeKind::Box => [4, 4, 4],
-            ShapeKind::Sphere => [4, 4, 4],
-            ShapeKind::Cylinder => [4, 4, 6],
-            ShapeKind::Tube => [4, 4, 6],
-            ShapeKind::Torus => [6, 6, 2],
+            Self::Box | Self::Sphere => [4, 4, 4],
+            Self::Cylinder | Self::Tube => [4, 4, 6],
+            Self::Torus => [6, 6, 2],
         }
     }
 }
@@ -120,6 +124,8 @@ impl Voxel {
     /// The voxel center as an f32 position in the grid's carried frame — `index + 0.5`.
     /// This is the only place f32 is produced; the stored index stays integer.
     #[inline]
+    #[must_use]
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn world_position(&self) -> [f32; 3] {
         [
             self.local_index[0] as f32 + 0.5,
@@ -131,7 +137,8 @@ impl Voxel {
     /// The categorical block id as the color / atlas index the renderer + `.vox`
     /// export use — the 3-value palette maps 1:1 to the color index.
     #[inline]
-    pub fn color_index(&self) -> u16 {
+    #[must_use]
+    pub const fn color_index(&self) -> u16 {
         self.block_id.0
     }
 
@@ -145,7 +152,8 @@ impl Voxel {
     ///
     /// [`CellKey`]: crate::core_geom::CellKey
     #[inline]
-    pub fn cell_key(&self) -> crate::core_geom::CellKey {
+    #[must_use]
+    pub const fn cell_key(&self) -> crate::core_geom::CellKey {
         crate::core_geom::CellKey::compose(self.color_index(), self.grid_overlay)
     }
 }
@@ -177,7 +185,8 @@ pub struct VoxelGrid {
 impl VoxelGrid {
     /// Create an empty grid with the given voxel dimensions (un-recentered:
     /// `recenter_voxels = [0,0,0]`; a recentered resolve sets it explicitly).
-    pub fn new(dimensions: [u32; 3]) -> Self {
+    #[must_use]
+    pub const fn new(dimensions: [u32; 3]) -> Self {
         Self {
             dimensions,
             recenter_voxels: [0, 0, 0],
@@ -186,7 +195,8 @@ impl VoxelGrid {
     }
 
     /// Number of occupied voxels.
-    pub fn occupied_count(&self) -> usize {
+    #[must_use]
+    pub const fn occupied_count(&self) -> usize {
         self.occupied.len()
     }
 
@@ -203,6 +213,7 @@ impl VoxelGrid {
     /// Reads the RESOLVED grid — NOT the SDF. Cheap: one
     /// pass over the sparse occupied list bucketed into per-(z,y)-row bitsets (the
     /// shared [`widest_run_over`] kernel, fed this grid's own `occupied` list).
+    #[must_use]
     pub fn widest_run_in_band(&self, band_min: u32, band_max: u32) -> u32 {
         widest_run_over(self.occupied.iter(), self.dimensions, band_min, band_max)
     }
@@ -224,6 +235,15 @@ impl VoxelGrid {
 /// [`widest_run_in_band_over_chunks`] (many chunk grids' `occupied` lists flattened)
 /// are thin sources over this same bucket-and-scan arithmetic — one definition, so the
 /// seam-stitching decode can never drift between them.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing
+)]
 fn widest_run_over<'voxel>(
     voxels: impl Iterator<Item = &'voxel Voxel>,
     dimensions: [u32; 3],
@@ -244,17 +264,20 @@ fn widest_run_over<'voxel>(
     for voxel in voxels {
         let position = voxel.world_position();
         let k = (position[2] + half_z - 0.5).round() as i64;
-        if k < band_min as i64 || k > band_max as i64 {
+        if k < i64::from(band_min) || k > i64::from(band_max) {
             continue;
         }
         let i = (position[0] + half_x - 0.5).round() as i64;
         let j = (position[1] + half_y - 0.5).round() as i64;
-        if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
+        if i < 0 || i >= i64::from(grid_x) || j < 0 || j >= i64::from(grid_y) {
             continue;
         }
-        let key = (k as u64) << 32 | (j as u64);
+        let key = (u64::try_from(k).unwrap_or_default() << 32)
+            | u64::try_from(j).unwrap_or_default();
         let row = rows.entry(key).or_insert_with(|| vec![false; width]);
-        row[i as usize] = true;
+        if let Some(cell) = row.get_mut(usize::try_from(i).unwrap_or_default()) {
+            *cell = true;
+        }
     }
 
     let mut widest = 0u32;
@@ -273,7 +296,9 @@ fn widest_run_over<'voxel>(
 }
 
 /// **Region-scoped diameter readout.** Compute the SAME value as
-/// [`VoxelGrid::widest_run_in_band`] would return for the whole region, but from a
+/// [`VoxelGrid::widest_run_in_band`] would return for the whole region.
+///
+/// Do so from a
 /// SET of per-chunk grids instead of one assembled monolithic grid, so no consumer
 /// needs the whole grid materialized.
 ///
@@ -300,6 +325,7 @@ fn widest_run_over<'voxel>(
 /// run-scan arithmetic is byte-for-byte the same as
 /// [`VoxelGrid::widest_run_in_band`] — because it IS the same code: both funnel their
 /// voxels through the shared [`widest_run_over`] kernel.
+#[must_use]
 pub fn widest_run_in_band_over_chunks<'grid>(
     region_dimensions: [u32; 3],
     chunk_grids: impl IntoIterator<Item = &'grid VoxelGrid>,
@@ -320,6 +346,8 @@ pub fn widest_run_in_band_over_chunks<'grid>(
 }
 
 /// Signed distance to an axis-aligned box with half-extents `box_half`.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn signed_distance_box(point: Vec3, box_half: Vec3) -> f32 {
     let q = point.abs() - box_half;
     q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0)
@@ -327,6 +355,8 @@ pub fn signed_distance_box(point: Vec3, box_half: Vec3) -> f32 {
 
 /// Signed distance to an inscribed ellipsoid — the standard gradient-normalized
 /// approximation, which is bounded but not exact.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
     let scaled = point / semi_axes;
     let distance_to_unit = scaled.length();
@@ -343,6 +373,8 @@ pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
 /// `semi_axis_x`/`semi_axis_y` are the cross-section radii (the cylinder's circular
 /// cross-section lies in the XY ground plane), `half_height` is the Z (vertical)
 /// half-extent.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn signed_distance_elliptical_cylinder(
     point: Vec3,
     semi_axis_x: f32,
@@ -359,6 +391,8 @@ pub fn signed_distance_elliptical_cylinder(
 ///
 /// `semi_axes` are the inscribed half-extents `(AX, AY, AZ)`; `wall_voxels` is
 /// `wall * density` (Tube only).
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn signed_distance(shape: ShapeKind, point: Vec3, semi_axes: Vec3, wall_voxels: f32) -> f32 {
     let semi_axis_x = semi_axes.x;
     let semi_axis_y = semi_axes.y;
@@ -431,6 +465,14 @@ mod default_size_tests {
 
 #[cfg(test)]
 mod categorical_block_id_tests {
+    #![allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::float_cmp,
+        clippy::indexing_slicing
+    )]
+
     use super::*;
 
     /// The per-voxel cell carries the categorical `block_id` ONLY — the color index IS

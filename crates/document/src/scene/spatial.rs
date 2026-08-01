@@ -1,3 +1,20 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::similar_names,
+    clippy::checked_conversions,
+    clippy::doc_markdown,
+    clippy::semicolon_if_nothing_returned,
+    clippy::single_match_else,
+    clippy::wildcard_imports
+)]
+
 //! Spatial index and chunk covering: the composite voxel AABB, the covering chunk range
 //! (far-placement i64 math narrowed to the i32 chunk key), and the per-leaf
 //! [`LeafSpatialIndex`] the edit-diff broadphase reads.

@@ -95,10 +95,10 @@ pub struct BrickRecord {
     pub seam_solidity: SeamSolidity,
 }
 
-/// The built brick field: the sorted record array + the sculpted-brick occupancy atlas
-/// bytes in the tile-cube layout (`bricks_per_axis³` slots of `edge³` texels,
-/// linear slot index → 3D tile coord, x-fastest). [`upload_brick_atlas`] lands the bytes
-/// in an R8 3D texture.
+/// The built brick field.
+///
+/// It contains sorted records and sculpted-brick occupancy bytes in the tile-cube layout used
+/// by [`upload_brick_atlas`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrickFieldBuild {
     /// Every non-air block's record, sorted strictly ascending by
@@ -128,14 +128,10 @@ pub struct BrickFieldBuild {
     pub atlas_dim_voxels: u32,
 }
 
-/// The GPU upload payload for the sculpted-brick atlas — the ONE place the flat R8 byte
-/// blob lives, under the single-owner tile law (see `docs/architecture/03-display.md`).
-/// A wholesale build hands this to
-/// [`BrickRaymarchRenderer::install_brick_field`](crate::brick::BrickRaymarchRenderer::install_brick_field)
-/// by MOVE ([`IncrementalBrickField::from_wholesale`]); the incremental patch path never
-/// materializes one except on the legitimate atlas-grow re-pack
-/// ([`IncrementalBrickField::pack_atlas_payload`]). Carries the atlas GEOMETRY alongside
-/// the bytes so the install seam sets its frame scalars without a `BrickFieldBuild`.
+/// The GPU upload payload for the sculpted-brick atlas.
+///
+/// It owns the flat R8 bytes and their geometry. Wholesale builds move it into the renderer;
+/// incremental updates materialize it only when the atlas grows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SculptedAtlasPayload {
     /// `geometry.atlas_dim_voxels³` occupancy bytes (0 empty / 255 occupied), slot-packed —
@@ -149,9 +145,9 @@ pub struct SculptedAtlasPayload {
     pub sculpted_slot_count: u32,
 }
 
-/// The sculpted atlas's tile geometry — `bricks_per_axis` / `atlas_dim_voxels` / brick edge,
-/// factored so the incremental owner and the packer never drift on the tile-cube math.
-/// ([`IncrementalBrickField::atlas_geometry`].)
+/// The sculpted atlas's tile geometry.
+///
+/// The shared value keeps the incremental owner and packer aligned on tile-cube math.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SculptedAtlasGeometry {
     /// Sculpted-brick tile slots per atlas axis (`ceil(cbrt(slot_high_water))`).
@@ -162,13 +158,11 @@ pub struct SculptedAtlasGeometry {
     pub brick_edge_voxels: u32,
 }
 
-/// The GPU upload payload for the **material side atlas**: the MIXED bricks' per-voxel
-/// cell-key tiles packed into one 16-bit-texel cube, landed by
-/// [`upload_brick_cell_key_atlas`] in an R16Uint 3D texture. The sibling of
-/// [`SculptedAtlasPayload`] — a SECOND, independently pooled atlas (its own slot numbering,
-/// its own free-list, its own tile-grid edge), sparse by construction: only a block whose
-/// microblocks disagree on their cell key owns a slot here, so a scene of uniform blocks packs
-/// ZERO bytes. See docs/architecture/03-display.md (the brick-field atlas).
+/// The GPU upload payload for the **material side atlas**.
+///
+/// Mixed-brick cell-key tiles are packed into an `R16Uint` cube by
+/// [`upload_brick_cell_key_atlas`]. This is an independent sparse pool; uniform blocks own no
+/// side-atlas slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SculptedCellKeyAtlasPayload {
     /// `2 · geometry.atlas_dim_voxels³` bytes: one **little-endian u16 cell key per voxel**
@@ -183,9 +177,10 @@ pub struct SculptedCellKeyAtlasPayload {
     pub cell_key_slot_count: u32,
 }
 
-/// The material side atlas's tile geometry — the twin of [`SculptedAtlasGeometry`] computed
-/// from the CELL-KEY slot count (the pools size independently: a scene of 10k sculpted bricks
-/// with 3 mixed ones has a 22-tile occupancy grid and a 2-tile material grid).
+/// The material side atlas's tile geometry.
+///
+/// It is computed from the independent cell-key slot count, so its tile grid can be smaller
+/// than the occupancy atlas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SculptedCellKeyAtlasGeometry {
     /// Cell-key tile slots per atlas axis (`ceil(cbrt(cell_key_slot_high_water))`).

@@ -49,40 +49,42 @@ pub struct ValueCube<T: Copy> {
 impl<T: Copy> ValueCube<T> {
     /// A cube of the given edge (`1..=64`) with every cell set to `fill` — the "don't-care"
     /// value the caller injects for cells its companion occupancy marks empty.
+    #[must_use]
     pub fn new_filled(edge: u32, fill: T) -> Self {
         debug_assert!(
             (1..=64).contains(&edge),
             "a ValueCube edge must be 1..=64 (it pairs with a BitCube of the same edge)"
         );
-        let edge_usize = edge as usize;
         Self {
             edge,
-            values: vec![fill; edge_usize * edge_usize * edge_usize],
+            values: vec![fill; cube_value_count(edge)],
         }
     }
 
     /// A cube seeded from `edge³` values already in the row layout (x-fastest, row index
     /// `z * edge + y`) — the inverse of [`as_slice`](Self::as_slice).
+    #[must_use]
     pub fn from_values(edge: u32, values: Vec<T>) -> Self {
-        let edge_usize = edge as usize;
         debug_assert!(
             (1..=64).contains(&edge),
             "a ValueCube edge must be 1..=64 (it pairs with a BitCube of the same edge)"
         );
         debug_assert_eq!(
             values.len(),
-            edge_usize * edge_usize * edge_usize,
+            cube_value_count(edge),
             "the value buffer must be edge³"
         );
         Self { edge, values }
     }
 
     /// The cube edge in cells.
-    pub fn edge(&self) -> u32 {
+    #[must_use]
+    pub const fn edge(&self) -> u32 {
         self.edge
     }
 
     /// The whole cube in row layout (x-fastest, row index `z * edge + y`) — `edge³` values.
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.values
     }
@@ -90,12 +92,19 @@ impl<T: Copy> ValueCube<T> {
     /// The flat index of `(x, y, z)` — the SAME `(row, element)` split
     /// [`BitCube`](crate::occupancy::bit_cube::BitCube) uses (`row = z * edge + y`, element `x`).
     #[inline]
-    fn flat_index(&self, x: u32, y: u32, z: u32) -> usize {
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
+    const fn flat_index(&self, x: u32, y: u32, z: u32) -> usize {
         let edge = self.edge as usize;
-        (z as usize * edge + y as usize) * edge + x as usize
+        (z as usize)
+            .saturating_mul(edge)
+            .saturating_add(y as usize)
+            .saturating_mul(edge)
+            .saturating_add(x as usize)
     }
 
     /// The value at `(x, y, z)`.
+    #[must_use]
+    #[allow(clippy::indexing_slicing)]
     pub fn get(&self, x: u32, y: u32, z: u32) -> T {
         self.values[self.flat_index(x, y, z)]
     }
@@ -103,7 +112,9 @@ impl<T: Copy> ValueCube<T> {
     /// Write the value at `(x, y, z)`.
     pub fn set(&mut self, x: u32, y: u32, z: u32, value: T) {
         let index = self.flat_index(x, y, z);
-        self.values[index] = value;
+        if let Some(slot) = self.values.get_mut(index) {
+            *slot = value;
+        }
     }
 
     /// Fill the contiguous X-run `min_x..=max_x` of the row at `(row_y, row_z)` with `value` —
@@ -113,16 +124,29 @@ impl<T: Copy> ValueCube<T> {
     pub fn fill_x_run(&mut self, row_y: u32, row_z: u32, min_x: u32, max_x: u32, value: T) {
         debug_assert!(min_x <= max_x, "an X-run's min must not exceed its max");
         debug_assert!(max_x < self.edge, "an X-run must stay inside the cube edge");
-        let row_start = (row_z * self.edge + row_y) as usize * self.edge as usize;
-        let run = &mut self.values[row_start + min_x as usize..=row_start + max_x as usize];
-        run.fill(value);
+        let row_start = self.flat_index(0, row_y, row_z);
+        let Some(start) = row_start.checked_add(usize::try_from(min_x).unwrap_or_default()) else {
+            return;
+        };
+        let Some(end) = row_start.checked_add(usize::try_from(max_x).unwrap_or_default()) else {
+            return;
+        };
+        if let Some(run) = self.values.get_mut(start..=end) {
+            run.fill(value);
+        }
     }
 
     /// One X-row (`row_index = z * edge + y`) as a slice of `edge` values.
+    #[must_use]
     pub fn row(&self, row_index: usize) -> &[T] {
-        let edge = self.edge as usize;
-        let start = row_index * edge;
-        &self.values[start..start + edge]
+        let edge = usize::try_from(self.edge).unwrap_or_default();
+        let Some(start) = row_index.checked_mul(edge) else {
+            return &[];
+        };
+        let Some(end) = start.checked_add(edge) else {
+            return &[];
+        };
+        self.values.get(start..end).unwrap_or_default()
     }
 
     /// Copy one X-row (`row_index = z * edge + y`) into `out_row`, the `edge`-long destination
@@ -133,7 +157,7 @@ impl<T: Copy> ValueCube<T> {
     pub fn copy_row_into(&self, row_index: usize, out_row: &mut [T]) {
         debug_assert_eq!(
             out_row.len(),
-            self.edge as usize,
+            usize::try_from(self.edge).unwrap_or_default(),
             "the destination row must be `edge` long"
         );
         out_row.copy_from_slice(self.row(row_index));
@@ -148,13 +172,20 @@ impl ValueCube<u16> {
     /// [`CubeTilePacking::pack_u16_value_cubes`](crate::occupancy::cube_packing::CubeTilePacking::pack_u16_value_cubes)
     /// scatters a set of these cubes in, so one cube's bytes and a packed cube-of-cubes'
     /// bytes agree value-for-value.
+    #[must_use]
     pub fn to_le_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.values.len() * 2);
+        let mut bytes = Vec::with_capacity(self.values.len().checked_mul(2).unwrap_or_default());
         for value in &self.values {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes
     }
+}
+
+#[allow(clippy::as_conversions)]
+const fn cube_value_count(edge: u32) -> usize {
+    let edge = edge as usize;
+    edge.saturating_mul(edge).saturating_mul(edge)
 }
 
 /// Kani bounded-model-checking proofs of the **row-major cube index** shared by [`ValueCube`]
@@ -212,7 +243,29 @@ mod kani_proofs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::unwrap_used
+)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
     use crate::occupancy::bit_cube::BitCube;
 

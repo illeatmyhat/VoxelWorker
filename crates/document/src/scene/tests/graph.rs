@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 use crate::debug_clouds::DebugCloudField;
 use crate::voxel::GeometryParams;
 use crate::voxel::SdfShape;
@@ -359,8 +360,7 @@ fn two_node_scene_resolves_to_union() {
 
     // The expected set-union of the two single-node occupied sets, keyed by
     // integer voxel position (the producers emit voxel-center world positions).
-    use std::collections::HashSet;
-    let key = |grid: &VoxelGrid| -> HashSet<[i64; 3]> {
+    let key = |grid: &VoxelGrid| -> std::collections::HashSet<[i64; 3]> {
         grid.occupied
             .iter()
             .map(|voxel| {
@@ -986,8 +986,8 @@ fn two_instance_village_doubles_occupancy_disjointly() {
         .iter()
         .map(|v| v.world_position()[0])
         .collect();
-    let split_x = (xs.iter().cloned().fold(f32::MAX, f32::min)
-        + xs.iter().cloned().fold(f32::MIN, f32::max))
+    let split_x = (xs.iter().copied().fold(f32::MAX, f32::min)
+        + xs.iter().copied().fold(f32::MIN, f32::max))
         / 2.0;
     let low: std::collections::HashSet<[i64; 3]> = grid
         .occupied

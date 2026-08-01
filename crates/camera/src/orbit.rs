@@ -31,8 +31,9 @@ use crate::view_cube::{CubeFace, CUBE_FACES};
 /// below, which derives the cursor-locked world-per-pixel from the same frustum.
 pub(crate) const PERSPECTIVE_FOV_Y: f32 = std::f32::consts::FRAC_PI_4; // 45°
 
-/// Historical pole epsilon. **No longer used by the camera math** — the snaps and
-/// the drag clamp reach the EXACT poles (`0` / `π`) and rely on
+/// Compatibility constant for callers that configure a pole epsilon.
+///
+/// The camera reaches the EXACT poles (`0` / `π`) and relies on
 /// [`OrbitCamera::up_vector`] for a true singular-frame up rather than nudging `phi`
 /// a hair short.
 pub const POLE_EPSILON: f32 = 0.0001;
@@ -133,7 +134,8 @@ impl Default for HomeView {
 impl HomeView {
     /// Capture the live camera's orbit angles + distance as the new home. This is
     /// an EXPLICIT user home, so its saved distance is honored by Home (no re-fit).
-    pub fn from_camera(camera: &OrbitCamera) -> Self {
+    #[must_use]
+    pub const fn from_camera(camera: &OrbitCamera) -> Self {
         Self {
             theta: camera.orbit_theta,
             phi: camera.orbit_phi,
@@ -146,6 +148,7 @@ impl HomeView {
     /// (nearest-equivalent theta, so no long spin). The caller advances the returned
     /// tween each frame and separately lerps/sets `orbit_distance` (the tween
     /// animates angles only, matching [`SnapTween`]).
+    #[must_use]
     pub fn snap_tween(&self, camera: &OrbitCamera) -> SnapTween {
         SnapTween {
             theta_from: camera.orbit_theta,
@@ -177,7 +180,7 @@ pub struct OrbitCamera {
     /// Distance from `target` to the camera eye.
     pub orbit_distance: f32,
     /// Roll about the forward/view axis (radians). Default 0 = the pole-aware base up
-    /// (`Vec3::Z` away from the poles). The ViewCube roll arrows tween this by ∓90°;
+    /// (`Vec3::Z` away from the poles). The `ViewCube` roll arrows tween this by ∓90°;
     /// any face/edge/corner/Home snap re-uprights it to 0. Transient view state —
     /// NOT persisted (default 0 on load).
     pub roll: f32,
@@ -234,6 +237,12 @@ impl Default for OrbitCamera {
 impl OrbitCamera {
     /// Auto-frame the camera for a grid of the given voxel dimensions:
     /// `distance = max(grid_x, grid_y, grid_z) * 1.9`.
+    #[must_use]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_precision_loss
+    )]
     pub fn auto_framed_distance(grid_dimensions: [u32; 3]) -> f32 {
         let longest = grid_dimensions[0]
             .max(grid_dimensions[1])
@@ -250,6 +259,13 @@ impl OrbitCamera {
     /// Fit, scoped to that node. The orbit angles are left to the caller (Focus
     /// moves the pivot + distance only, like Fit). A zero-extent node yields a
     /// floored minimum distance so the camera never collapses onto the target.
+    #[must_use]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub fn focus_target_and_distance(center: Vec3, extent: [f32; 3]) -> (Vec3, f32) {
         let extent_dimensions = [
             extent[0].round().max(0.0) as u32,
@@ -262,6 +278,8 @@ impl OrbitCamera {
 
     /// Unit direction from the target toward the camera eye (Z-up spherical:
     /// `phi` is the polar angle from +Z, `theta` the azimuth in the XY plane).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn direction(&self) -> Vec3 {
         // Free Orbit is authoritative when it is live; the chart below is stale by definition.
         if let Some(orientation) = self.free_orientation {
@@ -273,6 +291,8 @@ impl OrbitCamera {
     }
 
     /// Camera eye position: `target + direction * distance`.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn eye(&self) -> Vec3 {
         self.target + self.direction() * self.orbit_distance
     }
@@ -283,6 +303,7 @@ impl OrbitCamera {
     /// *from*. Ties (exactly edge-/corner-on views) resolve to the first face in
     /// `CUBE_FACES` order, which is deterministic and good enough — the rotate target
     /// is then `adjacent_face` of that face.
+    #[must_use]
     pub fn nearest_face(&self) -> CubeFace {
         let direction = self.direction();
         CUBE_FACES
@@ -297,12 +318,13 @@ impl OrbitCamera {
     }
 
     /// Is the view currently **constrained to a single face** (looking nearly
-    /// head-on at one of the 6 faces, upright)? The ViewCube rotate arrows are a
+    /// head-on at one of the 6 faces, upright)? The `ViewCube` rotate arrows are a
     /// face-relative 90°-step affordance, so they are only offered when the view is
     /// face-on. An edge/corner/arbitrary-orbit view returns
     /// `false` (no rotate arrows). The test: the eye direction is within ~8° of the
     /// nearest face's outward normal AND the view is roughly upright (roll ≈ 0), so
     /// the four screen-aligned arrows map cleanly to the face's four neighbors.
+    #[must_use]
     pub fn is_face_constrained(&self) -> bool {
         // cos(8°) ≈ 0.990 — a tight cone around the face normal.
         const FACE_ALIGN_COS: f32 = 0.990;
@@ -334,6 +356,8 @@ impl OrbitCamera {
     /// This is the **base** up (roll-free). [`Self::up_vector`] rotates it by
     /// `roll` about the forward axis; both view matrices route through that one so
     /// roll twists the scene AND the small cube together.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects, clippy::suboptimal_flops)]
     pub fn up_vector_base(&self) -> Vec3 {
         use std::f32::consts::PI;
         // Distance (in phi) from the nearest pole.
@@ -370,10 +394,12 @@ impl OrbitCamera {
     /// whole view simply twists in screen space. `roll = 0` returns the base up
     /// unchanged (existing goldens stay byte-identical). Both
     /// [`OrbitCamera::view_projection`] and [`OrbitCamera::view_cube_view_projection`]
-    /// use THIS, so the scene and the small ViewCube roll in lockstep.
+    /// use THIS, so the scene and the small `ViewCube` roll in lockstep.
     ///
     /// [`OrbitCamera::view_projection`]: crate::projection
     /// [`OrbitCamera::view_cube_view_projection`]: crate::projection
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn up_vector(&self) -> Vec3 {
         // Under Free Orbit the whole orientation lives in the quaternion, roll included — there
         // is no separate roll to compose, and no pole to blend around.
@@ -411,6 +437,7 @@ impl OrbitCamera {
     /// closer the eye is to straight-up/down (where azimuth is degenerate). The
     /// damping is floored at `AZIMUTH_DAMPING_FLOOR` so it never reaches zero — a
     /// pole where the drag does nothing at all reads as a locked-up camera.
+    #[allow(clippy::arithmetic_side_effects, clippy::suboptimal_flops)]
     pub fn orbit_by_drag(&mut self, delta_x: f32, delta_y: f32) {
         let azimuth_damping = self.orbit_phi.sin().max(AZIMUTH_DAMPING_FLOOR);
         self.orbit_theta -= delta_x * 0.01 * azimuth_damping;
@@ -420,6 +447,7 @@ impl OrbitCamera {
     /// The camera's orthonormal view basis as world→camera columns
     /// (`right`, `screen_up`, `back`) — the SAME frame `look_at_rh` builds, so a
     /// rotation expressed against it is the rotation the user sees.
+    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn view_basis(&self) -> glam::Mat3 {
         let forward = -self.direction().normalize();
         let right = forward.cross(self.up_vector()).normalize_or_zero();
@@ -443,6 +471,7 @@ impl OrbitCamera {
     /// the grabbed point does not move on screen, under either projection. That is the
     /// property the gesture is judged by: the surface under the cursor stays put and the
     /// world turns around it.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn orbit_about_point_as(
         &mut self,
         orbit_type: OrbitType,
@@ -461,7 +490,7 @@ impl OrbitCamera {
     /// Put the [orbit center](Self::orbit_center) down at a world `point` — what the
     /// viewport context menu's "place orbit center" drives, and one of only two things that
     /// may move it.
-    pub fn place_orbit_center(&mut self, point: Vec3) {
+    pub const fn place_orbit_center(&mut self, point: Vec3) {
         self.orbit_center = point;
     }
 
@@ -470,7 +499,7 @@ impl OrbitCamera {
     ///
     /// The origin rather than `target`: a reset should land somewhere the user can predict
     /// and find again, and a target that pan has been sliding around all session is neither.
-    pub fn reset_orbit_center(&mut self) {
+    pub const fn reset_orbit_center(&mut self) {
         self.orbit_center = Vec3::ZERO;
     }
 
@@ -497,6 +526,7 @@ impl OrbitCamera {
     /// target slides LEFT (`−right`). Winit's screen Y is down-positive, so dragging
     /// down (`delta_y > 0`) pulls the scene down and the target slides UP
     /// (`+screen_up`).
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn pan_by_drag(&mut self, delta_x: f32, delta_y: f32, viewport_height_px: f32) {
         let forward = -self.direction();
         let right = forward.cross(self.up_vector()).normalize_or_zero();
@@ -515,6 +545,7 @@ impl OrbitCamera {
 
     /// Zoom by a wheel step: `distance *= 1 ± 0.08`. Positive `scroll_lines`
     /// zooms in (closer).
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn zoom_by_wheel(&mut self, scroll_lines: f32) {
         let factor = if scroll_lines > 0.0 {
             1.0 - 0.08
@@ -527,6 +558,12 @@ impl OrbitCamera {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::doc_markdown,
+        clippy::items_after_statements,
+        clippy::while_float
+    )]
+
     use super::*;
     use crate::view_cube::{CubeFace, ViewCubeElement, CUBE_FACES};
     use std::f32::consts::{FRAC_PI_2, PI};

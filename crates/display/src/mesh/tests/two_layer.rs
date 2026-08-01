@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_clone, clippy::single_match_else)]
+
 use super::*;
 
 // ---- Two-layer mesher exposed-face parity ----

@@ -12,6 +12,27 @@
 //! initial guess and writes them back, and an under-constrained sketch has free degrees of freedom
 //! that only the stored position remembers.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::imprecise_flops,
+    clippy::indexing_slicing,
+    clippy::manual_midpoint,
+    clippy::map_unwrap_or,
+    clippy::match_same_arms,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::too_many_lines,
+    clippy::suboptimal_flops,
+    clippy::use_self,
+    clippy::similar_names
+)]
+
 use super::{EntityId, Point, SketchLength, SketchPoint};
 use substrate::nonlinear_least_squares::{
     jacobian, rank, solve, ResidualSystem, SolveReport, SolveSettings,

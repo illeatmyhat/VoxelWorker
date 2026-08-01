@@ -63,6 +63,7 @@ pub enum Operator {
 
 /// An authored expression tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::use_self)]
 pub enum Expression {
     /// A value written down directly.
     Literal(Literal),
@@ -83,52 +84,61 @@ pub enum Expression {
 
 impl Expression {
     /// A length literal.
-    pub fn length(measurement: Measurement) -> Self {
-        Expression::Literal(Literal::Length(measurement))
+    #[must_use]
+    pub const fn length(measurement: Measurement) -> Self {
+        Self::Literal(Literal::Length(measurement))
     }
 
     /// An angle literal.
-    pub fn angle(angle: AngleMeasurement) -> Self {
-        Expression::Literal(Literal::Angle(angle))
+    #[must_use]
+    pub const fn angle(angle: AngleMeasurement) -> Self {
+        Self::Literal(Literal::Angle(angle))
     }
 
     /// A pure-number literal.
-    pub fn number(value: ExactRational) -> Self {
-        Expression::Literal(Literal::Number(value))
+    #[must_use]
+    pub const fn number(value: ExactRational) -> Self {
+        Self::Literal(Literal::Number(value))
     }
 
     /// A whole-number literal — the common case, so it does not have to be spelled out.
+    #[must_use]
     pub fn whole(value: i64) -> Self {
-        Self::number(ExactRational::from_integer(value as i128))
+        Self::number(ExactRational::from_integer(i128::from(value)))
     }
 
     /// A reference to a named parameter.
+    #[must_use]
     pub fn symbol(name: impl Into<String>) -> Self {
-        Expression::Symbol(name.into())
+        Self::Symbol(name.into())
     }
 
     /// `self + other`.
-    pub fn plus(self, other: Expression) -> Self {
+    #[must_use]
+    pub fn plus(self, other: Self) -> Self {
         self.binary(Operator::Add, other)
     }
 
     /// `self - other`.
-    pub fn minus(self, other: Expression) -> Self {
+    #[must_use]
+    pub fn minus(self, other: Self) -> Self {
         self.binary(Operator::Subtract, other)
     }
 
     /// `self * other`.
-    pub fn times(self, other: Expression) -> Self {
+    #[must_use]
+    pub fn times(self, other: Self) -> Self {
         self.binary(Operator::Multiply, other)
     }
 
     /// `self / other`.
-    pub fn divided_by(self, other: Expression) -> Self {
+    #[must_use]
+    pub fn divided_by(self, other: Self) -> Self {
         self.binary(Operator::Divide, other)
     }
 
-    fn binary(self, operator: Operator, other: Expression) -> Self {
-        Expression::Binary {
+    fn binary(self, operator: Operator, other: Self) -> Self {
+        Self::Binary {
             left: Box::new(self),
             operator,
             right: Box::new(other),
@@ -137,6 +147,7 @@ impl Expression {
 
     /// Every symbol this expression mentions, deduplicated — what the dependency graph and
     /// the cycle check are built from.
+    #[must_use]
     pub fn referenced_symbols(&self) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
         self.collect_symbols(&mut found);
@@ -145,12 +156,12 @@ impl Expression {
 
     fn collect_symbols(&self, into: &mut BTreeSet<String>) {
         match self {
-            Expression::Literal(_) => {}
-            Expression::Symbol(name) => {
+            Self::Literal(_) => {}
+            Self::Symbol(name) => {
                 into.insert(name.clone());
             }
-            Expression::Negate(inner) => inner.collect_symbols(into),
-            Expression::Binary { left, right, .. } => {
+            Self::Negate(inner) => inner.collect_symbols(into),
+            Self::Binary { left, right, .. } => {
                 left.collect_symbols(into);
                 right.collect_symbols(into);
             }
@@ -185,23 +196,23 @@ pub enum EvaluationError {
 
 impl From<QuantityError> for EvaluationError {
     fn from(error: QuantityError) -> Self {
-        EvaluationError::Quantity(error)
+        Self::Quantity(error)
     }
 }
 
 impl core::fmt::Display for EvaluationError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            EvaluationError::UnknownSymbol { name } => {
+            Self::UnknownSymbol { name } => {
                 write!(formatter, "unknown parameter `{name}`")
             }
-            EvaluationError::CircularReference { cycle } => {
+            Self::CircularReference { cycle } => {
                 write!(formatter, "`{}` depends on itself", cycle.join("` → `"))
             }
-            EvaluationError::ShadowsBuiltIn { name } => {
+            Self::ShadowsBuiltIn { name } => {
                 write!(formatter, "`{name}` is built in and cannot be redefined")
             }
-            EvaluationError::Quantity(error) => write!(formatter, "{error}"),
+            Self::Quantity(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -222,11 +233,13 @@ pub struct SymbolTable {
 impl SymbolTable {
     /// An empty table. The built-ins are not stored — they are resolved during evaluation,
     /// so they cost nothing and cannot be deleted.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Whether a name is built in, and so neither definable nor deletable.
+    #[must_use]
     pub fn is_built_in(name: &str) -> bool {
         name == VOXEL_DENSITY
     }
@@ -236,6 +249,11 @@ impl SymbolTable {
     /// Refuses a name that shadows a built-in, and refuses a definition that would put the
     /// table into a cycle — checked against the table as it *would be*, so redefining an
     /// existing parameter is judged on its new expression rather than its old one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` shadows a built-in or when the new definition introduces
+    /// a circular reference.
     pub fn define(
         &mut self,
         name: impl Into<String>,
@@ -267,11 +285,13 @@ impl SymbolTable {
     }
 
     /// The expression a parameter is defined as.
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&Expression> {
         self.parameters.get(name)
     }
 
     /// Every defined parameter name, sorted.
+    #[must_use = "iterate over the table's parameter names"]
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.parameters.keys().map(String::as_str)
     }
@@ -280,6 +300,10 @@ impl SymbolTable {
     ///
     /// `density` is voxels-per-block: it scales every block term and is the value
     /// [`VOXEL_DENSITY`] resolves to.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first unknown-symbol, cycle, or quantity-arithmetic error encountered.
     pub fn evaluate(
         &self,
         expression: &Expression,
@@ -289,6 +313,10 @@ impl SymbolTable {
     }
 
     /// Evaluate a named parameter at the document density.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first unknown-symbol, cycle, or quantity-arithmetic error encountered.
     pub fn evaluate_symbol(&self, name: &str, density: u32) -> Result<Quantity, EvaluationError> {
         self.resolve_symbol(name, density, &mut Vec::new())
     }
@@ -334,7 +362,7 @@ impl SymbolTable {
     ) -> Result<Quantity, EvaluationError> {
         if name == VOXEL_DENSITY {
             return Ok(Quantity::dimensionless(ExactRational::from_integer(
-                density as i128,
+                i128::from(density),
             )));
         }
         let expression =
@@ -395,6 +423,10 @@ impl SymbolTable {
 /// parameters panel wants as you type, and the one a driving dimension applies before it
 /// hands a value to the solver. Uses a density of 1 because a dimension never depends on
 /// one: scaling a length by any number leaves it a length.
+///
+/// # Errors
+///
+/// Returns the same evaluation error that would occur while evaluating the expression.
 pub fn dimension_of(
     table: &SymbolTable,
     expression: &Expression,
@@ -404,13 +436,15 @@ pub fn dimension_of(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::as_conversions, clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     const DENSITY: u32 = 16;
 
     fn blocks(count: i64) -> Expression {
         Expression::length(Measurement::new(
-            ExactRational::from_integer(count as i128),
+            ExactRational::from_integer(i128::from(count)),
             0,
         ))
     }

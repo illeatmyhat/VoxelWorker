@@ -123,8 +123,9 @@ pub(crate) fn points_line_batch(
     vertices
 }
 
-/// One enabled reference plane of a visible Point,
-/// resolved into the recentered render frame for the analytic infinite-grid shader.
+/// One enabled reference plane for a visible [`Point`].
+///
+/// The plane is resolved into the recentered render frame for the analytic infinite-grid shader.
 /// Computed CPU-side from the scene so the plane selection is unit-testable without
 /// a GPU; [`InfiniteGridRenderer`] turns each into one fullscreen draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,8 +152,9 @@ fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]
     }
 }
 
-/// Collect every enabled reference plane of every visible Point
-/// fast-follow), in the recentered render frame, for the analytic infinite-grid pass.
+/// Collect enabled reference planes for visible points.
+///
+/// The result is in the recentered render frame for the analytic infinite-grid pass.
 /// Hidden Points and disabled planes contribute nothing; the common case (the
 /// Origin Point's XY ground plane, Z-up) yields exactly one instance. Pure + GPU-free
 /// so the plane selection/orientation is unit-tested.
@@ -188,8 +190,10 @@ pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlan
     planes
 }
 
-/// The world reference axes: every visible [`Point`]'s axis lines, batched into one
-/// alpha-blended line buffer. The axes are a **screen-stable navigation marker** —
+/// The world reference axes.
+///
+/// Every visible [`Point`]'s axis lines are batched into one alpha-blended buffer. The axes are a
+/// **screen-stable navigation marker** that spans a fixed viewport fraction at any zoom.
 /// each half-axis spans a fixed fraction of the viewport ([`POINT_AXIS_SCREEN_FRACTION`]) at any
 /// zoom — drawn ON TOP by default (depth off, through the model) with the option to occlude
 /// (depth-tested), selected per frame by [`rebuild_from_scene`](Self::rebuild_from_scene).

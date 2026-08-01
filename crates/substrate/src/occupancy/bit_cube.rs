@@ -39,6 +39,7 @@ pub struct BitCube {
 
 impl BitCube {
     /// An all-clear cube of the given edge (`1..=64`).
+    #[must_use]
     pub fn empty(edge: u32) -> Self {
         debug_assert!(
             (1..=64).contains(&edge),
@@ -46,12 +47,13 @@ impl BitCube {
         );
         Self {
             edge,
-            row_words: vec![0u64; (edge * edge) as usize],
+            row_words: vec![0u64; row_count(edge)],
         }
     }
 
     /// The cube edge in cells.
-    pub fn edge(&self) -> u32 {
+    #[must_use]
+    pub const fn edge(&self) -> u32 {
         self.edge
     }
 
@@ -63,19 +65,26 @@ impl BitCube {
         debug_assert!(min_x <= max_x, "an X-run's min must not exceed its max");
         debug_assert!(max_x < self.edge, "an X-run must stay inside the cube edge");
         let low_bits_cleared = u64::MAX << min_x;
-        let high_bits_cleared = u64::MAX >> (63 - max_x);
+        let high_bits_cleared = u64::MAX >> 63u32.saturating_sub(max_x);
         let run_mask = low_bits_cleared & high_bits_cleared;
-        let row = (row_z * self.edge + row_y) as usize;
-        self.row_words[row] |= run_mask;
+        if let Some(row) = row_index(self.edge, row_y, row_z) {
+            if let Some(word) = self.row_words.get_mut(row) {
+                *word |= run_mask;
+            }
+        }
     }
 
     /// Whether the cell `(x, y, z)` is set.
+    #[must_use]
     pub fn is_set(&self, x: u32, y: u32, z: u32) -> bool {
-        let row = (z * self.edge + y) as usize;
-        (self.row_words[row] >> x) & 1 == 1
+        row_index(self.edge, y, z)
+            .and_then(|row| self.row_words.get(row).copied())
+            .and_then(|word| word.checked_shr(x))
+            .is_some_and(|word| word & 1 == 1)
     }
 
     /// The set-cell count (a popcount sum over the row words).
+    #[must_use]
     pub fn popcount(&self) -> u32 {
         self.row_words.iter().map(|word| word.count_ones()).sum()
     }
@@ -87,19 +96,34 @@ impl BitCube {
     /// of a larger buffer. The `set_byte` is the injected "a set bit reads as THIS byte"
     /// value — the structure names no such byte itself.
     pub fn expand_row_into(&self, row_index: usize, out_row: &mut [u8], set_byte: u8) {
-        expand_row_word_into(self.row_words[row_index], out_row, set_byte);
+        let word = self.row_words.get(row_index).copied().unwrap_or_default();
+        expand_row_word_into(word, out_row, set_byte);
     }
 
     /// Expand the whole cube to `edge³` bytes (`0` for a clear bit, `set_byte` for a set
     /// bit; x-fastest, row index `z * edge + y`). O(edge³), never larger.
+    #[must_use]
     pub fn expand_to_bytes(&self, set_byte: u8) -> Vec<u8> {
-        let edge = self.edge as usize;
-        let mut bytes = vec![0u8; edge * edge * edge];
+        let edge = usize::try_from(self.edge).unwrap_or_default();
+        let byte_count = edge
+            .checked_mul(edge)
+            .and_then(|count| count.checked_mul(edge))
+            .unwrap_or_default();
+        let mut bytes = vec![0u8; byte_count];
         for z in 0..edge {
             for y in 0..edge {
-                let row_index = z * edge + y;
-                let out_start = row_index * edge;
-                self.expand_row_into(row_index, &mut bytes[out_start..out_start + edge], set_byte);
+                let Some(row_index) = z.checked_mul(edge).and_then(|row| row.checked_add(y)) else {
+                    continue;
+                };
+                let Some(out_start) = row_index.checked_mul(edge) else {
+                    continue;
+                };
+                let Some(out_end) = out_start.checked_add(edge) else {
+                    continue;
+                };
+                if let Some(out_row) = bytes.get_mut(out_start..out_end) {
+                    self.expand_row_into(row_index, out_row, set_byte);
+                }
             }
         }
         bytes
@@ -108,24 +132,40 @@ impl BitCube {
     /// Pack `edge³` bytes into the cube (the inverse of [`expand_to_bytes`](Self::expand_to_bytes)):
     /// any nonzero byte is a set bit. Used to seed a cube from a byte buffer produced by an
     /// earlier expand (the round-trip the equality/popcount oracles pin).
+    #[must_use]
     pub fn from_bytes(edge: u32, bytes: &[u8]) -> Self {
-        let edge_usize = edge as usize;
-        debug_assert_eq!(
-            bytes.len(),
-            edge_usize * edge_usize * edge_usize,
-            "the byte buffer must be edge³"
-        );
+        let edge_usize = usize::try_from(edge).unwrap_or_default();
+        let expected_len = edge_usize
+            .checked_mul(edge_usize)
+            .and_then(|count| count.checked_mul(edge_usize))
+            .unwrap_or_default();
+        debug_assert_eq!(bytes.len(), expected_len, "the byte buffer must be edge³");
         let mut cube = Self::empty(edge);
         for z in 0..edge_usize {
             for y in 0..edge_usize {
-                let base = (z * edge_usize + y) * edge_usize;
+                let Some(row_index) = z.checked_mul(edge_usize).and_then(|row| row.checked_add(y))
+                else {
+                    continue;
+                };
+                let Some(base) = row_index.checked_mul(edge_usize) else {
+                    continue;
+                };
+                let Some(end) = base.checked_add(edge_usize) else {
+                    continue;
+                };
+                let Some(input_row) = bytes.get(base..end) else {
+                    continue;
+                };
                 let mut word = 0u64;
-                for x in 0..edge_usize {
-                    if bytes[base + x] != 0 {
-                        word |= 1u64 << x;
+                for (x, byte) in input_row.iter().enumerate() {
+                    if *byte != 0 {
+                        let shift = u32::try_from(x).unwrap_or_default();
+                        word |= 1u64.checked_shl(shift).unwrap_or_default();
                     }
                 }
-                cube.row_words[z * edge_usize + y] = word;
+                if let Some(slot) = cube.row_words.get_mut(row_index) {
+                    *slot = word;
+                }
             }
         }
         cube
@@ -140,10 +180,24 @@ fn expand_row_word_into(word: u64, out_row: &mut [u8], set_byte: u8) {
         return;
     }
     for (x, out) in out_row.iter_mut().enumerate() {
-        if (word >> x) & 1 == 1 {
+        let shift = u32::try_from(x).unwrap_or_default();
+        if word.checked_shr(shift).unwrap_or_default() & 1 == 1 {
             *out = set_byte;
         }
     }
+}
+
+fn row_count(edge: u32) -> usize {
+    edge.checked_mul(edge)
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or_default()
+}
+
+fn row_index(edge: u32, row_y: u32, row_z: u32) -> Option<usize> {
+    row_z
+        .checked_mul(edge)
+        .and_then(|row| row.checked_add(row_y))
+        .and_then(|row| usize::try_from(row).ok())
 }
 
 /// Kani bounded-model-checking proofs of [`BitCube`]'s two silent-corruption-prone kernels —
@@ -195,7 +249,29 @@ mod kani_proofs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::unwrap_used
+)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     /// The byte the fixtures treat as "set" — an arbitrary nonzero value the injection

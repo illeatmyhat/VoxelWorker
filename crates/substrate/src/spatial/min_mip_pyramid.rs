@@ -30,13 +30,10 @@ use crate::spatial::lattice_key::{pack_lattice_key, unpack_lattice_key};
 /// contains it: `floor_div` per axis (Euclidean, so negatives round toward −∞ and cells tile the
 /// lattice without a gap at the origin). `cell_edge` is clamped to at least 1 (a 0-edge cell is
 /// ill-defined; edge 1 is the identity fold).
+#[must_use]
 pub fn fold_coordinate_to_cell(coordinate: [i64; 3], cell_edge: u32) -> [i64; 3] {
-    let edge = cell_edge.max(1) as i64;
-    [
-        coordinate[0].div_euclid(edge),
-        coordinate[1].div_euclid(edge),
-        coordinate[2].div_euclid(edge),
-    ]
+    let edge = i64::from(cell_edge.max(1));
+    coordinate.map(|axis| axis.div_euclid(edge))
 }
 
 /// Binary-search a **sorted, deduplicated** cell-key set for the cell (of edge `cell_edge`) that
@@ -44,6 +41,7 @@ pub fn fold_coordinate_to_cell(coordinate: [i64; 3], cell_edge: u32) -> [i64; 3]
 /// everything" policy; a consumer that reads an empty level as "no skip information" applies that
 /// itself. The set MUST be sorted ascending (the invariant [`MinMipLevel`] maintains), or the
 /// search result is meaningless.
+#[must_use]
 pub fn sorted_cell_keys_contain(cell_keys: &[u64], coordinate: [i64; 3], cell_edge: u32) -> bool {
     let cell = fold_coordinate_to_cell(coordinate, cell_edge);
     cell_keys.binary_search(&pack_lattice_key(cell)).is_ok()
@@ -64,8 +62,9 @@ pub struct MinMipLevel {
 
 impl MinMipLevel {
     /// An empty level (no occupied cells) at the given edge.
+    #[must_use]
     pub fn empty(cell_edge: u32) -> Self {
-        MinMipLevel {
+        Self {
             cell_edge: cell_edge.max(1),
             cell_keys: Vec::new(),
         }
@@ -75,6 +74,7 @@ impl MinMipLevel {
     /// min-mip of the key set. Each input key maps to exactly one cell; distinct keys collapsing to
     /// the same cell dedup to one entry. Pure function of the keys and the edge; the input need not
     /// be sorted.
+    #[must_use]
     pub fn from_keys(keys: &[u64], cell_edge: u32) -> Self {
         Self::from_key_iter(keys.iter().copied(), cell_edge)
     }
@@ -84,6 +84,7 @@ impl MinMipLevel {
     /// already streams keys (e.g. a domain that maps over its records) folds straight into the level
     /// without first materialising an intermediate `Vec<u64>`; only the folded cell-key output is
     /// allocated. Byte-identical to [`from_keys`](Self::from_keys) over the same key sequence.
+    #[must_use]
     pub fn from_key_iter(keys: impl IntoIterator<Item = u64>, cell_edge: u32) -> Self {
         let cell_edge = cell_edge.max(1);
         let cell_keys = keys
@@ -99,16 +100,18 @@ impl MinMipLevel {
     /// that emits cell keys directly during its own traversal, including a bulk range emission) —
     /// sort + deduplicate only, no re-fold. The keys must already be at cell granularity for
     /// `cell_edge`; this is the sink of a producer that did its own folding.
+    #[must_use]
     pub fn from_folded_cell_keys(mut cell_keys: Vec<u64>, cell_edge: u32) -> Self {
         cell_keys.par_sort_unstable();
         cell_keys.dedup();
-        MinMipLevel {
+        Self {
             cell_edge: cell_edge.max(1),
             cell_keys,
         }
     }
 
     /// Whether this level holds the given already-packed cell key (a binary search).
+    #[must_use]
     pub fn contains_cell(&self, cell_key: u64) -> bool {
         self.cell_keys.binary_search(&cell_key).is_ok()
     }
@@ -116,6 +119,7 @@ impl MinMipLevel {
     /// Whether the cell of this level's edge containing `coordinate` is occupied (fold then binary
     /// search). `false` for an empty level — the pure predicate carries no policy; see
     /// [`sorted_cell_keys_contain`].
+    #[must_use]
     pub fn contains_coordinate(&self, coordinate: [i64; 3]) -> bool {
         sorted_cell_keys_contain(&self.cell_keys, coordinate, self.cell_edge)
     }
@@ -135,8 +139,9 @@ impl SparseMinMipPyramid {
     /// Build one [`MinMipLevel`] per edge from the shared key set (each level folds the same keys
     /// at its own edge). The edge list is domain configuration — this kernel names no particular
     /// level count or edge progression.
+    #[must_use]
     pub fn from_keys(keys: &[u64], cell_edges: &[u32]) -> Self {
-        SparseMinMipPyramid {
+        Self {
             levels: cell_edges
                 .iter()
                 .map(|&edge| MinMipLevel::from_keys(keys, edge))
@@ -150,14 +155,16 @@ impl SparseMinMipPyramid {
     /// here (a multi-pass fold cannot replay a single-pass iterator) and each edge folds that
     /// buffer; the caller is spared building its own intermediate `Vec<u64>`. Byte-identical to
     /// [`from_keys`](Self::from_keys) over the same key sequence.
+    #[must_use]
     pub fn from_key_iter(keys: impl IntoIterator<Item = u64>, cell_edges: &[u32]) -> Self {
         let keys: Vec<u64> = keys.into_iter().collect();
         Self::from_keys(&keys, cell_edges)
     }
 
     /// An all-empty pyramid — one empty level per edge.
+    #[must_use]
     pub fn empty(cell_edges: &[u32]) -> Self {
-        SparseMinMipPyramid {
+        Self {
             levels: cell_edges
                 .iter()
                 .map(|&edge| MinMipLevel::empty(edge))
@@ -254,6 +261,17 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     fn key(coordinate: [i64; 3]) -> u64 {

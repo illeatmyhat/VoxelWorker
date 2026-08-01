@@ -2,7 +2,7 @@
 //!
 //! A [`SnapTween`] carries the camera's orbit `(theta, phi)` and `roll` from their
 //! current values to a target over a fixed duration, easing the interpolation with
-//! [`ease_in_out_quad`] so a ViewCube click or a Home snap accelerates out and
+//! [`ease_in_out_quad`] so a `ViewCube` click or a Home snap accelerates out and
 //! decelerates in rather than starting and stopping abruptly. Two small pieces of
 //! angle hygiene travel with it: [`nearest_equivalent_theta`] picks the target
 //! azimuth's `mod 2π` representative nearest the current one so a snap never spins
@@ -18,6 +18,12 @@ use crate::view_cube::{CubeFace, RollDir, ViewCubeElement};
 
 /// Pick the equivalent of `target_theta` (mod 2π) nearest to `current_theta`, so a
 /// snap never spins the long way round ("add/sub 2π before tweening").
+#[must_use]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::suboptimal_flops,
+    clippy::while_float
+)]
 pub fn nearest_equivalent_theta(current_theta: f32, target_theta: f32) -> f32 {
     use std::f32::consts::PI;
     let mut chosen = target_theta;
@@ -31,6 +37,8 @@ pub fn nearest_equivalent_theta(current_theta: f32, target_theta: f32) -> f32 {
 }
 
 /// easeInOutQuad over `t` in `[0, 1]`.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects, clippy::suboptimal_flops)]
 pub fn ease_in_out_quad(t: f32) -> f32 {
     if t < 0.5 {
         2.0 * t * t
@@ -77,6 +85,7 @@ impl SnapTween {
 
     /// Begin a snap to a view-cube element (face, edge or corner). `theta_to` is
     /// resolved to the nearest equivalent so the camera takes the short way.
+    #[must_use]
     pub fn to_element(camera: &OrbitCamera, element: ViewCubeElement) -> Self {
         let (target_theta, target_phi) = element.snap_angles();
         Self {
@@ -97,6 +106,7 @@ impl SnapTween {
 
     /// Begin a snap from the camera's current angles to a face. `theta_to` is
     /// resolved to the nearest equivalent so the camera takes the short way.
+    #[must_use]
     pub fn to_face(camera: &OrbitCamera, face: CubeFace) -> Self {
         let (target_theta, target_phi) = face.snap_angles();
         Self {
@@ -124,6 +134,7 @@ impl SnapTween {
     /// and duration as every other snap.
     ///
     /// [`OrbitCamera::ensure_constrained`]: crate::orbit::OrbitCamera
+    #[must_use]
     pub fn re_level(camera: &OrbitCamera) -> Self {
         Self {
             theta_from: camera.orbit_theta,
@@ -148,6 +159,7 @@ impl SnapTween {
     /// `roll` animates. The target is kept CONTINUOUS (it accumulates off the live
     /// roll) so repeated arrow presses tween smoothly; a later face/Home snap
     /// re-uprights to 0.
+    #[must_use]
     pub fn roll(camera: &OrbitCamera, direction: RollDir) -> Self {
         use std::f32::consts::FRAC_PI_2;
         // Screen convention: a Cw roll arrow twists the view clockwise, which is a
@@ -181,7 +193,8 @@ impl SnapTween {
     /// It ANIMATES for the reason every other camera snap does: a cut straight to the new center
     /// gives no cue as to which way the view moved, and the whole point of aiming at a feature is
     /// to keep hold of it while the frame comes to it.
-    pub fn recenter(camera: &OrbitCamera, point: glam::Vec3) -> Self {
+    #[must_use]
+    pub const fn recenter(camera: &OrbitCamera, point: glam::Vec3) -> Self {
         Self {
             theta_from: camera.orbit_theta,
             phi_from: camera.orbit_phi,
@@ -206,6 +219,7 @@ impl SnapTween {
     /// no-ops the next seam close overwrites, and only `target` (shared by both types)
     /// actually moves. A future tween with MOVING angles started under Free would silently
     /// not turn the view — settle the seam first.
+    #[allow(clippy::arithmetic_side_effects, clippy::suboptimal_flops)]
     pub fn advance(&mut self, camera: &mut OrbitCamera, delta_seconds: f32) -> bool {
         self.elapsed_seconds += delta_seconds;
         let progress = (self.elapsed_seconds / self.duration_seconds).clamp(0.0, 1.0);
@@ -225,9 +239,12 @@ impl SnapTween {
     }
 }
 
-/// Normalize a roll angle to the half-open interval `(−π, π]`. Keeps accumulated
+/// Normalize a roll angle to the half-open interval `(−π, π]`.
+///
+/// It keeps accumulated
 /// roll bounded after repeated arrow presses without affecting the rendered
 /// orientation (the up vector is 2π-periodic in roll).
+#[must_use]
 pub fn normalize_roll(roll: f32) -> f32 {
     use std::f32::consts::PI;
     let two_pi = 2.0 * PI;
@@ -243,6 +260,8 @@ pub fn normalize_roll(roll: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::suboptimal_flops)]
+
     use super::*;
     use std::f32::consts::{FRAC_PI_2, PI};
 

@@ -1,3 +1,5 @@
+#![allow(clippy::panic)]
+
 use crate::brick::*;
 use document::scene::Scene;
 use document::voxel::GeometryParams;

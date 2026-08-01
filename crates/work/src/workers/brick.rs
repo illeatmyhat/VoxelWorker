@@ -47,9 +47,10 @@ use display::brick::{pack_gpu_records, BrickGpuRecord};
 use evaluation::two_layer_store::TwoLayerChunk;
 use voxel_core::voxel::RecenterVoxels;
 
-/// A request to rebuild the brick pipeline WHOLESALE on the worker. Carries the
-/// resolve's covering chunks (`Arc`-shared, `Send`) plus the frame scalars — the same
-/// inputs the synchronous path fed `build_brick_field` / `ClipmapPyramid::from_chunks`.
+/// A request for a wholesale brick-pipeline rebuild.
+///
+/// It carries the resolve's shared covering chunks and the frame scalars used by the synchronous
+/// `build_brick_field` and `ClipmapPyramid::from_chunks` paths.
 pub struct BrickRebuildRequest {
     /// Monotonic generation stamp (supersede key). A result is accepted only when its
     /// generation is still the newest the shell dispatched.
@@ -127,13 +128,10 @@ pub struct BrickRebuildResult {
     pub outcome: Option<BrickRebuildOutcome>,
 }
 
-/// Build a wholesale brick rebuild's artifacts — the SAME calls the synchronous path
-/// makes, in the same order (record build → pyramid + record pack + cell-key pack), so the
-/// outcome is byte-identical to an inline build (asserted by the build-equivalence test).
-/// Every non-empty gpu-build scene reaches `Display` now: the representability gate is deleted,
-/// so a mixed-material scene engages the brick path with its cell-key side atlas (material atlas).
-/// Factored out so the worker loop and the equivalence test share one entry, like
-/// [`build_geometry`](crate::workers::geometry::build_geometry).
+/// Build the artifacts for a wholesale brick rebuild.
+///
+/// The worker uses the same record, pyramid, and atlas sequence as the synchronous path, so the
+/// result is byte-identical to an inline build.
 pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome {
     let (build, slot_tiles) =
         build_brick_field_with_tiles(&request.two_layer_chunks, request.density);
@@ -166,17 +164,15 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
     }))
 }
 
-/// The background brick-pipeline worker: a [`Worker`] whose pure-CPU build closure turns
-/// each [`BrickRebuildRequest`] into a [`BrickRebuildResult`]. Spawn it via
-/// [`spawn_brick_worker`]. The shell dispatches requests and polls each frame; the shared
-/// drain-to-latest/supersede loop is [`Worker`]'s.
+/// The background brick-pipeline worker.
+///
+/// Its [`Worker`] closure turns each [`BrickRebuildRequest`] into a [`BrickRebuildResult`].
 pub type BrickWorker = Worker<BrickRebuildRequest, BrickRebuildResult>;
 
-/// Spawn the brick-pipeline worker on a dedicated thread. The closure builds via
-/// [`build_brick_rebuild`] and carries the request's recenter through to the result.
-/// 0008: the frame value travels with the build, never re-derived at install). Like the
-/// geometry worker, the build runs under [`build_catching`] so a build panic is caught and
-/// surfaced as a `None` outcome the shell can react to, keeping the loop alive.
+/// Spawn the brick-pipeline worker on a dedicated thread.
+///
+/// The closure builds via [`build_brick_rebuild`] and carries the request's recenter to the
+/// result. [`build_catching`] converts a build panic into an empty outcome so the loop survives.
 pub fn spawn_brick_worker() -> BrickWorker {
     Worker::spawn(
         "voxel-worker brick rebuild",
@@ -194,6 +190,7 @@ pub fn spawn_brick_worker() -> BrickWorker {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use document::scene::Scene;

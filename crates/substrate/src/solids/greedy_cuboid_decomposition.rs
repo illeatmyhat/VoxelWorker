@@ -58,11 +58,13 @@ pub struct Cuboid<T> {
 
 impl<T> Cuboid<T> {
     /// Number of cells this (inclusive–inclusive) cuboid covers.
-    pub fn cell_count(&self) -> u64 {
-        let dx = (self.max[0] - self.min[0] + 1) as u64;
-        let dy = (self.max[1] - self.min[1] + 1) as u64;
-        let dz = (self.max[2] - self.min[2] + 1) as u64;
-        dx * dy * dz
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
+    pub const fn cell_count(&self) -> u64 {
+        let dx = self.max[0].saturating_sub(self.min[0]).saturating_add(1) as u64;
+        let dy = self.max[1].saturating_sub(self.min[1]).saturating_add(1) as u64;
+        let dz = self.max[2].saturating_sub(self.min[2]).saturating_add(1) as u64;
+        dx.saturating_mul(dy).saturating_mul(dz)
     }
 
     /// Whether `cell` lies inside this cuboid — the POINT question, as against
@@ -73,8 +75,14 @@ impl<T> Cuboid<T> {
     /// index for asking "is this one cell solid" — answering that by expanding the cuboids
     /// back to cells would cost the volume to learn one bit, which is exactly what the
     /// decomposition was chosen to avoid.
+    #[must_use]
     pub fn contains(&self, cell: [u32; 3]) -> bool {
-        (0..3).all(|axis| cell[axis] >= self.min[axis] && cell[axis] <= self.max[axis])
+        let [cell_x, cell_y, cell_z] = cell;
+        let [min_x, min_y, min_z] = self.min;
+        let [max_x, max_y, max_z] = self.max;
+        (min_x..=max_x).contains(&cell_x)
+            && (min_y..=max_y).contains(&cell_y)
+            && (min_z..=max_z).contains(&cell_z)
     }
 }
 
@@ -95,8 +103,14 @@ pub struct CellGrid<T> {
 
 impl<T: Copy> CellGrid<T> {
     /// Create an all-empty grid of the given extent.
+    #[must_use]
     pub fn new_empty(extent: [u32; 3]) -> Self {
-        let count = extent[0] as usize * extent[1] as usize * extent[2] as usize;
+        let [width, height, depth] = extent;
+        let count = usize::try_from(width)
+            .unwrap_or_default()
+            .checked_mul(usize::try_from(height).unwrap_or_default())
+            .and_then(|count| count.checked_mul(usize::try_from(depth).unwrap_or_default()))
+            .unwrap_or_default();
         Self {
             extent,
             cells: vec![None; count],
@@ -106,25 +120,36 @@ impl<T: Copy> CellGrid<T> {
     /// Flat row-major index for `(x, y, z)` (X fastest). Caller guarantees the
     /// coordinate is in bounds.
     #[inline]
-    fn flat_index(&self, x: u32, y: u32, z: u32) -> usize {
-        let [w, h, _d] = self.extent;
-        (z as usize * h as usize + y as usize) * w as usize + x as usize
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
+    const fn flat_index(&self, x_coord: u32, y_coord: u32, z_coord: u32) -> usize {
+        let [width, height, _depth] = self.extent;
+        (z_coord as usize)
+            .saturating_mul(height as usize)
+            .saturating_add(y_coord as usize)
+            .saturating_mul(width as usize)
+            .saturating_add(x_coord as usize)
     }
 
     /// Label at `(x, y, z)`, or `None` for empty / out-of-bounds.
     #[inline]
-    pub fn cell_at(&self, x: u32, y: u32, z: u32) -> Option<T> {
-        let [w, h, d] = self.extent;
-        if x >= w || y >= h || z >= d {
+    #[must_use]
+    pub fn cell_at(&self, x_coord: u32, y_coord: u32, z_coord: u32) -> Option<T> {
+        let [width, height, depth] = self.extent;
+        if x_coord >= width || y_coord >= height || z_coord >= depth {
             return None;
         }
-        self.cells[self.flat_index(x, y, z)]
+        self.cells
+            .get(self.flat_index(x_coord, y_coord, z_coord))
+            .copied()
+            .flatten()
     }
 
-    /// Set the label at `(x, y, z)`. Panics if out of bounds.
+    /// Set the label at `(x, y, z)`. Out-of-bounds coordinates are ignored.
     pub fn set(&mut self, x: u32, y: u32, z: u32, label: Option<T>) {
         let index = self.flat_index(x, y, z);
-        self.cells[index] = label;
+        if let Some(cell) = self.cells.get_mut(index) {
+            *cell = label;
+        }
     }
 }
 
@@ -140,6 +165,7 @@ impl GreedyCuboidDecomposition {
     /// Guarantees (see the module doc): exact cover of the labeled set, pairwise
     /// disjoint cuboids, each single-label, deterministic output. Not guaranteed
     /// minimal in cuboid count.
+    #[must_use]
     pub fn decompose<T: Copy + Eq>(grid: &CellGrid<T>) -> Vec<Cuboid<T>> {
         let [w, h, d] = grid.extent;
         if w == 0 || h == 0 || d == 0 {
@@ -150,39 +176,41 @@ impl GreedyCuboidDecomposition {
         let mut cuboids = Vec::new();
 
         // Local index helper over the consumed bitmap, sharing the grid's flat layout.
-        let idx = |x: u32, y: u32, z: u32| {
-            (z as usize * h as usize + y as usize) * w as usize + x as usize
-        };
+        let idx = |x: u32, y: u32, z: u32| grid.flat_index(x, y, z);
 
         for z in 0..d {
             for y in 0..h {
                 for x in 0..w {
                     let seed_index = idx(x, y, z);
-                    if consumed[seed_index] {
+                    if consumed.get(seed_index).copied().unwrap_or(false) {
                         continue;
                     }
-                    let label = match grid.cells[seed_index] {
-                        Some(label) => label,
-                        None => continue, // empty
+                    let Some(label) = grid.cells.get(seed_index).copied().flatten() else {
+                        continue;
                     };
 
                     // --- Grow +X: longest same-label unconsumed run from x. ---
                     let mut max_x = x;
-                    while max_x + 1 < w {
-                        let next = idx(max_x + 1, y, z);
-                        if consumed[next] || grid.cells[next] != Some(label) {
+                    while max_x.saturating_add(1) < w {
+                        let next_x = max_x.saturating_add(1);
+                        let next = idx(next_x, y, z);
+                        if consumed.get(next).copied().unwrap_or(false)
+                            || grid.cells.get(next).copied().flatten() != Some(label)
+                        {
                             break;
                         }
-                        max_x += 1;
+                        max_x = next_x;
                     }
 
                     // --- Grow +Y: extend the whole [x..=max_x] row along +Y. ---
                     let mut max_y = y;
-                    'grow_y: while max_y + 1 < h {
-                        let candidate_y = max_y + 1;
+                    'grow_y: while max_y.saturating_add(1) < h {
+                        let candidate_y = max_y.saturating_add(1);
                         for cx in x..=max_x {
                             let cell = idx(cx, candidate_y, z);
-                            if consumed[cell] || grid.cells[cell] != Some(label) {
+                            if consumed.get(cell).copied().unwrap_or(false)
+                                || grid.cells.get(cell).copied().flatten() != Some(label)
+                            {
                                 break 'grow_y;
                             }
                         }
@@ -191,12 +219,14 @@ impl GreedyCuboidDecomposition {
 
                     // --- Grow +Z: extend the whole [x..=max_x]×[y..=max_y] slab. ---
                     let mut max_z = z;
-                    'grow_z: while max_z + 1 < d {
-                        let candidate_z = max_z + 1;
+                    'grow_z: while max_z.saturating_add(1) < d {
+                        let candidate_z = max_z.saturating_add(1);
                         for cy in y..=max_y {
                             for cx in x..=max_x {
                                 let cell = idx(cx, cy, candidate_z);
-                                if consumed[cell] || grid.cells[cell] != Some(label) {
+                                if consumed.get(cell).copied().unwrap_or(false)
+                                    || grid.cells.get(cell).copied().flatten() != Some(label)
+                                {
                                     break 'grow_z;
                                 }
                             }
@@ -208,7 +238,9 @@ impl GreedyCuboidDecomposition {
                     for cz in z..=max_z {
                         for cy in y..=max_y {
                             for cx in x..=max_x {
-                                consumed[idx(cx, cy, cz)] = true;
+                                if let Some(cell) = consumed.get_mut(idx(cx, cy, cz)) {
+                                    *cell = true;
+                                }
                             }
                         }
                     }
@@ -227,6 +259,17 @@ impl GreedyCuboidDecomposition {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     /// Build a grid from a closure `(x, y, z) -> Option<u16>` over `extent`.
@@ -444,8 +487,8 @@ mod tests {
             // Numerical Recipes LCG constants.
             self.0 = self
                 .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (self.0 >> 33) as u32
         }
     }

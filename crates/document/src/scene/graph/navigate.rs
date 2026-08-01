@@ -1,3 +1,20 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::similar_names,
+    clippy::expect_used,
+    clippy::explicit_iter_loop,
+    clippy::doc_markdown,
+    clippy::missing_panics_doc,
+    clippy::wildcard_imports
+)]
+
 //! Path/id navigation over the id-keyed arena: resolving a [`NodePath`] or [`NodeId`]
 //! to a node, the inverse [`Scene::path_of`], the tree-row projection, and the
 //! id-minting / spine-repointing helpers the load path and edit ops share.

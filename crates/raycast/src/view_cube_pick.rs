@@ -1,4 +1,4 @@
-//! The ViewCube element picker's ray-slab-with-entry-axis test.
+//! The `ViewCube` element picker's ray-slab-with-entry-axis test.
 //!
 //! Casting a ray at the small on-screen orientation cube and deciding which element it
 //! hit — a face, an edge, or a corner — is pure ray geometry: a slab intersection
@@ -7,7 +7,7 @@
 //! thresholds, decides whether the pick is the face's center (→ the face), an edge
 //! column/row (→ the face plus one in-plane neighbor), or a corner (→ the face plus
 //! two). This module holds that geometry; the app maps the axes and signs to its
-//! ViewCube face vocabulary.
+//! `ViewCube` face vocabulary.
 //!
 //! ## Zone proportion
 //!
@@ -28,16 +28,20 @@
 use glam::Vec3;
 use substrate::spatial::Ray;
 
-/// The ViewCube's half-extent: the cube spans `[-0.7, 0.7]` on each axis.
+/// The `ViewCube`'s half-extent: the cube spans `[-0.7, 0.7]` on each axis.
 pub const VIEW_CUBE_HALF_EXTENT: f32 = 0.7;
 
-/// The fraction of a face spanned by its central (face-center) zone — the Signal
-/// spec's **68 % center patch**, leaving two 16 % edge strips. The renderer draws the
+/// The fraction of a face spanned by its central (face-center) zone.
+///
+/// This is the Signal spec's **68 % center patch**, leaving two 16 % edge strips.
+///
+/// The renderer draws the
 /// 3×3 slice lines at this same proportion so the drawn partition IS the pick partition.
 pub const VIEW_CUBE_CENTER_PATCH_FRACTION: f32 = 0.68;
 
-/// The hot-zone threshold: the half-width of the 68 %-center patch, in cube units. An
-/// in-plane hit coordinate beyond `±VIEW_CUBE_ZONE_THRESHOLD` falls in that axis's
+/// The hot-zone threshold: the half-width of the 68 %-center patch, in cube units.
+///
+/// An in-plane hit coordinate beyond `±VIEW_CUBE_ZONE_THRESHOLD` falls in that axis's
 /// edge/corner (16 %) strip rather than the central face zone. Derived from
 /// [`VIEW_CUBE_CENTER_PATCH_FRACTION`] so a retune moves both the pick and the drawn
 /// slices together: a center patch covering fraction `f` of the full `2·half` face
@@ -48,7 +52,7 @@ pub const VIEW_CUBE_ZONE_THRESHOLD: f32 = VIEW_CUBE_HALF_EXTENT * VIEW_CUBE_CENT
 /// parallel to that pair of slab planes (mirrors the picker's original `1e-6`).
 const PARALLEL_GUARD: f32 = 1e-6;
 
-/// Where a ray entered the ViewCube: the dominant entry-face axis (0=x, 1=y, 2=z), its
+/// Where a ray entered the `ViewCube`: the dominant entry-face axis (0=x, 1=y, 2=z), its
 /// sign (`-1.0` entered the `-half` face, `+1.0` the `+half` face), and the 3D hit point
 /// on that face in cube space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,11 +65,14 @@ pub struct ViewCubeSlabHit {
     pub hit_point: Vec3,
 }
 
-/// Intersect a ray with the ViewCube `[-half_extent, half_extent]³` by the slab method,
-/// returning the entered face (axis + sign) and the hit point, or `None` if the ray
+/// Intersect a ray with the `ViewCube` `[-half_extent, half_extent]³` by the slab method.
+///
+/// Return the entered face (axis + sign) and the hit point, or `None` if the ray
 /// misses the cube (or only meets it behind the origin). Reproduces the picker's exact
 /// arithmetic: the `1e-6` parallel-axis guard, the entry face = the axis with the largest
 /// near-slab parameter, and the miss test `t_entry > t_exit || t_exit < 0`.
+#[must_use]
+#[allow(clippy::arithmetic_side_effects)]
 pub fn pick_view_cube_slab(ray: Ray, half_extent: f32) -> Option<ViewCubeSlabHit> {
     let origin = ray.origin;
     let direction = ray.direction;
@@ -74,8 +81,11 @@ pub fn pick_view_cube_slab(ray: Ray, half_extent: f32) -> Option<ViewCubeSlabHit
     let mut entry_sign = 1.0f32;
     let mut t_exit = f32::INFINITY;
     for axis in 0..3 {
-        let o = origin[axis];
-        let d = direction[axis];
+        let (o, d) = match axis {
+            0 => (origin.x, direction.x),
+            1 => (origin.y, direction.y),
+            _ => (origin.z, direction.z),
+        };
         if d.abs() < PARALLEL_GUARD {
             if !(-half_extent..=half_extent).contains(&o) {
                 return None; // parallel and outside the slab
@@ -84,11 +94,12 @@ pub fn pick_view_cube_slab(ray: Ray, half_extent: f32) -> Option<ViewCubeSlabHit
         }
         let mut t0 = (-half_extent - o) / d;
         let mut t1 = (half_extent - o) / d;
-        let mut sign = -1.0; // entering the -half face
-        if t0 > t1 {
+        let sign = if t0 > t1 {
             std::mem::swap(&mut t0, &mut t1);
-            sign = 1.0; // entering the +half face
-        }
+            1.0 // entering the +half face
+        } else {
+            -1.0 // entering the -half face
+        };
         if t0 > t_entry {
             t_entry = t0;
             entry_axis = axis;
@@ -106,12 +117,15 @@ pub fn pick_view_cube_slab(ray: Ray, half_extent: f32) -> Option<ViewCubeSlabHit
     })
 }
 
-/// The in-plane neighbor axes+signs the hit's 3×3 hot zones trigger. For each of the two
+/// The in-plane neighbor axes+signs the hit's 3×3 hot zones trigger.
+///
+/// For each of the two
 /// axes NOT equal to the entered face's axis, if the hit's coordinate on that axis exceeds
 /// `+threshold` the zone points toward that axis's positive face (`(axis, true)`); below
 /// `-threshold`, its negative face (`(axis, false)`); within the band, nothing. Zero
 /// neighbors ⇒ the face center, one ⇒ an edge, two ⇒ a corner. The app maps each
-/// `(axis, positive)` to its ViewCube face vocabulary.
+/// `(axis, positive)` to its `ViewCube` face vocabulary.
+#[must_use]
 pub fn view_cube_hot_zone_neighbors(hit: &ViewCubeSlabHit, threshold: f32) -> Vec<(usize, bool)> {
     let mut neighbors = Vec::with_capacity(2);
     for axis in 0..3 {
@@ -130,6 +144,8 @@ pub fn view_cube_hot_zone_neighbors(hit: &ViewCubeSlabHit, threshold: f32) -> Ve
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::float_cmp)]
+
     use super::*;
 
     /// A ray fired straight down −z at the cube's top enters the +z face (axis 2, sign +),

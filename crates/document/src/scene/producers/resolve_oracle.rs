@@ -1,3 +1,17 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::similar_names,
+    clippy::doc_markdown,
+    clippy::wildcard_imports
+)]
+
 //! The cfg-gated dense oracle: the whole-region [`Scene::resolve_region`] and its
 //! chunk-decomposition twin [`Scene::resolve_region_via_chunks`] — the dense,
 //! O(volume) measuring sticks the sparse runtime path is held against, excluded from

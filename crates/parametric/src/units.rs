@@ -60,6 +60,15 @@ pub struct Measurement {
     voxel_term: i64,
 }
 
+/// Convert an exact value to the storage type without wrapping at either boundary.
+fn saturating_i64(value: i128) -> i64 {
+    match i64::try_from(value) {
+        Ok(value) => value,
+        Err(_) if value.is_negative() => i64::MIN,
+        Err(_) => i64::MAX,
+    }
+}
+
 impl Default for Measurement {
     /// The zero measurement: a `0/1` block term and `0` voxels (NOT the derived
     /// `i128::default()` denominator of 0, which would be an invalid rational).
@@ -72,7 +81,8 @@ impl Default for Measurement {
 
 impl Measurement {
     /// Build a measurement from an exact block rational and a whole voxel count.
-    pub fn new(block_term: ExactRational, voxel_term: i64) -> Self {
+    #[must_use]
+    pub const fn new(block_term: ExactRational, voxel_term: i64) -> Self {
         Self {
             block_term_numerator: block_term.numerator(),
             block_term_denominator: block_term.denominator(),
@@ -81,6 +91,12 @@ impl Measurement {
     }
 
     /// The block term as an exact rational.
+    #[allow(clippy::expect_used)]
+    ///
+    /// # Panics
+    ///
+    /// This cannot panic for a value made by [`Measurement::new`], which stores the
+    /// denominator from an already-valid [`ExactRational`].
     pub fn block_term(self) -> ExactRational {
         // The stored pair came from a reduced `ExactRational`, so reconstruction
         // is exact; `expect` cannot fire (the denominator is never zero).
@@ -89,7 +105,8 @@ impl Measurement {
     }
 
     /// The whole-voxel term.
-    pub fn voxel_term(self) -> i64 {
+    #[must_use]
+    pub const fn voxel_term(self) -> i64 {
         self.voxel_term
     }
 
@@ -101,7 +118,8 @@ impl Measurement {
     /// gizmo): the retained measurement is just the voxel count, which
     /// re-evaluates back to exactly `voxels` at any density (the block term is 0,
     /// so density does not scale it).
-    pub fn from_voxels(voxels: i64) -> Self {
+    #[must_use]
+    pub const fn from_voxels(voxels: i64) -> Self {
         Self::new(ExactRational::from_integer(0), voxels)
     }
 
@@ -112,30 +130,37 @@ impl Measurement {
     /// blocks"` at `d = 15` = 52.5), this returns
     /// [`MeasurementError::BlockTermNotWholeVoxels`] reporting the nearest
     /// representable floor/ceil voxel counts — it never silently rounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MeasurementError::ZeroDensity`] for a zero density, or
+    /// [`MeasurementError::BlockTermNotWholeVoxels`] when the block term does not
+    /// evaluate to an integer number of voxels.
     pub fn to_voxels(self, density: u32) -> Result<i64, MeasurementError> {
         if density == 0 {
             return Err(MeasurementError::ZeroDensity);
         }
         let block_voxels = self
             .block_term()
-            .times(ExactRational::from_integer(density as i128));
-        let whole_block_voxels = match block_voxels.to_integer() {
-            Some(value) => value,
-            None => {
-                // Report the nearest representable voxel counts for the WHOLE
-                // measurement (block contribution rounded each way, plus the
-                // exact voxel term) so the caller can show "did you mean 52 or
-                // 53 voxels?".
-                let floor_voxels = block_voxels.floor() + self.voxel_term as i128;
-                let ceil_voxels = block_voxels.ceil() + self.voxel_term as i128;
-                return Err(MeasurementError::BlockTermNotWholeVoxels {
-                    density,
-                    nearest_floor_voxels: floor_voxels as i64,
-                    nearest_ceil_voxels: ceil_voxels as i64,
-                });
-            }
+            .times(ExactRational::from_integer(i128::from(density)));
+        let Some(whole_block_voxels) = block_voxels.to_integer() else {
+            // Report the nearest representable voxel counts for the WHOLE
+            // measurement (block contribution rounded each way, plus the
+            // exact voxel term) so the caller can show "did you mean 52 or
+            // 53 voxels?".
+            let floor_voxels = block_voxels
+                .floor()
+                .saturating_add(i128::from(self.voxel_term));
+            let ceil_voxels = block_voxels
+                .ceil()
+                .saturating_add(i128::from(self.voxel_term));
+            return Err(MeasurementError::BlockTermNotWholeVoxels {
+                density,
+                nearest_floor_voxels: saturating_i64(floor_voxels),
+                nearest_ceil_voxels: saturating_i64(ceil_voxels),
+            });
         };
-        Ok(whole_block_voxels as i64 + self.voxel_term)
+        Ok(saturating_i64(whole_block_voxels).saturating_add(self.voxel_term))
     }
 
     /// Evaluate to an EXACT voxel value at density `d`, without the whole-voxel policy.
@@ -154,8 +179,8 @@ impl Measurement {
     /// literally is.
     pub fn to_voxels_exact(self, density: u32) -> ExactRational {
         self.block_term()
-            .times(ExactRational::from_integer(density as i128))
-            .plus(ExactRational::from_integer(self.voxel_term as i128))
+            .times(ExactRational::from_integer(i128::from(density)))
+            .plus(ExactRational::from_integer(i128::from(self.voxel_term)))
     }
 }
 
@@ -184,7 +209,8 @@ impl Default for AngleMeasurement {
 
 impl AngleMeasurement {
     /// Build an angle from an exact degree rational.
-    pub fn new(degrees: ExactRational) -> Self {
+    #[must_use]
+    pub const fn new(degrees: ExactRational) -> Self {
         Self {
             degrees_numerator: degrees.numerator(),
             degrees_denominator: degrees.denominator(),
@@ -192,13 +218,16 @@ impl AngleMeasurement {
     }
 
     /// A whole-degree angle.
+    #[must_use]
     pub fn from_degrees(degrees: i64) -> Self {
-        Self::new(ExactRational::from_integer(degrees as i128))
+        Self::new(ExactRational::from_integer(i128::from(degrees)))
     }
 
     /// Quantize a solved continuous degree value onto the exact store at 1/3600°
     /// (arc-second) resolution — the entry for creation tools whose inputs are floats,
     /// such as the 3-point arc solve. Exact thereafter. `None` for a non-finite input.
+    #[must_use]
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     pub fn from_degrees_f64(degrees: f64) -> Option<Self> {
         if !degrees.is_finite() {
             return None;
@@ -208,6 +237,12 @@ impl AngleMeasurement {
     }
 
     /// The exact degree value.
+    #[allow(clippy::expect_used)]
+    ///
+    /// # Panics
+    ///
+    /// This cannot panic for a value made by [`AngleMeasurement::new`], which stores the
+    /// denominator from an already-valid [`ExactRational`].
     pub fn degrees(self) -> ExactRational {
         ExactRational::new(self.degrees_numerator, self.degrees_denominator)
             .expect("stored degree denominator is non-zero")
@@ -216,6 +251,8 @@ impl AngleMeasurement {
     /// The degree value evaluated to `f64` — the tessellation/display evaluation, the
     /// analog of [`Measurement::to_voxels`]. Angles carry no density, so unlike a length
     /// the evaluation cannot fail; the float is derived, never stored.
+    #[must_use]
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn to_degrees_f64(self) -> f64 {
         self.degrees_numerator as f64 / self.degrees_denominator as f64
     }
@@ -242,8 +279,9 @@ pub enum DisplayUnit {
 /// The inverse of [`parse`] + [`Measurement::to_voxels`] for the round-trip
 /// display path. `density` of 0 is treated as 1 (degenerate, but never panics);
 /// callers always pass the document's real `d`.
+#[must_use]
 pub fn format(voxels: i64, density: u32, style: DisplayUnit) -> String {
-    let density = density.max(1) as i64;
+    let density = i64::from(density.max(1));
     match style {
         DisplayUnit::Voxels => format!("{voxels} {}", pluralise(voxels, "voxel")),
         DisplayUnit::BlocksAndVoxels => {
@@ -274,10 +312,11 @@ pub fn format(voxels: i64, density: u32, style: DisplayUnit) -> String {
             // Exact-rational blocks: voxels / density, reduced, rendered as a
             // terminating decimal when the reduced denominator is 2/5-smooth, else
             // fall back to whole blocks + voxels so we never emit a rounded float.
-            let blocks = ExactRational::new(voxels as i128, density as i128).expect("density >= 1");
-            match blocks.to_terminating_decimal() {
-                Some(text) => format!("{text} {}", pluralise_rational(blocks, "block")),
-                None => {
+            let Some(blocks) = ExactRational::new(i128::from(voxels), i128::from(density)) else {
+                return format!("{voxels} {}", pluralise(voxels, "voxel"));
+            };
+            blocks.to_terminating_decimal().map_or_else(
+                || {
                     // Non-terminating in base 10 (e.g. 1/3 of a block): present the
                     // honest mixed form rather than a truncated decimal.
                     let whole_blocks = voxels.div_euclid(density);
@@ -287,8 +326,9 @@ pub fn format(voxels: i64, density: u32, style: DisplayUnit) -> String {
                         pluralise(whole_blocks, "block"),
                         pluralise(remainder_voxels, "voxel"),
                     )
-                }
-            }
+                },
+                |text| format!("{text} {}", pluralise_rational(blocks, "block")),
+            )
         }
     }
 }
@@ -338,28 +378,28 @@ pub enum MeasurementParseError {
 impl fmt::Display for MeasurementParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MeasurementParseError::Empty => write!(formatter, "empty measurement"),
-            MeasurementParseError::MissingUnit { number_text } => write!(
+            Self::Empty => write!(formatter, "empty measurement"),
+            Self::MissingUnit { number_text } => write!(
                 formatter,
                 "number `{number_text}` has no unit (expected blocks or voxels)"
             ),
-            MeasurementParseError::MissingNumber { unit_text } => {
+            Self::MissingNumber { unit_text } => {
                 write!(formatter, "unit `{unit_text}` has no preceding number")
             }
-            MeasurementParseError::UnknownUnit { unit_text } => {
+            Self::UnknownUnit { unit_text } => {
                 write!(formatter, "unknown unit `{unit_text}` (expected blocks or voxels)")
             }
-            MeasurementParseError::InvalidNumber { number_text } => {
+            Self::InvalidNumber { number_text } => {
                 write!(formatter, "`{number_text}` is not a valid number")
             }
-            MeasurementParseError::SubVoxel { number_text } => write!(
+            Self::SubVoxel { number_text } => write!(
                 formatter,
                 "`{number_text}` voxels is sub-voxel; voxels must be whole (use a block-fraction or a denser document)"
             ),
-            MeasurementParseError::DuplicateUnit { unit_text } => {
+            Self::DuplicateUnit { unit_text } => {
                 write!(formatter, "unit `{unit_text}` appears more than once")
             }
-            MeasurementParseError::ZeroDenominator { number_text } => {
+            Self::ZeroDenominator { number_text } => {
                 write!(formatter, "`{number_text}` has a zero denominator")
             }
         }
@@ -386,7 +426,7 @@ pub enum MeasurementError {
 impl fmt::Display for MeasurementError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MeasurementError::BlockTermNotWholeVoxels {
+            Self::BlockTermNotWholeVoxels {
                 density,
                 nearest_floor_voxels,
                 nearest_ceil_voxels,
@@ -394,7 +434,7 @@ impl fmt::Display for MeasurementError {
                 formatter,
                 "block term does not land on a whole voxel at density {density}; nearest are {nearest_floor_voxels} or {nearest_ceil_voxels} voxels"
             ),
-            MeasurementError::ZeroDensity => write!(formatter, "density must be at least 1"),
+            Self::ZeroDensity => write!(formatter, "density must be at least 1"),
         }
     }
 }
@@ -431,6 +471,10 @@ fn classify_unit(word: &str) -> Option<UnitKind> {
 /// Tokenisation splits on whitespace AND on the unit letters glued to a number
 /// (`"3b"` → `3`, `b`), so the spaced and compact spellings parse identically.
 /// Each term must end in a unit; each unit may appear once.
+///
+/// # Errors
+///
+/// Returns a [`MeasurementParseError`] describing the first malformed term.
 pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
     let tokens = tokenise(input);
     if tokens.is_empty() {
@@ -475,16 +519,29 @@ pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
                         // voxel term must be a whole integer.
                         let mut term: i64 = 0;
                         for number in &pending_numbers {
-                            match number.to_rational().to_integer() {
-                                Some(whole) => term += whole as i64,
-                                None => {
-                                    return Err(MeasurementParseError::SubVoxel {
-                                        number_text: number.source_text.clone(),
-                                    })
-                                }
-                            }
+                            let Some(whole) = number.to_rational().to_integer() else {
+                                return Err(MeasurementParseError::SubVoxel {
+                                    number_text: number.source_text.clone(),
+                                });
+                            };
+                            let Ok(whole) = i64::try_from(whole) else {
+                                return Err(MeasurementParseError::InvalidNumber {
+                                    number_text: number.source_text.clone(),
+                                });
+                            };
+                            let Some(sum) = term.checked_add(whole) else {
+                                return Err(MeasurementParseError::InvalidNumber {
+                                    number_text: number.source_text.clone(),
+                                });
+                            };
+                            term = sum;
                         }
-                        voxel_total += term;
+                        let Some(sum) = voxel_total.checked_add(term) else {
+                            return Err(MeasurementParseError::InvalidNumber {
+                                number_text: pending_text.clone(),
+                            });
+                        };
+                        voxel_total = sum;
                     }
                 }
                 pending_numbers.clear();
@@ -493,25 +550,22 @@ pub fn parse(input: &str) -> Result<Measurement, MeasurementParseError> {
             None => {
                 // Not a unit, so it must be a number literal; a non-number here is
                 // either an unknown unit word or garbage.
-                match parse_number(&token)? {
-                    Some(number) => {
-                        if !pending_text.is_empty() {
-                            pending_text.push(' ');
-                        }
-                        pending_text.push_str(&token);
-                        pending_numbers.push(number);
+                if let Some(number) = parse_number(&token)? {
+                    if !pending_text.is_empty() {
+                        pending_text.push(' ');
                     }
-                    None => {
-                        // Alphabetic but not a known unit → unknown unit; otherwise
-                        // an unparseable number token.
-                        if token
-                            .chars()
-                            .any(|character| character.is_ascii_alphabetic())
-                        {
-                            return Err(MeasurementParseError::UnknownUnit { unit_text: token });
-                        }
-                        return Err(MeasurementParseError::InvalidNumber { number_text: token });
+                    pending_text.push_str(&token);
+                    pending_numbers.push(number);
+                } else {
+                    // Alphabetic but not a known unit → unknown unit; otherwise
+                    // an unparseable number token.
+                    if token
+                        .chars()
+                        .any(|character| character.is_ascii_alphabetic())
+                    {
+                        return Err(MeasurementParseError::UnknownUnit { unit_text: token });
                     }
+                    return Err(MeasurementParseError::InvalidNumber { number_text: token });
                 }
             }
         }
@@ -535,7 +589,7 @@ struct NumberLiteral {
 }
 
 impl NumberLiteral {
-    fn to_rational(&self) -> ExactRational {
+    const fn to_rational(&self) -> ExactRational {
         self.value
     }
 }
@@ -557,8 +611,9 @@ fn tokenise(input: &str) -> Vec<String> {
             .map(|(index, _)| index);
         match split_at {
             Some(index) if index > 0 => {
-                tokens.push(raw[..index].to_string());
-                tokens.push(raw[index..].to_string());
+                let (head, tail) = raw.split_at(index);
+                tokens.push(head.to_string());
+                tokens.push(tail.to_string());
             }
             _ => tokens.push(raw.to_string()),
         }
@@ -570,6 +625,7 @@ fn tokenise(input: &str) -> Vec<String> {
 /// is not a number at all (the caller decides whether that is an unknown unit or
 /// garbage). Recognizes integer, decimal and fraction forms. A malformed number
 /// (e.g. `"3.5.6"`, `"8/"`) is a hard error.
+#[allow(clippy::too_many_lines)]
 fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseError> {
     // A token is "number-shaped" if it is only digits, a single dot, a single
     // slash and an optional leading minus. A purely alphabetic token is not a
@@ -597,11 +653,11 @@ fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseEr
                 .map_err(|_| MeasurementParseError::InvalidNumber {
                     number_text: token.to_string(),
                 })?;
-        let value = ExactRational::new(numerator, denominator).ok_or(
+        let value = ExactRational::new(numerator, denominator).ok_or_else(|| {
             MeasurementParseError::ZeroDenominator {
                 number_text: token.to_string(),
-            },
-        )?;
+            }
+        })?;
         return Ok(Some(NumberLiteral {
             value,
             source_text: token.to_string(),
@@ -641,12 +697,40 @@ fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseEr
                 .map_err(|_| MeasurementParseError::InvalidNumber {
                     number_text: token.to_string(),
                 })?;
-        let scale = 10i128.pow(fraction_text.len() as u32);
-        let mut numerator = whole_value * scale + fraction_value;
-        if negative {
-            numerator = -numerator;
-        }
-        let value = ExactRational::new(numerator, scale).expect("power of ten is non-zero");
+        let Ok(scale_power) = u32::try_from(fraction_text.len()) else {
+            return Err(MeasurementParseError::InvalidNumber {
+                number_text: token.to_string(),
+            });
+        };
+        let Some(scale) = 10i128.checked_pow(scale_power) else {
+            return Err(MeasurementParseError::InvalidNumber {
+                number_text: token.to_string(),
+            });
+        };
+        let Some(scaled_whole) = whole_value.checked_mul(scale) else {
+            return Err(MeasurementParseError::InvalidNumber {
+                number_text: token.to_string(),
+            });
+        };
+        let Some(unsigned_numerator) = scaled_whole.checked_add(fraction_value) else {
+            return Err(MeasurementParseError::InvalidNumber {
+                number_text: token.to_string(),
+            });
+        };
+        let numerator = if negative {
+            unsigned_numerator
+                .checked_neg()
+                .ok_or_else(|| MeasurementParseError::InvalidNumber {
+                    number_text: token.to_string(),
+                })?
+        } else {
+            unsigned_numerator
+        };
+        let value = ExactRational::new(numerator, scale).ok_or_else(|| {
+            MeasurementParseError::InvalidNumber {
+                number_text: token.to_string(),
+            }
+        })?;
         return Ok(Some(NumberLiteral {
             value,
             source_text: token.to_string(),
@@ -667,6 +751,8 @@ fn parse_number(token: &str) -> Result<Option<NumberLiteral>, MeasurementParseEr
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
     use super::*;
 
     /// Helper: parse then evaluate at one density, asserting the parse succeeds.

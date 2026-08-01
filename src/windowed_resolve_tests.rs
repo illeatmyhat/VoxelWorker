@@ -1,3 +1,13 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::indexing_slicing,
+    clippy::too_many_lines
+)]
+
 //! Commit-1 windowed-resolve contract: every [`VoxelProducer`] gains a
 //! `resolve_into(window)` that writes ONLY the cells whose local voxel index lies
 //! inside `window`, while still reporting the producer's FULL `dimensions`. The

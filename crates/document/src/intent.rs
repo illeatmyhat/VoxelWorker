@@ -1,3 +1,21 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::doc_markdown,
+    clippy::return_self_not_must_use,
+    clippy::struct_excessive_bools,
+    clippy::similar_names,
+    clippy::too_long_first_doc_paragraph,
+    clippy::use_self
+)]
+
 //! The [`Intent`] boundary — the single serializable description of a mutation.
 //!
 //! Identity, selection, edit ops and storage all key on a stable [`NodeId`], and an

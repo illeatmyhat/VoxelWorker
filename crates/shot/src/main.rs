@@ -24,6 +24,34 @@
 //!   --theta/--phi/--dist                    orbit overrides (auto-framed dist)
 //! ```
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::bool_to_int_with_if,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::exit,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::map_unwrap_or,
+    clippy::if_not_else,
+    clippy::manual_assert,
+    clippy::missing_const_for_fn,
+    clippy::needless_pass_by_ref_mut,
+    clippy::option_if_let_else,
+    clippy::panic,
+    clippy::redundant_pub_crate,
+    clippy::string_slice,
+    clippy::too_many_lines,
+    clippy::struct_excessive_bools,
+    clippy::unwrap_used
+)]
+
 mod capture;
 mod demos;
 mod options;

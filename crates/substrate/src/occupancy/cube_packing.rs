@@ -40,6 +40,13 @@ pub struct CubeTilePacking {
 impl CubeTilePacking {
     /// The tiles-per-axis a slot count packs to: `ceil(cbrt(count))`, or `0` for an empty
     /// set. The grid-edge scalar both the packer and a grow test read.
+    #[must_use]
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn tiles_per_axis(tile_count: usize) -> u32 {
         if tile_count == 0 {
             0
@@ -49,23 +56,34 @@ impl CubeTilePacking {
     }
 
     /// The packing geometry for `tile_count` tiles of edge `tile_edge`.
+    #[must_use]
     pub fn for_tile_count(tile_count: usize, tile_edge: u32) -> Self {
         let tiles_per_axis = Self::tiles_per_axis(tile_count);
         Self {
             tiles_per_axis,
-            cube_dim_cells: tiles_per_axis * tile_edge,
+            cube_dim_cells: tiles_per_axis.saturating_mul(tile_edge),
         }
     }
 
     /// The low-corner cell of `slot`'s tile in the cube (linear slot → 3D tile coord,
     /// x-fastest, times the tile edge).
-    pub fn tile_origin_cells(&self, slot: u32, tile_edge: u32) -> [usize; 3] {
+    #[must_use]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::cast_possible_truncation
+    )]
+    pub const fn tile_origin_cells(&self, slot: u32, tile_edge: u32) -> [usize; 3] {
         let tiles = self.tiles_per_axis;
         let edge = tile_edge as usize;
+        if tiles == 0 {
+            return [0; 3];
+        }
+        let tiles_squared = tiles.saturating_mul(tiles);
         [
-            (slot % tiles) as usize * edge,
-            ((slot / tiles) % tiles) as usize * edge,
-            (slot / (tiles * tiles)) as usize * edge,
+            ((slot % tiles) as usize).saturating_mul(edge),
+            (((slot / tiles) % tiles) as usize).saturating_mul(edge),
+            ((slot / tiles_squared) as usize).saturating_mul(edge),
         ]
     }
 
@@ -74,13 +92,16 @@ impl CubeTilePacking {
     /// [`BitCube`] row-expand seam), clear cells left `0`. Returns `(tiles_per_axis,
     /// cube_dim_cells, bytes)`. Every tile must share `tile_edge`. A count of `0` yields
     /// `(0, 0, empty)`.
+    #[must_use]
     pub fn pack_bit_cubes(tiles: &[BitCube], tile_edge: u32, set_byte: u8) -> (u32, u32, Vec<u8>) {
         debug_assert!(
             tiles.iter().all(|tile| tile.edge() == tile_edge),
             "every packed tile must share the given tile edge"
         );
         Self::scatter_tile_rows(tiles.len(), tile_edge, 1, |slot, row_index, out_row| {
-            tiles[slot].expand_row_into(row_index, out_row, set_byte)
+            if let Some(tile) = tiles.get(slot) {
+                tile.expand_row_into(row_index, out_row, set_byte);
+            }
         })
     }
 
@@ -92,18 +113,17 @@ impl CubeTilePacking {
     /// cube_dim_cells, bytes)` — note the dimensions are in CELLS, while `bytes.len()` is
     /// `2 · cube_dim_cells³`. Every tile must share `tile_edge`; a count of `0` yields
     /// `(0, 0, empty)`.
+    #[must_use]
     pub fn pack_u16_value_cubes(tiles: &[ValueCube<u16>], tile_edge: u32) -> (u32, u32, Vec<u8>) {
         debug_assert!(
             tiles.iter().all(|tile| tile.edge() == tile_edge),
             "every packed tile must share the given tile edge"
         );
         Self::scatter_tile_rows(tiles.len(), tile_edge, 2, |slot, row_index, out_row| {
-            for (value, texel) in tiles[slot]
-                .row(row_index)
-                .iter()
-                .zip(out_row.chunks_exact_mut(2))
-            {
-                texel.copy_from_slice(&value.to_le_bytes());
+            if let Some(tile) = tiles.get(slot) {
+                for (value, texel) in tile.row(row_index).iter().zip(out_row.chunks_exact_mut(2)) {
+                    texel.copy_from_slice(&value.to_le_bytes());
+                }
             }
         })
     }
@@ -122,21 +142,50 @@ impl CubeTilePacking {
     where
         F: FnMut(usize, usize, &mut [u8]),
     {
-        let edge = tile_edge as usize;
+        let edge = usize::try_from(tile_edge).unwrap_or_default();
         let packing = Self::for_tile_count(tile_count, tile_edge);
-        let cube_dim = packing.cube_dim_cells as usize;
-        let mut bytes = vec![0u8; cube_dim * cube_dim * cube_dim * bytes_per_texel];
-        let row_bytes = edge * bytes_per_texel;
+        let cube_dim = usize::try_from(packing.cube_dim_cells).unwrap_or_default();
+        let byte_count = cube_dim
+            .checked_mul(cube_dim)
+            .and_then(|count| count.checked_mul(cube_dim))
+            .and_then(|count| count.checked_mul(bytes_per_texel))
+            .unwrap_or_default();
+        let mut bytes = vec![0u8; byte_count];
+        let row_bytes = edge.checked_mul(bytes_per_texel).unwrap_or_default();
         for slot in 0..tile_count {
-            let origin = packing.tile_origin_cells(slot as u32, tile_edge);
+            let slot_index = u32::try_from(slot).unwrap_or_default();
+            let [origin_x, origin_y, origin_z] = packing.tile_origin_cells(slot_index, tile_edge);
             for local_z in 0..edge {
                 for local_y in 0..edge {
-                    let row_index = local_z * edge + local_y;
-                    let dest_cell = ((origin[2] + local_z) * cube_dim + origin[1] + local_y)
-                        * cube_dim
-                        + origin[0];
-                    let start = dest_cell * bytes_per_texel;
-                    write_row(slot, row_index, &mut bytes[start..start + row_bytes]);
+                    let Some(row_index) = local_z
+                        .checked_mul(edge)
+                        .and_then(|row| row.checked_add(local_y))
+                    else {
+                        continue;
+                    };
+                    let Some(dest_row) = origin_z
+                        .checked_add(local_z)
+                        .and_then(|row| row.checked_mul(cube_dim))
+                        .and_then(|row| row.checked_add(origin_y))
+                        .and_then(|row| row.checked_add(local_y))
+                    else {
+                        continue;
+                    };
+                    let Some(dest_cell) = dest_row
+                        .checked_mul(cube_dim)
+                        .and_then(|row| row.checked_add(origin_x))
+                    else {
+                        continue;
+                    };
+                    let Some(start) = dest_cell.checked_mul(bytes_per_texel) else {
+                        continue;
+                    };
+                    let Some(end) = start.checked_add(row_bytes) else {
+                        continue;
+                    };
+                    if let Some(out_row) = bytes.get_mut(start..end) {
+                        write_row(slot, row_index, out_row);
+                    }
                 }
             }
         }
@@ -195,7 +244,29 @@ mod kani_proofs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::unwrap_used
+)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     /// `tiles_per_axis` is `ceil(cbrt(count))`: 0→0, 1→1, 8→2, 9→3 (rounds up past a full

@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::panic)]
+
 //! Tests for the sketch-editing undo GROUP.
 //!
 //! A mode opens the group on enter, in-mode edits route into its own session history through

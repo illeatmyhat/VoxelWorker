@@ -84,13 +84,12 @@
 //! `Euclidean` grows a shape by a disc and rounds its corners, `Chebyshev` grows it
 //! by a square and keeps them sharp, which is the natural choice on a lattice.
 
-/// The signed area of triangle `(a, b, c)` — twice the area, the determinant
-/// `(b − a) × (c − a)`. Positive ⇒ counter-clockwise (`c` left of `a → b`),
-/// negative ⇒ clockwise, zero ⇒ collinear. See the module docs for the
-/// literature (Shewchuk 1997; O'Rourke 1998).
+/// Twice the signed area of triangle `(a, b, c)`, or `(b − a) × (c − a)`.
+/// Positive means a counter-clockwise turn, negative means clockwise, and zero means collinear.
 #[inline]
+#[must_use]
 pub fn orient2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    (b[1] - a[1]).mul_add(-(c[0] - a[0]), (b[0] - a[0]) * (c[1] - a[1]))
 }
 
 #[inline]
@@ -105,9 +104,9 @@ fn orientation_sign(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> i32 {
     }
 }
 
-/// Whether the two closed segments `p0→p1` and `q0→q1` intersect — proper
-/// crossings AND collinear / endpoint touches — via the four orientation signs
-/// with a collinear bounding-box (`on-segment`) fallback. CLRS 3rd ed. §33.1.
+/// Whether two closed segments intersect, including collinear and endpoint touches.
+/// The test combines orientation signs with a bounding-box check for collinear points.
+#[must_use]
 pub fn segments_intersect(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]) -> bool {
     // `c` (collinear with `a→b`) lies within `a→b`'s bounding box.
     let on_segment = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| -> bool {
@@ -129,10 +128,9 @@ pub fn segments_intersect(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]
         || (d4 == 0 && on_segment(p0, p1, q1))
 }
 
-/// Whether segment `a→b` intersects the CLOSED axis-aligned rectangle
-/// `[rect_min, rect_max]` (component-wise `min <= max`). True iff an endpoint is
-/// inside the rectangle OR the segment crosses one of the four rectangle edges —
-/// complete for a convex box (Ericson 2005).
+/// Whether segment `a→b` intersects the closed axis-aligned rectangle `[rect_min, rect_max]`.
+/// An endpoint inside the rectangle or a crossing of one of its edges counts as an intersection.
+#[must_use]
 pub fn segment_intersects_rect(
     a: [f64; 2],
     b: [f64; 2],
@@ -151,13 +149,18 @@ pub fn segment_intersects_rect(
         [rect_max[0], rect_max[1]],
         [rect_min[0], rect_max[1]],
     ];
-    (0..4).any(|edge| segments_intersect(a, b, corners[edge], corners[(edge + 1) % 4]))
+    let [lower_left, lower_right, upper_right, upper_left] = corners;
+    [
+        (lower_left, lower_right),
+        (lower_right, upper_right),
+        (upper_right, upper_left),
+        (upper_left, lower_left),
+    ]
+    .into_iter()
+    .any(|(edge_start, edge_end)| segments_intersect(a, b, edge_start, edge_end))
 }
 
-/// The crossing-number point-in-polygon test: whether `sample` lies inside the
-/// polygon `[[axis0, axis1]; n]` (implicitly closed, last vertex → first). Counts
-/// how many edges a ray cast in the `+axis1` direction from the sample crosses;
-/// an odd count is inside. Franklin's PNPOLY / ray-crossing (see module docs).
+/// Whether `sample` lies inside the implicitly closed polygon using an even-odd ray test.
 ///
 /// No on-boundary tie-breaking is done: callers that need exactness (e.g. voxel
 /// sample centers at half-integer positions against integer vertices) rely on the
@@ -166,18 +169,17 @@ pub fn segment_intersects_rect(
 /// `f32`, with the rest of the measurement half: this is the boundary authority a WGSL
 /// preview must port, and it supplies the sign for [`signed_distance_to_polygon`]. See
 /// the module docs for why the width is part of the contract rather than an accident.
+#[must_use]
 pub fn point_in_polygon(polygon: &[[f32; 2]], sample: [f32; 2]) -> bool {
     let mut inside = false;
-    let count = polygon.len();
-    if count == 0 {
+    let Some(mut previous) = polygon.last().copied() else {
         return false;
-    }
-    let mut previous = count - 1;
-    for current in 0..count {
-        let current_0 = polygon[current][0];
-        let current_1 = polygon[current][1];
-        let previous_0 = polygon[previous][0];
-        let previous_1 = polygon[previous][1];
+    };
+    for &current in polygon {
+        let current_0 = current[0];
+        let current_1 = current[1];
+        let previous_0 = previous[0];
+        let previous_1 = previous[1];
         // Does a ray in the +axis1 direction from the sample cross this edge?
         let straddles = (current_1 > sample[1]) != (previous_1 > sample[1]);
         if straddles {
@@ -194,15 +196,9 @@ pub fn point_in_polygon(polygon: &[[f32; 2]], sample: [f32; 2]) -> bool {
     inside
 }
 
-/// Whether the CLOSED axis-aligned rectangle `[rect_min, rect_max]` lies ENTIRELY
-/// inside the polygon (same space [`point_in_polygon`] samples). Exact by
-/// connectedness: the rectangle is inside iff **no polygon edge intersects it AND
-/// its center is inside** (see module docs). A rectangle whose edge grazes a
-/// polygon edge counts as crossing ⇒ not-inside (conservative, still exact). A
-/// degenerate rectangle (`hi == lo` on an axis: a segment or a point) is handled
-/// directly — the edge tests run against the degenerate box and the center
-/// reduces to its midpoint/point. Returns `false` for a polygon with fewer than
-/// three vertices or an inverted rectangle.
+/// Whether a closed axis-aligned rectangle lies entirely inside the polygon.
+/// The rectangle is inside when no polygon edge intersects it and its center is inside.
+#[must_use]
 pub fn rectangle_inside_polygon(
     polygon: &[[f64; 2]],
     rect_min: [f64; 2],
@@ -212,9 +208,11 @@ pub fn rectangle_inside_polygon(
     if count < 3 || rect_max[0] < rect_min[0] || rect_max[1] < rect_min[1] {
         return false;
     }
-    let mut previous = count - 1;
-    for current in 0..count {
-        if segment_intersects_rect(polygon[current], polygon[previous], rect_min, rect_max) {
+    let Some(mut previous) = polygon.last().copied() else {
+        return false;
+    };
+    for &current in polygon {
+        if segment_intersects_rect(current, previous, rect_min, rect_max) {
             return false;
         }
         previous = current;
@@ -233,15 +231,21 @@ pub fn rectangle_inside_polygon(
     //   sitting on an edge — exactly the "same set, different rounding" failure this
     //   classifier is supposed to avoid. Sharing the width makes them agree by
     //   construction.
-    let narrowed: Vec<[f32; 2]> = polygon
-        .iter()
-        .map(|point| [point[0] as f32, point[1] as f32])
-        .collect();
-    let center = [
-        ((rect_min[0] + rect_max[0]) * 0.5) as f32,
-        ((rect_min[1] + rect_max[1]) * 0.5) as f32,
-    ];
+    let narrowed: Vec<[f32; 2]> = polygon.iter().copied().map(narrow_to_measurement).collect();
+    let center = narrow_to_measurement([
+        (rect_min[0] + rect_max[0]) * 0.5,
+        (rect_min[1] + rect_max[1]) * 0.5,
+    ]);
     point_in_polygon(&narrowed, center)
+}
+
+/// Convert predicate coordinates at the CPU/GPU boundary.
+///
+/// The measurement implementation intentionally uses `f32` so it matches the shader. This is
+/// the single audited narrowing point for the predicate-to-measurement handoff.
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+const fn narrow_to_measurement(point: [f64; 2]) -> [f32; 2] {
+    [point[0] as f32, point[1] as f32]
 }
 
 /// Which notion of distance a measurement is taken in.
@@ -262,15 +266,17 @@ pub enum Metric {
 impl Metric {
     /// The length of the vector `delta` under this metric.
     #[inline]
+    #[must_use]
     pub fn length(self, delta: [f32; 2]) -> f32 {
         match self {
-            Metric::Euclidean => (delta[0] * delta[0] + delta[1] * delta[1]).sqrt(),
-            Metric::Chebyshev => delta[0].abs().max(delta[1].abs()),
+            Self::Euclidean => delta[0].hypot(delta[1]),
+            Self::Chebyshev => delta[0].abs().max(delta[1].abs()),
         }
     }
 
     /// The distance between two points under this metric.
     #[inline]
+    #[must_use]
     pub fn distance(self, a: [f32; 2], b: [f32; 2]) -> f32 {
         self.length([b[0] - a[0], b[1] - a[1]])
     }
@@ -284,13 +290,16 @@ impl Metric {
     /// variant is a compile error here rather than a silent under-bracket at one of the producers
     /// that share it.
     #[inline]
+    #[must_use]
     pub fn cell_circumradius(self, half_extent: [f32; 3]) -> f32 {
         match self {
-            Metric::Euclidean => (half_extent[0] * half_extent[0]
-                + half_extent[1] * half_extent[1]
-                + half_extent[2] * half_extent[2])
+            Self::Euclidean => half_extent[2]
+                .mul_add(
+                    half_extent[2],
+                    half_extent[1].mul_add(half_extent[1], half_extent[0] * half_extent[0]),
+                )
                 .sqrt(),
-            Metric::Chebyshev => half_extent[0].max(half_extent[1]).max(half_extent[2]),
+            Self::Chebyshev => half_extent[0].max(half_extent[1]).max(half_extent[2]),
         }
     }
 }
@@ -316,6 +325,7 @@ impl Metric {
 /// those four parameters plus both endpoints is therefore **exact**, not an approximation.
 ///
 /// A degenerate (zero-length) segment reduces to the distance to its single point.
+#[must_use]
 pub fn distance_point_to_segment(a: [f32; 2], b: [f32; 2], point: [f32; 2], metric: Metric) -> f32 {
     let delta = [b[0] - a[0], b[1] - a[1]];
     let offset = [point[0] - a[0], point[1] - a[1]];
@@ -329,8 +339,8 @@ pub fn distance_point_to_segment(a: [f32; 2], b: [f32; 2], point: [f32; 2], metr
     };
     match metric {
         Metric::Euclidean => {
-            let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
-            at((offset[0] * delta[0] + offset[1] * delta[1]) / length_squared)
+            let length_squared = delta[1].mul_add(delta[1], delta[0] * delta[0]);
+            at(offset[1].mul_add(delta[1], offset[0] * delta[0]) / length_squared)
         }
         Metric::Chebyshev => {
             let mut best = at(0.0).min(at(1.0));
@@ -363,6 +373,7 @@ pub fn distance_point_to_segment(a: [f32; 2], b: [f32; 2], point: [f32; 2], metr
 /// same treatment the even-odd rule already gives it.
 ///
 /// Fewer than two vertices has no boundary to measure, and returns `f32::INFINITY`.
+#[must_use]
 pub fn signed_distance_to_polygon(polygon: &[[f32; 2]], point: [f32; 2], metric: Metric) -> f32 {
     let nearest = nearest_edge_distance(polygon, point, metric);
     if point_in_polygon(polygon, point) {
@@ -380,7 +391,9 @@ fn nearest_edge_distance(polygon: &[[f32; 2]], point: [f32; 2], metric: Metric) 
         return f32::INFINITY;
     }
     let mut nearest = f32::INFINITY;
-    let mut previous = polygon[polygon.len() - 1];
+    let Some(mut previous) = polygon.last().copied() else {
+        return f32::INFINITY;
+    };
     for &current in polygon {
         nearest = nearest.min(distance_point_to_segment(previous, current, point, metric));
         previous = current;
@@ -449,17 +462,19 @@ pub enum RegionEdge {
 impl RegionEdge {
     /// The edge's tail.
     #[inline]
-    pub fn start(&self) -> [f32; 2] {
+    #[must_use]
+    pub const fn start(&self) -> [f32; 2] {
         match self {
-            RegionEdge::Segment { start, .. } | RegionEdge::Arc { start, .. } => *start,
+            Self::Segment { start, .. } | Self::Arc { start, .. } => *start,
         }
     }
 
     /// The edge's head.
     #[inline]
-    pub fn end(&self) -> [f32; 2] {
+    #[must_use]
+    pub const fn end(&self) -> [f32; 2] {
         match self {
-            RegionEdge::Segment { end, .. } | RegionEdge::Arc { end, .. } => *end,
+            Self::Segment { end, .. } | Self::Arc { end, .. } => *end,
         }
     }
 
@@ -469,11 +484,12 @@ impl RegionEdge {
     /// This is what an extent measured from a curved profile must use. Bounds taken from a chord
     /// approximation understate the reach, and a producer sized from them clips the bulge it was
     /// asked to build.
+    #[must_use]
     pub fn bounds(&self) -> ([f32; 2], [f32; 2]) {
         let (start, end) = (self.start(), self.end());
         let mut low = [start[0].min(end[0]), start[1].min(end[1])];
         let mut high = [start[0].max(end[0]), start[1].max(end[1])];
-        if let RegionEdge::Arc {
+        if let Self::Arc {
             center,
             radius,
             start_radians,
@@ -482,19 +498,21 @@ impl RegionEdge {
         } = self
         {
             // The four compass extremes of the circle, each counted only where the arc reaches it.
-            for quarter in 0..4 {
-                let bearing = quarter as f32 * std::f32::consts::FRAC_PI_2;
+            for bearing in [
+                0.0,
+                std::f32::consts::FRAC_PI_2,
+                std::f32::consts::PI,
+                std::f32::consts::PI + std::f32::consts::FRAC_PI_2,
+            ] {
                 if travel_to_bearing(*start_radians, *sweep_radians, bearing).is_none() {
                     continue;
                 }
                 let reach = [
-                    center[0] + radius * bearing.cos(),
-                    center[1] + radius * bearing.sin(),
+                    radius.mul_add(bearing.cos(), center[0]),
+                    radius.mul_add(bearing.sin(), center[1]),
                 ];
-                for axis in 0..2 {
-                    low[axis] = low[axis].min(reach[axis]);
-                    high[axis] = high[axis].max(reach[axis]);
-                }
+                low = [low[0].min(reach[0]), low[1].min(reach[1])];
+                high = [high[0].max(reach[0]), high[1].max(reach[1])];
             }
         }
         (low, high)
@@ -506,12 +524,11 @@ impl RegionEdge {
     /// within the sweep is `‖point − center‖ − radius` in magnitude under **Euclidean**; otherwise
     /// the nearer endpoint is the closest thing on the curve. **Chebyshev** has no such closed
     /// form and is solved by candidate angles (`chebyshev_distance_to_arc`, private).
+    #[must_use]
     pub fn distance(&self, point: [f32; 2], metric: Metric) -> f32 {
         match self {
-            RegionEdge::Segment { start, end } => {
-                distance_point_to_segment(*start, *end, point, metric)
-            }
-            RegionEdge::Arc {
+            Self::Segment { start, end } => distance_point_to_segment(*start, *end, point, metric),
+            Self::Arc {
                 start,
                 end,
                 center,
@@ -555,8 +572,8 @@ impl RegionEdge {
     /// independent of where the ray happens to sit.
     fn crossings(&self, sample: [f32; 2]) -> u32 {
         match self {
-            RegionEdge::Segment { start, end } => segment_crossings(*start, *end, sample),
-            RegionEdge::Arc {
+            Self::Segment { start, end } => segment_crossings(*start, *end, sample),
+            Self::Arc {
                 start,
                 end,
                 center,
@@ -565,52 +582,58 @@ impl RegionEdge {
                 sweep_radians,
             } => {
                 let span = sweep_radians.abs();
-                let mut cuts = [0.0, span, span, span];
-                let mut count = 2;
+                let mut cuts = vec![0.0, span];
                 for extreme in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2] {
                     if let Some(travel) = travel_to_bearing(*start_radians, *sweep_radians, extreme)
                     {
                         if travel > 0.0 && travel < span {
-                            cuts[count] = travel;
-                            count += 1;
+                            cuts.push(travel);
                         }
                     }
                 }
-                let cuts = &mut cuts[..count];
                 cuts.sort_by(f32::total_cmp);
-                let direction = if *sweep_radians < 0.0 { -1.0 } else { 1.0 };
+                let direction: f32 = if *sweep_radians < 0.0 { -1.0 } else { 1.0 };
                 let at = |travel: f32| {
-                    let bearing = start_radians + direction * travel;
+                    let bearing = direction.mul_add(travel, *start_radians);
                     [
-                        center[0] + radius * bearing.cos(),
-                        center[1] + radius * bearing.sin(),
+                        radius.mul_add(bearing.cos(), center[0]),
+                        radius.mul_add(bearing.sin(), center[1]),
                     ]
                 };
-                let mut crossings = 0;
+                let mut crossings: u32 = 0;
                 for piece in cuts.array_windows::<2>() {
-                    let (entry, exit) = (piece[0], piece[1]);
+                    let [entry, exit] = piece;
+                    let (entry, exit) = (*entry, *exit);
                     if exit <= entry {
                         continue;
                     }
                     // The outer ends are the STORED endpoints, so a vertex shared with the next
                     // edge is the same value on both sides of the join.
-                    let low = if entry == 0.0 { *start } else { at(entry) };
-                    let high = if exit == span { *end } else { at(exit) };
+                    let low = if entry.abs() <= f32::EPSILON {
+                        *start
+                    } else {
+                        at(entry)
+                    };
+                    let high = if (exit - span).abs() <= f32::EPSILON {
+                        *end
+                    } else {
+                        at(exit)
+                    };
                     if (low[1] > sample[1]) == (high[1] > sample[1]) {
                         continue;
                     }
                     // The piece is monotone, so its half of the circle decides which root of
                     // `axis0 = center ± √(r² − dy²)` it crosses at.
                     let rise = sample[1] - center[1];
-                    let half_chord = (radius * radius - rise * rise).max(0.0).sqrt();
-                    let middle = start_radians + direction * (entry + exit) * 0.5;
+                    let half_chord = (*radius).mul_add(*radius, -(rise * rise)).max(0.0).sqrt();
+                    let middle = direction.mul_add((entry + exit) * 0.5, *start_radians);
                     let crossing_0 = if middle.cos() >= 0.0 {
                         center[0] + half_chord
                     } else {
                         center[0] - half_chord
                     };
                     if sample[0] < crossing_0 {
-                        crossings += 1;
+                        crossings = crossings.saturating_add(1);
                     }
                 }
                 crossings
@@ -664,23 +687,28 @@ fn chebyshev_distance_to_arc(
             return;
         }
         nearest = nearest.min(Metric::Chebyshev.length([
-            radius * bearing.cos() - offset[0],
-            radius * bearing.sin() - offset[1],
+            radius.mul_add(bearing.cos(), -offset[0]),
+            radius.mul_add(bearing.sin(), -offset[1]),
         ]));
     };
-    for quarter in 0..4 {
-        consider(quarter as f32 * std::f32::consts::FRAC_PI_2);
+    for bearing in [
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+        std::f32::consts::PI,
+        std::f32::consts::PI + std::f32::consts::FRAC_PI_2,
+    ] {
+        consider(bearing);
     }
     let amplitude = radius * std::f32::consts::SQRT_2;
     if amplitude > 0.0 {
-        for sign in [1.0, -1.0] {
-            let ratio = (offset[0] - sign * offset[1]) / amplitude;
+        for sign in [1.0_f32, -1.0_f32] {
+            let ratio = sign.mul_add(-offset[1], offset[0]) / amplitude;
             if ratio.abs() > 1.0 {
                 continue;
             }
             let base = ratio.acos();
             for direction in [1.0, -1.0] {
-                consider(direction * base - sign * std::f32::consts::FRAC_PI_4);
+                consider(sign.mul_add(-std::f32::consts::FRAC_PI_4, direction * base));
             }
         }
     }
@@ -698,15 +726,16 @@ fn segment_crossings(a: [f32; 2], b: [f32; 2], sample: [f32; 2]) -> u32 {
     u32::from(sample[0] < crossing_0)
 }
 
-/// Whether `sample` is inside the closed loop of edges — the crossing-number test of
-/// [`point_in_polygon`], over edges that may curve. The loop is explicitly closed (the last edge's
-/// head is the first edge's tail).
+/// Whether `sample` is inside the closed loop of possibly curved edges.
+/// The test uses the same crossing-number rule as [`point_in_polygon`].
+#[must_use]
 pub fn point_in_edge_loop(edges: &[RegionEdge], sample: [f32; 2]) -> bool {
     let crossings: u32 = edges.iter().map(|edge| edge.crossings(sample)).sum();
     crossings % 2 == 1
 }
 
 /// The UNSIGNED distance to the loop's nearest edge. `f32::INFINITY` for an empty loop.
+#[must_use]
 pub fn nearest_boundary_distance(edges: &[RegionEdge], point: [f32; 2], metric: Metric) -> f32 {
     edges
         .iter()
@@ -733,6 +762,7 @@ pub fn nearest_boundary_distance(edges: &[RegionEdge], point: [f32; 2], metric: 
 /// own area, where even-odd would cancel them.
 ///
 /// A sample in no loop at all is outside, so an empty region contains nothing.
+#[must_use]
 pub fn point_in_region(loops: &[(LoopRole, Vec<RegionEdge>)], sample: [f32; 2]) -> bool {
     for (role, edges) in loops {
         if point_in_edge_loop(edges, sample) {
@@ -754,6 +784,7 @@ pub fn point_in_region(loops: &[(LoopRole, Vec<RegionEdge>)], sample: [f32; 2]) 
 ///
 /// An empty region is `f32::INFINITY` (everywhere outside), matching the composite fold's empty
 /// accumulator.
+#[must_use]
 pub fn signed_distance_to_region(
     loops: &[(LoopRole, Vec<RegionEdge>)],
     point: [f32; 2],
@@ -803,6 +834,7 @@ pub fn signed_distance_to_region(
 /// for the same reason the identity wants the deepest point in the first place: the pole of a ring
 /// has to be in the ring, not in the hole the ring is drawn around. `loops` is innermost-first,
 /// the order [`point_in_region`] states.
+#[must_use]
 pub fn deepest_interior_point(
     loops: &[(LoopRole, Vec<RegionEdge>)],
     precision: f32,
@@ -824,13 +856,13 @@ pub fn deepest_interior_point(
     let cell = |center: [f32; 2], half: f32| Cell {
         center,
         half,
-        bound: depth(center) + half * std::f32::consts::SQRT_2,
+        bound: half.mul_add(std::f32::consts::SQRT_2, depth(center)),
     };
     let mut queue: std::collections::BinaryHeap<Cell> = std::collections::BinaryHeap::new();
     let mut x = low[0];
-    while x < high[0] {
+    while x.total_cmp(&high[0]).is_lt() {
         let mut y = low[1];
-        while y < high[1] {
+        while y.total_cmp(&high[1]).is_lt() {
             queue.push(cell([x + side / 2.0, y + side / 2.0], side / 2.0));
             y += side;
         }
@@ -847,17 +879,22 @@ pub fn deepest_interior_point(
         if popped.bound - best_depth <= precision {
             break;
         }
-        let here = popped.bound - popped.half * std::f32::consts::SQRT_2;
+        let here = popped.half.mul_add(-std::f32::consts::SQRT_2, popped.bound);
         if here > best_depth {
             best_depth = here;
             best = popped.center;
         }
         let quarter = popped.half / 2.0;
-        for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        for (dx, dy) in [
+            (-1.0_f32, -1.0_f32),
+            (1.0_f32, -1.0_f32),
+            (-1.0_f32, 1.0_f32),
+            (1.0_f32, 1.0_f32),
+        ] {
             queue.push(cell(
                 [
-                    popped.center[0] + dx * quarter,
-                    popped.center[1] + dy * quarter,
+                    dx.mul_add(quarter, popped.center[0]),
+                    dy.mul_add(quarter, popped.center[1]),
                 ],
                 quarter,
             ));
@@ -916,9 +953,8 @@ fn region_bounds(loops: &[(LoopRole, Vec<RegionEdge>)]) -> Option<([f32; 2], [f3
     bounds
 }
 
-/// Whether the CLOSED axis-aligned rectangle lies ENTIRELY inside the region — the innermost loop
-/// that touches it is a `Fill` that contains it whole. Takes the same innermost-first `loops`
-/// [`point_in_region`] does.
+/// Whether a closed axis-aligned rectangle lies entirely inside the region.
+/// The innermost loop that touches it must be a `Fill` containing it whole.
 ///
 /// **Conservative**: it never claims a rectangle that is not wholly solid, but it declines
 /// rectangles that are (one spanning two adjacent `Fill` loops, say), because the coarse
@@ -935,6 +971,7 @@ fn region_bounds(loops: &[(LoopRole, Vec<RegionEdge>)]) -> Option<([f32; 2], [f3
 /// rectangle this claims, and the connectedness argument holds unchanged everywhere else. Without
 /// that guard a chord cutting to the void side of a concave curve would let the classifier fill a
 /// cell that is not wholly solid, which is unsound rather than merely coarse.
+#[must_use]
 pub fn rectangle_inside_region(
     loops: &[(LoopRole, Vec<[f64; 2]>)],
     curve_bounds: &[([f64; 2], [f64; 2])],
@@ -970,29 +1007,44 @@ fn rectangle_meets_polygon(polygon: &[[f64; 2]], rect_min: [f64; 2], rect_max: [
     if count < 3 {
         return false;
     }
-    let mut previous = count - 1;
-    for current in 0..count {
-        if segment_intersects_rect(polygon[current], polygon[previous], rect_min, rect_max) {
+    let Some(mut previous) = polygon.last().copied() else {
+        return false;
+    };
+    for &current in polygon {
+        if segment_intersects_rect(current, previous, rect_min, rect_max) {
             return true;
         }
         previous = current;
     }
     // No edge crosses, so the rectangle is wholly inside or wholly outside: its center decides,
     // in the same `f32` the per-voxel resolve uses (see `rectangle_inside_polygon`).
-    let narrowed: Vec<[f32; 2]> = polygon
-        .iter()
-        .map(|point| [point[0] as f32, point[1] as f32])
-        .collect();
+    let narrowed: Vec<[f32; 2]> = polygon.iter().copied().map(narrow_to_measurement).collect();
     point_in_polygon(
         &narrowed,
-        [
-            ((rect_min[0] + rect_max[0]) * 0.5) as f32,
-            ((rect_min[1] + rect_max[1]) * 0.5) as f32,
-        ],
+        narrow_to_measurement([
+            (rect_min[0] + rect_max[0]) * 0.5,
+            (rect_min[1] + rect_max[1]) * 0.5,
+        ]),
     )
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::imprecise_flops,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::suboptimal_flops,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
 

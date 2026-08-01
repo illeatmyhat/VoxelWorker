@@ -76,12 +76,10 @@ pub(crate) fn record_is_coarse_form(record: &BrickGpuRecord) -> bool {
         || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT
 }
 
-/// One resident brick as the shader consumes it: the packed world-block key split
-/// into a `(hi, lo)` u32 pair (sorted ascending — the in-shader binary search's
-/// order), the packed `kind` field (kind discriminant + material id + overlay bit — see
-/// [`BRICK_RECORD_MATERIAL_ID_SHIFT`]), the occupancy atlas slot (or
-/// [`NON_RESIDENT_ATLAS_SLOT`]), and the MATERIAL SIDE ATLAS slot holding the block's
-/// per-voxel cell-key tile.
+/// One resident brick in the shader's input format.
+///
+/// It contains the packed world-block key, packed `kind` field, occupancy atlas slot, and
+/// material side-atlas slot. Records are sorted for the in-shader binary search.
 ///
 /// `cell_key_slot` is [`NON_RESIDENT_ATLAS_SLOT`] for every non-MIXED record (coarse or
 /// sculpted-uniform: they own no cell-key tile — their one cell key rides in `kind`), and it
@@ -99,15 +97,11 @@ pub struct BrickGpuRecord {
     pub cell_key_slot: u32,
 }
 
-/// Pack the build's records for the GPU. The record set is already **surface-only**
-/// (interior elision, fused into
-/// [`build_brick_field`]: a fully-occluded interior
-/// block never emits a record — no second mask pass exists), so this is a plain 1:1 mapping
-/// and the uploaded buffer is ∝ surface, not volume, for a large solid. Hit-identity of the
-/// surface-only set vs the interior-inclusive oracle build is gated in
-/// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`; interiors stay
-/// queryable through the two-layer chunks (the clip-map derives from the chunks, and the
-/// block-occupancy map box-fills coarse occupancy from the chunks).
+/// Pack the surface-only brick-field records for the GPU.
+///
+/// Interior elision is already part of [`build_brick_field`], so this is a one-to-one mapping
+/// from records to GPU entries. Interior occupancy remains queryable through the two-layer
+/// chunks used by the clip-map and block-occupancy map.
 ///
 /// `non_resident` marks sculpted slots to upload as [`NON_RESIDENT_ATLAS_SLOT`] — the
 /// residency-miss test's forced-miss hook (and the eviction seam); pass
@@ -200,7 +194,7 @@ pub(crate) fn write_atlas_slot(
 
 /// Write ONE mixed brick's `edge³` cell-key tile into the persistent MATERIAL SIDE ATLAS at
 /// its slot's tile origin — the twin of [`write_atlas_slot`] for the second pool, differing
-/// only in the texel stride (2 bytes per R16Uint texel) and in `bricks_per_axis` (the side
+/// only in the texel stride (2 bytes per `R16Uint` texel) and in `bricks_per_axis` (the side
 /// atlas sizes from its OWN slot count).
 pub(crate) fn write_cell_key_atlas_slot(
     queue: &wgpu::Queue,

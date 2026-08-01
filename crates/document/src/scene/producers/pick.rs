@@ -1,3 +1,18 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::similar_names,
+    clippy::expect_used,
+    clippy::missing_const_for_fn,
+    clippy::wildcard_imports
+)]
+
 //! Which node owns a voxel: the picked-node resolver
 //! ([`Scene::picked_node_at_voxel`]), the single-cell scoped fold it runs
 //! ([`fold_owner_into`]), and the per-leaf coverage test that fold asks

@@ -17,7 +17,7 @@
 //! every tile is identical in size — which is exactly our case — but the shelf
 //! algorithm is written generally so a future loaded-VS-block material of a
 //! different size still packs without a rewrite. The choice is documented here per
-//! the task: a shelf packer is chosen over a full rectangle-bin-packing (MaxRects /
+//! the task: a shelf packer is chosen over a full rectangle-bin-packing (`MaxRects` /
 //! guillotine) because our tile set is tiny and near-uniform — the packing-density
 //! win of a smarter packer is irrelevant, and a shelf packer has no failure modes.
 //!
@@ -47,14 +47,15 @@ use voxel_core::core_geom::MaterialChoice;
 // This module supplies the material ordering, gutter choice, and atlas types.
 use substrate::occupancy::shelf_bin_pack::{ShelfBinPack, TileImage, TileSize};
 
-/// Texels of replicated-edge gutter padded around every tile in the atlas. One
-/// texel is enough to absorb a single-texel filter/derivative spill at a cell
-/// border; we use a small constant rather than 0 so the seam defense is explicit.
+/// The replicated-edge gutter width in atlas texels.
+///
+/// One texel absorbs a single-texel filter or derivative spill at a cell border.
 pub const GUTTER_TEXELS: u32 = 1;
 
-/// One material's place in the atlas, in atlas UV space (`[0,1]` across the whole
-/// atlas image). `min_*`/`max_*` are the tile's OUTER bounds (the original tile,
-/// excluding the gutter); `inset_*` are those bounds pulled in by half a texel so
+/// One material's atlas sub-rectangle in UV space.
+///
+/// `min_*`/`max_*` are the tile's outer bounds, excluding the gutter. `inset_*` pulls those
+/// bounds inward by half a texel so
 /// the shader's `fract`-based per-voxel tiling never samples the outermost texel
 /// edge (where it could round into the gutter / neighbor). The shader maps a
 /// per-voxel `fract` in `[0,1)` linearly into the inset window.

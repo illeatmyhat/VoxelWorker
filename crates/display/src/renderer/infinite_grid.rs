@@ -46,13 +46,11 @@ const ORTHOGRAPHIC_LOD_FADE_SCALE: f32 = 1.0;
 /// of Points). Bounds the dynamic-offset uniform buffer; extra planes are dropped.
 const MAX_GRID_PLANES: usize = 32;
 
-/// The analytic infinite reference grid: for each
-/// visible [`Point`]'s enabled plane it draws a fullscreen triangle whose fragment
-/// shader intersects the per-pixel view ray with that plane, computes a two-tier
-/// (voxel + block) anti-aliased grid via screen-space derivatives, fades with
-/// distance, and writes `@builtin(frag_depth)` so opaque voxels (drawn earlier in
-/// the SAME MSAA pass) occlude it. This replaces the old finite tiled LINE quad,
-/// whose hard edge / near-clip cutoff looked bad at shallow angles.
+/// The analytic infinite reference grid.
+///
+/// Each enabled plane is drawn as a fullscreen triangle. Its fragment shader intersects the
+/// view ray with the plane, computes an anti-aliased voxel/block grid, fades with distance, and
+/// writes `@builtin(frag_depth)` so opaque voxels occlude it.
 ///
 /// One dynamic-offset uniform buffer holds all planes' uniforms; [`Self::draw`]
 /// binds each plane's slice and issues one 3-vertex draw. With no enabled plane the

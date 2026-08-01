@@ -16,7 +16,18 @@
 //! pipeline: one winit window, one wgpu surface, one egui pass.
 
 // This reference tool's own page/backing chrome is dev-only, not app theme colors.
-#![allow(clippy::disallowed_methods)]
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::match_wildcard_for_single_variants,
+    clippy::panic,
+    clippy::too_many_lines
+)]
 
 use std::sync::Arc;
 

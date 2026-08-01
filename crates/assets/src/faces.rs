@@ -54,25 +54,27 @@ pub enum CubeFaceSlot {
 impl CubeFaceSlot {
     /// All six slots in texture-array layer order (0 East/+X, 1 West/-X, 2 Up/+Z,
     /// 3 Down/-Z, 4 South/-Y, 5 North/+Y).
+    #[allow(clippy::use_self)]
     pub const ALL: [CubeFaceSlot; 6] = [
-        CubeFaceSlot::East,
-        CubeFaceSlot::West,
-        CubeFaceSlot::Up,
-        CubeFaceSlot::Down,
-        CubeFaceSlot::South,
-        CubeFaceSlot::North,
+        Self::East,
+        Self::West,
+        Self::Up,
+        Self::Down,
+        Self::South,
+        Self::North,
     ];
 
     /// The texture-array layer index (0..6) for this slot. Z-up: Up=+Z, Down=-Z,
     /// East=+X, West=-X, South=-Y, North=+Y.
-    pub fn layer(self) -> usize {
+    #[must_use]
+    pub const fn layer(self) -> usize {
         match self {
-            CubeFaceSlot::East => 0,
-            CubeFaceSlot::West => 1,
-            CubeFaceSlot::Up => 2,
-            CubeFaceSlot::Down => 3,
-            CubeFaceSlot::South => 4,
-            CubeFaceSlot::North => 5,
+            Self::East => 0,
+            Self::West => 1,
+            Self::Up => 2,
+            Self::Down => 3,
+            Self::South => 4,
+            Self::North => 5,
         }
     }
 }
@@ -108,6 +110,7 @@ pub enum FaceProvenance {
 
 impl FaceTextures {
     /// A uniform mapping: the same `path` on all six faces.
+    #[must_use]
     pub fn uniform(path: PathBuf) -> Self {
         Self {
             paths: [
@@ -124,15 +127,19 @@ impl FaceTextures {
 
     /// Does every face resolve to the same PNG? `true` means a single-texture
     /// block (the common rock case); `false` means genuinely per-face.
+    #[must_use]
     pub fn is_uniform(&self) -> bool {
-        self.paths.iter().all(|p| *p == self.paths[0])
+        self.paths
+            .first()
+            .is_some_and(|first| self.paths.iter().all(|path| path == first))
     }
 
     /// Whether the top (`up`) face differs from a representative side face — the
     /// most visible per-face distinction (`--list-perface` uses this).
+    #[must_use]
     pub fn top_differs_from_side(&self) -> bool {
-        let up = &self.paths[CubeFaceSlot::Up.layer()];
-        let side = &self.paths[CubeFaceSlot::East.layer()];
+        let up = self.paths.get(CubeFaceSlot::Up.layer());
+        let side = self.paths.get(CubeFaceSlot::East.layer());
         up != side
     }
 }
@@ -164,6 +171,7 @@ impl ParsedBlockType {
     /// Every `base` texture path this block references (across `textures` and all
     /// `texturesByType` variants). Used to index a blocktype by the stems it
     /// references so a scanned texture can find its block.
+    #[must_use]
     pub fn referenced_bases(&self) -> Vec<String> {
         let mut bases = Vec::new();
         if let Some(map) = &self.textures {
@@ -193,6 +201,12 @@ impl ParsedBlockType {
 /// string and skip transformations there). This is a pragmatic normalizer, not a
 /// full JSON5 parser; anything it can't fix cleanly just fails to parse and the
 /// caller falls back to uniform.
+#[must_use]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::string_slice
+)]
 pub fn normalize_vs_json(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut out = String::with_capacity(source.len() + 64);
@@ -204,10 +218,10 @@ pub fn normalize_vs_json(source: &str) -> String {
         let c = bytes[i];
 
         if in_string {
-            out.push(c as char);
+            out.push(char::from(c));
             if c == b'\\' && i + 1 < bytes.len() {
                 // Copy the escaped character verbatim.
-                out.push(bytes[i + 1] as char);
+                out.push(char::from(bytes[i + 1]));
                 i += 2;
                 continue;
             }
@@ -247,13 +261,10 @@ pub fn normalize_vs_json(source: &str) -> String {
                 // Drop a trailing comma: look ahead past whitespace/comments for
                 // a closing bracket.
                 let next = next_significant_byte(bytes, i + 1);
-                if matches!(next, Some(b'}') | Some(b']')) {
-                    // Skip this comma.
-                    i += 1;
-                } else {
+                if !matches!(next, Some(b'}' | b']')) {
                     out.push(',');
-                    i += 1;
                 }
+                i += 1;
             }
             _ if is_ident_start(c) => {
                 // A bare identifier. If it is an object key (followed, after
@@ -263,7 +274,7 @@ pub fn normalize_vs_json(source: &str) -> String {
                 while i < bytes.len() && is_ident_part(bytes[i]) {
                     i += 1;
                 }
-                let ident = &source[start..i];
+                let ident = source.get(start..i).unwrap_or_default();
                 let after = next_significant_byte(bytes, i);
                 if after == Some(b':') {
                     out.push('"');
@@ -274,7 +285,7 @@ pub fn normalize_vs_json(source: &str) -> String {
                 }
             }
             _ => {
-                out.push(c as char);
+                out.push(char::from(c));
                 i += 1;
             }
         }
@@ -283,6 +294,7 @@ pub fn normalize_vs_json(source: &str) -> String {
 }
 
 /// First non-whitespace, non-comment byte at or after `from`.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 fn next_significant_byte(bytes: &[u8], from: usize) -> Option<u8> {
     let mut i = from;
     while i < bytes.len() {
@@ -307,16 +319,17 @@ fn next_significant_byte(bytes: &[u8], from: usize) -> Option<u8> {
     None
 }
 
-fn is_ident_start(c: u8) -> bool {
+const fn is_ident_start(c: u8) -> bool {
     c.is_ascii_alphabetic() || c == b'_'
 }
 
-fn is_ident_part(c: u8) -> bool {
+const fn is_ident_part(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.'
 }
 
 /// Parse a normalized blocktype JSON value into a [`ParsedBlockType`], or `None`
 /// if it has neither a usable `code` nor any texture map.
+#[must_use]
 pub fn parse_block_type(raw: &str) -> Option<ParsedBlockType> {
     let normalized = normalize_vs_json(raw);
     let value: serde_json::Value = serde_json::from_str(&normalized).ok()?;
@@ -400,8 +413,9 @@ fn resolve_face_map(
     let mut slots: [Option<PathBuf>; 6] = Default::default();
 
     let mut apply = |face_slot: CubeFaceSlot, base: &str| {
-        if let Some(path) = resolve_reference(base, group_png, resolve_path) {
-            slots[face_slot.layer()] = Some(path);
+        let path = resolve_reference(base, group_png, resolve_path);
+        if let Some(slot) = slots.get_mut(face_slot.layer()) {
+            *slot = Some(path);
         }
     };
 
@@ -445,8 +459,10 @@ fn resolve_face_map(
     // Any face still unresolved falls back to the group PNG.
     let fallback = group_png.to_path_buf();
     CubeFaceSlot::ALL.map(|slot| {
-        slots[slot.layer()]
-            .clone()
+        slots
+            .get(slot.layer())
+            .and_then(Option::as_ref)
+            .cloned()
             .unwrap_or_else(|| fallback.clone())
     })
 }
@@ -464,17 +480,17 @@ fn resolve_reference(
     base: &str,
     group_png: &Path,
     resolve_path: &dyn Fn(&str) -> Option<PathBuf>,
-) -> Option<PathBuf> {
+) -> PathBuf {
     let substituted = substitute_placeholder(base, group_png);
     // If a clean (no-glob) reference resolves to a real file, use it.
     if !substituted.contains('{') && !substituted.contains('*') {
         if let Some(path) = resolve_path(&substituted) {
-            return Some(path);
+            return path;
         }
     }
     // Otherwise the exact texture is variant-dependent (or missing on disk); the
     // group PNG already IS the chosen variant, so use it.
-    Some(group_png.to_path_buf())
+    group_png.to_path_buf()
 }
 
 /// Substitute a single `{...}` placeholder in `base` with the material name taken
@@ -489,8 +505,8 @@ fn substitute_placeholder(base: &str, group_png: &Path) -> String {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut out = String::with_capacity(base.len() + material.len());
-    let mut chars = base.chars().peekable();
+    let mut out = String::with_capacity(base.len().saturating_add(material.len()));
+    let mut chars = base.chars();
     while let Some(c) = chars.next() {
         if c == '{' {
             // Skip to the closing brace, then emit the material name.
@@ -514,6 +530,7 @@ fn substitute_placeholder(base: &str, group_png: &Path) -> String {
 /// `wanted_stem` is the group key (e.g. `stone/rock/granite`) — the path the
 /// blocktype's `base` entries reference. For `texturesByType`, the variant whose
 /// any `base` references `wanted_stem` wins; otherwise the first variant is used.
+#[must_use]
 pub fn resolve_block_faces(
     block: &ParsedBlockType,
     wanted_stem: &str,
@@ -574,21 +591,28 @@ pub fn resolve_block_faces(
 ///     (so a standing log's end-grain top is preferred over a lying log whose
 ///     end-grain is on the sides and whose top is plain bark).
 fn variant_face_score(paths: &[PathBuf; 6]) -> i32 {
-    let up = &paths[CubeFaceSlot::Up.layer()];
-    let side = &paths[CubeFaceSlot::East.layer()];
+    let Some(up) = paths.get(CubeFaceSlot::Up.layer()) else {
+        return 0;
+    };
+    let Some(side) = paths.get(CubeFaceSlot::East.layer()) else {
+        return 0;
+    };
     if up == side {
         return 0;
     }
     // up is distinct from the side: prefer the variant where fewer faces share
     // the up texture (i.e. up is the special/minority face → it reads as "top").
-    let faces_matching_up = paths.iter().filter(|p| *p == up).count() as i32;
+    let faces_matching_up = i32::try_from(paths.iter().filter(|path| *path == up).count())
+        .unwrap_or(i32::MAX);
     // Base score 10 for being distinct, minus how widespread the up texture is.
-    10 - faces_matching_up
+    10i32.saturating_sub(faces_matching_up)
 }
 
-/// Does a blocktype `base` reference the wanted texture stem? The base may carry
-/// a `block/` prefix, `{placeholder}` and trailing `*`; we compare the cleaned
-/// directory portion against the wanted stem's directory.
+/// Does a blocktype `base` reference the wanted texture stem?
+///
+/// The base may carry a `block/` prefix, `{placeholder}` and trailing `*`; we
+/// compare the cleaned directory portion against the wanted stem's directory.
+#[must_use]
 pub fn base_matches_stem(base: &str, wanted_stem: &str) -> bool {
     let base_clean = clean_texture_path(base);
     let wanted_clean = clean_texture_path(wanted_stem);
@@ -612,7 +636,7 @@ fn clean_texture_path(reference: &str) -> String {
     let mut s = reference.trim();
     // Drop a domain prefix like `game:`.
     if let Some(colon) = s.find(':') {
-        s = &s[colon + 1..];
+        s = s.get(colon.saturating_add(1)..).unwrap_or_default();
     }
     let s = s.trim_start_matches('/');
     let mut s = s.strip_prefix("block/").unwrap_or(s).to_string();
@@ -628,14 +652,16 @@ fn clean_texture_path(reference: &str) -> String {
 
 /// The directory portion of a `a/b/c` path (`a/b`), or empty if no slash.
 fn directory_of(path: &str) -> String {
-    match path.rfind('/') {
-        Some(slash) => path[..slash].to_string(),
-        None => String::new(),
-    }
+    path.rfind('/').map_or_else(
+        String::new,
+        |slash| path.get(..slash).unwrap_or_default().to_string(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+
     use super::*;
 
     #[test]
@@ -705,7 +731,7 @@ mod tests {
         // Resolver returns the requested clean path verbatim (file exists stub).
         let group_png = Path::new("/x/bark/oak.png");
         let resolve = |reference: &str| -> Option<PathBuf> {
-            Some(PathBuf::from(format!("/assets/{}.png", reference)))
+            Some(PathBuf::from(format!("/assets/{reference}.png")))
         };
         let mut map: TextureMap = BTreeMap::new();
         map.insert(

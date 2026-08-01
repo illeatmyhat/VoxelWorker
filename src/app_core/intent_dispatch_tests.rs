@@ -1,3 +1,10 @@
+#![allow(
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+
 use super::selection_of_first_root;
 use crate::app_core::AppCore;
 use camera::OrbitCamera;

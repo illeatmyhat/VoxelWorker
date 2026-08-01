@@ -3,6 +3,9 @@ name = "raycast"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # Ray–volume traversal library: the wgpu-free graphics mathematics of marching a
 # ray through a sparse voxel/brick volume. Like `substrate` and its sibling
 # `camera`, this is a read-first library of well-known concepts under their
@@ -15,12 +18,6 @@ edition = "2021"
 # domain (records, atlas bytes, occupancy policies stay in the app as the injected
 # closures). It never depends on the sibling `camera` crate. See the graphics-crate
 # law in docs/architecture/README.md and docs/design/graphics-crates-extraction-map.md.
-
-# `cfg(kani)` gates the bounded-model-checking proofs in `voxel_dda.rs` (the box-entry
-# invariant behind the grazing-rim fix). It is set only under `cargo kani`; register it here
-# so ordinary `cargo`/clippy builds don't warn on the unknown cfg (the proofs stay inactive).
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
 glam = "0.33.1"

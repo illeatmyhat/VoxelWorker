@@ -1,3 +1,10 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::fn_params_excessive_bools,
+    clippy::similar_names,
+    clippy::unwrap_used
+)]
+
 use super::*;
 
 /// For a triangle wound CCW *as seen from outside*, the geometric face normal

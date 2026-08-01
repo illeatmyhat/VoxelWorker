@@ -3,6 +3,9 @@ name = "evaluation"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The EVALUATION crate: the one evaluator that turns the authored document into the
 # classified boundary set every derivation reads. It owns the residency + per-chunk
 # resolve store (`store`, its re-export shim `chunk_cache`), the boundary-aware

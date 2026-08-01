@@ -42,9 +42,10 @@ use display::renderer::{LayerBand, RegionClip};
 use evaluation::two_layer_store::TwoLayerChunk;
 use voxel_core::voxel::RecenterVoxels;
 
-/// A request to build a wholesale cuboid mesh on the worker. Carries the
-/// OWNED two-layer chunks the resolve produced plus the frame parameters
-/// [`CuboidMeshRenderer::new_from_two_layer_chunks`] needs — all `Send` plain data.
+/// A request for a wholesale cuboid-mesh build.
+///
+/// It owns the two-layer chunks and frame parameters required by
+/// [`CuboidMeshRenderer::new_from_two_layer_chunks`].
 pub struct GeometryRebuildRequest {
     /// Monotonic generation stamp (supersede key). A result is accepted only when its
     /// generation matches the newest request the shell has dispatched (see
@@ -78,9 +79,10 @@ pub struct GeometryRebuildRequest {
     pub region: Option<RegionClip>,
 }
 
-/// A finished wholesale mesh built by the worker: the whole
-/// [`CuboidMeshRenderer`] (GPU buffers included) tagged with the request generation it
-/// was built for, so the shell can discard a stale result and swap in a fresh one.
+/// A finished wholesale mesh build.
+///
+/// The renderer, including GPU buffers, is tagged with its request generation so the shell can
+/// discard stale results before swapping in a fresh one.
 pub struct GeometryRebuildResult {
     /// The generation of the [`GeometryRebuildRequest`] this result was built for.
     pub generation: u64,
@@ -92,19 +94,16 @@ pub struct GeometryRebuildResult {
     pub renderer: Option<CuboidMeshRenderer>,
 }
 
-/// The background geometry worker: a [`Worker`] whose build closure owns the
-/// cloned `device`/`queue` and turns each [`GeometryRebuildRequest`] into a
-/// [`GeometryRebuildResult`]. Spawn it via [`spawn_geometry_worker`]. The shell dispatches
-/// requests and polls each frame; the shared drain-to-latest/supersede loop is
-/// [`Worker`]'s.
+/// The background geometry worker.
+///
+/// Its [`Worker`] closure owns cloned GPU handles and turns each request into a result. The
+/// shell dispatches requests and polls the shared drain-to-latest loop each frame.
 pub type GeometryWorker = Worker<GeometryRebuildRequest, GeometryRebuildResult>;
 
-/// Spawn the geometry worker with cloned GPU handles. `device`/`queue` are
-/// cloned (wgpu 29 Arc-backed) so the worker can create the mesh's GPU buffers off the main
-/// thread; `color_format` is the render target format the pipelines are built for. The
-/// closure captures all three and builds via the SAME
-/// [`CuboidMeshRenderer::new_from_two_layer_chunks`] the sync path uses, so the output is
-/// byte-identical.
+/// Spawn the geometry worker with cloned GPU handles.
+///
+/// The worker creates mesh buffers off the main thread and uses the same builder as the
+/// synchronous path, preserving byte-identical output.
 ///
 /// A build panic (GPU OOM, an internal assert, a bad dimension) must NOT wedge the worker,
 /// so the build runs under [`build_catching`]: a panic is caught, logged, and surfaced as a
@@ -129,10 +128,9 @@ pub fn spawn_geometry_worker(
     )
 }
 
-/// Build the wholesale cuboid mesh for a request — the SAME call the
-/// synchronous path makes, so the built renderer is byte-identical (the build-equivalence
-/// net asserts this). Factored out so the worker loop and the build-equivalence test share
-/// one build entry.
+/// Build the wholesale cuboid mesh for a request.
+///
+/// This is the shared entry used by the worker loop and build-equivalence test.
 pub fn build_geometry(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

@@ -7,6 +7,23 @@
 //! does a vertex the author never placed: an arc reaches the boundary as a run of tessellation
 //! samples, and those are steps around a smooth curve, not corners.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::expect_used,
+    clippy::missing_const_for_fn,
+    clippy::suboptimal_flops,
+    clippy::too_many_lines,
+    clippy::wildcard_imports,
+    clippy::similar_names
+)]
+
 use super::solid::revolve_axes;
 use super::*;
 

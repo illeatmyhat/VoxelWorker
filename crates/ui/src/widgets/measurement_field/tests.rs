@@ -4,6 +4,8 @@
 //! only route authored spatial values take into the document. The validation matrix is
 //! exercised directly; the frame-level rules go through a headless egui `Context`.
 
+#![allow(clippy::duration_subsec, clippy::expect_used, clippy::float_cmp, clippy::match_same_arms, clippy::panic, clippy::semicolon_if_nothing_returned, clippy::unwrap_used, clippy::while_float)]
+
 use super::*;
 
 /// A field with the properties of the OFFSET site: signed, no lower bound.

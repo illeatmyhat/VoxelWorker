@@ -3,6 +3,9 @@ name = "work"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # The WORK crate: the async worker pool + the engagement state machine that COORDINATES the
 # pipeline — evaluation -> display -> pixels — via async workers (tempos, generations, staleness
 # discipline) and the engagement orchestrator (which owns both display renderers + both workers

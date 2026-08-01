@@ -238,7 +238,7 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleStat
                 gizmos::warn_cross(&painter, *mid);
             }
         } else {
-            for pair in curve.array_windows::<2>() {
+        for pair in curve.array_windows::<2>() {
                 gizmos::styled_segment(&painter, pair[0], pair[1], state);
             }
         }

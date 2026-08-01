@@ -1,4 +1,4 @@
-//! Async MagicaVoxel `.vox` export worker.
+//! Async `MagicaVoxel` `.vox` export worker.
 //!
 //! Writing a `.vox` re-streams the scene's exact occupancy region-scoped (one covering
 //! chunk at a time — a coarse-solid block is a fast `d³` fill, a boundary block is
@@ -35,9 +35,10 @@ use document::scene::Scene;
 use evaluation::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
 use interchange::vox_export::{BlockPaletteColors, VoxExportBuilder};
 
-/// A request to build + write one `.vox` file. Carries an OWNED scene clone plus all the
-/// plain data the build needs — the save dialog (a native modal, the fast part) already
-/// ran on the main thread and produced `path`.
+/// A request to build and write one `.vox` file.
+///
+/// It owns the scene clone and plain build data; the main thread has already produced `path`
+/// through the save dialog.
 pub struct VoxExportRequest {
     /// The scene to export, cloned out of the document so the worker owns it.
     pub scene: Scene,
@@ -75,19 +76,16 @@ pub struct VoxExportResult {
     pub outcome: Result<VoxExportSummary, String>,
 }
 
-/// The background `.vox` export worker: a [`Worker`] whose build closure streams the
-/// scene into a [`VoxExportBuilder`] and writes the file. Spawn it via
-/// [`spawn_vox_export_worker`]. Unlike the display workers it carries no supersede
-/// generation — the shell serializes exports (see the module doc).
+/// The background `.vox` export worker.
+///
+/// Its [`Worker`] closure streams the scene into [`VoxExportBuilder`] and writes the file. The
+/// shell serializes exports, so this worker does not carry a supersede generation.
 pub type VoxExportWorker = Worker<VoxExportRequest, VoxExportResult>;
 
-/// Spawn the `.vox` export worker on a dedicated thread. The closure mirrors the body of
-/// a synchronous `export_vox` would do AFTER the save dialog: build the always-on
-/// [`TwoLayerStore`], pre-create the [`VoxExportBuilder`] model set from the region
-/// dimensions, [`stream_vox_occupancy`] each covering chunk into it (bumping
-/// `progress_chunks` per chunk), finish, and write. The whole build runs under
-/// [`build_catching`] so a panic becomes a failure result
-/// (not a wedged thread); an IO error maps to its `to_string()`.
+/// Spawn the `.vox` export worker on a dedicated thread.
+///
+/// The closure builds the two-layer stream, updates `progress_chunks`, finishes the
+/// [`VoxExportBuilder`], and writes the result under [`build_catching`].
 pub fn spawn_vox_export_worker() -> VoxExportWorker {
     Worker::spawn("voxel-worker vox export", |request: VoxExportRequest| {
         let VoxExportRequest {
@@ -110,11 +108,14 @@ pub fn spawn_vox_export_worker() -> VoxExportWorker {
             let two_layer = TwoLayerStore::enabled();
             let region_dimensions = scene.placed_region_dimensions(density);
             let mut builder = VoxExportBuilder::new(region_dimensions, palette_colors);
-            stream_vox_occupancy(&two_layer, &scene, density, |chunk_voxels| {
+            if stream_vox_occupancy(&two_layer, &scene, density, |chunk_voxels| {
                 builder.ingest_chunk(&chunk_voxels);
                 progress_chunks.fetch_add(1, Ordering::Relaxed);
             })
-            .expect("the two-layer capability is enabled");
+            .is_none()
+            {
+                return Err("the two-layer capability is disabled".to_string());
+            }
             let export = builder.finish();
             match export.write(&path) {
                 Ok(bytes) => Ok(VoxExportSummary {

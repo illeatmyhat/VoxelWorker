@@ -15,6 +15,7 @@ use voxel_core::voxel::VoxelGrid;
 /// is merely conservative, and stays exact via the per-voxel path.
 #[test]
 fn coarse_solid_cells_never_over_claim_against_a_per_voxel_sweep() {
+    const CELL: i64 = 2;
     use voxel_core::spatial_index::VoxelAabb;
 
     let lathe = vec![
@@ -67,7 +68,6 @@ fn coarse_solid_cells_never_over_claim_against_a_per_voxel_sweep() {
             .collect();
 
         // Sweep 2x2x2 cells across the extent and check every SOLID claim voxel by voxel.
-        const CELL: i64 = 2;
         let mut solid_claims = 0;
         for z in (0..dimensions[2] as i64).step_by(CELL as usize) {
             for y in (0..dimensions[1] as i64).step_by(CELL as usize) {

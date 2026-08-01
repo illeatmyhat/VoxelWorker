@@ -3,6 +3,20 @@
 //! calls, plus its per-leaf chunk-clipped stamp / mask helpers
 //! ([`stamp_producer_into_chunk`] / [`mask_producer_in_chunk`]).
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    clippy::wildcard_imports,
+    clippy::similar_names
+)]
+
 use crate::voxel::VoxelProducer;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::VoxelGrid;

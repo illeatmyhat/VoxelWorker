@@ -1,8 +1,9 @@
 use super::*;
 
-/// The exact frame the march runs in — every value the shader's uniforms carry,
-/// mirrored so the CPU reference march ([`cpu_march_brick_field`]) computes with
-/// IDENTICAL parameters (the frame is carried, never re-derived).
+/// The exact frame used by the ray march.
+///
+/// The CPU reference [`cpu_march_brick_field`] receives the same values as the shader rather
+/// than deriving them again.
 #[derive(Debug, Clone, Copy)]
 pub struct BrickMarchFrame {
     /// CAMERA-RELATIVE matrices (eye at the frame origin): the forward matrix projects
@@ -42,14 +43,14 @@ pub struct BrickMarchFrame {
     pub brick_edge_voxels: i32,
     pub bricks_per_axis: u32,
     /// The onion-fog REGION clip in the sv voxel frame, half-open
-    /// `[lo, hi)`, or `None` for a scene-wide band. For the SOLID march (ConfineBand) the band
+    /// `[lo, hi)`, or `None` for a scene-wide band. For the SOLID march (`ConfineBand`) the band
     /// is applied per voxel INSIDE this box only; outside renders finished. For a GHOST slab
-    /// (ClipToRegion) the box additionally confines the traversal AABB.
+    /// (`ClipToRegion`) the box additionally confines the traversal AABB.
     pub region_lo_sv: [i32; 3],
     pub region_hi_sv: [i32; 3],
     /// Whether the region clip is live this frame (`region_hi_active.w`).
     pub region_active: bool,
-    /// The region ROLE — `false` = ConfineBand (SOLID), `true` = ClipToRegion (ghost). Packed
+    /// The region ROLE — `false` = `ConfineBand` (SOLID), `true` = `ClipToRegion` (ghost). Packed
     /// into `region_lo_role.w`. Inert for the haze march (the traversal AABB confines the ghost).
     pub region_role_ghost: bool,
 }
@@ -72,8 +73,8 @@ pub(crate) struct OccupancyCellPod {
     mask: [u32; BLOCK_OCCUPANCY_MASK_WORDS],
 }
 
-/// Pack the block-occupancy map into the shader's sorted cell records (the parallel SoA
-/// `cell_keys`/`cell_masks`/`cell_materials` → AoS). Empty ⇒ a single zeroed placeholder (its
+/// Pack the block-occupancy map into the shader's sorted cell records (the parallel `SoA`
+/// `cell_keys`/`cell_masks`/`cell_materials` → `AoS`). Empty ⇒ a single zeroed placeholder (its
 /// count is 0, so the shader never binary-searches it).
 pub(crate) fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<OccupancyCellPod> {
     masks
@@ -152,10 +153,10 @@ pub(crate) struct BrickUniformsPod {
     region_hi_active: [i32; 4],
 }
 
-/// The brick raymarch renderer: owns the record buffer, the sculpted atlas
-/// texture, its own copy of the procedural material atlas (identical texels +
-/// sub-rects to the cuboid path's), and the two pipelines (the MSAA render pass
-/// entry + the single-sample hit-identity entry the parity net reads back).
+/// The brick raymarch renderer.
+///
+/// It owns the record buffer, sculpted atlas, procedural material atlas, and the MSAA and
+/// single-sample pipelines used by rendering and hit-identity parity.
 pub struct BrickRaymarchRenderer {
     render_pipeline: wgpu::RenderPipeline,
     /// The onion GHOST pipeline — same shader + layout as
@@ -191,7 +192,7 @@ pub struct BrickRaymarchRenderer {
     field_bind_group: wgpu::BindGroup,
     material_bind_group: wgpu::BindGroup,
     /// The group(2) LOADED-material bind group bound when NO loaded block is
-    /// applied: a dummy 1×1×6 D2Array (the shader ignores it while `voxel_bias.w == 0`).
+    /// applied: a dummy 1×1×6 `D2Array` (the shader ignores it while `voxel_bias.w == 0`).
     /// When a block is applied the app binds `LoadedMaterial::bind_group` at group(2)
     /// instead (built against the SAME `renderer::build_face_material_layout`), so the
     /// raymarch textures per-face by the owner's lattice rule. Kept alive here so the
@@ -199,7 +200,7 @@ pub struct BrickRaymarchRenderer {
     /// the 3-group pipeline layout.
     dummy_loaded_material_bind_group: wgpu::BindGroup,
     /// Whether a loaded block is applied this frame — mirrored into `voxel_bias.w` so the
-    /// shader shades solid hits from the loaded D2Array (`true`) or the procedural
+    /// shader shades solid hits from the loaded `D2Array` (`true`) or the procedural
     /// atlas (`false`). Set by [`set_loaded_material_active`](Self::set_loaded_material_active).
     loaded_material_active: bool,
     /// The PERSISTENT sculpted-brick atlas texture. Kept across edits so an
@@ -1594,7 +1595,7 @@ impl BrickRaymarchRenderer {
 
     /// Set whether a loaded block is applied this frame — mirrored into `voxel_bias.w` by the
     /// next [`update_uniforms`](Self::update_uniforms) so the shader shades solid hits from
-    /// the loaded 6-layer D2Array (the owner's lattice rule) instead of the procedural
+    /// the loaded 6-layer `D2Array` (the owner's lattice rule) instead of the procedural
     /// atlas. Call BEFORE `update_uniforms`; pass the SAME block's bind group
     /// to [`draw`](Self::draw). A no-op state change when it matches the current value.
     pub fn set_loaded_material_active(&mut self, active: bool) {
@@ -1907,10 +1908,10 @@ impl BrickRaymarchRenderer {
 
     /// Render the SHADED color image (the color-parity harness): one
     /// `Rgba8Unorm` pixel per hit, shaded exactly as the MSAA render pass' center-ray
-    /// evaluation. `loaded_material` binds the applied block's group(2) D2Array (call
+    /// evaluation. `loaded_material` binds the applied block's group(2) `D2Array` (call
     /// [`set_loaded_material_active(true)`](Self::set_loaded_material_active) +
     /// `update_uniforms` first so the shading branch matches); `None` binds the dummy.
-    /// Non-hit pixels are the cleared background. Used ONLY by tests/gpu_parity.rs.
+    /// Non-hit pixels are the cleared background. Used ONLY by `tests/gpu_parity.rs`.
     pub fn render_color_image(
         &self,
         device: &wgpu::Device,

@@ -75,8 +75,9 @@ pub enum PlanarCurve {
 
 impl PlanarCurve {
     /// A whole circle: the arc that sweeps a full turn counter-clockwise from bearing zero.
-    pub fn circle(center: [f64; 2], radius: f64) -> Self {
-        PlanarCurve::Arc {
+    #[must_use]
+    pub const fn circle(center: [f64; 2], radius: f64) -> Self {
+        Self::Arc {
             center,
             radius,
             start_radians: 0.0,
@@ -87,50 +88,55 @@ impl PlanarCurve {
     /// The point at `parameter`, which runs `0` at the tail to `1` at the head. Outside that range
     /// the curve is extended — the segment along its line, the arc around its circle — which is
     /// what makes an out-of-range solve reportable rather than silently clamped.
+    #[must_use]
     pub fn point_at(&self, parameter: f64) -> [f64; 2] {
         match *self {
-            PlanarCurve::Segment { start, end } => [
-                start[0] + (end[0] - start[0]) * parameter,
-                start[1] + (end[1] - start[1]) * parameter,
+            Self::Segment { start, end } => [
+                (end[0] - start[0]).mul_add(parameter, start[0]),
+                (end[1] - start[1]).mul_add(parameter, start[1]),
             ],
-            PlanarCurve::Arc {
+            Self::Arc {
                 center,
                 radius,
                 start_radians,
                 sweep_radians,
             } => {
-                let bearing = start_radians + sweep_radians * parameter;
+                let bearing = sweep_radians.mul_add(parameter, start_radians);
                 [
-                    center[0] + radius * bearing.cos(),
-                    center[1] + radius * bearing.sin(),
+                    radius.mul_add(bearing.cos(), center[0]),
+                    radius.mul_add(bearing.sin(), center[1]),
                 ]
             }
         }
     }
 
     /// The curve's tail.
+    #[must_use]
     pub fn start(&self) -> [f64; 2] {
         self.point_at(0.0)
     }
 
     /// The curve's head.
+    #[must_use]
     pub fn end(&self) -> [f64; 2] {
         self.point_at(1.0)
     }
 
     /// Whether the curve closes on itself — a whole circle.
-    pub fn is_closed(&self) -> bool {
+    #[must_use]
+    pub const fn is_closed(&self) -> bool {
         match *self {
-            PlanarCurve::Segment { .. } => false,
-            PlanarCurve::Arc { sweep_radians, .. } => sweep_radians.abs() >= TAU - ANGULAR_EPSILON,
+            Self::Segment { .. } => false,
+            Self::Arc { sweep_radians, .. } => sweep_radians.abs() >= TAU - ANGULAR_EPSILON,
         }
     }
 
     /// How long the curve is, in the units its coordinates are in.
+    #[must_use]
     pub fn length(&self) -> f64 {
         match *self {
-            PlanarCurve::Segment { start, end } => length([end[0] - start[0], end[1] - start[1]]),
-            PlanarCurve::Arc {
+            Self::Segment { start, end } => length([end[0] - start[0], end[1] - start[1]]),
+            Self::Arc {
                 radius,
                 sweep_radians,
                 ..
@@ -143,21 +149,22 @@ impl PlanarCurve {
     /// An arc keeps its circle and narrows its sweep — it does not become a chord, and it does not
     /// get re-solved from the new endpoints. That is the whole point: cutting a curve produces
     /// pieces of the SAME curve, so nothing is approximated by being split.
-    pub fn sub_curve(&self, from: f64, to: f64) -> PlanarCurve {
+    #[must_use]
+    pub fn sub_curve(&self, from: f64, to: f64) -> Self {
         match *self {
-            PlanarCurve::Segment { .. } => PlanarCurve::Segment {
+            Self::Segment { .. } => Self::Segment {
                 start: self.point_at(from),
                 end: self.point_at(to),
             },
-            PlanarCurve::Arc {
+            Self::Arc {
                 center,
                 radius,
                 start_radians,
                 sweep_radians,
-            } => PlanarCurve::Arc {
+            } => Self::Arc {
                 center,
                 radius,
-                start_radians: start_radians + sweep_radians * from,
+                start_radians: sweep_radians.mul_add(from, start_radians),
                 sweep_radians: sweep_radians * (to - from),
             },
         }
@@ -172,7 +179,8 @@ impl PlanarCurve {
     /// A CLOSED curve with no cuts comes back whole, as one closed piece. That case cannot be
     /// expressed as a chain of pieces between vertices, because it has no vertex; it is a loop
     /// already, and its caller treats it as one.
-    pub fn split_at(&self, parameters: &[f64]) -> Vec<PlanarCurve> {
+    #[must_use]
+    pub fn split_at(&self, parameters: &[f64]) -> Vec<Self> {
         let curve_length = self.length();
         let slack = if curve_length > CROSSING_EPSILON {
             CROSSING_EPSILON / curve_length
@@ -212,15 +220,21 @@ impl PlanarCurve {
             // back to the first — otherwise the seam would become a spurious degree-two vertex in
             // the arrangement, splitting one piece into two for no geometric reason. One cut
             // leaves the curve closed; it is merely re-seamed there.
-            let first = cuts[0];
+            let Some(&first) = cuts.first() else {
+                return vec![*self];
+            };
             let mut pieces = Vec::with_capacity(cuts.len());
             for window in cuts.array_windows::<2>() {
-                pieces.push(self.sub_curve(window[0], window[1]));
+                let [from, to] = window;
+                pieces.push(self.sub_curve(*from, *to));
             }
-            pieces.push(self.sub_curve(cuts[cuts.len() - 1], first + 1.0));
+            let Some(&last) = cuts.last() else {
+                return vec![*self];
+            };
+            pieces.push(self.sub_curve(last, first + 1.0));
             return pieces;
         }
-        let mut pieces = Vec::with_capacity(cuts.len() + 1);
+        let mut pieces = Vec::with_capacity(cuts.len().saturating_add(1));
         let mut previous = 0.0;
         for cut in cuts.into_iter().chain(std::iter::once(1.0)) {
             pieces.push(self.sub_curve(previous, cut));
@@ -238,16 +252,16 @@ impl PlanarCurve {
     ///
     /// A curve never crosses itself here: `self` against `self` is a total overlap, which is true
     /// but useless, so an arrangement filters identical pairs before asking.
-    pub fn crossings(&self, other: &PlanarCurve) -> Vec<CurveCrossing> {
+    #[must_use]
+    pub fn crossings(&self, other: &Self) -> Vec<CurveCrossing> {
         let mut found = match (self, other) {
-            (
-                PlanarCurve::Segment { start: a0, end: a1 },
-                PlanarCurve::Segment { start: b0, end: b1 },
-            ) => segment_meets_segment(*a0, *a1, *b0, *b1),
-            (PlanarCurve::Segment { start, end }, PlanarCurve::Arc { .. }) => {
+            (Self::Segment { start: a0, end: a1 }, Self::Segment { start: b0, end: b1 }) => {
+                segment_meets_segment(*a0, *a1, *b0, *b1)
+            }
+            (Self::Segment { start, end }, Self::Arc { .. }) => {
                 segment_meets_arc(*start, *end, other)
             }
-            (PlanarCurve::Arc { .. }, PlanarCurve::Segment { start, end }) => {
+            (Self::Arc { .. }, Self::Segment { start, end }) => {
                 let mut mirrored = segment_meets_arc(*start, *end, self);
                 for crossing in &mut mirrored {
                     std::mem::swap(
@@ -257,7 +271,7 @@ impl PlanarCurve {
                 }
                 mirrored
             }
-            (PlanarCurve::Arc { .. }, PlanarCurve::Arc { .. }) => arc_meets_arc(self, other),
+            (Self::Arc { .. }, Self::Arc { .. }) => arc_meets_arc(self, other),
         };
         found.sort_by(|a, b| a.parameter_on_first.total_cmp(&b.parameter_on_first));
         found
@@ -274,13 +288,23 @@ impl PlanarCurve {
 /// Quadratic in the number of curves. A sketch is drawn by hand, so the count is small and the
 /// constant matters more than the exponent; a sweep-line would be the answer if that ever stopped
 /// being true.
+#[must_use]
 pub fn cut_at_crossings(curves: &[PlanarCurve]) -> Vec<Vec<PlanarCurve>> {
     let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); curves.len()];
-    for first in 0..curves.len() {
-        for second in (first + 1)..curves.len() {
-            for crossing in curves[first].crossings(&curves[second]) {
-                cuts[first].push(crossing.parameter_on_first);
-                cuts[second].push(crossing.parameter_on_second);
+    for (first_index, first_curve) in curves.iter().enumerate() {
+        let following_start = first_index.saturating_add(1);
+        let (first_cuts, following_cuts) = cuts.split_at_mut(following_start);
+        let Some(first_cuts) = first_cuts.last_mut() else {
+            continue;
+        };
+        for (second_curve, second_cuts) in curves
+            .iter()
+            .skip(following_start)
+            .zip(following_cuts.iter_mut())
+        {
+            for crossing in first_curve.crossings(second_curve) {
+                first_cuts.push(crossing.parameter_on_first);
+                second_cuts.push(crossing.parameter_on_second);
             }
         }
     }
@@ -310,7 +334,11 @@ pub struct CurveCrossing {
 
 impl CurveCrossing {
     /// A transverse crossing — the ordinary case.
-    fn transverse(point: [f64; 2], parameter_on_first: f64, parameter_on_second: f64) -> Self {
+    const fn transverse(
+        point: [f64; 2],
+        parameter_on_first: f64,
+        parameter_on_second: f64,
+    ) -> Self {
         Self {
             point,
             parameter_on_first,
@@ -320,7 +348,7 @@ impl CurveCrossing {
     }
 
     /// One end of a coincident stretch.
-    fn shared(point: [f64; 2], parameter_on_first: f64, parameter_on_second: f64) -> Self {
+    const fn shared(point: [f64; 2], parameter_on_first: f64, parameter_on_second: f64) -> Self {
         Self {
             point,
             parameter_on_first,
@@ -344,11 +372,11 @@ fn clamped_parameter(parameter: f64, span_length: f64) -> Option<f64> {
 }
 
 fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
+    a[1].mul_add(-b[0], a[0] * b[1])
 }
 
 fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
+    a[1].mul_add(b[1], a[0] * b[0])
 }
 
 fn length(a: [f64; 2]) -> f64 {
@@ -382,7 +410,10 @@ fn segment_meets_segment(
         ) else {
             return Vec::new();
         };
-        let point = [a0[0] + first[0] * on_first, a0[1] + first[1] * on_first];
+        let point = [
+            first[0].mul_add(on_first, a0[0]),
+            first[1].mul_add(on_first, a0[1]),
+        ];
         return vec![CurveCrossing::transverse(point, on_first, on_second)];
     }
     // Parallel. Off the same line ⇒ nothing; on it ⇒ the span they share.
@@ -412,8 +443,8 @@ fn segment_meets_segment(
     };
     let mut ends = vec![CurveCrossing::shared(
         [
-            a0[0] + first[0] * overlap_low,
-            a0[1] + first[1] * overlap_low,
+            first[0].mul_add(overlap_low, a0[0]),
+            first[1].mul_add(overlap_low, a0[1]),
         ],
         overlap_low,
         to_second(overlap_low),
@@ -421,8 +452,8 @@ fn segment_meets_segment(
     if (overlap_high - overlap_low) * first_length > CROSSING_EPSILON {
         ends.push(CurveCrossing::shared(
             [
-                a0[0] + first[0] * overlap_high,
-                a0[1] + first[1] * overlap_high,
+                first[0].mul_add(overlap_high, a0[0]),
+                first[1].mul_add(overlap_high, a0[1]),
             ],
             overlap_high,
             to_second(overlap_high),
@@ -449,8 +480,8 @@ fn segment_meets_arc(a0: [f64; 2], a1: [f64; 2], arc: &PlanarCurve) -> Vec<Curve
         return Vec::new(); // a degenerate segment is a point, and a point is not a crossing
     }
     let linear = 2.0 * dot(to_start, direction);
-    let constant = dot(to_start, to_start) - radius * radius;
-    let discriminant = linear * linear - 4.0 * quadratic * constant;
+    let constant = radius.mul_add(-radius, dot(to_start, to_start));
+    let discriminant = (4.0 * quadratic).mul_add(-constant, linear * linear);
     if discriminant < 0.0 {
         return Vec::new();
     }
@@ -472,8 +503,8 @@ fn segment_meets_arc(a0: [f64; 2], a1: [f64; 2], arc: &PlanarCurve) -> Vec<Curve
             continue;
         };
         let point = [
-            a0[0] + direction[0] * on_segment,
-            a0[1] + direction[1] * on_segment,
+            direction[0].mul_add(on_segment, a0[0]),
+            direction[1].mul_add(on_segment, a0[1]),
         ];
         let Some(on_arc) = parameter_on_arc(center, start_radians, sweep_radians, point) else {
             continue;
@@ -516,19 +547,29 @@ fn arc_meets_arc(first: &PlanarCurve, second: &PlanarCurve) -> Vec<CurveCrossing
         return Vec::new();
     }
     // The radical line: the crossings sit at `along` down the center line, `off` to either side.
-    let along =
-        (distance * distance + radius_a * radius_a - radius_b * radius_b) / (2.0 * distance);
-    let off = (radius_a * radius_a - along * along).max(0.0).sqrt();
+    let along_numerator =
+        radius_b.mul_add(-radius_b, radius_a.mul_add(radius_a, distance * distance));
+    let along = along_numerator / (2.0 * distance);
+    let off = radius_a.mul_add(radius_a, -(along * along)).max(0.0).sqrt();
     let unit = [between[0] / distance, between[1] / distance];
-    let base = [center_a[0] + unit[0] * along, center_a[1] + unit[1] * along];
+    let base = [
+        unit[0].mul_add(along, center_a[0]),
+        unit[1].mul_add(along, center_a[1]),
+    ];
     let normal = [-unit[1], unit[0]];
     // Tangent circles have one crossing, not two at the same place.
     let candidates: Vec<[f64; 2]> = if off <= CROSSING_EPSILON {
         vec![base]
     } else {
         vec![
-            [base[0] + normal[0] * off, base[1] + normal[1] * off],
-            [base[0] - normal[0] * off, base[1] - normal[1] * off],
+            [
+                normal[0].mul_add(off, base[0]),
+                normal[1].mul_add(off, base[1]),
+            ],
+            [
+                normal[0].mul_add(-off, base[0]),
+                normal[1].mul_add(-off, base[1]),
+            ],
         ]
     };
     let mut found = Vec::new();
@@ -558,8 +599,8 @@ fn coincident_arcs(
     ) {
         for bearing in [begin, begin + span] {
             let point = [
-                center[0] + radius * bearing.cos(),
-                center[1] + radius * bearing.sin(),
+                radius.mul_add(bearing.cos(), center[0]),
+                radius.mul_add(bearing.sin(), center[1]),
             ];
             let (Some(on_first), Some(on_second)) = (
                 parameter_on_arc(center, first.0, first.1, point),
@@ -640,6 +681,22 @@ fn parameter_on_arc(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::imprecise_flops,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::suboptimal_flops,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
 

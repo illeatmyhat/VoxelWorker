@@ -37,9 +37,8 @@
 //! Two departures from textbook interval arithmetic: bounds are `f32` rather than a wider
 //! type, and the classify threshold is a plain parameter rather than a fixed constant.
 
-/// A conservative interval `[minimum, maximum]` bounding a signed scalar field over a
-/// region. Conservative means the true field range over the region is CONTAINED in
-/// `[minimum, maximum]` (the bound is never narrower than the truth).
+/// A conservative interval `[minimum, maximum]` bounding a signed scalar field over a region.
+/// The bound contains the true field range and is never narrower than the truth.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FieldInterval {
     /// Conservative LOWER bound on the field over the region (`<=` its true minimum).
@@ -50,7 +49,8 @@ pub struct FieldInterval {
 
 impl FieldInterval {
     /// An interval `[minimum, maximum]` (callers pass already-conservative bounds).
-    pub fn new(minimum: f32, maximum: f32) -> Self {
+    #[must_use]
+    pub const fn new(minimum: f32, maximum: f32) -> Self {
         Self { minimum, maximum }
     }
 
@@ -76,6 +76,7 @@ impl FieldInterval {
     /// band — found zero flipped verdicts at isolevel `0`, and flips within seconds once the
     /// threshold moved off zero. Since `classify` takes the isolevel as a PARAMETER, the
     /// guarantee should not rest on every caller happening to pass `0`.
+    #[must_use]
     pub fn from_lipschitz_center(field_at_center: f32, cell_circumradius: f32) -> Self {
         let radius = cell_circumradius.abs();
         Self {
@@ -87,6 +88,7 @@ impl FieldInterval {
     /// Classify the region against an occupancy threshold `isolevel` (inside where
     /// `field <= isolevel`). Because the interval is conservative, an "all outside" or
     /// "all inside" verdict can never disagree with a per-sample evaluation.
+    #[must_use]
     pub fn classify(&self, isolevel: f32) -> FieldClassification {
         if self.minimum > isolevel {
             // Every sample is strictly outside ⇒ the region is entirely empty.
@@ -102,8 +104,9 @@ impl FieldInterval {
 
     /// CSG UNION of two field intervals (`min(field_a, field_b)`, the nearer surface
     /// wins): the bound on `min(a, b)` is `[min(aMin,bMin), min(aMax,bMax)]`.
-    pub fn union(self, other: FieldInterval) -> FieldInterval {
-        FieldInterval {
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self {
             minimum: self.minimum.min(other.minimum),
             maximum: self.maximum.min(other.maximum),
         }
@@ -111,8 +114,9 @@ impl FieldInterval {
 
     /// CSG INTERSECTION of two field intervals (`max(field_a, field_b)`): the bound on
     /// `max(a, b)` is `[max(aMin,bMin), max(aMax,bMax)]`.
-    pub fn intersect(self, other: FieldInterval) -> FieldInterval {
-        FieldInterval {
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self {
             minimum: self.minimum.max(other.minimum),
             maximum: self.maximum.max(other.maximum),
         }
@@ -120,8 +124,9 @@ impl FieldInterval {
 
     /// The NEGATED field interval (`−field`): `[−maximum, −minimum]`. Used to compose
     /// a subtraction, whose field is `max(field_a, −field_b)`.
-    pub fn negate(self) -> FieldInterval {
-        FieldInterval {
+    #[must_use]
+    pub const fn negate(self) -> Self {
+        Self {
             minimum: -self.maximum,
             maximum: -self.minimum,
         }
@@ -129,7 +134,8 @@ impl FieldInterval {
 
     /// CSG SUBTRACTION `A − B` of two field intervals (`max(field_a, −field_b)`): the
     /// region inside `A` and outside `B`. Composed as `self.intersect(other.negate())`.
-    pub fn subtract(self, other: FieldInterval) -> FieldInterval {
+    #[must_use]
+    pub const fn subtract(self, other: Self) -> Self {
         self.intersect(other.negate())
     }
 }
@@ -150,9 +156,9 @@ pub enum FieldClassification {
     Boundary,
 }
 
-/// The conservative field interval of a CSG UNION over a list of operands — `None`
-/// (unboundable ⇒ straddling) the moment any operand is `None`, since a union with an
-/// unbounded field cannot be coarsely decided. An empty list yields `None`.
+/// The conservative field interval of a CSG union over a list of operands.
+/// Returns `None` when any operand is unboundable or when the list is empty.
+#[must_use]
 pub fn union_field_intervals(
     intervals: impl IntoIterator<Item = Option<FieldInterval>>,
 ) -> Option<FieldInterval> {
@@ -161,10 +167,7 @@ pub fn union_field_intervals(
     for interval in intervals {
         any = true;
         let interval = interval?;
-        accumulated = Some(match accumulated {
-            Some(existing) => existing.union(interval),
-            None => interval,
-        });
+        accumulated = Some(accumulated.map_or(interval, |existing| existing.union(interval)));
     }
     if any {
         accumulated
@@ -291,6 +294,22 @@ mod kani_proofs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::imprecise_flops,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::suboptimal_flops,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
 
@@ -306,8 +325,8 @@ mod tests {
         fn next_u64(&mut self) -> u64 {
             self.state = self
                 .state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             self.state
         }
     }
@@ -353,9 +372,9 @@ mod tests {
         let mut rng = Lcg::new(0xC56_u64);
         for _ in 0..5000 {
             let sample_a =
-                a.minimum + (a.maximum - a.minimum) * (rng.next_u64() as f32 / u64::MAX as f32);
+                (a.maximum - a.minimum).mul_add(rng.next_u64() as f32 / u64::MAX as f32, a.minimum);
             let sample_b =
-                b.minimum + (b.maximum - b.minimum) * (rng.next_u64() as f32 / u64::MAX as f32);
+                (b.maximum - b.minimum).mul_add(rng.next_u64() as f32 / u64::MAX as f32, b.minimum);
             let union_value = sample_a.min(sample_b);
             let intersect_value = sample_a.max(sample_b);
             let subtract_value = sample_a.max(-sample_b);

@@ -1,10 +1,12 @@
-//! The **cuboid mesher** — the sole mesh render path. It decomposes the resolved grid
+//! The **cuboid mesher**.
+//!
+//! This is the sole mesh render path. It decomposes the resolved grid
 //! into a small set of single-material axis-aligned boxes ([`evaluation::cuboid`]) and
 //! builds a triangle mesh of each box's **exposed faces only** (faces internal to the
 //! solid set are culled). Each face vertex carries the box's `material_id` and a face
 //! normal; the shader (`shaders/cuboid.wgsl`) flat-shades it with normal-based lighting +
 //! per-material base-color modulation, tiles the block texture once per voxel across a
-//! merged box face (a voxel-unit UV + a Repeat sampler), selects the per-face D2Array
+//! merged box face (a voxel-unit UV + a `Repeat` sampler), selects the per-face `D2Array`
 //! layer from the face normal, and draws the position-based per-voxel/per-block GRID
 //! OVERLAY. A layer-range band clip (`build_cuboid_mesh_banded`) and a debug-faces mode
 //! ride on the same path.

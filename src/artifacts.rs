@@ -131,10 +131,10 @@ enum SketchToolConfig {
     ThreePointArc,
 }
 
-/// The same shim treatment for an armed constraint gesture — the verb
-/// and the entities picked for it so far. `ui` carries no serde, and the gesture's fields are
-/// private to it because `offer` is what maintains their agreement, so this mirrors the shape
-/// and converts through the public parts door rather than reaching inside.
+/// The persisted form of an armed constraint gesture.
+///
+/// It stores the verb and entities picked so far. `ui` carries no serde, and the gesture's
+/// private fields are kept consistent by `offer`, so this type converts through the public API.
 ///
 /// A dump naming a verb this build lacks degrades the whole gesture to "nothing armed", which is
 /// the same tolerance the sketch tool gets: an unknown command is better forgotten than guessed.
@@ -678,6 +678,11 @@ impl Dump {
     /// disjoint by construction — a field belongs to exactly one category — so the merge
     /// is total and order-independent, and a collision would mean a field had been routed
     /// to two artifacts at once, which the destructuring above cannot express.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a component cannot be converted to JSON or the merged value cannot
+    /// be serialized.
     pub fn to_json(&self) -> Result<String, String> {
         let mut merged = serde_json::Map::new();
         for part in [
@@ -704,6 +709,10 @@ impl Dump {
     /// Every field carries a serde default, so a dump missing a key restores that field's
     /// default rather than failing: a repro from another build is worth more partially
     /// than not at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `text` is not valid JSON or a component cannot be deserialized.
     pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
         use serde::Deserialize;
         let value: serde_json::Value = serde_json::from_str(text)?;
@@ -783,6 +792,7 @@ pub(crate) fn default_signal_stack() -> SignalStackState {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use snapshot::{Snapshot, StateCategory};

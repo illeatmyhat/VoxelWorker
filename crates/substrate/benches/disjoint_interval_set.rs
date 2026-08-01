@@ -8,6 +8,15 @@
 //! out-of-order arrivals with overlaps take the linear splice-merge. We bench
 //! both at 10k inserts so the fast path's win over the fallback is legible.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::missing_const_for_fn
+)]
+
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::hint::black_box;
 use substrate::interval::DisjointIntervalSet;
@@ -21,8 +30,8 @@ impl Lcg {
     fn next_in(&mut self, range: i64) -> i64 {
         self.0 = self
             .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         ((self.0 >> 33) as i64).rem_euclid(range)
     }
 }

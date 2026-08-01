@@ -11,6 +11,11 @@
 //! item a given target doesn't use would trip `dead_code` under `-D warnings`; the
 //! module-wide allow below is the standard `tests/common` remedy.
 #![allow(dead_code)]
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::manual_assert,
+    clippy::panic
+)]
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};

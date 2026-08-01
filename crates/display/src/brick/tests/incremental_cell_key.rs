@@ -4,6 +4,7 @@
 //! These fixtures drive the emission builder DIRECTLY with hand-built two-layer chunks —
 //! the tightest test of the CPU classifier. The rendering side is proven by the
 //! mixed-material golden + parity test; this module is the CPU mirror's own contract.
+#![allow(clippy::panic, clippy::redundant_clone)]
 use crate::brick::*;
 use document::scene::Scene;
 use document::voxel::GeometryParams;

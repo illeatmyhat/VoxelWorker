@@ -24,8 +24,10 @@ use glam::{Mat4, Vec3, Vec4};
 pub use substrate::spatial::RealAabb;
 
 /// The six planes of a view frustum, each stored as `(a, b, c, d)` where
-/// `a*x + b*y + c*z + d >= 0` for points on the inside (the normal points
-/// inward). Extracted from a `view_projection` matrix via Gribb–Hartmann.
+/// `a*x + b*y + c*z + d >= 0` for points on the inside.
+///
+/// The normal points inward. Planes are extracted from a `view_projection` matrix via
+/// Gribb–Hartmann.
 #[derive(Debug, Clone, Copy)]
 pub struct Frustum {
     planes: [Vec4; 6],
@@ -37,10 +39,31 @@ impl Frustum {
     /// the matrix are recovered from the columns. The planes are normalized so a
     /// later signed-distance test is in world units (not strictly required for a
     /// pure inside/outside test, but it keeps the maths well-conditioned).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn from_view_projection(view_projection: Mat4) -> Self {
         // Row i of the matrix: the i-th component of each of the four columns.
         let c = view_projection.to_cols_array_2d();
-        let row = |i: usize| Vec4::new(c[0][i], c[1][i], c[2][i], c[3][i]);
+        let row = |i: usize| {
+            Vec4::new(
+                c.first()
+                    .and_then(|column| column.get(i))
+                    .copied()
+                    .unwrap_or_default(),
+                c.get(1)
+                    .and_then(|column| column.get(i))
+                    .copied()
+                    .unwrap_or_default(),
+                c.get(2)
+                    .and_then(|column| column.get(i))
+                    .copied()
+                    .unwrap_or_default(),
+                c.get(3)
+                    .and_then(|column| column.get(i))
+                    .copied()
+                    .unwrap_or_default(),
+            )
+        };
         let row0 = row(0);
         let row1 = row(1);
         let row2 = row(2);
@@ -76,6 +99,8 @@ impl Frustum {
     /// plane, the whole box is outside and we reject. This can produce false
     /// positives for boxes straddling a frustum corner, but NEVER a false
     /// negative — so no on-screen geometry is ever wrongly culled.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn intersects_aabb(&self, aabb: &RealAabb) -> bool {
         for plane in &self.planes {
             let normal = plane.truncate();
@@ -108,6 +133,8 @@ impl Frustum {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use glam::Mat4;
 

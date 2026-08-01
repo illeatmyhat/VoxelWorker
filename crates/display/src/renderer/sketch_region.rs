@@ -43,9 +43,10 @@ struct RegionLoopSlot {
     padding: u32,
 }
 
-/// The `LoopRole` discriminant the shader switches on. **MUST match `LoopRole`'s declaration
-/// order** in `substrate::geom2d` — the one place a hand-written mirror drifts without any
-/// distance ever being wrong. The exhaustive `match` makes a new variant a compile error here.
+/// Return the shader discriminant for a `LoopRole`.
+///
+/// The values match declaration order in `substrate::geom2d`; the exhaustive match makes a new
+/// variant a compile error here.
 pub fn sketch_region_loop_role_discriminant(role: LoopRole) -> u32 {
     match role {
         LoopRole::Fill => 0,

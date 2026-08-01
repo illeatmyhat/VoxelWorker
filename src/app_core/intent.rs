@@ -528,9 +528,7 @@ impl AppCore {
                 .command_stack
                 .open_group
                 .as_mut()
-                .expect("group is Some")
-                .session_undo
-                .pop()
+                .and_then(|group| group.session_undo.pop())
             else {
                 return IntentEffect::none();
             };
@@ -540,12 +538,9 @@ impl AppCore {
             for command in transaction.iter().rev() {
                 effect = effect.merged_with(self.reverse_command(scene, selection, command));
             }
-            self.command_stack
-                .open_group
-                .as_mut()
-                .expect("group is Some")
-                .session_redo
-                .push(transaction);
+            if let Some(group) = self.command_stack.open_group.as_mut() {
+                group.session_redo.push(transaction);
+            }
             return effect;
         }
         let Some(transaction) = self.command_stack.undo.pop() else {
@@ -627,9 +622,7 @@ impl AppCore {
                 .command_stack
                 .open_group
                 .as_mut()
-                .expect("group is Some")
-                .session_redo
-                .pop()
+                .and_then(|group| group.session_redo.pop())
             else {
                 return IntentEffect::none();
             };
@@ -637,12 +630,9 @@ impl AppCore {
             for command in &transaction {
                 effect = effect.merged_with(self.replay_command(scene, selection, command));
             }
-            self.command_stack
-                .open_group
-                .as_mut()
-                .expect("group is Some")
-                .session_undo
-                .push(transaction);
+            if let Some(group) = self.command_stack.open_group.as_mut() {
+                group.session_undo.push(transaction);
+            }
             return effect;
         }
         let Some(transaction) = self.command_stack.redo.pop() else {
@@ -763,8 +753,8 @@ impl AppCore {
     /// The success effect is
     /// [`effect_of`](Self::effect_of) (the single source of truth); a mutation that
     /// could not land (missing id / kind-mismatch / stale index) downgrades to
-    /// [`IntentEffect::none`]. Also returns, for the add family (AddNode / AddChild /
-    /// AddInstance), the minted node id the inverse needs (`None` for the field /
+    /// [`IntentEffect::none`]. Also returns, for the add family (`AddNode` / `AddChild` /
+    /// `AddInstance`), the minted node id the inverse needs (`None` for the field /
     /// structural / selection / point intents and for an add that no-ops on a stale
     /// target).
     fn dispatch(&self, scene: &mut Scene, intent: Intent) -> DispatchOutcome {

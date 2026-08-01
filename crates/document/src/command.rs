@@ -1,3 +1,5 @@
+#![allow(clippy::doc_markdown, clippy::too_long_first_doc_paragraph, clippy::use_self)]
+
 //! The linear command stack — inverse-based undo/redo.
 //!
 //! Undo/redo is a **linear command stack of inverse commands**, NOT snapshots: the

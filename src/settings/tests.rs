@@ -1,3 +1,11 @@
+#![allow(
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_lines,
+    clippy::unwrap_used
+)]
+
 use super::*;
 use voxel_core::voxel::ShapeKind;
 

@@ -9,6 +9,14 @@
 //! boundary block, and a checkerboard forces one cuboid per cell (the worst case
 //! greedy growth can never merge).
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::missing_const_for_fn
+)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use substrate::solids::{CellGrid, GreedyCuboidDecomposition};

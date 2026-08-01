@@ -34,16 +34,28 @@ use glam::Vec3;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RecenterVoxels([i64; 3]);
 
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+const fn i64_to_f32(value: i64) -> f32 {
+    value as f32
+}
+
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+const fn u32_to_f32(value: u32) -> f32 {
+    value as f32
+}
+
 impl RecenterVoxels {
     /// Carry a known recenter triple as its frame value — the boundary/test constructor for a
     /// recenter that arrives as a raw `[i64; 3]`.
-    pub fn new(voxels: [i64; 3]) -> Self {
+    #[must_use]
+    pub const fn new(voxels: [i64; 3]) -> Self {
         Self(voxels)
     }
 
     /// The raw voxel triple — the single consumption door, called only at the point of positional
     /// arithmetic, at the GPU uniform packing, and at the raw-by-rule oracle / cache / delta values.
-    pub fn voxels(&self) -> [i64; 3] {
+    #[must_use]
+    pub const fn voxels(&self) -> [i64; 3] {
         self.0
     }
 
@@ -54,11 +66,15 @@ impl RecenterVoxels {
     /// `recenter − grid_half_extent` subtraction happens — so no call site can treat
     /// `world_position + grid_half_extent` (a render-local index) as if it were the true-world
     /// coordinate, and a [`GridHalfExtent`] can never be swapped for a `RecenterVoxels` here.
+    #[must_use]
     pub fn render_absolute_to_true_world_offset(
         self,
         grid_half_extent: GridHalfExtent,
     ) -> [f32; 3] {
-        std::array::from_fn(|axis| self.0[axis] as f32 - grid_half_extent.0[axis])
+        std::array::from_fn(|axis| {
+            i64_to_f32(self.0.get(axis).copied().unwrap_or_default())
+                - grid_half_extent.0.get(axis).copied().unwrap_or_default()
+        })
     }
 }
 
@@ -76,12 +92,14 @@ impl GridHalfExtent {
     /// `f32`. The integer division BEFORE the cast reproduces the corner-anchoring the shader relies
     /// on — a `dim / 2.0` would sit half a voxel off for an ODD dimension, mis-snapping the overlay
     /// and the Z-band clip.
+    #[must_use]
     pub fn of_grid_dimensions(dimensions: [u32; 3]) -> Self {
-        Self(std::array::from_fn(|axis| (dimensions[axis] / 2) as f32))
+        Self(dimensions.map(|dimension| u32_to_f32(dimension / 2)))
     }
 
     /// The raw per-axis half-extent — the GPU uniform packing door (`grid_half_extent`).
-    pub fn voxels(&self) -> [f32; 3] {
+    #[must_use]
+    pub const fn voxels(&self) -> [f32; 3] {
         self.0
     }
 }
@@ -90,7 +108,7 @@ impl GridHalfExtent {
 /// the pure-translation point crossings below.
 fn recenter_as_vec3(recenter: RecenterVoxels) -> Vec3 {
     let voxels = recenter.voxels();
-    Vec3::new(voxels[0] as f32, voxels[1] as f32, voxels[2] as f32)
+    Vec3::from_array(voxels.map(i64_to_f32))
 }
 
 /// The absolute producer/world voxel coordinate. Cross into another frame ONLY via a
@@ -104,18 +122,22 @@ pub struct TrueWorldVoxelPoint(Vec3);
 impl TrueWorldVoxelPoint {
     /// Carry a `Vec3` as a true-world voxel point — the boundary constructor where a raw absolute
     /// coordinate (a leaf's world offset, an absolute cell center) enters the typed frame world.
-    pub fn from_voxels(point: Vec3) -> Self {
+    #[must_use]
+    pub const fn from_voxels(point: Vec3) -> Self {
         Self(point)
     }
 
     /// The raw `Vec3` — the consumption door, called where the true-world coordinate leaves the
     /// typed world for arithmetic (a `floor` to an integer cell, a GPU coordinate).
-    pub fn voxels(self) -> Vec3 {
+    #[must_use]
+    pub const fn voxels(self) -> Vec3 {
         self.0
     }
 
     /// Translate into the [`RecenteredVoxelPoint`] frame by SUBTRACTING the recenter — one of the two
     /// audited recenter crossings (`recentered = true_world − recenter`).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn to_recentered(self, recenter: RecenterVoxels) -> RecenteredVoxelPoint {
         RecenteredVoxelPoint(self.0 - recenter_as_vec3(recenter))
     }
@@ -130,17 +152,21 @@ pub struct RecenteredVoxelPoint(Vec3);
 impl RecenteredVoxelPoint {
     /// Carry a `Vec3` as a recentered voxel point — the boundary constructor for a coordinate born in
     /// the resolved-grid frame.
-    pub fn from_voxels(point: Vec3) -> Self {
+    #[must_use]
+    pub const fn from_voxels(point: Vec3) -> Self {
         Self(point)
     }
 
     /// The raw `Vec3` — the consumption door out of the recentered frame.
-    pub fn voxels(self) -> Vec3 {
+    #[must_use]
+    pub const fn voxels(self) -> Vec3 {
         self.0
     }
 
     /// Translate into the [`TrueWorldVoxelPoint`] frame by ADDING the recenter — the inverse of
     /// [`TrueWorldVoxelPoint::to_recentered`] (`true_world = recentered + recenter`).
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn to_true_world(self, recenter: RecenterVoxels) -> TrueWorldVoxelPoint {
         TrueWorldVoxelPoint(self.0 + recenter_as_vec3(recenter))
     }
@@ -156,19 +182,32 @@ pub struct ProducerLocalVoxelPoint(Vec3);
 impl ProducerLocalVoxelPoint {
     /// Carry a `Vec3` as a producer-local voxel point — the boundary constructor for a local cell
     /// center / box corner the placement affine will fold through.
-    pub fn from_voxels(point: Vec3) -> Self {
+    #[must_use]
+    pub const fn from_voxels(point: Vec3) -> Self {
         Self(point)
     }
 
     /// The raw `Vec3` — the consumption door, called where the producer-local coordinate is handed
     /// to the producer's field sampler (`signed_distance` / `material_at`).
-    pub fn voxels(self) -> Vec3 {
+    #[must_use]
+    pub const fn voxels(self) -> Vec3 {
         self.0
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     #[test]

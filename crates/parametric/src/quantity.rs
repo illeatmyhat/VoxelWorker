@@ -69,17 +69,17 @@ pub enum QuantityError {
 impl core::fmt::Display for QuantityError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            QuantityError::MismatchedDimensions { left, right } => write!(
+            Self::MismatchedDimensions { left, right } => write!(
                 formatter,
                 "cannot combine {} with {}",
                 left.describe(),
                 right.describe()
             ),
-            QuantityError::DividedByZero => write!(formatter, "division by zero"),
-            QuantityError::Overflowed => {
+            Self::DividedByZero => write!(formatter, "division by zero"),
+            Self::Overflowed => {
                 write!(formatter, "the exact value grew too large to represent")
             }
-            QuantityError::NotRepresentable { needed } => {
+            Self::NotRepresentable { needed } => {
                 write!(formatter, "not representable: {needed}")
             }
         }
@@ -90,22 +90,26 @@ impl std::error::Error for QuantityError {}
 
 impl Quantity {
     /// A quantity from a raw exact value and a dimension.
-    pub fn new(value: ExactRational, dimension: Dimension) -> Self {
+    #[must_use]
+    pub const fn new(value: ExactRational, dimension: Dimension) -> Self {
         Self { value, dimension }
     }
 
     /// A pure number — what a bare literal in an expression evaluates to.
-    pub fn dimensionless(value: ExactRational) -> Self {
+    #[must_use]
+    pub const fn dimensionless(value: ExactRational) -> Self {
         Self::new(value, Dimension::DIMENSIONLESS)
     }
 
     /// A length, in voxels.
-    pub fn length_voxels(value: ExactRational) -> Self {
+    #[must_use]
+    pub const fn length_voxels(value: ExactRational) -> Self {
         Self::new(value, Dimension::LENGTH)
     }
 
     /// An angle, in degrees.
-    pub fn angle_degrees(value: ExactRational) -> Self {
+    #[must_use]
+    pub const fn angle_degrees(value: ExactRational) -> Self {
         Self::new(value, Dimension::ANGLE)
     }
 
@@ -114,16 +118,23 @@ impl Quantity {
     /// Takes `density` for the same reason
     /// [`Measurement::to_voxels`](crate::units::Measurement::to_voxels) does: a block term is
     /// only a count of voxels once `d` is known.
+    #[must_use]
     pub fn from_measurement(measurement: Measurement, density: u32) -> Self {
         Self::length_voxels(measurement.to_voxels_exact(density))
     }
 
     /// An angle quantity from an authored [`AngleMeasurement`]. No density: an angle has none.
+    #[must_use]
     pub fn from_angle(angle: AngleMeasurement) -> Self {
         Self::angle_degrees(angle.degrees())
     }
 
     /// `self + other`, or [`MismatchedDimensions`](QuantityError::MismatchedDimensions).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantityError::MismatchedDimensions`] when the operands have different
+    /// dimensions.
     pub fn plus(self, other: Self) -> Result<Self, QuantityError> {
         let dimension =
             self.dimension
@@ -136,6 +147,11 @@ impl Quantity {
     }
 
     /// `self - other`, or [`MismatchedDimensions`](QuantityError::MismatchedDimensions).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantityError::MismatchedDimensions`] when the operands have different
+    /// dimensions.
     pub fn minus(self, other: Self) -> Result<Self, QuantityError> {
         let dimension =
             self.dimension
@@ -148,6 +164,7 @@ impl Quantity {
     }
 
     /// `self * other`. Never fails on dimensions — exponents simply add.
+    #[must_use]
     pub fn times(self, other: Self) -> Self {
         Self::new(
             self.value.times(other.value),
@@ -157,6 +174,10 @@ impl Quantity {
 
     /// `self / other`. Fails only on a zero divisor; the dimension always exists, because
     /// exponents subtract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantityError::DividedByZero`] when `other` is zero.
     pub fn divided_by(self, other: Self) -> Result<Self, QuantityError> {
         let value = self
             .value
@@ -166,6 +187,10 @@ impl Quantity {
     }
 
     /// `-self`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantityError::Overflowed`] if the exact negation cannot be represented.
     pub fn negated(self) -> Result<Self, QuantityError> {
         let value = self.value.negated().ok_or(QuantityError::Overflowed)?;
         Ok(Self::new(value, self.dimension))
@@ -177,6 +202,11 @@ impl Quantity {
     /// the dimension must be a length, and the value must be a whole number of voxels —
     /// nothing is finer than a voxel, which is the same rule
     /// [`units::parse`](crate::units::parse) applies to an authored voxel term.
+    ///
+    /// # Errors
+    ///
+    /// Returns a dimension, representability, or exact-arithmetic error when the quantity
+    /// cannot be stored as a whole voxel count.
     pub fn to_whole_voxels(self) -> Result<i64, QuantityError> {
         if self.dimension != Dimension::LENGTH {
             return Err(QuantityError::MismatchedDimensions {
@@ -196,6 +226,10 @@ impl Quantity {
     /// The [`AngleMeasurement`] this angle lands on, or an error. The angle door, mirroring
     /// [`to_whole_voxels`](Self::to_whole_voxels) — an angle has no whole-unit floor, so only
     /// the dimension is checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantityError::MismatchedDimensions`] unless this quantity is an angle.
     pub fn to_angle(self) -> Result<AngleMeasurement, QuantityError> {
         if self.dimension != Dimension::ANGLE {
             return Err(QuantityError::MismatchedDimensions {
@@ -209,6 +243,8 @@ impl Quantity {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
     use super::*;
 
     fn whole(value: i128) -> ExactRational {

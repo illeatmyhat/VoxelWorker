@@ -34,19 +34,22 @@ pub struct DisjointIntervalSet {
 
 impl DisjointIntervalSet {
     /// An empty set.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             intervals: Vec::new(),
         }
     }
 
     /// `true` when the set holds no intervals.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.intervals.is_empty()
     }
 
     /// The stored intervals, in ascending order — each `(lo, hi)` disjoint and
     /// non-touching from its neighbors.
+    #[must_use]
     pub fn intervals(&self) -> &[(i64, i64)] {
         &self.intervals
     }
@@ -59,6 +62,7 @@ impl DisjointIntervalSet {
     /// `2^64 − 1` — and a plain `hi - lo` would overflow and panic there. Saturating keeps this
     /// total over every set the public API can build; in the voxel-coordinate workloads it serves,
     /// widths are bounded by the grid, so the saturating case is unreachable and the value exact.
+    #[must_use]
     pub fn widest_span(&self) -> i64 {
         self.intervals
             .iter()
@@ -91,17 +95,21 @@ impl DisjointIntervalSet {
             return;
         }
         // General merge (rare: an out-of-order interval starting left of the last run).
-        let mut start = 0;
-        while start < self.intervals.len() && self.intervals[start].1 < lo {
-            start += 1; // skip intervals strictly left of the run (a real gap)
-        }
+        let start = self
+            .intervals
+            .iter()
+            .position(|&(_, interval_hi)| interval_hi >= lo)
+            .unwrap_or(self.intervals.len());
         let mut merged_lo = lo;
         let mut merged_hi = hi;
         let mut end = start;
-        while end < self.intervals.len() && self.intervals[end].0 <= merged_hi {
-            merged_lo = merged_lo.min(self.intervals[end].0);
-            merged_hi = merged_hi.max(self.intervals[end].1);
-            end += 1;
+        while let Some(&(interval_lo, interval_hi)) = self.intervals.get(end) {
+            if interval_lo > merged_hi {
+                break;
+            }
+            merged_lo = merged_lo.min(interval_lo);
+            merged_hi = merged_hi.max(interval_hi);
+            end = end.saturating_add(1);
         }
         self.intervals
             .splice(start..end, std::iter::once((merged_lo, merged_hi)));

@@ -84,6 +84,8 @@ impl OrbitCamera {
     ///
     /// Perspective grows with depth; orthographic ignores it entirely, which is the one place
     /// the two projections genuinely part company for this purpose.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn view_extent_at_depth(&self, depth: f32) -> f32 {
         match self.projection_mode {
             ProjectionMode::Perspective => {
@@ -97,6 +99,7 @@ impl OrbitCamera {
 
     /// The world-space distance the viewport's height spans **at the target** — the depth the
     /// user is actually working at, and the one the authorability question is asked about.
+    #[must_use]
     pub fn view_extent_at_target(&self) -> f32 {
         self.view_extent_at_depth(self.orbit_distance)
     }
@@ -105,6 +108,8 @@ impl OrbitCamera {
     /// placed at `anchor` — the size a screen-stable manipulator (the transform gizmos) must
     /// use so it holds constant on screen through any zoom. Perspective scales it by the
     /// depth-to-anchor; orthographic ignores depth, its extent already tracking `orbit_distance`.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn screen_stable_size(&self, anchor: glam::Vec3, screen_fraction: f32) -> f32 {
         let forward = -self.direction();
         let depth = (anchor - self.eye()).dot(forward);
@@ -115,6 +120,7 @@ impl OrbitCamera {
     /// to [`screen_stable_size`](Self::screen_stable_size): `translate(anchor) · scale(size)`.
     /// Left-multiply by the view-projection to draw any screen-stable gizmo; a gizmo that also
     /// carries an orientation composes its own rotation onto this.
+    #[must_use]
     pub fn screen_stable_model(&self, anchor: glam::Vec3, screen_fraction: f32) -> glam::Mat4 {
         let size = self.screen_stable_size(anchor, screen_fraction);
         glam::Mat4::from_scale_rotation_translation(
@@ -132,6 +138,8 @@ impl OrbitCamera {
     /// is sized to the model, and far out is much smaller than a screen-stable widget). Like the
     /// view cube's projection, the depth range is chosen to not matter — the overlay writes no
     /// depth — rather than tuned to the geometry.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn overlay_view_projection(&self, aspect_ratio: f32, anchor: glam::Vec3) -> glam::Mat4 {
         let forward = -self.direction();
         let depth = (anchor - self.eye()).dot(forward);
@@ -145,6 +153,8 @@ impl OrbitCamera {
     /// Solving `2 · d · k <= block_size / fraction` for `d`. Under perspective this reads as a
     /// distance limit; under orthographic, where `orbit_distance` is the zoom, it reads as a
     /// zoom limit. Same inequality either way.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn authorable_distance_limit(&self, block_size: f32) -> f32 {
         let factor = half_extent_factor(self.projection_mode);
         if factor <= 0.0 || block_size <= 0.0 {
@@ -158,6 +168,7 @@ impl OrbitCamera {
     /// False means the point the camera orbits is itself too far to work at, so nothing nearer
     /// the cursor can be either — the viewport should say **zoom in**, which is a different
     /// message from "point at something" and must not share its affordance.
+    #[must_use]
     pub fn can_author_at_all(&self, block_size: f32) -> bool {
         self.orbit_distance <= self.authorable_distance_limit(block_size)
     }
@@ -167,6 +178,8 @@ impl OrbitCamera {
     /// Under orthographic this is independent of `depth` and answers the same question as
     /// [`can_author_at_all`](Self::can_author_at_all) — correctly, since a block's apparent size
     /// there does not change with distance.
+    #[must_use]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn depth_is_authorable(&self, depth: f32, block_size: f32) -> bool {
         let limit = block_size / MIN_BLOCK_SCREEN_FRACTION;
         self.view_extent_at_depth(depth) <= limit
@@ -175,6 +188,8 @@ impl OrbitCamera {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::arithmetic_side_effects, clippy::float_cmp)]
+
     use super::*;
 
     /// A 16-voxel block — the document default density, and the unit the limit is quoted in.

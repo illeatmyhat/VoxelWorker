@@ -3,6 +3,9 @@ name = "substrate"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 # Pure computer-science / mathematics library. No features (no gpu/oracle/tracy).
 # Two dependencies: rayon and glam. rayon backs the `SparseMinMipPyramid` fold
 # (slice S7), which sorts its folded cell keys in parallel (`par_sort_unstable`),
@@ -12,13 +15,6 @@ edition = "2021"
 # app hands rays across the crate boundary without a conversion. Not intended for
 # release; intended for reading, naming, and isolated performance reasoning. See the
 # "Substrate" section of docs/architecture/data-structures.md for the boundary law.
-
-# `cfg(kani)` gates the bounded-model-checking proofs in the finite bit/index kernels
-# (`lattice_key.rs`, and the other decision-6 targets as they land). It is set only under
-# `cargo kani`; register it here so ordinary `cargo`/clippy builds don't warn on the unknown
-# cfg (the proofs stay inactive). See docs/design/substrate-extraction-map.md item 10b.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
 rayon = "1"

@@ -10,13 +10,15 @@ use voxel_core::voxel::chunk_extent_exceeds_bound;
 use super::{AppCore, RebuildOutcome, RebuildOutput};
 
 impl AppCore {
-    /// **The headless geometry rebuild.** Route the resolve through the per-chunk store
+    /// **The headless geometry rebuild.** Route the resolve through the per-chunk store.
+    ///
+    /// It uses
     /// with TARGETED invalidation: build the new scene's leaf spatial index, diff it
     /// against the last rebuild's to get the edit's dirty world-AABB, and evict ONLY the
     /// chunks that AABB touches (every
     /// other cached chunk stays resident). Fall back to a wholesale `clear()` when a
     /// precise AABB can't be computed — the first rebuild (no previous index), a
-    /// density change, or a region-spanning VoxelBody edit (no localizable box, see
+    /// density change, or a region-spanning `VoxelBody` edit (no localizable box, see
     /// `LeafSpatialIndex::edit_aabb_since`). The reassembled grid is byte-identical
     /// either way (the same chunks are re-resolved; untouched chunks are reused).
     ///
@@ -25,7 +27,7 @@ impl AppCore {
     /// shell must consume it (build the cuboid mesh, refresh the brick field) BEFORE the
     /// next `&mut AppCore` call. A density whose single-chunk voxel capacity exceeds the bound
     /// is rejected WITHOUT touching the store, returning the offending count so the shell can
-    /// surface the cap warning (AppCore never writes panel state).
+    /// surface the cap warning (`AppCore` never writes panel state).
     ///
     /// **No dense grid is ever assembled.** A rebuild produces ONLY the sparse two-layer
     /// covering chunks + scalar metadata — no whole-region `VoxelGrid` expansion. The brick

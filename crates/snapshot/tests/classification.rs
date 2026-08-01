@@ -1,6 +1,6 @@
 //! What the classification scheme promises, tested at both ends: that a classified
 //! struct reports every one of its fields with the category that was authored on it,
-//! and that an UNclassified field cannot be compiled at all.
+//! and that an `unclassified` field cannot be compiled at all.
 //!
 //! The second half is the one that matters, and it is why `trybuild` is here. The
 //! derive's whole contribution is a diagnostic (the macro buys

@@ -68,12 +68,15 @@ enum BvhNodeKind {
 impl Bvh {
     /// Build the BVH over `input_aabbs`; index `i` of the slice is the index a query
     /// reports. Empty boxes are excluded (they overlap nothing).
+    #[must_use]
     pub fn build(input_aabbs: &[LatticeAabb]) -> Self {
         let mut entries: Vec<(u32, LatticeAabb)> = input_aabbs
             .iter()
             .enumerate()
             .filter(|(_, aabb)| !aabb.is_empty())
-            .map(|(input_index, aabb)| (input_index as u32, *aabb))
+            .filter_map(|(input_index, aabb)| {
+                u32::try_from(input_index).ok().map(|index| (index, *aabb))
+            })
             .collect();
         let mut nodes = Vec::new();
         if !entries.is_empty() {
@@ -92,6 +95,7 @@ impl Bvh {
     /// Every input index whose box overlaps `query`, **sorted ascending** (= input order:
     /// an ordered caller gets an ordered subsequence). Exactly the set a naive linear
     /// `intersects` filter over the input slice returns.
+    #[must_use]
     pub fn overlapping_input_indices(&self, query: &LatticeAabb) -> Vec<usize> {
         let mut overlapping = Vec::new();
         if self.nodes.is_empty() || query.is_empty() {
@@ -99,22 +103,33 @@ impl Bvh {
         }
         let mut pending_nodes: Vec<u32> = vec![0];
         while let Some(node_index) = pending_nodes.pop() {
-            let node = &self.nodes[node_index as usize];
+            let Some(node) = self
+                .nodes
+                .get(usize::try_from(node_index).unwrap_or_default())
+            else {
+                continue;
+            };
             if !node.aabb.intersects(query) {
                 continue;
             }
             match node.kind {
                 BvhNodeKind::Internal { right_child } => {
-                    pending_nodes.push(node_index + 1);
+                    pending_nodes.push(node_index.saturating_add(1));
                     pending_nodes.push(right_child);
                 }
                 BvhNodeKind::Leaf {
                     entry_start,
                     entry_count,
                 } => {
-                    for entry in entry_start..entry_start + entry_count {
-                        if self.entry_aabbs[entry as usize].intersects(query) {
-                            overlapping.push(self.entry_input_indices[entry as usize] as usize);
+                    for entry in entry_start..entry_start.saturating_add(entry_count) {
+                        let index = usize::try_from(entry).unwrap_or_default();
+                        if let (Some(aabb), Some(input_index)) = (
+                            self.entry_aabbs.get(index),
+                            self.entry_input_indices.get(index),
+                        ) {
+                            if aabb.intersects(query) {
+                                overlapping.push(usize::try_from(*input_index).unwrap_or_default());
+                            }
                         }
                     }
                 }
@@ -135,8 +150,11 @@ fn build_bvh_subtree(
     entries: &mut [(u32, LatticeAabb)],
     entry_offset: usize,
 ) -> u32 {
-    let node_index = nodes.len() as u32;
-    let mut bounds = entries[0].1;
+    let node_index = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
+    let Some((_, first_aabb)) = entries.first() else {
+        return node_index;
+    };
+    let mut bounds = *first_aabb;
     for (_, aabb) in entries.iter().skip(1) {
         bounds = bounds.union(aabb);
     }
@@ -145,8 +163,8 @@ fn build_bvh_subtree(
         nodes.push(BvhNode {
             aabb: bounds,
             kind: BvhNodeKind::Leaf {
-                entry_start: entry_offset as u32,
-                entry_count: entries.len() as u32,
+                entry_start: u32::try_from(entry_offset).unwrap_or(u32::MAX),
+                entry_count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
             },
         });
         return node_index;
@@ -155,22 +173,28 @@ fn build_bvh_subtree(
     // Split axis = the widest spread of the DOUBLED centroids (min + max; halving would
     // only lose parity information). Coincident centroids on every axis still split fine:
     // the median partition then just halves the run arbitrarily.
-    let doubled_centroid = |aabb: &LatticeAabb, axis: usize| aabb.min[axis] + aabb.max[axis];
+    let doubled_centroid = |aabb: &LatticeAabb, axis: usize| {
+        aabb.min
+            .get(axis)
+            .copied()
+            .unwrap_or_default()
+            .saturating_add(aabb.max.get(axis).copied().unwrap_or_default())
+    };
     let split_axis = (0..3)
         .max_by_key(|&axis| {
             let low = entries
                 .iter()
                 .map(|(_, aabb)| doubled_centroid(aabb, axis))
                 .min()
-                .expect("entries is non-empty");
+                .unwrap_or_default();
             let high = entries
                 .iter()
                 .map(|(_, aabb)| doubled_centroid(aabb, axis))
                 .max()
-                .expect("entries is non-empty");
-            high - low
+                .unwrap_or_default();
+            high.saturating_sub(low)
         })
-        .expect("three axes");
+        .unwrap_or_default();
     let middle = entries.len() / 2;
     entries.select_nth_unstable_by_key(middle, |(_, aabb)| doubled_centroid(aabb, split_axis));
 
@@ -181,13 +205,26 @@ fn build_bvh_subtree(
     });
     let (left_entries, right_entries) = entries.split_at_mut(middle);
     build_bvh_subtree(nodes, left_entries, entry_offset);
-    let right_child = build_bvh_subtree(nodes, right_entries, entry_offset + middle);
-    nodes[node_index as usize].kind = BvhNodeKind::Internal { right_child };
+    let right_child = build_bvh_subtree(nodes, right_entries, entry_offset.saturating_add(middle));
+    if let Some(node) = nodes.get_mut(usize::try_from(node_index).unwrap_or_default()) {
+        node.kind = BvhNodeKind::Internal { right_child };
+    }
     node_index
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     /// The BVH's whole contract: a query returns EXACTLY the input indices a naive linear
@@ -201,8 +238,8 @@ mod tests {
         let mut lcg_state = 0x1234_5678_9abc_def0_u64;
         let mut next_in = |range: i64| -> i64 {
             lcg_state = lcg_state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             ((lcg_state >> 33) as i64).rem_euclid(range)
         };
 

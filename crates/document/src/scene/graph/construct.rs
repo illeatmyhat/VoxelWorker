@@ -1,3 +1,5 @@
+#![allow(clippy::wildcard_imports)]
+
 //! Scene construction, arena insertion, and reference [`Point`] management: the
 //! terse by-value constructors ([`Scene::from_nodes`], [`Scene::single_node`]), the
 //! [`NodeBuilder`] flatten-into-arena path, definition registration, and the Origin

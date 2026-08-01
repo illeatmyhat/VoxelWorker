@@ -48,54 +48,78 @@ pub struct LatticeAabb {
 
 impl LatticeAabb {
     /// A box spanning `[min, max)`.
-    pub fn new(min: [i64; 3], max: [i64; 3]) -> Self {
+    #[must_use]
+    pub const fn new(min: [i64; 3], max: [i64; 3]) -> Self {
         Self { min, max }
     }
 
     /// Whether the box is empty (owns no cell on some axis).
+    #[must_use]
     pub fn is_empty(&self) -> bool {
-        (0..3).any(|axis| self.min[axis] >= self.max[axis])
+        self.min
+            .iter()
+            .zip(self.max.iter())
+            .any(|(min, max)| min >= max)
     }
 
     /// Whether two half-open boxes overlap (share at least one integer cell). Touching
     /// faces (one box's `max` equals the other's `min`) do **not** overlap — the
     /// half-open convention. This is the per-axis separating-axis test, with strict
     /// inequalities because the boxes are half-open.
-    pub fn intersects(&self, other: &LatticeAabb) -> bool {
+    #[must_use]
+    pub fn intersects(&self, other: &Self) -> bool {
         if self.is_empty() || other.is_empty() {
             return false;
         }
-        (0..3).all(|axis| self.min[axis] < other.max[axis] && other.min[axis] < self.max[axis])
+        self.min
+            .iter()
+            .zip(self.max.iter())
+            .zip(other.min.iter().zip(other.max.iter()))
+            .all(|((self_min, self_max), (other_min, other_max))| {
+                self_min < other_max && other_min < self_max
+            })
     }
 
     /// Whether this box fully CONTAINS `other` (every cell of `other` lies inside
     /// `self`). Half-open: `self.min <= other.min` and `other.max <= self.max` on every
     /// axis. An empty `other` is never contained (it owns no cell to be contained).
-    pub fn contains_box(&self, other: &LatticeAabb) -> bool {
+    #[must_use]
+    pub fn contains_box(&self, other: &Self) -> bool {
         if other.is_empty() || self.is_empty() {
             return false;
         }
-        (0..3).all(|axis| self.min[axis] <= other.min[axis] && other.max[axis] <= self.max[axis])
+        self.min
+            .iter()
+            .zip(self.max.iter())
+            .zip(other.min.iter().zip(other.max.iter()))
+            .all(|((self_min, self_max), (other_min, other_max))| {
+                self_min <= other_min && other_max <= self_max
+            })
     }
 
     /// The smallest box containing both inputs (an empty box contributes nothing).
-    pub fn union(&self, other: &LatticeAabb) -> LatticeAabb {
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
         if self.is_empty() {
             return *other;
         }
         if other.is_empty() {
             return *self;
         }
-        LatticeAabb {
+        let [self_min_x, self_min_y, self_min_z] = self.min;
+        let [self_max_x, self_max_y, self_max_z] = self.max;
+        let [other_min_x, other_min_y, other_min_z] = other.min;
+        let [other_max_x, other_max_y, other_max_z] = other.max;
+        Self {
             min: [
-                self.min[0].min(other.min[0]),
-                self.min[1].min(other.min[1]),
-                self.min[2].min(other.min[2]),
+                self_min_x.min(other_min_x),
+                self_min_y.min(other_min_y),
+                self_min_z.min(other_min_z),
             ],
             max: [
-                self.max[0].max(other.max[0]),
-                self.max[1].max(other.max[1]),
-                self.max[2].max(other.max[2]),
+                self_max_x.max(other_max_x),
+                self_max_y.max(other_max_y),
+                self_max_z.max(other_max_z),
             ],
         }
     }
@@ -122,14 +146,16 @@ impl LatticeAabb {
 ///
 /// Both corners are `[i64; 3]` so a far-flung span (a coordinate scaled up by a large
 /// density) cannot silently truncate.
+#[must_use]
 pub fn enclosing_block_aabb(
     voxel_min: [i64; 3],
     voxel_max: [i64; 3],
     voxels_per_block: i64,
 ) -> ([i64; 3], [i64; 3]) {
     let density = voxels_per_block.max(1);
-    let low_block_corner = std::array::from_fn(|axis| voxel_min[axis].div_euclid(density));
-    let high_block_corner = std::array::from_fn(|axis| -((-voxel_max[axis]).div_euclid(density)));
+    let low_block_corner = voxel_min.map(|value| value.div_euclid(density));
+    let high_block_corner =
+        voxel_max.map(|value| value.saturating_neg().div_euclid(density).saturating_neg());
     (low_block_corner, high_block_corner)
 }
 
@@ -147,7 +173,8 @@ pub struct RealAabb {
 impl RealAabb {
     /// An empty/degenerate box that grows to fit points via [`RealAabb::expand`].
     /// `min` starts at +∞ and `max` at −∞ so the first expansion sets both.
-    pub fn empty() -> Self {
+    #[must_use]
+    pub const fn empty() -> Self {
         Self {
             min: Vec3::splat(f32::INFINITY),
             max: Vec3::splat(f32::NEG_INFINITY),

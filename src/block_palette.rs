@@ -24,10 +24,10 @@ use crate::thumbnail::ThumbnailRenderer;
 use assets::{BlockGroup, DecodedRgba};
 pub use ui::palette::{BlockPalette, PaletteTile};
 
-/// The shell's GPU host for the palette: it owns the wgpu resources the UI-facing
-/// [`BlockPalette`] cannot name (the thumbnail renderer, the texture keep-alives) and
-/// the scanned [`BlockGroup`]s used for per-face resolution, and it keeps them
-/// index-aligned with `ui.tiles` (see the module invariant).
+/// The shell's GPU host for the palette.
+///
+/// It owns the wgpu resources that the UI-facing [`BlockPalette`] cannot name, the scanned
+/// [`BlockGroup`]s used for per-face resolution, and the index alignment with `ui.tiles`.
 pub struct PaletteHost {
     /// The UI-facing palette state (tiles + status + click counter) — the half handed
     /// to `ui::panel::build_panel`.

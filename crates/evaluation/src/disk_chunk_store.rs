@@ -1,3 +1,21 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::similar_names,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::panic_in_result_fn,
+    clippy::too_long_first_doc_paragraph
+)]
+
 //! Disk-backed chunk store with bounded-RAM LRU eviction.
 //!
 //! [`crate::chunk_storage`] gives a compact, serde-serializable on-disk form for one
@@ -367,6 +385,8 @@ fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_lossless, clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::expect_used, clippy::float_cmp, clippy::indexing_slicing, clippy::items_after_statements, clippy::manual_midpoint, clippy::panic, clippy::redundant_clone, clippy::too_many_lines, clippy::unwrap_used)]
+
     use super::*;
     use crate::chunk_storage::{compress, decompress};
     use voxel_core::voxel::{Voxel, VoxelGrid};

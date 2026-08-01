@@ -7,10 +7,10 @@ const MATERIAL_TEXTURE_SIZE: u32 = 32;
 // removed with the earlier instanced mesher. The cuboid path uses its own
 // `CuboidUniforms`.)
 
-/// The visible layer band, in voxel Z-layer indices (Z-up: layers are
-/// Z-slices), passed to the mesh band clip. The band is INCLUSIVE on both ends:
-/// layers `[band_min, band_max]` render solid. `onion_depth` is the number of layers
-/// OUTSIDE the band that render ghosted (screen-door dither); `0` = a hard clip.
+/// The visible layer band in voxel Z-layer indices.
+///
+/// Layers `[band_min, band_max]` render solid. `onion_depth` controls the ghosted layers outside
+/// the band; zero produces a hard clip.
 ///
 /// Pass [`LayerBand::FULL`] (or any band whose `band_max >= grid_z - 1` and
 /// `band_min == 0`) to draw the whole model unclipped.
@@ -44,12 +44,10 @@ pub enum RegionRole {
     ClipToRegion,
 }
 
-/// The selected object's placed AABB the onion-fog band clip is confined to, in the
-/// **recentered voxel frame** the mesher emits vertices in — a voxel at absolute producer
-/// coord `a` sits at recentered `a − recenter_voxels`,
-/// so the two-layer mesher tests its `block_low_recentered` directly and the dense mesher
-/// tests `global_index + world_offset` (both the same world lattice). Half-open
-/// `[min, max)` per axis.
+/// The placed AABB that confines onion-fog clipping.
+///
+/// Coordinates use the recentered voxel frame emitted by the mesher. The bounds are half-open,
+/// `[min, max)` on each axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionClip {
     pub min: [i64; 3],
@@ -104,8 +102,9 @@ pub enum MaterialSource<'a> {
     Loaded(&'a wgpu::BindGroup),
 }
 
-/// Build the 6-layer face-material bind-group layout (M7): a `D2Array` texture
-/// (binding 0, one layer per cube face) + a sampler (binding 1). Both the
+/// Build the six-layer face-material bind-group layout.
+///
+/// Binding 0 is a `D2Array` texture with one layer per cube face; binding 1 is a sampler. Both
 /// procedural materials and a loaded VS block build a bind group of this shape,
 /// so every pipeline that samples it — the cuboid mesh pass and the brick
 /// raymarch pass alike — draws uniform and per-face materials
@@ -158,8 +157,9 @@ pub fn build_face_material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
     })
 }
 
-/// Upload six RGBA8 sRGB layers (one per cube face) as a single `D2Array`
-/// texture (nearest filter, clamp-to-edge, no mipmaps). Every layer must be the
+/// Upload six RGBA8 sRGB layers as one `D2Array` texture.
+///
+/// The texture uses nearest filtering, clamp-to-edge addressing, and no mipmaps. Every layer
 /// same `width`×`height`; callers that have per-face PNGs of differing sizes
 /// rescale to a common size first (see `block_texture::LoadedMaterial::from_faces`).
 ///
@@ -306,9 +306,10 @@ fn generate_plain_texture() -> Vec<u8> {
     pixels
 }
 
-/// The average RGBA color of a procedural material's texture — the
-/// representative palette color used by the `.vox` export (M8). A loaded VS
-/// block can supply its own average instead; this covers the procedural case.
+/// Compute the average RGBA color of a procedural material.
+///
+/// The result is the representative palette color used by the `.vox` export; a loaded block can
+/// supply its own average.
 pub fn procedural_material_average_color(material: MaterialChoice) -> [u8; 4] {
     let pixels = match material {
         MaterialChoice::Stone => generate_stone_texture(),
@@ -373,8 +374,9 @@ fn relative_material_base_colors(
     colors
 }
 
-/// Public access to the per-material relative base colors (step 3b) for the cuboid
-/// mesh path, so it modulates per-box material color. Returns each
+/// Return the per-material relative base colors for the cuboid mesh path.
+///
+/// Each color modulates per-box material color and is normalized against `bound`'s average.
 /// material's average color relative to `bound`'s average (the bound material's
 /// own slot is ~neutral white).
 pub fn relative_material_base_colors_public(
@@ -383,9 +385,9 @@ pub fn relative_material_base_colors_public(
     relative_material_base_colors(bound)
 }
 
-/// The grid-overlay tuning, originally authored for the instanced voxel pass
-/// (removed with the legacy mesher, #20) and now shared: both the cuboid mesh
-/// path and the brick raymarch path draw the position-based
+/// The shared grid-overlay tuning.
+///
+/// Both the cuboid mesh and brick raymarch paths draw the position-based
 /// grid overlay with the EXACT same colors/half-widths/alphas — keeping the
 /// merged box faces phase-aligned to the same per-voxel/per-block lines.
 #[derive(Debug, Clone, Copy)]
@@ -398,9 +400,9 @@ pub struct GridOverlayParams {
     pub block_line_alpha: f32,
 }
 
-/// The shared grid-overlay parameters (colors in LINEAR space, the same the
-/// voxel shader receives) — originally the instanced pass's, now reused
-/// verbatim by both the cuboid mesh path and the brick raymarch path.
+/// Return the shared grid-overlay parameters in linear color space.
+///
+/// Both the cuboid mesh and brick raymarch paths reuse these values verbatim.
 pub fn grid_overlay_params() -> GridOverlayParams {
     GridOverlayParams {
         voxel_line_color: srgb_hex_to_linear(VOXEL_LINE_COLOR_HEX),
@@ -412,8 +414,9 @@ pub fn grid_overlay_params() -> GridOverlayParams {
     }
 }
 
-/// Generate the three procedural material textures (Stone/Wood/Plain) as RGBA8
-/// sRGB pixel buffers, in `MaterialChoice` order, so the cuboid path's atlas
+/// Generate the three procedural material textures as RGBA8 sRGB buffers.
+///
+/// The buffers use `MaterialChoice` order so the cuboid path's atlas
 /// packer (`texture_atlas::MaterialAtlas`) packs the SAME procedural textures
 /// the instanced path once bound directly (removed with the legacy mesher, #20).
 pub fn procedural_material_pixels() -> [Vec<u8>; 3] {

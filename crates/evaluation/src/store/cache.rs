@@ -1,3 +1,22 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::must_use_candidate,
+    clippy::similar_names,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    clippy::panic_in_result_fn,
+    clippy::struct_field_names
+)]
+
 //! The residency + per-chunk resolve cache — the store proper.
 //!
 //! A per-chunk resolve cache: a cache keyed by

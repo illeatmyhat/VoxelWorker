@@ -12,6 +12,18 @@
 //!
 //! Run: `cargo test --release --test edit_cost_probe -- --ignored --nocapture`
 
+#![allow(
+    clippy::as_conversions,
+    clippy::cast_lossless,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::option_if_let_else,
+    clippy::panic,
+    clippy::too_many_lines
+)]
+
 use ui::panel::{Selection, SelectionTarget};
 
 /// The workspace selection a fixture arrives with: its first top-level node picked

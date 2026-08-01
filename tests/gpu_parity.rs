@@ -8,6 +8,28 @@
 //!
 //! Run: `cargo test --test gpu_parity` (skips loudly without a GPU adapter)
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::bool_to_int_with_if,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::option_if_let_else,
+    clippy::panic,
+    clippy::redundant_clone,
+    clippy::semicolon_if_nothing_returned,
+    clippy::suboptimal_flops,
+    clippy::too_many_lines,
+    clippy::unwrap_used
+)]
+
 mod common;
 
 use document::voxel::{GeometryParams, SdfShape};

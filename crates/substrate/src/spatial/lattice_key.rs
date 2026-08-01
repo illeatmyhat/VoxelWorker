@@ -27,8 +27,13 @@ pub const BITS_PER_AXIS: u32 = 21;
 pub const BIAS: i64 = 1 << (BITS_PER_AXIS - 1);
 
 /// Pack a signed integer 3-vector into a single sortable `u64` (z-major lexicographic
-/// order). Panics if a coordinate falls outside the ±2^(BITS_PER_AXIS - 1) biased lane —
+/// order). Panics if a coordinate falls outside the `±2^(BITS_PER_AXIS - 1)` biased lane —
 /// a silent wrap would alias two distinct coordinates onto one key.
+///
+/// # Panics
+///
+/// Panics when any coordinate is outside the representable biased lane.
+#[must_use]
 pub fn pack_lattice_key(coordinate: [i64; 3]) -> u64 {
     let mut packed = 0u64;
     // z fills the highest lane so integer order == (z, y, x) lexicographic order.
@@ -36,29 +41,40 @@ pub fn pack_lattice_key(coordinate: [i64; 3]) -> u64 {
         .iter()
         .enumerate()
     {
-        let biased = axis_value + BIAS;
+        let biased = axis_value.saturating_add(BIAS);
         assert!(
             (0..(1i64 << BITS_PER_AXIS)).contains(&biased),
             "lattice coordinate {axis_value} exceeds the {BITS_PER_AXIS}-bit biased lane"
         );
-        packed |= (biased as u64) << ((2 - lane) as u32 * BITS_PER_AXIS);
+        let shift = u32::try_from(2usize.saturating_sub(lane))
+            .unwrap_or_default()
+            .saturating_mul(BITS_PER_AXIS);
+        packed |= biased.cast_unsigned() << shift;
     }
     packed
 }
 
 /// Unpack a [`pack_lattice_key`] key back to its signed 3-vector.
+#[must_use]
 pub fn unpack_lattice_key(key: u64) -> [i64; 3] {
     let lane_mask = (1u64 << BITS_PER_AXIS) - 1;
-    let unpack_lane =
-        |lane: u32| -> i64 { ((key >> (lane * BITS_PER_AXIS)) & lane_mask) as i64 - BIAS };
+    let unpack_lane = |lane: u32| -> i64 {
+        ((key >> lane.saturating_mul(BITS_PER_AXIS)) & lane_mask)
+            .cast_signed()
+            .saturating_sub(BIAS)
+    };
     [unpack_lane(0), unpack_lane(1), unpack_lane(2)]
 }
 
 /// Split a `u64` key into its `[hi, lo]` pair of `u32` halves — the form a GPU (with no
 /// native `u64`) binary-searches. `hi` is the high 32 bits, `lo` the low 32; comparing
 /// `(hi, lo)` lexicographically reproduces the `u64` order.
+#[must_use]
 pub fn split_key_hi_lo(key: u64) -> [u32; 2] {
-    [(key >> 32) as u32, key as u32]
+    [
+        u32::try_from(key >> 32).unwrap_or_default(),
+        u32::try_from(key & u64::from(u32::MAX)).unwrap_or_default(),
+    ]
 }
 
 /// Kani bounded-model-checking proofs of the [`pack_lattice_key`] codec's two load-bearing
@@ -139,6 +155,17 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::all,
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::pedantic,
+        clippy::nursery,
+        clippy::unwrap_used
+    )]
     use super::*;
 
     #[test]

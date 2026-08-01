@@ -1,9 +1,9 @@
 use super::*;
 
-/// One mixed block's per-voxel cell-key tile: `edge³` render-cell keys (clean block id +
-/// overlay bit), block-local x-fastest — the sibling of [`BrickOccupancyTile`]. Only a block
-/// whose microblocks disagree on their cell key carries one; a uniform block's single key
-/// lives on its record.
+/// One mixed block's per-voxel cell-key tile.
+///
+/// It stores `edge³` render-cell keys (clean block id plus overlay bit) in block-local
+/// x-fastest order. Only a block whose microblocks disagree carries a tile.
 pub type BrickCellKeyTile = ValueTile<u16>;
 
 /// The cell key an AIR voxel of a mixed block's cell-key tile holds — a documented
@@ -48,11 +48,11 @@ pub const CLIPMAP_LEVEL_2_BLOCKS_PER_CELL: u32 = 64;
 /// the hierarchical DDA so a wide empty void skips in one 512-block stride.
 pub const CLIPMAP_LEVEL_3_BLOCKS_PER_CELL: u32 = 512;
 
-/// One clip-map occupancy level: cells of `blocks_per_cell` blocks per axis, each
-/// a packed cell key (the SAME 21-bit z-major packing as a brick record's block
-/// key, applied to the CELL coordinate = `floor_div(absolute_block,
-/// blocks_per_cell)`). `cell_keys` is sorted strictly ascending + unique — the
-/// order the in-shader binary search relies on, exactly like the record array.
+/// One clip-map occupancy level.
+///
+/// Each cell spans `blocks_per_cell` blocks per axis and stores a packed cell key using the
+/// same 21-bit z-major representation as brick records. `cell_keys` is sorted and unique for
+/// the in-shader binary search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipmapLevel {
     /// Cell edge in blocks (8 for L1, 64 for L2). Block-denominated.
@@ -172,9 +172,10 @@ impl ClipmapLevel {
     }
 }
 
-/// The three-level clip-map pyramid (L1 = 8-block cells, L2 = 64-block cells, L3
-/// = 512-block cells). A derived, rebuildable min-mip of the brick records — never
-/// truth. The DDA descends the levels coarsest-first (L3 → L2 → L1) via
+/// The three-level clip-map pyramid.
+///
+/// Its levels use 8-, 64-, and 512-block cells. The pyramid is derived from brick records and
+/// rebuilt as needed; the DDA visits it from coarsest to finest via
 /// [`Self::levels_coarse_to_fine`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipmapPyramid {
