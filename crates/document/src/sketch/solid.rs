@@ -863,6 +863,68 @@ impl SketchSolid {
         next
     }
 
+    /// Resolve a circle whose diameter endpoints are `first` and `second` without allocation.
+    pub fn two_point_circle_placement(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+    ) -> Result<PointCirclePlacement, PointCircleRefusal> {
+        let candidate =
+            parametric::sketch::two_point_circle_candidate(first.in_plane(), second.in_plane())
+                .map_err(PointCircleRefusal::Candidate)?;
+        canonical_point_circle(candidate)
+    }
+
+    /// Resolve the unique circle through three circumference points without allocation.
+    pub fn three_point_circle_placement(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+        third: SketchPoint,
+    ) -> Result<PointCirclePlacement, PointCircleRefusal> {
+        let candidate = parametric::sketch::three_point_circle_candidate(
+            first.in_plane(),
+            second.in_plane(),
+            third.in_plane(),
+        )
+        .map_err(PointCircleRefusal::Candidate)?;
+        canonical_point_circle(candidate)
+    }
+
+    /// Atomically append the circle whose diameter is defined by two points.
+    pub fn with_two_point_circle(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+    ) -> Result<(SketchSolid, EntityId), PointCircleRefusal> {
+        self.two_point_circle_placement(first, second)
+            .and_then(|placement| self.with_point_circle_placement(placement))
+    }
+
+    /// Atomically append the unique circle through three circumference points.
+    pub fn with_three_point_circle(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+        third: SketchPoint,
+    ) -> Result<(SketchSolid, EntityId), PointCircleRefusal> {
+        self.three_point_circle_placement(first, second, third)
+            .and_then(|placement| self.with_point_circle_placement(placement))
+    }
+
+    fn with_point_circle_placement(
+        &self,
+        placement: PointCirclePlacement,
+    ) -> Result<(SketchSolid, EntityId), PointCircleRefusal> {
+        let mut next = self.clone();
+        let circle = match next.sketch.point_at(placement.center) {
+            Some(center) => next.sketch.circle_about(center, placement.radius),
+            None => next.sketch.add_circle(placement.center, placement.radius),
+        }
+        .ok_or(PointCircleRefusal::CircleRefused)?;
+        Ok((next, circle))
+    }
+
     /// This producer with the circle `circle_id` deleted. Its construction center is pruned only
     /// when no remaining curve names it.
     pub fn with_circle_deleted(&self, circle_id: EntityId) -> SketchSolid {
@@ -1160,6 +1222,26 @@ impl SketchSolid {
     pub fn exceeds_voxel_cap(&self, context: EvaluationContext) -> bool {
         self.grid_voxel_count(context) > MAX_GRID_VOXELS
     }
+}
+
+fn canonical_point_circle(
+    candidate: parametric::sketch::CircleCandidate,
+) -> Result<PointCirclePlacement, PointCircleRefusal> {
+    let center = SketchPoint::try_from_continuous(candidate.center[0], candidate.center[1])
+        .map_err(|_| PointCircleRefusal::Unrepresentable)?;
+    const UPPER_EXCLUSIVE: f64 = -(i64::MIN as f64);
+    if !(0.0..UPPER_EXCLUSIVE).contains(&candidate.radius) || candidate.radius <= 0.0 {
+        return Err(PointCircleRefusal::Unrepresentable);
+    }
+    let radius = SketchLength::from_continuous(candidate.radius);
+    Ok(PointCirclePlacement {
+        candidate: parametric::sketch::CircleCandidate {
+            center: center.in_plane(),
+            radius: radius.value(),
+        },
+        center,
+        radius,
+    })
 }
 
 impl SketchSolid {

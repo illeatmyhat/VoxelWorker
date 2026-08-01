@@ -11,6 +11,61 @@ fn lone_circle(cx: i64, cy: i64, radius: i64) -> Sketch {
     Sketch::circle(PlaneAxis::Z, SketchPoint::new(cx, cy), radius)
 }
 
+#[test]
+fn two_point_circle_uses_the_span_as_its_diameter() {
+    let solid = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+    let placement = solid
+        .two_point_circle_placement(SketchPoint::new(-3, 2), SketchPoint::new(5, 2))
+        .unwrap();
+    assert!(placement.center.coincides(&SketchPoint::new(1, 2)));
+    assert!((placement.radius.value() - 4.0).abs() < 1e-12);
+    let (made, circle) = solid
+        .with_two_point_circle(SketchPoint::new(-3, 2), SketchPoint::new(5, 2))
+        .unwrap();
+    let stored = made
+        .sketch
+        .circles()
+        .iter()
+        .find(|item| item.id == circle)
+        .unwrap();
+    assert_eq!(
+        stored.center,
+        made.sketch.point_at(placement.center).unwrap()
+    );
+    assert!((stored.resolved_radius(ctx(16)) - placement.candidate.radius).abs() < 1e-12);
+}
+
+#[test]
+fn three_point_circle_preview_and_commit_share_the_canonical_circumcircle() {
+    let solid = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+    let points = [
+        SketchPoint::from_continuous(2.25, 1.5),
+        SketchPoint::from_continuous(-0.75, 4.125),
+        SketchPoint::from_continuous(-2.0, -1.25),
+    ];
+    let placement = solid
+        .three_point_circle_placement(points[0], points[1], points[2])
+        .unwrap();
+    let (made, circle) = solid
+        .with_three_point_circle(points[0], points[1], points[2])
+        .unwrap();
+    let stored = made
+        .sketch
+        .circles()
+        .iter()
+        .find(|item| item.id == circle)
+        .unwrap();
+    assert!(made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == stored.center)
+        .unwrap()
+        .at
+        .coincides(&placement.center));
+    assert!((stored.resolved_radius(ctx(16)) - placement.candidate.radius).abs() < 1e-12);
+}
+
 /// The headline: a circle bounds a region with no help from anything else. An arc has to meet
 /// other geometry before it encloses anything; a closed curve does not, which is the whole reason
 /// it is its own entity rather than a 360-degree bulge.

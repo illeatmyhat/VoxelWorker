@@ -135,6 +135,28 @@ pub struct CenterArcPlacement {
     pub candidate: parametric::sketch::CenterArcCandidate,
 }
 
+/// Why a point-defined circle could not become durable center-and-radius geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointCircleRefusal {
+    /// The continuous diameter/circumcircle construction is invalid.
+    Candidate(parametric::sketch::CircleCandidateError),
+    /// The solved center or radius lies outside canonical sketch scalar storage.
+    Unrepresentable,
+    /// A circle with the same center and radius already exists or storage refused it.
+    CircleRefused,
+}
+
+/// Exact canonical geometry shared by point-defined circle previews and commits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointCirclePlacement {
+    /// Canonical construction center.
+    pub center: SketchPoint,
+    /// Canonical free radius.
+    pub radius: SketchLength,
+    /// Continuous view of those same durable values.
+    pub candidate: parametric::sketch::CircleCandidate,
+}
+
 /// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
 /// Radius and center stay derived curve data; the persisted arc remains its endpoint ids plus
 /// intrinsic sweep.

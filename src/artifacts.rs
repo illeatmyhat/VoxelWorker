@@ -134,6 +134,8 @@ enum SketchToolConfig {
     ArcCenterEndpoints,
     ArcTangent,
     CircleCenterDiameter,
+    Circle2Point,
+    Circle3Point,
 }
 
 /// The persisted form of an armed constraint gesture.
@@ -1011,6 +1013,24 @@ mod tests {
                 .sketch_tool,
             SketchTool::ArcCenterEndpoints
         );
+    }
+
+    #[test]
+    fn point_circle_tools_survive_both_sides_of_the_tool_config_shim() {
+        for tool in [SketchTool::Circle2Point, SketchTool::Circle3Point] {
+            let mut state = distinctive_state();
+            state.sketch_tool = tool;
+            let json = Dump::from_state(&state)
+                .to_json()
+                .expect("serialize circle tool");
+            assert_eq!(
+                Dump::from_json(&json)
+                    .expect("deserialize circle tool")
+                    .into_state()
+                    .sketch_tool,
+                tool
+            );
+        }
     }
 
     /// The flattening is a format decision, so it is pinned as one. If the three parts ever

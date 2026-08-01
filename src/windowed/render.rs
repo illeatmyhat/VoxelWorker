@@ -365,6 +365,7 @@ impl WindowedState {
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
+            self.point_circle_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -375,6 +376,7 @@ impl WindowedState {
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
+            self.point_circle_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1657,6 +1659,18 @@ impl WindowedState {
         ) {
             return true;
         }
+        let point_circle_kind = point_circle_kind(self.panel_state.sketch_tool);
+        self.point_circle_gesture.retain_for_context(
+            point_circle_kind,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self.point_circle_gesture.blocks_enter(
+            point_circle_kind,
+            self.panel_state.armed_constraint.is_some(),
+        ) {
+            return true;
+        }
         let tangent_producer = self
             .panel_state
             .sketch_mode
@@ -1715,6 +1729,31 @@ impl WindowedState {
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
         if let center_arc::CenterArcEdit::Document(next) =
             self.center_arc_gesture.click(target, &producer, resolved)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance either point-defined circle grammar. All circumference picks stay transient until
+    /// the final click creates the center/radius circle in one edit.
+    pub(super) fn sketch_point_circle_click(
+        &mut self,
+        kind: point_circle::PointCircleKind,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.point_circle_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.point_circle_gesture.reset();
+            return;
+        };
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        if let point_circle::PointCircleEdit::Document(next) = self
+            .point_circle_gesture
+            .click(target, kind, &producer, resolved)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2096,6 +2135,7 @@ impl WindowedState {
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
+            self.point_circle_gesture.reset();
             self.sketch_edit_press = false;
             return false;
         }
@@ -2130,6 +2170,8 @@ impl WindowedState {
                 ui::panel::SketchTool::MidpointLine
                     | ui::panel::SketchTool::ArcCenterEndpoints
                     | ui::panel::SketchTool::ArcTangent
+                    | ui::panel::SketchTool::Circle2Point
+                    | ui::panel::SketchTool::Circle3Point
             )
             && self.panel_state.armed_constraint.is_none();
         let center_arc_live = self.center_arc_gesture.cancel_for_escape(
@@ -2140,11 +2182,16 @@ impl WindowedState {
             self.panel_state.sketch_tool == ui::panel::SketchTool::ArcTangent,
             self.panel_state.armed_constraint.is_some(),
         );
+        let point_circle_live = self.point_circle_gesture.cancel_for_escape(
+            point_circle_kind(self.panel_state.sketch_tool),
+            self.panel_state.armed_constraint.is_some(),
+        );
         let live = constraint_picks
             || line_live
             || midpoint_line_live
             || center_arc_live
             || tangent_arc_live
+            || point_circle_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2181,6 +2228,7 @@ impl WindowedState {
         self.midpoint_line_gesture.reset();
         self.tangent_arc_gesture.reset();
         self.center_arc_gesture.reset();
+        self.point_circle_gesture.reset();
         true
     }
 
@@ -2232,6 +2280,7 @@ impl WindowedState {
                     self.midpoint_line_gesture.reset();
                     self.tangent_arc_gesture.reset();
                     self.center_arc_gesture.reset();
+                    self.point_circle_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2242,6 +2291,7 @@ impl WindowedState {
                     self.midpoint_line_gesture.reset();
                     self.tangent_arc_gesture.reset();
                     self.center_arc_gesture.reset();
+                    self.point_circle_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -3143,6 +3193,7 @@ impl WindowedState {
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
+            self.point_circle_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3161,6 +3212,7 @@ impl WindowedState {
             self.midpoint_line_gesture.reset();
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
+            self.point_circle_gesture.reset();
             return;
         };
 
@@ -3182,6 +3234,11 @@ impl WindowedState {
             self.panel_state.armed_constraint.is_some(),
             Some(target),
             center_arc_producer.as_ref(),
+        );
+        self.point_circle_gesture.retain_for_context(
+            point_circle_kind(tool),
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
         );
         let tangent_producer = self.sketch_node_state(target).map(|(producer, _)| producer);
         self.tangent_arc_gesture.retain_for_context(
@@ -3343,7 +3400,9 @@ impl WindowedState {
             | ui::panel::SketchTool::Rectangle
             | ui::panel::SketchTool::ThreePointArc
             | ui::panel::SketchTool::ArcCenterEndpoints
-            | ui::panel::SketchTool::CircleCenterDiameter => None,
+            | ui::panel::SketchTool::CircleCenterDiameter
+            | ui::panel::SketchTool::Circle2Point
+            | ui::panel::SketchTool::Circle3Point => None,
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -3777,6 +3836,32 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::Circle2Point | ui::panel::SketchTool::Circle3Point => {
+                if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
+                    point_circle_kind(tool),
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                ) {
+                    let placement = self
+                        .sketch_target_at(cursor_x, cursor_y)
+                        .and_then(|cursor| {
+                            self.point_circle_gesture
+                                .placement(target, kind, &producer, cursor)
+                        });
+                    if let Some(placement) = placement {
+                        let ring = circle_ring(
+                            placement.candidate.center,
+                            placement.candidate.radius,
+                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                        );
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -3856,6 +3941,22 @@ fn circle_gesture_is_current(
     pending_target: Option<document::scene::NodeId>,
 ) -> bool {
     tool == ui::panel::SketchTool::CircleCenterDiameter && pending_target == Some(target)
+}
+
+fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointCircleKind> {
+    match tool {
+        ui::panel::SketchTool::Circle2Point => Some(point_circle::PointCircleKind::TwoPoint),
+        ui::panel::SketchTool::Circle3Point => Some(point_circle::PointCircleKind::ThreePoint),
+        ui::panel::SketchTool::Select
+        | ui::panel::SketchTool::AddPoint
+        | ui::panel::SketchTool::Line
+        | ui::panel::SketchTool::MidpointLine
+        | ui::panel::SketchTool::Rectangle
+        | ui::panel::SketchTool::ThreePointArc
+        | ui::panel::SketchTool::ArcCenterEndpoints
+        | ui::panel::SketchTool::ArcTangent
+        | ui::panel::SketchTool::CircleCenterDiameter => None,
+    }
 }
 
 /// The directional marquee predicate for the projected closed circle ring.

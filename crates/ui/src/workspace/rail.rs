@@ -116,6 +116,16 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         "Circle — click center, then perimeter",
         Some(SketchTool::CircleCenterDiameter),
     ),
+    (
+        Icon::Circle2Point,
+        "2-Point Circle — click opposite diameter endpoints",
+        Some(SketchTool::Circle2Point),
+    ),
+    (
+        Icon::Circle3Point,
+        "3-Point Circle — click three circumference points",
+        Some(SketchTool::Circle3Point),
+    ),
 ];
 
 /// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch
@@ -537,6 +547,20 @@ mod tests {
                         "Tangent Arc — click a line/arc endpoint, then the other endpoint",
                         Some(SketchTool::ArcTangent)
                     )
+                ]
+            )
+        }));
+    }
+
+    #[test]
+    fn sketch_rail_places_point_circles_after_center_diameter_circle() {
+        assert!(SKETCH_TOOLS.windows(3).any(|items| {
+            matches!(
+                items,
+                [
+                    (_, _, Some(SketchTool::CircleCenterDiameter)),
+                    (Icon::Circle2Point, _, Some(SketchTool::Circle2Point)),
+                    (Icon::Circle3Point, _, Some(SketchTool::Circle3Point))
                 ]
             )
         }));

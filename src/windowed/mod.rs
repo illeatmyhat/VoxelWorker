@@ -51,6 +51,7 @@ mod geometry;
 mod line;
 mod midpoint_line;
 mod palette;
+mod point_circle;
 mod render;
 mod sketch_target;
 mod tangent_arc;
@@ -431,6 +432,8 @@ struct WindowedState {
     /// Center Point Arc's center and optional start. Both are interaction-transient; completion
     /// authors the whole arc in one edit.
     center_arc_gesture: center_arc::CenterArcGesture,
+    /// Shared interaction-transient picks for Two-Point and Three-Point Circle.
+    point_circle_gesture: point_circle::PointCircleGesture,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -825,6 +828,7 @@ impl WindowedState {
             midpoint_line_gesture: midpoint_line::MidpointLineGesture::default(),
             tangent_arc_gesture: tangent_arc::TangentArcGesture::default(),
             center_arc_gesture: center_arc::CenterArcGesture::default(),
+            point_circle_gesture: point_circle::PointCircleGesture::default(),
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1020,6 +1024,7 @@ impl WindowedState {
             midpoint_line_gesture: _,
             tangent_arc_gesture: _,
             center_arc_gesture: _,
+            point_circle_gesture: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,

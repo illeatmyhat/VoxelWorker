@@ -22,7 +22,9 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::ArcCenterEndpoints
         | ui::panel::SketchTool::ArcTangent
         | ui::panel::SketchTool::ThreePointArc
-        | ui::panel::SketchTool::CircleCenterDiameter => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::CircleCenterDiameter
+        | ui::panel::SketchTool::Circle2Point
+        | ui::panel::SketchTool::Circle3Point => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
         ui::panel::SketchTool::Rectangle => SketchPointerRoute::RectangleDrag,
     }
@@ -326,6 +328,20 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::CircleCenterDiameter => {
                                         state.sketch_circle_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::Circle2Point => {
+                                        state.sketch_point_circle_click(
+                                            point_circle::PointCircleKind::TwoPoint,
+                                            up_x,
+                                            up_y,
+                                        );
+                                    }
+                                    ui::panel::SketchTool::Circle3Point => {
+                                        state.sketch_point_circle_click(
+                                            point_circle::PointCircleKind::ThreePoint,
+                                            up_x,
+                                            up_y,
+                                        );
                                     }
                                     ui::panel::SketchTool::MidpointLine => {
                                         state.sketch_midpoint_line_click(up_x, up_y);
@@ -773,6 +789,14 @@ mod tests {
         );
         assert_eq!(
             sketch_pointer_route(ui::panel::SketchTool::ArcTangent),
+            SketchPointerRoute::StationaryEdit
+        );
+        assert_eq!(
+            sketch_pointer_route(ui::panel::SketchTool::Circle2Point),
+            SketchPointerRoute::StationaryEdit
+        );
+        assert_eq!(
+            sketch_pointer_route(ui::panel::SketchTool::Circle3Point),
             SketchPointerRoute::StationaryEdit
         );
         assert_eq!(

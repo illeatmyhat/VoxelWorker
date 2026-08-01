@@ -324,6 +324,10 @@ pub enum SketchTool {
     ArcTangent,
     /// Draw a circle: click its center, then a point on its perimeter.
     CircleCenterDiameter,
+    /// Draw a circle from two opposite diameter endpoints.
+    Circle2Point,
+    /// Draw the unique circle through three circumference points.
+    Circle3Point,
 }
 
 /// The floating Signal **display stack**'s viewer state.
