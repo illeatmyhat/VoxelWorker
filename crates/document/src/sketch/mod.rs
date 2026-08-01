@@ -157,6 +157,24 @@ pub struct PointCirclePlacement {
     pub candidate: parametric::sketch::CircleCandidate,
 }
 
+/// Why a point-defined rectangle could not be appended atomically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RectangleRefusal {
+    /// The continuous construction is degenerate or non-finite.
+    Candidate(parametric::sketch::RectangleCandidateError),
+    /// A solved corner cannot be represented distinctly in canonical point storage.
+    Unrepresentable,
+    /// Every boundary edge already exists, so the command would change nothing.
+    AlreadyExists,
+}
+
+/// Canonical boundary corners shared by rectangle preview and commit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RectanglePlacement {
+    /// Boundary-ordered corners, with the final edge closing index 3 back to index 0.
+    pub corners: [SketchPoint; 4],
+}
+
 /// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
 /// Radius and center stay derived curve data; the persisted arc remains its endpoint ids plus
 /// intrinsic sweep.

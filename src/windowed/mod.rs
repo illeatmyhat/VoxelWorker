@@ -55,6 +55,7 @@ mod point_circle;
 mod render;
 mod sketch_target;
 mod tangent_arc;
+mod three_point_rectangle;
 mod view_cube;
 mod workers;
 
@@ -434,6 +435,8 @@ struct WindowedState {
     center_arc_gesture: center_arc::CenterArcGesture,
     /// Shared interaction-transient picks for Two-Point and Three-Point Circle.
     point_circle_gesture: point_circle::PointCircleGesture,
+    /// Three-Point Rectangle's transient base endpoints.
+    three_point_rectangle_gesture: three_point_rectangle::ThreePointRectangleGesture,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -829,6 +832,8 @@ impl WindowedState {
             tangent_arc_gesture: tangent_arc::TangentArcGesture::default(),
             center_arc_gesture: center_arc::CenterArcGesture::default(),
             point_circle_gesture: point_circle::PointCircleGesture::default(),
+            three_point_rectangle_gesture:
+                three_point_rectangle::ThreePointRectangleGesture::default(),
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1025,6 +1030,7 @@ impl WindowedState {
             tangent_arc_gesture: _,
             center_arc_gesture: _,
             point_circle_gesture: _,
+            three_point_rectangle_gesture: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,

@@ -24,9 +24,12 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::ThreePointArc
         | ui::panel::SketchTool::CircleCenterDiameter
         | ui::panel::SketchTool::Circle2Point
-        | ui::panel::SketchTool::Circle3Point => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::Circle3Point
+        | ui::panel::SketchTool::Rectangle3Point => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
-        ui::panel::SketchTool::Rectangle => SketchPointerRoute::RectangleDrag,
+        ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
+            SketchPointerRoute::RectangleDrag
+        }
     }
 }
 
@@ -343,6 +346,9 @@ impl ApplicationHandler for App {
                                             up_y,
                                         );
                                     }
+                                    ui::panel::SketchTool::Rectangle3Point => {
+                                        state.sketch_three_point_rectangle_click(up_x, up_y);
+                                    }
                                     ui::panel::SketchTool::MidpointLine => {
                                         state.sketch_midpoint_line_click(up_x, up_y);
                                     }
@@ -354,7 +360,8 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Line
-                                    | ui::panel::SketchTool::Rectangle => {}
+                                    | ui::panel::SketchTool::Rectangle
+                                    | ui::panel::SketchTool::RectangleCenterCorner => {}
                                 }
                             }
                         }
@@ -798,6 +805,14 @@ mod tests {
         assert_eq!(
             sketch_pointer_route(ui::panel::SketchTool::Circle3Point),
             SketchPointerRoute::StationaryEdit
+        );
+        assert_eq!(
+            sketch_pointer_route(ui::panel::SketchTool::Rectangle3Point),
+            SketchPointerRoute::StationaryEdit
+        );
+        assert_eq!(
+            sketch_pointer_route(ui::panel::SketchTool::RectangleCenterCorner),
+            SketchPointerRoute::RectangleDrag
         );
         assert_eq!(
             sketch_pointer_route(ui::panel::SketchTool::Line),

@@ -597,6 +597,73 @@ impl SketchSolid {
         next
     }
 
+    /// Resolve a center-defined axis-aligned rectangle without allocating entities.
+    pub fn center_rectangle_placement(
+        &self,
+        center: SketchPoint,
+        corner: SketchPoint,
+    ) -> Result<RectanglePlacement, RectangleRefusal> {
+        let candidate =
+            parametric::sketch::center_rectangle_candidate(center.in_plane(), corner.in_plane())
+                .map_err(RectangleRefusal::Candidate)?;
+        canonical_rectangle(candidate)
+    }
+
+    /// Resolve an oriented three-point rectangle without allocating entities.
+    pub fn three_point_rectangle_placement(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<RectanglePlacement, RectangleRefusal> {
+        let candidate = parametric::sketch::three_point_rectangle_candidate(
+            first.in_plane(),
+            second.in_plane(),
+            width_point.in_plane(),
+        )
+        .map_err(RectangleRefusal::Candidate)?;
+        canonical_rectangle(candidate)
+    }
+
+    /// Atomically append a center-defined axis-aligned rectangle.
+    pub fn with_center_rectangle(
+        &self,
+        center: SketchPoint,
+        corner: SketchPoint,
+    ) -> Result<SketchSolid, RectangleRefusal> {
+        self.center_rectangle_placement(center, corner)
+            .and_then(|placement| self.with_rectangle_placement(&placement))
+    }
+
+    /// Atomically append an oriented three-point rectangle.
+    pub fn with_three_point_rectangle(
+        &self,
+        first: SketchPoint,
+        second: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<SketchSolid, RectangleRefusal> {
+        self.three_point_rectangle_placement(first, second, width_point)
+            .and_then(|placement| self.with_rectangle_placement(&placement))
+    }
+
+    fn with_rectangle_placement(
+        &self,
+        placement: &RectanglePlacement,
+    ) -> Result<SketchSolid, RectangleRefusal> {
+        let mut next = self.clone();
+        let ids = placement.corners.map(|corner| {
+            next.sketch
+                .point_at(corner)
+                .unwrap_or_else(|| next.sketch.add_free_point(corner))
+        });
+        for index in 0..4 {
+            next.sketch.connect(ids[index], ids[(index + 1) % 4]);
+        }
+        (next != *self)
+            .then_some(next)
+            .ok_or(RectangleRefusal::AlreadyExists)
+    }
+
     /// This producer with the point `point_id` deleted, CASCADING to its incident segments:
     /// deleting a point removes its edges and nothing else, and does NOT reclose the loop.
     /// No-op if `point_id` is unknown. Pure — returns a new producer. A loop that
@@ -1242,6 +1309,28 @@ fn canonical_point_circle(
         center,
         radius,
     })
+}
+
+fn canonical_rectangle(
+    candidate: parametric::sketch::RectangleCandidate,
+) -> Result<RectanglePlacement, RectangleRefusal> {
+    let corners = candidate
+        .corners
+        .map(|corner| SketchPoint::try_from_continuous(corner[0], corner[1]))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RectangleRefusal::Unrepresentable)?;
+    let corners: [SketchPoint; 4] = corners
+        .try_into()
+        .map_err(|_| RectangleRefusal::Unrepresentable)?;
+    if corners
+        .iter()
+        .enumerate()
+        .any(|(index, corner)| corner.coincides(&corners[(index + 1) % 4]))
+    {
+        return Err(RectangleRefusal::Unrepresentable);
+    }
+    Ok(RectanglePlacement { corners })
 }
 
 impl SketchSolid {

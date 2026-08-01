@@ -130,6 +130,8 @@ enum SketchToolConfig {
     Line,
     MidpointLine,
     Rectangle,
+    Rectangle3Point,
+    RectangleCenterCorner,
     ThreePointArc,
     ArcCenterEndpoints,
     ArcTangent,
@@ -1026,6 +1028,27 @@ mod tests {
             assert_eq!(
                 Dump::from_json(&json)
                     .expect("deserialize circle tool")
+                    .into_state()
+                    .sketch_tool,
+                tool
+            );
+        }
+    }
+
+    #[test]
+    fn rectangle_tools_survive_both_sides_of_the_tool_config_shim() {
+        for tool in [
+            SketchTool::Rectangle3Point,
+            SketchTool::RectangleCenterCorner,
+        ] {
+            let mut state = distinctive_state();
+            state.sketch_tool = tool;
+            let json = Dump::from_state(&state)
+                .to_json()
+                .expect("serialize rectangle tool");
+            assert_eq!(
+                Dump::from_json(&json)
+                    .expect("deserialize rectangle tool")
                     .into_state()
                     .sketch_tool,
                 tool

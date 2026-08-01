@@ -366,6 +366,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.three_point_rectangle_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -377,6 +378,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.three_point_rectangle_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1671,6 +1673,18 @@ impl WindowedState {
         ) {
             return true;
         }
+        self.three_point_rectangle_gesture.retain_for_context(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::Rectangle3Point,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self.three_point_rectangle_gesture.blocks_enter(
+            self.panel_state.sketch_mode.is_some()
+                && self.panel_state.sketch_tool == ui::panel::SketchTool::Rectangle3Point,
+            self.panel_state.armed_constraint.is_some(),
+        ) {
+            return true;
+        }
         let tangent_producer = self
             .panel_state
             .sketch_mode
@@ -1754,6 +1768,24 @@ impl WindowedState {
         if let point_circle::PointCircleEdit::Document(next) = self
             .point_circle_gesture
             .click(target, kind, &producer, resolved)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    pub(super) fn sketch_three_point_rectangle_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.three_point_rectangle_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.three_point_rectangle_gesture.reset();
+            return;
+        };
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        if let three_point_rectangle::ThreePointRectangleEdit::Document(next) = self
+            .three_point_rectangle_gesture
+            .click(target, &producer, resolved)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -1909,8 +1941,14 @@ impl WindowedState {
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
-        let next = producer.with_rectangle(anchor, corner);
-        if next != producer {
+        let next = match self.panel_state.sketch_tool {
+            ui::panel::SketchTool::Rectangle => Some(producer.with_rectangle(anchor, corner)),
+            ui::panel::SketchTool::RectangleCenterCorner => {
+                producer.with_center_rectangle(anchor, corner).ok()
+            }
+            _ => None,
+        };
+        if let Some(next) = next.filter(|next| *next != producer) {
             self.commit_sketch_profile_edit(target, next);
         }
     }
@@ -2136,6 +2174,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.three_point_rectangle_gesture.reset();
             self.sketch_edit_press = false;
             return false;
         }
@@ -2172,6 +2211,7 @@ impl WindowedState {
                     | ui::panel::SketchTool::ArcTangent
                     | ui::panel::SketchTool::Circle2Point
                     | ui::panel::SketchTool::Circle3Point
+                    | ui::panel::SketchTool::Rectangle3Point
             )
             && self.panel_state.armed_constraint.is_none();
         let center_arc_live = self.center_arc_gesture.cancel_for_escape(
@@ -2186,12 +2226,17 @@ impl WindowedState {
             point_circle_kind(self.panel_state.sketch_tool),
             self.panel_state.armed_constraint.is_some(),
         );
+        let three_point_rectangle_live = self.three_point_rectangle_gesture.cancel_for_escape(
+            self.panel_state.sketch_tool == ui::panel::SketchTool::Rectangle3Point,
+            self.panel_state.armed_constraint.is_some(),
+        );
         let live = constraint_picks
             || line_live
             || midpoint_line_live
             || center_arc_live
             || tangent_arc_live
             || point_circle_live
+            || three_point_rectangle_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2229,6 +2274,7 @@ impl WindowedState {
         self.tangent_arc_gesture.reset();
         self.center_arc_gesture.reset();
         self.point_circle_gesture.reset();
+        self.three_point_rectangle_gesture.reset();
         true
     }
 
@@ -2281,6 +2327,7 @@ impl WindowedState {
                     self.tangent_arc_gesture.reset();
                     self.center_arc_gesture.reset();
                     self.point_circle_gesture.reset();
+                    self.three_point_rectangle_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2292,6 +2339,7 @@ impl WindowedState {
                     self.tangent_arc_gesture.reset();
                     self.center_arc_gesture.reset();
                     self.point_circle_gesture.reset();
+                    self.three_point_rectangle_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -3194,6 +3242,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.three_point_rectangle_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3213,6 +3262,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.three_point_rectangle_gesture.reset();
             return;
         };
 
@@ -3240,6 +3290,11 @@ impl WindowedState {
             self.panel_state.armed_constraint.is_some(),
             Some(target),
         );
+        self.three_point_rectangle_gesture.retain_for_context(
+            tool == ui::panel::SketchTool::Rectangle3Point,
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
         let tangent_producer = self.sketch_node_state(target).map(|(producer, _)| producer);
         self.tangent_arc_gesture.retain_for_context(
             tool == ui::panel::SketchTool::ArcTangent,
@@ -3250,7 +3305,10 @@ impl WindowedState {
         if tool == ui::panel::SketchTool::Line && self.panel_state.armed_constraint.is_none() {
             self.validate_line_gesture(target);
         }
-        if tool != ui::panel::SketchTool::Rectangle {
+        if !matches!(
+            tool,
+            ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner
+        ) {
             self.sketch_rect_anchor = None;
         }
         if tool != ui::panel::SketchTool::Select {
@@ -3398,6 +3456,8 @@ impl WindowedState {
             | ui::panel::SketchTool::Line
             | ui::panel::SketchTool::MidpointLine
             | ui::panel::SketchTool::Rectangle
+            | ui::panel::SketchTool::Rectangle3Point
+            | ui::panel::SketchTool::RectangleCenterCorner
             | ui::panel::SketchTool::ThreePointArc
             | ui::panel::SketchTool::ArcCenterEndpoints
             | ui::panel::SketchTool::CircleCenterDiameter
@@ -3743,6 +3803,68 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::RectangleCenterCorner => {
+                if let (Some(anchor), Some((producer, _)), Some((cursor_x, cursor_y))) = (
+                    self.sketch_rect_anchor,
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                ) {
+                    if let Some(corner) = self.sketch_target_at(cursor_x, cursor_y) {
+                        if let Ok(placement) =
+                            producer.center_rectangle_placement(anchor, corner.at)
+                        {
+                            let mut ring: Vec<[f64; 2]> = placement
+                                .corners
+                                .iter()
+                                .map(document::sketch::SketchPoint::in_plane)
+                                .collect();
+                            ring.push(placement.corners[0].in_plane());
+                            let projected: Vec<egui::Pos2> =
+                                ring.iter().copied().filter_map(snapped_screen).collect();
+                            if projected.len() == ring.len() {
+                                self.sketch_draw_preview = projected;
+                            }
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::Rectangle3Point => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(cursor)) = (
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                    self.last_cursor_position
+                        .and_then(|(x, y)| self.sketch_target_at(x, y)),
+                ) {
+                    let ring = if let Some(placement) = self
+                        .three_point_rectangle_gesture
+                        .placement(target, &producer, cursor)
+                    {
+                        let mut ring: Vec<[f64; 2]> = placement
+                            .corners
+                            .iter()
+                            .map(document::sketch::SketchPoint::in_plane)
+                            .collect();
+                        ring.push(placement.corners[0].in_plane());
+                        Some(ring)
+                    } else {
+                        self.three_point_rectangle_gesture.guide(target).and_then(
+                            |(first, second)| {
+                                second.is_none().then_some(vec![
+                                    first.in_plane(),
+                                    self.sketch_target_at(cursor_x, cursor_y)?.at.in_plane(),
+                                ])
+                            },
+                        )
+                    };
+                    if let Some(ring) = ring {
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::Select => {
                 // Slice 3: the marquee rubber band, once the press travels past the click
                 // threshold. Direction is read LIVE from the cursor, so the style flips
@@ -3952,6 +4074,8 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::Line
         | ui::panel::SketchTool::MidpointLine
         | ui::panel::SketchTool::Rectangle
+        | ui::panel::SketchTool::Rectangle3Point
+        | ui::panel::SketchTool::RectangleCenterCorner
         | ui::panel::SketchTool::ThreePointArc
         | ui::panel::SketchTool::ArcCenterEndpoints
         | ui::panel::SketchTool::ArcTangent

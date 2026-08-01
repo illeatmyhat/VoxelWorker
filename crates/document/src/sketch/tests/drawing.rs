@@ -15,6 +15,54 @@ fn empty_solid() -> SketchSolid {
 }
 
 #[test]
+fn center_rectangle_preview_and_commit_share_reflected_corners() {
+    let solid = empty_solid();
+    let center = SketchPoint::from_continuous(2.5, 3.25);
+    let corner = SketchPoint::from_continuous(5.75, 8.0);
+    let placement = solid.center_rectangle_placement(center, corner).unwrap();
+    let made = solid.with_center_rectangle(center, corner).unwrap();
+    assert_eq!(made.sketch.segments().len(), 4);
+    for point in placement.corners {
+        assert!(made.sketch.point_at(point).is_some());
+    }
+    let a = placement.corners[0].in_plane();
+    let c = placement.corners[2].in_plane();
+    assert!(((a[0] + c[0]) / 2.0 - center.in_plane()[0]).abs() < 1e-6);
+    assert!(((a[1] + c[1]) / 2.0 - center.in_plane()[1]).abs() < 1e-6);
+}
+
+#[test]
+fn three_point_rectangle_projects_width_and_commits_atomically() {
+    let solid = empty_solid();
+    let placement = solid
+        .three_point_rectangle_placement(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(3, 4),
+            SketchPoint::new(0, 5),
+        )
+        .unwrap();
+    let made = solid
+        .with_three_point_rectangle(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(3, 4),
+            SketchPoint::new(0, 5),
+        )
+        .unwrap();
+    assert_eq!(made.sketch.points().len(), 4);
+    assert_eq!(made.sketch.segments().len(), 4);
+    for point in placement.corners {
+        assert!(made.sketch.point_at(point).is_some());
+    }
+    let base = [3.0, 4.0];
+    let side = [
+        placement.corners[3].in_plane()[0] - placement.corners[0].in_plane()[0],
+        placement.corners[3].in_plane()[1] - placement.corners[0].in_plane()[1],
+    ];
+    assert!(base[0] * side[0] + base[1] * side[1] < 1e-5);
+    assert!(solid.sketch.points().is_empty(), "source remains untouched");
+}
+
+#[test]
 fn center_arc_projects_the_end_direction_and_keeps_the_center_derived() {
     let solid = empty_solid();
     let center = SketchPoint::new(0, 0);

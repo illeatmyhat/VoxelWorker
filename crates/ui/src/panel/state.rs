@@ -312,6 +312,10 @@ pub enum SketchTool {
     /// Draw a rectangle: press one corner, drag, release at the opposite corner to
     /// append the closed four-segment loop. A degenerate (zero-span) drag draws nothing.
     Rectangle,
+    /// Draw an oriented rectangle from a base edge and perpendicular-width pick.
+    Rectangle3Point,
+    /// Draw an axis-aligned rectangle from its center and one corner.
+    RectangleCenterCorner,
     /// Draw a 3-point arc: click the start, the end, then a point the arc passes THROUGH. The
     /// through-point is consumed — the stored form is the two endpoints plus the solved included
     /// angle.

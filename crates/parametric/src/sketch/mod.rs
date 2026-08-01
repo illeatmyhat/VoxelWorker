@@ -8,6 +8,7 @@ mod circle;
 mod curve;
 mod midpoint_line;
 mod model;
+mod rectangle;
 mod solve;
 mod symmetry;
 mod tangent;
@@ -23,6 +24,10 @@ pub use midpoint_line::{
     midpoint_line_candidate, MidpointLineCandidate, MidpointLineCandidateError,
 };
 pub use model::{SolveOutcome, SolveReport};
+pub use rectangle::{
+    center_rectangle_candidate, three_point_rectangle_candidate, RectangleCandidate,
+    RectangleCandidateError,
+};
 pub use solve::{
     concentric_center, Analysis, ArcId, BuildError, CircleId, ConstraintId, CurrentValidation,
     Diagnostics, DragOutcome, ParameterId, ParameterKind, ParameterValue, PointId, Problem,
