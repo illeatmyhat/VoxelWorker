@@ -537,6 +537,44 @@ fn set_sketch_tangent_round_trips() {
 }
 
 #[test]
+fn set_sketch_concentric_json_dispatch_undo_redo_round_trips() {
+    let mut scene = sketch_then_tool_scene();
+    let target = scene.roots[0];
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(2))
+        .expect("first circle");
+    let second = sketch
+        .add_circle(SketchPoint::new(8, 3), SketchLength::new(6))
+        .expect("second circle");
+    let constraint = sketch
+        .add_constraint(
+            ConstraintKind::concentric(SketchCurve::Circle(second), SketchCurve::Circle(first)),
+            evaluation_context_from_density(16).expect("valid density"),
+        )
+        .expect("concentric");
+    let intent = Intent::SetSketch {
+        target,
+        producer: SketchSolid::extrude(sketch, 3),
+    };
+    let serialized = serde_json::to_string(&intent).expect("serialize");
+    assert!(serialized.contains("Concentric"));
+    let replayed: Intent = serde_json::from_str(&serialized).expect("deserialize");
+    let Intent::SetSketch { producer, .. } = &replayed else {
+        panic!("SetSketch")
+    };
+    assert_eq!(producer.sketch.constraints()[0].id, constraint);
+    assert!(matches!(
+        producer.sketch.constraints()[0].kind,
+        ConstraintKind::Concentric {
+            first: SketchCurve::Circle(a),
+            second: SketchCurve::Circle(b)
+        } if a < b
+    ));
+    assert_round_trips(&mut scene, replayed);
+}
+
+#[test]
 fn set_sketch_revolve_round_trips() {
     // A SetSketch carrying a REVOLVE producer round-trips: undo restores the prior
     // producer byte-for-byte, redo re-applies the revolve. Proves the dispatch /

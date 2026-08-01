@@ -2240,3 +2240,414 @@ fn fixed_block_radius_tangent_retargets_from_density_16_to_32_without_losing_aut
     assert!(sketch.circles()[0].radius.fixed_source().is_some());
     assert_eq!(sketch.circles()[0].resolved_radius(ctx(32)), 32.0);
 }
+
+fn add_test_arc(sketch: &mut Sketch, center: [i64; 2]) -> EntityId {
+    let from = sketch.add_free_point(SketchPoint::new(center[0] - 3, center[1]));
+    let to = sketch.add_free_point(SketchPoint::new(center[0] + 3, center[1]));
+    sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(180))
+        .expect("arc")
+}
+
+#[test]
+fn concentric_solves_every_document_circular_pair() {
+    for (first_arc, second_arc) in [(true, true), (true, false), (false, false)] {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let first = if first_arc {
+            SketchCurve::Arc(add_test_arc(&mut sketch, [0, 0]))
+        } else {
+            SketchCurve::Circle(
+                sketch
+                    .add_circle(SketchPoint::new(0, 0), SketchLength::new(2))
+                    .expect("circle"),
+            )
+        };
+        let second = if second_arc {
+            SketchCurve::Arc(add_test_arc(&mut sketch, [12, 8]))
+        } else {
+            SketchCurve::Circle(
+                sketch
+                    .add_circle(SketchPoint::new(12, 8), SketchLength::new(7))
+                    .expect("circle"),
+            )
+        };
+        let constraint = sketch
+            .add_constraint(ConstraintKind::concentric(second, first), ctx(16))
+            .expect("circular pair");
+        let center = sketch
+            .concentric_center(first, second)
+            .expect("satisfied circular pair has one center");
+        let first_center = sketch.circular_curve_center(first).expect("first center");
+        assert!((first_center[0] - center[0]).hypot(first_center[1] - center[1]) < 1e-6);
+        let ConstraintKind::Concentric {
+            first: stored_first,
+            second: stored_second,
+        } = sketch.constraints()[0].kind
+        else {
+            panic!("concentric")
+        };
+        assert!(
+            stored_first.id() < stored_second.id(),
+            "stable canonical order"
+        );
+        assert_eq!(
+            sketch.add_constraint(ConstraintKind::concentric(first, second), ctx(16)),
+            Err(ConstraintRefusal::AlreadyAsserted {
+                existing: constraint
+            })
+        );
+    }
+}
+
+#[test]
+fn concentric_center_rejects_unsatisfied_or_non_circular_pairs() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(2))
+        .expect("first");
+    let second = sketch
+        .add_circle(SketchPoint::new(4, 0), SketchLength::new(3))
+        .expect("second");
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(3, 0));
+    let segment = sketch.connect(from, to).expect("segment");
+
+    assert!(sketch
+        .concentric_center(SketchCurve::Circle(first), SketchCurve::Circle(second))
+        .is_none());
+    assert!(sketch
+        .concentric_center(SketchCurve::Circle(first), SketchCurve::Circle(first))
+        .is_none());
+    assert!(sketch
+        .concentric_center(SketchCurve::Segment(segment), SketchCurve::Circle(first))
+        .is_none());
+}
+
+#[test]
+fn concentric_keeps_unequal_radius_authorities_exact_across_density() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(2))
+        .expect("free circle");
+    let second = sketch
+        .add_circle(SketchPoint::new(9, 5), SketchLength::new(7))
+        .expect("fixed circle");
+    let source =
+        ::parametric::units::Measurement::new(::parametric::ExactRational::from_integer(1), 0);
+    sketch.circles_mut_for_test()[1].radius = CircleRadius::fixed(source);
+    let before_free = sketch.circles()[0].radius;
+    let before_fixed = sketch.circles()[1].radius;
+    sketch
+        .add_constraint(
+            ConstraintKind::concentric(SketchCurve::Circle(first), SketchCurve::Circle(second)),
+            ctx(16),
+        )
+        .expect("concentric circles");
+    assert_eq!(sketch.circles()[0].radius, before_free);
+    assert_eq!(sketch.circles()[1].radius, before_fixed);
+    assert_ne!(
+        sketch.circles()[0].resolved_radius(ctx(16)).to_bits(),
+        sketch.circles()[1].resolved_radius(ctx(16)).to_bits()
+    );
+
+    sketch.retarget_density(16, 32);
+    let retargeted_free = sketch.circles()[0].radius;
+    sketch.solve(ctx(32)).expect("density-aware preparation");
+    assert_eq!(sketch.circles()[0].radius, retargeted_free);
+    assert_eq!(sketch.circles()[1].radius, before_fixed);
+    assert_eq!(sketch.circles()[1].resolved_radius(ctx(32)), 32.0);
+}
+
+#[test]
+fn concentric_reads_and_writes_arc_sweep_authority() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(10, 0));
+    let arc = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("free arc");
+    let circle = sketch
+        .add_circle(SketchPoint::new(5, 0), SketchLength::new(3))
+        .expect("fixed-center target");
+    let circle_center = sketch.circles()[0].center;
+    for (point, at) in [
+        (from, [0.0, 0.0]),
+        (to, [10.0, 0.0]),
+        (circle_center, [5.0, 0.0]),
+    ] {
+        sketch
+            .add_constraint(
+                ConstraintKind::Fix {
+                    point,
+                    at: SketchPoint::from_continuous(at[0], at[1]),
+                },
+                ctx(16),
+            )
+            .expect("fixed point");
+    }
+    sketch
+        .add_constraint(
+            ConstraintKind::concentric(SketchCurve::Arc(arc), SketchCurve::Circle(circle)),
+            ctx(16),
+        )
+        .expect("free sweep can place its derived center");
+    let solved = sketch.arcs()[0]
+        .bulge
+        .free_value()
+        .expect("free sweep")
+        .to_degrees_f64();
+    assert!((solved - 180.0).abs() < 1e-4, "solved sweep was {solved}");
+}
+
+#[test]
+fn concentric_preserves_a_fixed_arc_sweep() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(0, 0));
+    let to = sketch.add_free_point(SketchPoint::new(10, 0));
+    let arc = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("arc");
+    sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
+    sketch.sync_arc_centers();
+    let center = sketch
+        .circular_curve_center(SketchCurve::Arc(arc))
+        .expect("derived center");
+    let circle = sketch
+        .add_circle(
+            SketchPoint::from_continuous(center[0], center[1]),
+            SketchLength::new(6),
+        )
+        .expect("circle");
+    let before = sketch.arcs()[0].bulge;
+    sketch
+        .add_constraint(
+            ConstraintKind::concentric(SketchCurve::Arc(arc), SketchCurve::Circle(circle)),
+            ctx(16),
+        )
+        .expect("already concentric");
+    sketch.solve(ctx(32)).expect("solve");
+    assert_eq!(sketch.arcs()[0].bulge, before);
+}
+
+#[test]
+fn concentric_repair_canonicalizes_deduplicates_and_cascades() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(2))
+        .expect("first");
+    let second = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(4))
+        .expect("second");
+    let from = sketch.add_free_point(SketchPoint::new(-3, 0));
+    let to = sketch.add_free_point(SketchPoint::new(3, 0));
+    let segment = sketch.connect(from, to).expect("segment");
+    let mut raw = serde_json::to_value(&sketch).expect("source");
+    raw["constraints"] = serde_json::json!([
+        {"id": 90, "kind": {"Concentric": {
+            "first": {"Circle": second}, "second": {"Circle": first}
+        }}, "redundant": false},
+        {"id": 91, "kind": {"Concentric": {
+            "first": {"Circle": first}, "second": {"Circle": second}
+        }}, "redundant": false},
+        {"id": 92, "kind": {"Concentric": {
+            "first": {"Circle": first}, "second": {"Circle": first}
+        }}, "redundant": false},
+        {"id": 93, "kind": {"Concentric": {
+            "first": {"Segment": segment}, "second": {"Circle": first}
+        }}, "redundant": false},
+        {"id": 94, "kind": {"Concentric": {
+            "first": {"Circle": 999}, "second": {"Circle": first}
+        }}, "redundant": false}
+    ]);
+    let mut loaded: Sketch = serde_json::from_value(raw).expect("load");
+    assert!(matches!(
+        loaded.constraints()[0].kind,
+        ConstraintKind::Concentric {
+            first: SketchCurve::Circle(a),
+            second: SketchCurve::Circle(b)
+        } if (a, b) == (first, second)
+    ));
+    assert_eq!(loaded.repair(ctx(16)), 4);
+    assert_eq!(loaded.constraints().len(), 1);
+    assert_eq!(loaded.constraints()[0].id, 90);
+    loaded.delete_circle(first);
+    assert!(loaded.constraints().is_empty(), "curve deletion cascades");
+}
+
+#[test]
+fn fixed_separate_centers_refuse_concentric_with_blame_and_no_writeback() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(2))
+        .expect("first");
+    let second = sketch
+        .add_circle(SketchPoint::new(10, 0), SketchLength::new(5))
+        .expect("second");
+    let centers = [sketch.circles()[0].center, sketch.circles()[1].center];
+    let mut pins = Vec::new();
+    for (point, at) in centers.into_iter().zip([[0.0, 0.0], [10.0, 0.0]]) {
+        pins.push(
+            sketch
+                .add_constraint(
+                    ConstraintKind::Fix {
+                        point,
+                        at: SketchPoint::from_continuous(at[0], at[1]),
+                    },
+                    ctx(16),
+                )
+                .expect("pin"),
+        );
+    }
+    let before = serde_json::to_value(&sketch).expect("before");
+    let refusal = sketch
+        .add_constraint(
+            ConstraintKind::concentric(SketchCurve::Circle(first), SketchCurve::Circle(second)),
+            ctx(16),
+        )
+        .expect_err("fixed separate centers conflict");
+    assert_eq!(refusal, ConstraintRefusal::Unsatisfiable { fights: pins });
+    assert_eq!(serde_json::to_value(&sketch).expect("after"), before);
+}
+
+#[test]
+fn loaded_conflicting_concentric_solve_blames_stable_constraints_without_writeback() {
+    let mut source = Sketch::empty(PlaneAxis::Z);
+    let first = source
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(2))
+        .expect("first");
+    let second = source
+        .add_circle(SketchPoint::new(10, 0), SketchLength::new(5))
+        .expect("second");
+    let [first_center, second_center] = [source.circles()[0].center, source.circles()[1].center];
+    source.constraints_mut_for_test().extend([
+        Constraint {
+            id: 40,
+            kind: ConstraintKind::Concentric {
+                first: SketchCurve::Circle(first),
+                second: SketchCurve::Circle(second),
+            },
+            redundant: false,
+        },
+        Constraint {
+            id: 9,
+            kind: ConstraintKind::Fix {
+                point: first_center,
+                at: SketchPoint::new(0, 0),
+            },
+            redundant: false,
+        },
+        Constraint {
+            id: 13,
+            kind: ConstraintKind::Fix {
+                point: second_center,
+                at: SketchPoint::new(10, 0),
+            },
+            redundant: false,
+        },
+    ]);
+    let encoded = serde_json::to_string(&source).expect("persisted source");
+    let mut loaded: Sketch = serde_json::from_str(&encoded).expect("loaded conflict");
+    let before = serde_json::to_string(&loaded).expect("before solve");
+
+    assert_eq!(
+        loaded.solve(ctx(16)),
+        Err(SketchEvaluationError::Unsatisfied {
+            conflicts: vec![9, 13, 40],
+        })
+    );
+    assert_eq!(serde_json::to_string(&loaded).expect("after solve"), before);
+    assert_eq!(
+        loaded.move_point(first_center, SketchPoint::new(2, 3), ctx(16)),
+        Ok(false)
+    );
+    assert_eq!(serde_json::to_string(&loaded).expect("after drag"), before);
+}
+
+#[test]
+fn derived_center_drag_rolls_back_against_loaded_conflicting_concentric() {
+    let mut source = Sketch::empty(PlaneAxis::Z);
+    let arc = add_test_arc(&mut source, [0, 0]);
+    let arc_center = source.arcs()[0].center;
+    let circle = source
+        .add_circle(SketchPoint::new(10, 0), SketchLength::new(5))
+        .expect("circle");
+    let circle_center = source.circles()[0].center;
+    source.constraints_mut_for_test().extend([
+        Constraint {
+            id: 40,
+            kind: ConstraintKind::Concentric {
+                first: SketchCurve::Arc(arc),
+                second: SketchCurve::Circle(circle),
+            },
+            redundant: false,
+        },
+        Constraint {
+            id: 9,
+            kind: ConstraintKind::Fix {
+                point: arc_center,
+                at: SketchPoint::new(0, 0),
+            },
+            redundant: false,
+        },
+        Constraint {
+            id: 13,
+            kind: ConstraintKind::Fix {
+                point: circle_center,
+                at: SketchPoint::new(10, 0),
+            },
+            redundant: false,
+        },
+    ]);
+    let encoded = serde_json::to_string(&source).expect("persisted source");
+    let mut loaded: Sketch = serde_json::from_str(&encoded).expect("loaded conflict");
+    let before = serde_json::to_string(&loaded).expect("before drag");
+
+    assert_eq!(
+        loaded.move_point(arc_center, SketchPoint::new(0, 4), ctx(16)),
+        Ok(false)
+    );
+    assert_eq!(serde_json::to_string(&loaded).expect("after drag"), before);
+}
+
+#[test]
+fn concentric_api_refuses_self_pairs_and_segments_without_mutation() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(3))
+        .expect("circle");
+    let from = sketch.add_free_point(SketchPoint::new(-4, 0));
+    let to = sketch.add_free_point(SketchPoint::new(4, 0));
+    let segment = sketch.connect(from, to).expect("segment");
+    let before = serde_json::to_value(&sketch).expect("before");
+    for kind in [
+        ConstraintKind::concentric(SketchCurve::Circle(circle), SketchCurve::Circle(circle)),
+        ConstraintKind::concentric(SketchCurve::Segment(segment), SketchCurve::Circle(circle)),
+    ] {
+        assert_eq!(
+            sketch.add_constraint(kind, ctx(16)),
+            Err(ConstraintRefusal::InvalidConcentric)
+        );
+        assert_eq!(serde_json::to_value(&sketch).expect("after"), before);
+    }
+}
+
+#[test]
+fn concentric_arc_center_resweep_is_atomic() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let arc = add_test_arc(&mut sketch, [0, 0]);
+    let arc_center = sketch.arcs()[0].center;
+    let circle = sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(5))
+        .expect("circle");
+    sketch
+        .add_constraint(
+            ConstraintKind::concentric(SketchCurve::Arc(arc), SketchCurve::Circle(circle)),
+            ctx(16),
+        )
+        .expect("concentric");
+    let before = serde_json::to_value(&sketch).expect("before");
+    assert!(!sketch
+        .move_point(arc_center, SketchPoint::new(0, 4), ctx(16))
+        .expect("ordinary refusal"));
+    assert_eq!(serde_json::to_value(&sketch).expect("after"), before);
+}

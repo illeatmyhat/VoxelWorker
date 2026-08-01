@@ -43,6 +43,15 @@ const SATISFIED_RESIDUAL: f64 = 1e-6;
 /// while this test rejects loss of the curve or segment identity itself.
 const COLLAPSED_SPAN: f64 = 1e-6;
 
+/// The shared center witness for a satisfied Concentric pair. This uses the same residual norm
+/// threshold as the solver, so overlays and numerical acceptance cannot disagree at the boundary.
+pub fn concentric_center(first: [f64; 2], second: [f64; 2]) -> Option<[f64; 2]> {
+    let delta = [first[0] - second[0], first[1] - second[1]];
+    (first.into_iter().chain(second).all(f64::is_finite)
+        && delta[0].hypot(delta[1]) <= SATISFIED_RESIDUAL)
+        .then_some([(first[0] + second[0]) / 2.0, (first[1] + second[1]) / 2.0])
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PointId {
     owner: u64,
@@ -149,6 +158,11 @@ pub enum Relation {
         second: SketchCurve,
         branch: TangentBranch,
     },
+    /// Two circular curves share a center while their radii remain independent.
+    Concentric {
+        first: SketchCurve,
+        second: SketchCurve,
+    },
 }
 
 impl Relation {
@@ -159,7 +173,8 @@ impl Relation {
             Self::Fix { .. }
             | Self::Coincident { .. }
             | Self::Midpoint { .. }
-            | Self::Collinear { .. } => 2,
+            | Self::Collinear { .. }
+            | Self::Concentric { .. } => 2,
             Self::Horizontal { .. }
             | Self::Vertical { .. }
             | Self::Distance { .. }
@@ -178,6 +193,7 @@ pub enum BuildError {
     UnknownParameter,
     InvalidParameter,
     InvalidTangent,
+    InvalidConcentric,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -830,6 +846,21 @@ impl Problem {
                     branch,
                 })
             }
+            Relation::Concentric { first, second } => {
+                let center =
+                    |subject| match curve(subject).map_err(|_| BuildError::InvalidConcentric)? {
+                        ResolvedCurve::Arc(arc) => Ok(arc.center),
+                        ResolvedCurve::Circle(circle) => Ok(circle.center),
+                        ResolvedCurve::Segment(_) => Err(BuildError::InvalidConcentric),
+                    };
+                if first == second {
+                    return Err(BuildError::InvalidConcentric);
+                }
+                Ok(Resolved::Concentric {
+                    first: center(first)?,
+                    second: center(second)?,
+                })
+            }
         }
     }
 }
@@ -1087,6 +1118,49 @@ mod tests {
     }
 
     #[test]
+    fn standing_conflicts_returns_each_individually_removable_local_constraint() {
+        let mut builder = ProblemBuilder::new();
+        let first_center = builder.add_point([0.0, 0.0]);
+        let first_radius = builder.add_fixed_positive_radius(2.0).unwrap();
+        let first = builder.add_circle(first_center, first_radius);
+        let second_center = builder.add_point([10.0, 0.0]);
+        let second_radius = builder.add_fixed_positive_radius(5.0).unwrap();
+        let second = builder.add_circle(second_center, second_radius);
+        let concentric = builder.add_constraint(Relation::Concentric {
+            first: SketchCurve::Circle(first),
+            second: SketchCurve::Circle(second),
+        });
+        let first_fix = builder.add_constraint(Relation::Fix {
+            point: first_center,
+            at: [0.0, 0.0],
+        });
+        let second_fix = builder.add_constraint(Relation::Fix {
+            point: second_center,
+            at: [10.0, 0.0],
+        });
+        let problem = builder.finish().unwrap();
+
+        assert_eq!(
+            problem.standing_conflicts(),
+            vec![concentric, first_fix, second_fix]
+        );
+    }
+
+    #[test]
+    fn satisfied_standing_problem_has_no_conflicts() {
+        let mut builder = ProblemBuilder::new();
+        let point = builder.add_point([3.0, 4.0]);
+        builder.add_constraint(Relation::Fix {
+            point,
+            at: [3.0, 4.0],
+        });
+        let problem = builder.finish().unwrap();
+
+        assert!(problem.settle().diagnostics.satisfied);
+        assert!(problem.standing_conflicts().is_empty());
+    }
+
+    #[test]
     /// A handle from another builder never aliases a local slot or reaches an out-of-bounds read.
     fn foreign_handles_are_rejected_at_finish_and_drag() {
         let mut first = ProblemBuilder::new();
@@ -1267,6 +1341,147 @@ mod tests {
         let center = builder.add_point(center);
         let radius = builder.add_fixed_positive_radius(radius).unwrap();
         builder.add_circle(center, radius)
+    }
+
+    fn arc(builder: &mut ProblemBuilder, from: [f64; 2], to: [f64; 2]) -> ArcId {
+        let center_at = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
+        let from = builder.add_point(from);
+        let to = builder.add_point(to);
+        let center = builder.add_point(center_at);
+        let sweep = builder.add_fixed_signed_sweep(180.0).unwrap();
+        builder.add_arc(center, from, to, sweep)
+    }
+
+    #[test]
+    fn concentric_has_two_rows_and_never_equalizes_radii() {
+        let mut builder = ProblemBuilder::new();
+        let first_center = builder.add_point([0.0, 0.0]);
+        let first_radius = builder.add_free_positive_radius(2.0).unwrap();
+        let first = builder.add_circle(first_center, first_radius);
+        let second_center = builder.add_point([6.0, 4.0]);
+        let second_radius = builder.add_free_positive_radius(7.0).unwrap();
+        let second = builder.add_circle(second_center, second_radius);
+        builder.add_constraint(Relation::Concentric {
+            first: SketchCurve::Circle(first),
+            second: SketchCurve::Circle(second),
+        });
+        let problem = builder.finish().unwrap();
+        let analysis = problem.analyze();
+        assert!(analysis.diagnostics.satisfied);
+        assert_eq!(analysis.witness_rank, 2);
+        assert_eq!(analysis.degrees_of_freedom, 4);
+        let Some(ParameterValue::Radius(first_solved)) = analysis.solution.parameter(first_radius)
+        else {
+            panic!("first radius")
+        };
+        let Some(ParameterValue::Radius(second_solved)) =
+            analysis.solution.parameter(second_radius)
+        else {
+            panic!("second radius")
+        };
+        assert_eq!(first_solved.to_bits(), 2.0_f64.to_bits());
+        assert_eq!(second_solved.to_bits(), 7.0_f64.to_bits());
+    }
+
+    #[test]
+    fn concentric_accepts_every_circular_pair_in_either_order() {
+        for (first_is_arc, second_is_arc, reversed) in [
+            (true, true, false),
+            (true, true, true),
+            (true, false, false),
+            (true, false, true),
+            (false, false, false),
+            (false, false, true),
+        ] {
+            let mut builder = ProblemBuilder::new();
+            let first = if first_is_arc {
+                SketchCurve::Arc(arc(&mut builder, [0.0, 0.0], [4.0, 0.0]))
+            } else {
+                SketchCurve::Circle(circle(&mut builder, [2.0, 0.0], 2.0))
+            };
+            let second = if second_is_arc {
+                SketchCurve::Arc(arc(&mut builder, [4.0, 6.0], [8.0, 6.0]))
+            } else {
+                SketchCurve::Circle(circle(&mut builder, [6.0, 6.0], 5.0))
+            };
+            let (first, second) = if reversed {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            builder.add_constraint(Relation::Concentric { first, second });
+            assert!(builder.finish().unwrap().settle().diagnostics.satisfied);
+        }
+    }
+
+    #[test]
+    fn concentric_refuses_segments_and_self_pairs() {
+        let mut segment_pair = ProblemBuilder::new();
+        let from = segment_pair.add_point([0.0, 0.0]);
+        let to = segment_pair.add_point([1.0, 0.0]);
+        let segment = segment_pair.add_segment(from, to);
+        let circular = circle(&mut segment_pair, [0.0, 0.0], 1.0);
+        segment_pair.add_constraint(Relation::Concentric {
+            first: SketchCurve::Segment(segment),
+            second: SketchCurve::Circle(circular),
+        });
+        assert!(matches!(
+            segment_pair.finish(),
+            Err(BuildError::InvalidConcentric)
+        ));
+
+        let mut self_pair = ProblemBuilder::new();
+        let circular = circle(&mut self_pair, [0.0, 0.0], 1.0);
+        self_pair.add_constraint(Relation::Concentric {
+            first: SketchCurve::Circle(circular),
+            second: SketchCurve::Circle(circular),
+        });
+        assert!(matches!(
+            self_pair.finish(),
+            Err(BuildError::InvalidConcentric)
+        ));
+    }
+
+    #[test]
+    fn concentric_center_uses_the_solver_satisfaction_boundary() {
+        for (offset, valid) in [
+            (SATISFIED_RESIDUAL, true),
+            (f64::from_bits(SATISFIED_RESIDUAL.to_bits() + 1), false),
+        ] {
+            let first = [0.0, 0.0];
+            let second = [offset, 0.0];
+            assert_eq!(concentric_center(first, second).is_some(), valid);
+
+            let mut builder = ProblemBuilder::new();
+            let first_center = builder.add_point(first);
+            let first_radius = builder.add_fixed_positive_radius(2.0).unwrap();
+            let first_circle = builder.add_circle(first_center, first_radius);
+            let second_center = builder.add_point(second);
+            let second_radius = builder.add_fixed_positive_radius(5.0).unwrap();
+            let second_circle = builder.add_circle(second_center, second_radius);
+            builder.add_constraint(Relation::Concentric {
+                first: SketchCurve::Circle(first_circle),
+                second: SketchCurve::Circle(second_circle),
+            });
+            let problem = builder.finish().unwrap();
+            let scalar_coordinates = problem.scalar_coordinates();
+            let positions = problem
+                .points
+                .iter()
+                .map(|point| point.at)
+                .collect::<Vec<_>>();
+            let system = Residuals::new(&problem, &scalar_coordinates, Rigidity::Ignored).unwrap();
+            let parameters = system.guess(&positions);
+            let mut residuals = vec![0.0; system.residual_count()];
+            system.residuals(&parameters, &mut residuals);
+            let solver_valid = residuals
+                .iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt()
+                <= SATISFIED_RESIDUAL;
+            assert_eq!(solver_valid, valid);
+        }
     }
 
     #[test]
@@ -1671,6 +1886,10 @@ enum Resolved {
         second: ResolvedCurve,
         branch: TangentBranch,
     },
+    Concentric {
+        first: usize,
+        second: usize,
+    },
 }
 
 /// The parameterized residual system, field by field.
@@ -2048,7 +2267,7 @@ impl ResidualSystem for Residuals<'_> {
                         ((head[0] - tail[0]).powi(2) + (head[1] - tail[1]).powi(2)).sqrt() - length;
                     row += 1;
                 }
-                Resolved::Coincident { first, second } => {
+                Resolved::Coincident { first, second } | Resolved::Concentric { first, second } => {
                     let (a, b) = (at(first), at(second));
                     into[row] = a[0] - b[0];
                     into[row + 1] = a[1] - b[1];
@@ -2295,6 +2514,18 @@ impl Problem {
         Ok(TrialAdd::Accepted { settled, redundant })
     }
 
+    /// Return the standing constraints whose individual removal restores a satisfied system.
+    ///
+    /// An empty result means the system already satisfies or no single removal repairs it. The
+    /// keys stay local because only the document adapter owns durable constraint identity.
+    pub fn standing_conflicts(&self) -> Vec<ConstraintId> {
+        if self.settle().diagnostics.satisfied {
+            Vec::new()
+        } else {
+            self.leave_one_out(|without| without.settle().diagnostics.satisfied)
+        }
+    }
+
     /// Pull one local point toward a target, then release the hand and settle standing relations.
     /// The hand is not a hard pin: a point free to slide along a relation must still be able to
     /// move even when the cursor is not exactly on that relation. An achievable pull is unchanged;
@@ -2453,10 +2684,12 @@ impl Problem {
             Relation::Fix { point, .. } | Relation::Midpoint { point, .. } => vec![point],
             Relation::Distance { from, to, .. } => vec![from, to],
             Relation::Coincident { first, second } => vec![first, second],
-            Relation::Tangent { first, second, .. } => [first, second]
-                .into_iter()
-                .flat_map(|curve| self.points_of_curve(curve))
-                .collect(),
+            Relation::Tangent { first, second, .. } | Relation::Concentric { first, second } => {
+                [first, second]
+                    .into_iter()
+                    .flat_map(|curve| self.points_of_curve(curve))
+                    .collect()
+            }
             _ => Vec::new(),
         };
         for segment in Self::named_segments(relation) {
@@ -2483,9 +2716,10 @@ impl Problem {
                     SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
                 })
                 .collect(),
-            Relation::Fix { .. } | Relation::Distance { .. } | Relation::Coincident { .. } => {
-                Vec::new()
-            }
+            Relation::Fix { .. }
+            | Relation::Distance { .. }
+            | Relation::Coincident { .. }
+            | Relation::Concentric { .. } => Vec::new(),
         }
     }
 
@@ -2521,19 +2755,30 @@ impl Problem {
         resolved: Resolved,
         anchored: &[PointId],
     ) -> Vec<ConstraintId> {
+        self.leave_one_out(|without| {
+            without
+                .with_candidate(relation, resolved)
+                .settle_with(anchored)
+                .diagnostics
+                .satisfied
+        })
+    }
+
+    /// Run one deterministic leave-one-out pass over standing constraints. The insertion order is
+    /// the authored relation order supplied by the adapter, so callers can map results faithfully.
+    fn leave_one_out(
+        &self,
+        mut restores_satisfaction: impl FnMut(&Self) -> bool,
+    ) -> Vec<ConstraintId> {
         self.constraints
             .iter()
-            .filter_map(|standing| {
+            .map(|constraint| constraint.key)
+            .filter(|key| {
                 let mut without = self.clone();
                 without
                     .constraints
-                    .retain(|constraint| constraint.key != standing.key);
-                without
-                    .with_candidate(relation, resolved)
-                    .settle_with(anchored)
-                    .diagnostics
-                    .satisfied
-                    .then_some(standing.key)
+                    .retain(|constraint| constraint.key != *key);
+                restores_satisfaction(&without)
             })
             .collect()
     }

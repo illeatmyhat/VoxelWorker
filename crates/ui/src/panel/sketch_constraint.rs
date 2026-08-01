@@ -42,6 +42,7 @@ pub enum SlotKind {
     Point,
     Segment,
     Curve,
+    CircularCurve,
 }
 
 impl SlotKind {
@@ -54,6 +55,10 @@ impl SlotKind {
                     Self::Curve,
                     SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_)
                 )
+                | (
+                    Self::CircularCurve,
+                    SketchEntity::Arc(_) | SketchEntity::Circle(_)
+                )
         )
     }
     /// What the prompt asks for when this slot is the one waiting.
@@ -62,6 +67,7 @@ impl SlotKind {
             SlotKind::Point => "a point",
             SlotKind::Segment => "a line",
             SlotKind::Curve => "a curve",
+            SlotKind::CircularCurve => "an arc or circle",
         }
     }
 }
@@ -94,6 +100,8 @@ pub enum ConstraintVerb {
     Collinear,
     /// Two finite curves touch; the click loci choose the durable branch.
     Tangent,
+    /// Two arcs or circles share one center.
+    Concentric,
 }
 
 impl ConstraintVerb {
@@ -115,6 +123,7 @@ impl ConstraintVerb {
             // read as picking a line and then being asked what for.
             ConstraintVerb::Midpoint => &[SlotKind::Point, SlotKind::Segment],
             ConstraintVerb::Tangent => &[SlotKind::Curve, SlotKind::Curve],
+            ConstraintVerb::Concentric => &[SlotKind::CircularCurve, SlotKind::CircularCurve],
         }
     }
 
@@ -131,6 +140,7 @@ impl ConstraintVerb {
             ConstraintVerb::Midpoint => "Midpoint — then pick a point and a line",
             ConstraintVerb::Collinear => "Collinear — then pick two lines",
             ConstraintVerb::Tangent => "Tangent — then pick two curves",
+            ConstraintVerb::Concentric => "Concentric — then pick two arcs or circles",
         }
     }
 
@@ -151,6 +161,7 @@ impl ConstraintVerb {
             ConstraintVerb::Midpoint => Icon::ConstraintMidpoint,
             ConstraintVerb::Collinear => Icon::ConstraintCollinear,
             ConstraintVerb::Tangent => Icon::ConstraintTangent,
+            ConstraintVerb::Concentric => Icon::ConstraintConcentric,
         }
     }
 }
@@ -171,6 +182,7 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Midpoint { .. } => Icon::ConstraintMidpoint,
         ConstraintKind::Collinear { .. } => Icon::ConstraintCollinear,
         ConstraintKind::Tangent { .. } => Icon::ConstraintTangent,
+        ConstraintKind::Concentric { .. } => Icon::ConstraintConcentric,
     }
 }
 
@@ -277,6 +289,7 @@ impl ArmedConstraint {
                 SlotKind::Point => "that is not a point",
                 SlotKind::Segment => "that is not a line",
                 SlotKind::Curve => "that is not a curve",
+                SlotKind::CircularCurve => "pick an arc or circle — lines have no center",
             });
         }
         if self.picked.contains(&candidate) {
@@ -325,6 +338,14 @@ impl ArmedConstraint {
             }
             _ => None,
         };
+        let circular_pair = || {
+            let curve = |entity| match entity {
+                SketchEntity::Arc(id) => Some(SketchCurve::Arc(id)),
+                SketchEntity::Circle(id) => Some(SketchCurve::Circle(id)),
+                SketchEntity::Point(_) | SketchEntity::Segment(_) => None,
+            };
+            curve(*self.picked.first()?).zip(curve(*self.picked.get(1)?))
+        };
         match self.verb {
             ConstraintVerb::HorizontalOrVertical => match self.picked.first()? {
                 SketchEntity::Segment(segment) => nearer_axis(sketch, *segment),
@@ -367,6 +388,10 @@ impl ArmedConstraint {
                 _ => None,
             },
             ConstraintVerb::Tangent => None,
+            ConstraintVerb::Concentric => {
+                let (first, second) = circular_pair()?;
+                Some(ConstraintKind::concentric(first, second))
+            }
         }
     }
 
@@ -708,6 +733,56 @@ mod tests {
         assert_eq!(
             circle_pair.offer_at(SketchEntity::Segment(line), [5.0, 0.0], &sketch),
             Offer::Complete
+        );
+    }
+
+    #[test]
+    fn concentric_slots_accept_only_circular_curves_and_complete_canonically() {
+        let mut sketch = Sketch::empty(PlaneAxis::Z);
+        let from = sketch.add_free_point(SketchPoint::new(0, 0));
+        let to = sketch.add_free_point(SketchPoint::new(10, 0));
+        let segment = sketch.connect(from, to).expect("line");
+        let arc = sketch
+            .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+            .expect("arc");
+        let circle = sketch
+            .add_circle(
+                SketchPoint::new(5, 5),
+                document::sketch::SketchLength::new(3),
+            )
+            .expect("circle");
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Concentric);
+        assert_eq!(armed.wants(), Some(SlotKind::CircularCurve));
+        assert_eq!(
+            armed.offer(SketchEntity::Segment(segment), &sketch),
+            Offer::Refused("pick an arc or circle — lines have no center")
+        );
+        assert!(armed.picked().is_empty());
+        assert_eq!(
+            armed.offer(SketchEntity::Circle(circle), &sketch),
+            Offer::Taken
+        );
+        assert_eq!(
+            armed.offer(SketchEntity::Arc(arc), &sketch),
+            Offer::Complete
+        );
+        assert_eq!(
+            armed.kind(&sketch),
+            Some(ConstraintKind::concentric(
+                SketchCurve::Circle(circle),
+                SketchCurve::Arc(arc)
+            ))
+        );
+        assert_eq!(
+            armed.kind_at_context(
+                &sketch,
+                parametric::EvaluationContext::new(std::num::NonZeroU32::new(16).expect("density"))
+            ),
+            armed.kind(&sketch).ok_or("constraint is incomplete")
+        );
+        assert_eq!(
+            ConstraintVerb::Concentric.icon(),
+            Icon::ConstraintConcentric
         );
     }
 

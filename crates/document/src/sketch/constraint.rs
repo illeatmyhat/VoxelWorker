@@ -107,6 +107,11 @@ pub enum ConstraintKind {
         second: SketchCurve,
         branch: TangentBranch,
     },
+    /// Two circular authored curves share one center while retaining independent radii.
+    Concentric {
+        first: SketchCurve,
+        second: SketchCurve,
+    },
 }
 
 impl ConstraintKind {
@@ -130,6 +135,18 @@ impl ConstraintKind {
         }
     }
 
+    /// Construct a branch-free circular pair in stable entity-id order.
+    pub const fn concentric(first: SketchCurve, second: SketchCurve) -> Self {
+        if first.id() <= second.id() {
+            Self::Concentric { first, second }
+        } else {
+            Self::Concentric {
+                first: second,
+                second: first,
+            }
+        }
+    }
+
     pub(super) fn normalized(self) -> Self {
         match self {
             Self::Tangent {
@@ -137,6 +154,7 @@ impl ConstraintKind {
                 second,
                 branch,
             } => Self::tangent(first, second, branch),
+            Self::Concentric { first, second } => Self::concentric(first, second),
             other => other,
         }
     }
@@ -152,7 +170,8 @@ impl ConstraintKind {
             | Self::Perpendicular { .. }
             | Self::Equal { .. }
             | Self::Collinear { .. }
-            | Self::Tangent { .. } => Vec::new(),
+            | Self::Tangent { .. }
+            | Self::Concentric { .. } => Vec::new(),
         }
     }
 
@@ -177,7 +196,7 @@ impl ConstraintKind {
             | Self::Perpendicular { first, second }
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => [first.min(second), first.max(second)],
-            Self::Tangent { first, second, .. } => {
+            Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
                 let (first, second) = (first.id(), second.id());
                 [first.min(second), first.max(second)]
             }
@@ -202,14 +221,19 @@ impl ConstraintKind {
                     SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
                 })
                 .collect(),
-            Self::Fix { .. } | Self::Distance { .. } | Self::Coincident { .. } => Vec::new(),
+            Self::Fix { .. }
+            | Self::Distance { .. }
+            | Self::Coincident { .. }
+            | Self::Concentric { .. } => Vec::new(),
         }
     }
 
     /// Every curve id named by a generic curve relation, for cascade/repair.
     pub(super) fn curves(&self) -> Vec<SketchCurve> {
         match *self {
-            Self::Tangent { first, second, .. } => vec![first, second],
+            Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
+                vec![first, second]
+            }
             _ => Vec::new(),
         }
     }
@@ -242,6 +266,17 @@ impl ConstraintKind {
             _ => true,
         }
     }
+
+    pub(super) const fn concentric_is_structurally_valid(&self) -> bool {
+        match *self {
+            Self::Concentric { first, second } => {
+                first.id() != second.id()
+                    && matches!(first, SketchCurve::Arc(_) | SketchCurve::Circle(_))
+                    && matches!(second, SketchCurve::Arc(_) | SketchCurve::Circle(_))
+            }
+            _ => true,
+        }
+    }
 }
 
 /// A stable, individually selectable and deletable constraint entity.
@@ -261,8 +296,8 @@ pub struct Constraint {
     pub redundant: bool,
 }
 
-/// Persistence boundary for a stored constraint. Every loaded Tangent is normalized to canonical
-/// member order before repair makes the document-specific liveness/type decision.
+/// Persistence boundary for a stored constraint. Every unordered curve pair is normalized to
+/// canonical member order before repair makes the document-specific liveness/type decision.
 fn deserialize_constraint_kind<'de, D>(deserializer: D) -> Result<ConstraintKind, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -287,6 +322,8 @@ pub enum ConstraintRefusal {
         constraint: Option<EntityId>,
         error: TangentContactError,
     },
+    /// Concentric accepts two distinct arcs or circles and no other geometry.
+    InvalidConcentric,
     /// The request names geometry the store does not hold.
     UnknownEntity,
     /// Its own terms cannot be met by any drawing: for example a negative distance or a horizontal
@@ -335,6 +372,7 @@ impl ConstraintRefusal {
             Self::MissingEvaluationContext
             | Self::UnknownEntity
             | Self::Impossible
+            | Self::InvalidConcentric
             | Self::InvalidTangent {
                 constraint: None, ..
             } => Vec::new(),
@@ -415,6 +453,21 @@ impl PreparedProblem {
 
     pub(super) fn validate_current(&self) -> parametric::sketch::CurrentValidation {
         self.problem.validate_current()
+    }
+
+    /// Map deterministic kernel leave-one-out conflicts back to persistent constraint ids.
+    pub(super) fn standing_conflicts(&self) -> Result<Vec<EntityId>, PrepareError> {
+        let mut conflicts: Vec<_> = self
+            .problem
+            .standing_conflicts()
+            .into_iter()
+            .map(|constraint| {
+                self.constraint(constraint)
+                    .ok_or(PrepareError::InvalidDocumentGeometry)
+            })
+            .collect::<Result<_, _>>()?;
+        conflicts.sort_unstable();
+        Ok(conflicts)
     }
 
     pub(super) fn standing_tangent_failure(
@@ -650,6 +703,9 @@ fn relation_for(
                 second,
                 branch,
             }),
+        ConstraintKind::Concentric { first, second } => curve(first)
+            .zip(curve(second))
+            .map(|(first, second)| Relation::Concentric { first, second }),
     }
 }
 

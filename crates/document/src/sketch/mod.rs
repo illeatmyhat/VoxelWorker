@@ -74,7 +74,7 @@ use std::num::NonZeroU32;
 
 /// An operation reached a fixed measurement source without the document evaluation context that
 /// resolves it. This is deliberately an error instead of a density default or stale cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SketchEvaluationError {
     /// A fixed source was encountered without the density needed to resolve it.
     MissingEvaluationContext,
@@ -82,6 +82,9 @@ pub enum SketchEvaluationError {
     InvalidDocumentGeometry,
     /// A local solution could not be represented in durable document scalar storage.
     ScalarWritebackFailed,
+    /// Standing relations cannot all hold. The ids are individually removable constraints whose
+    /// removal restores satisfaction; an empty list means no single removal is sufficient.
+    Unsatisfied { conflicts: Vec<EntityId> },
     /// A standing Tangent settled numerically but its derived contact escaped a finite authored
     /// curve or became singular. No candidate coordinates were applied.
     InvalidTangent {
@@ -125,6 +128,20 @@ fn validate_prepared_tangent_contacts(
         return Err(SketchEvaluationError::InvalidTangent {
             constraint: failure.constraint,
             error: failure.error,
+        });
+    }
+    Ok(())
+}
+
+fn validate_prepared_satisfaction(
+    prepared: &constraint::PreparedProblem,
+    diagnostics: &parametric::sketch::Diagnostics,
+) -> Result<(), SketchEvaluationError> {
+    if !diagnostics.satisfied {
+        return Err(SketchEvaluationError::Unsatisfied {
+            conflicts: prepared
+                .standing_conflicts()
+                .map_err(map_prepare_evaluation_error)?,
         });
     }
     Ok(())
@@ -1004,6 +1021,42 @@ impl Sketch {
         }
     }
 
+    /// The current center of one authored circular curve. Radius sources are irrelevant to this
+    /// query, so overlays can place center-based badges without fabricating evaluation context.
+    pub fn circular_curve_center(&self, curve: SketchCurve) -> Option<[f64; 2]> {
+        let point = |id: EntityId| {
+            self.points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        match curve {
+            SketchCurve::Arc(id) => {
+                let arc = self.arcs.iter().find(|arc| arc.id == id)?;
+                let (center, _) =
+                    arc_center_radius(point(arc.from)?, point(arc.to)?, arc.sweep_degrees())?;
+                Some(center)
+            }
+            SketchCurve::Circle(id) => {
+                let circle = self.circles.iter().find(|circle| circle.id == id)?;
+                point(circle.center)
+            }
+            SketchCurve::Segment(_) => None,
+        }
+    }
+
+    /// The shared center witness for two satisfied circular curves. The parametric kernel owns
+    /// the numerical satisfaction boundary so document and overlay semantics remain identical.
+    pub fn concentric_center(&self, first: SketchCurve, second: SketchCurve) -> Option<[f64; 2]> {
+        if first.id() == second.id() {
+            return None;
+        }
+        parametric::sketch::concentric_center(
+            self.circular_curve_center(first)?,
+            self.circular_curve_center(second)?,
+        )
+    }
+
     /// Pick the stable Tangent branch from canonical curve/locus pairs.
     pub fn choose_tangent_branch(
         &self,
@@ -1708,6 +1761,11 @@ impl Sketch {
                 constraint: None,
                 error: parametric::sketch::TangentContactError::InvalidBranch,
             },
+            constraint::TrialMapError::Request(
+                parametric::sketch::RequestError::InvalidRelation(
+                    parametric::sketch::BuildError::InvalidConcentric,
+                ),
+            ) => ConstraintRefusal::InvalidConcentric,
         })?;
         let (settled, redundant) = match trial {
             parametric::sketch::TrialAdd::Accepted { settled, redundant } => (settled, redundant),
@@ -1878,6 +1936,19 @@ impl Sketch {
                     return Err(ConstraintRefusal::UnknownEntity);
                 }
             }
+            ConstraintKind::Concentric { first, second } => {
+                if !kind.concentric_is_structurally_valid() {
+                    return Err(ConstraintRefusal::InvalidConcentric);
+                }
+                let live = |curve: SketchCurve| match curve {
+                    SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
+                    SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
+                    SketchCurve::Segment(_) => false,
+                };
+                if !live(first) || !live(second) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+            }
         }
         Ok(())
     }
@@ -1904,6 +1975,7 @@ impl Sketch {
         let prepared = constraint::prepare(self, &self.constraints, Some(context))
             .map_err(map_prepare_evaluation_error)?;
         let settled = prepared.settle();
+        validate_prepared_satisfaction(&prepared, &settled.diagnostics)?;
         validate_prepared_tangent_contacts(&prepared, &settled.solution)?;
         let plan = prepared
             .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
@@ -1979,6 +2051,7 @@ impl Sketch {
                     SketchCurve::Circle(id) => circle_ids.contains(id),
                 })
                 && constraint.kind.tangent_is_structurally_valid()
+                && constraint.kind.concentric_is_structurally_valid()
         });
         let surviving = self.constraints.clone();
         self.constraints.retain(|constraint| {
