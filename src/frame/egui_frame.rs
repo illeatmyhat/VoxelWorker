@@ -228,13 +228,14 @@ pub fn run_egui_frame(
     // so the profile reads as connected edges (an open sketch resolves to nothing, so these are
     // the only shape cue); the hovered segment draws brighter (Select) or warn-red with a `✕`
     // (Delete). Empty unless a sketch is being edited, always empty on the headless `shot` path.
-    sketch_segment_lines: &[(egui::Pos2, egui::Pos2, ui::gizmos::HandleState)],
+    // Each carries its own CONSTRUCTION flag, so the linetype is decided per edge.
+    sketch_segment_lines: &[ui::chrome::SketchEdgeLine],
     // The sketch's committed arc curves for THIS frame — each an already-
     // projected polyline (egui points) from endpoint to endpoint through the tessellated chords,
     // plus its interaction state. Same layer and vocabulary as the segment lines: an arc is an
     // edge that happens to bend. Empty unless a sketch is being edited, always empty on the
     // headless `shot` path.
-    sketch_arc_lines: &[(Vec<egui::Pos2>, ui::gizmos::HandleState)],
+    sketch_arc_lines: &[ui::chrome::SketchCurveLine],
     // The constraint badges for THIS frame — each asserted relation's own
     // glyph at an already-projected center (egui points), anchored on the geometry the relation
     // names. Drawn OVER the lines and handles: a badge is a claim about the drawing and must not

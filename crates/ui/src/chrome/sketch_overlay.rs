@@ -201,21 +201,46 @@ pub fn sketch_marquee_band(ui: &egui::Ui, rect: Rect, window: bool) {
     }
 }
 
+/// One straight profile edge ready to paint: where it is, how the pointer sees it, and whether it
+/// is construction. State and linetype are separate fields because they are separate questions —
+/// see [`gizmos::curve_stroke`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SketchEdgeLine {
+    pub a: Pos2,
+    pub b: Pos2,
+    pub state: gizmos::HandleState,
+    pub construction: bool,
+}
+
+/// One curved profile entity ready to paint, as the chords the viewer already tessellated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchCurveLine {
+    pub chords: Vec<Pos2>,
+    pub state: gizmos::HandleState,
+    pub construction: bool,
+}
+
 /// Draw the committed segment lines between their projected endpoints. Idle edges first, then the
 /// single hovered/marked one on top so its brighter line (or warn line + ✕) is never clipped.
-pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, gizmos::HandleState)]) {
+pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[SketchEdgeLine]) {
     let painter = ui.ctx().layer_painter(LayerId::new(
         Order::Foreground,
         Id::new("sketch_segment_lines"),
     ));
-    for &(a, b, state) in lines {
-        if state == gizmos::HandleState::Idle {
-            gizmos::styled_segment(&painter, a, b, state);
+    let draw = |line: &SketchEdgeLine| {
+        gizmos::roled_segment(&painter, line.a, line.b, line.state, line.construction);
+        if line.state == gizmos::HandleState::Marked {
+            gizmos::warn_cross(&painter, line.a + (line.b - line.a) * 0.5);
+        }
+    };
+    for line in lines {
+        if line.state == gizmos::HandleState::Idle {
+            draw(line);
         }
     }
-    for &(a, b, state) in lines {
-        if state != gizmos::HandleState::Idle {
-            gizmos::styled_segment(&painter, a, b, state);
+    for line in lines {
+        if line.state != gizmos::HandleState::Idle {
+            draw(line);
         }
     }
 }
@@ -224,33 +249,29 @@ pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, gizmos::HandleS
 /// idle-then-emphasised ordering and the same [`gizmos::HandleState`] vocabulary the segment lines
 /// use, so an arc and a straight edge answer the pointer identically. A `Marked` arc stamps its
 /// warn `✕` once, at the curve's midpoint, rather than once per chord.
-pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[(Vec<Pos2>, gizmos::HandleState)]) {
+pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[SketchCurveLine]) {
     let painter = ui.ctx().layer_painter(LayerId::new(
         Order::Foreground,
         Id::new("sketch_arc_curves"),
     ));
-    let draw = |curve: &[Pos2], state: gizmos::HandleState| {
-        if state == gizmos::HandleState::Marked {
-            for pair in curve.array_windows::<2>() {
-                gizmos::warn_segment(&painter, pair[0], pair[1]);
-            }
-            if let Some(mid) = curve.get(curve.len() / 2) {
+    let draw = |curve: &SketchCurveLine| {
+        for pair in curve.chords.array_windows::<2>() {
+            gizmos::roled_segment(&painter, pair[0], pair[1], curve.state, curve.construction);
+        }
+        if curve.state == gizmos::HandleState::Marked {
+            if let Some(mid) = curve.chords.get(curve.chords.len() / 2) {
                 gizmos::warn_cross(&painter, *mid);
-            }
-        } else {
-            for pair in curve.array_windows::<2>() {
-                gizmos::styled_segment(&painter, pair[0], pair[1], state);
             }
         }
     };
-    for (curve, state) in curves {
-        if *state == gizmos::HandleState::Idle {
-            draw(curve, *state);
+    for curve in curves {
+        if curve.state == gizmos::HandleState::Idle {
+            draw(curve);
         }
     }
-    for (curve, state) in curves {
-        if *state != gizmos::HandleState::Idle {
-            draw(curve, *state);
+    for curve in curves {
+        if curve.state != gizmos::HandleState::Idle {
+            draw(curve);
         }
     }
 }

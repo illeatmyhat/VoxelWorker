@@ -42,6 +42,44 @@ pub fn styled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState) {
     }
 }
 
+/// The stroke a profile edge takes for a given interaction state and linetype.
+///
+/// The two are ORTHOGONAL and compose: the linetype picks the ink and whether the line is dashed,
+/// the state picks the weight. Flattening role into [`HandleState`] would need a
+/// `ConstructionHover`/`ConstructionSelected`/… variant per combination, and there is no such
+/// thing as a segment that is construction *instead of* hovered.
+///
+/// `Marked` is the one state that overrides the linetype's ink: an edge armed for deletion must
+/// read destructive whether or not it is construction.
+pub fn curve_stroke(state: HandleState, construction: bool) -> Stroke {
+    let width = match state {
+        HandleState::Hover => STROKE_SEGMENT_HOVER,
+        HandleState::Selected => STROKE_SEGMENT_SELECTED,
+        HandleState::Idle | HandleState::Snapped | HandleState::Marked => STROKE_SEGMENT,
+    };
+    let ink = match (state, construction) {
+        (HandleState::Marked, _) => color_palette::WARN,
+        (_, true) => color_palette::SKETCH_CONSTRUCTION,
+        (HandleState::Hover, false) => HANDLE_HOVER,
+        (_, false) => HANDLE_ACCENT,
+    };
+    Stroke::new(width, ink)
+}
+
+/// One chord of a profile curve, in its state and linetype.
+///
+/// Construction geometry is DASHED — the linetype's own definition, and the reason the ink is
+/// warm rather than another accent step: dashed-plus-accent already means "uncommitted preview",
+/// so the ink is what keeps the two apart on a frame that shows both.
+pub fn roled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState, construction: bool) {
+    let stroke = curve_stroke(state, construction);
+    if construction {
+        dashed(painter, a, b, stroke);
+    } else {
+        painter.line_segment([a, b], stroke);
+    }
+}
+
 /// A profile segment **armed for deletion** — the Delete tool is hovering this edge (and no
 /// vertex, which would take priority). The whole line goes warn-red with a warn `✕` at its
 /// midpoint: the line analog of the vertex handle's [`Marked`](super::HandleState::Marked)

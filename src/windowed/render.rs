@@ -1313,10 +1313,10 @@ impl WindowedState {
         let pad_px = ui::chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
         let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
         let mut nearest: Option<(document::sketch::EntityId, egui::Pos2, egui::Pos2, f32)> = None;
-        for &(seg_id, a_idx, b_idx) in &self.sketch_segments {
+        for segment in &self.sketch_segments {
             let (Some(&Some(a)), Some(&Some(b))) = (
-                self.sketch_vertex_px.get(a_idx),
-                self.sketch_vertex_px.get(b_idx),
+                self.sketch_vertex_px.get(segment.from),
+                self.sketch_vertex_px.get(segment.to),
             ) else {
                 continue;
             };
@@ -1326,7 +1326,7 @@ impl WindowedState {
                     .map(|(_, _, _, best)| distance < best)
                     .unwrap_or(true)
             {
-                nearest = Some((seg_id, a, b, distance));
+                nearest = Some((segment.entity, a, b, distance));
             }
         }
         nearest.map(|(seg_id, a, b, _)| (seg_id, a, b))
@@ -2718,10 +2718,10 @@ impl WindowedState {
                 picked.push(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
             }
         }
-        for &(entity, a_index, b_index) in &self.sketch_segments {
+        for segment in &self.sketch_segments {
             if let (Some(Some(a)), Some(Some(b))) = (
-                self.sketch_vertex_px.get(a_index),
-                self.sketch_vertex_px.get(b_index),
+                self.sketch_vertex_px.get(segment.from),
+                self.sketch_vertex_px.get(segment.to),
             ) {
                 let hit = if window {
                     rect.contains(*a) || rect.contains(*b)
@@ -2729,7 +2729,10 @@ impl WindowedState {
                     segment_touches_rect(*a, *b, rect)
                 };
                 if hit {
-                    picked.push(ui::panel::SelectionTarget::SketchSegment { sketch, entity });
+                    picked.push(ui::panel::SelectionTarget::SketchSegment {
+                        sketch,
+                        entity: segment.entity,
+                    });
                 }
             }
         }
@@ -3509,11 +3512,11 @@ impl WindowedState {
 
         // A badge stands at a segment's midpoint, offset along that segment's normal.
         let beside_segment = |segment: document::sketch::EntityId| {
-            let &(_, a_idx, b_idx) = self
+            let held = self
                 .sketch_segments
                 .iter()
-                .find(|(id, _, _)| *id == segment)?;
-            let (a, b) = (at(a_idx)?, at(b_idx)?);
+                .find(|held| held.entity == segment)?;
+            let (a, b) = (at(held.from)?, at(held.to)?);
             let along = b - a;
             let length = along.length();
             if length < f32::EPSILON {
@@ -3529,8 +3532,8 @@ impl WindowedState {
         let ends_of = |segment: document::sketch::EntityId| {
             self.sketch_segments
                 .iter()
-                .find(|(id, _, _)| *id == segment)
-                .map(|&(_, from, to)| (from, to))
+                .find(|held| held.entity == segment)
+                .map(|held| (held.from, held.to))
         };
         // Where two segments MEET, offset into the angle they make — the square that the mark
         // asserts is the one the badge is sitting in. `None` when they share no endpoint.
@@ -4292,7 +4295,8 @@ impl WindowedState {
                 )
             })
         };
-        for &(arc_id, from, to, sweep) in &handles.arcs {
+        for arc in &handles.arcs {
+            let (arc_id, from, to, sweep) = (arc.entity, arc.from, arc.to, arc.sweep_degrees);
             let tolerance = document::sketch::arc_center_radius(from, to, sweep)
                 .and_then(|(center, radius)| {
                     let radius_px = to_viewport_px(center)?.distance(to_viewport_px(from)?);
@@ -4348,6 +4352,31 @@ impl WindowedState {
                 }
             }
         }
+
+        // Which curved entities are construction, joined from the handles while they are still in
+        // hand. The chord caches above answer "where is it on screen" for the hit-test and are
+        // deliberately left free of linetype; the draw loops below join back to these.
+        let construction =
+            |role: document::sketch::EntityRole| role == document::sketch::EntityRole::Construction;
+        let construction_arcs: std::collections::BTreeSet<document::sketch::EntityId> = handles
+            .arcs
+            .iter()
+            .filter(|arc| construction(arc.role))
+            .map(|arc| arc.entity)
+            .collect();
+        let construction_circles: std::collections::BTreeSet<document::sketch::EntityId> = handles
+            .circles
+            .iter()
+            .filter(|circle| construction(circle.role))
+            .map(|circle| circle.entity)
+            .collect();
+        let construction_higher: std::collections::BTreeSet<document::sketch::SketchCurve> =
+            handles
+                .higher_curves
+                .iter()
+                .filter(|curve| construction(curve.role))
+                .map(|curve| curve.entity)
+                .collect();
 
         // The segment under the cursor and the state it should draw in. A vertex under the cursor
         // takes priority — it already answers with its own handle state — so a segment lights up
@@ -4472,10 +4501,10 @@ impl WindowedState {
         // are the only thing that shows the profile is connected). A behind-camera endpoint
         // (`None` in `sketch_vertex_px`) culls its line, matching the vertex-dot cull. The one
         // hovered segment carries its Hover/Marked state; the rest are Idle.
-        for &(seg_id, a_idx, b_idx) in &self.sketch_segments {
+        for segment in &self.sketch_segments {
             if let (Some(Some(a_px)), Some(Some(b_px))) = (
-                self.sketch_vertex_px.get(a_idx),
-                self.sketch_vertex_px.get(b_idx),
+                self.sketch_vertex_px.get(segment.from),
+                self.sketch_vertex_px.get(segment.to),
             ) {
                 let a = egui::Pos2::new(a_px.x / pixels_per_point, a_px.y / pixels_per_point);
                 let b = egui::Pos2::new(b_px.x / pixels_per_point, b_px.y / pixels_per_point);
@@ -4483,15 +4512,20 @@ impl WindowedState {
                 // under the cursor (Select hover never shrinks it).
                 let picked = ui::panel::SelectionTarget::SketchSegment {
                     sketch: target,
-                    entity: seg_id,
+                    entity: segment.entity,
                 };
                 let selected = self.panel_state.selection.contains(picked);
                 let state = match hovered_edge {
                     _ if selected => ui::gizmos::HandleState::Selected,
-                    Some((SketchEdgeHit::Segment(id), state)) if id == seg_id => state,
+                    Some((SketchEdgeHit::Segment(id), state)) if id == segment.entity => state,
                     _ => ui::gizmos::HandleState::Idle,
                 };
-                self.sketch_segment_lines.push((a, b, state));
+                self.sketch_segment_lines.push(ui::chrome::SketchEdgeLine {
+                    a,
+                    b,
+                    state,
+                    construction: segment.role == document::sketch::EntityRole::Construction,
+                });
             }
         }
 
@@ -4508,11 +4542,15 @@ impl WindowedState {
                 Some((SketchEdgeHit::Arc(id), state)) if id == *arc_id => state,
                 _ => ui::gizmos::HandleState::Idle,
             };
-            let curve = chords
+            let chords = chords
                 .iter()
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
-            self.sketch_arc_lines.push((curve, state));
+            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
+                chords,
+                state,
+                construction: construction_arcs.contains(arc_id),
+            });
         }
         for (circle_id, ring) in &self.sketch_circle_chords {
             let picked = ui::panel::SelectionTarget::SketchCircle {
@@ -4525,11 +4563,15 @@ impl WindowedState {
                 Some((SketchEdgeHit::Circle(id), state)) if id == *circle_id => state,
                 _ => ui::gizmos::HandleState::Idle,
             };
-            let curve = ring
+            let chords = ring
                 .iter()
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
-            self.sketch_arc_lines.push((curve, state));
+            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
+                chords,
+                state,
+                construction: construction_circles.contains(circle_id),
+            });
         }
         // Every span of an aggregate reads the SAME state, resolved from the aggregate identity —
         // so selecting an ellipse lights all four quarters and hovering one span lights the
@@ -4545,11 +4587,15 @@ impl WindowedState {
                 Some((SketchEdgeHit::HigherCurve(curve), state)) if curve == *entity => state,
                 _ => ui::gizmos::HandleState::Idle,
             };
-            let curve = chords
+            let chords = chords
                 .iter()
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
-            self.sketch_arc_lines.push((curve, state));
+            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
+                chords,
+                state,
+                construction: construction_higher.contains(entity),
+            });
         }
 
         // Generated operator instances draw from their regenerated curves, but never enter the
@@ -4570,8 +4616,13 @@ impl WindowedState {
                     })
                     .collect();
                 if let Some(projected) = projected {
-                    self.sketch_arc_lines
-                        .push((projected, ui::gizmos::HandleState::Idle));
+                    // An instance of a construction source is construction too — the pattern
+                    // copies the geometry's role along with its shape.
+                    self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
+                        chords: projected,
+                        state: ui::gizmos::HandleState::Idle,
+                        construction: construction(derived.role),
+                    });
                 }
             }
         }

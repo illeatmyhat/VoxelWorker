@@ -390,10 +390,10 @@ struct WindowedState {
     /// the SAME order — maps an overlay hit index to the entity to drag or delete (the store has
     /// no positional index).
     sketch_point_ids: Vec<document::sketch::EntityId>,
-    /// Each segment as `(segment id, from index, to index)` into
-    /// [`sketch_vertex_px`](Self::sketch_vertex_px) — the add-point hit-test splits the named
-    /// segment by id, and the overlay draws a line per entry, not consecutive pairs.
-    sketch_segments: Vec<(document::sketch::EntityId, usize, usize)>,
+    /// Each segment's identity, its two endpoint indices into
+    /// [`sketch_vertex_px`](Self::sketch_vertex_px), and its role — the add-point hit-test splits
+    /// the named segment by id, and the overlay draws a line per entry, not consecutive pairs.
+    sketch_segments: Vec<document::scene::SketchSegmentHandle>,
     /// Each committed segment's two endpoints in egui POINTS for THIS frame plus its interaction
     /// [`HandleState`](ui::gizmos::HandleState), drawn as a line on the NEXT frame — a sketch's
     /// edges, so an open profile reads as connected geometry, not loose dots). The one segment
@@ -403,12 +403,12 @@ struct WindowedState {
     /// endpoints projected in front of the camera appear; a behind-camera endpoint
     /// (`sketch_vertex_px` `None`) culls its line. Built in
     /// [`refresh_sketch_overlay`](Self::refresh_sketch_overlay) alongside the handles.
-    sketch_segment_lines: Vec<(egui::Pos2, egui::Pos2, ui::gizmos::HandleState)>,
+    sketch_segment_lines: Vec<ui::chrome::SketchEdgeLine>,
     /// Each committed ARC's tessellated polyline in egui POINTS for THIS frame plus its
     /// [`HandleState`](ui::gizmos::HandleState) (#102) — the curve twin of
     /// [`sketch_segment_lines`](Self::sketch_segment_lines), drawn with the same vocabulary. An
     /// arc with any behind-camera chord vertex is culled whole, matching the segment rule.
-    sketch_arc_lines: Vec<(Vec<egui::Pos2>, ui::gizmos::HandleState)>,
+    sketch_arc_lines: Vec<ui::chrome::SketchCurveLine>,
     /// Each committed arc as `(arc id, its chord polyline in PHYSICAL px)` for this frame —
     /// what the Select hit-test measures the cursor against (#102). Separate from
     /// [`sketch_arc_lines`](Self::sketch_arc_lines) because that one is drawing state in egui

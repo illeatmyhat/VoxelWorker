@@ -42,6 +42,38 @@ use std::num::NonZeroU32;
 use substrate::curve_intersection::PlanarCurve;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
+/// One straight profile edge ready for display.
+///
+/// The role rides along because it is a LINETYPE, not a hit-test property: construction geometry
+/// locates the shape without being part of it, and the viewer cannot say so unless the handle
+/// says which it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SketchSegmentHandle {
+    /// The segment entity this display handle names.
+    pub entity: EntityId,
+    /// Index into [`SketchHandles::vertices`] of the edge's tail.
+    pub from: usize,
+    /// Index into [`SketchHandles::vertices`] of the edge's head.
+    pub to: usize,
+    /// Whether this edge is part of the shape or merely locates it.
+    pub role: EntityRole,
+}
+
+/// One arc ready for display, in the canonical endpoint form the viewer tessellates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SketchArcHandle {
+    /// The arc entity this display handle names.
+    pub entity: EntityId,
+    /// The tail endpoint in profile coordinates.
+    pub from: [f64; 2],
+    /// The head endpoint in profile coordinates.
+    pub to: [f64; 2],
+    /// The signed sweep in degrees; its sign picks the arc's direction.
+    pub sweep_degrees: f64,
+    /// Whether this arc is part of the shape or merely locates it.
+    pub role: EntityRole,
+}
+
 /// A circle ready for display: its identity stays paired with its profile-space geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SketchCircleHandle {
@@ -51,6 +83,8 @@ pub struct SketchCircleHandle {
     pub center: [f64; 2],
     /// The circle's radius in voxels.
     pub radius: f64,
+    /// Whether this circle is part of the shape or merely locates it.
+    pub role: EntityRole,
 }
 
 /// One higher-order authored curve resolved into the planar pieces the viewer can sample.
@@ -60,6 +94,9 @@ pub struct SketchCurveHandle {
     pub entity: SketchCurve,
     /// Exact substrate pieces; tessellation remains a screen-space viewer decision.
     pub pieces: Vec<PlanarCurve>,
+    /// Whether this curve is part of the shape or merely locates it. One role for the whole
+    /// aggregate, like every other property of an aggregate identity.
+    pub role: EntityRole,
 }
 
 /// The sketch's profile vertices in the recentered render frame, with everything the UI
@@ -79,17 +116,17 @@ pub struct SketchHandles {
     /// drag / delete can map a hit index back to the stable entity it must mutate (the entity
     /// store has no positional index).
     pub point_ids: Vec<EntityId>,
-    /// Each segment entity as `(segment id, from-vertex index, to-vertex index)` — the indices
-    /// point into [`vertices`](Self::vertices)/[`point_ids`](Self::point_ids). The UI draws a
+    /// Each segment entity, its two endpoint indices into
+    /// [`vertices`](Self::vertices)/[`point_ids`](Self::point_ids), and its role. The UI draws a
     /// line per entry and hit-tests add-point against them (splitting the named segment by id).
     /// A segment with a dangling endpoint is omitted.
-    pub segments: Vec<(EntityId, usize, usize)>,
-    /// Each arc entity as `(arc id, tail, head, signed sweep in degrees)` — the canonical form
-    /// with the endpoint ids resolved to PROFILE coordinates. The curve is deliberately NOT
-    /// tessellated here: chord count belongs to whoever knows how many pixels a voxel is
-    /// currently worth, and [`profile_to_render`](Self::profile_to_render) maps each sample it
-    /// produces into this frame. An arc with a dangling endpoint is omitted.
-    pub arcs: Vec<(EntityId, [f64; 2], [f64; 2], f64)>,
+    pub segments: Vec<SketchSegmentHandle>,
+    /// Each arc entity in canonical form, with the endpoint ids resolved to PROFILE coordinates.
+    /// The curve is deliberately NOT tessellated here: chord count belongs to whoever knows how
+    /// many pixels a voxel is currently worth, and
+    /// [`profile_to_render`](Self::profile_to_render) maps each sample it produces into this
+    /// frame. An arc with a dangling endpoint is omitted.
+    pub arcs: Vec<SketchArcHandle>,
     /// Each circle ready for display. Tessellation stays in the viewer, which alone knows the
     /// screen-space tolerance.
     pub circles: Vec<SketchCircleHandle>,
@@ -273,11 +310,18 @@ impl Scene {
 
         // Segment connectivity, mapped to vertex indices; a dangling endpoint drops the segment.
         let index_of = |id: EntityId| point_ids.iter().position(|&pid| pid == id);
-        let segments: Vec<(EntityId, usize, usize)> = producer
+        let segments: Vec<SketchSegmentHandle> = producer
             .sketch
             .segments()
             .iter()
-            .filter_map(|seg| Some((seg.id, index_of(seg.from)?, index_of(seg.to)?)))
+            .filter_map(|seg| {
+                Some(SketchSegmentHandle {
+                    entity: seg.id,
+                    from: index_of(seg.from)?,
+                    to: index_of(seg.to)?,
+                    role: seg.role,
+                })
+            })
             .collect();
 
         // Each arc's canonical form with its endpoints resolved — the viewer picks the chord
@@ -288,17 +332,18 @@ impl Scene {
                 .find(|point| point.id == id)
                 .map(|point| point.at.in_plane())
         };
-        let arcs: Vec<(EntityId, [f64; 2], [f64; 2], f64)> = producer
+        let arcs: Vec<SketchArcHandle> = producer
             .sketch
             .arcs()
             .iter()
             .filter_map(|arc| {
-                Some((
-                    arc.id,
-                    position_of(arc.from)?,
-                    position_of(arc.to)?,
-                    arc.sweep_degrees(),
-                ))
+                Some(SketchArcHandle {
+                    entity: arc.id,
+                    from: position_of(arc.from)?,
+                    to: position_of(arc.to)?,
+                    sweep_degrees: arc.sweep_degrees(),
+                    role: arc.role,
+                })
             })
             .collect();
         let circles: Vec<SketchCircleHandle> = producer
@@ -310,6 +355,7 @@ impl Scene {
                     entity: circle.id,
                     center: position_of(circle.center)?,
                     radius: circle.resolved_radius(context),
+                    role: circle.role,
                 })
             })
             .collect();
@@ -341,8 +387,12 @@ impl Scene {
             );
         let higher_curves = higher_sources
             .filter_map(|entity| {
-                let (pieces, _) = producer.sketch.source_planar_curves(entity, context)?;
-                Some(SketchCurveHandle { entity, pieces })
+                let (pieces, role) = producer.sketch.source_planar_curves(entity, context)?;
+                Some(SketchCurveHandle {
+                    entity,
+                    pieces,
+                    role,
+                })
             })
             .collect();
 

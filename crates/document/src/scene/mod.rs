@@ -50,7 +50,9 @@ pub use graph::{
 };
 pub use producers::{operation_masks_beyond_bounds, quat_from_lattice, LeafProducer, ScopeFrame};
 pub use producers::{NodeContent, VoxelBody};
-pub use sketch_handles::SketchHandles;
+pub use sketch_handles::{
+    SketchArcHandle, SketchCircleHandle, SketchCurveHandle, SketchHandles, SketchSegmentHandle,
+};
 
 /// Default +X spacing (in blocks) between successive instances of the same
 /// definition added via [`Scene::add_instance`], so a freshly-placed village
