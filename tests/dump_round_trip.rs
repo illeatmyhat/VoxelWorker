@@ -239,6 +239,8 @@ fn arbitrary_config(rng: &mut Lcg, scene: Option<Scene>) -> AppConfig {
             SketchTool::Rectangle,
         ]),
         sketch_polygon_sides: rng.pick(&[3, 6, 11, 128]),
+        sketch_pattern_counts: [rng.pick(&[1, 3, 8, 128]), rng.pick(&[1, 2, 5, 128])],
+        sketch_circular_pattern_count: rng.pick(&[2, 6, 12, 128]),
         armed_constraint: rng.flag().then(|| {
             ArmedConstraint::from_parts(
                 rng.pick(&[ConstraintVerb::HorizontalOrVertical, ConstraintVerb::Fix]),

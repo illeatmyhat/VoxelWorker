@@ -81,7 +81,7 @@ struct Snapshot {
     segments: Vec<Segment>,
     arcs: Vec<ArcEntity>,
     circles: Vec<Circle>,
-    patterns: Vec<SketchPattern>,
+    patterns: Box<[SketchPattern]>,
     unpicked_points: Vec<FaceKey>,
 }
 

@@ -1308,8 +1308,8 @@ pub struct Sketch {
     /// Associative operators whose instances are regenerated from authored curves. Generated
     /// curves deliberately have no entity ids of their own: constraints and direct edits continue
     /// to target the sources, so an operator adds no solver freedoms and cannot drift apart.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    patterns: Vec<SketchPattern>,
+    #[serde(default, skip_serializing_if = "pattern::pattern_store_is_empty")]
+    patterns: Box<[SketchPattern]>,
     /// The faces the author has UNPICKED, each named by a point inside it. Every derived
     /// face is picked by default, so this holds only the exceptions and is usually empty. A
     /// point inside no current face is inert, not an error: it costs nothing and lets an
@@ -1607,7 +1607,7 @@ impl Sketch {
             segments: Vec::with_capacity(profile.len()),
             arcs: Vec::new(),
             circles: Vec::new(),
-            patterns: Vec::new(),
+            patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
             next_id: 0,
@@ -1649,7 +1649,7 @@ impl Sketch {
             segments: Vec::new(),
             arcs: Vec::new(),
             circles: Vec::new(),
-            patterns: Vec::new(),
+            patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
             next_id: 0,

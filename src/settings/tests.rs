@@ -80,6 +80,8 @@ fn config_round_trips_through_json() {
         sketch_tool: ui::panel::SketchTool::CircleCenterDiameter,
         // Non-default so polygon tool configuration is exercised too.
         sketch_polygon_sides: 11,
+        sketch_pattern_counts: [4, 2],
+        sketch_circular_pattern_count: 9,
         armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
             ui::panel::ConstraintVerb::HorizontalOrVertical,
             vec![ui::panel::SketchEntity::Segment(11)],

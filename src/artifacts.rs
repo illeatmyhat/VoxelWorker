@@ -158,11 +158,22 @@ enum SketchToolConfig {
     Offset,
     MoveCopy,
     Scale,
+    Mirror,
+    RectangularPattern,
+    CircularPattern,
     FillRegion,
     CarveRegion,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
+    6
+}
+
+const fn default_sketch_pattern_counts() -> [u16; 2] {
+    [3, 1]
+}
+
+const fn default_sketch_circular_pattern_count() -> u16 {
     6
 }
 
@@ -458,6 +469,12 @@ pub struct SessionArtifact {
     /// Polygon tool side count; six is the compatibility default for older dumps.
     #[serde(default = "default_sketch_polygon_sides")]
     pub sketch_polygon_sides: u16,
+    /// Rectangular-pattern counts; old artifacts restore the three-by-one default.
+    #[serde(default = "default_sketch_pattern_counts")]
+    pub sketch_pattern_counts: [u16; 2],
+    /// Circular-pattern count; old artifacts restore six instances.
+    #[serde(default = "default_sketch_circular_pattern_count")]
+    pub sketch_circular_pattern_count: u16,
     /// The armed constraint gesture and its picks so far. A pre-field
     /// dump degrades to `None` — nothing armed.
     #[serde(default)]
@@ -553,6 +570,8 @@ impl DocumentArtifact {
             sketch_tool: _,
             // Declined — session state. The polygon side count is an active tool option.
             sketch_polygon_sides: _,
+            sketch_pattern_counts: _,
+            sketch_circular_pattern_count: _,
             // Declined — an unfinished constraint gesture is the very definition of where
             // somebody stopped.
             armed_constraint: _,
@@ -626,6 +645,8 @@ impl Dump {
             sketch_mode,
             sketch_tool,
             sketch_polygon_sides,
+            sketch_pattern_counts,
+            sketch_circular_pattern_count,
             armed_constraint,
             sketch_snap,
             selection,
@@ -670,6 +691,8 @@ impl Dump {
                 sketch_mode: *sketch_mode,
                 sketch_tool: *sketch_tool,
                 sketch_polygon_sides: *sketch_polygon_sides,
+                sketch_pattern_counts: *sketch_pattern_counts,
+                sketch_circular_pattern_count: *sketch_circular_pattern_count,
                 armed_constraint: armed_constraint
                     .as_ref()
                     .map(ArmedConstraintConfig::capture),
@@ -726,6 +749,10 @@ impl Dump {
             sketch_mode: session.sketch_mode,
             sketch_tool: session.sketch_tool,
             sketch_polygon_sides: session.sketch_polygon_sides.clamp(3, 128),
+            sketch_pattern_counts: session
+                .sketch_pattern_counts
+                .map(|count| count.clamp(1, 128)),
+            sketch_circular_pattern_count: session.sketch_circular_pattern_count.clamp(2, 128),
             armed_constraint: session
                 .armed_constraint
                 .as_ref()
@@ -931,6 +958,8 @@ mod tests {
             sketch_tool: SketchTool::CircleCenterDiameter,
             // Off its default so the active polygon option is covered by persistence.
             sketch_polygon_sides: 9,
+            sketch_pattern_counts: [5, 2],
+            sketch_circular_pattern_count: 11,
             armed_constraint: Some(ui::panel::ArmedConstraint::from_parts(
                 ui::panel::ConstraintVerb::Fix,
                 vec![ui::panel::SketchEntity::Point(7)],
@@ -1180,6 +1209,28 @@ mod tests {
             assert_eq!(
                 Dump::from_json(&json)
                     .expect("deserialize modifier tool")
+                    .into_state()
+                    .sketch_tool,
+                tool
+            );
+        }
+    }
+
+    #[test]
+    fn associative_operator_tools_survive_the_session_shim() {
+        for tool in [
+            SketchTool::Mirror,
+            SketchTool::RectangularPattern,
+            SketchTool::CircularPattern,
+        ] {
+            let mut state = distinctive_state();
+            state.sketch_tool = tool;
+            let json = Dump::from_state(&state)
+                .to_json()
+                .expect("serialize associative operator");
+            assert_eq!(
+                Dump::from_json(&json)
+                    .expect("deserialize associative operator")
                     .into_state()
                     .sketch_tool,
                 tool

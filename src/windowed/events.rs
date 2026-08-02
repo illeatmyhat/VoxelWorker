@@ -46,6 +46,9 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
         | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::Mirror
+        | ui::panel::SketchTool::RectangularPattern
+        | ui::panel::SketchTool::CircularPattern
         | ui::panel::SketchTool::FillRegion
         | ui::panel::SketchTool::CarveRegion => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
@@ -421,6 +424,15 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::Scale => {
                                         state.sketch_scale_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::Mirror => {
+                                        state.sketch_mirror_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::RectangularPattern => {
+                                        state.sketch_rectangular_pattern_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::CircularPattern => {
+                                        state.sketch_circular_pattern_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::FillRegion => {
                                         state.sketch_set_face_picked(up_x, up_y, true);

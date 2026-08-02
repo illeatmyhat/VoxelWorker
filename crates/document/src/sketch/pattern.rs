@@ -11,7 +11,13 @@ use std::num::NonZeroU32;
 use parametric::units::AngleMeasurement;
 use substrate::curve_intersection::PlanarCurve;
 
-use super::{arc_center_radius, EntityId, EntityRole, Sketch, SketchCurve, SketchLength};
+use super::{
+    arc_center_radius, EntityId, EntityRole, Sketch, SketchCurve, SketchLength, SketchSolid,
+};
+
+pub(super) fn pattern_store_is_empty(patterns: &[SketchPattern]) -> bool {
+    patterns.is_empty()
+}
 
 /// A durable in-plane vector. Each component retains its own authored length expression, so a
 /// density retarget treats pattern spacing exactly like a dimension or circle radius.
@@ -163,7 +169,13 @@ impl Sketch {
     /// Delete a generator without touching its authored sources.
     pub fn delete_pattern(&mut self, id: EntityId) -> bool {
         let before = self.patterns.len();
-        self.patterns.retain(|pattern| pattern.id != id);
+        self.patterns = self
+            .patterns
+            .iter()
+            .filter(|pattern| pattern.id != id)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         self.patterns.len() != before
     }
 
@@ -273,18 +285,24 @@ impl Sketch {
             .collect();
         let segments: BTreeSet<EntityId> = self.segments.iter().map(|curve| curve.id).collect();
         let points: BTreeSet<EntityId> = self.points.iter().map(|point| point.id).collect();
-        self.patterns.retain(|pattern| {
-            !pattern.sources.is_empty()
-                && pattern
-                    .sources
-                    .iter()
-                    .all(|source| curves.contains(&source.id()))
-                && match &pattern.kind {
-                    SketchPatternKind::Mirror { axis } => segments.contains(axis),
-                    SketchPatternKind::Circular { center, .. } => points.contains(center),
-                    SketchPatternKind::Rectangular { .. } => true,
-                }
-        });
+        self.patterns = self
+            .patterns
+            .iter()
+            .filter(|pattern| {
+                !pattern.sources.is_empty()
+                    && pattern
+                        .sources
+                        .iter()
+                        .all(|source| curves.contains(&source.id()))
+                    && match &pattern.kind {
+                        SketchPatternKind::Mirror { axis } => segments.contains(axis),
+                        SketchPatternKind::Circular { center, .. } => points.contains(center),
+                        SketchPatternKind::Rectangular { .. } => true,
+                    }
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
     }
 
     fn checked_pattern_sources(
@@ -311,7 +329,9 @@ impl Sketch {
     fn push_pattern(&mut self, sources: Vec<SketchCurve>, kind: SketchPatternKind) -> EntityId {
         let id = self.next_id;
         self.next_id += 1;
-        self.patterns.push(SketchPattern { id, sources, kind });
+        let mut patterns = self.patterns.to_vec();
+        patterns.push(SketchPattern { id, sources, kind });
+        self.patterns = patterns.into_boxed_slice();
         id
     }
 
@@ -373,6 +393,46 @@ impl Sketch {
                 ))
             }
         }
+    }
+}
+
+impl SketchSolid {
+    /// Clone this producer and append one associative mirror rule atomically.
+    pub fn with_mirror_pattern(
+        &self,
+        sources: impl IntoIterator<Item = SketchCurve>,
+        axis: EntityId,
+    ) -> Result<Self, SketchPatternRefusal> {
+        let mut next = self.clone();
+        next.sketch.add_mirror_pattern(sources, axis)?;
+        Ok(next)
+    }
+
+    /// Clone this producer and append one associative rectangular array atomically.
+    pub fn with_rectangular_pattern(
+        &self,
+        sources: impl IntoIterator<Item = SketchCurve>,
+        counts: [u32; 2],
+        steps: [SketchVector; 2],
+    ) -> Result<Self, SketchPatternRefusal> {
+        let mut next = self.clone();
+        next.sketch
+            .add_rectangular_pattern(sources, counts, steps)?;
+        Ok(next)
+    }
+
+    /// Clone this producer and append one associative circular array atomically.
+    pub fn with_circular_pattern(
+        &self,
+        sources: impl IntoIterator<Item = SketchCurve>,
+        center: EntityId,
+        count: u32,
+        angle: AngleMeasurement,
+    ) -> Result<Self, SketchPatternRefusal> {
+        let mut next = self.clone();
+        next.sketch
+            .add_circular_pattern(sources, center, count, angle)?;
+        Ok(next)
     }
 }
 

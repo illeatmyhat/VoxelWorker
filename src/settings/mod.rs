@@ -483,6 +483,14 @@ pub struct AppConfig {
     #[snapshot(session)]
     pub sketch_polygon_sides: u16,
 
+    /// Rectangular-pattern counts, including the source instance.
+    #[snapshot(session)]
+    pub sketch_pattern_counts: [u16; 2],
+
+    /// Circular-pattern count, including the source instance.
+    #[snapshot(session)]
+    pub sketch_circular_pattern_count: u16,
+
     /// The armed constraint gesture and its picks so far, restored so a
     /// mid-pick dump re-enters with the same question on screen — the same reason
     /// [`sketch_tool`](Self::sketch_tool) is carried, applied to the one sketch gesture that
@@ -563,6 +571,8 @@ impl Default for AppConfig {
             sketch_mode: None,
             sketch_tool: SketchTool::default(),
             sketch_polygon_sides: 6,
+            sketch_pattern_counts: [3, 1],
+            sketch_circular_pattern_count: 6,
             armed_constraint: None,
             sketch_snap: PositionSnap::default(),
             default_orbit_type: OrbitType::default(),
@@ -625,6 +635,8 @@ impl AppConfig {
                 .and_then(ArmedToolConfig::from_armed),
             sketch_tool: panel.sketch_tool,
             sketch_polygon_sides: panel.sketch_polygon_sides.clamp(3, 128),
+            sketch_pattern_counts: panel.sketch_pattern_counts.map(|count| count.clamp(1, 128)),
+            sketch_circular_pattern_count: panel.sketch_circular_pattern_count.clamp(2, 128),
             armed_constraint: panel.armed_constraint.clone(),
             sketch_snap: panel.sketch_snap,
             default_orbit_type: panel.default_orbit_type,
@@ -738,6 +750,8 @@ impl AppConfig {
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
             sketch_polygon_sides: self.sketch_polygon_sides.clamp(3, 128),
+            sketch_pattern_counts: self.sketch_pattern_counts.map(|count| count.clamp(1, 128)),
+            sketch_circular_pattern_count: self.sketch_circular_pattern_count.clamp(2, 128),
             // And restore the constraint gesture, picks included.
             armed_constraint: self.armed_constraint.clone(),
             sketch_snap: self.sketch_snap,

@@ -246,7 +246,6 @@ enum SketchModifierRoute {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SketchOperatorRoute {
-    Reserved,
     CloseLoopAction,
     Tool(SketchTool),
 }
@@ -254,18 +253,18 @@ enum SketchOperatorRoute {
 const SKETCH_OPERATORS: &[(Icon, &str, SketchOperatorRoute)] = &[
     (
         Icon::Mirror,
-        "Mirror — reserved",
-        SketchOperatorRoute::Reserved,
+        "Mirror — select curves, then click the mirror line",
+        SketchOperatorRoute::Tool(SketchTool::Mirror),
     ),
     (
         Icon::RectangularPattern,
-        "Rectangular Pattern — reserved",
-        SketchOperatorRoute::Reserved,
+        "Rectangular Pattern — select curves, then define the spacing directions",
+        SketchOperatorRoute::Tool(SketchTool::RectangularPattern),
     ),
     (
         Icon::CircularPattern,
-        "Circular Pattern — reserved",
-        SketchOperatorRoute::Reserved,
+        "Circular Pattern — select curves, then click the center point",
+        SketchOperatorRoute::Tool(SketchTool::CircularPattern),
     ),
     (
         Icon::CloseLoop,
@@ -448,7 +447,6 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
     rail_heading(ui, "Operate");
     for &(icon, tip, route) in SKETCH_OPERATORS {
         match route {
-            SketchOperatorRoute::Reserved => sketch_cell(ui, icon, tip, false, true),
             SketchOperatorRoute::CloseLoopAction => {
                 if sketch_tool_cell(ui, icon, tip, false) {
                     response.close_sketch_loop = true;
@@ -476,6 +474,31 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
                     .range(3..=128)
                     .speed(0.1),
             );
+        });
+    }
+    if state.sketch_tool == SketchTool::RectangularPattern {
+        for count in &mut state.sketch_pattern_counts {
+            *count = (*count).clamp(1, 128);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Count");
+            ui.add(
+                egui::DragValue::new(&mut state.sketch_pattern_counts[0])
+                    .range(1..=128)
+                    .prefix("X "),
+            );
+            ui.add(
+                egui::DragValue::new(&mut state.sketch_pattern_counts[1])
+                    .range(1..=128)
+                    .prefix("Y "),
+            );
+        });
+    }
+    if state.sketch_tool == SketchTool::CircularPattern {
+        state.sketch_circular_pattern_count = state.sketch_circular_pattern_count.clamp(2, 128);
+        ui.horizontal(|ui| {
+            ui.label("Count");
+            ui.add(egui::DragValue::new(&mut state.sketch_circular_pattern_count).range(2..=128));
         });
     }
     rail_heading(ui, "Snap");
@@ -782,24 +805,24 @@ mod tests {
     }
 
     #[test]
-    fn sketch_rail_exposes_face_roles_and_close_loop_but_keeps_patterns_reserved() {
+    fn sketch_rail_exposes_associative_patterns_face_roles_and_close_loop() {
         assert_eq!(
             SKETCH_OPERATORS,
             &[
                 (
                     Icon::Mirror,
-                    "Mirror — reserved",
-                    SketchOperatorRoute::Reserved
+                    "Mirror — select curves, then click the mirror line",
+                    SketchOperatorRoute::Tool(SketchTool::Mirror)
                 ),
                 (
                     Icon::RectangularPattern,
-                    "Rectangular Pattern — reserved",
-                    SketchOperatorRoute::Reserved,
+                    "Rectangular Pattern — select curves, then define the spacing directions",
+                    SketchOperatorRoute::Tool(SketchTool::RectangularPattern),
                 ),
                 (
                     Icon::CircularPattern,
-                    "Circular Pattern — reserved",
-                    SketchOperatorRoute::Reserved,
+                    "Circular Pattern — select curves, then click the center point",
+                    SketchOperatorRoute::Tool(SketchTool::CircularPattern),
                 ),
                 (
                     Icon::CloseLoop,

@@ -372,6 +372,12 @@ pub enum SketchTool {
     MoveCopy,
     /// Uniformly scale selected free geometry about a clicked center.
     Scale,
+    /// Reflect selected curves across a clicked authored line.
+    Mirror,
+    /// Array selected curves along one or two cursor-defined directions.
+    RectangularPattern,
+    /// Array selected curves around a clicked authored center point.
+    CircularPattern,
     /// Mark the derived face under the cursor as filled.
     FillRegion,
     /// Mark the derived face under the cursor as carved.
@@ -675,6 +681,12 @@ pub struct PanelState {
     /// artifacts (where this field is absent and therefore zero) deterministic.
     #[snapshot(session)]
     pub sketch_polygon_sides: u16,
+    /// Instance counts for rectangular sketch patterns. Each count includes the source.
+    #[snapshot(session)]
+    pub sketch_pattern_counts: [u16; 2],
+    /// Instance count for circular sketch patterns. The count includes the source.
+    #[snapshot(session)]
+    pub sketch_circular_pattern_count: u16,
     /// The armed **constraint** and the entities picked for it so far.
     ///
     /// Held apart from [`sketch_tool`](Self::sketch_tool) rather than joining its enum, because

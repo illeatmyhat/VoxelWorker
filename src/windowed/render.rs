@@ -374,6 +374,7 @@ impl WindowedState {
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
             self.sketch_scale_pending = None;
+            self.sketch_rectangular_pattern_pending = None;
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -393,6 +394,7 @@ impl WindowedState {
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
             self.sketch_scale_pending = None;
+            self.sketch_rectangular_pattern_pending = None;
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1741,6 +1743,127 @@ impl WindowedState {
         }
     }
 
+    /// Mirror the current typed curve selection across the authored line under the cursor. The
+    /// result is one persisted generator, so later source or axis edits regenerate the instance.
+    pub(super) fn sketch_mirror_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((axis, _, _)) = self.nearest_sketch_segment(cursor_x, cursor_y) else {
+            return;
+        };
+        let sources = self.sketch_curve_selection(target);
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        if let Ok(next) = producer.with_mirror_pattern(sources, axis) {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance rectangular-pattern input. The first click establishes a common anchor, the
+    /// second defines X spacing, and a third defines Y spacing only when its count exceeds one.
+    pub(super) fn sketch_rectangular_pattern_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(witness) = self.sketch_unsnapped_profile_coord(cursor_x, cursor_y) else {
+            return;
+        };
+        let counts = self
+            .panel_state
+            .sketch_pattern_counts
+            .map(|count| u32::from(count.clamp(1, 128)));
+        let Some(mut pending) = self.sketch_rectangular_pattern_pending.take() else {
+            let sources = self.sketch_curve_selection(target);
+            if !sources.is_empty() {
+                self.sketch_rectangular_pattern_pending = Some(PendingRectangularPattern {
+                    target,
+                    sources,
+                    anchor: witness,
+                    first_step: None,
+                });
+            }
+            return;
+        };
+        if pending.target != target {
+            return;
+        }
+        let step = [
+            witness[0] - pending.anchor[0],
+            witness[1] - pending.anchor[1],
+        ];
+        let steps = match pending.first_step {
+            None if counts[1] > 1 => {
+                pending.first_step = Some(step);
+                self.sketch_rectangular_pattern_pending = Some(pending);
+                return;
+            }
+            None => [step, [0.0, 0.0]],
+            Some(first) => [first, step],
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        if let Ok(next) = producer.with_rectangular_pattern(
+            pending.sources,
+            counts,
+            steps.map(|step| document::sketch::SketchVector::from_continuous(step[0], step[1])),
+        ) {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Array selected curves through one full turn around the authored point under the cursor.
+    pub(super) fn sketch_circular_pattern_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some(center) = self.sketch_point_ids.get(index).copied() else {
+            return;
+        };
+        let sources = self.sketch_curve_selection(target);
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let Ok(full_turn) = parametric::units::AngleMeasurement::try_from_degrees_f64(360.0) else {
+            return;
+        };
+        let count = u32::from(self.panel_state.sketch_circular_pattern_count.clamp(2, 128));
+        if let Ok(next) = producer.with_circular_pattern(sources, center, count, full_turn) {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// The selected authored curves in stable pick order. Points and constraints are deliberately
+    /// ignored: operator instances are regenerated curves, while their source points remain owned
+    /// by the selected curves and the solver.
+    fn sketch_curve_selection(
+        &self,
+        target: document::scene::NodeId,
+    ) -> Vec<document::sketch::SketchCurve> {
+        self.panel_state
+            .selection
+            .sketch_segments(target)
+            .map(document::sketch::SketchCurve::Segment)
+            .chain(
+                self.panel_state
+                    .selection
+                    .sketch_arcs(target)
+                    .map(document::sketch::SketchCurve::Arc),
+            )
+            .chain(
+                self.panel_state
+                    .selection
+                    .sketch_circles(target)
+                    .map(document::sketch::SketchCurve::Circle),
+            )
+            .collect()
+    }
+
     fn sketch_transform_selection(
         &self,
         target: document::scene::NodeId,
@@ -2721,6 +2844,7 @@ impl WindowedState {
         let offset_live = self.sketch_offset_pending.take().is_some();
         let move_copy_live = self.sketch_move_copy_pending.take().is_some();
         let scale_live = self.sketch_scale_pending.take().is_some();
+        let rectangular_pattern_live = self.sketch_rectangular_pattern_pending.take().is_some();
         let live = constraint_picks
             || line_live
             || midpoint_line_live
@@ -2735,6 +2859,7 @@ impl WindowedState {
             || offset_live
             || move_copy_live
             || scale_live
+            || rectangular_pattern_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2780,6 +2905,7 @@ impl WindowedState {
         self.sketch_offset_pending = None;
         self.sketch_move_copy_pending = None;
         self.sketch_scale_pending = None;
+        self.sketch_rectangular_pattern_pending = None;
         true
     }
 
@@ -3828,6 +3954,7 @@ impl WindowedState {
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
             self.sketch_scale_pending = None;
+            self.sketch_rectangular_pattern_pending = None;
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3855,6 +3982,7 @@ impl WindowedState {
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
             self.sketch_scale_pending = None;
+            self.sketch_rectangular_pattern_pending = None;
             return;
         };
 
@@ -3894,6 +4022,15 @@ impl WindowedState {
                 .is_none_or(|pending| pending.target == target);
         if !scale_context_is_live {
             self.sketch_scale_pending = None;
+        }
+        let rectangular_pattern_context_is_live = tool == ui::panel::SketchTool::RectangularPattern
+            && self.panel_state.armed_constraint.is_none()
+            && self
+                .sketch_rectangular_pattern_pending
+                .as_ref()
+                .is_none_or(|pending| pending.target == target);
+        if !rectangular_pattern_context_is_live {
+            self.sketch_rectangular_pattern_pending = None;
         }
         // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
         self.line_gesture.retain_for_context(
@@ -4125,8 +4262,11 @@ impl WindowedState {
             | ui::panel::SketchTool::Slot3PointArc
             | ui::panel::SketchTool::MoveCopy
             | ui::panel::SketchTool::Scale
+            | ui::panel::SketchTool::RectangularPattern
+            | ui::panel::SketchTool::CircularPattern
             | ui::panel::SketchTool::FillRegion
             | ui::panel::SketchTool::CarveRegion => None,
+            ui::panel::SketchTool::Mirror => Some(ui::gizmos::HandleState::Hover),
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -4251,6 +4391,30 @@ impl WindowedState {
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
             self.sketch_arc_lines.push((curve, state));
+        }
+
+        // Generated operator instances draw from their regenerated curves, but never enter the
+        // authored hit-test caches above. Selecting or constraining an instance would imply an
+        // entity id and an independent solver coordinate it intentionally does not own.
+        if let (Some((producer, _)), Some(context)) = (
+            self.sketch_node_state(target),
+            self.sketch_evaluation_context(),
+        ) {
+            for derived in producer.sketch.derived_pattern_curves(context) {
+                let points = break_piece_points(&derived.geometry);
+                let projected: Option<Vec<egui::Pos2>> = points
+                    .into_iter()
+                    .map(|point| {
+                        to_viewport_px(point).map(|px| {
+                            egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point)
+                        })
+                    })
+                    .collect();
+                if let Some(projected) = projected {
+                    self.sketch_arc_lines
+                        .push((projected, ui::gizmos::HandleState::Idle));
+                }
+            }
         }
 
         // The derived faces (#100), in physical px for the right-press hit-test. Derivation is a
@@ -5063,11 +5227,139 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::Mirror => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                    self.sketch_evaluation_context(),
+                ) {
+                    let preview = self
+                        .nearest_sketch_segment(cursor_x, cursor_y)
+                        .and_then(|(axis, _, _)| {
+                            producer
+                                .with_mirror_pattern(self.sketch_curve_selection(target), axis)
+                                .ok()
+                        })
+                        .map(|next| newest_pattern_curves(&next, context));
+                    if let Some(curves) = preview {
+                        let ring: Vec<_> = curves.iter().flat_map(break_piece_points).collect();
+                        let projected: Vec<_> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::RectangularPattern => {
+                if let (
+                    Some((producer, _)),
+                    Some(pending),
+                    Some((cursor_x, cursor_y)),
+                    Some(context),
+                ) = (
+                    self.sketch_node_state(target),
+                    self.sketch_rectangular_pattern_pending.as_ref(),
+                    self.last_cursor_position,
+                    self.sketch_evaluation_context(),
+                ) {
+                    if pending.target == target {
+                        let witness = self
+                            .sketch_unsnapped_profile_coord(cursor_x, cursor_y)
+                            .unwrap_or(pending.anchor);
+                        let cursor_step = [
+                            witness[0] - pending.anchor[0],
+                            witness[1] - pending.anchor[1],
+                        ];
+                        let configured = self
+                            .panel_state
+                            .sketch_pattern_counts
+                            .map(|count| u32::from(count.clamp(1, 128)));
+                        let (counts, steps) = match pending.first_step {
+                            Some(first) => (configured, [first, cursor_step]),
+                            None => ([configured[0], 1], [cursor_step, [0.0, 0.0]]),
+                        };
+                        let preview = producer
+                            .with_rectangular_pattern(
+                                pending.sources.iter().copied(),
+                                counts,
+                                steps.map(|step| {
+                                    document::sketch::SketchVector::from_continuous(
+                                        step[0], step[1],
+                                    )
+                                }),
+                            )
+                            .ok()
+                            .map(|next| newest_pattern_curves(&next, context));
+                        if let Some(curves) = preview {
+                            let ring: Vec<_> = curves.iter().flat_map(break_piece_points).collect();
+                            let projected: Vec<_> =
+                                ring.iter().copied().filter_map(snapped_screen).collect();
+                            if projected.len() == ring.len() {
+                                self.sketch_draw_preview = projected;
+                            }
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::CircularPattern => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                    self.sketch_evaluation_context(),
+                ) {
+                    let preview = self
+                        .sketch_vertex_at(cursor_x, cursor_y)
+                        .and_then(|index| self.sketch_point_ids.get(index).copied())
+                        .and_then(|center| {
+                            let angle =
+                                parametric::units::AngleMeasurement::try_from_degrees_f64(360.0)
+                                    .ok()?;
+                            producer
+                                .with_circular_pattern(
+                                    self.sketch_curve_selection(target),
+                                    center,
+                                    u32::from(
+                                        self.panel_state
+                                            .sketch_circular_pattern_count
+                                            .clamp(2, 128),
+                                    ),
+                                    angle,
+                                )
+                                .ok()
+                        })
+                        .map(|next| newest_pattern_curves(&next, context));
+                    if let Some(curves) = preview {
+                        let ring: Vec<_> = curves.iter().flat_map(break_piece_points).collect();
+                        let projected: Vec<_> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint
             | ui::panel::SketchTool::FillRegion
             | ui::panel::SketchTool::CarveRegion => {}
         }
     }
+}
+
+fn newest_pattern_curves(
+    producer: &document::sketch::SketchSolid,
+    context: parametric::EvaluationContext,
+) -> Vec<substrate::curve_intersection::PlanarCurve> {
+    let Some(pattern) = producer.sketch.patterns().last() else {
+        return Vec::new();
+    };
+    producer
+        .sketch
+        .derived_pattern_curves(context)
+        .into_iter()
+        .filter(|curve| curve.pattern == pattern.id)
+        .map(|curve| curve.geometry)
+        .collect()
 }
 
 /// Which kind of sketch EDGE a cursor resolved to (#102) — the two entity stores share an id
@@ -5204,6 +5496,9 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
         | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::Mirror
+        | ui::panel::SketchTool::RectangularPattern
+        | ui::panel::SketchTool::CircularPattern
         | ui::panel::SketchTool::FillRegion
         | ui::panel::SketchTool::CarveRegion => None,
     }
@@ -5244,6 +5539,9 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
         | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::Mirror
+        | ui::panel::SketchTool::RectangularPattern
+        | ui::panel::SketchTool::CircularPattern
         | ui::panel::SketchTool::FillRegion
         | ui::panel::SketchTool::CarveRegion => None,
     }
@@ -5284,6 +5582,9 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
         | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::Mirror
+        | ui::panel::SketchTool::RectangularPattern
+        | ui::panel::SketchTool::CircularPattern
         | ui::panel::SketchTool::FillRegion
         | ui::panel::SketchTool::CarveRegion => None,
     }
@@ -5326,6 +5627,9 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
         | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::Mirror
+        | ui::panel::SketchTool::RectangularPattern
+        | ui::panel::SketchTool::CircularPattern
         | ui::panel::SketchTool::FillRegion
         | ui::panel::SketchTool::CarveRegion => None,
     }

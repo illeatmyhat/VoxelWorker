@@ -602,6 +602,7 @@ impl Sketch {
         }?;
         self.sync_arc_centers();
         self.prune_orphan_centers();
+        self.drop_dangling_patterns();
         self.drop_dangling_constraints();
         Ok(())
     }
@@ -775,6 +776,7 @@ impl Sketch {
         }
         self.sync_arc_centers();
         self.prune_orphan_centers();
+        self.drop_dangling_patterns();
         self.drop_dangling_constraints();
         Ok(())
     }

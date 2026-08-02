@@ -98,6 +98,14 @@ struct PendingScale {
     base_radius: f64,
 }
 
+#[derive(Debug, Clone)]
+struct PendingRectangularPattern {
+    target: document::scene::NodeId,
+    sources: Vec<document::sketch::SketchCurve>,
+    anchor: [f64; 2],
+    first_step: Option<[f64; 2]>,
+}
+
 struct WindowedState {
     /// Stored as `Arc` so the surface can be `Surface<'static>` (`DEV_NOTES` /
     /// Hard requirement #6): the surface is created from `window.clone()`.
@@ -489,6 +497,8 @@ struct WindowedState {
     /// Scale center, selected identities, and their original spatial radius while the second
     /// witness chooses a uniform factor.
     sketch_scale_pending: Option<PendingScale>,
+    /// Selected sources and direction witnesses for the rectangular associative operator.
+    sketch_rectangular_pattern_pending: Option<PendingRectangularPattern>,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -893,6 +903,7 @@ impl WindowedState {
             sketch_offset_pending: None,
             sketch_move_copy_pending: None,
             sketch_scale_pending: None,
+            sketch_rectangular_pattern_pending: None,
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1097,6 +1108,7 @@ impl WindowedState {
             sketch_offset_pending: _,
             sketch_move_copy_pending: _,
             sketch_scale_pending: _,
+            sketch_rectangular_pattern_pending: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,
