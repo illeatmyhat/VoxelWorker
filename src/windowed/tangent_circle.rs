@@ -29,6 +29,18 @@ pub(super) struct TangentCircleGesture {
 }
 
 impl TangentCircleGesture {
+    /// The points this gesture has already taken, for THIS sketch — the multi-step affordance.
+    ///
+    /// A tool that has consumed clicks must show what it consumed, or its intermediate steps read
+    /// as the tool doing nothing. Empty when idle or when the pending gesture belongs elsewhere.
+    pub fn placed_points(&self, owner: NodeId) -> Vec<SketchPoint> {
+        self.pending
+            .iter()
+            .filter(|pending| pending.owner == owner)
+            .flat_map(|pending| pending.lines.iter().map(|(_, at)| *at))
+            .collect()
+    }
+
     pub fn reset(&mut self) -> bool {
         self.pending.take().is_some()
     }

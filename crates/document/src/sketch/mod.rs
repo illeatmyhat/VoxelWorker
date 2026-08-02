@@ -120,6 +120,32 @@ pub enum TangentArcRefusal {
     Constraint(ConstraintRefusal),
 }
 
+impl TangentArcRefusal {
+    /// Whether MOVING THE CURSOR could clear this refusal.
+    ///
+    /// The two halves of this enum answer different questions. A geometric refusal says the arc
+    /// through *this* cursor position is impossible — the sweep is absurd, the branch is
+    /// unreachable, the endpoint is the seam — and the author fixes it by pointing somewhere else,
+    /// so it is worth saying at the cursor. The rest say the HELD incoming curve is unusable, which
+    /// no amount of pointing changes; marking those would leave a refusal standing on screen for
+    /// the whole gesture and teach the author nothing.
+    #[must_use]
+    pub const fn is_about_the_cursor(&self) -> bool {
+        match self {
+            Self::SelfLoop
+            | Self::Candidate(_)
+            | Self::UnrepresentableSweep
+            | Self::ArcRefused
+            | Self::Branch(_)
+            | Self::Constraint(_) => true,
+            Self::UnsupportedIncoming
+            | Self::UnknownIncoming
+            | Self::NonIncidentIncoming
+            | Self::UnknownEndpoint => false,
+        }
+    }
+}
+
 /// Why a center-first arc could not be represented as durable endpoint-and-sweep geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CenterArcRefusal {

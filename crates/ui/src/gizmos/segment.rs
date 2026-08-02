@@ -3,7 +3,9 @@
 
 use egui::{Painter, Pos2, Stroke, Vec2};
 
-use super::{dashed, HandleState, HANDLE_ACCENT, HANDLE_HOVER, STROKE_HANDLE, STROKE_SEGMENT};
+use super::{
+    dashed, HandleState, HANDLE_ACCENT, HANDLE_HOVER, STROKE_GUIDE, STROKE_HANDLE, STROKE_SEGMENT,
+};
 use crate::theme::color_palette;
 
 /// Half-length (points) of the arms of the warn `✕` stamped on a [`marked_segment`] — sized to
@@ -117,19 +119,16 @@ pub fn warn_segment(painter: &Painter, a: Pos2, b: Pos2) {
 
 /// The warn `✕` of a delete-armed edge, centered on `at`.
 pub fn warn_cross(painter: &Painter, at: Pos2) {
+    warn_cross_sized(painter, at, MARK_CROSS_ARM);
+}
+
+/// The warn `✕` at an arbitrary arm length — the delete mark's own glyph, reused wherever
+/// something must read as "this cannot happen" rather than "this will be removed".
+pub fn warn_cross_sized(painter: &Painter, at: Pos2, arm: f32) {
     let cross = Stroke::new(STROKE_HANDLE, color_palette::WARN);
+    painter.line_segment([at + Vec2::splat(-arm), at + Vec2::splat(arm)], cross);
     painter.line_segment(
-        [
-            at + Vec2::splat(-MARK_CROSS_ARM),
-            at + Vec2::splat(MARK_CROSS_ARM),
-        ],
-        cross,
-    );
-    painter.line_segment(
-        [
-            at + Vec2::new(MARK_CROSS_ARM, -MARK_CROSS_ARM),
-            at + Vec2::new(-MARK_CROSS_ARM, MARK_CROSS_ARM),
-        ],
+        [at + Vec2::new(arm, -arm), at + Vec2::new(-arm, arm)],
         cross,
     );
 }
@@ -147,4 +146,17 @@ pub fn dashed_preview_polyline(painter: &Painter, points: &[Pos2]) {
         return;
     }
     super::dashed_polyline(painter, points, Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT));
+}
+
+/// The dashed **guide polyline** — the datum a preview is derived from rather than the shape being
+/// authored: a polygon's base circle, a slot's spine.
+///
+/// Same cool dashed ink as [`dashed_preview_polyline`], at the lighter [`STROKE_GUIDE`] weight the
+/// family already reserves for a datum. The weight is the whole distinction, deliberately: a
+/// second ink here would collide with CONSTRUCTION, which is what warm dashes already mean.
+pub fn dashed_guide_polyline(painter: &Painter, points: &[Pos2]) {
+    if points.len() < 2 {
+        return;
+    }
+    super::dashed_polyline(painter, points, Stroke::new(STROKE_GUIDE, HANDLE_ACCENT));
 }

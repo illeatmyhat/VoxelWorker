@@ -42,6 +42,18 @@ pub(super) struct SlotGesture {
 }
 
 impl SlotGesture {
+    /// The points this gesture has already taken, for THIS sketch — the multi-step affordance.
+    ///
+    /// A tool that has consumed clicks must show what it consumed, or its intermediate steps read
+    /// as the tool doing nothing. Empty when idle or when the pending gesture belongs elsewhere.
+    pub fn placed_points(&self, owner: NodeId) -> Vec<SketchPoint> {
+        self.pending
+            .iter()
+            .filter(|pending| pending.owner == owner)
+            .flat_map(|pending| pending.picks.iter().copied())
+            .collect()
+    }
+
     pub fn reset(&mut self) -> bool {
         self.pending.take().is_some()
     }
@@ -79,6 +91,44 @@ impl SlotGesture {
             .as_ref()
             .filter(|pending| pending.owner == owner && pending.kind == kind)
             .map(|pending| pending.picks.clone())
+    }
+
+    /// The centerline arc of an arc slot whose spine is settled but whose WIDTH is not — the
+    /// intermediate the two arc grammars spend most of their clicks in.
+    ///
+    /// Without this the width step previewed a straight run through the picks, which looks nothing
+    /// like the arc slot it is about to become. The cursor stands in for the last spine pick until
+    /// that pick is taken, so the arc is live from the moment it is determined.
+    pub fn spine(
+        &self,
+        owner: NodeId,
+        kind: SlotKind,
+        cursor: SketchPoint,
+    ) -> Option<parametric::sketch::ArcSlotSpine> {
+        let pending = self
+            .pending
+            .as_ref()
+            .filter(|pending| pending.owner == owner && pending.kind == kind)?;
+        // Once the spine's own picks are all in, the cursor is driving the width instead.
+        let settled: Vec<[f64; 2]> = pending
+            .picks
+            .iter()
+            .chain(std::iter::once(&cursor))
+            .take(3)
+            .map(SketchPoint::in_plane)
+            .collect();
+        let [first, second, third] = settled.as_slice() else {
+            return None;
+        };
+        match kind {
+            SlotKind::ThreePointArc => {
+                parametric::sketch::three_point_arc_slot_spine(*first, *second, *third).ok()
+            }
+            SlotKind::CenterPointArc => {
+                parametric::sketch::center_arc_slot_spine(*first, *second, *third).ok()
+            }
+            SlotKind::CenterToCenter | SlotKind::Overall | SlotKind::CenterPoint => None,
+        }
     }
 
     pub fn placement(

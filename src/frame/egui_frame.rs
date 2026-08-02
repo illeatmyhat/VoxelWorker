@@ -253,7 +253,7 @@ pub fn run_egui_frame(
     // #99: the drawing tools' dashed preview polyline (egui points) — the polyline rubber
     // line to the snapped cursor, or the rectangle ghost's five closing corners. Empty when
     // no drawing gesture is live, and always empty on the headless `shot` path.
-    sketch_draw_preview: &[egui::Pos2],
+    sketch_draw_preview: &[ui::chrome::SketchPreviewMark],
     // Sketch-selection slice 3: the marquee rubber band (egui points) and whether it is a
     // window (`true`, solid + stronger fill) or crossing (`false`, dashed + lighter) box, or
     // `None` when no marquee is live. Always `None` on the headless `shot` path.

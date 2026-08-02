@@ -433,11 +433,11 @@ struct WindowedState {
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
     /// Refreshed alongside the handles; drawn as a diamond on the next frame.
     sketch_insert_preview: Option<egui::Pos2>,
-    /// The drawing tools' dashed preview polyline for THIS frame (egui points), drawn on the
-    /// next (#99): Line's rubber curve from the chain's last vertex to the snapped cursor, or
-    /// the rectangle ghost's five closing corners. Empty when no drawing tool is
-    /// mid-gesture. Refreshed alongside the handles.
-    sketch_draw_preview: Vec<egui::Pos2>,
+    /// The drawing tools' preview MARKS for THIS frame (egui points), drawn on the next (#99):
+    /// the outline the click is about to author, any guide it rests on, the points the gesture has
+    /// already taken, and a refusal when the tool cannot complete from here. Empty when no drawing
+    /// tool is mid-gesture. Refreshed alongside the handles.
+    sketch_draw_preview: Vec<ui::chrome::SketchPreviewMark>,
     /// The orbit-center marker for THIS frame: its projected screen position (egui points) and
     /// whether a placement is armed (the marker is riding the cursor), or `None` when the pivot
     /// should not be drawn. Refreshed alongside the sketch overlay, from

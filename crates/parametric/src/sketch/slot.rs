@@ -112,11 +112,80 @@ pub fn three_point_arc_slot_candidate(
     through: [f64; 2],
     width_point: [f64; 2],
 ) -> Result<SlotCandidate, SlotCandidateError> {
-    finite([start, end, through, width_point])?;
+    finite([width_point])?;
+    let spine = three_point_arc_slot_spine(start, end, through)?;
+    arc_boundary(
+        spine.center,
+        spine.start,
+        spine.end,
+        spine.radius,
+        spine.sweep_radians,
+        width_point,
+    )
+}
+
+/// The CENTERLINE of an arc slot — the arc its two rails are offset from, before any width.
+///
+/// Split out so the width step's preview can draw the very arc the commit will build its rails
+/// around, rather than a straight run through the picks that looks nothing like the result. The
+/// candidate constructors below take their own spine from here, so there is one definition of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArcSlotSpine {
+    /// The arc's center.
+    pub center: [f64; 2],
+    /// Where the centerline starts.
+    pub start: [f64; 2],
+    /// Where it ends.
+    pub end: [f64; 2],
+    /// Its radius.
+    pub radius: f64,
+    /// Signed sweep; negative is clockwise.
+    pub sweep_radians: f64,
+}
+
+/// The centerline arc through three points, in the three-point grammar's own reading of them.
+///
+/// # Errors
+///
+/// Refuses non-finite or degenerate input, exactly as the full candidate does.
+pub fn three_point_arc_slot_spine(
+    start: [f64; 2],
+    end: [f64; 2],
+    through: [f64; 2],
+) -> Result<ArcSlotSpine, SlotCandidateError> {
+    finite([start, end, through])?;
     let circle = three_point_circle_candidate(start, end, through)
         .map_err(|_| SlotCandidateError::InvalidArc)?;
-    let sweep = signed_sweep_through(circle.center, start, end, through)?;
-    arc_boundary(circle.center, start, end, circle.radius, sweep, width_point)
+    let sweep_radians = signed_sweep_through(circle.center, start, end, through)?;
+    Ok(ArcSlotSpine {
+        center: circle.center,
+        start,
+        end,
+        radius: circle.radius,
+        sweep_radians,
+    })
+}
+
+/// The centerline arc from a center, a start point, and a direction to end in.
+///
+/// # Errors
+///
+/// Refuses non-finite or degenerate input, exactly as the full candidate does.
+pub fn center_arc_slot_spine(
+    center: [f64; 2],
+    start: [f64; 2],
+    end_direction: [f64; 2],
+) -> Result<ArcSlotSpine, SlotCandidateError> {
+    finite([center, start, end_direction])?;
+    let centerline = center_arc_candidate(center, start, end_direction)
+        .map_err(|_| SlotCandidateError::InvalidArc)?;
+    Ok(ArcSlotSpine {
+        center,
+        start,
+        end: centerline.endpoint,
+        radius: centerline.radius,
+        sweep_radians: centerline.sweep_radians,
+    })
 }
 
 /// Construct a curved slot from its arc center, start point, end direction, and width point.
@@ -130,15 +199,14 @@ pub fn center_arc_slot_candidate(
     end_direction: [f64; 2],
     width_point: [f64; 2],
 ) -> Result<SlotCandidate, SlotCandidateError> {
-    finite([center, start, end_direction, width_point])?;
-    let centerline = center_arc_candidate(center, start, end_direction)
-        .map_err(|_| SlotCandidateError::InvalidArc)?;
+    finite([width_point])?;
+    let spine = center_arc_slot_spine(center, start, end_direction)?;
     arc_boundary(
-        center,
-        start,
-        centerline.endpoint,
-        centerline.radius,
-        centerline.sweep_radians,
+        spine.center,
+        spine.start,
+        spine.end,
+        spine.radius,
+        spine.sweep_radians,
         width_point,
     )
 }

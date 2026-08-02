@@ -109,18 +109,101 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
     gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
 }
 
-/// Draw a drawing-tool preview: dashed segments through `points` in order — the
-/// polyline's rubber line to the cursor, or the rectangle ghost (five points closing the
-/// box). Dashed is the family's "uncommitted" read; the release is what commits. Not chrome —
-/// a passive preview, so the press/release passes through to the shell.
-pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
+/// The half-extent (egui points) of the diamond standing on a point a gesture has already taken.
+/// Matches [`SKETCH_INSERT_MARKER_HALF`] — both mean "a point that is not an entity yet".
+pub const SKETCH_PREVIEW_POINT_HALF: f32 = 4.0;
+/// The arm half-length (egui points) of the refusal cross at the cursor.
+const SKETCH_REFUSAL_ARM: f32 = 6.0;
+
+/// Which linetype a preview polyline takes.
+///
+/// Both are cool and dashed — the family's "uncommitted" read, and what keeps a preview distinct
+/// from the warm dashes of CONSTRUCTION geometry. The WEIGHT separates them, on the vocabulary the
+/// gizmo set already reserved: a real edge's weight for the shape being authored, and the lighter
+/// datum weight for the thing it is being derived FROM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchPreviewLine {
+    /// The geometry this click is about to author.
+    Outline,
+    /// The construction the outline is derived from — a polygon's base circle, a slot's spine.
+    /// Never authored, and gone when the preview is.
+    Guide,
+}
+
+/// One mark in a drawing tool's preview for THIS frame.
+///
+/// A tool mid-gesture has more to say than one polyline: the points it has already consumed, the
+/// guide it is deriving from, and whether it is currently refusing. One anonymous point list could
+/// say none of that, so a three-click tool showed nothing until it had enough for a whole shape.
+///
+/// Rebuilt from scratch every frame and never retained — a preview has no identity, so a flat list
+/// is the honest shape for it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SketchPreviewMark {
+    /// A point the gesture has already taken. The general multi-step affordance: a tool that has
+    /// consumed a click must show what it consumed.
+    Point {
+        /// Already projected by the shell.
+        at: Pos2,
+    },
+    /// A run of already-projected chords — the shape, or a guide it rests on.
+    Polyline {
+        /// Already projected by the shell, in order.
+        chords: Vec<Pos2>,
+        /// Which linetype this run takes.
+        line: SketchPreviewLine,
+    },
+    /// The tool cannot complete from where the cursor is. Drawn AT the cursor rather than in the
+    /// notice corner: the condition is continuous and cursor-tracking, so it belongs where the
+    /// author is already looking, and it lives and dies with the frame instead of needing a
+    /// debounce the notice channel would.
+    Refused {
+        /// Already projected by the shell.
+        at: Pos2,
+    },
+}
+
+/// Draw a drawing tool's preview marks for this frame. Not chrome — a passive preview, so the
+/// press/release passes through to the shell.
+///
+/// Ordered so the reading is bottom-up: guides under the outline they explain, the taken points
+/// over both (they are the author's own input and must never be buried), and a refusal on top of
+/// everything, because it is the reason nothing else is happening.
+pub fn sketch_draw_preview(ui: &egui::Ui, marks: &[SketchPreviewMark]) {
     let painter = ui.ctx().layer_painter(LayerId::new(
         Order::Foreground,
         Id::new("sketch_draw_preview"),
     ));
-    // One run, not one per chord: a curve preview arrives already flattened, and restarting the
-    // dash rhythm on every short chord would draw it solid (see `gizmos::dashed_polyline`).
-    gizmos::dashed_preview_polyline(&painter, points);
+    let polylines = |want: SketchPreviewLine| {
+        for mark in marks {
+            if let SketchPreviewMark::Polyline { chords, line } = mark {
+                if *line == want {
+                    // One run, not one per chord: a curve preview arrives already flattened, and
+                    // restarting the dash rhythm on every short chord would draw it solid.
+                    match want {
+                        SketchPreviewLine::Outline => {
+                            gizmos::dashed_preview_polyline(&painter, chords);
+                        }
+                        SketchPreviewLine::Guide => {
+                            gizmos::dashed_guide_polyline(&painter, chords);
+                        }
+                    }
+                }
+            }
+        }
+    };
+    polylines(SketchPreviewLine::Guide);
+    polylines(SketchPreviewLine::Outline);
+    for mark in marks {
+        if let SketchPreviewMark::Point { at } = mark {
+            gizmos::diamond(&painter, *at, SKETCH_PREVIEW_POINT_HALF);
+        }
+    }
+    for mark in marks {
+        if let SketchPreviewMark::Refused { at } = mark {
+            gizmos::warn_cross_sized(&painter, *at, SKETCH_REFUSAL_ARM);
+        }
+    }
 }
 
 /// One constraint badge, as the overlay draws it and as the shell's hit-test reads it.
@@ -294,29 +377,74 @@ pub fn sketch_vertex_handles(
 
 #[cfg(test)]
 mod tests {
-    use super::sketch_draw_preview;
+    use super::{sketch_draw_preview, SketchPreviewLine, SketchPreviewMark};
     use egui::{pos2, Context, Pos2, RawInput, Rect, Vec2};
 
-    #[test]
-    fn a_closed_preview_ring_paints_through_the_dashed_preview_layer() {
+    fn painted(marks: &[SketchPreviewMark]) -> usize {
         let context = Context::default();
-        let ring: [Pos2; 5] = [
+        context
+            .run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(32.0))),
+                    ..Default::default()
+                },
+                |ui| sketch_draw_preview(ui, marks),
+            )
+            .shapes
+            .len()
+    }
+
+    fn ring() -> Vec<Pos2> {
+        vec![
             pos2(10.0, 5.0),
             pos2(5.0, 10.0),
             pos2(0.0, 5.0),
             pos2(5.0, 0.0),
             pos2(10.0, 5.0),
-        ];
-        let output = context.run_ui(
-            RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(32.0))),
-                ..Default::default()
-            },
-            |ui| sketch_draw_preview(ui, &ring),
-        );
+        ]
+    }
+
+    #[test]
+    fn a_closed_preview_ring_paints_through_the_dashed_preview_layer() {
         assert!(
-            !output.shapes.is_empty(),
+            painted(&[SketchPreviewMark::Polyline {
+                chords: ring(),
+                line: SketchPreviewLine::Outline,
+            }]) > 0,
             "the closed preview produced foreground ink"
         );
+    }
+
+    /// Each kind of mark draws on its own — a tool mid-gesture with only points taken and no shape
+    /// yet still shows something, which is the whole reason the channel is a list of marks.
+    #[test]
+    fn every_mark_kind_paints_on_its_own() {
+        for mark in [
+            SketchPreviewMark::Point { at: pos2(8.0, 8.0) },
+            SketchPreviewMark::Refused { at: pos2(8.0, 8.0) },
+            SketchPreviewMark::Polyline {
+                chords: ring(),
+                line: SketchPreviewLine::Guide,
+            },
+        ] {
+            assert!(
+                painted(std::slice::from_ref(&mark)) > 0,
+                "{mark:?} produced no ink"
+            );
+        }
+    }
+
+    /// A guide and the outline it explains are DIFFERENT ink, so one cannot be read as the other.
+    #[test]
+    fn a_guide_and_an_outline_are_not_the_same_mark() {
+        let as_outline = painted(&[SketchPreviewMark::Polyline {
+            chords: ring(),
+            line: SketchPreviewLine::Outline,
+        }]);
+        let as_guide = painted(&[SketchPreviewMark::Polyline {
+            chords: ring(),
+            line: SketchPreviewLine::Guide,
+        }]);
+        assert!(as_outline > 0 && as_guide > 0);
     }
 }

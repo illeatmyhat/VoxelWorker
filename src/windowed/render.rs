@@ -9,6 +9,23 @@ use super::*;
 /// any zoom; it only ever refines the DRAWING, never the resolved profile.
 const ARC_SCREEN_SAGITTA_PX: f64 = 0.25;
 
+/// The shape a click is about to author — every drawing tool's ordinary preview mark.
+fn preview_outline(chords: Vec<egui::Pos2>) -> ui::chrome::SketchPreviewMark {
+    ui::chrome::SketchPreviewMark::Polyline {
+        chords,
+        line: ui::chrome::SketchPreviewLine::Outline,
+    }
+}
+
+/// The datum a preview rests on — a polygon's base circle, a slot's spine. Drawn under the
+/// outline, at the lighter guide weight, and never authored.
+fn preview_guide(chords: Vec<egui::Pos2>) -> ui::chrome::SketchPreviewMark {
+    ui::chrome::SketchPreviewMark::Polyline {
+        chords,
+        line: ui::chrome::SketchPreviewLine::Guide,
+    }
+}
+
 impl WindowedState {
     pub(super) fn render(&mut self) {
         profiling::scope!("render");
@@ -4747,7 +4764,7 @@ impl WindowedState {
                             let projected: Vec<egui::Pos2> =
                                 profile.iter().copied().filter_map(snapped_screen).collect();
                             if projected.len() == profile.len() {
-                                self.sketch_draw_preview = projected;
+                                self.sketch_draw_preview = vec![preview_outline(projected)];
                             }
                         }
                     }
@@ -4770,7 +4787,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             profile.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == profile.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -4783,29 +4800,43 @@ impl WindowedState {
                 ) {
                     if self.tangent_arc_gesture.is_pending() {
                         let endpoint = self.sketch_target_at(cursor_x, cursor_y);
-                        if let Some(placement) = endpoint.and_then(|endpoint| {
+                        let attempt = endpoint.map(|endpoint| {
                             self.tangent_arc_gesture
                                 .placement(target, &producer, endpoint, context)
-                                .ok()
-                        }) {
-                            let from = placement.seam.in_plane();
-                            let to = placement.endpoint.in_plane();
-                            let mut profile = vec![from];
-                            profile.extend(
-                                document::sketch::arc_interior_points(
-                                    from,
-                                    to,
-                                    placement.candidate.sweep_radians.to_degrees(),
-                                )
-                                .iter()
-                                .map(|point| point.in_plane()),
-                            );
-                            profile.push(to);
-                            let projected: Vec<egui::Pos2> =
-                                profile.iter().copied().filter_map(snapped_screen).collect();
-                            if projected.len() == profile.len() {
-                                self.sketch_draw_preview = projected;
+                        });
+                        match attempt {
+                            Some(Ok(placement)) => {
+                                let from = placement.seam.in_plane();
+                                let to = placement.endpoint.in_plane();
+                                let mut profile = vec![from];
+                                profile.extend(
+                                    document::sketch::arc_interior_points(
+                                        from,
+                                        to,
+                                        placement.candidate.sweep_radians.to_degrees(),
+                                    )
+                                    .iter()
+                                    .map(|point| point.in_plane()),
+                                );
+                                profile.push(to);
+                                let projected: Vec<egui::Pos2> =
+                                    profile.iter().copied().filter_map(snapped_screen).collect();
+                                if projected.len() == profile.len() {
+                                    self.sketch_draw_preview = vec![preview_outline(projected)];
+                                }
                             }
+                            // The refusal was swallowed here, so a tangent arc the tool cannot
+                            // build just showed nothing — indistinguishable from a dead tool. It
+                            // is said AT the cursor because moving the cursor is the fix.
+                            Some(Err(refusal)) if refusal.is_about_the_cursor() => {
+                                if let Some(at) = endpoint
+                                    .and_then(|endpoint| snapped_screen(endpoint.at.in_plane()))
+                                {
+                                    self.sketch_draw_preview =
+                                        vec![ui::chrome::SketchPreviewMark::Refused { at }];
+                                }
+                            }
+                            Some(Err(_)) | None => {}
                         }
                     }
                 }
@@ -4837,7 +4868,7 @@ impl WindowedState {
                                 let projected: Vec<egui::Pos2> =
                                     profile.iter().copied().filter_map(snapped_screen).collect();
                                 if projected.len() == profile.len() {
-                                    self.sketch_draw_preview = projected;
+                                    self.sketch_draw_preview = vec![preview_outline(projected)];
                                 }
                             }
                         } else {
@@ -4845,7 +4876,7 @@ impl WindowedState {
                             let projected: Vec<egui::Pos2> =
                                 profile.iter().copied().filter_map(snapped_screen).collect();
                             if projected.len() == profile.len() {
-                                self.sketch_draw_preview = projected;
+                                self.sketch_draw_preview = vec![preview_outline(projected)];
                             }
                         }
                     }
@@ -4875,7 +4906,7 @@ impl WindowedState {
                         // A behind-camera corner culls the whole preview rather than
                         // drawing a broken ring.
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -4912,7 +4943,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -4984,7 +5015,7 @@ impl WindowedState {
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         // A behind-camera vertex culls the whole preview, as the rectangle's does.
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5005,7 +5036,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5031,7 +5062,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5057,7 +5088,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5072,33 +5103,50 @@ impl WindowedState {
                 ) {
                     let cursor = self.sketch_target_at(cursor_x, cursor_y);
                     let sides = normalized_polygon_sides(self.panel_state.sketch_polygon_sides);
-                    let ring = cursor.and_then(|cursor| {
+                    let placement = cursor.and_then(|cursor| {
                         self.polygon_gesture
                             .placement(target, kind, &producer, cursor, sides)
-                            .map(|placement| {
-                                let mut ring: Vec<[f64; 2]> = placement
-                                    .vertices
-                                    .iter()
-                                    .map(document::sketch::SketchPoint::in_plane)
-                                    .collect();
-                                ring.push(placement.vertices[0].in_plane());
-                                ring
-                            })
-                            .or_else(|| {
-                                self.polygon_gesture.guide(target, kind).and_then(
-                                    |(first, second)| {
-                                        second
-                                            .is_none()
-                                            .then_some(vec![first.in_plane(), cursor.at.in_plane()])
-                                    },
-                                )
-                            })
                     });
+                    let ring = placement
+                        .as_ref()
+                        .map(|placement| {
+                            let mut ring: Vec<[f64; 2]> = placement
+                                .vertices
+                                .iter()
+                                .map(document::sketch::SketchPoint::in_plane)
+                                .collect();
+                            ring.push(placement.vertices[0].in_plane());
+                            ring
+                        })
+                        .or_else(|| {
+                            let cursor = cursor?;
+                            self.polygon_gesture
+                                .guide(target, kind)
+                                .and_then(|(first, second)| {
+                                    second
+                                        .is_none()
+                                        .then_some(vec![first.in_plane(), cursor.at.in_plane()])
+                                })
+                        });
                     if let Some(ring) = ring {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
+                        }
+                    }
+                    // The circle the polygon is BEING FITTED TO — the whole meaning of
+                    // "inscribed" versus "circumscribed", which the vertex ring alone cannot
+                    // show. Inscribed touches it at the vertices, circumscribed at the edge
+                    // midpoints; an edge-defined polygon rests on no circle, so it gets none.
+                    if let Some(base) = placement
+                        .as_ref()
+                        .and_then(|placement| polygon_base_circle(kind, placement))
+                    {
+                        let projected: Vec<egui::Pos2> =
+                            base.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == base.len() {
+                            self.sketch_draw_preview.push(preview_guide(projected));
                         }
                     }
                 }
@@ -5129,7 +5177,20 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
+                        }
+                    }
+                    // An arc slot's CENTERLINE, from the moment three picks settle it. The
+                    // straight run above is all a partial arc grammar could say, and it looks
+                    // nothing like the arc the slot is about to be swept around.
+                    if let Some(spine) = cursor
+                        .and_then(|cursor| self.slot_gesture.spine(target, kind, cursor.at))
+                        .map(|spine| arc_spine_points(&spine))
+                    {
+                        let projected: Vec<egui::Pos2> =
+                            spine.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == spine.len() {
+                            self.sketch_draw_preview.push(preview_guide(projected));
                         }
                     }
                 }
@@ -5151,7 +5212,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             profile.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == profile.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5180,7 +5241,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5207,7 +5268,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5233,7 +5294,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5271,7 +5332,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5325,7 +5386,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5356,7 +5417,7 @@ impl WindowedState {
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5398,7 +5459,7 @@ impl WindowedState {
                             let projected: Vec<egui::Pos2> =
                                 ring.iter().copied().filter_map(snapped_screen).collect();
                             if projected.len() == ring.len() {
-                                self.sketch_draw_preview = projected;
+                                self.sketch_draw_preview = vec![preview_outline(projected)];
                             }
                         }
                     }
@@ -5439,7 +5500,7 @@ impl WindowedState {
                             let projected: Vec<egui::Pos2> =
                                 ring.iter().copied().filter_map(snapped_screen).collect();
                             if projected.len() == ring.len() {
-                                self.sketch_draw_preview = projected;
+                                self.sketch_draw_preview = vec![preview_outline(projected)];
                             }
                         }
                     }
@@ -5464,7 +5525,7 @@ impl WindowedState {
                         let projected: Vec<_> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5514,7 +5575,7 @@ impl WindowedState {
                             let projected: Vec<_> =
                                 ring.iter().copied().filter_map(snapped_screen).collect();
                             if projected.len() == ring.len() {
-                                self.sketch_draw_preview = projected;
+                                self.sketch_draw_preview = vec![preview_outline(projected)];
                             }
                         }
                     }
@@ -5552,7 +5613,7 @@ impl WindowedState {
                         let projected: Vec<_> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == ring.len() {
-                            self.sketch_draw_preview = projected;
+                            self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
                 }
@@ -5560,6 +5621,30 @@ impl WindowedState {
             ui::panel::SketchTool::AddPoint
             | ui::panel::SketchTool::FillRegion
             | ui::panel::SketchTool::CarveRegion => {}
+        }
+
+        // Every multi-step tool shows the points it has already taken, in ONE place rather than
+        // per tool. A tool that consumes clicks and draws nothing until it has a whole shape reads
+        // as a tool that is broken — the three-point circle showed nothing at all until the second
+        // click. Whichever gesture is live answers; the rest hold no pending for this sketch.
+        let taken = [
+            self.point_circle_gesture.placed_points(target),
+            self.polygon_gesture.placed_points(target),
+            self.three_point_rectangle_gesture.placed_points(target),
+            self.corner_rectangle_gesture.placed_points(target),
+            self.center_arc_gesture.placed_points(target),
+            self.midpoint_line_gesture.placed_points(target),
+            self.slot_gesture.placed_points(target),
+            self.higher_curve_gesture.placed_points(target),
+            self.tangent_circle_gesture.placed_points(target),
+        ];
+        for at in taken
+            .into_iter()
+            .flatten()
+            .filter_map(|point| snapped_screen(point.in_plane()))
+        {
+            self.sketch_draw_preview
+                .push(ui::chrome::SketchPreviewMark::Point { at });
         }
     }
 }
@@ -5619,6 +5704,51 @@ fn break_piece_points(piece: &substrate::curve_intersection::PlanarCurve) -> Vec
             curve.flatten(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS)
         }
     }
+}
+
+/// An arc slot's centerline, tessellated to chords the projection can take.
+fn arc_spine_points(spine: &parametric::sketch::ArcSlotSpine) -> Vec<[f64; 2]> {
+    let mut points = vec![spine.start];
+    points.extend(
+        document::sketch::arc_interior_points(
+            spine.start,
+            spine.end,
+            spine.sweep_radians.to_degrees(),
+        )
+        .iter()
+        .map(document::sketch::SketchPoint::in_plane),
+    );
+    points.push(spine.end);
+    points
+}
+
+/// The circle a regular polygon is fitted to, as a projected-ready ring — or `None` for a grammar
+/// that rests on no circle.
+///
+/// The two circle grammars differ ONLY in where the polygon touches the circle, so the circle is
+/// the one mark that tells them apart: inscribed touches at the vertices, circumscribed at the
+/// edge midpoints. An edge-defined polygon is built from a side, not a radius.
+fn polygon_base_circle(
+    kind: polygon::PolygonKind,
+    placement: &document::sketch::PolygonPlacement,
+) -> Option<Vec<[f64; 2]>> {
+    let center = placement.center.in_plane();
+    let first = placement.vertices.first()?.in_plane();
+    let touch = match kind {
+        polygon::PolygonKind::Inscribed => first,
+        polygon::PolygonKind::Circumscribed => {
+            let next = placement.vertices.get(1)?.in_plane();
+            [(first[0] + next[0]) * 0.5, (first[1] + next[1]) * 0.5]
+        }
+        polygon::PolygonKind::Edge => return None,
+    };
+    let radius = (touch[0] - center[0]).hypot(touch[1] - center[1]);
+    let ring = circle_ring(
+        center,
+        radius,
+        document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+    );
+    (!ring.is_empty()).then_some(ring)
 }
 
 fn circle_ring(center: [f64; 2], radius: f64, tolerance: f64) -> Vec<[f64; 2]> {
