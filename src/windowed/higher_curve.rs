@@ -90,7 +90,6 @@ impl HigherCurveGesture {
         kind: HigherCurveKind,
         producer: &SketchSolid,
         target: Option<ResolvedSketchTarget>,
-        conic_rho: f64,
     ) -> HigherCurveEdit {
         let Some(target) = target else {
             return HigherCurveEdit::InteractionOnly;
@@ -121,28 +120,29 @@ impl HigherCurveGesture {
             && pending.points.len() >= 3
             && pending.points[0].coincides(&target.at)
         {
-            return self.finish_with(producer, true, conic_rho);
+            return self.finish_with(producer, true);
         }
         pending.points.push(target.at);
-        if matches!(kind, HigherCurveKind::Ellipse | HigherCurveKind::Conic)
-            && pending.points.len() == 3
-        {
-            return self.finish_with(producer, false, conic_rho);
+        // The conic takes a FOURTH pick the ellipse does not: its three points leave rho free, and
+        // rho is the whole difference between an elliptic, parabolic and hyperbolic curve through
+        // the same three points. The fourth pick is the apex that names it.
+        let arity = match kind {
+            HigherCurveKind::Ellipse => 3,
+            HigherCurveKind::Conic => 4,
+            HigherCurveKind::FitPointSpline | HigherCurveKind::ControlPointSpline => usize::MAX,
+        };
+        if pending.points.len() == arity {
+            return self.finish_with(producer, false);
         }
         HigherCurveEdit::InteractionOnly
     }
 
     /// Finish an open repeated-point spline on Enter. Fixed-arity tools ignore Enter.
-    pub fn finish(&mut self, producer: &SketchSolid, conic_rho: f64) -> HigherCurveEdit {
-        self.finish_with(producer, false, conic_rho)
+    pub fn finish(&mut self, producer: &SketchSolid) -> HigherCurveEdit {
+        self.finish_with(producer, false)
     }
 
-    fn finish_with(
-        &mut self,
-        producer: &SketchSolid,
-        closed: bool,
-        conic_rho: f64,
-    ) -> HigherCurveEdit {
+    fn finish_with(&mut self, producer: &SketchSolid, closed: bool) -> HigherCurveEdit {
         let Some(pending) = self.pending.take() else {
             return HigherCurveEdit::InteractionOnly;
         };
@@ -153,9 +153,10 @@ impl HigherCurveGesture {
                     .add_ellipse(points[0], points[1], points[2])
                     .ok()
             }),
-            HigherCurveKind::Conic => pending.points.get(..3).and_then(|points| {
+            HigherCurveKind::Conic => pending.points.get(..4).and_then(|points| {
+                let rho = conic_rho(points[0], points[1], points[2], points[3])?;
                 next.sketch
-                    .add_conic(points[0], points[1], points[2], conic_rho)
+                    .add_conic(points[0], points[1], points[2], rho)
                     .ok()
             }),
             HigherCurveKind::FitPointSpline => next
@@ -178,7 +179,6 @@ impl HigherCurveGesture {
         owner: NodeId,
         kind: HigherCurveKind,
         cursor: SketchPoint,
-        conic_rho: f64,
     ) -> Vec<[f64; 2]> {
         let Some(pending) = self
             .pending
@@ -198,14 +198,21 @@ impl HigherCurveGesture {
                     .ok()
                     .map(|candidate| candidate.quarters.to_vec())
             }
-            HigherCurveKind::Conic if continuous.len() == 3 => parametric::sketch::conic_candidate(
-                continuous[0],
-                continuous[1],
-                continuous[2],
-                conic_rho,
-            )
-            .ok()
-            .map(|candidate| vec![candidate.curve]),
+            // The rho step previews the curve the fourth pick is choosing between; before that
+            // pick exists there is no rho, so the three points stand on their own.
+            HigherCurveKind::Conic if continuous.len() == 4 => {
+                conic_rho(points[0], points[1], points[2], points[3])
+                    .and_then(|rho| {
+                        parametric::sketch::conic_candidate(
+                            continuous[0],
+                            continuous[1],
+                            continuous[2],
+                            rho,
+                        )
+                        .ok()
+                    })
+                    .map(|candidate| vec![candidate.curve])
+            }
             HigherCurveKind::FitPointSpline => {
                 parametric::sketch::fit_point_spline(&continuous, false)
                     .ok()
@@ -220,6 +227,25 @@ impl HigherCurveGesture {
         };
         curves.map_or(continuous, flatten_joined)
     }
+}
+
+/// The rho a conic's fourth pick names, in the gesture's own pick order.
+///
+/// One definition for the preview and the commit, so the curve the author is aiming at is the
+/// curve the click authors. `None` when the apex pick does not lie beyond the vertex, where no rho
+/// answers — the tool then shows nothing rather than snapping to an invented sharpness.
+fn conic_rho(
+    from: SketchPoint,
+    to: SketchPoint,
+    vertex: SketchPoint,
+    apex: SketchPoint,
+) -> Option<f64> {
+    parametric::sketch::conic_rho_from_apex(
+        from.in_plane(),
+        to.in_plane(),
+        vertex.in_plane(),
+        apex.in_plane(),
+    )
 }
 
 fn flatten_joined(curves: Vec<RationalBezier>) -> Vec<[f64; 2]> {
@@ -247,18 +273,74 @@ mod tests {
         }
     }
 
+    /// An ellipse is settled by three picks; a conic is not, because rho is still free.
     #[test]
-    fn fixed_arity_curves_commit_atomically_on_the_third_pick() {
+    fn fixed_arity_curves_commit_atomically_on_their_last_pick() {
         let owner = NodeId(1);
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
-        for kind in [HigherCurveKind::Ellipse, HigherCurveKind::Conic] {
+        for (kind, apex) in [
+            (HigherCurveKind::Ellipse, None),
+            // Beyond the vertex on the midpoint→vertex ray, so a rho in (0, 1) answers.
+            (HigherCurveKind::Conic, Some(target(2, 9))),
+        ] {
             let mut gesture = HigherCurveGesture::default();
-            gesture.click(owner, kind, &source, Some(target(0, 0)), 0.5);
-            gesture.click(owner, kind, &source, Some(target(5, 0)), 0.5);
-            let made = gesture.click(owner, kind, &source, Some(target(0, 3)), 0.5);
+            gesture.click(owner, kind, &source, Some(target(0, 0)));
+            gesture.click(owner, kind, &source, Some(target(5, 0)));
+            let third = gesture.click(owner, kind, &source, Some(target(2, 3)));
+            let made = match apex {
+                None => third,
+                Some(apex) => {
+                    assert!(
+                        matches!(third, HigherCurveEdit::InteractionOnly),
+                        "a conic's third pick leaves rho unchosen"
+                    );
+                    gesture.click(owner, kind, &source, Some(apex))
+                }
+            };
             assert!(matches!(made, HigherCurveEdit::Document(_)));
             assert!(source.sketch.points().is_empty());
         }
+    }
+
+    /// The apex pick names rho, so two different apexes on the same three points are two
+    /// different curves — the freedom the fourth pick exists to spend.
+    #[test]
+    fn the_apex_pick_chooses_the_conics_sharpness() {
+        let owner = NodeId(3);
+        let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+        let rho_for = |apex: ResolvedSketchTarget| {
+            let mut gesture = HigherCurveGesture::default();
+            for point in [target(0, 0), target(8, 0), target(4, 2)] {
+                gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+            }
+            let HigherCurveEdit::Document(made) =
+                gesture.click(owner, HigherCurveKind::Conic, &source, Some(apex))
+            else {
+                panic!("the apex pick commits")
+            };
+            made.sketch.conics()[0].rho.value()
+        };
+        let near = rho_for(target(4, 3));
+        let far = rho_for(target(4, 20));
+        assert!(
+            near > far,
+            "pulling the apex away sharpens: {near} vs {far}"
+        );
+        assert!((0.0..1.0).contains(&near) && (0.0..1.0).contains(&far));
+    }
+
+    /// An apex that does not lie beyond the vertex names no rho, and the tool refuses rather than
+    /// inventing a sharpness the author did not point at.
+    #[test]
+    fn an_apex_short_of_the_vertex_commits_nothing() {
+        let owner = NodeId(4);
+        let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+        let mut gesture = HigherCurveGesture::default();
+        for point in [target(0, 0), target(8, 0), target(4, 6)] {
+            gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+        }
+        let made = gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 2)));
+        assert!(matches!(made, HigherCurveEdit::InteractionOnly));
     }
 
     #[test]
@@ -267,20 +349,13 @@ mod tests {
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         let mut gesture = HigherCurveGesture::default();
         for point in [target(0, 0), target(5, 0), target(2, 4)] {
-            gesture.click(
-                owner,
-                HigherCurveKind::FitPointSpline,
-                &source,
-                Some(point),
-                0.5,
-            );
+            gesture.click(owner, HigherCurveKind::FitPointSpline, &source, Some(point));
         }
         let made = gesture.click(
             owner,
             HigherCurveKind::FitPointSpline,
             &source,
             Some(target(0, 0)),
-            0.5,
         );
         let HigherCurveEdit::Document(made) = made else {
             panic!("closing pick commits")

@@ -2312,9 +2312,7 @@ impl WindowedState {
                     self.sketch_node_state(target)
                         .map(|(producer, _)| (target, producer))
                 }) {
-                    let edit = self
-                        .higher_curve_gesture
-                        .finish(&producer, DEFAULT_CONIC_RHO);
+                    let edit = self.higher_curve_gesture.finish(&producer);
                     if let higher_curve::HigherCurveEdit::Document(next) = edit {
                         self.commit_sketch_profile_edit(target, next);
                     }
@@ -2410,9 +2408,9 @@ impl WindowedState {
             return;
         };
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
-        let edit =
-            self.higher_curve_gesture
-                .click(target, kind, &producer, resolved, DEFAULT_CONIC_RHO);
+        let edit = self
+            .higher_curve_gesture
+            .click(target, kind, &producer, resolved);
         if let higher_curve::HigherCurveEdit::Document(next) = edit {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -5203,12 +5201,7 @@ impl WindowedState {
                     (higher_curve_kind(tool), self.last_cursor_position)
                 {
                     if let Some(cursor) = self.sketch_snapped_point_at(cursor_x, cursor_y) {
-                        let profile = self.higher_curve_gesture.preview(
-                            target,
-                            kind,
-                            cursor,
-                            DEFAULT_CONIC_RHO,
-                        );
+                        let profile = self.higher_curve_gesture.preview(target, kind, cursor);
                         let projected: Vec<egui::Pos2> =
                             profile.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == profile.len() {
@@ -5814,11 +5807,6 @@ fn circle_gesture_is_current(
 ) -> bool {
     tool == ui::panel::SketchTool::CircleCenterDiameter && pending_target == Some(target)
 }
-
-/// Fusion's neutral conic boundary: rho 0.5 is the parabolic case. The active-tool scalar editor
-/// will own this value once dimensions/parameters land; keeping the default named prevents the
-/// interaction grammar from smuggling an unexplained literal through preview and commit.
-const DEFAULT_CONIC_RHO: f64 = 0.5;
 
 const fn higher_curve_kind(tool: ui::panel::SketchTool) -> Option<higher_curve::HigherCurveKind> {
     match tool {

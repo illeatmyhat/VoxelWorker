@@ -354,7 +354,9 @@ pub enum SketchTool {
     Slot3PointArc,
     /// Draw an ellipse from its center, major-axis endpoint, and width pick.
     Ellipse,
-    /// Draw an endpoint/vertex/rho conic. Rho is edited beside the active rail command.
+    /// Draw an endpoint/vertex/rho conic: two endpoints, a point on the curve, then the APEX that
+    /// names rho — the sharpness left free by the first three, and what makes the same three
+    /// points elliptic, parabolic or hyperbolic.
     Conic,
     /// Draw a spline through repeated fit points; Enter finishes open and clicking the start
     /// closes it.

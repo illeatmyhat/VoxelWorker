@@ -26,8 +26,8 @@ pub use circle::{
 };
 pub use curve::{ArcDomain, CircularCurve, CurveGeometry};
 pub use higher_curve::{
-    conic_candidate, ellipse_candidate, ConicCandidate, ConicCandidateError, EllipseCandidate,
-    EllipseCandidateError,
+    conic_candidate, conic_rho_from_apex, ellipse_candidate, ConicCandidate, ConicCandidateError,
+    EllipseCandidate, EllipseCandidateError,
 };
 pub use midpoint_line::{
     midpoint_line_candidate, MidpointLineCandidate, MidpointLineCandidateError,

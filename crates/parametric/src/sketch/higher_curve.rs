@@ -102,6 +102,44 @@ pub enum ConicCandidateError {
     CollapsedVertex,
 }
 
+/// The rho that makes the conic through `from`/`to`/`vertex` also aim at `apex`.
+///
+/// The three picks fix the curve's endpoints and one point ON it; rho is the remaining freedom,
+/// and on its own it is a bare number with nothing on screen to grab. This is what gives it a
+/// handle: the APEX is where the two end tangents meet, the vertex always sits on the segment from
+/// the chord midpoint to it, and rho is exactly how far along that segment it sits —
+/// `vertex = midpoint + rho * (apex - midpoint)`. So pointing at an apex names a rho, and pulling
+/// the apex away from the chord sharpens the curve.
+///
+/// The cursor is projected onto the midpoint→vertex ray, because only that direction can carry an
+/// apex consistent with the vertex already picked. `None` when the projection falls at or behind
+/// the vertex, where no rho in the open interval `(0, 1)` answers.
+#[must_use]
+pub fn conic_rho_from_apex(
+    from: [f64; 2],
+    to: [f64; 2],
+    vertex: [f64; 2],
+    apex: [f64; 2],
+) -> Option<f64> {
+    if ![from, to, vertex, apex]
+        .into_iter()
+        .flatten()
+        .all(f64::is_finite)
+    {
+        return None;
+    }
+    let midpoint = [(from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5];
+    let toward_vertex = [vertex[0] - midpoint[0], vertex[1] - midpoint[1]];
+    let reach = toward_vertex[0].hypot(toward_vertex[1]);
+    if reach <= f64::EPSILON {
+        return None;
+    }
+    let unit = [toward_vertex[0] / reach, toward_vertex[1] / reach];
+    let along = (apex[0] - midpoint[0]).mul_add(unit[0], (apex[1] - midpoint[1]) * unit[1]);
+    // The apex must lie strictly beyond the vertex, or the vertex is not between the two.
+    (along > reach).then(|| reach / along)
+}
+
 /// Build Fusion's endpoint/vertex/rho conic.
 ///
 /// `rho = 0.5` is parabolic; values below are elliptic and values above are hyperbolic. The open
