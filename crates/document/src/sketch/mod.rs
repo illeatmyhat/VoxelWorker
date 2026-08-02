@@ -53,6 +53,7 @@
 mod constraint;
 mod edges;
 mod faces;
+mod modify;
 mod produce;
 mod region_memo;
 mod solid;
@@ -64,6 +65,7 @@ pub use constraint::{
     SymmetryBranch, TangentBranch,
 };
 pub use faces::{Face, FaceKey};
+pub use modify::{BreakPlacement, BreakRefusal};
 pub use parametric::sketch::{SolveOutcome, SolveReport};
 pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
 pub use solid::SketchSolid;

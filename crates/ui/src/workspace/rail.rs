@@ -236,35 +236,70 @@ const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
 /// document operation and shell route; the remaining glyphs stay visible but inert until that
 /// contract exists. Keeping the inventory here prevents implementation order from silently
 /// becoming the eventual rail order.
-const SKETCH_MODIFIERS: &[(Icon, &str, bool)] = &[
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SketchModifierRoute {
+    Reserved,
+    ConstructionAction,
+    Tool(SketchTool),
+}
+
+const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
     (
         Icon::ConstructionToggle,
         "Construction — toggle selected geometry between profile and reference",
-        true,
+        SketchModifierRoute::ConstructionAction,
     ),
-    (Icon::Fillet, "Fillet — round a selected corner", false),
+    (
+        Icon::Fillet,
+        "Fillet — round a selected corner",
+        SketchModifierRoute::Reserved,
+    ),
     (
         Icon::ChamferEqual,
         "Equal Distance Chamfer — reserved",
-        false,
+        SketchModifierRoute::Reserved,
     ),
     (
         Icon::ChamferDistanceAngle,
         "Distance and Angle Chamfer — reserved",
-        false,
+        SketchModifierRoute::Reserved,
     ),
     (
         Icon::ChamferTwoDistance,
         "Two Distance Chamfer — reserved",
-        false,
+        SketchModifierRoute::Reserved,
     ),
-    (Icon::Trim, "Trim — reserved", false),
-    (Icon::Extend, "Extend — reserved", false),
-    (Icon::BreakCurve, "Break — reserved", false),
-    (Icon::OffsetCurve, "Offset — reserved", false),
-    (Icon::MoveCopy, "Move / Copy — reserved", false),
-    (Icon::SketchScale, "Scale — reserved", false),
-    (Icon::BlendCurve, "Blend Curve — reserved", false),
+    (Icon::Trim, "Trim — reserved", SketchModifierRoute::Reserved),
+    (
+        Icon::Extend,
+        "Extend — reserved",
+        SketchModifierRoute::Reserved,
+    ),
+    (
+        Icon::BreakCurve,
+        "Break — split a curve at its intersections",
+        SketchModifierRoute::Tool(SketchTool::BreakCurve),
+    ),
+    (
+        Icon::OffsetCurve,
+        "Offset — reserved",
+        SketchModifierRoute::Reserved,
+    ),
+    (
+        Icon::MoveCopy,
+        "Move / Copy — reserved",
+        SketchModifierRoute::Reserved,
+    ),
+    (
+        Icon::SketchScale,
+        "Scale — reserved",
+        SketchModifierRoute::Reserved,
+    ),
+    (
+        Icon::BlendCurve,
+        "Blend Curve — reserved",
+        SketchModifierRoute::Reserved,
+    ),
 ];
 
 /// The set-operation picker on the sketch rail — the operation is a property of the same fused
@@ -349,13 +384,20 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
         }
     }
     rail_heading(ui, "Modify");
-    for &(icon, tip, live) in SKETCH_MODIFIERS {
-        if live {
-            if sketch_tool_cell(ui, icon, tip, false) && icon == Icon::ConstructionToggle {
-                response.toggle_sketch_construction = true;
+    for &(icon, tip, route) in SKETCH_MODIFIERS {
+        match route {
+            SketchModifierRoute::Reserved => sketch_cell(ui, icon, tip, false, true),
+            SketchModifierRoute::ConstructionAction => {
+                if sketch_tool_cell(ui, icon, tip, false) {
+                    response.toggle_sketch_construction = true;
+                }
             }
-        } else {
-            sketch_cell(ui, icon, tip, false, true);
+            SketchModifierRoute::Tool(tool) => {
+                let active = state.sketch_tool == tool;
+                if sketch_tool_cell(ui, icon, tip, active) {
+                    state.sketch_tool = tool;
+                }
+            }
         }
     }
     if matches!(
@@ -657,9 +699,11 @@ mod tests {
         assert_eq!(
             SKETCH_MODIFIERS
                 .iter()
-                .filter_map(|&(icon, _, live)| live.then_some(icon))
+                .filter_map(|&(icon, _, route)| {
+                    (route != SketchModifierRoute::Reserved).then_some(icon)
+                })
                 .collect::<Vec<_>>(),
-            vec![Icon::ConstructionToggle]
+            vec![Icon::ConstructionToggle, Icon::BreakCurve]
         );
     }
 

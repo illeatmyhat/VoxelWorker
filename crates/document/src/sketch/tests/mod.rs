@@ -31,6 +31,7 @@ mod edges;
 mod edits;
 mod extrude;
 mod field;
+mod modifiers;
 mod parametric;
 mod polygons;
 mod region_memo;

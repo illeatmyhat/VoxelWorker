@@ -35,7 +35,8 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::SlotOverall
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
-        | ui::panel::SketchTool::Slot3PointArc => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::BreakCurve => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
         ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
             SketchPointerRoute::RectangleDrag
@@ -383,6 +384,9 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::ArcTangent => {
                                         state.sketch_tangent_arc_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::BreakCurve => {
+                                        state.sketch_break_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Line
@@ -847,6 +851,7 @@ mod tests {
             ui::panel::SketchTool::SlotCenterPoint,
             ui::panel::SketchTool::SlotCenterPointArc,
             ui::panel::SketchTool::Slot3PointArc,
+            ui::panel::SketchTool::BreakCurve,
         ] {
             assert_eq!(
                 sketch_pointer_route(tool),

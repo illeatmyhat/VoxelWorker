@@ -352,6 +352,8 @@ pub enum SketchTool {
     SlotCenterPointArc,
     /// Draw a curved slot from a three-point center arc and a width pick.
     Slot3PointArc,
+    /// Break the curve under the cursor at every intersection with other sketch geometry.
+    BreakCurve,
 }
 
 /// The floating Signal **display stack**'s viewer state.

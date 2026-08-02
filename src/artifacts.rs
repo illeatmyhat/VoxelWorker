@@ -148,6 +148,7 @@ enum SketchToolConfig {
     SlotCenterPoint,
     SlotCenterPointArc,
     Slot3PointArc,
+    BreakCurve,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
@@ -1141,6 +1142,22 @@ mod tests {
                 tool
             );
         }
+    }
+
+    #[test]
+    fn break_tool_survives_both_sides_of_the_tool_config_shim() {
+        let mut state = distinctive_state();
+        state.sketch_tool = SketchTool::BreakCurve;
+        let json = Dump::from_state(&state)
+            .to_json()
+            .expect("serialize Break tool");
+        assert_eq!(
+            Dump::from_json(&json)
+                .expect("deserialize Break tool")
+                .into_state()
+                .sketch_tool,
+            SketchTool::BreakCurve
+        );
     }
 
     /// The flattening is a format decision, so it is pinned as one. If the three parts ever

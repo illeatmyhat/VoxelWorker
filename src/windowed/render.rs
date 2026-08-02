@@ -1452,6 +1452,28 @@ impl WindowedState {
         Some(producer.with_point_on_segment(seg_id, point))
     }
 
+    /// Break the native curve under the cursor at all of its intersections with the rest of the
+    /// sketch. A refusal is a no-op, so a miss or endpoint-only contact creates no undo entry.
+    pub(super) fn sketch_break_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let Some(hit) = self.nearest_sketch_edge(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some(context) = document::sketch::evaluation_context_from_density(
+            self.panel_state.geometry.voxels_per_block,
+        ) else {
+            return;
+        };
+        if let Ok(next) = producer.with_curve_broken(sketch_curve_from_hit(hit), context) {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
     /// The snap-policy profile point under the cursor (physical px), through the cached
     /// ray frame — the shared entry the drawing tools (#99) and vertex edits resolve a press
     /// or release with, quantized by [`PanelState::sketch_snap`] (#96). `None` when the
@@ -1641,6 +1663,12 @@ impl WindowedState {
     }
 
     pub(super) fn accept_sketch_gesture(&mut self) -> bool {
+        if self.panel_state.armed_constraint.is_none()
+            && self.panel_state.sketch_tool == ui::panel::SketchTool::BreakCurve
+        {
+            self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
+            return true;
+        }
         self.midpoint_line_gesture.retain_for_context(
             self.panel_state.sketch_tool == ui::panel::SketchTool::MidpointLine,
             self.panel_state.armed_constraint.is_some(),
@@ -3659,7 +3687,8 @@ impl WindowedState {
             ui::panel::SketchTool::Select
             | ui::panel::SketchTool::ArcTangent
             | ui::panel::SketchTool::Circle2Tangent
-            | ui::panel::SketchTool::Circle3Tangent => Some(ui::gizmos::HandleState::Hover),
+            | ui::panel::SketchTool::Circle3Tangent
+            | ui::panel::SketchTool::BreakCurve => Some(ui::gizmos::HandleState::Hover),
             // Add-point has its own insert diamond; the drawing tools (#99, #102) target
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
@@ -3706,6 +3735,9 @@ impl WindowedState {
                     return self
                         .nearest_sketch_segment(cx, cy)
                         .map(|(id, _, _)| (SketchEdgeHit::Segment(id), state));
+                }
+                if tool == ui::panel::SketchTool::BreakCurve {
+                    return self.nearest_sketch_edge(cx, cy).map(|hit| (hit, state));
                 }
                 if self.sketch_vertex_at(cx, cy).is_some() {
                     None
@@ -4308,6 +4340,35 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::BreakCurve => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                    document::sketch::evaluation_context_from_density(
+                        self.panel_state.geometry.voxels_per_block,
+                    ),
+                ) {
+                    let placement = self
+                        .nearest_sketch_edge(cursor_x, cursor_y)
+                        .and_then(|hit| {
+                            producer
+                                .break_placement(sketch_curve_from_hit(hit), context)
+                                .ok()
+                        });
+                    if let Some(placement) = placement {
+                        let ring: Vec<[f64; 2]> = placement
+                            .pieces
+                            .iter()
+                            .flat_map(break_piece_points)
+                            .collect();
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -4323,6 +4384,29 @@ pub(super) enum SketchEdgeHit {
     Arc(document::sketch::EntityId),
     /// A circle.
     Circle(document::sketch::EntityId),
+}
+
+fn break_piece_points(piece: &substrate::curve_intersection::PlanarCurve) -> Vec<[f64; 2]> {
+    match *piece {
+        substrate::curve_intersection::PlanarCurve::Segment { start, end } => vec![start, end],
+        substrate::curve_intersection::PlanarCurve::Arc { sweep_radians, .. } => {
+            let from = piece.start();
+            let to = piece.end();
+            let mut points = vec![from];
+            points.extend(
+                document::sketch::arc_interior_points_within(
+                    from,
+                    to,
+                    sweep_radians.to_degrees(),
+                    document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                )
+                .iter()
+                .map(document::sketch::SketchPoint::in_plane),
+            );
+            points.push(to);
+            points
+        }
+    }
 }
 
 fn circle_ring(center: [f64; 2], radius: f64, tolerance: f64) -> Vec<[f64; 2]> {
@@ -4413,7 +4497,8 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::SlotOverall
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
-        | ui::panel::SketchTool::Slot3PointArc => None,
+        | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::BreakCurve => None,
     }
 }
 
@@ -4441,7 +4526,8 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::SlotOverall
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
-        | ui::panel::SketchTool::Slot3PointArc => None,
+        | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::BreakCurve => None,
     }
 }
 
@@ -4469,7 +4555,8 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::Circle3Tangent
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
-        | ui::panel::SketchTool::PolygonEdge => None,
+        | ui::panel::SketchTool::PolygonEdge
+        | ui::panel::SketchTool::BreakCurve => None,
     }
 }
 
@@ -4499,7 +4586,8 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::SlotOverall
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
-        | ui::panel::SketchTool::Slot3PointArc => None,
+        | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::BreakCurve => None,
     }
 }
 
@@ -4721,6 +4809,14 @@ fn sketch_entity_from_curve_hit(hit: SketchEdgeHit) -> ui::panel::SketchEntity {
         SketchEdgeHit::Segment(id) => ui::panel::SketchEntity::Segment(id),
         SketchEdgeHit::Arc(id) => ui::panel::SketchEntity::Arc(id),
         SketchEdgeHit::Circle(id) => ui::panel::SketchEntity::Circle(id),
+    }
+}
+
+const fn sketch_curve_from_hit(hit: SketchEdgeHit) -> document::sketch::SketchCurve {
+    match hit {
+        SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
+        SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
+        SketchEdgeHit::Circle(id) => document::sketch::SketchCurve::Circle(id),
     }
 }
 
