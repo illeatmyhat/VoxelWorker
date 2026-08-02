@@ -190,7 +190,7 @@ pub struct TangentCirclePlacement {
 }
 
 /// Why a point-defined rectangle could not be appended atomically.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RectangleRefusal {
     /// The continuous construction is degenerate or non-finite.
     Candidate(parametric::sketch::RectangleCandidateError),
@@ -198,6 +198,12 @@ pub enum RectangleRefusal {
     Unrepresentable,
     /// Every boundary edge already exists, so the command would change nothing.
     AlreadyExists,
+    /// A boundary edge the rectangle means to constrain could not be resolved.
+    UnknownSegment,
+    /// A relation the rectangle asserts was refused. The rectangle is a shape AND the
+    /// assertions that keep it one, so a refused relation refuses the whole command rather
+    /// than leaving four unconstrained lines behind that merely look rectangular.
+    Constraint(ConstraintRefusal),
 }
 
 /// Canonical boundary corners shared by rectangle preview and commit.
@@ -1863,6 +1869,21 @@ impl Sketch {
         &self.patterns
     }
 
+    /// Put a point or segment into the construction role, whatever role it held.
+    ///
+    /// Idempotent where [`toggle_construction`](Self::toggle_construction) is not. A tool that
+    /// authors reference geometry knows the role it wants; toggling would flip an entity it
+    /// happened to reuse back to real and quietly hand the region a new boundary.
+    pub fn set_construction(&mut self, id: EntityId) {
+        if let Some(point) = self.points.iter_mut().find(|point| point.id == id) {
+            point.role = EntityRole::Construction;
+            return;
+        }
+        if let Some(segment) = self.segments.iter_mut().find(|segment| segment.id == id) {
+            segment.role = EntityRole::Construction;
+        }
+    }
+
     /// Flip one geometry entity between real and construction while retaining its stable id.
     ///
     /// Arc and circle centers are structural construction points, not author geometry. They are
@@ -3404,8 +3425,18 @@ impl Sketch {
     /// Drop every construction point nothing references any more — the center of an arc that
     /// has just been deleted. A center the author has since drawn to (an edge names it) is
     /// referenced, so it survives as ordinary geometry.
+    ///
+    /// A relation that ANCHORS a point to surviving geometry counts as a reference too. A center
+    /// rectangle's center is held at the crossing of its diagonals and is named by no curve at
+    /// all; without this it would survive creation and then vanish the first time an unrelated
+    /// deletion swept the sketch, taking its assertions with it. Merely being mentioned is not
+    /// enough — see [`ConstraintKind::anchored_points`] — so a `Fix`ed circle center still goes
+    /// with its circle.
     fn prune_orphan_centers(&mut self) {
         let mut referenced = std::collections::BTreeSet::new();
+        for constraint in &self.constraints {
+            referenced.extend(constraint.kind.anchored_points());
+        }
         for arc in &self.arcs {
             referenced.extend([arc.center, arc.from, arc.to]);
         }
@@ -3432,11 +3463,21 @@ impl Sketch {
         });
     }
 
-    /// Whether a straight segment already joins `a` and `b` in either direction.
-    pub fn segment_joins(&self, a: EntityId, b: EntityId) -> bool {
+    /// The straight segment joining `a` and `b` in either direction, if one is held.
+    ///
+    /// A tool that draws a whole loop needs the id back even when [`connect`](Self::connect)
+    /// declined because the edge was already there — the edge it means to constrain is that
+    /// standing one, not a duplicate it failed to add.
+    pub fn segment_between(&self, a: EntityId, b: EntityId) -> Option<EntityId> {
         self.segments
             .iter()
-            .any(|seg| (seg.from == a && seg.to == b) || (seg.from == b && seg.to == a))
+            .find(|seg| (seg.from == a && seg.to == b) || (seg.from == b && seg.to == a))
+            .map(|seg| seg.id)
+    }
+
+    /// Whether a straight segment already joins `a` and `b` in either direction.
+    pub fn segment_joins(&self, a: EntityId, b: EntityId) -> bool {
+        self.segment_between(a, b).is_some()
     }
 
     /// Whether some stored arc already traces the CURVE `from → to` sweeping `sweep_degrees`.

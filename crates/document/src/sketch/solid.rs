@@ -566,10 +566,30 @@ impl SketchSolid {
     /// that coincide with existing points reuse their ids; the four edges go through
     /// [`Sketch::connect`], so an edge that already exists is not doubled. Unchanged when the
     /// corners are degenerate (zero span on either in-plane axis — no area to enclose). Pure.
-    pub fn with_rectangle(&self, a: SketchPoint, b: SketchPoint) -> SketchSolid {
+    pub fn with_rectangle(
+        &self,
+        a: SketchPoint,
+        b: SketchPoint,
+        context: EvaluationContext,
+    ) -> Result<SketchSolid, RectangleRefusal> {
+        let placement = self.corner_rectangle_placement(a, b)?;
+        let (next, _) =
+            self.with_rectangle_placement(&placement, RectangleFrame::AxisAligned, context)?;
+        Ok(next)
+    }
+
+    /// Resolve an axis-aligned rectangle between opposite corners without allocating entities.
+    ///
+    /// Shared with [`SketchSolid::with_rectangle`] so the two-click preview draws the very loop
+    /// the second click authors, rather than a lookalike built by the shell.
+    pub fn corner_rectangle_placement(
+        &self,
+        a: SketchPoint,
+        b: SketchPoint,
+    ) -> Result<RectanglePlacement, RectangleRefusal> {
         let (a_pos, b_pos) = (a.in_plane(), b.in_plane());
         if a_pos[0] == b_pos[0] || a_pos[1] == b_pos[1] {
-            return self.clone();
+            return Err(RectangleRefusal::Unrepresentable);
         }
         // The two synthesized corners mix one coordinate from each source point,
         // fraction included; they carry no retained expression of their own.
@@ -581,20 +601,9 @@ impl SketchSolid {
             ],
             offset_measurements: None,
         };
-        let corners = [a, mixed(&b, &a), b, mixed(&a, &b)];
-        let mut next = self.clone();
-        let ids: Vec<EntityId> = corners
-            .iter()
-            .map(|&corner| {
-                next.sketch
-                    .point_at(corner)
-                    .unwrap_or_else(|| next.sketch.add_free_point(corner))
-            })
-            .collect();
-        for i in 0..4 {
-            next.sketch.connect(ids[i], ids[(i + 1) % 4]);
-        }
-        next
+        Ok(RectanglePlacement {
+            corners: [a, mixed(&b, &a), b, mixed(&a, &b)],
+        })
     }
 
     /// Resolve a center-defined axis-aligned rectangle without allocating entities.
@@ -626,13 +635,43 @@ impl SketchSolid {
     }
 
     /// Atomically append a center-defined axis-aligned rectangle.
+    ///
+    /// The center is authored, not merely consumed: it persists as a construction point held at
+    /// the crossing of two construction diagonals, so dragging it moves the rectangle and the
+    /// shape keeps a handle on the thing it was drawn around. The diagonals never bound a region
+    /// — that is what [`EntityRole::Construction`] means — so the interior stays one face.
     pub fn with_center_rectangle(
         &self,
         center: SketchPoint,
         corner: SketchPoint,
+        context: EvaluationContext,
     ) -> Result<SketchSolid, RectangleRefusal> {
-        self.center_rectangle_placement(center, corner)
-            .and_then(|placement| self.with_rectangle_placement(&placement))
+        let placement = self.center_rectangle_placement(center, corner)?;
+        let (mut next, ids) =
+            self.with_rectangle_placement(&placement, RectangleFrame::AxisAligned, context)?;
+        let diagonals = [
+            connect_construction(&mut next.sketch, ids[0], ids[2])?,
+            connect_construction(&mut next.sketch, ids[1], ids[3])?,
+        ];
+        let center_id = next
+            .sketch
+            .point_at(center)
+            .unwrap_or_else(|| next.sketch.add_free_point(center));
+        next.sketch.set_construction(center_id);
+        // Halfway along BOTH diagonals. The second assertion is implied by the first once the
+        // sides are square, and the solver keeps it flagged rather than refusing it — the
+        // author drew a center rectangle, so both diagonals owning the center is the intent.
+        for segment in diagonals {
+            assert_rectangle_relation(
+                &mut next.sketch,
+                ConstraintKind::Midpoint {
+                    point: center_id,
+                    segment,
+                },
+                context,
+            )?;
+        }
+        Ok(next)
     }
 
     /// Atomically append an oriented three-point rectangle.
@@ -641,27 +680,49 @@ impl SketchSolid {
         first: SketchPoint,
         second: SketchPoint,
         width_point: SketchPoint,
+        context: EvaluationContext,
     ) -> Result<SketchSolid, RectangleRefusal> {
-        self.three_point_rectangle_placement(first, second, width_point)
-            .and_then(|placement| self.with_rectangle_placement(&placement))
+        let placement = self.three_point_rectangle_placement(first, second, width_point)?;
+        let (next, _) =
+            self.with_rectangle_placement(&placement, RectangleFrame::Oriented, context)?;
+        Ok(next)
     }
 
+    /// Append the four corners and their closing loop, returning the corner ids so a caller that
+    /// authors more than the boundary — the center construction, say — can name them.
+    ///
+    /// The frame is passed rather than inferred from the corners. A three-point rectangle the
+    /// author happened to draw square to the axes is still an ORIENTED rectangle — inferring
+    /// would silently pin its rotation and make the tool's behavior depend on how carefully the
+    /// author aimed.
     fn with_rectangle_placement(
         &self,
         placement: &RectanglePlacement,
-    ) -> Result<SketchSolid, RectangleRefusal> {
+        frame: RectangleFrame,
+        context: EvaluationContext,
+    ) -> Result<(SketchSolid, [EntityId; 4]), RectangleRefusal> {
         let mut next = self.clone();
         let ids = placement.corners.map(|corner| {
             next.sketch
                 .point_at(corner)
                 .unwrap_or_else(|| next.sketch.add_free_point(corner))
         });
-        for index in 0..4 {
-            next.sketch.connect(ids[index], ids[(index + 1) % 4]);
+        let edges = rectangle_edges(&mut next.sketch, ids)?;
+        if next == *self {
+            return Err(RectangleRefusal::AlreadyExists);
         }
-        (next != *self)
-            .then_some(next)
-            .ok_or(RectangleRefusal::AlreadyExists)
+        match frame {
+            RectangleFrame::AxisAligned => constrain_axis_aligned_rectangle(
+                &mut next.sketch,
+                &placement.corners,
+                edges,
+                context,
+            )?,
+            RectangleFrame::Oriented => {
+                constrain_oriented_rectangle(&mut next.sketch, edges, context)?;
+            }
+        }
+        Ok((next, ids))
     }
 
     /// Resolve an inscribed regular polygon without allocation.
@@ -1704,6 +1765,136 @@ fn canonical_tangent_circle(
         radius,
         contacts,
     })
+}
+
+/// Which claim a rectangle tool makes about its own sides.
+///
+/// Both frames say "this stays a rectangle"; they differ on whether it may turn. Naming the
+/// frame keeps the decision at the tool that knows the answer instead of re-deriving it from
+/// corner coordinates that only accidentally reveal it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RectangleFrame {
+    /// Sides stay on the plane's own axes — the two-point and center constructions.
+    AxisAligned,
+    /// Corners stay square but the rectangle may rotate — the three-point construction.
+    Oriented,
+}
+
+/// Join two existing points with a CONSTRUCTION segment, reusing a standing edge.
+///
+/// A diagonal is reference geometry: it exists to give the center something to be the middle of,
+/// and it must never bound a region.
+fn connect_construction(
+    sketch: &mut Sketch,
+    from: EntityId,
+    to: EntityId,
+) -> Result<EntityId, RectangleRefusal> {
+    let id = sketch
+        .connect(from, to)
+        .or_else(|| sketch.segment_between(from, to))
+        .ok_or(RectangleRefusal::UnknownSegment)?;
+    sketch.set_construction(id);
+    Ok(id)
+}
+
+/// Close a corner loop into four boundary edges, in the same order as `ids`.
+///
+/// An edge that already stands is REUSED rather than doubled — [`Sketch::connect`] declines a
+/// duplicate, and the edge the rectangle means to constrain is that standing one. Without this
+/// the relations would silently skip whichever side the drawing already had.
+fn rectangle_edges(
+    sketch: &mut Sketch,
+    ids: [EntityId; 4],
+) -> Result<[EntityId; 4], RectangleRefusal> {
+    let mut edges = [0; 4];
+    for index in 0..4 {
+        let (from, to) = (ids[index], ids[(index + 1) % 4]);
+        edges[index] = sketch
+            .connect(from, to)
+            .or_else(|| sketch.segment_between(from, to))
+            .ok_or(RectangleRefusal::UnknownSegment)?;
+    }
+    Ok(edges)
+}
+
+/// Assert one of a rectangle's relations, treating "already asserted" as satisfied.
+///
+/// A rectangle's corners fuse with coincident existing points and its edges reuse standing
+/// segments, so a rectangle drawn against earlier geometry can meet a side that already carries
+/// the very relation being asserted. That is the desired end state reached early, not a refusal:
+/// re-asserting it is idempotent. Every other refusal aborts the whole command, because a
+/// rectangle is the shape AND the assertions that keep it one.
+fn assert_rectangle_relation(
+    sketch: &mut Sketch,
+    kind: ConstraintKind,
+    context: EvaluationContext,
+) -> Result<(), RectangleRefusal> {
+    match sketch.add_constraint(kind, context) {
+        Ok(_) | Err(ConstraintRefusal::AlreadyAsserted { .. }) => Ok(()),
+        Err(refusal) => Err(RectangleRefusal::Constraint(refusal)),
+    }
+}
+
+/// Assert that an axis-aligned rectangle stays axis-aligned: each side Horizontal or Vertical.
+///
+/// Which is which is read from the geometry the tool just placed rather than from the edge's
+/// index, so a corner order that differs between the two-point and center constructions cannot
+/// silently assert the transpose. Four relations against eight corner freedoms leave exactly the
+/// four the shape has — position, width and height.
+fn constrain_axis_aligned_rectangle(
+    sketch: &mut Sketch,
+    corners: &[SketchPoint; 4],
+    edges: [EntityId; 4],
+    context: EvaluationContext,
+) -> Result<(), RectangleRefusal> {
+    for index in 0..4 {
+        let (from, to) = (
+            corners[index].in_plane(),
+            corners[(index + 1) % 4].in_plane(),
+        );
+        let segment = edges[index];
+        let kind = if from[1] == to[1] {
+            ConstraintKind::Horizontal { segment }
+        } else if from[0] == to[0] {
+            ConstraintKind::Vertical { segment }
+        } else {
+            // Not axis-aligned after all: the caller named the wrong frame for this drawing.
+            return Err(RectangleRefusal::Unrepresentable);
+        };
+        assert_rectangle_relation(sketch, kind, context)?;
+    }
+    Ok(())
+}
+
+/// Assert that an ORIENTED rectangle stays a rectangle without pinning which way it faces:
+/// both pairs of opposite sides parallel, and one corner square.
+///
+/// The fourth corner needs no relation of its own — three assertions against eight corner
+/// freedoms leave the five an oriented rectangle has (position, rotation, width, height), and a
+/// parallelogram with one right angle has four.
+fn constrain_oriented_rectangle(
+    sketch: &mut Sketch,
+    edges: [EntityId; 4],
+    context: EvaluationContext,
+) -> Result<(), RectangleRefusal> {
+    let relations = [
+        ConstraintKind::Parallel {
+            first: edges[0],
+            second: edges[2],
+        },
+        ConstraintKind::Parallel {
+            first: edges[1],
+            second: edges[3],
+        },
+        ConstraintKind::Perpendicular {
+            first: edges[0],
+            second: edges[1],
+        },
+    ];
+    for kind in relations {
+        assert_rectangle_relation(sketch, kind, context)?;
+    }
+    Ok(())
 }
 
 fn canonical_rectangle(

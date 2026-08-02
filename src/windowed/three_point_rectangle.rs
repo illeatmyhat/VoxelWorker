@@ -2,6 +2,7 @@
 
 use document::scene::NodeId;
 use document::sketch::{RectanglePlacement, SketchPoint, SketchSolid};
+use parametric::EvaluationContext;
 
 use super::sketch_target::ResolvedSketchTarget;
 
@@ -76,6 +77,7 @@ impl ThreePointRectangleGesture {
         owner: NodeId,
         producer: &SketchSolid,
         target: Option<ResolvedSketchTarget>,
+        context: EvaluationContext,
     ) -> ThreePointRectangleEdit {
         let Some(pending) = self.pending.take() else {
             if let Some(target) = target {
@@ -103,7 +105,7 @@ impl ThreePointRectangleGesture {
             return ThreePointRectangleEdit::InteractionOnly;
         };
         producer
-            .with_three_point_rectangle(pending.first, second, target.at)
+            .with_three_point_rectangle(pending.first, second, target.at, context)
             .map_or(ThreePointRectangleEdit::InteractionOnly, |next| {
                 ThreePointRectangleEdit::Document(next)
             })
@@ -115,9 +117,14 @@ impl ThreePointRectangleGesture {
 mod tests {
     use super::*;
     use document::sketch::{PlaneAxis, Sketch};
+    use std::num::NonZeroU32;
 
     fn target(at: SketchPoint) -> ResolvedSketchTarget {
         ResolvedSketchTarget { at, existing: None }
+    }
+
+    fn context() -> EvaluationContext {
+        EvaluationContext::new(NonZeroU32::new(16).unwrap())
     }
 
     #[test]
@@ -125,22 +132,46 @@ mod tests {
         let owner = NodeId(1);
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         let mut gesture = ThreePointRectangleGesture::default();
-        gesture.click(owner, &source, Some(target(SketchPoint::new(0, 0))));
-        gesture.click(owner, &source, Some(target(SketchPoint::new(3, 4))));
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(0, 0))),
+            context(),
+        );
+        gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(3, 4))),
+            context(),
+        );
         assert!(source.sketch.points().is_empty());
         let preview = gesture
             .placement(owner, &source, target(SketchPoint::new(0, 5)))
             .unwrap();
-        let ThreePointRectangleEdit::Document(made) =
-            gesture.click(owner, &source, Some(target(SketchPoint::new(0, 5))))
-        else {
+        let ThreePointRectangleEdit::Document(made) = gesture.click(
+            owner,
+            &source,
+            Some(target(SketchPoint::new(0, 5))),
+            context(),
+        ) else {
             panic!("completion")
         };
         assert_eq!(made.sketch.segments().len(), 4);
         assert_eq!(made.sketch.points().len(), 4);
         assert!(gesture.pending.is_none());
+        // Asserting perpendicularity settles the corners a hair off the previewed placement —
+        // bounded well under the 1/256-block quantum the profile flattens to, so it is invisible
+        // in resolved occupancy but real. The preview is compared with a tolerance rather than by
+        // exact coincidence; the axis-aligned grammars do not move at all.
         for corner in preview.corners {
-            assert!(made.sketch.point_at(corner).is_some());
+            let corner = corner.in_plane();
+            assert!(
+                made.sketch.points().iter().any(|point| {
+                    let at = point.at.in_plane();
+                    (at[0] - corner[0]).abs() < 1e-3 && (at[1] - corner[1]).abs() < 1e-3
+                }),
+                "no stored corner near {corner:?}"
+            );
         }
     }
 }

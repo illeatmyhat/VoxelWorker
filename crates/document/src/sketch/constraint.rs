@@ -220,6 +220,33 @@ impl ConstraintKind {
             other => other,
         }
     }
+    /// Every point this relation ties to SURVIVING GEOMETRY, rather than merely mentions.
+    ///
+    /// The distinction decides whether an orphan sweep may take the point. A circle's center is
+    /// structural — it anchors the circle and nothing else, so `Fix`ing it must not outlive the
+    /// circle. A center rectangle's center is authored: `Midpoint` holds it on a diagonal that is
+    /// still there, and that diagonal is the reference. Relations between two points, or between
+    /// two curves, anchor nothing — a point they name is held up by whatever draws it, or by
+    /// nothing at all.
+    pub(super) fn anchored_points(&self) -> Vec<EntityId> {
+        match *self {
+            Self::Midpoint { point, .. } => vec![point],
+            Self::Fix { .. }
+            | Self::Quantize { .. }
+            | Self::Distance { .. }
+            | Self::Coincident { .. }
+            | Self::Horizontal { .. }
+            | Self::Vertical { .. }
+            | Self::Parallel { .. }
+            | Self::Perpendicular { .. }
+            | Self::Equal { .. }
+            | Self::Collinear { .. }
+            | Self::Tangent { .. }
+            | Self::Concentric { .. }
+            | Self::Symmetry { .. } => Vec::new(),
+        }
+    }
+
     /// Every point id named directly, for cascade and liveness checks.
     pub(super) fn points(&self) -> Vec<EntityId> {
         match *self {

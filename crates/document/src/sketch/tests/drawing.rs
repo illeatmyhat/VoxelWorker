@@ -20,8 +20,11 @@ fn center_rectangle_preview_and_commit_share_reflected_corners() {
     let center = SketchPoint::from_continuous(2.5, 3.25);
     let corner = SketchPoint::from_continuous(5.75, 8.0);
     let placement = solid.center_rectangle_placement(center, corner).unwrap();
-    let made = solid.with_center_rectangle(center, corner).unwrap();
-    assert_eq!(made.sketch.segments().len(), 4);
+    let made = solid
+        .with_center_rectangle(center, corner, ctx(16))
+        .unwrap();
+    // Four boundary sides plus the two construction diagonals the center hangs from.
+    assert_eq!(made.sketch.segments().len(), 6);
     for point in placement.corners {
         assert!(made.sketch.point_at(point).is_some());
     }
@@ -46,12 +49,25 @@ fn three_point_rectangle_projects_width_and_commits_atomically() {
             SketchPoint::new(0, 0),
             SketchPoint::new(3, 4),
             SketchPoint::new(0, 5),
+            ctx(16),
         )
         .unwrap();
     assert_eq!(made.sketch.points().len(), 4);
     assert_eq!(made.sketch.segments().len(), 4);
-    for point in placement.corners {
-        assert!(made.sketch.point_at(point).is_some());
+    // Asserting perpendicularity settles the corners, which quantization left a hair off square.
+    // The nudge is bounded well under the 1/256-block quantum the profile flattens to, so it is
+    // invisible in resolved occupancy — but it is real, so the corners are compared with a
+    // tolerance rather than by exact coincidence. The axis-aligned constructions do not move at
+    // all: their corners already satisfy Horizontal and Vertical exactly.
+    for corner in placement.corners {
+        let corner = corner.in_plane();
+        assert!(
+            made.sketch.points().iter().any(|point| {
+                let at = point.at.in_plane();
+                (at[0] - corner[0]).abs() < 1e-3 && (at[1] - corner[1]).abs() < 1e-3
+            }),
+            "no stored corner near {corner:?}"
+        );
     }
     let base = [3.0, 4.0];
     let side = [
@@ -1059,7 +1075,9 @@ fn tangent_arc_reads_fixed_incoming_sweep_without_reauthoring_it_or_using_densit
 
 #[test]
 fn with_rectangle_closes_a_four_point_loop() {
-    let after = empty_solid().with_rectangle(SketchPoint::new(1, 1), SketchPoint::new(4, 3));
+    let after = empty_solid()
+        .with_rectangle(SketchPoint::new(1, 1), SketchPoint::new(4, 3), ctx(16))
+        .unwrap();
     assert_eq!(after.sketch.points().len(), 4);
     assert_eq!(after.sketch.segments().len(), 4);
     let coords: std::collections::BTreeSet<[i64; 2]> = after
@@ -1079,8 +1097,14 @@ fn with_rectangle_closes_a_four_point_loop() {
 fn with_rectangle_reuses_coincident_corners() {
     // Drawing a second rectangle sharing an edge with the first reuses the shared corners and
     // never doubles the shared segment.
-    let one = empty_solid().with_rectangle(SketchPoint::new(0, 0), SketchPoint::new(4, 3));
-    let two = one.with_rectangle(SketchPoint::new(4, 0), SketchPoint::new(8, 3));
+    let one = empty_solid()
+        .with_rectangle(SketchPoint::new(0, 0), SketchPoint::new(4, 3), ctx(16))
+        .unwrap();
+    // The shared side already carries the first rectangle's Vertical, so the second rectangle
+    // re-asserting it is idempotent rather than a refusal.
+    let two = one
+        .with_rectangle(SketchPoint::new(4, 0), SketchPoint::new(8, 3), ctx(16))
+        .unwrap();
     assert_eq!(
         two.sketch.points().len(),
         6,
@@ -1097,12 +1121,111 @@ fn with_rectangle_reuses_coincident_corners() {
 fn with_rectangle_refuses_a_zero_span() {
     let before = empty_solid();
     assert_eq!(
-        before.with_rectangle(SketchPoint::new(2, 2), SketchPoint::new(2, 5)),
-        before,
-        "a degenerate rectangle (zero span on an axis) changes nothing"
+        before.with_rectangle(SketchPoint::new(2, 2), SketchPoint::new(2, 5), ctx(16)),
+        Err(crate::sketch::RectangleRefusal::Unrepresentable),
+        "a degenerate rectangle (zero span on an axis) draws nothing"
     );
     assert_eq!(
-        before.with_rectangle(SketchPoint::new(2, 2), SketchPoint::new(2, 2)),
-        before
+        before.with_rectangle(SketchPoint::new(2, 2), SketchPoint::new(2, 2), ctx(16)),
+        Err(crate::sketch::RectangleRefusal::Unrepresentable)
+    );
+}
+
+/// Each side of a two-point rectangle carries the relation that keeps it on its axis, so
+/// dragging a corner later stretches the rectangle instead of shearing it.
+#[test]
+fn a_two_point_rectangle_constrains_every_side_to_its_axis() {
+    let made = empty_solid()
+        .with_rectangle(SketchPoint::new(1, 1), SketchPoint::new(5, 4), ctx(16))
+        .unwrap();
+    let mut horizontal = 0;
+    let mut vertical = 0;
+    for constraint in made.sketch.constraints() {
+        match constraint.kind {
+            ConstraintKind::Horizontal { .. } => horizontal += 1,
+            ConstraintKind::Vertical { .. } => vertical += 1,
+            other => panic!("unexpected relation on a two-point rectangle: {other:?}"),
+        }
+    }
+    assert_eq!((horizontal, vertical), (2, 2));
+}
+
+/// A three-point rectangle may turn, so it asserts squareness WITHOUT pinning an axis: opposite
+/// sides parallel and one corner perpendicular.
+#[test]
+fn a_three_point_rectangle_stays_square_without_pinning_its_rotation() {
+    let made = empty_solid()
+        .with_three_point_rectangle(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(3, 4),
+            SketchPoint::new(0, 5),
+            ctx(16),
+        )
+        .unwrap();
+    let mut parallel = 0;
+    let mut perpendicular = 0;
+    for constraint in made.sketch.constraints() {
+        match constraint.kind {
+            ConstraintKind::Parallel { .. } => parallel += 1,
+            ConstraintKind::Perpendicular { .. } => perpendicular += 1,
+            other => panic!("a three-point rectangle must not pin an axis: {other:?}"),
+        }
+    }
+    assert_eq!((parallel, perpendicular), (2, 1));
+}
+
+/// The center is real authored geometry: it persists as a construction point held at the
+/// crossing of two construction diagonals, and the diagonals never bound the region.
+#[test]
+fn a_center_rectangle_hangs_its_center_from_two_construction_diagonals() {
+    use crate::sketch::EntityRole;
+    let center = SketchPoint::new(4, 3);
+    let made = empty_solid()
+        .with_center_rectangle(center, SketchPoint::new(7, 8), ctx(16))
+        .unwrap();
+
+    let diagonals: Vec<_> = made
+        .sketch
+        .segments()
+        .iter()
+        .filter(|segment| segment.role == EntityRole::Construction)
+        .collect();
+    assert_eq!(diagonals.len(), 2, "corner to corner, both ways");
+
+    let center_id = made.sketch.point_at(center).expect("the center persists");
+    let held: Vec<_> = made
+        .sketch
+        .constraints()
+        .iter()
+        .filter_map(|constraint| match constraint.kind {
+            ConstraintKind::Midpoint { point, segment } if point == center_id => Some(segment),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(held.len(), 2, "the center is halfway along BOTH diagonals");
+    for segment in held {
+        assert!(diagonals.iter().any(|held| held.id == segment));
+    }
+
+    // The interior stays ONE face: a construction edge never bounds a region.
+    assert_eq!(made.sketch.faces(ctx(16)).len(), 1);
+}
+
+/// A constrained construction point is referenced. Without this the center would survive its
+/// own creation and then vanish the next time any unrelated deletion swept the sketch.
+#[test]
+fn a_center_rectangle_keeps_its_center_across_an_unrelated_deletion() {
+    let center = SketchPoint::new(4, 3);
+    let mut made = empty_solid()
+        .with_center_rectangle(center, SketchPoint::new(7, 8), ctx(16))
+        .unwrap();
+    let circle = made
+        .sketch
+        .add_circle(SketchPoint::new(40, 40), SketchLength::new(3))
+        .expect("an unrelated circle");
+    made.sketch.delete_circle(circle);
+    assert!(
+        made.sketch.point_at(center).is_some(),
+        "the center is held by its Midpoint assertions, not by a curve"
     );
 }

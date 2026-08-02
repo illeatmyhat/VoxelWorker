@@ -9,7 +9,6 @@ enum SketchPointerRoute {
     Select,
     StationaryEdit,
     LineClickOrArcDrag,
-    RectangleDrag,
 }
 
 /// Classify the pointer grammar once. Midpoint Line deliberately shares the ordinary stationary
@@ -28,6 +27,8 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::Circle2Tangent
         | ui::panel::SketchTool::Circle3Tangent
         | ui::panel::SketchTool::Rectangle3Point
+        | ui::panel::SketchTool::Rectangle
+        | ui::panel::SketchTool::RectangleCenterCorner
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
         | ui::panel::SketchTool::PolygonEdge
@@ -56,9 +57,6 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::FillRegion
         | ui::panel::SketchTool::CarveRegion => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
-        ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
-            SketchPointerRoute::RectangleDrag
-        }
     }
 }
 
@@ -180,9 +178,9 @@ impl ApplicationHandler for App {
                         && state.panel_state.sketch_mode.is_none();
                     // A sketch-mode press on the live viewport (not egui / cube). Select grabs a
                     // vertex handle; Add Point latches for a generic stationary-release edit;
-                    // Line owns a typed click/tangent-arc press; Rectangle pins its anchor corner.
-                    // The view stays freely rotatable throughout via Shift+MMB, which is gated
-                    // on neither sketch mode nor the armed tool.
+                    // Line owns a typed click/tangent-arc press. The view stays freely rotatable
+                    // throughout via Shift+MMB, which is gated on neither sketch mode nor the
+                    // armed tool.
                     if state.panel_state.sketch_mode.is_some()
                         && !in_orbit_mode
                         && !egui_consumed
@@ -221,12 +219,6 @@ impl ApplicationHandler for App {
                                     // Line owns a typed click-or-tangent-arc press path.
                                     SketchPointerRoute::LineClickOrArcDrag => {
                                         state.begin_line_press(cursor_x, cursor_y);
-                                    }
-                                    // #99: the rectangle is a press-drag-release gesture — the
-                                    // press pins the anchor corner; the release commits.
-                                    SketchPointerRoute::RectangleDrag => {
-                                        state.sketch_rect_anchor =
-                                            state.sketch_snapped_point_at(cursor_x, cursor_y);
                                     }
                                 }
                             }
@@ -450,21 +442,14 @@ impl ApplicationHandler for App {
                                     ui::panel::SketchTool::CarveRegion => {
                                         state.sketch_set_face_picked(up_x, up_y, false);
                                     }
-                                    ui::panel::SketchTool::Select
-                                    | ui::panel::SketchTool::Line
-                                    | ui::panel::SketchTool::Rectangle
-                                    | ui::panel::SketchTool::RectangleCenterCorner => {}
+                                    ui::panel::SketchTool::Rectangle
+                                    | ui::panel::SketchTool::RectangleCenterCorner => {
+                                        state.sketch_corner_rectangle_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::Select | ui::panel::SketchTool::Line => {
+                                    }
                                 }
                             }
-                        }
-                    }
-                    // A rectangle release commits at any drag distance (it is the drag
-                    // gesture); a degenerate release just consumes the anchor. Runs BEFORE
-                    // `last_cursor_position` is cleared below.
-                    if state.sketch_rect_anchor.is_some() {
-                        match state.last_cursor_position {
-                            Some((up_x, up_y)) => state.sketch_rectangle_release(up_x, up_y),
-                            None => state.sketch_rect_anchor = None,
                         }
                     }
                     // A stationary release of a viewport Select press resolves the sketch
@@ -923,16 +908,15 @@ mod tests {
             ui::panel::SketchTool::Offset,
             ui::panel::SketchTool::MoveCopy,
             ui::panel::SketchTool::Scale,
+            // Both corner rectangles are two-click grammars, not drags.
+            ui::panel::SketchTool::Rectangle,
+            ui::panel::SketchTool::RectangleCenterCorner,
         ] {
             assert_eq!(
                 sketch_pointer_route(tool),
                 SketchPointerRoute::StationaryEdit
             );
         }
-        assert_eq!(
-            sketch_pointer_route(ui::panel::SketchTool::RectangleCenterCorner),
-            SketchPointerRoute::RectangleDrag
-        );
         assert_eq!(
             sketch_pointer_route(ui::panel::SketchTool::Line),
             SketchPointerRoute::LineClickOrArcDrag

@@ -361,16 +361,7 @@ impl WindowedState {
         // group-close effect folds into `merged_effect` below so a Cancel rebuilds like an edit.
         let mut sketch_effect = crate::IntentEffect::none();
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
-            self.line_gesture.reset();
-            self.midpoint_line_gesture.reset();
-            self.tangent_arc_gesture.reset();
-            self.center_arc_gesture.reset();
-            self.point_circle_gesture.reset();
-            self.higher_curve_gesture.reset();
-            self.three_point_rectangle_gesture.reset();
-            self.polygon_gesture.reset();
-            self.slot_gesture.reset();
-            self.tangent_circle_gesture.reset();
+            self.reset_sketch_gestures();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
@@ -382,16 +373,7 @@ impl WindowedState {
             self.app_core.begin_sketch_group();
         }
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
-            self.line_gesture.reset();
-            self.midpoint_line_gesture.reset();
-            self.tangent_arc_gesture.reset();
-            self.center_arc_gesture.reset();
-            self.point_circle_gesture.reset();
-            self.higher_curve_gesture.reset();
-            self.three_point_rectangle_gesture.reset();
-            self.polygon_gesture.reset();
-            self.slot_gesture.reset();
-            self.tangent_circle_gesture.reset();
+            self.reset_sketch_gestures();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
@@ -1223,6 +1205,26 @@ impl WindowedState {
             }
             node.transform.offset_voxels = offset_voxels;
         }
+    }
+
+    /// Drop the pending picks of every multi-click drawing gesture.
+    ///
+    /// One roster, called everywhere a half-drawn gesture must not survive: entering and leaving
+    /// the mode, Escape, undo and redo, the tool disarming, and the sketch or its handles going
+    /// away. The list was hand-copied at eight sites and rotted — `higher_curve_gesture` was
+    /// absent from undo and redo, so a pending spline point outlived Ctrl+Z.
+    fn reset_sketch_gestures(&mut self) {
+        self.line_gesture.reset();
+        self.midpoint_line_gesture.reset();
+        self.tangent_arc_gesture.reset();
+        self.center_arc_gesture.reset();
+        self.point_circle_gesture.reset();
+        self.higher_curve_gesture.reset();
+        self.three_point_rectangle_gesture.reset();
+        self.corner_rectangle_gesture.reset();
+        self.polygon_gesture.reset();
+        self.slot_gesture.reset();
+        self.tangent_circle_gesture.reset();
     }
 
     /// The in-plane bbox-minimum (per profile coordinate) of a sketch producer's profile — the
@@ -2207,6 +2209,18 @@ impl WindowedState {
         ) {
             return true;
         }
+        let corner_rectangle_kind = corner_rectangle_kind(self.panel_state.sketch_tool);
+        self.corner_rectangle_gesture.retain_for_context(
+            corner_rectangle_kind,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self.corner_rectangle_gesture.blocks_enter(
+            corner_rectangle_kind,
+            self.panel_state.armed_constraint.is_some(),
+        ) {
+            return true;
+        }
         let polygon_kind = polygon_kind(self.panel_state.sketch_tool);
         self.polygon_gesture.retain_for_context(
             polygon_kind,
@@ -2397,9 +2411,13 @@ impl WindowedState {
             return;
         };
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.three_point_rectangle_gesture.reset();
+            return;
+        };
         if let three_point_rectangle::ThreePointRectangleEdit::Document(next) = self
             .three_point_rectangle_gesture
-            .click(target, &producer, resolved)
+            .click(target, &producer, resolved, context)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2617,31 +2635,31 @@ impl WindowedState {
         }
     }
 
-    /// #99: the rectangle tool's release. Takes the press-time anchor corner; a release whose
-    /// snapped opposite corner spans both in-plane axes appends the closed four-segment loop
-    /// as one undo entry — a degenerate (zero-span) or off-plane release draws nothing. Either
-    /// way the anchor is consumed: each rectangle is one press-drag-release gesture.
-    pub(super) fn sketch_rectangle_release(&mut self, cursor_x: f64, cursor_y: f64) {
-        let Some(anchor) = self.sketch_rect_anchor.take() else {
+    /// Advance whichever corner-rectangle grammar is armed. The first click pins the anchor
+    /// (a corner, or the center); the second appends the closed loop as one undo entry. A
+    /// degenerate or off-plane second click authors nothing and leaves the anchor standing,
+    /// so the gesture can simply be finished somewhere else.
+    pub(super) fn sketch_corner_rectangle_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(kind) = corner_rectangle_kind(self.panel_state.sketch_tool) else {
             return;
         };
         let Some(target) = self.panel_state.sketch_mode else {
-            return;
-        };
-        let Some(corner) = self.sketch_snapped_point_at(cursor_x, cursor_y) else {
+            self.corner_rectangle_gesture.reset();
             return;
         };
         let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.corner_rectangle_gesture.reset();
             return;
         };
-        let next = match self.panel_state.sketch_tool {
-            ui::panel::SketchTool::Rectangle => Some(producer.with_rectangle(anchor, corner)),
-            ui::panel::SketchTool::RectangleCenterCorner => {
-                producer.with_center_rectangle(anchor, corner).ok()
-            }
-            _ => None,
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.corner_rectangle_gesture.reset();
+            return;
         };
-        if let Some(next) = next.filter(|next| *next != producer) {
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        if let corner_rectangle::CornerRectangleEdit::Document(next) = self
+            .corner_rectangle_gesture
+            .click(target, kind, &producer, resolved, context)
+        {
             self.commit_sketch_profile_edit(target, next);
         }
     }
@@ -2860,21 +2878,13 @@ impl WindowedState {
     }
 
     /// Escape's first sketch rung: drop whatever half-finished gesture the armed tool is holding
-    /// — the Line chain, construction inputs, the rectangle's press corner, the marquee's anchor,
+    /// — the Line chain, construction inputs, a rectangle's first corner, the marquee's anchor,
     /// or an arc's pending picks. Reports whether anything was actually put back, so the cancel chain can fall
     /// through when there was nothing mid-stroke. The tool stays armed: dropping a stroke is not
     /// the same act as putting the tool down.
     pub(super) fn cancel_sketch_gesture(&mut self) -> bool {
         if self.panel_state.sketch_mode.is_none() {
-            self.midpoint_line_gesture.reset();
-            self.tangent_arc_gesture.reset();
-            self.center_arc_gesture.reset();
-            self.point_circle_gesture.reset();
-            self.higher_curve_gesture.reset();
-            self.three_point_rectangle_gesture.reset();
-            self.polygon_gesture.reset();
-            self.slot_gesture.reset();
-            self.tangent_circle_gesture.reset();
+            self.reset_sketch_gestures();
             self.sketch_edit_press = false;
             return false;
         }
@@ -2948,6 +2958,10 @@ impl WindowedState {
             self.panel_state.sketch_tool == ui::panel::SketchTool::Rectangle3Point,
             self.panel_state.armed_constraint.is_some(),
         );
+        let corner_rectangle_live = self.corner_rectangle_gesture.cancel_for_escape(
+            corner_rectangle_kind(self.panel_state.sketch_tool),
+            self.panel_state.armed_constraint.is_some(),
+        );
         let polygon_live = self.polygon_gesture.cancel_for_escape(
             polygon_kind(self.panel_state.sketch_tool),
             self.panel_state.armed_constraint.is_some(),
@@ -2973,6 +2987,7 @@ impl WindowedState {
             || point_circle_live
             || higher_curve_live
             || three_point_rectangle_live
+            || corner_rectangle_live
             || polygon_live
             || slot_live
             || tangent_circle_live
@@ -2982,11 +2997,9 @@ impl WindowedState {
             || scale_live
             || rectangular_pattern_live
             || stationary_gesture_press
-            || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
             || self.sketch_arc_gesture.is_some()
             || self.sketch_circle_center.is_some();
-        self.sketch_rect_anchor = None;
         self.sketch_marquee_anchor = None;
         self.sketch_arc_gesture = None;
         self.sketch_circle_center = None;
@@ -3013,16 +3026,7 @@ impl WindowedState {
             return false;
         }
         self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
-        self.line_gesture.reset();
-        self.midpoint_line_gesture.reset();
-        self.tangent_arc_gesture.reset();
-        self.center_arc_gesture.reset();
-        self.point_circle_gesture.reset();
-        self.higher_curve_gesture.reset();
-        self.three_point_rectangle_gesture.reset();
-        self.polygon_gesture.reset();
-        self.slot_gesture.reset();
-        self.tangent_circle_gesture.reset();
+        self.reset_sketch_gestures();
         self.sketch_chamfer_pending = None;
         self.sketch_offset_pending = None;
         self.sketch_move_copy_pending = None;
@@ -3075,30 +3079,14 @@ impl WindowedState {
                 // The document history. `AppCore::undo`/`redo` route into an open sketch
                 // group's fine-grained session stacks by themselves.
                 ui::shortcuts::ShortcutCommand::Undo => {
-                    self.line_gesture.reset();
-                    self.midpoint_line_gesture.reset();
-                    self.tangent_arc_gesture.reset();
-                    self.center_arc_gesture.reset();
-                    self.point_circle_gesture.reset();
-                    self.three_point_rectangle_gesture.reset();
-                    self.polygon_gesture.reset();
-                    self.slot_gesture.reset();
-                    self.tangent_circle_gesture.reset();
+                    self.reset_sketch_gestures();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
                     );
                 }
                 ui::shortcuts::ShortcutCommand::Redo => {
-                    self.line_gesture.reset();
-                    self.midpoint_line_gesture.reset();
-                    self.tangent_arc_gesture.reset();
-                    self.center_arc_gesture.reset();
-                    self.point_circle_gesture.reset();
-                    self.three_point_rectangle_gesture.reset();
-                    self.polygon_gesture.reset();
-                    self.slot_gesture.reset();
-                    self.tangent_circle_gesture.reset();
+                    self.reset_sketch_gestures();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -4083,22 +4071,12 @@ impl WindowedState {
 
         let Some(target) = self.panel_state.sketch_mode else {
             // #99 / slice 3 / #102: a drawing or marquee gesture dies with the mode.
-            self.line_gesture.reset();
-            self.midpoint_line_gesture.reset();
-            self.tangent_arc_gesture.reset();
-            self.center_arc_gesture.reset();
-            self.point_circle_gesture.reset();
-            self.higher_curve_gesture.reset();
-            self.three_point_rectangle_gesture.reset();
-            self.polygon_gesture.reset();
-            self.slot_gesture.reset();
-            self.tangent_circle_gesture.reset();
+            self.reset_sketch_gestures();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
             self.sketch_scale_pending = None;
             self.sketch_rectangular_pattern_pending = None;
-            self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
             self.sketch_circle_center = None;
@@ -4112,16 +4090,7 @@ impl WindowedState {
             .scene
             .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
         else {
-            self.line_gesture.reset();
-            self.midpoint_line_gesture.reset();
-            self.tangent_arc_gesture.reset();
-            self.center_arc_gesture.reset();
-            self.point_circle_gesture.reset();
-            self.higher_curve_gesture.reset();
-            self.three_point_rectangle_gesture.reset();
-            self.polygon_gesture.reset();
-            self.slot_gesture.reset();
-            self.tangent_circle_gesture.reset();
+            self.reset_sketch_gestures();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
             self.sketch_move_copy_pending = None;
@@ -4224,6 +4193,11 @@ impl WindowedState {
             self.panel_state.armed_constraint.is_some(),
             Some(target),
         );
+        self.corner_rectangle_gesture.retain_for_context(
+            corner_rectangle_kind(tool),
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
         let tangent_producer = self.sketch_node_state(target).map(|(producer, _)| producer);
         self.tangent_arc_gesture.retain_for_context(
             tool == ui::panel::SketchTool::ArcTangent,
@@ -4233,12 +4207,6 @@ impl WindowedState {
         );
         if tool == ui::panel::SketchTool::Line && self.panel_state.armed_constraint.is_none() {
             self.validate_line_gesture(target);
-        }
-        if !matches!(
-            tool,
-            ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner
-        ) {
-            self.sketch_rect_anchor = None;
         }
         if tool != ui::panel::SketchTool::Select {
             self.sketch_marquee_anchor = None;
@@ -4832,45 +4800,31 @@ impl WindowedState {
                     }
                 }
             }
-            ui::panel::SketchTool::Rectangle => {
-                // The four edges the release will commit, closed back to the anchor.
-                if let (Some(anchor), Some((cursor_x, cursor_y))) =
-                    (self.sketch_rect_anchor, self.last_cursor_position)
-                {
-                    if let Some(corner) = self.sketch_snapped_point_at(cursor_x, cursor_y) {
-                        let (a, c) = (anchor.in_plane(), corner.in_plane());
-                        let ring = [a, [c[0], a[1]], c, [a[0], c[1]], a];
+            // Both corner grammars preview through the gesture's own placement, so the loop
+            // drawn under the cursor is the loop the second click authors.
+            ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
+                if let (Some(kind), Some((producer, _)), Some(cursor)) = (
+                    corner_rectangle_kind(tool),
+                    self.sketch_node_state(target),
+                    self.last_cursor_position
+                        .and_then(|(x, y)| self.sketch_target_at(x, y)),
+                ) {
+                    if let Some(placement) = self
+                        .corner_rectangle_gesture
+                        .placement(target, kind, &producer, cursor)
+                    {
+                        let mut ring: Vec<[f64; 2]> = placement
+                            .corners
+                            .iter()
+                            .map(document::sketch::SketchPoint::in_plane)
+                            .collect();
+                        ring.push(placement.corners[0].in_plane());
                         let projected: Vec<egui::Pos2> =
                             ring.iter().copied().filter_map(snapped_screen).collect();
                         // A behind-camera corner culls the whole preview rather than
                         // drawing a broken ring.
                         if projected.len() == ring.len() {
                             self.sketch_draw_preview = projected;
-                        }
-                    }
-                }
-            }
-            ui::panel::SketchTool::RectangleCenterCorner => {
-                if let (Some(anchor), Some((producer, _)), Some((cursor_x, cursor_y))) = (
-                    self.sketch_rect_anchor,
-                    self.sketch_node_state(target),
-                    self.last_cursor_position,
-                ) {
-                    if let Some(corner) = self.sketch_target_at(cursor_x, cursor_y) {
-                        if let Ok(placement) =
-                            producer.center_rectangle_placement(anchor, corner.at)
-                        {
-                            let mut ring: Vec<[f64; 2]> = placement
-                                .corners
-                                .iter()
-                                .map(document::sketch::SketchPoint::in_plane)
-                                .collect();
-                            ring.push(placement.corners[0].in_plane());
-                            let projected: Vec<egui::Pos2> =
-                                ring.iter().copied().filter_map(snapped_screen).collect();
-                            if projected.len() == ring.len() {
-                                self.sketch_draw_preview = projected;
-                            }
                         }
                     }
                 }
@@ -5694,6 +5648,18 @@ const fn higher_curve_kind(tool: ui::panel::SketchTool) -> Option<higher_curve::
         }
         ui::panel::SketchTool::ControlPointSpline => {
             Some(higher_curve::HigherCurveKind::ControlPointSpline)
+        }
+        _ => None,
+    }
+}
+
+const fn corner_rectangle_kind(
+    tool: ui::panel::SketchTool,
+) -> Option<corner_rectangle::CornerRectangleKind> {
+    match tool {
+        ui::panel::SketchTool::Rectangle => Some(corner_rectangle::CornerRectangleKind::TwoPoint),
+        ui::panel::SketchTool::RectangleCenterCorner => {
+            Some(corner_rectangle::CornerRectangleKind::CenterCorner)
         }
         _ => None,
     }

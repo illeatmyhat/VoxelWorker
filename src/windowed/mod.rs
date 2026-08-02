@@ -45,6 +45,7 @@ use crate::{
 };
 
 mod center_arc;
+mod corner_rectangle;
 mod events;
 mod export;
 mod geometry;
@@ -484,6 +485,8 @@ struct WindowedState {
     higher_curve_gesture: higher_curve::HigherCurveGesture,
     /// Three-Point Rectangle's transient base endpoints.
     three_point_rectangle_gesture: three_point_rectangle::ThreePointRectangleGesture,
+    /// Shared first pick for the two-click Rectangle and Center Rectangle grammars.
+    corner_rectangle_gesture: corner_rectangle::CornerRectangleGesture,
     /// Shared transient picks for inscribed, circumscribed, and edge polygons.
     polygon_gesture: polygon::PolygonGesture,
     /// Shared transient construction picks for the five slot grammars.
@@ -505,10 +508,6 @@ struct WindowedState {
     sketch_scale_pending: Option<PendingScale>,
     /// Selected sources and direction witnesses for the rectangular associative operator.
     sketch_rectangular_pattern_pending: Option<PendingRectangularPattern>,
-    /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
-    /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
-    /// the loop and clears this; a degenerate (zero-span) release just clears it.
-    sketch_rect_anchor: Option<document::sketch::SketchPoint>,
     /// The 3-point arc gesture (#102): the endpoint ids clicked so far — `None` before the
     /// first click, `Some((start, None))` after it, `Some((start, Some(end)))` waiting for the
     /// through-point that solves and commits the arc. Cleared when the armed tool leaves
@@ -904,6 +903,7 @@ impl WindowedState {
             higher_curve_gesture: higher_curve::HigherCurveGesture::default(),
             three_point_rectangle_gesture:
                 three_point_rectangle::ThreePointRectangleGesture::default(),
+            corner_rectangle_gesture: corner_rectangle::CornerRectangleGesture::default(),
             polygon_gesture: polygon::PolygonGesture::default(),
             slot_gesture: slot::SlotGesture::default(),
             tangent_circle_gesture: tangent_circle::TangentCircleGesture::default(),
@@ -912,7 +912,6 @@ impl WindowedState {
             sketch_move_copy_pending: None,
             sketch_scale_pending: None,
             sketch_rectangular_pattern_pending: None,
-            sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
             sketch_circle_target: None,
@@ -1111,6 +1110,7 @@ impl WindowedState {
             point_circle_gesture: _,
             higher_curve_gesture: _,
             three_point_rectangle_gesture: _,
+            corner_rectangle_gesture: _,
             polygon_gesture: _,
             slot_gesture: _,
             tangent_circle_gesture: _,
@@ -1119,7 +1119,6 @@ impl WindowedState {
             sketch_move_copy_pending: _,
             sketch_scale_pending: _,
             sketch_rectangular_pattern_pending: _,
-            sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,
             sketch_circle_target: _,
