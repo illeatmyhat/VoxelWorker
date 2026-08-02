@@ -136,6 +136,7 @@ impl Scene {
     /// children. `None` when any index along the path is out of range or the path
     /// tries to descend through a non-Group (a Tool / VoxelBody / Instance has no
     /// addressable children).
+    #[must_use]
     pub fn node_at_path(&self, path: &NodePath) -> Option<&Node> {
         // Walk the id-spine (`roots`, then each Group's `Vec<NodeId>`) for ORDER,
         // fetching each node's content from the arena.
@@ -167,6 +168,7 @@ impl Scene {
 
     /// The [`NodeId`] of the node at `path` — the top-level-tree inverse of
     /// [`path_of`](Self::path_of) — or `None` if the path doesn't resolve.
+    #[must_use]
     pub fn id_at_path(&self, path: &NodePath) -> Option<NodeId> {
         self.node_at_path(path).map(|node| node.id)
     }
@@ -175,6 +177,7 @@ impl Scene {
     /// (top-level nodes + [`NodeContent::Group`] children — the same scope
     /// [`NodePath`] addresses), or `None`. `NodeId(0)` (the unassigned sentinel) never
     /// matches. The arena is keyed by [`NodeId`], so this is a direct lookup.
+    #[must_use]
     pub fn node_by_id(&self, id: NodeId) -> Option<&Node> {
         if id == NodeId(0) {
             return None;
@@ -223,6 +226,7 @@ impl Scene {
     /// [`id_at_path`](Self::id_at_path): `path_of(id_at_path(path)) == Some(path)`
     /// for every path that resolves. Lets a caller hold a stable [`NodeId`] and recover
     /// its current position on demand.
+    #[must_use]
     pub fn path_of(&self, id: NodeId) -> Option<NodePath> {
         // Walk the id-spine (`roots`, then each Group's spine) for ORDER, fetching
         // content from the arena — the canonical render-time NodePath projection. The
@@ -261,6 +265,7 @@ impl Scene {
     /// Each row also carries the node's stable [`NodeId`] so the panel can feed the
     /// NodeId-typed select/delete/visibility ops directly, without a `path → id`
     /// round-trip; the `NodePath` is there for depth/path display.
+    #[must_use]
     pub fn tree_rows(&self) -> Vec<(NodePath, NodeId, usize)> {
         let mut rows = Vec::new();
         // The root part is the TOP ROW (depth 0), addressed by the empty `NodePath`
@@ -294,6 +299,7 @@ impl Scene {
     /// `(None, index)` for a top-level node. `None` when the
     /// id does not resolve. Used to CAPTURE a node's slot before a structural edit so
     /// the inverse can splice it back at the same place.
+    #[must_use]
     pub fn parent_and_index_of(&self, id: NodeId) -> Option<(Option<NodeId>, usize)> {
         let path = self.path_of(id)?;
         let (&last_index, parent_indices) = path.indices.split_last()?;
@@ -359,6 +365,7 @@ impl Scene {
     /// Test helper: the top-level node at positional `index`, via the
     /// [`roots`](Self::roots) spine + arena.
     #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
     pub fn root_node(&self, index: usize) -> &Node {
         let id = self.roots[index];
         &self.arena[&id]

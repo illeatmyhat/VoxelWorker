@@ -1293,6 +1293,34 @@ pub struct Bezier {
     pub role: EntityRole,
 }
 
+/// One closed ellipse authored by a center and two semi-axis gestures.
+///
+/// The three referenced points are handles, not boundary seams. Four exact rational Bézier
+/// quarters are derived only when a geometric consumer asks for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Ellipse {
+    pub id: EntityId,
+    pub center: EntityId,
+    pub major_endpoint: EntityId,
+    pub width_point: EntityId,
+    pub origin: EntityId,
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
+/// One endpoint/vertex/rho conic. Rho is exact and dimensionless in durable storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Conic {
+    pub id: EntityId,
+    pub from: EntityId,
+    pub to: EntityId,
+    pub vertex: EntityId,
+    pub rho: parametric::ResolvedScalar,
+    pub origin: EntityId,
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
 impl Arc {
     pub(crate) fn sweep_degrees(self) -> f64 {
         self.bulge
@@ -1347,6 +1375,21 @@ fn absent_center() -> EntityId {
     ABSENT_CENTER
 }
 
+/// Mutate a compact boxed store without making every [`Sketch`] carry a `Vec`'s spare-capacity
+/// word. Higher curves are comparatively rare, while `Sketch` itself sits inside several enums
+/// where its inline size matters.
+fn boxed_push<T>(store: &mut Box<[T]>, value: T) {
+    let mut values = std::mem::take(store).into_vec();
+    values.push(value);
+    *store = values.into_boxed_slice();
+}
+
+fn boxed_retain<T>(store: &mut Box<[T]>, mut keep: impl FnMut(&T) -> bool) {
+    let mut values = std::mem::take(store).into_vec();
+    values.retain(|value| keep(value));
+    *store = values.into_boxed_slice();
+}
+
 /// A grid-aligned PLANE plus a collection of sketch ENTITIES — points, segments, arcs and
 /// circles. The extrudable **profile is DERIVED** from the closed loops those entities bound
 /// (see [`region`](Self::region)); it is never a hand-maintained ordered vertex list.
@@ -1368,7 +1411,13 @@ pub struct Sketch {
     circles: Vec<Circle>,
     /// Rational cubic curve pieces. `serde(default)` keeps older documents source-compatible.
     #[serde(default)]
-    beziers: Vec<Bezier>,
+    beziers: Box<[Bezier]>,
+    /// Closed ellipse entities; absent in older documents.
+    #[serde(default)]
+    ellipses: Box<[Ellipse]>,
+    /// Endpoint/vertex/rho conic entities; absent in older documents.
+    #[serde(default)]
+    conics: Box<[Conic]>,
     /// Associative operators whose instances are regenerated from authored curves. Generated
     /// curves deliberately have no entity ids of their own: constraints and direct edits continue
     /// to target the sources, so an operator adds no solver freedoms and cannot drift apart.
@@ -1674,7 +1723,9 @@ impl Sketch {
             segments: Vec::with_capacity(profile.len()),
             arcs: Vec::new(),
             circles: Vec::new(),
-            beziers: Vec::new(),
+            beziers: Box::default(),
+            ellipses: Box::default(),
+            conics: Box::default(),
             patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
@@ -1717,7 +1768,9 @@ impl Sketch {
             segments: Vec::new(),
             arcs: Vec::new(),
             circles: Vec::new(),
-            beziers: Vec::new(),
+            beziers: Box::default(),
+            ellipses: Box::default(),
+            conics: Box::default(),
             patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
@@ -1760,6 +1813,14 @@ impl Sketch {
         &self.beziers
     }
 
+    pub fn ellipses(&self) -> &[Ellipse] {
+        &self.ellipses
+    }
+
+    pub fn conics(&self) -> &[Conic] {
+        &self.conics
+    }
+
     /// Read-only view of associative mirror and pattern rules.
     pub fn patterns(&self) -> &[SketchPattern] {
         &self.patterns
@@ -1793,6 +1854,14 @@ impl Sketch {
         }
         if let Some(bezier) = self.beziers.iter_mut().find(|bezier| bezier.id == id) {
             bezier.role = bezier.role.toggled();
+            return true;
+        }
+        if let Some(ellipse) = self.ellipses.iter_mut().find(|ellipse| ellipse.id == id) {
+            ellipse.role = ellipse.role.toggled();
+            return true;
+        }
+        if let Some(conic) = self.conics.iter_mut().find(|conic| conic.id == id) {
+            conic.role = conic.role.toggled();
             return true;
         }
         false
@@ -2271,7 +2340,13 @@ impl Sketch {
             .retain(|arc| arc.from != id && arc.to != id && arc.center != id);
         // A circle IS its center plus a radius, so deleting the center deletes the circle.
         self.circles.retain(|circle| circle.center != id);
-        self.beziers.retain(|bezier| !bezier.controls.contains(&id));
+        boxed_retain(&mut self.beziers, |bezier| !bezier.controls.contains(&id));
+        boxed_retain(&mut self.ellipses, |ellipse| {
+            ellipse.center != id && ellipse.major_endpoint != id && ellipse.width_point != id
+        });
+        boxed_retain(&mut self.conics, |conic| {
+            conic.from != id && conic.to != id && conic.vertex != id
+        });
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
         self.drop_dangling_patterns();
@@ -2317,6 +2392,13 @@ impl Sketch {
                 .beziers
                 .iter()
                 .any(|bezier| bezier.controls.contains(&id))
+            || self.ellipses.iter().any(|ellipse| {
+                ellipse.center == id || ellipse.major_endpoint == id || ellipse.width_point == id
+            })
+            || self
+                .conics
+                .iter()
+                .any(|conic| conic.from == id || conic.to == id || conic.vertex == id)
     }
 
     /// Erase each candidate that no geometry draws any more. Asked AFTER the edge has gone, so
@@ -2943,13 +3025,16 @@ impl Sketch {
             return None;
         }
         let id = self.alloc_id();
-        self.beziers.push(Bezier {
-            id,
-            controls,
-            weights,
-            origin: id,
-            role: EntityRole::Real,
-        });
+        boxed_push(
+            &mut self.beziers,
+            Bezier {
+                id,
+                controls,
+                weights,
+                origin: id,
+                role: EntityRole::Real,
+            },
+        );
         Some(id)
     }
 
@@ -2978,7 +3063,7 @@ impl Sketch {
             .iter()
             .find(|bezier| bezier.id == bezier_id)
             .map(|bezier| bezier.controls);
-        self.beziers.retain(|bezier| bezier.id != bezier_id);
+        boxed_retain(&mut self.beziers, |bezier| bezier.id != bezier_id);
         if let Some(controls) = controls {
             self.drop_undrawn_points(controls);
         }
@@ -3009,6 +3094,119 @@ impl Sketch {
             weights,
         };
         curve.is_valid().then_some(curve)
+    }
+
+    /// Draw one closed ellipse from center, major-axis endpoint, and width pick.
+    pub fn add_ellipse(
+        &mut self,
+        center: SketchPoint,
+        major_endpoint: SketchPoint,
+        width_point: SketchPoint,
+    ) -> Result<EntityId, parametric::sketch::EllipseCandidateError> {
+        parametric::sketch::ellipse_candidate(
+            center.in_plane(),
+            major_endpoint.in_plane(),
+            width_point.in_plane(),
+        )?;
+        let center = self.add_construction_point(center);
+        let major_endpoint = self.add_construction_point(major_endpoint);
+        let width_point = self.add_construction_point(width_point);
+        let id = self.alloc_id();
+        boxed_push(
+            &mut self.ellipses,
+            Ellipse {
+                id,
+                center,
+                major_endpoint,
+                width_point,
+                origin: id,
+                role: EntityRole::Real,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Draw one endpoint/vertex/rho conic with exact dimensionless rho storage.
+    pub fn add_conic(
+        &mut self,
+        from: SketchPoint,
+        to: SketchPoint,
+        vertex: SketchPoint,
+        rho: f64,
+    ) -> Result<EntityId, parametric::sketch::ConicCandidateError> {
+        parametric::sketch::conic_candidate(
+            from.in_plane(),
+            to.in_plane(),
+            vertex.in_plane(),
+            rho,
+        )?;
+        let rho = parametric::ResolvedScalar::try_from_f64(rho)
+            .map_err(|_| parametric::sketch::ConicCandidateError::InvalidRho)?;
+        let from = self.add_point(from);
+        let to = self.add_point(to);
+        let vertex = self.add_point(vertex);
+        let id = self.alloc_id();
+        boxed_push(
+            &mut self.conics,
+            Conic {
+                id,
+                from,
+                to,
+                vertex,
+                rho,
+                origin: id,
+                role: EntityRole::Real,
+            },
+        );
+        Ok(id)
+    }
+
+    fn ellipse_candidate(&self, ellipse: Ellipse) -> Option<parametric::sketch::EllipseCandidate> {
+        let position = |id| {
+            self.points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        parametric::sketch::ellipse_candidate(
+            position(ellipse.center)?,
+            position(ellipse.major_endpoint)?,
+            position(ellipse.width_point)?,
+        )
+        .ok()
+    }
+
+    fn conic_candidate(&self, conic: Conic) -> Option<parametric::sketch::ConicCandidate> {
+        let position = |id| {
+            self.points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        parametric::sketch::conic_candidate(
+            position(conic.from)?,
+            position(conic.to)?,
+            position(conic.vertex)?,
+            conic.rho.value(),
+        )
+        .ok()
+    }
+
+    pub fn delete_ellipse(&mut self, id: EntityId) {
+        boxed_retain(&mut self.ellipses, |ellipse| ellipse.id != id);
+        self.prune_orphan_centers();
+    }
+
+    pub fn delete_conic(&mut self, id: EntityId) {
+        let points = self
+            .conics
+            .iter()
+            .find(|conic| conic.id == id)
+            .map(|conic| [conic.from, conic.to, conic.vertex]);
+        boxed_retain(&mut self.conics, |conic| conic.id != id);
+        if let Some(points) = points {
+            self.drop_undrawn_points(points);
+        }
     }
 
     /// Whether the drawing OWNS this point's coordinates — whether it is an arc's center, which
@@ -3066,8 +3264,14 @@ impl Sketch {
         for circle in &self.circles {
             referenced.insert(circle.center);
         }
-        for bezier in &self.beziers {
+        for bezier in &*self.beziers {
             referenced.extend(bezier.controls);
+        }
+        for ellipse in &*self.ellipses {
+            referenced.extend([ellipse.center, ellipse.major_endpoint, ellipse.width_point]);
+        }
+        for conic in &*self.conics {
+            referenced.extend([conic.from, conic.to, conic.vertex]);
         }
         self.points.retain(|point| {
             point.role != EntityRole::Construction || referenced.contains(&point.id)
@@ -3190,8 +3394,12 @@ impl Sketch {
     /// derived center points agree again.
     pub fn repair(&mut self, context: parametric::EvaluationContext) -> usize {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
-        let before =
-            self.segments.len() + self.arcs.len() + self.circles.len() + self.beziers.len();
+        let before = self.segments.len()
+            + self.arcs.len()
+            + self.circles.len()
+            + self.beziers.len()
+            + self.ellipses.len()
+            + self.conics.len();
         self.segments.retain(|seg| {
             seg.from != seg.to && point_ids.contains(&seg.from) && point_ids.contains(&seg.to)
         });
@@ -3209,13 +3417,24 @@ impl Sketch {
             point_ids.contains(&circle.center)
                 && circle_radius_is_valid(circle.resolved_radius(context))
         });
-        self.beziers.retain(|bezier| {
+        boxed_retain(&mut self.beziers, |bezier| {
             bezier.controls[0] != bezier.controls[3]
                 && bezier.controls.iter().all(|id| point_ids.contains(id))
                 && bezier
                     .weights
                     .iter()
                     .all(|weight| weight.is_finite() && *weight > 0.0)
+        });
+        boxed_retain(&mut self.ellipses, |ellipse| {
+            [ellipse.center, ellipse.major_endpoint, ellipse.width_point]
+                .iter()
+                .all(|id| point_ids.contains(id))
+        });
+        boxed_retain(&mut self.conics, |conic| {
+            [conic.from, conic.to, conic.vertex]
+                .iter()
+                .all(|id| point_ids.contains(id))
+                && (0.0..1.0).contains(&conic.rho.value())
         });
         // Geometry-dependent constraint repair must see derived arc centers at their authored
         // positions, not a stale serialized cache.
@@ -3230,6 +3449,8 @@ impl Sketch {
             - self.arcs.len()
             - self.circles.len()
             - self.beziers.len()
+            - self.ellipses.len()
+            - self.conics.len()
             - self.patterns.len()
             - self.constraints.len();
         // A document may name no center at all, and a just-erased arc leaves one behind;

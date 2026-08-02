@@ -32,6 +32,7 @@ mod edges;
 mod edits;
 mod extrude;
 mod field;
+mod higher_curves;
 mod modifiers;
 mod parametric;
 mod polygons;

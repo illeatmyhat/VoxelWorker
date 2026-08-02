@@ -573,9 +573,9 @@ fn producer_switched_to(
                 .map(|spans| spans[1])
                 .unwrap_or(16)
                 .max(1);
-            SketchSolid::extrude(sketch, height)
+            SketchSolid::extrude(*sketch, height)
         }
-        _ => SketchSolid::revolve(sketch, RevolveAxis::InPlane0, 360),
+        _ => SketchSolid::revolve(*sketch, RevolveAxis::InPlane0, 360),
     }
 }
 

@@ -259,7 +259,7 @@ impl PreparedSketchField<'_> {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SketchSolid {
     /// The closed 2D profile + its plane.
-    pub sketch: Sketch,
+    pub sketch: Box<Sketch>,
     /// How the profile is turned into a volume.
     #[serde(default)]
     pub operation: Operation,
@@ -269,7 +269,7 @@ impl SketchSolid {
     /// A sketch extruded `height_voxels` along its plane normal.
     pub fn extrude(sketch: Sketch, height_voxels: u32) -> Self {
         Self {
-            sketch,
+            sketch: Box::new(sketch),
             operation: Operation::Extrude { height_voxels },
         }
     }
@@ -279,7 +279,7 @@ impl SketchSolid {
     /// [`RevolveAxis`] for the (axial, radial) reinterpretation of the profile.
     pub fn revolve(sketch: Sketch, axis: RevolveAxis, turn_degrees: u32) -> Self {
         Self {
-            sketch,
+            sketch: Box::new(sketch),
             operation: Operation::Revolve {
                 axis,
                 sweep: RevolveSweep { turn_degrees },

@@ -58,6 +58,7 @@ impl Scene {
     /// `voxels_per_block` is the application density. `lod` is the level-of-detail
     /// seam: it is **always `0`** and asserted so, so that a down-sampling LOD level
     /// is a behavioral change rather than a signature break.
+    #[must_use]
     pub fn resolve_chunk(
         &self,
         chunk_coord: [i32; 3],
@@ -86,6 +87,7 @@ impl Scene {
     /// (the composite recenter, an integer-block-aligned point), so for a near scene
     /// the result is bit-identical to the recentered `resolve_region` while a
     /// far-placed scene renders with no f32 jitter.
+    #[must_use]
     pub fn resolve_chunk_rebased(
         &self,
         chunk_coord: [i32; 3],

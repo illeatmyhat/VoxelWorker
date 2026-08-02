@@ -50,6 +50,7 @@ impl Scene {
     /// the compiler, not by review — see the proof chapter's "Oracles" section
     /// (`docs/architecture/05-proof.md`).
     #[cfg(any(test, feature = "oracle"))]
+    #[must_use]
     pub fn resolve_region(
         &self,
         region: RegionBlocks,
@@ -256,6 +257,7 @@ impl Scene {
     /// compile error, not a review catch — see the proof chapter's "Oracles" section
     /// (`docs/architecture/05-proof.md`).
     #[cfg(any(test, feature = "oracle"))]
+    #[must_use]
     pub fn resolve_region_via_chunks(&self, voxels_per_block: u32, lod: u32) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "only full resolution (lod 0) is resolved");
 

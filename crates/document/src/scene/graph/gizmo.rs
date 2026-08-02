@@ -37,6 +37,7 @@ impl Scene {
     /// union `placed_extent_blocks` forms scene-wide, but rooted at the node).
     /// Single-node scenes recenter that node onto the origin, so its pivot is
     /// `[0, 0, 0]` — the gizmo only visibly *moves* in a multi-node scene.
+    #[must_use]
     pub fn gizmo_placement_for_id(
         &self,
         node_id: NodeId,

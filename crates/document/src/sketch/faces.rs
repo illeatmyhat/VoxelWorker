@@ -351,6 +351,31 @@ fn drawn_curves(
         };
         curves.push((bezier.origin, PlanarCurve::RationalBezier(curve)));
     }
+    for ellipse in sketch
+        .ellipses
+        .iter()
+        .filter(|ellipse| ellipse.role == EntityRole::Real)
+    {
+        let Some(candidate) = sketch.ellipse_candidate(*ellipse) else {
+            continue;
+        };
+        curves.extend(
+            candidate
+                .quarters
+                .map(PlanarCurve::RationalBezier)
+                .map(|curve| (ellipse.origin, curve)),
+        );
+    }
+    for conic in sketch
+        .conics
+        .iter()
+        .filter(|conic| conic.role == EntityRole::Real)
+    {
+        let Some(candidate) = sketch.conic_candidate(*conic) else {
+            continue;
+        };
+        curves.push((conic.origin, PlanarCurve::RationalBezier(candidate.curve)));
+    }
     curves.extend(
         sketch
             .derived_pattern_curves(context)

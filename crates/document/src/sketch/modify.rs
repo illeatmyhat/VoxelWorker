@@ -6,8 +6,9 @@
 //! so a hover cannot promise a different cut from the one an undoable click performs.
 
 use super::{
-    AngleMeasurement, Arc, ArcSweep, ConstraintKind, EntityId, EntityRole, Segment, Sketch,
-    SketchCurve, SketchLength, SketchPoint, SketchSolid, ABSENT_CENTER,
+    boxed_push, boxed_retain, AngleMeasurement, Arc, ArcSweep, ConstraintKind, EntityId,
+    EntityRole, Segment, Sketch, SketchCurve, SketchLength, SketchPoint, SketchSolid,
+    ABSENT_CENTER,
 };
 use substrate::curve_intersection::{CurveSupportCrossing, PlanarCurve};
 
@@ -773,7 +774,7 @@ impl Sketch {
             SketchCurve::Segment(id) => self.segments.retain(|segment| segment.id != id),
             SketchCurve::Arc(id) => self.arcs.retain(|arc| arc.id != id),
             SketchCurve::Circle(id) => self.circles.retain(|circle| circle.id != id),
-            SketchCurve::Bezier(id) => self.beziers.retain(|bezier| bezier.id != id),
+            SketchCurve::Bezier(id) => boxed_retain(&mut self.beziers, |bezier| bezier.id != id),
         }
         for piece in pieces {
             let from = self.point_for_break(piece.start(), role)?;
@@ -805,13 +806,16 @@ impl Sketch {
                             .map_err(|_| BreakRefusal::Unrepresentable)?;
                     let first_handle = self.add_construction_point(first_handle);
                     let second_handle = self.add_construction_point(second_handle);
-                    self.beziers.push(super::Bezier {
-                        id,
-                        controls: [from, first_handle, second_handle, to],
-                        weights: curve.weights,
-                        origin,
-                        role,
-                    });
+                    boxed_push(
+                        &mut self.beziers,
+                        super::Bezier {
+                            id,
+                            controls: [from, first_handle, second_handle, to],
+                            weights: curve.weights,
+                            origin,
+                            role,
+                        },
+                    );
                 }
             }
         }

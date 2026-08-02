@@ -33,6 +33,7 @@ impl Scene {
     /// `false` for a VoxelBody-only scene (e.g. a lone debug-cloud field), which has no
     /// AABB of its own and must be resolved through the explicit-region monolithic
     /// path instead. Public so the `shot` binary can pick the right resolve path.
+    #[must_use]
     pub fn has_chunkable_extent(&self, voxels_per_block: u32) -> bool {
         self.covering_chunk_range(voxels_per_block).is_some()
     }
@@ -70,6 +71,7 @@ impl Scene {
     /// producer-true voxel frame — so it covers every chunk a voxel can land in,
     /// including the chunks an odd/flat block size straddles (which the block-AABB
     /// frame would miss).
+    #[must_use]
     pub fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
         let (min_voxel_corner, max_voxel_corner) = self.placed_extent_voxels(voxels_per_block)?;
         // The voxel corners are i64 (a far-placed leaf), but the chunk extent is
@@ -99,6 +101,7 @@ impl Scene {
     /// empty scene (no covering range). Public so the shell can size the export progress
     /// readout's denominator without materializing any occupancy; the async export worker
     /// increments its per-chunk counter to exactly this total.
+    #[must_use]
     pub fn covering_chunk_count(&self, voxels_per_block: u32) -> u64 {
         let Some((min_chunk, max_chunk)) = self.covering_chunk_range(voxels_per_block) else {
             return 0;
@@ -124,6 +127,7 @@ impl Scene {
     /// By construction the index's entries ARE the leaves `for_each_leaf` yields, so
     /// a query against the index returns the same leaf set as the full walk filtered
     /// by AABB (proven in the spatial-index tests).
+    #[must_use]
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;

@@ -6,8 +6,8 @@
 //! would either violate an assertion or silently delete it, so Move and Scale refuse that case.
 
 use super::{
-    Arc, Bezier, Circle, CircleRadius, EntityId, Point, ResolvedLength, Segment, Sketch,
-    SketchCurve, SketchPoint, SketchSolid, ABSENT_CENTER,
+    boxed_push, Arc, Bezier, Circle, CircleRadius, EntityId, Point, ResolvedLength, Segment,
+    Sketch, SketchCurve, SketchPoint, SketchSolid, ABSENT_CENTER,
 };
 use std::collections::{HashMap, HashSet};
 use substrate::curve_intersection::PlanarCurve;
@@ -445,18 +445,21 @@ impl Sketch {
             .collect();
         for source in source_beziers {
             let id = self.alloc_id();
-            self.beziers.push(Bezier {
-                id,
-                controls: [
-                    mapped(&points, source.controls[0])?,
-                    mapped(&points, source.controls[1])?,
-                    mapped(&points, source.controls[2])?,
-                    mapped(&points, source.controls[3])?,
-                ],
-                weights: source.weights,
-                origin: id,
-                role: source.role,
-            });
+            boxed_push(
+                &mut self.beziers,
+                Bezier {
+                    id,
+                    controls: [
+                        mapped(&points, source.controls[0])?,
+                        mapped(&points, source.controls[1])?,
+                        mapped(&points, source.controls[2])?,
+                        mapped(&points, source.controls[3])?,
+                    ],
+                    weights: source.weights,
+                    origin: id,
+                    role: source.role,
+                },
+            );
         }
         Ok(())
     }

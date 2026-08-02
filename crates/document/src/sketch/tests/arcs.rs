@@ -387,7 +387,10 @@ fn arcs_round_trip_through_serde_and_a_pre_arc_document_loads_clean() {
     let solid = rounded_bottom_solid(2);
     let json = serde_json::to_string(&solid.sketch).expect("serialize");
     let restored: Sketch = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(restored, solid.sketch, "the arc store round-trips verbatim");
+    assert_eq!(
+        restored, *solid.sketch,
+        "the arc store round-trips verbatim"
+    );
 
     // A document written before arcs existed has no `arcs` key: strip it and the sketch
     // still loads, with no arcs (the serde default).

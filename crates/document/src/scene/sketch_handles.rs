@@ -626,7 +626,7 @@ mod tests {
         let mut sketch = Sketch::rectangle(PlaneAxis::Z, 4, 6);
         sketch.add_free_point(SketchPoint::new(-20, -20));
         let producer = SketchSolid::extrude(sketch, 3);
-        let (scene, id) = scene_with_sketch(producer.sketch.clone(), 3, [0, 0, 0]);
+        let (scene, id) = scene_with_sketch((*producer.sketch).clone(), 3, [0, 0, 0]);
         let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
         // The profile origin maps to producer-local zero exactly when the two anchors agree.
         let anchor = producer.profile_bbox_min(

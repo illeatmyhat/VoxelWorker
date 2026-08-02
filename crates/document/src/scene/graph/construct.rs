@@ -12,6 +12,7 @@ impl Scene {
     ///
     /// The lone node is minted a stable id here ([`ensure_node_ids`](Self::ensure_node_ids))
     /// so the scene is born already-normalized and a workspace selection can name it by id.
+    #[must_use]
     pub fn single_node(node: Node) -> Self {
         let mut scene = Self::from_nodes(vec![node]);
         scene.ensure_node_ids();

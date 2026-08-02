@@ -102,6 +102,7 @@ impl Scene {
     ///
     /// `pub` — the evaluator seam `two_layer_store` (up in the app crate) reads; the dense
     /// store uses the private [`for_each_leaf`](Self::for_each_leaf).
+    #[must_use]
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();

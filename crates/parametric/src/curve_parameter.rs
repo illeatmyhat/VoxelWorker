@@ -60,6 +60,82 @@ pub struct ResolvedLength {
     denominator: i128,
 }
 
+/// An exact, dimensionless authored scalar such as a conic's rho value.
+///
+/// It deliberately does not reuse [`ResolvedLength`]: both have rational storage, but accepting a
+/// length where a unitless shape parameter belongs would defeat the typed quantity boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedScalar {
+    numerator: i128,
+    denominator: i128,
+}
+
+impl serde::Serialize for ResolvedScalar {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut stored = serializer.serialize_struct("ResolvedScalar", 2)?;
+        stored.serialize_field("numerator", &self.numerator)?;
+        stored.serialize_field("denominator", &self.denominator)?;
+        stored.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ResolvedScalar {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            numerator: i128,
+            denominator: i128,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        ExactRational::new(stored.numerator, stored.denominator)
+            .map(Self::from_rational)
+            .ok_or_else(|| D::Error::custom("resolved scalar has a zero denominator"))
+    }
+}
+
+impl ResolvedScalar {
+    #[must_use]
+    pub const fn from_rational(value: ExactRational) -> Self {
+        Self {
+            numerator: value.numerator(),
+            denominator: value.denominator(),
+        }
+    }
+
+    /// Preserve a finite floating-point value as its exact rational ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact-rational conversion error when the value is non-finite or cannot fit in
+    /// the durable `i128` ratio representation.
+    pub fn try_from_f64(value: f64) -> Result<Self, RationalFromF64Error> {
+        ExactRational::try_from_f64_exact(value).map(Self::from_rational)
+    }
+
+    /// Return the exact rational value.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if a value was fabricated outside the constructors or deserializer, both of
+    /// which preserve the non-zero canonical denominator invariant.
+    #[allow(clippy::expect_used)]
+    pub fn rational(self) -> ExactRational {
+        ExactRational::new(self.numerator, self.denominator)
+            .expect("a resolved scalar stores a canonical rational")
+    }
+
+    #[must_use]
+    pub fn value(self) -> f64 {
+        self.rational().to_f64()
+    }
+}
+
 impl serde::Serialize for ResolvedLength {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

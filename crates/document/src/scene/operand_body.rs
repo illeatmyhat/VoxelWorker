@@ -69,6 +69,7 @@ impl Scene {
     /// Each node is visited once per placement path (no body is ever emitted twice — a
     /// body drawn twice would read as doubled ghost alpha). The slice keeps the
     /// document's `definitions` (an Instance root still expands) and density.
+    #[must_use]
     pub fn boolean_operand_body_slices(&self, target: NodeId) -> Vec<(CombineOp, Scene)> {
         let mut slices = Vec::new();
         if target == ROOT_NODE_ID {
@@ -127,6 +128,7 @@ impl Scene {
     /// `None` for the root part (the whole scene needs no feedback body — it IS the
     /// render), a stale id, or a disabled node (it stamps nothing into the composition,
     /// so a depth-tested overlay has no surface to sit on).
+    #[must_use]
     pub fn node_body_slice(&self, target: NodeId) -> Option<Scene> {
         if target == ROOT_NODE_ID {
             return None;

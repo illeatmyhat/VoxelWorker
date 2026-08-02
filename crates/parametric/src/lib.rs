@@ -45,7 +45,7 @@ pub mod quantity;
 pub mod sketch;
 pub mod units;
 
-pub use curve_parameter::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
+pub use curve_parameter::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength, ResolvedScalar};
 pub use dimension::Dimension;
 pub use evaluation::EvaluationContext;
 pub use expression::{Expression, SymbolTable};

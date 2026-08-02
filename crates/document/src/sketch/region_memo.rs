@@ -24,8 +24,8 @@ use std::sync::{Arc, RwLock};
 use substrate::geom2d::{LoopRole, RegionEdge};
 
 use super::{
-    Arc as ArcEntity, Bezier, Circle, FaceKey, PlaneAxis, Point, ProfileLoop, Segment, Sketch,
-    SketchPattern,
+    Arc as ArcEntity, Bezier, Circle, Conic, Ellipse, FaceKey, PlaneAxis, Point, ProfileLoop,
+    Segment, Sketch, SketchPattern,
 };
 use parametric::EvaluationContext;
 
@@ -81,7 +81,9 @@ struct Snapshot {
     segments: Vec<Segment>,
     arcs: Vec<ArcEntity>,
     circles: Vec<Circle>,
-    beziers: Vec<Bezier>,
+    beziers: Box<[Bezier]>,
+    ellipses: Box<[Ellipse]>,
+    conics: Box<[Conic]>,
     patterns: Box<[SketchPattern]>,
     unpicked_points: Vec<FaceKey>,
 }
@@ -96,6 +98,8 @@ impl Snapshot {
             arcs: sketch.arcs.clone(),
             circles: sketch.circles.clone(),
             beziers: sketch.beziers.clone(),
+            ellipses: sketch.ellipses.clone(),
+            conics: sketch.conics.clone(),
             patterns: sketch.patterns.clone(),
             unpicked_points: sketch.unpicked_points.clone(),
         }
@@ -111,6 +115,8 @@ impl Snapshot {
             && self.arcs == sketch.arcs
             && self.circles == sketch.circles
             && self.beziers == sketch.beziers
+            && self.ellipses == sketch.ellipses
+            && self.conics == sketch.conics
             && self.patterns == sketch.patterns
             && self.unpicked_points == sketch.unpicked_points
     }
