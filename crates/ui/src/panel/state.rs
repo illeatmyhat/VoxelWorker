@@ -332,6 +332,10 @@ pub enum SketchTool {
     Circle2Point,
     /// Draw the unique circle through three circumference points.
     Circle3Point,
+    /// Draw a radius-selected circle tangent to two selected line segments.
+    Circle2Tangent,
+    /// Draw the circle tangent to three selected line segments.
+    Circle3Tangent,
     /// Draw a regular polygon whose vertices lie on the authored center-radius circle.
     PolygonInscribed,
     /// Draw a regular polygon whose edge midpoints lie on the authored center-apothem circle.

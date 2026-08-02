@@ -138,6 +138,8 @@ enum SketchToolConfig {
     CircleCenterDiameter,
     Circle2Point,
     Circle3Point,
+    Circle2Tangent,
+    Circle3Tangent,
     PolygonInscribed,
     PolygonCircumscribed,
     PolygonEdge,
@@ -1050,6 +1052,24 @@ mod tests {
             assert_eq!(
                 Dump::from_json(&json)
                     .expect("deserialize circle tool")
+                    .into_state()
+                    .sketch_tool,
+                tool
+            );
+        }
+    }
+
+    #[test]
+    fn tangent_circle_tools_survive_both_sides_of_the_tool_config_shim() {
+        for tool in [SketchTool::Circle2Tangent, SketchTool::Circle3Tangent] {
+            let mut state = distinctive_state();
+            state.sketch_tool = tool;
+            let json = Dump::from_state(&state)
+                .to_json()
+                .expect("serialize tangent circle tool");
+            assert_eq!(
+                Dump::from_json(&json)
+                    .expect("deserialize tangent circle tool")
                     .into_state()
                     .sketch_tool,
                 tool

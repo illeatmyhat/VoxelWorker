@@ -157,6 +157,26 @@ pub struct PointCirclePlacement {
     pub candidate: parametric::sketch::CircleCandidate,
 }
 
+/// Why a two- or three-line tangent circle could not be authored atomically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TangentCircleRefusal {
+    Candidate(parametric::sketch::TangentCircleCandidateError),
+    UnknownSegment,
+    Unrepresentable,
+    CircleRefused,
+    Branch(parametric::sketch::BranchChoiceError),
+    Constraint(ConstraintRefusal),
+}
+
+/// Canonical tangent-circle geometry shared by preview and atomic commit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TangentCirclePlacement {
+    pub center: SketchPoint,
+    pub radius: SketchLength,
+    /// Canonical contact locus corresponding to each selected segment.
+    pub contacts: Vec<SketchPoint>,
+}
+
 /// Why a point-defined rectangle could not be appended atomically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RectangleRefusal {

@@ -37,6 +37,7 @@ mod region_memo;
 mod regions;
 mod revolve;
 mod slots;
+mod tangent_circles;
 
 /// Explicit evaluation context for a test's authoritative scene density. Keeping this one small
 /// helper makes it visible at every curve-sensitive call site without scattering constructors.

@@ -25,6 +25,8 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::CircleCenterDiameter
         | ui::panel::SketchTool::Circle2Point
         | ui::panel::SketchTool::Circle3Point
+        | ui::panel::SketchTool::Circle2Tangent
+        | ui::panel::SketchTool::Circle3Tangent
         | ui::panel::SketchTool::Rectangle3Point
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
@@ -353,6 +355,10 @@ impl ApplicationHandler for App {
                                             up_x,
                                             up_y,
                                         );
+                                    }
+                                    ui::panel::SketchTool::Circle2Tangent
+                                    | ui::panel::SketchTool::Circle3Tangent => {
+                                        state.sketch_tangent_circle_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Rectangle3Point => {
                                         state.sketch_three_point_rectangle_click(up_x, up_y);
@@ -834,6 +840,8 @@ mod tests {
             ui::panel::SketchTool::PolygonInscribed,
             ui::panel::SketchTool::PolygonCircumscribed,
             ui::panel::SketchTool::PolygonEdge,
+            ui::panel::SketchTool::Circle2Tangent,
+            ui::panel::SketchTool::Circle3Tangent,
             ui::panel::SketchTool::SlotCenterToCenter,
             ui::panel::SketchTool::SlotOverall,
             ui::panel::SketchTool::SlotCenterPoint,

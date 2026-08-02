@@ -14,6 +14,7 @@ mod slot;
 mod solve;
 mod symmetry;
 mod tangent;
+mod tangent_circle;
 #[cfg(test)]
 mod tests;
 
@@ -52,4 +53,8 @@ pub use tangent::{
     choose_branch, tangent_arc_candidate, tangent_contact, BranchChoiceError, InternalContainment,
     LineSide, TangentArcCandidate, TangentArcCandidateError, TangentBranch, TangentContact,
     TangentContactError, TangentCurve,
+};
+pub use tangent_circle::{
+    three_tangent_circle_candidate, two_tangent_circle_candidate, TangentCircleCandidate,
+    TangentCircleCandidateError,
 };

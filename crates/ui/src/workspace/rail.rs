@@ -137,6 +137,16 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         Some(SketchTool::Circle3Point),
     ),
     (
+        Icon::Circle2Tangent,
+        "2-Tangent Circle — select two lines, then place the radius",
+        Some(SketchTool::Circle2Tangent),
+    ),
+    (
+        Icon::Circle3Tangent,
+        "3-Tangent Circle — select three lines",
+        Some(SketchTool::Circle3Tangent),
+    ),
+    (
         Icon::PolygonInscribed,
         "Inscribed Polygon — click center, then a vertex",
         Some(SketchTool::PolygonInscribed),
@@ -619,14 +629,16 @@ mod tests {
     }
 
     #[test]
-    fn sketch_rail_places_point_circles_after_center_diameter_circle() {
-        assert!(SKETCH_TOOLS.windows(3).any(|items| {
+    fn sketch_rail_groups_all_circle_grammars() {
+        assert!(SKETCH_TOOLS.windows(5).any(|items| {
             matches!(
                 items,
                 [
                     (_, _, Some(SketchTool::CircleCenterDiameter)),
                     (Icon::Circle2Point, _, Some(SketchTool::Circle2Point)),
-                    (Icon::Circle3Point, _, Some(SketchTool::Circle3Point))
+                    (Icon::Circle3Point, _, Some(SketchTool::Circle3Point)),
+                    (Icon::Circle2Tangent, _, Some(SketchTool::Circle2Tangent)),
+                    (Icon::Circle3Tangent, _, Some(SketchTool::Circle3Tangent))
                 ]
             )
         }));
@@ -638,7 +650,7 @@ mod tests {
             matches!(
                 items,
                 [
-                    (_, _, Some(SketchTool::Circle3Point)),
+                    (_, _, Some(SketchTool::Circle3Tangent)),
                     (
                         Icon::PolygonInscribed,
                         _,

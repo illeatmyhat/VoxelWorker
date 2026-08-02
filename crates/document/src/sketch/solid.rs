@@ -1219,6 +1219,113 @@ impl SketchSolid {
         Ok((next, circle))
     }
 
+    /// Resolve a radius-selected circle tangent to two finite segments.
+    pub fn two_tangent_circle_placement(
+        &self,
+        segments: [EntityId; 2],
+        witness: SketchPoint,
+    ) -> Result<TangentCirclePlacement, TangentCircleRefusal> {
+        let first = self
+            .segment_endpoints(segments[0])
+            .ok_or(TangentCircleRefusal::UnknownSegment)?;
+        let second = self
+            .segment_endpoints(segments[1])
+            .ok_or(TangentCircleRefusal::UnknownSegment)?;
+        canonical_tangent_circle(
+            parametric::sketch::two_tangent_circle_candidate(
+                [
+                    (first.0.in_plane(), first.1.in_plane()),
+                    (second.0.in_plane(), second.1.in_plane()),
+                ],
+                witness.in_plane(),
+            )
+            .map_err(TangentCircleRefusal::Candidate)?,
+        )
+    }
+
+    /// Resolve the circle tangent to three finite segments using their click loci for branch
+    /// selection.
+    pub fn three_tangent_circle_placement(
+        &self,
+        segments: [(EntityId, SketchPoint); 3],
+    ) -> Result<TangentCirclePlacement, TangentCircleRefusal> {
+        let line = |(id, locus): (EntityId, SketchPoint)| {
+            let (from, to) = self
+                .segment_endpoints(id)
+                .ok_or(TangentCircleRefusal::UnknownSegment)?;
+            Ok((from.in_plane(), to.in_plane(), locus.in_plane()))
+        };
+        let [first, second, third] = segments.map(line);
+        canonical_tangent_circle(
+            parametric::sketch::three_tangent_circle_candidate([first?, second?, third?])
+                .map_err(TangentCircleRefusal::Candidate)?,
+        )
+    }
+
+    /// Atomically append a two-line tangent circle and both durable Tangent relations.
+    pub fn with_two_tangent_circle(
+        &self,
+        segments: [EntityId; 2],
+        witness: SketchPoint,
+        context: EvaluationContext,
+    ) -> Result<SketchSolid, TangentCircleRefusal> {
+        let placement = self.two_tangent_circle_placement(segments, witness)?;
+        self.with_tangent_circle_placement(&placement, &segments, context)
+    }
+
+    /// Atomically append a three-line tangent circle and all three durable Tangent relations.
+    pub fn with_three_tangent_circle(
+        &self,
+        segments: [(EntityId, SketchPoint); 3],
+        context: EvaluationContext,
+    ) -> Result<SketchSolid, TangentCircleRefusal> {
+        let placement = self.three_tangent_circle_placement(segments)?;
+        let ids = segments.map(|(id, _)| id);
+        self.with_tangent_circle_placement(&placement, &ids, context)
+    }
+
+    fn with_tangent_circle_placement(
+        &self,
+        placement: &TangentCirclePlacement,
+        segments: &[EntityId],
+        context: EvaluationContext,
+    ) -> Result<SketchSolid, TangentCircleRefusal> {
+        let mut next = self.clone();
+        let circle_id = next
+            .sketch
+            .add_circle(placement.center, placement.radius)
+            .ok_or(TangentCircleRefusal::CircleRefused)?;
+        let circle = SketchCurve::Circle(circle_id);
+        for (&segment_id, contact) in segments.iter().zip(&placement.contacts) {
+            let segment = SketchCurve::Segment(segment_id);
+            let locus = contact.in_plane();
+            let branch = next
+                .sketch
+                .choose_tangent_branch(segment, locus, circle, locus, context)
+                .map_err(TangentCircleRefusal::Branch)?;
+            next.sketch
+                .add_constraint(ConstraintKind::tangent(segment, circle, branch), context)
+                .map_err(TangentCircleRefusal::Constraint)?;
+        }
+        Ok(next)
+    }
+
+    fn segment_endpoints(&self, id: EntityId) -> Option<(SketchPoint, SketchPoint)> {
+        let segment = self
+            .sketch
+            .segments()
+            .iter()
+            .find(|segment| segment.id == id)?;
+        let point = |id| {
+            self.sketch
+                .points()
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at)
+        };
+        Some((point(segment.from)?, point(segment.to)?))
+    }
+
     /// This producer with the circle `circle_id` deleted. Its construction center is pruned only
     /// when no remaining curve names it.
     pub fn with_circle_deleted(&self, circle_id: EntityId) -> SketchSolid {
@@ -1535,6 +1642,31 @@ fn canonical_point_circle(
         },
         center,
         radius,
+    })
+}
+
+fn canonical_tangent_circle(
+    candidate: parametric::sketch::TangentCircleCandidate,
+) -> Result<TangentCirclePlacement, TangentCircleRefusal> {
+    let center = SketchPoint::try_from_continuous(candidate.center[0], candidate.center[1])
+        .map_err(|_| TangentCircleRefusal::Unrepresentable)?;
+    const UPPER_EXCLUSIVE: f64 = -(i64::MIN as f64);
+    if !(0.0..UPPER_EXCLUSIVE).contains(&candidate.radius) || candidate.radius <= 0.0 {
+        return Err(TangentCircleRefusal::Unrepresentable);
+    }
+    let radius = SketchLength::from_continuous(candidate.radius);
+    let contacts = candidate
+        .contacts
+        .into_iter()
+        .map(|contact| {
+            SketchPoint::try_from_continuous(contact[0], contact[1])
+                .map_err(|_| TangentCircleRefusal::Unrepresentable)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(TangentCirclePlacement {
+        center,
+        radius,
+        contacts,
     })
 }
 

@@ -369,6 +369,7 @@ impl WindowedState {
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
+            self.tangent_circle_gesture.reset();
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -383,6 +384,7 @@ impl WindowedState {
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
+            self.tangent_circle_gesture.reset();
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1713,6 +1715,18 @@ impl WindowedState {
         {
             return true;
         }
+        let tangent_circle_kind = tangent_circle_kind(self.panel_state.sketch_tool);
+        self.tangent_circle_gesture.retain_for_context(
+            tangent_circle_kind,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self.tangent_circle_gesture.blocks_enter(
+            tangent_circle_kind,
+            self.panel_state.armed_constraint.is_some(),
+        ) {
+            return true;
+        }
         let tangent_producer = self
             .panel_state
             .sketch_mode
@@ -1862,6 +1876,37 @@ impl WindowedState {
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
         if let slot::SlotEdit::Document(next) =
             self.slot_gesture.click(target, kind, &producer, resolved)
+        {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance a tangent-circle grammar from line-only picks. Two-Tangent consumes a final radius
+    /// witness; Three-Tangent completes on its third distinct line.
+    pub(super) fn sketch_tangent_circle_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(kind) = tangent_circle_kind(self.panel_state.sketch_tool) else {
+            self.tangent_circle_gesture.reset();
+            return;
+        };
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.tangent_circle_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.tangent_circle_gesture.reset();
+            return;
+        };
+        let Some(context) = document::sketch::evaluation_context_from_density(
+            self.panel_state.geometry.voxels_per_block,
+        ) else {
+            self.tangent_circle_gesture.reset();
+            return;
+        };
+        let cursor = self.sketch_snapped_point_at(cursor_x, cursor_y);
+        let line = self.sketch_segment_at(cursor_x, cursor_y).zip(cursor);
+        if let tangent_circle::TangentCircleEdit::Document(next) = self
+            .tangent_circle_gesture
+            .click(target, kind, &producer, line, cursor, context)
         {
             self.commit_sketch_profile_edit(target, next);
         }
@@ -2253,6 +2298,7 @@ impl WindowedState {
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
+            self.tangent_circle_gesture.reset();
             self.sketch_edit_press = false;
             return false;
         }
@@ -2289,6 +2335,8 @@ impl WindowedState {
                     | ui::panel::SketchTool::ArcTangent
                     | ui::panel::SketchTool::Circle2Point
                     | ui::panel::SketchTool::Circle3Point
+                    | ui::panel::SketchTool::Circle2Tangent
+                    | ui::panel::SketchTool::Circle3Tangent
                     | ui::panel::SketchTool::Rectangle3Point
                     | ui::panel::SketchTool::PolygonInscribed
                     | ui::panel::SketchTool::PolygonCircumscribed
@@ -2324,6 +2372,10 @@ impl WindowedState {
             slot_kind(self.panel_state.sketch_tool),
             self.panel_state.armed_constraint.is_some(),
         );
+        let tangent_circle_live = self.tangent_circle_gesture.cancel_for_escape(
+            tangent_circle_kind(self.panel_state.sketch_tool),
+            self.panel_state.armed_constraint.is_some(),
+        );
         let live = constraint_picks
             || line_live
             || midpoint_line_live
@@ -2333,6 +2385,7 @@ impl WindowedState {
             || three_point_rectangle_live
             || polygon_live
             || slot_live
+            || tangent_circle_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2373,6 +2426,7 @@ impl WindowedState {
         self.three_point_rectangle_gesture.reset();
         self.polygon_gesture.reset();
         self.slot_gesture.reset();
+        self.tangent_circle_gesture.reset();
         true
     }
 
@@ -2428,6 +2482,7 @@ impl WindowedState {
                     self.three_point_rectangle_gesture.reset();
                     self.polygon_gesture.reset();
                     self.slot_gesture.reset();
+                    self.tangent_circle_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .undo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -2442,6 +2497,7 @@ impl WindowedState {
                     self.three_point_rectangle_gesture.reset();
                     self.polygon_gesture.reset();
                     self.slot_gesture.reset();
+                    self.tangent_circle_gesture.reset();
                     effect = effect.merged_with(
                         self.app_core
                             .redo(&mut self.panel_state.scene, &mut self.panel_state.selection),
@@ -3347,6 +3403,7 @@ impl WindowedState {
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
+            self.tangent_circle_gesture.reset();
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3369,6 +3426,7 @@ impl WindowedState {
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
+            self.tangent_circle_gesture.reset();
             return;
         };
 
@@ -3408,6 +3466,11 @@ impl WindowedState {
         );
         self.slot_gesture.retain_for_context(
             slot_kind(tool),
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
+        self.tangent_circle_gesture.retain_for_context(
+            tangent_circle_kind(tool),
             self.panel_state.armed_constraint.is_some(),
             Some(target),
         );
@@ -3563,9 +3626,10 @@ impl WindowedState {
         // (brighter, "you can pick this edge"); Add-point has its own insert diamond, so
         // segments stay Idle.
         let hovered_edge: Option<(SketchEdgeHit, ui::gizmos::HandleState)> = match tool {
-            ui::panel::SketchTool::Select | ui::panel::SketchTool::ArcTangent => {
-                Some(ui::gizmos::HandleState::Hover)
-            }
+            ui::panel::SketchTool::Select
+            | ui::panel::SketchTool::ArcTangent
+            | ui::panel::SketchTool::Circle2Tangent
+            | ui::panel::SketchTool::Circle3Tangent => Some(ui::gizmos::HandleState::Hover),
             // Add-point has its own insert diamond; the drawing tools (#99, #102) target
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
@@ -3604,6 +3668,14 @@ impl WindowedState {
                             document::sketch::SketchCurve::Circle(id) => SketchEdgeHit::Circle(id),
                         })
                         .map(|hit| (hit, state));
+                }
+                if matches!(
+                    tool,
+                    ui::panel::SketchTool::Circle2Tangent | ui::panel::SketchTool::Circle3Tangent
+                ) {
+                    return self
+                        .nearest_sketch_segment(cx, cy)
+                        .map(|(id, _, _)| (SketchEdgeHit::Segment(id), state));
                 }
                 if self.sketch_vertex_at(cx, cy).is_some() {
                     None
@@ -4108,6 +4180,32 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::Circle2Tangent | ui::panel::SketchTool::Circle3Tangent => {
+                if let (Some(kind), Some((producer, _)), Some((cursor_x, cursor_y))) = (
+                    tangent_circle_kind(tool),
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                ) {
+                    let cursor = self.sketch_snapped_point_at(cursor_x, cursor_y);
+                    let hovered = self.sketch_segment_at(cursor_x, cursor_y);
+                    let placement = cursor.and_then(|cursor| {
+                        self.tangent_circle_gesture
+                            .placement(target, kind, &producer, cursor, hovered)
+                    });
+                    if let Some(placement) = placement {
+                        let ring = circle_ring(
+                            placement.center.in_plane(),
+                            placement.radius.value(),
+                            document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                        );
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::PolygonInscribed
             | ui::panel::SketchTool::PolygonCircumscribed
             | ui::panel::SketchTool::PolygonEdge => {
@@ -4276,6 +4374,8 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::ArcCenterEndpoints
         | ui::panel::SketchTool::ArcTangent
         | ui::panel::SketchTool::CircleCenterDiameter
+        | ui::panel::SketchTool::Circle2Tangent
+        | ui::panel::SketchTool::Circle3Tangent
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
         | ui::panel::SketchTool::PolygonEdge
@@ -4305,6 +4405,8 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::CircleCenterDiameter
         | ui::panel::SketchTool::Circle2Point
         | ui::panel::SketchTool::Circle3Point
+        | ui::panel::SketchTool::Circle2Tangent
+        | ui::panel::SketchTool::Circle3Tangent
         | ui::panel::SketchTool::SlotCenterToCenter
         | ui::panel::SketchTool::SlotOverall
         | ui::panel::SketchTool::SlotCenterPoint
@@ -4333,9 +4435,41 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::CircleCenterDiameter
         | ui::panel::SketchTool::Circle2Point
         | ui::panel::SketchTool::Circle3Point
+        | ui::panel::SketchTool::Circle2Tangent
+        | ui::panel::SketchTool::Circle3Tangent
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
         | ui::panel::SketchTool::PolygonEdge => None,
+    }
+}
+
+const fn tangent_circle_kind(
+    tool: ui::panel::SketchTool,
+) -> Option<tangent_circle::TangentCircleKind> {
+    match tool {
+        ui::panel::SketchTool::Circle2Tangent => Some(tangent_circle::TangentCircleKind::Two),
+        ui::panel::SketchTool::Circle3Tangent => Some(tangent_circle::TangentCircleKind::Three),
+        ui::panel::SketchTool::Select
+        | ui::panel::SketchTool::AddPoint
+        | ui::panel::SketchTool::Line
+        | ui::panel::SketchTool::MidpointLine
+        | ui::panel::SketchTool::Rectangle
+        | ui::panel::SketchTool::Rectangle3Point
+        | ui::panel::SketchTool::RectangleCenterCorner
+        | ui::panel::SketchTool::ThreePointArc
+        | ui::panel::SketchTool::ArcCenterEndpoints
+        | ui::panel::SketchTool::ArcTangent
+        | ui::panel::SketchTool::CircleCenterDiameter
+        | ui::panel::SketchTool::Circle2Point
+        | ui::panel::SketchTool::Circle3Point
+        | ui::panel::SketchTool::PolygonInscribed
+        | ui::panel::SketchTool::PolygonCircumscribed
+        | ui::panel::SketchTool::PolygonEdge
+        | ui::panel::SketchTool::SlotCenterToCenter
+        | ui::panel::SketchTool::SlotOverall
+        | ui::panel::SketchTool::SlotCenterPoint
+        | ui::panel::SketchTool::SlotCenterPointArc
+        | ui::panel::SketchTool::Slot3PointArc => None,
     }
 }
 
