@@ -563,7 +563,7 @@ impl Sketch {
             )
     }
 
-    fn planar_curve(
+    pub(super) fn planar_curve(
         &self,
         curve: SketchCurve,
         context: parametric::EvaluationContext,

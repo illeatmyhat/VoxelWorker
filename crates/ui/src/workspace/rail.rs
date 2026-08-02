@@ -291,13 +291,13 @@ const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
     ),
     (
         Icon::MoveCopy,
-        "Move / Copy — reserved",
-        SketchModifierRoute::Reserved,
+        "Move / Copy — choose a base and destination; hold Shift to copy",
+        SketchModifierRoute::Tool(SketchTool::MoveCopy),
     ),
     (
         Icon::SketchScale,
-        "Scale — reserved",
-        SketchModifierRoute::Reserved,
+        "Scale — choose a center, then a uniform size",
+        SketchModifierRoute::Tool(SketchTool::Scale),
     ),
     (
         Icon::BlendCurve,
@@ -717,6 +717,8 @@ mod tests {
                 Icon::Extend,
                 Icon::BreakCurve,
                 Icon::OffsetCurve,
+                Icon::MoveCopy,
+                Icon::SketchScale,
             ]
         );
     }

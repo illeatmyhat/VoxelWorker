@@ -372,6 +372,8 @@ impl WindowedState {
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
+            self.sketch_move_copy_pending = None;
+            self.sketch_scale_pending = None;
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -389,6 +391,8 @@ impl WindowedState {
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
+            self.sketch_move_copy_pending = None;
+            self.sketch_scale_pending = None;
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1655,6 +1659,116 @@ impl WindowedState {
         });
     }
 
+    /// Begin or finish a rigid translation of the current typed selection. Shift is sampled on
+    /// the destination click so Copy is an explicit completion modifier, not latched accidentally
+    /// when the base point was chosen.
+    pub(super) fn sketch_move_copy_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(witness) = self.sketch_unsnapped_profile_coord(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        if let Some(pending) = self.sketch_move_copy_pending.take() {
+            if pending.target != target {
+                return;
+            }
+            let delta = [
+                witness[0] - pending.anchor[0],
+                witness[1] - pending.anchor[1],
+            ];
+            if let Ok(next) =
+                producer.with_entities_translated(&pending.entities, delta, self.shift_held)
+            {
+                self.commit_sketch_profile_edit(target, next);
+            }
+            return;
+        }
+        let entities = self.sketch_transform_selection(target);
+        if !entities.is_empty() {
+            self.sketch_move_copy_pending = Some(PendingMoveCopy {
+                target,
+                entities,
+                anchor: witness,
+            });
+        }
+    }
+
+    /// Begin or finish a uniform Scale. The first click is the center; the selected geometry's
+    /// original spatial radius becomes factor 1, and the second click chooses the new radius.
+    pub(super) fn sketch_scale_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(witness) = self.sketch_unsnapped_profile_coord(cursor_x, cursor_y) else {
+            return;
+        };
+        let (Some((producer, _)), Some(context)) = (
+            self.sketch_node_state(target),
+            document::sketch::evaluation_context_from_density(
+                self.panel_state.geometry.voxels_per_block,
+            ),
+        ) else {
+            return;
+        };
+        if let Some(pending) = self.sketch_scale_pending.take() {
+            if pending.target != target {
+                return;
+            }
+            let radius = (witness[0] - pending.center[0]).hypot(witness[1] - pending.center[1]);
+            let factor = radius / pending.base_radius;
+            if let Ok(next) =
+                producer.with_entities_scaled(&pending.entities, pending.center, factor)
+            {
+                self.commit_sketch_profile_edit(target, next);
+            }
+            return;
+        }
+        let entities = self.sketch_transform_selection(target);
+        if let Ok(base_radius) = producer.selection_scale_radius(&entities, witness, context) {
+            self.sketch_scale_pending = Some(PendingScale {
+                target,
+                entities,
+                center: witness,
+                base_radius,
+            });
+        }
+    }
+
+    fn sketch_transform_selection(
+        &self,
+        target: document::scene::NodeId,
+    ) -> Vec<document::sketch::SketchTransformEntity> {
+        self.panel_state
+            .selection
+            .sketch_points(target)
+            .map(document::sketch::SketchTransformEntity::Point)
+            .chain(
+                self.panel_state
+                    .selection
+                    .sketch_segments(target)
+                    .map(|id| {
+                        document::sketch::SketchTransformEntity::Curve(
+                            document::sketch::SketchCurve::Segment(id),
+                        )
+                    }),
+            )
+            .chain(self.panel_state.selection.sketch_arcs(target).map(|id| {
+                document::sketch::SketchTransformEntity::Curve(document::sketch::SketchCurve::Arc(
+                    id,
+                ))
+            }))
+            .chain(self.panel_state.selection.sketch_circles(target).map(|id| {
+                document::sketch::SketchTransformEntity::Curve(
+                    document::sketch::SketchCurve::Circle(id),
+                )
+            }))
+            .collect()
+    }
+
     /// The snap-policy profile point under the cursor (physical px), through the cached
     /// ray frame — the shared entry the drawing tools (#99) and vertex edits resolve a press
     /// or release with, quantized by [`PanelState::sketch_snap`] (#96). `None` when the
@@ -1855,6 +1969,8 @@ impl WindowedState {
                     | ui::panel::SketchTool::ChamferDistanceAngle
                     | ui::panel::SketchTool::ChamferTwoDistance
                     | ui::panel::SketchTool::Offset
+                    | ui::panel::SketchTool::MoveCopy
+                    | ui::panel::SketchTool::Scale
             )
         {
             self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
@@ -2600,6 +2716,8 @@ impl WindowedState {
         );
         let chamfer_live = self.sketch_chamfer_pending.take().is_some();
         let offset_live = self.sketch_offset_pending.take().is_some();
+        let move_copy_live = self.sketch_move_copy_pending.take().is_some();
+        let scale_live = self.sketch_scale_pending.take().is_some();
         let live = constraint_picks
             || line_live
             || midpoint_line_live
@@ -2612,6 +2730,8 @@ impl WindowedState {
             || tangent_circle_live
             || chamfer_live
             || offset_live
+            || move_copy_live
+            || scale_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2655,6 +2775,8 @@ impl WindowedState {
         self.tangent_circle_gesture.reset();
         self.sketch_chamfer_pending = None;
         self.sketch_offset_pending = None;
+        self.sketch_move_copy_pending = None;
+        self.sketch_scale_pending = None;
         true
     }
 
@@ -3661,6 +3783,8 @@ impl WindowedState {
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
+            self.sketch_move_copy_pending = None;
+            self.sketch_scale_pending = None;
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3686,6 +3810,8 @@ impl WindowedState {
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
             self.sketch_offset_pending = None;
+            self.sketch_move_copy_pending = None;
+            self.sketch_scale_pending = None;
             return;
         };
 
@@ -3707,6 +3833,24 @@ impl WindowedState {
                 .is_none_or(|pending| pending.target == target);
         if !offset_context_is_live {
             self.sketch_offset_pending = None;
+        }
+        let move_copy_context_is_live = tool == ui::panel::SketchTool::MoveCopy
+            && self.panel_state.armed_constraint.is_none()
+            && self
+                .sketch_move_copy_pending
+                .as_ref()
+                .is_none_or(|pending| pending.target == target);
+        if !move_copy_context_is_live {
+            self.sketch_move_copy_pending = None;
+        }
+        let scale_context_is_live = tool == ui::panel::SketchTool::Scale
+            && self.panel_state.armed_constraint.is_none()
+            && self
+                .sketch_scale_pending
+                .as_ref()
+                .is_none_or(|pending| pending.target == target);
+        if !scale_context_is_live {
+            self.sketch_scale_pending = None;
         }
         // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
         self.line_gesture.retain_for_context(
@@ -3935,7 +4079,9 @@ impl WindowedState {
             | ui::panel::SketchTool::SlotOverall
             | ui::panel::SketchTool::SlotCenterPoint
             | ui::panel::SketchTool::SlotCenterPointArc
-            | ui::panel::SketchTool::Slot3PointArc => None,
+            | ui::panel::SketchTool::Slot3PointArc
+            | ui::panel::SketchTool::MoveCopy
+            | ui::panel::SketchTool::Scale => None,
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -4788,6 +4934,90 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::MoveCopy => {
+                if let (
+                    Some((producer, _)),
+                    Some(pending),
+                    Some((cursor_x, cursor_y)),
+                    Some(context),
+                ) = (
+                    self.sketch_node_state(target),
+                    self.sketch_move_copy_pending.as_ref(),
+                    self.last_cursor_position,
+                    document::sketch::evaluation_context_from_density(
+                        self.panel_state.geometry.voxels_per_block,
+                    ),
+                ) {
+                    if pending.target == target {
+                        let placement = self
+                            .sketch_unsnapped_profile_coord(cursor_x, cursor_y)
+                            .and_then(|witness| {
+                                let delta = [
+                                    witness[0] - pending.anchor[0],
+                                    witness[1] - pending.anchor[1],
+                                ];
+                                producer
+                                    .translated_curve_preview(
+                                        &pending.entities,
+                                        delta,
+                                        self.shift_held,
+                                        context,
+                                    )
+                                    .ok()
+                            });
+                        if let Some(curves) = placement {
+                            let ring: Vec<[f64; 2]> =
+                                curves.iter().flat_map(break_piece_points).collect();
+                            let projected: Vec<egui::Pos2> =
+                                ring.iter().copied().filter_map(snapped_screen).collect();
+                            if projected.len() == ring.len() {
+                                self.sketch_draw_preview = projected;
+                            }
+                        }
+                    }
+                }
+            }
+            ui::panel::SketchTool::Scale => {
+                if let (
+                    Some((producer, _)),
+                    Some(pending),
+                    Some((cursor_x, cursor_y)),
+                    Some(context),
+                ) = (
+                    self.sketch_node_state(target),
+                    self.sketch_scale_pending.as_ref(),
+                    self.last_cursor_position,
+                    document::sketch::evaluation_context_from_density(
+                        self.panel_state.geometry.voxels_per_block,
+                    ),
+                ) {
+                    if pending.target == target {
+                        let placement = self
+                            .sketch_unsnapped_profile_coord(cursor_x, cursor_y)
+                            .and_then(|witness| {
+                                let radius = (witness[0] - pending.center[0])
+                                    .hypot(witness[1] - pending.center[1]);
+                                producer
+                                    .scaled_curve_preview(
+                                        &pending.entities,
+                                        pending.center,
+                                        radius / pending.base_radius,
+                                        context,
+                                    )
+                                    .ok()
+                            });
+                        if let Some(curves) = placement {
+                            let ring: Vec<[f64; 2]> =
+                                curves.iter().flat_map(break_piece_points).collect();
+                            let projected: Vec<egui::Pos2> =
+                                ring.iter().copied().filter_map(snapped_screen).collect();
+                            if projected.len() == ring.len() {
+                                self.sketch_draw_preview = projected;
+                            }
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -4924,7 +5154,9 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
         | ui::panel::SketchTool::ChamferTwoDistance
-        | ui::panel::SketchTool::Offset => None,
+        | ui::panel::SketchTool::Offset
+        | ui::panel::SketchTool::MoveCopy
+        | ui::panel::SketchTool::Scale => None,
     }
 }
 
@@ -4960,7 +5192,9 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
         | ui::panel::SketchTool::ChamferTwoDistance
-        | ui::panel::SketchTool::Offset => None,
+        | ui::panel::SketchTool::Offset
+        | ui::panel::SketchTool::MoveCopy
+        | ui::panel::SketchTool::Scale => None,
     }
 }
 
@@ -4996,7 +5230,9 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
         | ui::panel::SketchTool::ChamferTwoDistance
-        | ui::panel::SketchTool::Offset => None,
+        | ui::panel::SketchTool::Offset
+        | ui::panel::SketchTool::MoveCopy
+        | ui::panel::SketchTool::Scale => None,
     }
 }
 
@@ -5034,7 +5270,9 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
         | ui::panel::SketchTool::ChamferTwoDistance
-        | ui::panel::SketchTool::Offset => None,
+        | ui::panel::SketchTool::Offset
+        | ui::panel::SketchTool::MoveCopy
+        | ui::panel::SketchTool::Scale => None,
     }
 }
 

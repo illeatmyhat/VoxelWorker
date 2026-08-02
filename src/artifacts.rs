@@ -156,6 +156,8 @@ enum SketchToolConfig {
     ChamferDistanceAngle,
     ChamferTwoDistance,
     Offset,
+    MoveCopy,
+    Scale,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
@@ -1159,6 +1161,8 @@ mod tests {
             SketchTool::ChamferDistanceAngle,
             SketchTool::ChamferTwoDistance,
             SketchTool::Offset,
+            SketchTool::MoveCopy,
+            SketchTool::Scale,
             SketchTool::Trim,
             SketchTool::Extend,
             SketchTool::BreakCurve,

@@ -43,7 +43,9 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
         | ui::panel::SketchTool::ChamferTwoDistance
-        | ui::panel::SketchTool::Offset => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::Offset
+        | ui::panel::SketchTool::MoveCopy
+        | ui::panel::SketchTool::Scale => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
         ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
             SketchPointerRoute::RectangleDrag
@@ -411,6 +413,12 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::Offset => {
                                         state.sketch_offset_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::MoveCopy => {
+                                        state.sketch_move_copy_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::Scale => {
+                                        state.sketch_scale_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Line
@@ -883,6 +891,8 @@ mod tests {
             ui::panel::SketchTool::ChamferDistanceAngle,
             ui::panel::SketchTool::ChamferTwoDistance,
             ui::panel::SketchTool::Offset,
+            ui::panel::SketchTool::MoveCopy,
+            ui::panel::SketchTool::Scale,
         ] {
             assert_eq!(
                 sketch_pointer_route(tool),

@@ -59,6 +59,7 @@ mod region_memo;
 mod solid;
 #[cfg(test)]
 mod tests;
+mod transform;
 
 pub use constraint::{
     Constraint, ConstraintKind, ConstraintRefusal, InternalContainment, LineSide, SketchCurve,
@@ -74,6 +75,7 @@ pub use parametric::sketch::{SolveOutcome, SolveReport};
 pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
+pub use transform::{SketchTransformEntity, SketchTransformRefusal};
 
 use parametric::units::{AngleMeasurement, ExactRational, Measurement};
 use std::num::NonZeroU32;

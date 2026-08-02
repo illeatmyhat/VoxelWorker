@@ -368,6 +368,10 @@ pub enum SketchTool {
     ChamferTwoDistance,
     /// Copy one native curve at a cursor-defined parallel or concentric offset.
     Offset,
+    /// Move the selected free geometry, or copy it when Shift is held at completion.
+    MoveCopy,
+    /// Uniformly scale selected free geometry about a clicked center.
+    Scale,
 }
 
 /// The floating Signal **display stack**'s viewer state.

@@ -554,3 +554,120 @@ fn offset_refuses_zero_distance_without_mutating_the_source() {
     );
     assert_eq!(source.sketch.segments().len(), 1);
 }
+
+#[test]
+fn move_and_copy_transform_curve_closures_with_the_right_identity_policy() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let line = segment(&mut sketch, [0, 0], [5, 0]);
+    let source = SketchSolid::extrude(sketch, 3);
+    let selected = [SketchTransformEntity::Curve(SketchCurve::Segment(line))];
+
+    let moved = source
+        .with_entities_translated(&selected, [3.0, 4.0], false)
+        .unwrap();
+    assert_eq!(moved.sketch.segments().len(), 1);
+    assert_eq!(moved.sketch.segments()[0].id, line);
+    let geometry = moved
+        .sketch
+        .curve_geometry(SketchCurve::Segment(line), ctx(16))
+        .unwrap();
+    assert_eq!(
+        geometry,
+        ::parametric::sketch::CurveGeometry::Segment {
+            from: [3.0, 4.0],
+            to: [8.0, 4.0]
+        }
+    );
+
+    let copied = source
+        .with_entities_translated(&selected, [3.0, 4.0], true)
+        .unwrap();
+    assert_eq!(copied.sketch.segments().len(), 2);
+    assert_ne!(copied.sketch.segments()[1].id, line);
+    assert_eq!(
+        copied.sketch.segments()[1].origin,
+        copied.sketch.segments()[1].id
+    );
+}
+
+#[test]
+fn scale_changes_selected_points_and_free_circle_radius_about_one_center() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let line = segment(&mut sketch, [1, 1], [3, 1]);
+    let circle = sketch
+        .add_circle(SketchPoint::new(2, 2), SketchLength::new(2))
+        .unwrap();
+    let source = SketchSolid::extrude(sketch, 3);
+    let selected = [
+        SketchTransformEntity::Curve(SketchCurve::Segment(line)),
+        SketchTransformEntity::Curve(SketchCurve::Circle(circle)),
+    ];
+    let scaled = source
+        .with_entities_scaled(&selected, [1.0, 1.0], 2.0)
+        .unwrap();
+    let preview = source
+        .scaled_curve_preview(&selected, [1.0, 1.0], 2.0, ctx(16))
+        .unwrap();
+    let preview_circle = preview.iter().find(|curve| curve.is_closed()).unwrap();
+    let PlanarCurve::Arc {
+        center: preview_center,
+        radius: preview_radius,
+        ..
+    } = *preview_circle
+    else {
+        panic!("the scaled preview must keep its circle native");
+    };
+    assert_eq!(preview_center, [3.0, 3.0]);
+    assert!((preview_radius - 4.0).abs() < 1.0e-9);
+    let line_geometry = scaled
+        .sketch
+        .curve_geometry(SketchCurve::Segment(line), ctx(16))
+        .unwrap();
+    assert_eq!(
+        line_geometry,
+        ::parametric::sketch::CurveGeometry::Segment {
+            from: [1.0, 1.0],
+            to: [5.0, 1.0]
+        }
+    );
+    let circle_geometry = scaled
+        .sketch
+        .curve_geometry(SketchCurve::Circle(circle), ctx(16))
+        .unwrap();
+    let ::parametric::sketch::CurveGeometry::Circular(circle_geometry) = circle_geometry else {
+        panic!("a scaled circle must remain circular");
+    };
+    assert_eq!(circle_geometry.center, [3.0, 3.0]);
+    assert!((circle_geometry.radius - 4.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn move_and_scale_refuse_constrained_geometry_without_deleting_the_assertion() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let line = segment(&mut sketch, [0, 0], [5, 0]);
+    sketch
+        .add_constraint(ConstraintKind::Horizontal { segment: line }, ctx(16))
+        .unwrap();
+    let source = SketchSolid::extrude(sketch, 3);
+    let selected = [SketchTransformEntity::Curve(SketchCurve::Segment(line))];
+    assert_eq!(
+        source.with_entities_translated(&selected, [1.0, 1.0], false),
+        Err(SketchTransformRefusal::ConstrainedSelection)
+    );
+    assert_eq!(
+        source.with_entities_scaled(&selected, [0.0, 0.0], 2.0),
+        Err(SketchTransformRefusal::ConstrainedSelection)
+    );
+    assert_eq!(
+        source.translated_curve_preview(&selected, [1.0, 1.0], false, ctx(16)),
+        Err(SketchTransformRefusal::ConstrainedSelection)
+    );
+    assert!(source
+        .translated_curve_preview(&selected, [1.0, 1.0], true, ctx(16))
+        .is_ok());
+    assert_eq!(
+        source.selection_scale_radius(&selected, [0.0, 0.0], ctx(16)),
+        Err(SketchTransformRefusal::ConstrainedSelection)
+    );
+    assert_eq!(source.sketch.constraints().len(), 1);
+}
