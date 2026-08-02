@@ -360,6 +360,12 @@ pub enum SketchTool {
     Extend,
     /// Replace the clicked two-line corner by a native tangent arc.
     Fillet,
+    /// Bevel a two-line corner by the same distance down both legs.
+    ChamferEqual,
+    /// Bevel a two-line corner from a distance witness and a second angle-defining witness.
+    ChamferDistanceAngle,
+    /// Bevel a two-line corner from independent witnesses on both legs.
+    ChamferTwoDistance,
 }
 
 /// The floating Signal **display stack**'s viewer state.

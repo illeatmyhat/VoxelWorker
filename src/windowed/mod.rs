@@ -68,6 +68,15 @@ const VIEW_CUBE_DRAG_THRESHOLD_PIXELS: f64 = 5.0;
 
 /// State that exists only once the window and GPU have been created (on first
 /// `resumed`). Kept in its own struct so `App` can start as `None` before then.
+#[derive(Debug, Clone, Copy)]
+struct PendingChamfer {
+    target: document::scene::NodeId,
+    tool: ui::panel::SketchTool,
+    source: document::sketch::EntityId,
+    second: document::sketch::EntityId,
+    first_witness: [f64; 2],
+}
+
 struct WindowedState {
     /// Stored as `Arc` so the surface can be `Surface<'static>` (`DEV_NOTES` /
     /// Hard requirement #6): the surface is created from `window.clone()`.
@@ -446,6 +455,10 @@ struct WindowedState {
     slot_gesture: slot::SlotGesture,
     /// Selected line loci for the two tangent-circle grammars.
     tangent_circle_gesture: tangent_circle::TangentCircleGesture,
+    /// First leg and tangent witness for the two-click Chamfer grammars. Equal Distance commits
+    /// immediately and never enters this state; incomplete input is session-only and dies on
+    /// Escape, tool changes, or sketch-mode transitions.
+    sketch_chamfer_pending: Option<PendingChamfer>,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -846,6 +859,7 @@ impl WindowedState {
             polygon_gesture: polygon::PolygonGesture::default(),
             slot_gesture: slot::SlotGesture::default(),
             tangent_circle_gesture: tangent_circle::TangentCircleGesture::default(),
+            sketch_chamfer_pending: None,
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1046,6 +1060,7 @@ impl WindowedState {
             polygon_gesture: _,
             slot_gesture: _,
             tangent_circle_gesture: _,
+            sketch_chamfer_pending: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,

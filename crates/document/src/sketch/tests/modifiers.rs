@@ -427,3 +427,66 @@ fn fillet_refuses_an_ambiguous_or_overlarge_corner_without_editing() {
         Err(FilletRefusal::RadiusOutOfRange)
     );
 }
+
+#[test]
+fn chamfer_supports_equal_and_independent_leg_distances_then_commits_one_connector() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first_far = sketch.add_free_point(SketchPoint::new(10, 0));
+    let corner = sketch.add_free_point(SketchPoint::new(0, 0));
+    let second_far = sketch.add_free_point(SketchPoint::new(0, 10));
+    let first = sketch.connect(first_far, corner).unwrap();
+    let second = sketch.connect(corner, second_far).unwrap();
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let equal = source
+        .chamfer_placement(SketchCurve::Segment(first), [2.0, 0.1], None, ctx(16))
+        .unwrap();
+    assert_eq!(equal.connector.start(), [2.0, 0.0]);
+    assert_eq!(equal.connector.end(), [0.0, 2.0]);
+
+    let independent = source
+        .chamfer_placement(
+            SketchCurve::Segment(first),
+            [2.0, 0.1],
+            Some([0.1, 4.0]),
+            ctx(16),
+        )
+        .unwrap();
+    assert_eq!(independent.connector.start(), [2.0, 0.0]);
+    assert_eq!(independent.connector.end(), [0.0, 4.0]);
+    let made = source
+        .with_corner_chamfered(
+            SketchCurve::Segment(first),
+            [2.0, 0.1],
+            Some([0.1, 4.0]),
+            ctx(16),
+        )
+        .unwrap();
+    assert!(made.sketch.segments().iter().any(|held| held.id == first));
+    assert!(made.sketch.segments().iter().any(|held| held.id == second));
+    assert_eq!(made.sketch.segments().len(), 3);
+    let connector = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|held| held.id != first && held.id != second)
+        .unwrap();
+    let from = made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == connector.from)
+        .unwrap()
+        .at
+        .in_plane();
+    let to = made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == connector.to)
+        .unwrap()
+        .at
+        .in_plane();
+    assert_eq!(from, [2.0, 0.0]);
+    assert_eq!(to, [0.0, 4.0]);
+}

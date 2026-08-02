@@ -152,6 +152,9 @@ enum SketchToolConfig {
     Trim,
     Extend,
     Fillet,
+    ChamferEqual,
+    ChamferDistanceAngle,
+    ChamferTwoDistance,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
@@ -1151,6 +1154,9 @@ mod tests {
     fn modifier_tools_survive_both_sides_of_the_tool_config_shim() {
         for tool in [
             SketchTool::Fillet,
+            SketchTool::ChamferEqual,
+            SketchTool::ChamferDistanceAngle,
+            SketchTool::ChamferTwoDistance,
             SketchTool::Trim,
             SketchTool::Extend,
             SketchTool::BreakCurve,

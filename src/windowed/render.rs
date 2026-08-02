@@ -370,6 +370,7 @@ impl WindowedState {
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
+            self.sketch_chamfer_pending = None;
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -385,6 +386,7 @@ impl WindowedState {
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
+            self.sketch_chamfer_pending = None;
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1549,6 +1551,71 @@ impl WindowedState {
         }
     }
 
+    /// Advance one of the three Chamfer grammars. Equal Distance commits from one witness; the
+    /// other two retain the first leg until the author clicks the adjacent leg, then commit the
+    /// shared canonical two-distance placement atomically.
+    pub(super) fn sketch_chamfer_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let tool = self.panel_state.sketch_tool;
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let (Some((segment, _, _)), Some(witness), Some(context)) = (
+            self.nearest_sketch_segment(cursor_x, cursor_y),
+            self.sketch_unsnapped_profile_coord(cursor_x, cursor_y),
+            document::sketch::evaluation_context_from_density(
+                self.panel_state.geometry.voxels_per_block,
+            ),
+        ) else {
+            return;
+        };
+        if tool == ui::panel::SketchTool::ChamferEqual {
+            if let Ok(next) = producer.with_corner_chamfered(
+                document::sketch::SketchCurve::Segment(segment),
+                witness,
+                None,
+                context,
+            ) {
+                self.commit_sketch_profile_edit(target, next);
+            }
+            return;
+        }
+        let Some(pending) = self.sketch_chamfer_pending else {
+            if let Ok(placement) = producer.chamfer_placement(
+                document::sketch::SketchCurve::Segment(segment),
+                witness,
+                None,
+                context,
+            ) {
+                let document::sketch::SketchCurve::Segment(second) = placement.second else {
+                    return;
+                };
+                self.sketch_chamfer_pending = Some(PendingChamfer {
+                    target,
+                    tool,
+                    source: segment,
+                    second,
+                    first_witness: witness,
+                });
+            }
+            return;
+        };
+        if pending.target != target || pending.tool != tool || pending.second != segment {
+            return;
+        }
+        self.sketch_chamfer_pending = None;
+        if let Ok(next) = producer.with_corner_chamfered(
+            document::sketch::SketchCurve::Segment(pending.source),
+            pending.first_witness,
+            Some(witness),
+            context,
+        ) {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
     /// The snap-policy profile point under the cursor (physical px), through the cached
     /// ray frame — the shared entry the drawing tools (#99) and vertex edits resolve a press
     /// or release with, quantized by [`PanelState::sketch_snap`] (#96). `None` when the
@@ -1745,6 +1812,9 @@ impl WindowedState {
                     | ui::panel::SketchTool::Trim
                     | ui::panel::SketchTool::Extend
                     | ui::panel::SketchTool::Fillet
+                    | ui::panel::SketchTool::ChamferEqual
+                    | ui::panel::SketchTool::ChamferDistanceAngle
+                    | ui::panel::SketchTool::ChamferTwoDistance
             )
         {
             self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
@@ -2488,6 +2558,7 @@ impl WindowedState {
             tangent_circle_kind(self.panel_state.sketch_tool),
             self.panel_state.armed_constraint.is_some(),
         );
+        let chamfer_live = self.sketch_chamfer_pending.take().is_some();
         let live = constraint_picks
             || line_live
             || midpoint_line_live
@@ -2498,6 +2569,7 @@ impl WindowedState {
             || polygon_live
             || slot_live
             || tangent_circle_live
+            || chamfer_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2539,6 +2611,7 @@ impl WindowedState {
         self.polygon_gesture.reset();
         self.slot_gesture.reset();
         self.tangent_circle_gesture.reset();
+        self.sketch_chamfer_pending = None;
         true
     }
 
@@ -3543,6 +3616,7 @@ impl WindowedState {
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
+            self.sketch_chamfer_pending = None;
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3566,10 +3640,21 @@ impl WindowedState {
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
+            self.sketch_chamfer_pending = None;
             return;
         };
 
         let tool = self.panel_state.sketch_tool;
+        let chamfer_context_is_live = matches!(
+            tool,
+            ui::panel::SketchTool::ChamferDistanceAngle | ui::panel::SketchTool::ChamferTwoDistance
+        ) && self.panel_state.armed_constraint.is_none()
+            && self
+                .sketch_chamfer_pending
+                .is_none_or(|pending| pending.target == target && pending.tool == tool);
+        if !chamfer_context_is_live {
+            self.sketch_chamfer_pending = None;
+        }
         // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
         self.line_gesture.retain_for_context(
             tool == ui::panel::SketchTool::Line,
@@ -3772,7 +3857,10 @@ impl WindowedState {
             | ui::panel::SketchTool::BreakCurve
             | ui::panel::SketchTool::Trim
             | ui::panel::SketchTool::Extend
-            | ui::panel::SketchTool::Fillet => Some(ui::gizmos::HandleState::Hover),
+            | ui::panel::SketchTool::Fillet
+            | ui::panel::SketchTool::ChamferEqual
+            | ui::panel::SketchTool::ChamferDistanceAngle
+            | ui::panel::SketchTool::ChamferTwoDistance => Some(ui::gizmos::HandleState::Hover),
             // Add-point has its own insert diamond; the drawing tools (#99, #102) target
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
@@ -3828,7 +3916,13 @@ impl WindowedState {
                 ) {
                     return self.nearest_sketch_edge(cx, cy).map(|hit| (hit, state));
                 }
-                if tool == ui::panel::SketchTool::Fillet {
+                if matches!(
+                    tool,
+                    ui::panel::SketchTool::Fillet
+                        | ui::panel::SketchTool::ChamferEqual
+                        | ui::panel::SketchTool::ChamferDistanceAngle
+                        | ui::panel::SketchTool::ChamferTwoDistance
+                ) {
                     return self
                         .nearest_sketch_segment(cx, cy)
                         .map(|(id, _, _)| (SketchEdgeHit::Segment(id), state));
@@ -4554,6 +4648,60 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::ChamferEqual
+            | ui::panel::SketchTool::ChamferDistanceAngle
+            | ui::panel::SketchTool::ChamferTwoDistance => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                    document::sketch::evaluation_context_from_density(
+                        self.panel_state.geometry.voxels_per_block,
+                    ),
+                ) {
+                    let hovered = self.nearest_sketch_segment(cursor_x, cursor_y);
+                    let witness = self.sketch_unsnapped_profile_coord(cursor_x, cursor_y);
+                    let placement = match (self.sketch_chamfer_pending, hovered, witness) {
+                        (Some(pending), Some((segment, _, _)), Some(second_witness))
+                            if pending.target == target
+                                && pending.tool == tool
+                                && pending.second == segment =>
+                        {
+                            producer
+                                .chamfer_placement(
+                                    document::sketch::SketchCurve::Segment(pending.source),
+                                    pending.first_witness,
+                                    Some(second_witness),
+                                    context,
+                                )
+                                .ok()
+                        }
+                        (None, Some((segment, _, _)), Some(first_witness)) => producer
+                            .chamfer_placement(
+                                document::sketch::SketchCurve::Segment(segment),
+                                first_witness,
+                                None,
+                                context,
+                            )
+                            .ok(),
+                        _ => None,
+                    };
+                    if let Some(placement) = placement {
+                        let ring: Vec<[f64; 2]> = [
+                            &placement.shortened_first,
+                            &placement.connector,
+                            &placement.shortened_second,
+                        ]
+                        .into_iter()
+                        .flat_map(break_piece_points)
+                        .collect();
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -4686,7 +4834,10 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
-        | ui::panel::SketchTool::Fillet => None,
+        | ui::panel::SketchTool::Fillet
+        | ui::panel::SketchTool::ChamferEqual
+        | ui::panel::SketchTool::ChamferDistanceAngle
+        | ui::panel::SketchTool::ChamferTwoDistance => None,
     }
 }
 
@@ -4718,7 +4869,10 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
-        | ui::panel::SketchTool::Fillet => None,
+        | ui::panel::SketchTool::Fillet
+        | ui::panel::SketchTool::ChamferEqual
+        | ui::panel::SketchTool::ChamferDistanceAngle
+        | ui::panel::SketchTool::ChamferTwoDistance => None,
     }
 }
 
@@ -4750,7 +4904,10 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
-        | ui::panel::SketchTool::Fillet => None,
+        | ui::panel::SketchTool::Fillet
+        | ui::panel::SketchTool::ChamferEqual
+        | ui::panel::SketchTool::ChamferDistanceAngle
+        | ui::panel::SketchTool::ChamferTwoDistance => None,
     }
 }
 
@@ -4784,7 +4941,10 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
-        | ui::panel::SketchTool::Fillet => None,
+        | ui::panel::SketchTool::Fillet
+        | ui::panel::SketchTool::ChamferEqual
+        | ui::panel::SketchTool::ChamferDistanceAngle
+        | ui::panel::SketchTool::ChamferTwoDistance => None,
     }
 }
 

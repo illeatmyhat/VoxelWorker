@@ -92,6 +92,26 @@ pub enum FilletRefusal {
     Constraint,
 }
 
+/// Canonical two-line corner replacement produced by any Chamfer input grammar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChamferPlacement {
+    pub first: SketchCurve,
+    pub second: SketchCurve,
+    pub shortened_first: PlanarCurve,
+    pub shortened_second: PlanarCurve,
+    pub connector: PlanarCurve,
+    corner: EntityId,
+    second_endpoint: ExtendEndpoint,
+}
+
+/// Why a chamfer could not be derived or written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChamferRefusal {
+    Corner(FilletRefusal),
+    DistanceOutOfRange,
+    Unrepresentable,
+}
+
 impl SketchSolid {
     /// Resolve every intersection of `source` with the other authored curves, retaining native
     /// line/arc pieces. End-only contacts do not break an already-open curve.
@@ -350,6 +370,97 @@ impl SketchSolid {
         let placement = self.fillet_placement(source, witness, context)?;
         let mut next = self.clone();
         next.sketch.apply_fillet(&placement, context)?;
+        Ok(next)
+    }
+
+    /// Bevel the same two-line corner Fillet recognizes. `second_witness == None` uses the first
+    /// leg's tangent distance on both legs (Equal Distance). Supplying a second witness projects it
+    /// onto the other leg, which is the shared geometric result of the Two Distance and
+    /// Distance/Angle input grammars.
+    pub fn chamfer_placement(
+        &self,
+        source: SketchCurve,
+        first_witness: [f64; 2],
+        second_witness: Option<[f64; 2]>,
+        context: parametric::EvaluationContext,
+    ) -> Result<ChamferPlacement, ChamferRefusal> {
+        let base = self
+            .fillet_placement(source, first_witness, context)
+            .map_err(ChamferRefusal::Corner)?;
+        let first_tangent = match base.first_endpoint {
+            ExtendEndpoint::Start => base.shortened_first.start(),
+            ExtendEndpoint::End => base.shortened_first.end(),
+        };
+        let equal_second_tangent = match base.second_endpoint {
+            ExtendEndpoint::Start => base.shortened_second.start(),
+            ExtendEndpoint::End => base.shortened_second.end(),
+        };
+        let (shortened_second, second_tangent) = if let Some(witness) = second_witness {
+            let corner = self
+                .sketch
+                .points
+                .iter()
+                .find(|point| point.id == base.corner)
+                .map(|point| point.at.in_plane())
+                .ok_or(ChamferRefusal::Corner(FilletRefusal::UnknownCurve))?;
+            let far = match base.second_endpoint {
+                ExtendEndpoint::Start => base.shortened_second.end(),
+                ExtendEndpoint::End => base.shortened_second.start(),
+            };
+            let span = [far[0] - corner[0], far[1] - corner[1]];
+            let length = span[0].hypot(span[1]);
+            if length <= EXTEND_EPSILON {
+                return Err(ChamferRefusal::DistanceOutOfRange);
+            }
+            let unit = [span[0] / length, span[1] / length];
+            let from_corner = [witness[0] - corner[0], witness[1] - corner[1]];
+            let distance = unit[0].mul_add(from_corner[0], unit[1] * from_corner[1]);
+            if distance <= EXTEND_EPSILON || distance >= length - EXTEND_EPSILON {
+                return Err(ChamferRefusal::DistanceOutOfRange);
+            }
+            let tangent = [
+                unit[0].mul_add(distance, corner[0]),
+                unit[1].mul_add(distance, corner[1]),
+            ];
+            let shortened = match base.second_endpoint {
+                ExtendEndpoint::Start => PlanarCurve::Segment {
+                    start: tangent,
+                    end: far,
+                },
+                ExtendEndpoint::End => PlanarCurve::Segment {
+                    start: far,
+                    end: tangent,
+                },
+            };
+            (shortened, tangent)
+        } else {
+            (base.shortened_second, equal_second_tangent)
+        };
+        Ok(ChamferPlacement {
+            first: base.first,
+            second: base.second,
+            shortened_first: base.shortened_first,
+            shortened_second,
+            connector: PlanarCurve::Segment {
+                start: first_tangent,
+                end: second_tangent,
+            },
+            corner: base.corner,
+            second_endpoint: base.second_endpoint,
+        })
+    }
+
+    /// Atomically persist a canonical Chamfer placement.
+    pub fn with_corner_chamfered(
+        &self,
+        source: SketchCurve,
+        first_witness: [f64; 2],
+        second_witness: Option<[f64; 2]>,
+        context: parametric::EvaluationContext,
+    ) -> Result<SketchSolid, ChamferRefusal> {
+        let placement = self.chamfer_placement(source, first_witness, second_witness, context)?;
+        let mut next = self.clone();
+        next.sketch.apply_chamfer(&placement)?;
         Ok(next)
     }
 }
@@ -715,6 +826,81 @@ impl Sketch {
                 .map_err(|_| FilletRefusal::Constraint)?;
             self.add_constraint(ConstraintKind::tangent(line, arc, branch), context)
                 .map_err(|_| FilletRefusal::Constraint)?;
+        }
+        Ok(())
+    }
+
+    fn apply_chamfer(&mut self, placement: &ChamferPlacement) -> Result<(), ChamferRefusal> {
+        let first_id = match placement.first {
+            SketchCurve::Segment(id) => id,
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+                return Err(ChamferRefusal::Corner(FilletRefusal::UnsupportedCurve));
+            }
+        };
+        let second_id = match placement.second {
+            SketchCurve::Segment(id) => id,
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+                return Err(ChamferRefusal::Corner(FilletRefusal::UnsupportedCurve));
+            }
+        };
+        let first_endpoint = self
+            .segments
+            .iter()
+            .find(|segment| segment.id == first_id)
+            .and_then(|segment| {
+                (segment.from == placement.corner)
+                    .then_some(ExtendEndpoint::Start)
+                    .or_else(|| (segment.to == placement.corner).then_some(ExtendEndpoint::End))
+            })
+            .ok_or(ChamferRefusal::Corner(FilletRefusal::UnknownCurve))?;
+        let first_at = match first_endpoint {
+            ExtendEndpoint::Start => placement.shortened_first.start(),
+            ExtendEndpoint::End => placement.shortened_first.end(),
+        };
+        let second_at = match placement.second_endpoint {
+            ExtendEndpoint::Start => placement.shortened_second.start(),
+            ExtendEndpoint::End => placement.shortened_second.end(),
+        };
+        let first_at = SketchPoint::try_from_continuous(first_at[0], first_at[1])
+            .map_err(|_| ChamferRefusal::Unrepresentable)?;
+        let second_at = SketchPoint::try_from_continuous(second_at[0], second_at[1])
+            .map_err(|_| ChamferRefusal::Unrepresentable)?;
+        let role = self
+            .segments
+            .iter()
+            .find(|segment| segment.id == first_id)
+            .map(|segment| segment.role)
+            .ok_or(ChamferRefusal::Corner(FilletRefusal::UnknownCurve))?;
+        let corner_index = self
+            .point_index(placement.corner)
+            .ok_or(ChamferRefusal::Corner(FilletRefusal::UnknownCurve))?;
+        self.points[corner_index].at = first_at;
+        let second_point = self.add_point(second_at);
+        if let Some(point) = self
+            .points
+            .iter_mut()
+            .find(|point| point.id == second_point)
+        {
+            point.role = role;
+        }
+        let second_segment = self
+            .segments
+            .iter_mut()
+            .find(|segment| segment.id == second_id)
+            .ok_or(ChamferRefusal::Corner(FilletRefusal::UnknownCurve))?;
+        match placement.second_endpoint {
+            ExtendEndpoint::Start => second_segment.from = second_point,
+            ExtendEndpoint::End => second_segment.to = second_point,
+        }
+        let connector = self
+            .connect(placement.corner, second_point)
+            .ok_or(ChamferRefusal::Unrepresentable)?;
+        if let Some(segment) = self
+            .segments
+            .iter_mut()
+            .find(|segment| segment.id == connector)
+        {
+            segment.role = role;
         }
         Ok(())
     }

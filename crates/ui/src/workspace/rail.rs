@@ -256,18 +256,18 @@ const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
     ),
     (
         Icon::ChamferEqual,
-        "Equal Distance Chamfer — reserved",
-        SketchModifierRoute::Reserved,
+        "Equal Distance Chamfer — click one leg to bevel both equally",
+        SketchModifierRoute::Tool(SketchTool::ChamferEqual),
     ),
     (
         Icon::ChamferDistanceAngle,
-        "Distance and Angle Chamfer — reserved",
-        SketchModifierRoute::Reserved,
+        "Distance and Angle Chamfer — choose a distance, then the angle on the other leg",
+        SketchModifierRoute::Tool(SketchTool::ChamferDistanceAngle),
     ),
     (
         Icon::ChamferTwoDistance,
-        "Two Distance Chamfer — reserved",
-        SketchModifierRoute::Reserved,
+        "Two Distance Chamfer — choose one tangent point on each leg",
+        SketchModifierRoute::Tool(SketchTool::ChamferTwoDistance),
     ),
     (
         Icon::Trim,
@@ -710,6 +710,9 @@ mod tests {
             vec![
                 Icon::ConstructionToggle,
                 Icon::Fillet,
+                Icon::ChamferEqual,
+                Icon::ChamferDistanceAngle,
+                Icon::ChamferTwoDistance,
                 Icon::Trim,
                 Icon::Extend,
                 Icon::BreakCurve,
