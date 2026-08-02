@@ -1998,6 +1998,7 @@ impl WindowedState {
                     producer.sketch.arcs().iter().any(|arc| arc.id == id)
                 }
                 document::sketch::SketchCurve::Circle(_) => false,
+                document::sketch::SketchCurve::Bezier(_) => false,
             },
         );
     }
@@ -4276,12 +4277,15 @@ impl WindowedState {
                     }
                     return self
                         .sketch_tangent_arc_source_at(cx, cy)
-                        .map(|source| match source.curve {
+                        .and_then(|source| match source.curve {
                             document::sketch::SketchCurve::Segment(id) => {
-                                SketchEdgeHit::Segment(id)
+                                Some(SketchEdgeHit::Segment(id))
                             }
-                            document::sketch::SketchCurve::Arc(id) => SketchEdgeHit::Arc(id),
-                            document::sketch::SketchCurve::Circle(id) => SketchEdgeHit::Circle(id),
+                            document::sketch::SketchCurve::Arc(id) => Some(SketchEdgeHit::Arc(id)),
+                            document::sketch::SketchCurve::Circle(id) => {
+                                Some(SketchEdgeHit::Circle(id))
+                            }
+                            document::sketch::SketchCurve::Bezier(_) => None,
                         })
                         .map(|hit| (hit, state));
                 }

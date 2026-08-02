@@ -341,6 +341,16 @@ fn drawn_curves(
             PlanarCurve::circle(center.in_plane(), circle.resolved_radius(context)),
         ));
     }
+    for bezier in sketch
+        .beziers
+        .iter()
+        .filter(|curve| curve.role == EntityRole::Real)
+    {
+        let Some(curve) = sketch.rational_bezier_from(bezier.controls, bezier.weights) else {
+            continue;
+        };
+        curves.push((bezier.origin, PlanarCurve::RationalBezier(curve)));
+    }
     curves.extend(
         sketch
             .derived_pattern_curves(context)

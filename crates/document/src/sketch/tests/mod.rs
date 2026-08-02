@@ -23,6 +23,7 @@ use std::num::NonZeroU32;
 use voxel_core::voxel::VoxelGrid;
 
 mod arcs;
+mod beziers;
 mod circles;
 mod coarse_solid;
 mod constraints;

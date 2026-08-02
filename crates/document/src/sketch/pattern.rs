@@ -282,6 +282,7 @@ impl Sketch {
             .map(|curve| curve.id)
             .chain(self.arcs.iter().map(|curve| curve.id))
             .chain(self.circles.iter().map(|curve| curve.id))
+            .chain(self.beziers.iter().map(|curve| curve.id))
             .collect();
         let segments: BTreeSet<EntityId> = self.segments.iter().map(|curve| curve.id).collect();
         let points: BTreeSet<EntityId> = self.points.iter().map(|point| point.id).collect();
@@ -390,6 +391,15 @@ impl Sketch {
                         circle.resolved_radius(context),
                     ),
                     circle.role,
+                ))
+            }
+            SketchCurve::Bezier(id) => {
+                let bezier = self.beziers.iter().find(|bezier| bezier.id == id)?;
+                Some((
+                    PlanarCurve::RationalBezier(
+                        self.rational_bezier_from(bezier.controls, bezier.weights)?,
+                    ),
+                    bezier.role,
                 ))
             }
         }

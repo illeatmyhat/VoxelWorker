@@ -6,8 +6,8 @@
 //! would either violate an assertion or silently delete it, so Move and Scale refuse that case.
 
 use super::{
-    Arc, Circle, CircleRadius, EntityId, Point, ResolvedLength, Segment, Sketch, SketchCurve,
-    SketchPoint, SketchSolid, ABSENT_CENTER,
+    Arc, Bezier, Circle, CircleRadius, EntityId, Point, ResolvedLength, Segment, Sketch,
+    SketchCurve, SketchPoint, SketchSolid, ABSENT_CENTER,
 };
 use std::collections::{HashMap, HashSet};
 use substrate::curve_intersection::PlanarCurve;
@@ -36,6 +36,7 @@ struct TransformClosure {
     segments: HashSet<EntityId>,
     arcs: HashSet<EntityId>,
     circles: HashSet<EntityId>,
+    beziers: HashSet<EntityId>,
 }
 
 impl SketchSolid {
@@ -231,6 +232,7 @@ impl SketchSolid {
             .map(SketchCurve::Segment)
             .chain(closure.arcs.iter().copied().map(SketchCurve::Arc))
             .chain(closure.circles.iter().copied().map(SketchCurve::Circle));
+        let curves = curves.chain(closure.beziers.iter().copied().map(SketchCurve::Bezier));
         curves
             .map(|curve| {
                 let curve = self
@@ -309,6 +311,15 @@ impl Sketch {
                     closure.circles.insert(id);
                     closure.points.insert(circle.center);
                 }
+                SketchTransformEntity::Curve(SketchCurve::Bezier(id)) => {
+                    let bezier = self
+                        .beziers
+                        .iter()
+                        .find(|bezier| bezier.id == id)
+                        .ok_or(SketchTransformRefusal::UnknownEntity)?;
+                    closure.beziers.insert(id);
+                    closure.points.extend(bezier.controls);
+                }
             }
         }
         Ok(closure)
@@ -330,6 +341,7 @@ impl Sketch {
                     closure.segments.contains(&curve.id())
                         || closure.arcs.contains(&curve.id())
                         || closure.circles.contains(&curve.id())
+                        || closure.beziers.contains(&curve.id())
                 })
         })
     }
@@ -421,6 +433,27 @@ impl Sketch {
                 id,
                 center: mapped(&points, source.center)?,
                 radius: source.radius,
+                origin: id,
+                role: source.role,
+            });
+        }
+        let source_beziers: Vec<Bezier> = self
+            .beziers
+            .iter()
+            .filter(|curve| closure.beziers.contains(&curve.id))
+            .copied()
+            .collect();
+        for source in source_beziers {
+            let id = self.alloc_id();
+            self.beziers.push(Bezier {
+                id,
+                controls: [
+                    mapped(&points, source.controls[0])?,
+                    mapped(&points, source.controls[1])?,
+                    mapped(&points, source.controls[2])?,
+                    mapped(&points, source.controls[3])?,
+                ],
+                weights: source.weights,
                 origin: id,
                 role: source.role,
             });

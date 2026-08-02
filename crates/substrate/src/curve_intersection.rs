@@ -518,6 +518,10 @@ fn intersect_parameter_spans(
     if depth >= MAX_DEPTH
         || (first_size <= RATIONAL_CROSSING_EPSILON && second_size <= RATIONAL_CROSSING_EPSILON)
     {
+        if let Some(crossing) = transverse_parameter_chords(first, second) {
+            found.push(crossing);
+            return;
+        }
         let (first_parameter, first_point) = first.midpoint();
         let (second_parameter, second_point) = second.midpoint();
         if squared_distance(first_point, second_point) <= (RATIONAL_CROSSING_EPSILON * 8.0).powi(2)
@@ -542,6 +546,59 @@ fn intersect_parameter_spans(
             intersect_parameter_spans(first, half, depth.saturating_add(1), found);
         }
     }
+}
+
+/// Intersect two already-converged parameter chords without the authored-segment minimum-length
+/// policy. At this recursion leaf both chords are intentionally microscopic, so treating a
+/// squared length below the document epsilon as degenerate would discard ordinary crossings.
+fn transverse_parameter_chords(
+    first: ParameterSpan,
+    second: ParameterSpan,
+) -> Option<CurveCrossing> {
+    const PARAMETER_SLACK: f64 = 1.0e-5;
+    let first_start = first.curve.start();
+    let second_start = second.curve.start();
+    let first_end = first.curve.end();
+    let second_end = second.curve.end();
+    let first_delta = [first_end[0] - first_start[0], first_end[1] - first_start[1]];
+    let second_delta = [
+        second_end[0] - second_start[0],
+        second_end[1] - second_start[1],
+    ];
+    let offset = [
+        second_start[0] - first_start[0],
+        second_start[1] - first_start[1],
+    ];
+    let denominator = cross(first_delta, second_delta);
+    let scale = length(first_delta) * length(second_delta);
+    if scale <= f64::MIN_POSITIVE || denominator.abs() <= f64::EPSILON * scale {
+        return None;
+    }
+    let on_first = cross(offset, second_delta) / denominator;
+    let on_second = cross(offset, first_delta) / denominator;
+    if !(-PARAMETER_SLACK..=1.0 + PARAMETER_SLACK).contains(&on_first)
+        || !(-PARAMETER_SLACK..=1.0 + PARAMETER_SLACK).contains(&on_second)
+    {
+        return None;
+    }
+    let on_first = on_first.clamp(0.0, 1.0);
+    let on_second = on_second.clamp(0.0, 1.0);
+    let first_point = [
+        first_delta[0].mul_add(on_first, first_start[0]),
+        first_delta[1].mul_add(on_first, first_start[1]),
+    ];
+    let second_point = [
+        second_delta[0].mul_add(on_second, second_start[0]),
+        second_delta[1].mul_add(on_second, second_start[1]),
+    ];
+    Some(CurveCrossing::transverse(
+        [
+            (first_point[0] + second_point[0]) * 0.5,
+            (first_point[1] + second_point[1]) * 0.5,
+        ],
+        (first.to - first.from).mul_add(on_first, first.from),
+        (second.to - second.from).mul_add(on_second, second.from),
+    ))
 }
 
 fn planar_curve_bounds(curve: PlanarCurve) -> ([f64; 2], [f64; 2]) {
@@ -1545,6 +1602,21 @@ mod tests {
         assert_near(crossings[0].point, [1.5, 0.0]);
         assert!((crossings[0].parameter_on_first - 0.5).abs() <= 1.0e-7);
         assert!((crossings[0].parameter_on_second - 0.5).abs() <= 1.0e-7);
+    }
+
+    #[test]
+    fn a_curved_bezier_crosses_a_segment_at_non_dyadic_segment_parameter() {
+        let bezier = PlanarCurve::RationalBezier(RationalBezier::cubic([
+            [0.0, 0.0],
+            [3.0, 5.0],
+            [7.0, 5.0],
+            [10.0, 0.0],
+        ]));
+        let vertical = segment([5.0, -1.0], [5.0, 6.0]);
+        let crossings = bezier.crossings(&vertical);
+        assert_eq!(crossings.len(), 1);
+        assert_near(crossings[0].point, [5.0, 3.75]);
+        assert!((crossings[0].parameter_on_first - 0.5).abs() <= 1.0e-7);
     }
 
     #[test]

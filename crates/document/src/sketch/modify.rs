@@ -562,6 +562,11 @@ impl Sketch {
                     .iter()
                     .map(|circle| SketchCurve::Circle(circle.id)),
             )
+            .chain(
+                self.beziers
+                    .iter()
+                    .map(|bezier| SketchCurve::Bezier(bezier.id)),
+            )
     }
 
     pub(super) fn planar_curve(
@@ -569,6 +574,12 @@ impl Sketch {
         curve: SketchCurve,
         context: parametric::EvaluationContext,
     ) -> Option<PlanarCurve> {
+        if let SketchCurve::Bezier(id) = curve {
+            let bezier = self.beziers.iter().find(|bezier| bezier.id == id)?;
+            return Some(PlanarCurve::RationalBezier(
+                self.rational_bezier_from(bezier.controls, bezier.weights)?,
+            ));
+        }
         match self.curve_geometry(curve, context)? {
             parametric::sketch::CurveGeometry::Segment { from, to } => Some(PlanarCurve::Segment {
                 start: from,
@@ -600,6 +611,9 @@ impl Sketch {
             SketchCurve::Segment(id) => self.break_segment(id, &placement.pieces),
             SketchCurve::Arc(id) => self.break_arc(id, &placement.pieces),
             SketchCurve::Circle(id) => self.break_circle(id, &placement.pieces),
+            SketchCurve::Bezier(_) => {
+                self.replace_curve_with_pieces(placement.source, &placement.pieces)
+            }
         }?;
         self.sync_arc_centers();
         self.prune_orphan_centers();
@@ -746,11 +760,20 @@ impl Sketch {
                     .ok_or(BreakRefusal::UnknownCurve)?;
                 (held.origin, held.role)
             }
+            SketchCurve::Bezier(id) => {
+                let held = self
+                    .beziers
+                    .iter()
+                    .find(|bezier| bezier.id == id)
+                    .ok_or(BreakRefusal::UnknownCurve)?;
+                (held.origin, held.role)
+            }
         };
         match source {
             SketchCurve::Segment(id) => self.segments.retain(|segment| segment.id != id),
             SketchCurve::Arc(id) => self.arcs.retain(|arc| arc.id != id),
             SketchCurve::Circle(id) => self.circles.retain(|circle| circle.id != id),
+            SketchCurve::Bezier(id) => self.beziers.retain(|bezier| bezier.id != id),
         }
         for piece in pieces {
             let from = self.point_for_break(piece.start(), role)?;
@@ -773,7 +796,23 @@ impl Sketch {
                     origin,
                     role,
                 }),
-                PlanarCurve::RationalBezier(_) => return Err(BreakRefusal::Unrepresentable),
+                PlanarCurve::RationalBezier(curve) => {
+                    let first_handle =
+                        SketchPoint::try_from_continuous(curve.control[1][0], curve.control[1][1])
+                            .map_err(|_| BreakRefusal::Unrepresentable)?;
+                    let second_handle =
+                        SketchPoint::try_from_continuous(curve.control[2][0], curve.control[2][1])
+                            .map_err(|_| BreakRefusal::Unrepresentable)?;
+                    let first_handle = self.add_construction_point(first_handle);
+                    let second_handle = self.add_construction_point(second_handle);
+                    self.beziers.push(super::Bezier {
+                        id,
+                        controls: [from, first_handle, second_handle, to],
+                        weights: curve.weights,
+                        origin,
+                        role,
+                    });
+                }
             }
         }
         self.sync_arc_centers();
@@ -824,6 +863,7 @@ impl Sketch {
                 }
             }
             SketchCurve::Circle(_) => return Err(ExtendRefusal::ClosedCurve),
+            SketchCurve::Bezier(_) => return Err(ExtendRefusal::Unrepresentable),
         };
         let point = self
             .points
@@ -840,6 +880,10 @@ impl Sketch {
             .iter()
             .any(|arc| arc.from == point || arc.to == point || arc.center == point)
             || self.circles.iter().any(|circle| circle.center == point)
+            || self
+                .beziers
+                .iter()
+                .any(|bezier| bezier.controls.contains(&point))
     }
 
     fn apply_fillet(
@@ -849,13 +893,13 @@ impl Sketch {
     ) -> Result<(), FilletRefusal> {
         let first_id = match placement.first {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
                 return Err(FilletRefusal::UnsupportedCurve);
             }
         };
         let second_id = match placement.second {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
                 return Err(FilletRefusal::UnsupportedCurve);
             }
         };
@@ -922,13 +966,13 @@ impl Sketch {
     fn apply_chamfer(&mut self, placement: &ChamferPlacement) -> Result<(), ChamferRefusal> {
         let first_id = match placement.first {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
                 return Err(ChamferRefusal::Corner(FilletRefusal::UnsupportedCurve));
             }
         };
         let second_id = match placement.second {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
                 return Err(ChamferRefusal::Corner(FilletRefusal::UnsupportedCurve));
             }
         };
@@ -1011,6 +1055,11 @@ impl Sketch {
                 .iter()
                 .find(|curve| curve.id == id)
                 .map(|curve| curve.role),
+            SketchCurve::Bezier(id) => self
+                .beziers
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| curve.role),
         }
         .ok_or(OffsetRefusal::UnknownCurve)?;
         match placement.offset {
@@ -1080,6 +1129,11 @@ impl Sketch {
             }
             SketchCurve::Circle(id) => {
                 if let Some(curve) = self.circles.iter_mut().find(|curve| curve.id == id) {
+                    curve.role = role;
+                }
+            }
+            SketchCurve::Bezier(id) => {
+                if let Some(curve) = self.beziers.iter_mut().find(|curve| curve.id == id) {
                     curve.role = role;
                 }
             }

@@ -1272,6 +1272,27 @@ pub struct Circle {
     pub role: EntityRole,
 }
 
+/// One rational cubic Bézier piece whose four controls are stable [`Point`] entities.
+///
+/// Unit weights describe an ordinary cubic spline piece. Non-unit positive weights also describe
+/// exact conics, including the quarter-ellipse pieces emitted by the ellipse tools. Keeping the
+/// controls as point references lets adjacent pieces share endpoints and gives programmatic
+/// authors the same stable handles as interactive tools.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Bezier {
+    /// Stable identity of this curve piece.
+    pub id: EntityId,
+    /// Endpoint, two tangent controls, and endpoint in parameter order.
+    pub controls: [EntityId; 4],
+    /// Strictly-positive homogeneous weights paired with [`controls`](Self::controls).
+    pub weights: [f64; 4],
+    /// Lineage shared by pieces created as one spline, conic, ellipse, or blend operation.
+    pub origin: EntityId,
+    /// Real vs construction geometry.
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
 impl Arc {
     pub(crate) fn sweep_degrees(self) -> f64 {
         self.bulge
@@ -1345,6 +1366,9 @@ pub struct Sketch {
     /// none.
     #[serde(default)]
     circles: Vec<Circle>,
+    /// Rational cubic curve pieces. `serde(default)` keeps older documents source-compatible.
+    #[serde(default)]
+    beziers: Vec<Bezier>,
     /// Associative operators whose instances are regenerated from authored curves. Generated
     /// curves deliberately have no entity ids of their own: constraints and direct edits continue
     /// to target the sources, so an operator adds no solver freedoms and cannot drift apart.
@@ -1389,7 +1413,9 @@ impl Sketch {
                 .map(|point| point.at.in_plane())
         };
         match curve {
-            SketchCurve::Circle(_) => Err(TangentArcRefusal::UnsupportedIncoming),
+            SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
+                Err(TangentArcRefusal::UnsupportedIncoming)
+            }
             SketchCurve::Segment(id) => {
                 let segment = self
                     .segments
@@ -1481,6 +1507,7 @@ impl Sketch {
                     arc: None,
                 }))
             }
+            SketchCurve::Bezier(_) => None,
             SketchCurve::Arc(id) => {
                 let arc = self.arcs.iter().find(|arc| arc.id == id)?;
                 let from = point(arc.from)?;
@@ -1520,7 +1547,7 @@ impl Sketch {
                 let circle = self.circles.iter().find(|circle| circle.id == id)?;
                 point(circle.center)
             }
-            SketchCurve::Segment(_) => None,
+            SketchCurve::Segment(_) | SketchCurve::Bezier(_) => None,
         }
     }
 
@@ -1647,6 +1674,7 @@ impl Sketch {
             segments: Vec::with_capacity(profile.len()),
             arcs: Vec::new(),
             circles: Vec::new(),
+            beziers: Vec::new(),
             patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
@@ -1689,6 +1717,7 @@ impl Sketch {
             segments: Vec::new(),
             arcs: Vec::new(),
             circles: Vec::new(),
+            beziers: Vec::new(),
             patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
@@ -1726,6 +1755,11 @@ impl Sketch {
         &self.circles
     }
 
+    /// Read-only view of rational cubic curve pieces.
+    pub fn beziers(&self) -> &[Bezier] {
+        &self.beziers
+    }
+
     /// Read-only view of associative mirror and pattern rules.
     pub fn patterns(&self) -> &[SketchPattern] {
         &self.patterns
@@ -1755,6 +1789,10 @@ impl Sketch {
         }
         if let Some(circle) = self.circles.iter_mut().find(|circle| circle.id == id) {
             circle.role = circle.role.toggled();
+            return true;
+        }
+        if let Some(bezier) = self.beziers.iter_mut().find(|bezier| bezier.id == id) {
+            bezier.role = bezier.role.toggled();
             return true;
         }
         false
@@ -2233,6 +2271,7 @@ impl Sketch {
             .retain(|arc| arc.from != id && arc.to != id && arc.center != id);
         // A circle IS its center plus a radius, so deleting the center deletes the circle.
         self.circles.retain(|circle| circle.center != id);
+        self.beziers.retain(|bezier| !bezier.controls.contains(&id));
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
         self.drop_dangling_patterns();
@@ -2274,6 +2313,10 @@ impl Sketch {
                 .iter()
                 .any(|arc| arc.from == id || arc.to == id || arc.center == id)
             || self.circles.iter().any(|circle| circle.center == id)
+            || self
+                .beziers
+                .iter()
+                .any(|bezier| bezier.controls.contains(&id))
     }
 
     /// Erase each candidate that no geometry draws any more. Asked AFTER the edge has gone, so
@@ -2531,6 +2574,7 @@ impl Sketch {
                         .unwrap_or(false),
                     SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
+                    SketchCurve::Bezier(_) => false,
                 };
                 if !live(first) || !live(second) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -2543,7 +2587,7 @@ impl Sketch {
                 let live = |curve: SketchCurve| match curve {
                     SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
-                    SketchCurve::Segment(_) => false,
+                    SketchCurve::Segment(_) | SketchCurve::Bezier(_) => false,
                 };
                 if !live(first) || !live(second) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -2562,6 +2606,7 @@ impl Sketch {
                     SketchCurve::Segment(id) => self.segments.iter().any(|held| held.id == id),
                     SketchCurve::Arc(id) => self.arcs.iter().any(|held| held.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|held| held.id == id),
+                    SketchCurve::Bezier(_) => false,
                 };
                 if !live(first) || !live(second) || live_segment(axis).is_none() {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -2658,6 +2703,7 @@ impl Sketch {
         let segment_ids: Vec<EntityId> = self.segments.iter().map(|seg| seg.id).collect();
         let arc_ids: Vec<EntityId> = self.arcs.iter().map(|arc| arc.id).collect();
         let circle_ids: Vec<EntityId> = self.circles.iter().map(|circle| circle.id).collect();
+        let bezier_ids: Vec<EntityId> = self.beziers.iter().map(|bezier| bezier.id).collect();
         let valid_symmetry_axes: Vec<EntityId> = self
             .segments
             .iter()
@@ -2692,6 +2738,7 @@ impl Sketch {
                     SketchCurve::Segment(id) => segment_ids.contains(id),
                     SketchCurve::Arc(id) => arc_ids.contains(id),
                     SketchCurve::Circle(id) => circle_ids.contains(id),
+                    SketchCurve::Bezier(id) => bezier_ids.contains(id),
                 })
                 && constraint.kind.tangent_is_structurally_valid()
                 && constraint.kind.concentric_is_structurally_valid()
@@ -2873,6 +2920,97 @@ impl Sketch {
         self.drop_dangling_constraints();
     }
 
+    /// Connect four existing control points as one rational cubic curve piece.
+    ///
+    /// The first and last controls are its topological endpoints. A closed rational curve needs
+    /// multiple pieces (as an ellipse does), so equal endpoints are refused here. All weights must
+    /// be finite and strictly positive, keeping the projective denominator non-zero throughout.
+    pub fn connect_rational_bezier(
+        &mut self,
+        controls: [EntityId; 4],
+        weights: [f64; 4],
+    ) -> Option<EntityId> {
+        let curve = self.rational_bezier_from(controls, weights)?;
+        let reversed_controls = [controls[3], controls[2], controls[1], controls[0]];
+        let reversed_weights = [weights[3], weights[2], weights[1], weights[0]];
+        if controls[0] == controls[3]
+            || curve.control[0] == curve.control[3]
+            || self.beziers.iter().any(|held| {
+                (held.controls == controls && held.weights == weights)
+                    || (held.controls == reversed_controls && held.weights == reversed_weights)
+            })
+        {
+            return None;
+        }
+        let id = self.alloc_id();
+        self.beziers.push(Bezier {
+            id,
+            controls,
+            weights,
+            origin: id,
+            role: EntityRole::Real,
+        });
+        Some(id)
+    }
+
+    /// Draw an ordinary cubic Bézier from four positions, minting visible endpoints and
+    /// construction-role tangent controls atomically.
+    pub fn add_cubic_bezier(&mut self, control: [SketchPoint; 4]) -> Option<EntityId> {
+        let continuous = control.map(|point| point.in_plane());
+        let curve = substrate::rational_bezier::RationalBezier::cubic(continuous);
+        if !curve.is_valid() || continuous[0] == continuous[3] {
+            return None;
+        }
+        let controls = [
+            self.add_point(control[0]),
+            self.add_construction_point(control[1]),
+            self.add_construction_point(control[2]),
+            self.add_point(control[3]),
+        ];
+        self.connect_rational_bezier(controls, [1.0; 4])
+    }
+
+    /// Delete one rational curve piece. Control points shared by another entity survive; private
+    /// tangent handles are pruned by the same orphan policy used for circular centers.
+    pub fn delete_bezier(&mut self, bezier_id: EntityId) {
+        let controls = self
+            .beziers
+            .iter()
+            .find(|bezier| bezier.id == bezier_id)
+            .map(|bezier| bezier.controls);
+        self.beziers.retain(|bezier| bezier.id != bezier_id);
+        if let Some(controls) = controls {
+            self.drop_undrawn_points(controls);
+        }
+        self.prune_orphan_centers();
+        self.drop_dangling_patterns();
+        self.drop_dangling_constraints();
+    }
+
+    /// Resolve stable control ids into the foundational rational-curve value.
+    fn rational_bezier_from(
+        &self,
+        controls: [EntityId; 4],
+        weights: [f64; 4],
+    ) -> Option<substrate::rational_bezier::RationalBezier> {
+        let position = |id| {
+            self.points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        let curve = substrate::rational_bezier::RationalBezier {
+            control: [
+                position(controls[0])?,
+                position(controls[1])?,
+                position(controls[2])?,
+                position(controls[3])?,
+            ],
+            weights,
+        };
+        curve.is_valid().then_some(curve)
+    }
+
     /// Whether the drawing OWNS this point's coordinates — whether it is an arc's center, which
     /// [`sync_arc_centers`](Self::sync_arc_centers) re-derives from the arc's ends and its
     /// sweep. A derived point is selectable, draggable, snappable and **constrainable** like any
@@ -2927,6 +3065,9 @@ impl Sketch {
         }
         for circle in &self.circles {
             referenced.insert(circle.center);
+        }
+        for bezier in &self.beziers {
+            referenced.extend(bezier.controls);
         }
         self.points.retain(|point| {
             point.role != EntityRole::Construction || referenced.contains(&point.id)
@@ -3049,7 +3190,8 @@ impl Sketch {
     /// derived center points agree again.
     pub fn repair(&mut self, context: parametric::EvaluationContext) -> usize {
         let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
-        let before = self.segments.len() + self.arcs.len() + self.circles.len();
+        let before =
+            self.segments.len() + self.arcs.len() + self.circles.len() + self.beziers.len();
         self.segments.retain(|seg| {
             seg.from != seg.to && point_ids.contains(&seg.from) && point_ids.contains(&seg.to)
         });
@@ -3067,6 +3209,14 @@ impl Sketch {
             point_ids.contains(&circle.center)
                 && circle_radius_is_valid(circle.resolved_radius(context))
         });
+        self.beziers.retain(|bezier| {
+            bezier.controls[0] != bezier.controls[3]
+                && bezier.controls.iter().all(|id| point_ids.contains(id))
+                && bezier
+                    .weights
+                    .iter()
+                    .all(|weight| weight.is_finite() && *weight > 0.0)
+        });
         // Geometry-dependent constraint repair must see derived arc centers at their authored
         // positions, not a stale serialized cache.
         self.sync_arc_centers();
@@ -3079,6 +3229,7 @@ impl Sketch {
             - self.segments.len()
             - self.arcs.len()
             - self.circles.len()
+            - self.beziers.len()
             - self.patterns.len()
             - self.constraints.len();
         // A document may name no center at all, and a just-erased arc leaves one behind;
