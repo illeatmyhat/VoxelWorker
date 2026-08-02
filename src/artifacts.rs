@@ -155,6 +155,7 @@ enum SketchToolConfig {
     ChamferEqual,
     ChamferDistanceAngle,
     ChamferTwoDistance,
+    Offset,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
@@ -1157,6 +1158,7 @@ mod tests {
             SketchTool::ChamferEqual,
             SketchTool::ChamferDistanceAngle,
             SketchTool::ChamferTwoDistance,
+            SketchTool::Offset,
             SketchTool::Trim,
             SketchTool::Extend,
             SketchTool::BreakCurve,

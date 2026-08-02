@@ -286,8 +286,8 @@ const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
     ),
     (
         Icon::OffsetCurve,
-        "Offset — reserved",
-        SketchModifierRoute::Reserved,
+        "Offset — select a curve, then place its parallel or concentric copy",
+        SketchModifierRoute::Tool(SketchTool::Offset),
     ),
     (
         Icon::MoveCopy,
@@ -716,6 +716,7 @@ mod tests {
                 Icon::Trim,
                 Icon::Extend,
                 Icon::BreakCurve,
+                Icon::OffsetCurve,
             ]
         );
     }

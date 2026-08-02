@@ -77,6 +77,12 @@ struct PendingChamfer {
     first_witness: [f64; 2],
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingOffset {
+    target: document::scene::NodeId,
+    source: document::sketch::SketchCurve,
+}
+
 struct WindowedState {
     /// Stored as `Arc` so the surface can be `Surface<'static>` (`DEV_NOTES` /
     /// Hard requirement #6): the surface is created from `window.clone()`.
@@ -459,6 +465,9 @@ struct WindowedState {
     /// immediately and never enters this state; incomplete input is session-only and dies on
     /// Escape, tool changes, or sketch-mode transitions.
     sketch_chamfer_pending: Option<PendingChamfer>,
+    /// Curve selected by Offset while its parallel/concentric copy follows the cursor. The
+    /// source identity is interaction state only; the committed copy is ordinary sketch data.
+    sketch_offset_pending: Option<PendingOffset>,
     /// The rectangle tool's press-time corner (#99) as a policy-snapped profile point
     /// (#96: sub-voxel under `NoSnap`), or `None`. The release at the opposite corner commits
     /// the loop and clears this; a degenerate (zero-span) release just clears it.
@@ -860,6 +869,7 @@ impl WindowedState {
             slot_gesture: slot::SlotGesture::default(),
             tangent_circle_gesture: tangent_circle::TangentCircleGesture::default(),
             sketch_chamfer_pending: None,
+            sketch_offset_pending: None,
             sketch_rect_anchor: None,
             sketch_arc_gesture: None,
             sketch_circle_center: None,
@@ -1061,6 +1071,7 @@ impl WindowedState {
             slot_gesture: _,
             tangent_circle_gesture: _,
             sketch_chamfer_pending: _,
+            sketch_offset_pending: _,
             sketch_rect_anchor: _,
             sketch_arc_gesture: _,
             sketch_circle_center: _,

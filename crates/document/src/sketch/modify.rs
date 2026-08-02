@@ -7,7 +7,7 @@
 
 use super::{
     AngleMeasurement, Arc, ArcSweep, ConstraintKind, EntityId, EntityRole, Segment, Sketch,
-    SketchCurve, SketchPoint, SketchSolid, ABSENT_CENTER,
+    SketchCurve, SketchLength, SketchPoint, SketchSolid, ABSENT_CENTER,
 };
 use substrate::curve_intersection::{CurveSupportCrossing, PlanarCurve};
 
@@ -109,6 +109,22 @@ pub struct ChamferPlacement {
 pub enum ChamferRefusal {
     Corner(FilletRefusal),
     DistanceOutOfRange,
+    Unrepresentable,
+}
+
+/// Canonical native copy produced by offsetting one authored curve.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OffsetPlacement {
+    pub source: SketchCurve,
+    pub offset: PlanarCurve,
+}
+
+/// Why a curve has no representable offset at the supplied witness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OffsetRefusal {
+    UnknownCurve,
+    ZeroDistance,
+    Degenerate,
     Unrepresentable,
 }
 
@@ -461,6 +477,75 @@ impl SketchSolid {
         let placement = self.chamfer_placement(source, first_witness, second_witness, context)?;
         let mut next = self.clone();
         next.sketch.apply_chamfer(&placement)?;
+        Ok(next)
+    }
+
+    /// Construct a native parallel/concentric copy through the distance indicated by `witness`.
+    /// A line reads signed perpendicular distance; a circular curve reads the witness's radial
+    /// distance from its center. The source remains untouched.
+    pub fn offset_placement(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<OffsetPlacement, OffsetRefusal> {
+        let source_curve = self
+            .sketch
+            .planar_curve(source, context)
+            .ok_or(OffsetRefusal::UnknownCurve)?;
+        let offset = match source_curve {
+            PlanarCurve::Segment { start, end } => {
+                let span = [end[0] - start[0], end[1] - start[1]];
+                let length = span[0].hypot(span[1]);
+                if length <= EXTEND_EPSILON {
+                    return Err(OffsetRefusal::Degenerate);
+                }
+                let normal = [-span[1] / length, span[0] / length];
+                let from_start = [witness[0] - start[0], witness[1] - start[1]];
+                let distance = normal[0].mul_add(from_start[0], normal[1] * from_start[1]);
+                if distance.abs() <= EXTEND_EPSILON {
+                    return Err(OffsetRefusal::ZeroDistance);
+                }
+                let shift = [normal[0] * distance, normal[1] * distance];
+                PlanarCurve::Segment {
+                    start: [start[0] + shift[0], start[1] + shift[1]],
+                    end: [end[0] + shift[0], end[1] + shift[1]],
+                }
+            }
+            PlanarCurve::Arc {
+                center,
+                radius,
+                start_radians,
+                sweep_radians,
+            } => {
+                let new_radius = (witness[0] - center[0]).hypot(witness[1] - center[1]);
+                if new_radius <= EXTEND_EPSILON {
+                    return Err(OffsetRefusal::Degenerate);
+                }
+                if (new_radius - radius).abs() <= EXTEND_EPSILON {
+                    return Err(OffsetRefusal::ZeroDistance);
+                }
+                PlanarCurve::Arc {
+                    center,
+                    radius: new_radius,
+                    start_radians,
+                    sweep_radians,
+                }
+            }
+        };
+        Ok(OffsetPlacement { source, offset })
+    }
+
+    /// Atomically append the native curve described by [`Self::offset_placement`].
+    pub fn with_curve_offset(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<SketchSolid, OffsetRefusal> {
+        let placement = self.offset_placement(source, witness, context)?;
+        let mut next = self.clone();
+        next.sketch.apply_offset(&placement)?;
         Ok(next)
     }
 }
@@ -903,6 +988,103 @@ impl Sketch {
             segment.role = role;
         }
         Ok(())
+    }
+
+    fn apply_offset(&mut self, placement: &OffsetPlacement) -> Result<(), OffsetRefusal> {
+        let role = match placement.source {
+            SketchCurve::Segment(id) => self
+                .segments
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| curve.role),
+            SketchCurve::Arc(id) => self
+                .arcs
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| curve.role),
+            SketchCurve::Circle(id) => self
+                .circles
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| curve.role),
+        }
+        .ok_or(OffsetRefusal::UnknownCurve)?;
+        match placement.offset {
+            PlanarCurve::Segment { start, end } => {
+                let start = SketchPoint::try_from_continuous(start[0], start[1])
+                    .map_err(|_| OffsetRefusal::Unrepresentable)?;
+                let end = SketchPoint::try_from_continuous(end[0], end[1])
+                    .map_err(|_| OffsetRefusal::Unrepresentable)?;
+                let from = self.add_point(start);
+                let to = self.add_point(end);
+                self.set_point_role(from, role);
+                self.set_point_role(to, role);
+                let id = self
+                    .connect(from, to)
+                    .ok_or(OffsetRefusal::Unrepresentable)?;
+                self.set_curve_role(SketchCurve::Segment(id), role);
+            }
+            PlanarCurve::Arc {
+                center,
+                radius,
+                sweep_radians,
+                ..
+            } if placement.offset.is_closed() => {
+                let center = SketchPoint::try_from_continuous(center[0], center[1])
+                    .map_err(|_| OffsetRefusal::Unrepresentable)?;
+                let id = self
+                    .add_circle(center, SketchLength::from_continuous(radius))
+                    .ok_or(OffsetRefusal::Unrepresentable)?;
+                self.set_curve_role(SketchCurve::Circle(id), role);
+                debug_assert!((sweep_radians.abs() - std::f64::consts::TAU).abs() < 1.0e-9);
+            }
+            PlanarCurve::Arc { .. } => {
+                let start = placement.offset.start();
+                let end = placement.offset.end();
+                let start = SketchPoint::try_from_continuous(start[0], start[1])
+                    .map_err(|_| OffsetRefusal::Unrepresentable)?;
+                let end = SketchPoint::try_from_continuous(end[0], end[1])
+                    .map_err(|_| OffsetRefusal::Unrepresentable)?;
+                let from = self.add_point(start);
+                let to = self.add_point(end);
+                self.set_point_role(from, role);
+                self.set_point_role(to, role);
+                let sweep =
+                    piece_sweep(&placement.offset).map_err(|_| OffsetRefusal::Unrepresentable)?;
+                let id = self
+                    .connect_arc(from, to, sweep)
+                    .ok_or(OffsetRefusal::Unrepresentable)?;
+                self.set_curve_role(SketchCurve::Arc(id), role);
+                self.sync_arc_centers();
+            }
+        }
+        Ok(())
+    }
+
+    fn set_curve_role(&mut self, curve: SketchCurve, role: EntityRole) {
+        match curve {
+            SketchCurve::Segment(id) => {
+                if let Some(curve) = self.segments.iter_mut().find(|curve| curve.id == id) {
+                    curve.role = role;
+                }
+            }
+            SketchCurve::Arc(id) => {
+                if let Some(curve) = self.arcs.iter_mut().find(|curve| curve.id == id) {
+                    curve.role = role;
+                }
+            }
+            SketchCurve::Circle(id) => {
+                if let Some(curve) = self.circles.iter_mut().find(|curve| curve.id == id) {
+                    curve.role = role;
+                }
+            }
+        }
+    }
+
+    fn set_point_role(&mut self, point: EntityId, role: EntityRole) {
+        if let Some(point) = self.points.iter_mut().find(|held| held.id == point) {
+            point.role = role;
+        }
     }
 }
 

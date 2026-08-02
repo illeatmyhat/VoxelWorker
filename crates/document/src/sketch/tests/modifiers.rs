@@ -490,3 +490,67 @@ fn chamfer_supports_equal_and_independent_leg_distances_then_commits_one_connect
     assert_eq!(from, [2.0, 0.0]);
     assert_eq!(to, [0.0, 4.0]);
 }
+
+#[test]
+fn offset_keeps_segments_arcs_and_circles_in_their_native_curve_families() {
+    let mut line_sketch = Sketch::empty(PlaneAxis::Z);
+    let line = segment(&mut line_sketch, [0, 0], [5, 0]);
+    let source = SketchSolid::extrude(line_sketch, 3);
+    let placement = source
+        .offset_placement(SketchCurve::Segment(line), [2.0, 3.0], ctx(16))
+        .unwrap();
+    assert_eq!(placement.offset.start(), [0.0, 3.0]);
+    assert_eq!(placement.offset.end(), [5.0, 3.0]);
+    let made = source
+        .with_curve_offset(SketchCurve::Segment(line), [2.0, 3.0], ctx(16))
+        .unwrap();
+    assert_eq!(made.sketch.segments().len(), 2);
+
+    let mut arc_sketch = Sketch::empty(PlaneAxis::Z);
+    let from = arc_sketch.add_free_point(SketchPoint::new(5, 0));
+    let to = arc_sketch.add_free_point(SketchPoint::new(0, 5));
+    let arc = arc_sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .unwrap();
+    let source = SketchSolid::extrude(arc_sketch, 3);
+    let placement = source
+        .offset_placement(SketchCurve::Arc(arc), [8.0, 0.0], ctx(16))
+        .unwrap();
+    let PlanarCurve::Arc {
+        radius,
+        sweep_radians,
+        ..
+    } = placement.offset
+    else {
+        panic!("an arc offset must remain an arc");
+    };
+    assert!((radius - 8.0).abs() < 1.0e-9);
+    assert!((sweep_radians.to_degrees() - 90.0).abs() < 1.0e-9);
+    let made = source
+        .with_curve_offset(SketchCurve::Arc(arc), [8.0, 0.0], ctx(16))
+        .unwrap();
+    assert_eq!(made.sketch.arcs().len(), 2);
+
+    let mut circle_sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = circle_sketch
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(5))
+        .unwrap();
+    let source = SketchSolid::extrude(circle_sketch, 3);
+    let made = source
+        .with_curve_offset(SketchCurve::Circle(circle), [0.0, 8.0], ctx(16))
+        .unwrap();
+    assert_eq!(made.sketch.circles().len(), 2);
+    assert!((made.sketch.circles()[1].resolved_radius(ctx(16)) - 8.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn offset_refuses_zero_distance_without_mutating_the_source() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let line = segment(&mut sketch, [0, 0], [5, 0]);
+    let source = SketchSolid::extrude(sketch, 3);
+    assert_eq!(
+        source.with_curve_offset(SketchCurve::Segment(line), [2.0, 0.0], ctx(16)),
+        Err(OffsetRefusal::ZeroDistance)
+    );
+    assert_eq!(source.sketch.segments().len(), 1);
+}

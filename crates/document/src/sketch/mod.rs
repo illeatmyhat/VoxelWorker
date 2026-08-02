@@ -67,7 +67,8 @@ pub use constraint::{
 pub use faces::{Face, FaceKey};
 pub use modify::{
     BreakPlacement, BreakRefusal, ChamferPlacement, ChamferRefusal, ExtendEndpoint,
-    ExtendPlacement, ExtendRefusal, FilletPlacement, FilletRefusal, TrimPlacement, TrimRefusal,
+    ExtendPlacement, ExtendRefusal, FilletPlacement, FilletRefusal, OffsetPlacement, OffsetRefusal,
+    TrimPlacement, TrimRefusal,
 };
 pub use parametric::sketch::{SolveOutcome, SolveReport};
 pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};

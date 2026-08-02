@@ -371,6 +371,7 @@ impl WindowedState {
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
+            self.sketch_offset_pending = None;
             self.panel_state.sketch_mode = Some(node);
             self.disarm_placement();
             self.panel_state.selection.clear_sketch_entities();
@@ -387,6 +388,7 @@ impl WindowedState {
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
+            self.sketch_offset_pending = None;
             sketch_effect = match exit {
                 ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
                 ui::panel::SketchExit::Cancel => self.app_core.cancel_sketch_group(
@@ -1616,6 +1618,43 @@ impl WindowedState {
         }
     }
 
+    /// Offset is a two-click command: name one authored curve, then use any point on the sketch
+    /// plane to choose the signed line distance or circular radius of its native copy.
+    pub(super) fn sketch_offset_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        if let Some(pending) = self.sketch_offset_pending {
+            if pending.target != target {
+                self.sketch_offset_pending = None;
+                return;
+            }
+            let (Some(witness), Some(context)) = (
+                self.sketch_unsnapped_profile_coord(cursor_x, cursor_y),
+                document::sketch::evaluation_context_from_density(
+                    self.panel_state.geometry.voxels_per_block,
+                ),
+            ) else {
+                return;
+            };
+            self.sketch_offset_pending = None;
+            if let Ok(next) = producer.with_curve_offset(pending.source, witness, context) {
+                self.commit_sketch_profile_edit(target, next);
+            }
+            return;
+        }
+        let Some(hit) = self.nearest_sketch_edge(cursor_x, cursor_y) else {
+            return;
+        };
+        self.sketch_offset_pending = Some(PendingOffset {
+            target,
+            source: sketch_curve_from_hit(hit),
+        });
+    }
+
     /// The snap-policy profile point under the cursor (physical px), through the cached
     /// ray frame — the shared entry the drawing tools (#99) and vertex edits resolve a press
     /// or release with, quantized by [`PanelState::sketch_snap`] (#96). `None` when the
@@ -1815,6 +1854,7 @@ impl WindowedState {
                     | ui::panel::SketchTool::ChamferEqual
                     | ui::panel::SketchTool::ChamferDistanceAngle
                     | ui::panel::SketchTool::ChamferTwoDistance
+                    | ui::panel::SketchTool::Offset
             )
         {
             self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
@@ -2559,6 +2599,7 @@ impl WindowedState {
             self.panel_state.armed_constraint.is_some(),
         );
         let chamfer_live = self.sketch_chamfer_pending.take().is_some();
+        let offset_live = self.sketch_offset_pending.take().is_some();
         let live = constraint_picks
             || line_live
             || midpoint_line_live
@@ -2570,6 +2611,7 @@ impl WindowedState {
             || slot_live
             || tangent_circle_live
             || chamfer_live
+            || offset_live
             || stationary_gesture_press
             || self.sketch_rect_anchor.is_some()
             || self.sketch_marquee_anchor.is_some()
@@ -2612,6 +2654,7 @@ impl WindowedState {
         self.slot_gesture.reset();
         self.tangent_circle_gesture.reset();
         self.sketch_chamfer_pending = None;
+        self.sketch_offset_pending = None;
         true
     }
 
@@ -3617,6 +3660,7 @@ impl WindowedState {
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
+            self.sketch_offset_pending = None;
             self.sketch_rect_anchor = None;
             self.sketch_marquee_anchor = None;
             self.sketch_arc_gesture = None;
@@ -3641,6 +3685,7 @@ impl WindowedState {
             self.slot_gesture.reset();
             self.tangent_circle_gesture.reset();
             self.sketch_chamfer_pending = None;
+            self.sketch_offset_pending = None;
             return;
         };
 
@@ -3654,6 +3699,14 @@ impl WindowedState {
                 .is_none_or(|pending| pending.target == target && pending.tool == tool);
         if !chamfer_context_is_live {
             self.sketch_chamfer_pending = None;
+        }
+        let offset_context_is_live = tool == ui::panel::SketchTool::Offset
+            && self.panel_state.armed_constraint.is_none()
+            && self
+                .sketch_offset_pending
+                .is_none_or(|pending| pending.target == target);
+        if !offset_context_is_live {
+            self.sketch_offset_pending = None;
         }
         // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
         self.line_gesture.retain_for_context(
@@ -3860,7 +3913,8 @@ impl WindowedState {
             | ui::panel::SketchTool::Fillet
             | ui::panel::SketchTool::ChamferEqual
             | ui::panel::SketchTool::ChamferDistanceAngle
-            | ui::panel::SketchTool::ChamferTwoDistance => Some(ui::gizmos::HandleState::Hover),
+            | ui::panel::SketchTool::ChamferTwoDistance
+            | ui::panel::SketchTool::Offset => Some(ui::gizmos::HandleState::Hover),
             // Add-point has its own insert diamond; the drawing tools (#99, #102) target
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
@@ -3913,6 +3967,7 @@ impl WindowedState {
                     ui::panel::SketchTool::BreakCurve
                         | ui::panel::SketchTool::Trim
                         | ui::panel::SketchTool::Extend
+                        | ui::panel::SketchTool::Offset
                 ) {
                     return self.nearest_sketch_edge(cx, cy).map(|hit| (hit, state));
                 }
@@ -4702,6 +4757,37 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::Offset => {
+                if let (
+                    Some((producer, _)),
+                    Some(pending),
+                    Some((cursor_x, cursor_y)),
+                    Some(context),
+                ) = (
+                    self.sketch_node_state(target),
+                    self.sketch_offset_pending,
+                    self.last_cursor_position,
+                    document::sketch::evaluation_context_from_density(
+                        self.panel_state.geometry.voxels_per_block,
+                    ),
+                ) {
+                    let placement = self
+                        .sketch_unsnapped_profile_coord(cursor_x, cursor_y)
+                        .and_then(|witness| {
+                            producer
+                                .offset_placement(pending.source, witness, context)
+                                .ok()
+                        });
+                    if let Some(placement) = placement {
+                        let ring = break_piece_points(&placement.offset);
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -4837,7 +4923,8 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::Fillet
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
-        | ui::panel::SketchTool::ChamferTwoDistance => None,
+        | ui::panel::SketchTool::ChamferTwoDistance
+        | ui::panel::SketchTool::Offset => None,
     }
 }
 
@@ -4872,7 +4959,8 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::Fillet
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
-        | ui::panel::SketchTool::ChamferTwoDistance => None,
+        | ui::panel::SketchTool::ChamferTwoDistance
+        | ui::panel::SketchTool::Offset => None,
     }
 }
 
@@ -4907,7 +4995,8 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::Fillet
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
-        | ui::panel::SketchTool::ChamferTwoDistance => None,
+        | ui::panel::SketchTool::ChamferTwoDistance
+        | ui::panel::SketchTool::Offset => None,
     }
 }
 
@@ -4944,7 +5033,8 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::Fillet
         | ui::panel::SketchTool::ChamferEqual
         | ui::panel::SketchTool::ChamferDistanceAngle
-        | ui::panel::SketchTool::ChamferTwoDistance => None,
+        | ui::panel::SketchTool::ChamferTwoDistance
+        | ui::panel::SketchTool::Offset => None,
     }
 }
 

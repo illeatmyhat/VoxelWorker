@@ -366,6 +366,8 @@ pub enum SketchTool {
     ChamferDistanceAngle,
     /// Bevel a two-line corner from independent witnesses on both legs.
     ChamferTwoDistance,
+    /// Copy one native curve at a cursor-defined parallel or concentric offset.
+    Offset,
 }
 
 /// The floating Signal **display stack**'s viewer state.
