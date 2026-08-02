@@ -6,6 +6,7 @@
 mod center_arc;
 mod circle;
 mod curve;
+mod higher_curve;
 mod midpoint_line;
 mod model;
 mod polygon;
@@ -23,6 +24,10 @@ pub use circle::{
     three_point_circle_candidate, two_point_circle_candidate, CircleCandidate, CircleCandidateError,
 };
 pub use curve::{ArcDomain, CircularCurve, CurveGeometry};
+pub use higher_curve::{
+    conic_candidate, ellipse_candidate, ConicCandidate, ConicCandidateError, EllipseCandidate,
+    EllipseCandidateError,
+};
 pub use midpoint_line::{
     midpoint_line_candidate, MidpointLineCandidate, MidpointLineCandidateError,
 };
