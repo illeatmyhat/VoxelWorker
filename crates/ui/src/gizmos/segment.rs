@@ -80,6 +80,24 @@ pub fn roled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState, co
     }
 }
 
+/// A whole profile CURVE, already flattened to chords, in its state and linetype.
+///
+/// Not a loop over [`roled_segment`]: each dash call restarts the rhythm on a full dash, and a
+/// flattened chord is usually shorter than one dash, so chord-by-chord dashing draws a
+/// construction curve SOLID. Dashing the polyline in one run is both the correct linetype and one
+/// shape instead of one per chord.
+pub fn roled_curve(painter: &Painter, chords: &[Pos2], state: HandleState, construction: bool) {
+    if chords.len() < 2 {
+        return;
+    }
+    let stroke = curve_stroke(state, construction);
+    if construction {
+        super::dashed_polyline(painter, chords, stroke);
+    } else {
+        painter.add(egui::Shape::line(chords.to_vec(), stroke));
+    }
+}
+
 /// A profile segment **armed for deletion** — the Delete tool is hovering this edge (and no
 /// vertex, which would take priority). The whole line goes warn-red with a warn `✕` at its
 /// midpoint: the line analog of the vertex handle's [`Marked`](super::HandleState::Marked)
@@ -120,4 +138,13 @@ pub fn warn_cross(painter: &Painter, at: Pos2) {
 /// dashed-means-uncommitted idiom. Becomes a solid [`segment`] once the click commits the loop.
 pub fn dashed_segment(painter: &Painter, a: Pos2, b: Pos2) {
     dashed(painter, a, b, Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT));
+}
+
+/// The dashed **preview polyline** — [`dashed_segment`]'s whole-run form, for a preview that is a
+/// flattened curve rather than one straight run. See [`roled_curve`] for why this cannot be a loop.
+pub fn dashed_preview_polyline(painter: &Painter, points: &[Pos2]) {
+    if points.len() < 2 {
+        return;
+    }
+    super::dashed_polyline(painter, points, Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT));
 }

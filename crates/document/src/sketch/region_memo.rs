@@ -31,6 +31,10 @@ use parametric::EvaluationContext;
 
 /// Everything the per-sample paths ask of the entity store, derived once.
 pub struct Derived {
+    /// The raw arrangement in `faces::derive`'s deterministic order — what [`Sketch::faces`] hands
+    /// out, and what [`Sketch::region_from_faces`] is read off. The shell asks for these once per
+    /// frame for its face hit-test, so they are cached beside the region rather than re-derived.
+    pub faces: Vec<super::Face>,
     /// The tagged loops — what [`Sketch::region`] hands out.
     pub region: Vec<ProfileLoop>,
     /// The same region in the measurement width, which the field folds per sample.
@@ -43,10 +47,14 @@ impl Derived {
     fn of(sketch: &Sketch, context: EvaluationContext) -> Self {
         // The resolved radius enters the arrangement once here. Every subsequent region/field
         // sample borrows these curves; no hot path re-evaluates a measurement source.
-        let region = sketch.region_uncached(context);
+        // ONE arrangement per miss: the region is read off these faces rather than deriving its
+        // own copy.
+        let faces = sketch.faces_uncached(context);
+        let region = sketch.region_from_faces(&faces);
         let region_field_loops = super::produce::to_region_edges_measured(&region);
         let filled_extent = filled_extent(&region);
         Self {
+            faces,
             region,
             region_field_loops,
             filled_extent,

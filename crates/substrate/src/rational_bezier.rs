@@ -207,7 +207,10 @@ impl RationalBezier {
 
 fn flatten_recursive(curve: RationalBezier, tolerance: f64, depth: u8, points: &mut Vec<[f64; 2]>) {
     const MAX_DEPTH: u8 = 24;
-    if depth >= MAX_DEPTH || curve.flatness() <= tolerance {
+    // A non-finite flatness compares FALSE against the tolerance, so without this a degenerate
+    // curve subdivides to the depth cap and emits 2^24 points instead of refusing to bend.
+    let flatness = curve.flatness();
+    if depth >= MAX_DEPTH || !flatness.is_finite() || flatness <= tolerance {
         points.push(curve.control[3]);
         return;
     }

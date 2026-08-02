@@ -118,9 +118,9 @@ pub fn sketch_draw_preview(ui: &egui::Ui, points: &[Pos2]) {
         Order::Foreground,
         Id::new("sketch_draw_preview"),
     ));
-    for pair in points.array_windows::<2>() {
-        gizmos::dashed_segment(&painter, pair[0], pair[1]);
-    }
+    // One run, not one per chord: a curve preview arrives already flattened, and restarting the
+    // dash rhythm on every short chord would draw it solid (see `gizmos::dashed_polyline`).
+    gizmos::dashed_preview_polyline(&painter, points);
 }
 
 /// One constraint badge, as the overlay draws it and as the shell's hit-test reads it.
@@ -255,9 +255,7 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[SketchCurveLine]) {
         Id::new("sketch_arc_curves"),
     ));
     let draw = |curve: &SketchCurveLine| {
-        for pair in curve.chords.array_windows::<2>() {
-            gizmos::roled_segment(&painter, pair[0], pair[1], curve.state, curve.construction);
-        }
+        gizmos::roled_curve(&painter, &curve.chords, curve.state, curve.construction);
         if curve.state == gizmos::HandleState::Marked {
             if let Some(mid) = curve.chords.get(curve.chords.len() / 2) {
                 gizmos::warn_cross(&painter, *mid);

@@ -106,3 +106,31 @@ fn a_clone_derives_the_same_region() {
     assert_eq!(copy, sketch);
     assert_eq!(copy.region(ctx(16)), sketch.region(ctx(16)));
 }
+
+/// The arrangement is derived ONCE for the region and the faces together.
+///
+/// The shell asks for the faces every frame to keep its hit-test polygons, so a `faces` call that
+/// re-derives makes a committed spline cost its whole arrangement per redraw — measured at 5-15 ms
+/// on nothing but a repaint before this was cached.
+#[test]
+fn the_faces_and_the_region_share_one_derivation() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    square(&mut sketch, 0, 12);
+    let first = sketch.faces(ctx(16));
+    let _ = sketch.region(ctx(16));
+    for _ in 0..8 {
+        assert_eq!(sketch.faces(ctx(16)), first);
+    }
+    assert_eq!(sketch.region_derivation_count_for_test(), 1);
+}
+
+/// An edit is still seen through the faces door, not just the region door.
+#[test]
+fn a_drawn_curve_after_a_faces_query_is_seen() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    square(&mut sketch, 0, 12);
+    assert_eq!(sketch.faces(ctx(16)).len(), 1);
+    square(&mut sketch, 4, 4);
+    assert_eq!(sketch.faces(ctx(16)).len(), 2);
+    assert_eq!(sketch.region_derivation_count_for_test(), 2);
+}

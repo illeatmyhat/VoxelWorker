@@ -480,8 +480,8 @@ pub use open_segment::open_segment;
 pub use orbit_center::{orbit_center, orbit_center_overlay, ORBIT_CENTER_RADIUS};
 pub use orbit_reticle::{orbit_reticle, orbit_reticle_overlay};
 pub use segment::{
-    curve_stroke, dashed_segment, marked_segment, roled_segment, segment, styled_segment,
-    warn_cross, warn_segment,
+    curve_stroke, dashed_preview_polyline, dashed_segment, marked_segment, roled_curve,
+    roled_segment, segment, styled_segment, warn_cross, warn_segment,
 };
 pub use snap_ticks::snap_ticks;
 pub use vertex_handle::{vertex_handle, HandleState};
@@ -531,6 +531,16 @@ pub(crate) const DASH_OFF: f32 = 1.8;
 /// share (egui has no dashed [`Painter`] method).
 pub(crate) fn dashed(painter: &Painter, a: Pos2, b: Pos2, stroke: Stroke) {
     painter.extend(Shape::dashed_line(&[a, b], stroke, DASH_ON, DASH_OFF));
+}
+
+/// Stroke a dashed POLYLINE as one run, so the dash phase carries ACROSS the chords.
+///
+/// A flattened curve's chords are routinely shorter than [`DASH_ON`], and each
+/// [`dashed`] call restarts the rhythm on a full dash — so dashing chord-by-chord draws a solid
+/// line. This is the only correct way to dash anything already flattened, and it is also one shape
+/// instead of one per chord.
+pub(crate) fn dashed_polyline(painter: &Painter, points: &[Pos2], stroke: Stroke) {
+    painter.extend(Shape::dashed_line(points, stroke, DASH_ON, DASH_OFF));
 }
 
 /// Stroke a dashed rectangle — once per side, so each side begins on a full dash and the corners

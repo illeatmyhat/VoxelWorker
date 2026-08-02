@@ -2017,8 +2017,12 @@ impl Sketch {
     /// The DERIVED bounded faces of the sketch's planar graph, in a deterministic order. Every
     /// face is a candidate region; whether it contributes solid or void is
     /// [`face_is_picked`](Self::face_is_picked).
+    /// Served from [`region_memo`]: deriving the arrangement costs an all-pairs curve
+    /// intersection, and the shell asks for these EVERY FRAME to keep its face hit-test polygons.
+    /// A committed spline is tens of rational-Bézier pieces, so re-deriving per frame measured
+    /// 5–15 ms on nothing but a redraw.
     pub fn faces(&self, context: parametric::EvaluationContext) -> Vec<Face> {
-        faces::derive(self, context)
+        self.derived(context).faces.clone()
     }
 
     /// The region in the **measurement** width — the exact value
@@ -2047,7 +2051,7 @@ impl Sketch {
     /// Whether the face containing this key's point contributes solid. Faces default to PICKED —
     /// the document stores only the unpicked exceptions.
     pub fn face_is_picked(&self, key: &FaceKey, context: parametric::EvaluationContext) -> bool {
-        let faces = self.nested_faces(context);
+        let faces = Self::nested_faces(&self.derived(context).faces);
         match innermost_face_at(&faces, key.interior_point) {
             Some(index) => self.pick_flags(&faces)[index],
             None => true,
@@ -2065,7 +2069,7 @@ impl Sketch {
         index: usize,
         context: parametric::EvaluationContext,
     ) -> Option<FaceKey> {
-        let faces = faces::derive(self, context);
+        let faces = self.derived(context).faces.clone();
         if index >= faces.len() {
             return None;
         }
@@ -2107,7 +2111,7 @@ impl Sketch {
         picked: bool,
         context: parametric::EvaluationContext,
     ) {
-        let faces = self.nested_faces(context);
+        let faces = Self::nested_faces(&self.derived(context).faces);
         let Some(index) = innermost_face_at(&faces, key.interior_point) else {
             // Nothing is there to carve. An unpick still records the intent — it is inert until
             // an edit puts a face under it — but a pick has nothing to clear.
@@ -2134,14 +2138,17 @@ impl Sketch {
         self.unpicked_points.iter()
     }
 
-    /// The derived faces in nesting order: smallest area first, so the FIRST face containing a
-    /// point is the innermost one that does. [`substrate::geom2d::point_in_region`] takes the
-    /// same order for the same reason.
-    fn nested_faces(&self, context: parametric::EvaluationContext) -> Vec<Face> {
-        let mut faces = faces::derive(self, context);
+    /// `faces` in nesting order: smallest area first, so the FIRST face containing a point is the
+    /// innermost one that does. [`substrate::geom2d::point_in_region`] takes the same order for
+    /// the same reason.
+    ///
+    /// Takes the already-derived faces rather than deriving its own, so the arrangement runs once
+    /// per [`region_memo`] miss instead of once per caller.
+    fn nested_faces(faces: &[Face]) -> Vec<Face> {
+        let mut nested = faces.to_vec();
         // Ties keep `derive`'s deterministic order, so the region is stable across derivations.
-        faces.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
-        faces
+        nested.sort_by(|first, second| first.area_voxels.total_cmp(&second.area_voxels));
+        nested
     }
 
     /// Whether each of `faces` (in nesting order) is picked. An unpick point resolves to exactly
@@ -2185,12 +2192,18 @@ impl Sketch {
         self.region_memo.derived(self, context)
     }
 
-    /// The region derived from scratch. Only [`region_memo`] calls this; everything else asks
-    /// [`region`](Self::region) and gets the same answer without re-deriving it.
-    fn region_uncached(&self, context: parametric::EvaluationContext) -> Vec<ProfileLoop> {
-        let faces = self.nested_faces(context);
-        let picked = self.pick_flags(&faces);
-        faces
+    /// The arrangement, derived from scratch. Only [`region_memo`] calls this; everything else
+    /// asks [`faces`](Self::faces) and gets the same answer without re-deriving it.
+    pub(super) fn faces_uncached(&self, context: parametric::EvaluationContext) -> Vec<Face> {
+        faces::derive(self, context)
+    }
+
+    /// The region read off an already-derived arrangement. Only [`region_memo`] calls this;
+    /// everything else asks [`region`](Self::region).
+    pub(super) fn region_from_faces(&self, faces: &[Face]) -> Vec<ProfileLoop> {
+        let nested = Self::nested_faces(faces);
+        let picked = self.pick_flags(&nested);
+        nested
             .into_iter()
             .zip(picked)
             .map(|(face, picked)| ProfileLoop {
