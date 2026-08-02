@@ -10,6 +10,14 @@ struct PendingCenterArc {
     owner: NodeId,
     center: SketchPoint,
     start: Option<ResolvedSketchTarget>,
+    /// How far the cursor has wound about the center since the start point landed.
+    ///
+    /// The arc's direction is a property of the PATH the cursor took, not of where it currently
+    /// is: the same point on the circle is reachable either way round. Living inside the pending
+    /// record is what keeps it honest — every reset, cancel and context change that drops the
+    /// gesture drops this with it, so there is no roster to keep in sync and no way for a stale
+    /// winding to outlive the arc it described.
+    winding: Option<substrate::winding::WindingAccumulator>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +104,20 @@ impl CenterArcGesture {
         tool_is_active && !constraint_is_armed && self.pending.is_some()
     }
 
+    /// Fold this frame's cursor into the winding that decides which way the arc runs.
+    ///
+    /// Called once per frame while the arc is being aimed, BEFORE the preview is asked for, so the
+    /// preview and the click that follows it read the same direction.
+    pub fn track_cursor(&mut self, owner: NodeId, cursor: SketchPoint) {
+        let Some(pending) = self.pending.as_mut().filter(|p| p.owner == owner) else {
+            return;
+        };
+        let Some(start) = pending.start else {
+            return;
+        };
+        super::arc_winding::track(&mut pending.winding, pending.center, start.at, cursor);
+    }
+
     pub fn placement(
         self,
         owner: NodeId,
@@ -105,7 +127,13 @@ impl CenterArcGesture {
         let pending = self.pending.filter(|pending| pending.owner == owner)?;
         let start = pending.start?;
         producer
-            .center_arc_placement(pending.center, start.at, start.existing, direction.at)
+            .center_arc_placement(
+                pending.center,
+                start.at,
+                start.existing,
+                direction.at,
+                super::arc_winding::turn(pending.winding),
+            )
             .ok()
     }
 
@@ -123,6 +151,7 @@ impl CenterArcGesture {
                     owner,
                     center: target.at,
                     start: None,
+                    winding: None,
                 });
             }
             return CenterArcEdit::InteractionOnly;
@@ -133,6 +162,7 @@ impl CenterArcGesture {
                     owner,
                     center: target.at,
                     start: None,
+                    winding: None,
                 });
             }
             return CenterArcEdit::InteractionOnly;
@@ -149,8 +179,18 @@ impl CenterArcGesture {
             }
             return CenterArcEdit::InteractionOnly;
         };
+        // The click's own position is the last reading, so a commit and the preview it replaces
+        // cannot disagree about the direction even if no frame rendered in between.
+        let mut winding = pending.winding;
+        super::arc_winding::track(&mut winding, pending.center, start.at, target.at);
         producer
-            .with_center_arc(pending.center, start.at, start.existing, target.at)
+            .with_center_arc(
+                pending.center,
+                start.at,
+                start.existing,
+                target.at,
+                super::arc_winding::turn(winding),
+            )
             .map_or(CenterArcEdit::InteractionOnly, |(next, _)| {
                 CenterArcEdit::Document(next)
             })
@@ -210,6 +250,46 @@ mod tests {
             .unwrap()
             .at;
         assert!(endpoint.coincides(&preview.endpoint));
+    }
+
+    /// Two gestures with identical picks, separated only by the route the cursor took.
+    #[test]
+    fn the_way_the_cursor_went_round_decides_which_arc_is_made() {
+        let owner = NodeId(7);
+        let source = empty();
+        let center = SketchPoint::new(0, 0);
+        let start = SketchPoint::new(8, 0);
+        let end = SketchPoint::new(-8, 0);
+
+        let mut sweeps = [
+            (CenterArcGesture::default(), 1.0_f64),
+            (CenterArcGesture::default(), -1.0_f64),
+        ];
+        for (gesture, sign) in &mut sweeps {
+            gesture.click(owner, &source, Some(target(center)));
+            gesture.click(owner, &source, Some(target(start)));
+            for step in 1..=8 {
+                let angle = *sign * f64::from(step) / 8.0 * std::f64::consts::PI;
+                let cursor =
+                    SketchPoint::try_from_continuous(8.0 * angle.cos(), 8.0 * angle.sin()).unwrap();
+                gesture.track_cursor(owner, cursor);
+            }
+        }
+
+        let counter_clockwise = sweeps[0]
+            .0
+            .placement(owner, &source, target(end))
+            .unwrap()
+            .candidate
+            .sweep_radians;
+        let clockwise = sweeps[1]
+            .0
+            .placement(owner, &source, target(end))
+            .unwrap()
+            .candidate
+            .sweep_radians;
+        assert!(counter_clockwise > 0.0, "{counter_clockwise}");
+        assert!(clockwise < 0.0, "{clockwise}");
     }
 
     #[test]

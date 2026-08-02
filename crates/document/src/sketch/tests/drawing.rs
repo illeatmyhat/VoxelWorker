@@ -85,14 +85,26 @@ fn center_arc_projects_the_end_direction_and_keeps_the_center_derived() {
     let start = SketchPoint::new(4, 0);
     let direction = SketchPoint::new(0, 9);
     let placement = solid
-        .center_arc_placement(center, start, None, direction)
+        .center_arc_placement(
+            center,
+            start,
+            None,
+            direction,
+            parametric::sketch::ArcTurn::CounterClockwise,
+        )
         .unwrap();
     assert!(placement.endpoint.coincides(&SketchPoint::new(0, 4)));
     assert_eq!(placement.candidate.radius, 4.0);
     assert!((placement.candidate.sweep_radians.to_degrees() - 90.0).abs() < 1e-12);
 
     let (made, arc_id) = solid
-        .with_center_arc(center, start, None, direction)
+        .with_center_arc(
+            center,
+            start,
+            None,
+            direction,
+            parametric::sketch::ArcTurn::CounterClockwise,
+        )
         .unwrap();
     assert_eq!(
         made.sketch.points().len(),
@@ -132,6 +144,7 @@ fn center_arc_reuses_a_stored_start_and_refuses_without_mutating() {
             SketchPoint::new(999, 999),
             Some(start),
             SketchPoint::new(0, -8),
+            parametric::sketch::ArcTurn::CounterClockwise,
         )
         .unwrap();
     assert_eq!(
@@ -161,6 +174,7 @@ fn center_arc_reuses_a_stored_start_and_refuses_without_mutating() {
             SketchPoint::new(0, 0),
             None,
             SketchPoint::new(1, 0),
+            parametric::sketch::ArcTurn::CounterClockwise,
         ),
         Err(CenterArcRefusal::Candidate(
             parametric::sketch::CenterArcCandidateError::CollapsedRadius
@@ -178,6 +192,7 @@ fn center_arc_preview_matches_persisted_geometry_after_endpoint_narrowing() {
             SketchPoint::from_continuous(4.125, 0.75),
             None,
             SketchPoint::from_continuous(2.7, 8.9),
+            parametric::sketch::ArcTurn::CounterClockwise,
         )
         .unwrap();
     let (made, arc) = solid
@@ -186,6 +201,7 @@ fn center_arc_preview_matches_persisted_geometry_after_endpoint_narrowing() {
             SketchPoint::from_continuous(4.125, 0.75),
             None,
             SketchPoint::from_continuous(2.7, 8.9),
+            parametric::sketch::ArcTurn::CounterClockwise,
         )
         .unwrap();
     let parametric::sketch::CurveGeometry::Circular(persisted) = made

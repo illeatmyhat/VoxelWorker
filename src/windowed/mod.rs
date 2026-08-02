@@ -44,6 +44,7 @@ use crate::{
     VoxExportWorker,
 };
 
+mod arc_winding;
 mod center_arc;
 mod corner_rectangle;
 mod events;

@@ -4848,6 +4848,9 @@ impl WindowedState {
                         self.sketch_target_at(cursor_x, cursor_y),
                     ) {
                         if self.center_arc_gesture.start(target).is_some() {
+                            // Which way round the arc goes is in the ROUTE the cursor took, so the
+                            // reading has to be folded in before the preview asks for a direction.
+                            self.center_arc_gesture.track_cursor(target, direction.at);
                             if let Some(placement) = self
                                 .center_arc_gesture
                                 .placement(target, &producer, direction)
@@ -5160,6 +5163,11 @@ impl WindowedState {
                     self.last_cursor_position,
                 ) {
                     let cursor = self.sketch_target_at(cursor_x, cursor_y);
+                    // Which way round a center-arc spine goes is in the ROUTE the cursor took, so
+                    // the reading has to be folded in before the preview asks for a direction.
+                    if let Some(cursor) = cursor {
+                        self.slot_gesture.track_cursor(target, kind, cursor.at);
+                    }
                     // An arc slot's CENTERLINE, from the moment its picks settle an arc.
                     let spine = cursor
                         .and_then(|cursor| self.slot_gesture.spine(target, kind, cursor.at))
@@ -5212,20 +5220,20 @@ impl WindowedState {
                         if projected.len() == profile.len() {
                             self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
-                        // The conic's last step is a gizmo, not a free pick: the shoulder is
-                        // captive to the track between the chord and the control point, and how
-                        // far along it sits IS how hard the control point pulls. Drawing the
-                        // track is what makes that a thing to grab rather than a number.
-                        if let Some((track, shoulder)) = self
+                        // The conic's last step is a gizmo, not a free pick: the control point is
+                        // captive to the ray running out through the curve's on-curve point, and
+                        // how far out it sits IS how hard it pulls. Drawing the track is what
+                        // makes that a thing to grab rather than a number.
+                        if let Some((track, control)) = self
                             .higher_curve_gesture
-                            .conic_shoulder_gizmo(target, kind, cursor)
+                            .conic_control_gizmo(target, kind, cursor)
                         {
                             let rail: Vec<egui::Pos2> =
                                 track.iter().copied().filter_map(snapped_screen).collect();
                             if rail.len() == track.len() {
                                 self.sketch_draw_preview.push(preview_guide(rail));
                             }
-                            if let Some(at) = snapped_screen(shoulder) {
+                            if let Some(at) = snapped_screen(control) {
                                 self.sketch_draw_preview
                                     .push(ui::chrome::SketchPreviewMark::Point { at });
                             }

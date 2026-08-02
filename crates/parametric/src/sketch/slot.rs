@@ -2,7 +2,7 @@
 
 use std::f64::consts::PI;
 
-use super::{center_arc_candidate, three_point_circle_candidate};
+use super::{center_arc_candidate, three_point_circle_candidate, ArcTurn};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SlotEdgeCandidate {
@@ -175,9 +175,10 @@ pub fn center_arc_slot_spine(
     center: [f64; 2],
     start: [f64; 2],
     end_direction: [f64; 2],
+    turn: ArcTurn,
 ) -> Result<ArcSlotSpine, SlotCandidateError> {
     finite([center, start, end_direction])?;
-    let centerline = center_arc_candidate(center, start, end_direction)
+    let centerline = center_arc_candidate(center, start, end_direction, turn)
         .map_err(|_| SlotCandidateError::InvalidArc)?;
     Ok(ArcSlotSpine {
         center,
@@ -197,10 +198,11 @@ pub fn center_arc_slot_candidate(
     center: [f64; 2],
     start: [f64; 2],
     end_direction: [f64; 2],
+    turn: ArcTurn,
     width_point: [f64; 2],
 ) -> Result<SlotCandidate, SlotCandidateError> {
     finite([width_point])?;
-    let spine = center_arc_slot_spine(center, start, end_direction)?;
+    let spine = center_arc_slot_spine(center, start, end_direction, turn)?;
     arc_boundary(
         spine.center,
         spine.start,
@@ -380,8 +382,14 @@ mod tests {
             [3.0, 0.0],
         )
         .unwrap();
-        let centered =
-            center_arc_slot_candidate([0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [3.0, 0.0]).unwrap();
+        let centered = center_arc_slot_candidate(
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 2.0],
+            ArcTurn::CounterClockwise,
+            [3.0, 0.0],
+        )
+        .unwrap();
         for (through_edge, centered_edge) in through.edges.iter().zip(centered.edges.iter()) {
             let (
                 SlotEdgeCandidate::Arc {

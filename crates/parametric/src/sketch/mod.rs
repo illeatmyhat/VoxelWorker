@@ -20,15 +20,15 @@ mod tangent_circle;
 #[cfg(test)]
 mod tests;
 
-pub use center_arc::{center_arc_candidate, CenterArcCandidate, CenterArcCandidateError};
+pub use center_arc::{center_arc_candidate, ArcTurn, CenterArcCandidate, CenterArcCandidateError};
 pub use circle::{
     three_point_circle_candidate, two_point_circle_candidate, CircleCandidate, CircleCandidateError,
 };
 pub use curve::{ArcDomain, CircularCurve, CurveGeometry};
 pub use higher_curve::{
-    conic_candidate, conic_rho_from_shoulder, conic_shoulder_track, conic_vertex_from_rho,
-    ellipse_candidate, ConicCandidate, ConicCandidateError, EllipseCandidate,
-    EllipseCandidateError, CONIC_PARABOLIC_RHO,
+    conic_candidate, conic_control_from_rho, conic_control_ray, conic_parabolic_shoulder,
+    conic_rho_from_control, ellipse_candidate, ConicCandidate, ConicCandidateError,
+    EllipseCandidate, EllipseCandidateError, CONIC_PARABOLIC_RHO,
 };
 pub use midpoint_line::{
     midpoint_line_candidate, MidpointLineCandidate, MidpointLineCandidateError,

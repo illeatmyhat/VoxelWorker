@@ -875,6 +875,7 @@ impl SketchSolid {
         center: SketchPoint,
         start: SketchPoint,
         end_direction: SketchPoint,
+        turn: parametric::sketch::ArcTurn,
         width_point: SketchPoint,
     ) -> Result<SlotPlacement, SlotRefusal> {
         canonical_slot(
@@ -882,6 +883,7 @@ impl SketchSolid {
                 center.in_plane(),
                 start.in_plane(),
                 end_direction.in_plane(),
+                turn,
                 width_point.in_plane(),
             )
             .map_err(SlotRefusal::Candidate)?,
@@ -915,10 +917,11 @@ impl SketchSolid {
         center: SketchPoint,
         start: SketchPoint,
         end_direction: SketchPoint,
+        turn: parametric::sketch::ArcTurn,
         width_point: SketchPoint,
     ) -> Result<SketchSolid, SlotRefusal> {
         let placement =
-            self.center_arc_slot_placement(center, start, end_direction, width_point)?;
+            self.center_arc_slot_placement(center, start, end_direction, turn, width_point)?;
         self.with_slot_placement(&placement)
     }
 
@@ -994,6 +997,7 @@ impl SketchSolid {
         start: SketchPoint,
         start_existing: Option<EntityId>,
         end_direction: SketchPoint,
+        turn: parametric::sketch::ArcTurn,
     ) -> Result<CenterArcPlacement, CenterArcRefusal> {
         let start = start_existing.map_or(Ok(start), |id| {
             self.sketch
@@ -1007,6 +1011,7 @@ impl SketchSolid {
             center.in_plane(),
             start.in_plane(),
             end_direction.in_plane(),
+            turn,
         )
         .map_err(CenterArcRefusal::Candidate)?;
         let endpoint =
@@ -1016,10 +1021,14 @@ impl SketchSolid {
         // from that durable direction, then expose the center/radius derived from the exact
         // endpoint+sweep representation commit will persist. Preview therefore cannot advertise
         // an ideal f64 circle that writeback changes by a fraction of a voxel.
+        // The turn must ride through the narrowing round trip too: re-solving the canonical
+        // endpoint without it would take the shortest way round and silently flip an arc the
+        // author wound the long way.
         let canonical = parametric::sketch::center_arc_candidate(
             center.in_plane(),
             start.in_plane(),
             endpoint.in_plane(),
+            turn,
         )
         .map_err(CenterArcRefusal::Candidate)?;
         let sweep = parametric::units::AngleMeasurement::try_from_degrees_f64(
@@ -1057,8 +1066,10 @@ impl SketchSolid {
         start: SketchPoint,
         start_existing: Option<EntityId>,
         end_direction: SketchPoint,
+        turn: parametric::sketch::ArcTurn,
     ) -> Result<(SketchSolid, EntityId), CenterArcRefusal> {
-        let placement = self.center_arc_placement(center, start, start_existing, end_direction)?;
+        let placement =
+            self.center_arc_placement(center, start, start_existing, end_direction, turn)?;
         let sweep = parametric::units::AngleMeasurement::try_from_degrees_f64(
             placement.candidate.sweep_radians.to_degrees(),
         )

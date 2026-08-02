@@ -28,6 +28,31 @@ struct PendingSlot {
     owner: NodeId,
     kind: SlotKind,
     picks: Vec<SketchPoint>,
+    /// How far the cursor wound about the center while the center-arc spine was being aimed.
+    ///
+    /// Only [`SlotKind::CenterPointArc`] ever fills this in; the other four grammars have no arc
+    /// whose direction is in question. It stops advancing once the direction pick lands, so the
+    /// width step cannot reverse a spine the author already settled.
+    winding: Option<substrate::winding::WindingAccumulator>,
+}
+
+impl PendingSlot {
+    fn starting(owner: NodeId, kind: SlotKind) -> Self {
+        Self {
+            owner,
+            kind,
+            picks: Vec::with_capacity(kind.pick_count() - 1),
+            winding: None,
+        }
+    }
+
+    /// The spine picks of a center-arc slot, once they are all in.
+    fn center_arc_spine(&self) -> Option<(SketchPoint, SketchPoint)> {
+        match (self.kind, self.picks.as_slice()) {
+            (SlotKind::CenterPointArc, [center, start, ..]) => Some((*center, *start)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +124,36 @@ impl SlotGesture {
     /// Without this the width step previewed a straight run through the picks, which looks nothing
     /// like the arc slot it is about to become. The cursor stands in for the last spine pick until
     /// that pick is taken, so the arc is live from the moment it is determined.
+    /// Fold this frame's cursor into the winding that decides which way a center-arc spine runs.
+    ///
+    /// Called once per frame before the preview is asked for, and only while the direction pick is
+    /// still the one being aimed — after that the cursor is driving the width.
+    pub fn track_cursor(&mut self, owner: NodeId, kind: SlotKind, cursor: SketchPoint) {
+        let Some(pending) = self
+            .pending
+            .as_mut()
+            .filter(|pending| pending.owner == owner && pending.kind == kind)
+        else {
+            return;
+        };
+        if pending.picks.len() != 2 {
+            return;
+        }
+        let Some((center, start)) = pending.center_arc_spine() else {
+            return;
+        };
+        super::arc_winding::track(&mut pending.winding, center, start, cursor);
+    }
+
+    fn turn(&self, owner: NodeId, kind: SlotKind) -> parametric::sketch::ArcTurn {
+        super::arc_winding::turn(
+            self.pending
+                .as_ref()
+                .filter(|pending| pending.owner == owner && pending.kind == kind)
+                .and_then(|pending| pending.winding),
+        )
+    }
+
     pub fn spine(
         &self,
         owner: NodeId,
@@ -124,9 +179,13 @@ impl SlotGesture {
             SlotKind::ThreePointArc => {
                 parametric::sketch::three_point_arc_slot_spine(*first, *second, *third).ok()
             }
-            SlotKind::CenterPointArc => {
-                parametric::sketch::center_arc_slot_spine(*first, *second, *third).ok()
-            }
+            SlotKind::CenterPointArc => parametric::sketch::center_arc_slot_spine(
+                *first,
+                *second,
+                *third,
+                self.turn(owner, kind),
+            )
+            .ok(),
             SlotKind::CenterToCenter | SlotKind::Overall | SlotKind::CenterPoint => None,
         }
     }
@@ -142,7 +201,13 @@ impl SlotGesture {
             .pending
             .as_ref()
             .filter(|pending| pending.owner == owner && pending.kind == kind)?;
-        placement_from(kind, producer, &pending.picks, cursor.at)
+        placement_from(
+            kind,
+            producer,
+            &pending.picks,
+            super::arc_winding::turn(pending.winding),
+            cursor.at,
+        )
     }
 
     pub fn click(
@@ -155,29 +220,36 @@ impl SlotGesture {
         let Some(target) = target else {
             return SlotEdit::InteractionOnly;
         };
-        let pending = self.pending.get_or_insert_with(|| PendingSlot {
-            owner,
-            kind,
-            picks: Vec::with_capacity(kind.pick_count() - 1),
-        });
+        let pending = self
+            .pending
+            .get_or_insert_with(|| PendingSlot::starting(owner, kind));
         if pending.owner != owner || pending.kind != kind {
-            *pending = PendingSlot {
-                owner,
-                kind,
-                picks: Vec::with_capacity(kind.pick_count() - 1),
-            };
+            *pending = PendingSlot::starting(owner, kind);
+        }
+        // The click's own position is the last winding reading, so a preview and the pick that
+        // replaces it cannot disagree about the direction even if no frame rendered in between.
+        if pending.picks.len() == 2 {
+            if let Some((center, start)) = pending.center_arc_spine() {
+                super::arc_winding::track(&mut pending.winding, center, start, target.at);
+            }
         }
         if pending.picks.len() + 1 < kind.pick_count() {
             pending.picks.push(target.at);
             return SlotEdit::InteractionOnly;
         }
-        let picks = self
+        let (picks, winding) = self
             .pending
             .take()
-            .map(|pending| pending.picks)
+            .map(|pending| (pending.picks, pending.winding))
             .unwrap_or_default();
-        commit_from(kind, producer, &picks, target.at)
-            .map_or(SlotEdit::InteractionOnly, SlotEdit::Document)
+        commit_from(
+            kind,
+            producer,
+            &picks,
+            super::arc_winding::turn(winding),
+            target.at,
+        )
+        .map_or(SlotEdit::InteractionOnly, SlotEdit::Document)
     }
 }
 
@@ -185,6 +257,7 @@ fn placement_from(
     kind: SlotKind,
     producer: &SketchSolid,
     picks: &[SketchPoint],
+    turn: parametric::sketch::ArcTurn,
     cursor: SketchPoint,
 ) -> Option<SlotPlacement> {
     match (kind, picks) {
@@ -216,7 +289,7 @@ fn placement_from(
             .three_point_arc_slot_placement(*start, *end, *through, cursor)
             .ok(),
         (SlotKind::CenterPointArc, [center, start, end_direction]) => producer
-            .center_arc_slot_placement(*center, *start, *end_direction, cursor)
+            .center_arc_slot_placement(*center, *start, *end_direction, turn, cursor)
             .ok(),
         _ => None,
     }
@@ -226,6 +299,7 @@ fn commit_from(
     kind: SlotKind,
     producer: &SketchSolid,
     picks: &[SketchPoint],
+    turn: parametric::sketch::ArcTurn,
     cursor: SketchPoint,
 ) -> Option<SketchSolid> {
     match (kind, picks) {
@@ -257,7 +331,7 @@ fn commit_from(
             .with_three_point_arc_slot(*start, *end, *through, cursor)
             .ok(),
         (SlotKind::CenterPointArc, [center, start, end_direction]) => producer
-            .with_center_arc_slot(*center, *start, *end_direction, cursor)
+            .with_center_arc_slot(*center, *start, *end_direction, turn, cursor)
             .ok(),
         _ => None,
     }

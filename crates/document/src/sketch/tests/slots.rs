@@ -79,6 +79,7 @@ fn both_arc_slots_commit_four_native_arcs_with_preview_identity() {
             SketchPoint::new(0, 0),
             SketchPoint::new(2, 0),
             SketchPoint::new(0, 2),
+            ::parametric::sketch::ArcTurn::CounterClockwise,
             SketchPoint::new(3, 0),
         )
         .unwrap();

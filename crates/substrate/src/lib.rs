@@ -102,6 +102,7 @@ pub mod solids;
 pub mod spatial;
 pub mod srgb;
 pub mod supersede;
+pub mod winding;
 
 pub use srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 pub use supersede::{catch_unwind_or_log, drain_to_latest, CoalescingWorker, GenerationTracker};

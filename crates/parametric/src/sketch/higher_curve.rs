@@ -102,79 +102,132 @@ pub enum ConicCandidateError {
     CollapsedVertex,
 }
 
-/// The rho a conic starts at before its shoulder is dragged.
+/// The rho a conic reads at before its control point is dragged.
 ///
 /// A parabola: the exact boundary between the elliptic and hyperbolic halves of the family, and so
 /// the reading that presumes least about which half the author is reaching for.
 pub const CONIC_PARABOLIC_RHO: f64 = 0.5;
 
-/// How close to degenerate a dragged shoulder is allowed to get.
+/// How close to degenerate a dragged control point is allowed to get.
 ///
 /// Rho lives on the OPEN interval `(0, 1)`, which has no endpoints to clamp a drag against. Both
-/// ends are curves nobody means to author — at 0 the conic is its own chord, at 1 it is a corner
-/// at the control point — so the gizmo stops just short of each.
-const SHOULDER_RHO_MARGIN: f64 = 1.0e-3;
+/// ends are curves nobody means to author — at 0 the conic is its own chord, at 1 it is a corner —
+/// so the gizmo stops just short of each.
+const CONIC_RHO_MARGIN: f64 = 1.0e-3;
 
-/// The segment a conic's shoulder gizmo slides along: chord midpoint to control point.
+/// Where a conic is pinned once its control point is first placed.
 ///
-/// Every conic through `from` and `to` with its tangents meeting at `apex` puts its on-curve
-/// shoulder somewhere on this segment, and rho is exactly how far along it sits. That makes the
-/// segment the whole authoring space of the last step, with nothing outside it to refuse. One
-/// definition so the drawn track, the rho the cursor names, and the committed vertex agree.
+/// Placing the control point does two things at once: it aims the curve, and it fixes the point
+/// the curve passes through — the parabolic shoulder halfway out to it. Dragging the control point
+/// afterwards moves it along its own ray and changes only how hard it pulls, so the pinned point
+/// is what stops that drag from dragging the whole curve with it.
 ///
-/// `None` when the control point falls on the chord midpoint, where the track has no length and no
-/// conic exists to shape.
+/// `None` when the control point falls on the chord midpoint, where there is no curve to pin.
 #[must_use]
-pub fn conic_shoulder_track(from: [f64; 2], to: [f64; 2], apex: [f64; 2]) -> Option<[[f64; 2]; 2]> {
-    if ![from, to, apex].into_iter().flatten().all(f64::is_finite) {
+pub fn conic_parabolic_shoulder(
+    from: [f64; 2],
+    to: [f64; 2],
+    control: [f64; 2],
+) -> Option<[f64; 2]> {
+    if ![from, to, control]
+        .into_iter()
+        .flatten()
+        .all(f64::is_finite)
+    {
         return None;
     }
     let midpoint = [(from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5];
-    let reach = (apex[0] - midpoint[0]).hypot(apex[1] - midpoint[1]);
-    (reach > f64::EPSILON).then_some([midpoint, apex])
+    let reach = (control[0] - midpoint[0]).hypot(control[1] - midpoint[1]);
+    (reach > f64::EPSILON).then(|| {
+        [
+            CONIC_PARABOLIC_RHO.mul_add(control[0] - midpoint[0], midpoint[0]),
+            CONIC_PARABOLIC_RHO.mul_add(control[1] - midpoint[1], midpoint[1]),
+        ]
+    })
 }
 
-/// The rho a cursor names when it drags the shoulder along [`conic_shoulder_track`].
+/// The ray a conic's control point slides on, once the curve is pinned through `shoulder`.
 ///
-/// The cursor is projected onto the track and clamped to it, because the gizmo is captive: the
-/// author is choosing how far along a known segment to sit, not pointing at a free position that
-/// might miss. `None` only when there is no track at all.
+/// Returned as `(chord midpoint, unit direction)`. The control point — where the two end tangents
+/// meet — always lies on the far side of the on-curve point from the chord, so this ray is the
+/// whole authoring space of the last step. How FAR along it the control point sits is rho, by
+/// `rho = |midpoint→shoulder| / |midpoint→control|`: close in behind the shoulder is a sharp
+/// hyperbola, far away is a flat ellipse.
+///
+/// `None` when the on-curve point falls on the chord midpoint, where there is no direction to
+/// slide along and no conic to shape.
 #[must_use]
-pub fn conic_rho_from_shoulder(
+pub fn conic_control_ray(
     from: [f64; 2],
     to: [f64; 2],
-    apex: [f64; 2],
     shoulder: [f64; 2],
-) -> Option<f64> {
-    if !shoulder.iter().copied().all(f64::is_finite) {
+) -> Option<([f64; 2], [f64; 2])> {
+    if ![from, to, shoulder]
+        .into_iter()
+        .flatten()
+        .all(f64::is_finite)
+    {
         return None;
     }
-    let [midpoint, apex] = conic_shoulder_track(from, to, apex)?;
-    let track = [apex[0] - midpoint[0], apex[1] - midpoint[1]];
-    let length = track[0].hypot(track[1]);
-    let unit = [track[0] / length, track[1] / length];
-    let along = (shoulder[0] - midpoint[0]).mul_add(unit[0], (shoulder[1] - midpoint[1]) * unit[1]);
-    Some((along / length).clamp(SHOULDER_RHO_MARGIN, 1.0 - SHOULDER_RHO_MARGIN))
+    let midpoint = [(from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5];
+    let reach = (shoulder[0] - midpoint[0]).hypot(shoulder[1] - midpoint[1]);
+    (reach > f64::EPSILON).then(|| {
+        (
+            midpoint,
+            [
+                (shoulder[0] - midpoint[0]) / reach,
+                (shoulder[1] - midpoint[1]) / reach,
+            ],
+        )
+    })
 }
 
-/// Where a given rho puts the on-curve shoulder — `midpoint + rho * (apex - midpoint)`.
+/// The rho a cursor names when it drags the control point along [`conic_control_ray`].
 ///
-/// The inverse of [`conic_rho_from_shoulder`], and what turns the gizmo's position back into the
-/// vertex [`conic_candidate`] is authored from.
+/// The cursor is projected onto the ray and the result is clamped, because the gizmo is captive:
+/// the author is choosing how far out along a known direction to sit, not pointing at a free
+/// position that might miss. A cursor level with or behind the chord reads as the flattest curve
+/// the band allows rather than as a failure. `None` only when there is no ray at all.
 #[must_use]
-pub fn conic_vertex_from_rho(
+pub fn conic_rho_from_control(
     from: [f64; 2],
     to: [f64; 2],
-    apex: [f64; 2],
+    shoulder: [f64; 2],
+    control: [f64; 2],
+) -> Option<f64> {
+    if !control.iter().copied().all(f64::is_finite) {
+        return None;
+    }
+    let (midpoint, unit) = conic_control_ray(from, to, shoulder)?;
+    let reach = (shoulder[0] - midpoint[0]).hypot(shoulder[1] - midpoint[1]);
+    let along = (control[0] - midpoint[0]).mul_add(unit[0], (control[1] - midpoint[1]) * unit[1]);
+    if along <= 0.0 {
+        return Some(CONIC_RHO_MARGIN);
+    }
+    Some((reach / along).clamp(CONIC_RHO_MARGIN, 1.0 - CONIC_RHO_MARGIN))
+}
+
+/// Where a given rho puts the control point, with the curve pinned through `shoulder`.
+///
+/// The inverse of [`conic_rho_from_control`], and what turns a rho back into something to draw and
+/// grab. Feeding it a clamped rho is what keeps the gizmo on its ray no matter where the cursor
+/// wanders.
+#[must_use]
+pub fn conic_control_from_rho(
+    from: [f64; 2],
+    to: [f64; 2],
+    shoulder: [f64; 2],
     rho: f64,
 ) -> Option<[f64; 2]> {
-    if !rho.is_finite() {
+    if !rho.is_finite() || rho <= 0.0 {
         return None;
     }
-    let [midpoint, apex] = conic_shoulder_track(from, to, apex)?;
+    let (midpoint, unit) = conic_control_ray(from, to, shoulder)?;
+    let reach = (shoulder[0] - midpoint[0]).hypot(shoulder[1] - midpoint[1]);
+    let along = reach / rho;
     Some([
-        rho.mul_add(apex[0] - midpoint[0], midpoint[0]),
-        rho.mul_add(apex[1] - midpoint[1], midpoint[1]),
+        along.mul_add(unit[0], midpoint[0]),
+        along.mul_add(unit[1], midpoint[1]),
     ])
 }
 
@@ -249,38 +302,39 @@ mod tests {
     }
 
     #[test]
-    fn the_shoulder_track_runs_from_the_chord_midpoint_to_the_control_point() {
-        let [midpoint, apex] = conic_shoulder_track([-2.0, 0.0], [2.0, 0.0], [0.0, 6.0]).unwrap();
+    fn the_control_ray_runs_outward_from_the_chord_through_the_on_curve_point() {
+        let (midpoint, unit) = conic_control_ray([-2.0, 0.0], [2.0, 0.0], [0.0, 6.0]).unwrap();
         assert_eq!(midpoint, [0.0, 0.0]);
-        assert_eq!(apex, [0.0, 6.0]);
-        assert!(conic_shoulder_track([-2.0, 0.0], [2.0, 0.0], [0.0, 0.0]).is_none());
+        assert_eq!(unit, [0.0, 1.0]);
+        assert!(conic_control_ray([-2.0, 0.0], [2.0, 0.0], [0.0, 0.0]).is_none());
     }
 
     #[test]
-    fn a_shoulder_drag_is_captive_to_its_track() {
-        let track = |shoulder| {
-            conic_rho_from_shoulder([-2.0, 0.0], [2.0, 0.0], [0.0, 4.0], shoulder).unwrap()
-        };
-        // Halfway up names the parabola, and sideways drift off the track does not change that:
-        // only the distance ALONG it is the parameter.
-        assert!((track([0.0, 2.0]) - 0.5).abs() < 1.0e-12);
-        assert!((track([9.0, 2.0]) - 0.5).abs() < 1.0e-12);
-        // Past either end the gizmo stops rather than leaving the open interval.
-        assert!(track([0.0, -50.0]) > 0.0);
-        assert!(track([0.0, 50.0]) < 1.0);
+    fn a_control_point_drag_is_captive_to_its_ray() {
+        let rho =
+            |control| conic_rho_from_control([-2.0, 0.0], [2.0, 0.0], [0.0, 2.0], control).unwrap();
+        // Twice the on-curve point's reach names the parabola, and sideways drift off the ray does
+        // not change that: only the distance ALONG it is the parameter.
+        assert!((rho([0.0, 4.0]) - 0.5).abs() < 1.0e-12);
+        assert!((rho([9.0, 4.0]) - 0.5).abs() < 1.0e-12);
+        // Inside the curve, or behind the chord entirely, the gizmo stops rather than leaving the
+        // open interval.
+        assert!(rho([0.0, 1.0]) < 1.0);
+        assert!(rho([0.0, -50.0]) > 0.0);
     }
 
     #[test]
-    fn the_shoulder_a_rho_names_lies_on_the_curve_that_rho_builds() {
-        let (from, to, apex) = ([-2.0, 0.0], [2.0, 0.0], [0.0, 4.0]);
+    fn a_control_point_and_its_rho_are_inverses_and_pin_the_curve() {
+        let (from, to, shoulder) = ([-2.0, 0.0], [2.0, 0.0], [0.0, 2.0]);
         for rho in [0.25, 0.5, 0.75] {
-            let vertex = conic_vertex_from_rho(from, to, apex, rho).unwrap();
-            let recovered = conic_rho_from_shoulder(from, to, apex, vertex).unwrap();
+            let control = conic_control_from_rho(from, to, shoulder, rho).unwrap();
+            let recovered = conic_rho_from_control(from, to, shoulder, control).unwrap();
             assert!((recovered - rho).abs() < 1.0e-12);
-            let conic = conic_candidate(from, to, vertex, rho).unwrap();
+            // Whatever the control point does, the curve keeps passing through the on-curve pick.
+            let conic = conic_candidate(from, to, shoulder, rho).unwrap();
             let point = conic.curve.point_at(0.5);
-            assert!((point[0] - vertex[0]).abs() < 1.0e-12);
-            assert!((point[1] - vertex[1]).abs() < 1.0e-12);
+            assert!((point[0] - shoulder[0]).abs() < 1.0e-12);
+            assert!((point[1] - shoulder[1]).abs() < 1.0e-12);
         }
     }
 

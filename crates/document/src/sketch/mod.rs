@@ -169,7 +169,7 @@ pub struct CenterArcPlacement {
     pub start: SketchPoint,
     /// The direction pick projected onto the fixed start radius.
     pub endpoint: SketchPoint,
-    /// Continuous circular geometry, including exposed radius and counter-clockwise sweep.
+    /// Continuous circular geometry, including exposed radius and signed sweep.
     pub candidate: parametric::sketch::CenterArcCandidate,
 }
 
