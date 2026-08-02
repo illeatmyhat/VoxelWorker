@@ -54,6 +54,7 @@ mod constraint;
 mod edges;
 mod faces;
 mod modify;
+mod pattern;
 mod produce;
 mod region_memo;
 mod solid;
@@ -73,6 +74,9 @@ pub use modify::{
 };
 pub use parametric::sketch::{SolveOutcome, SolveReport};
 pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
+pub use pattern::{
+    DerivedPatternCurve, SketchPattern, SketchPatternKind, SketchPatternRefusal, SketchVector,
+};
 pub use solid::SketchSolid;
 pub use substrate::geom2d::LoopRole;
 pub use transform::{SketchTransformEntity, SketchTransformRefusal};
@@ -1301,6 +1305,11 @@ pub struct Sketch {
     /// none.
     #[serde(default)]
     circles: Vec<Circle>,
+    /// Associative operators whose instances are regenerated from authored curves. Generated
+    /// curves deliberately have no entity ids of their own: constraints and direct edits continue
+    /// to target the sources, so an operator adds no solver freedoms and cannot drift apart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    patterns: Vec<SketchPattern>,
     /// The faces the author has UNPICKED, each named by a point inside it. Every derived
     /// face is picked by default, so this holds only the exceptions and is usually empty. A
     /// point inside no current face is inert, not an error: it costs nothing and lets an
@@ -1598,6 +1607,7 @@ impl Sketch {
             segments: Vec::with_capacity(profile.len()),
             arcs: Vec::new(),
             circles: Vec::new(),
+            patterns: Vec::new(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
             next_id: 0,
@@ -1639,6 +1649,7 @@ impl Sketch {
             segments: Vec::new(),
             arcs: Vec::new(),
             circles: Vec::new(),
+            patterns: Vec::new(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
             next_id: 0,
@@ -1673,6 +1684,11 @@ impl Sketch {
     /// Read-only view of the whole-circle entities.
     pub fn circles(&self) -> &[Circle] {
         &self.circles
+    }
+
+    /// Read-only view of associative mirror and pattern rules.
+    pub fn patterns(&self) -> &[SketchPattern] {
+        &self.patterns
     }
 
     /// Flip one geometry entity between real and construction while retaining its stable id.
@@ -2179,6 +2195,7 @@ impl Sketch {
         self.circles.retain(|circle| circle.center != id);
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
+        self.drop_dangling_patterns();
         self.drop_dangling_constraints();
     }
 
@@ -2202,6 +2219,7 @@ impl Sketch {
         self.segments.retain(|seg| seg.id != seg_id);
         self.drop_undrawn_points([span.from, span.to]);
         self.prune_orphan_centers();
+        self.drop_dangling_patterns();
         self.drop_dangling_constraints();
     }
 
@@ -2811,6 +2829,7 @@ impl Sketch {
     pub fn delete_circle(&mut self, circle_id: EntityId) {
         self.circles.retain(|circle| circle.id != circle_id);
         self.prune_orphan_centers();
+        self.drop_dangling_patterns();
         self.drop_dangling_constraints();
     }
 
@@ -2904,6 +2923,7 @@ impl Sketch {
         self.arcs.retain(|arc| arc.id != arc_id);
         self.drop_undrawn_points([curve.from, curve.to]);
         self.prune_orphan_centers();
+        self.drop_dangling_patterns();
         self.drop_dangling_constraints();
     }
 
@@ -2949,6 +2969,7 @@ impl Sketch {
         for circle in &mut self.circles {
             circle.rescale_free_radius(old_density, new_density);
         }
+        self.retarget_patterns(old_density, new_density);
         for constraint in &mut self.constraints {
             match &mut constraint.kind {
                 ConstraintKind::Fix { at, .. } => {
@@ -3011,12 +3032,14 @@ impl Sketch {
         self.sync_arc_centers();
         // A constraint naming geometry the store does not hold asserts nothing about anything,
         // and left in place it would keep a row in the residual system for a shape that is gone.
-        let before = before + self.constraints.len();
+        let before = before + self.constraints.len() + self.patterns.len();
+        self.drop_dangling_patterns();
         self.drop_dangling_constraints();
         let dropped = before
             - self.segments.len()
             - self.arcs.len()
             - self.circles.len()
+            - self.patterns.len()
             - self.constraints.len();
         // A document may name no center at all, and a just-erased arc leaves one behind;
         // both are settled here, so a loaded sketch always agrees with its arcs.

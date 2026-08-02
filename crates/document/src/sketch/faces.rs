@@ -341,6 +341,13 @@ fn drawn_curves(
             PlanarCurve::circle(center.in_plane(), circle.resolved_radius(context)),
         ));
     }
+    curves.extend(
+        sketch
+            .derived_pattern_curves(context)
+            .into_iter()
+            .filter(|curve| curve.role == EntityRole::Real)
+            .map(|curve| (curve.pattern, curve.geometry)),
+    );
     curves
 }
 

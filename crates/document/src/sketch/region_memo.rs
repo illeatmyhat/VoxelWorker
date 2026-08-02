@@ -23,7 +23,10 @@ use std::sync::{Arc, RwLock};
 
 use substrate::geom2d::{LoopRole, RegionEdge};
 
-use super::{Arc as ArcEntity, Circle, FaceKey, PlaneAxis, Point, ProfileLoop, Segment, Sketch};
+use super::{
+    Arc as ArcEntity, Circle, FaceKey, PlaneAxis, Point, ProfileLoop, Segment, Sketch,
+    SketchPattern,
+};
 use parametric::EvaluationContext;
 
 /// Everything the per-sample paths ask of the entity store, derived once.
@@ -78,6 +81,7 @@ struct Snapshot {
     segments: Vec<Segment>,
     arcs: Vec<ArcEntity>,
     circles: Vec<Circle>,
+    patterns: Vec<SketchPattern>,
     unpicked_points: Vec<FaceKey>,
 }
 
@@ -90,6 +94,7 @@ impl Snapshot {
             segments: sketch.segments.clone(),
             arcs: sketch.arcs.clone(),
             circles: sketch.circles.clone(),
+            patterns: sketch.patterns.clone(),
             unpicked_points: sketch.unpicked_points.clone(),
         }
     }
@@ -103,6 +108,7 @@ impl Snapshot {
             && self.segments == sketch.segments
             && self.arcs == sketch.arcs
             && self.circles == sketch.circles
+            && self.patterns == sketch.patterns
             && self.unpicked_points == sketch.unpicked_points
     }
 }
