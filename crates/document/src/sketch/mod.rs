@@ -1484,9 +1484,11 @@ impl Sketch {
                 .map(|point| point.at.in_plane())
         };
         match curve {
-            SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
-                Err(TangentArcRefusal::UnsupportedIncoming)
-            }
+            SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => Err(TangentArcRefusal::UnsupportedIncoming),
             SketchCurve::Segment(id) => {
                 let segment = self
                     .segments
@@ -1578,7 +1580,10 @@ impl Sketch {
                     arc: None,
                 }))
             }
-            SketchCurve::Bezier(_) => None,
+            SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => None,
             SketchCurve::Arc(id) => {
                 let arc = self.arcs.iter().find(|arc| arc.id == id)?;
                 let from = point(arc.from)?;
@@ -1618,7 +1623,11 @@ impl Sketch {
                 let circle = self.circles.iter().find(|circle| circle.id == id)?;
                 point(circle.center)
             }
-            SketchCurve::Segment(_) | SketchCurve::Bezier(_) => None,
+            SketchCurve::Segment(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => None,
         }
     }
 
@@ -2693,7 +2702,10 @@ impl Sketch {
                         .unwrap_or(false),
                     SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
-                    SketchCurve::Bezier(_) => false,
+                    SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => false,
                 };
                 if !live(first) || !live(second) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -2706,7 +2718,11 @@ impl Sketch {
                 let live = |curve: SketchCurve| match curve {
                     SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
-                    SketchCurve::Segment(_) | SketchCurve::Bezier(_) => false,
+                    SketchCurve::Segment(_)
+                    | SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => false,
                 };
                 if !live(first) || !live(second) {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -2725,7 +2741,10 @@ impl Sketch {
                     SketchCurve::Segment(id) => self.segments.iter().any(|held| held.id == id),
                     SketchCurve::Arc(id) => self.arcs.iter().any(|held| held.id == id),
                     SketchCurve::Circle(id) => self.circles.iter().any(|held| held.id == id),
-                    SketchCurve::Bezier(_) => false,
+                    SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => false,
                 };
                 if !live(first) || !live(second) || live_segment(axis).is_none() {
                     return Err(ConstraintRefusal::UnknownEntity);
@@ -2823,6 +2842,9 @@ impl Sketch {
         let arc_ids: Vec<EntityId> = self.arcs.iter().map(|arc| arc.id).collect();
         let circle_ids: Vec<EntityId> = self.circles.iter().map(|circle| circle.id).collect();
         let bezier_ids: Vec<EntityId> = self.beziers.iter().map(|bezier| bezier.id).collect();
+        let ellipse_ids: Vec<EntityId> = self.ellipses.iter().map(|ellipse| ellipse.id).collect();
+        let conic_ids: Vec<EntityId> = self.conics.iter().map(|conic| conic.id).collect();
+        let spline_ids: Vec<EntityId> = self.splines.iter().map(|spline| spline.id).collect();
         let valid_symmetry_axes: Vec<EntityId> = self
             .segments
             .iter()
@@ -2858,6 +2880,9 @@ impl Sketch {
                     SketchCurve::Arc(id) => arc_ids.contains(id),
                     SketchCurve::Circle(id) => circle_ids.contains(id),
                     SketchCurve::Bezier(id) => bezier_ids.contains(id),
+                    SketchCurve::Ellipse(id) => ellipse_ids.contains(id),
+                    SketchCurve::Conic(id) => conic_ids.contains(id),
+                    SketchCurve::Spline(id) => spline_ids.contains(id),
                 })
                 && constraint.kind.tangent_is_structurally_valid()
                 && constraint.kind.concentric_is_structurally_valid()

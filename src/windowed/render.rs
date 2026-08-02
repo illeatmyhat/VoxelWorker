@@ -366,6 +366,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.higher_curve_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
@@ -386,6 +387,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.higher_curve_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
@@ -1998,7 +2000,10 @@ impl WindowedState {
                     producer.sketch.arcs().iter().any(|arc| arc.id == id)
                 }
                 document::sketch::SketchCurve::Circle(_) => false,
-                document::sketch::SketchCurve::Bezier(_) => false,
+                document::sketch::SketchCurve::Bezier(_)
+                | document::sketch::SketchCurve::Ellipse(_)
+                | document::sketch::SketchCurve::Conic(_)
+                | document::sketch::SketchCurve::Spline(_) => false,
             },
         );
     }
@@ -2209,6 +2214,37 @@ impl WindowedState {
         ) {
             return true;
         }
+        let higher_kind = higher_curve_kind(self.panel_state.sketch_tool);
+        self.higher_curve_gesture.retain_for_context(
+            higher_kind,
+            self.panel_state.armed_constraint.is_some(),
+            self.panel_state.sketch_mode,
+        );
+        if self
+            .higher_curve_gesture
+            .blocks_enter(higher_kind, self.panel_state.armed_constraint.is_some())
+        {
+            if matches!(
+                higher_kind,
+                Some(
+                    higher_curve::HigherCurveKind::FitPointSpline
+                        | higher_curve::HigherCurveKind::ControlPointSpline
+                )
+            ) {
+                if let Some((target, producer)) = self.panel_state.sketch_mode.and_then(|target| {
+                    self.sketch_node_state(target)
+                        .map(|(producer, _)| (target, producer))
+                }) {
+                    let edit = self
+                        .higher_curve_gesture
+                        .finish(&producer, DEFAULT_CONIC_RHO);
+                    if let higher_curve::HigherCurveEdit::Document(next) = edit {
+                        self.commit_sketch_profile_edit(target, next);
+                    }
+                }
+            }
+            return true;
+        }
         self.line_gesture.accept_for_enter(
             self.panel_state.sketch_mode.is_some()
                 && self.panel_state.sketch_tool == ui::panel::SketchTool::Line,
@@ -2276,6 +2312,31 @@ impl WindowedState {
             .point_circle_gesture
             .click(target, kind, &producer, resolved)
         {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
+    /// Advance ellipse, conic, or a repeated-point spline grammar. Picks remain transient until
+    /// the aggregate constructor accepts the complete curve, so a cancelled gesture has no
+    /// document cleanup path.
+    pub(super) fn sketch_higher_curve_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(kind) = higher_curve_kind(self.panel_state.sketch_tool) else {
+            self.higher_curve_gesture.reset();
+            return;
+        };
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.higher_curve_gesture.reset();
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            self.higher_curve_gesture.reset();
+            return;
+        };
+        let resolved = self.sketch_target_at(cursor_x, cursor_y);
+        let edit =
+            self.higher_curve_gesture
+                .click(target, kind, &producer, resolved, DEFAULT_CONIC_RHO);
+        if let higher_curve::HigherCurveEdit::Document(next) = edit {
             self.commit_sketch_profile_edit(target, next);
         }
     }
@@ -2760,6 +2821,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.higher_curve_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
@@ -2811,6 +2873,10 @@ impl WindowedState {
                     | ui::panel::SketchTool::SlotCenterPoint
                     | ui::panel::SketchTool::SlotCenterPointArc
                     | ui::panel::SketchTool::Slot3PointArc
+                    | ui::panel::SketchTool::Ellipse
+                    | ui::panel::SketchTool::Conic
+                    | ui::panel::SketchTool::FitPointSpline
+                    | ui::panel::SketchTool::ControlPointSpline
             )
             && self.panel_state.armed_constraint.is_none();
         let center_arc_live = self.center_arc_gesture.cancel_for_escape(
@@ -2823,6 +2889,10 @@ impl WindowedState {
         );
         let point_circle_live = self.point_circle_gesture.cancel_for_escape(
             point_circle_kind(self.panel_state.sketch_tool),
+            self.panel_state.armed_constraint.is_some(),
+        );
+        let higher_curve_live = self.higher_curve_gesture.cancel_for_escape(
+            higher_curve_kind(self.panel_state.sketch_tool),
             self.panel_state.armed_constraint.is_some(),
         );
         let three_point_rectangle_live = self.three_point_rectangle_gesture.cancel_for_escape(
@@ -2852,6 +2922,7 @@ impl WindowedState {
             || center_arc_live
             || tangent_arc_live
             || point_circle_live
+            || higher_curve_live
             || three_point_rectangle_live
             || polygon_live
             || slot_live
@@ -2898,6 +2969,7 @@ impl WindowedState {
         self.tangent_arc_gesture.reset();
         self.center_arc_gesture.reset();
         self.point_circle_gesture.reset();
+        self.higher_curve_gesture.reset();
         self.three_point_rectangle_gesture.reset();
         self.polygon_gesture.reset();
         self.slot_gesture.reset();
@@ -3934,6 +4006,7 @@ impl WindowedState {
         self.sketch_arc_lines.clear();
         self.sketch_arc_chords.clear();
         self.sketch_circle_chords.clear();
+        self.sketch_higher_curve_chords.clear();
         self.sketch_face_polygons.clear();
         self.sketch_constraint_badges.clear();
         self.sketch_insert_preview = None;
@@ -3947,6 +4020,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.higher_curve_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
@@ -3975,6 +4049,7 @@ impl WindowedState {
             self.tangent_arc_gesture.reset();
             self.center_arc_gesture.reset();
             self.point_circle_gesture.reset();
+            self.higher_curve_gesture.reset();
             self.three_point_rectangle_gesture.reset();
             self.polygon_gesture.reset();
             self.slot_gesture.reset();
@@ -4036,6 +4111,11 @@ impl WindowedState {
         // #99: a chain / rectangle anchor belongs to its tool — switching away drops it.
         self.line_gesture.retain_for_context(
             tool == ui::panel::SketchTool::Line,
+            self.panel_state.armed_constraint.is_some(),
+            Some(target),
+        );
+        self.higher_curve_gesture.retain_for_context(
+            higher_curve_kind(tool),
             self.panel_state.armed_constraint.is_some(),
             Some(target),
         );
@@ -4220,6 +4300,18 @@ impl WindowedState {
                 self.sketch_circle_chords.push((circle_id, projected));
             }
         }
+        for curve in &handles.higher_curves {
+            for piece in &curve.pieces {
+                let projected: Option<Vec<egui::Pos2>> = break_piece_points(piece)
+                    .into_iter()
+                    .map(&to_viewport_px)
+                    .collect();
+                if let Some(projected) = projected {
+                    self.sketch_higher_curve_chords
+                        .push((curve.entity, projected));
+                }
+            }
+        }
 
         // The segment under the cursor and the state it should draw in. A vertex under the cursor
         // takes priority — it already answers with its own handle state — so a segment lights up
@@ -4261,6 +4353,10 @@ impl WindowedState {
             | ui::panel::SketchTool::SlotCenterPoint
             | ui::panel::SketchTool::SlotCenterPointArc
             | ui::panel::SketchTool::Slot3PointArc
+            | ui::panel::SketchTool::Ellipse
+            | ui::panel::SketchTool::Conic
+            | ui::panel::SketchTool::FitPointSpline
+            | ui::panel::SketchTool::ControlPointSpline
             | ui::panel::SketchTool::MoveCopy
             | ui::panel::SketchTool::Scale
             | ui::panel::SketchTool::RectangularPattern
@@ -4285,7 +4381,10 @@ impl WindowedState {
                             document::sketch::SketchCurve::Circle(id) => {
                                 Some(SketchEdgeHit::Circle(id))
                             }
-                            document::sketch::SketchCurve::Bezier(_) => None,
+                            document::sketch::SketchCurve::Bezier(_)
+                            | document::sketch::SketchCurve::Ellipse(_)
+                            | document::sketch::SketchCurve::Conic(_)
+                            | document::sketch::SketchCurve::Spline(_) => None,
                         })
                         .map(|hit| (hit, state));
                 }
@@ -4395,6 +4494,14 @@ impl WindowedState {
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
             self.sketch_arc_lines.push((curve, state));
+        }
+        for (_, chords) in &self.sketch_higher_curve_chords {
+            let curve = chords
+                .iter()
+                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
+                .collect();
+            self.sketch_arc_lines
+                .push((curve, ui::gizmos::HandleState::Idle));
         }
 
         // Generated operator instances draw from their regenerated curves, but never enter the
@@ -4942,6 +5049,28 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::Ellipse
+            | ui::panel::SketchTool::Conic
+            | ui::panel::SketchTool::FitPointSpline
+            | ui::panel::SketchTool::ControlPointSpline => {
+                if let (Some(kind), Some((cursor_x, cursor_y))) =
+                    (higher_curve_kind(tool), self.last_cursor_position)
+                {
+                    if let Some(cursor) = self.sketch_snapped_point_at(cursor_x, cursor_y) {
+                        let profile = self.higher_curve_gesture.preview(
+                            target,
+                            kind,
+                            cursor,
+                            DEFAULT_CONIC_RHO,
+                        );
+                        let projected: Vec<egui::Pos2> =
+                            profile.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == profile.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::BreakCurve => {
                 if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
                     self.sketch_node_state(target),
@@ -5468,6 +5597,25 @@ fn circle_gesture_is_current(
     tool == ui::panel::SketchTool::CircleCenterDiameter && pending_target == Some(target)
 }
 
+/// Fusion's neutral conic boundary: rho 0.5 is the parabolic case. The active-tool scalar editor
+/// will own this value once dimensions/parameters land; keeping the default named prevents the
+/// interaction grammar from smuggling an unexplained literal through preview and commit.
+const DEFAULT_CONIC_RHO: f64 = 0.5;
+
+const fn higher_curve_kind(tool: ui::panel::SketchTool) -> Option<higher_curve::HigherCurveKind> {
+    match tool {
+        ui::panel::SketchTool::Ellipse => Some(higher_curve::HigherCurveKind::Ellipse),
+        ui::panel::SketchTool::Conic => Some(higher_curve::HigherCurveKind::Conic),
+        ui::panel::SketchTool::FitPointSpline => {
+            Some(higher_curve::HigherCurveKind::FitPointSpline)
+        }
+        ui::panel::SketchTool::ControlPointSpline => {
+            Some(higher_curve::HigherCurveKind::ControlPointSpline)
+        }
+        _ => None,
+    }
+}
+
 fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointCircleKind> {
     match tool {
         ui::panel::SketchTool::Circle2Point => Some(point_circle::PointCircleKind::TwoPoint),
@@ -5493,6 +5641,10 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
         | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::Ellipse
+        | ui::panel::SketchTool::Conic
+        | ui::panel::SketchTool::FitPointSpline
+        | ui::panel::SketchTool::ControlPointSpline
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
@@ -5536,6 +5688,10 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
         | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::Ellipse
+        | ui::panel::SketchTool::Conic
+        | ui::panel::SketchTool::FitPointSpline
+        | ui::panel::SketchTool::ControlPointSpline
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
@@ -5579,6 +5735,10 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::PolygonInscribed
         | ui::panel::SketchTool::PolygonCircumscribed
         | ui::panel::SketchTool::PolygonEdge
+        | ui::panel::SketchTool::Ellipse
+        | ui::panel::SketchTool::Conic
+        | ui::panel::SketchTool::FitPointSpline
+        | ui::panel::SketchTool::ControlPointSpline
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
@@ -5624,6 +5784,10 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
         | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::Ellipse
+        | ui::panel::SketchTool::Conic
+        | ui::panel::SketchTool::FitPointSpline
+        | ui::panel::SketchTool::ControlPointSpline
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend

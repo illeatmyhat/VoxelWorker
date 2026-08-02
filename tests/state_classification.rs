@@ -238,6 +238,12 @@ fn the_session_is_the_workspace_and_nothing_else() {
             // mid-edit relaunch (the same "how the workspace was left" the ghost is).
             "sketch_mode",
             "sketch_tool",
+            // Tool-option state for the tools that carry a count. Session on the same
+            // bargain as `placement_snap`: last-used working state written by using the
+            // tool, restored so the rail re-arms with the number already in hand.
+            "sketch_polygon_sides",
+            "sketch_pattern_counts",
+            "sketch_circular_pattern_count",
             "armed_constraint",
             // The sketch position snap — the in-mode sibling of `placement_snap`, durable
             // for the same reason.

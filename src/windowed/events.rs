@@ -36,6 +36,10 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::SlotCenterPoint
         | ui::panel::SketchTool::SlotCenterPointArc
         | ui::panel::SketchTool::Slot3PointArc
+        | ui::panel::SketchTool::Ellipse
+        | ui::panel::SketchTool::Conic
+        | ui::panel::SketchTool::FitPointSpline
+        | ui::panel::SketchTool::ControlPointSpline
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
         | ui::panel::SketchTool::Extend
@@ -389,6 +393,12 @@ impl ApplicationHandler for App {
                                     | ui::panel::SketchTool::SlotCenterPointArc
                                     | ui::panel::SketchTool::Slot3PointArc => {
                                         state.sketch_slot_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::Ellipse
+                                    | ui::panel::SketchTool::Conic
+                                    | ui::panel::SketchTool::FitPointSpline
+                                    | ui::panel::SketchTool::ControlPointSpline => {
+                                        state.sketch_higher_curve_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::MidpointLine => {
                                         state.sketch_midpoint_line_click(up_x, up_y);

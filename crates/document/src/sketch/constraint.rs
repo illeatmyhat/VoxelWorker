@@ -31,7 +31,9 @@ use parametric::EvaluationContext;
 
 /// A stable reference to one authored curve. This is the document boundary equivalent of the
 /// solver's local [`ParametricSketchCurve`]: entity ids persist here, local handles do not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum SketchCurve {
     Segment(EntityId),
     Arc(EntityId),
@@ -39,12 +41,24 @@ pub enum SketchCurve {
     /// A rational cubic Bézier piece. Existing circular/linear relations refuse it explicitly;
     /// spline-aware relations such as Curvature consume its control geometry directly.
     Bezier(EntityId),
+    /// One closed ellipse aggregate, resolved to four rational cubic spans at geometry seams.
+    Ellipse(EntityId),
+    /// One endpoint/vertex/rho conic aggregate.
+    Conic(EntityId),
+    /// One fit-point or control-point spline aggregate, resolved to one or more cubic spans.
+    Spline(EntityId),
 }
 
 impl SketchCurve {
     pub const fn id(self) -> EntityId {
         match self {
-            Self::Segment(id) | Self::Arc(id) | Self::Circle(id) | Self::Bezier(id) => id,
+            Self::Segment(id)
+            | Self::Arc(id)
+            | Self::Circle(id)
+            | Self::Bezier(id)
+            | Self::Ellipse(id)
+            | Self::Conic(id)
+            | Self::Spline(id) => id,
         }
     }
 }
@@ -289,7 +303,12 @@ impl ConstraintKind {
                 .into_iter()
                 .filter_map(|curve| match curve {
                     SketchCurve::Segment(id) => Some(id),
-                    SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => None,
+                    SketchCurve::Arc(_)
+                    | SketchCurve::Circle(_)
+                    | SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => None,
                 })
                 .collect(),
             Self::Symmetry {
@@ -300,7 +319,12 @@ impl ConstraintKind {
             } => std::iter::once(axis)
                 .chain([first, second].into_iter().filter_map(|curve| match curve {
                     SketchCurve::Segment(id) => Some(id),
-                    SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => None,
+                    SketchCurve::Arc(_)
+                    | SketchCurve::Circle(_)
+                    | SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => None,
                 }))
                 .collect(),
             Self::Fix { .. }
@@ -770,7 +794,10 @@ fn relation_for(
             .iter()
             .find(|(candidate, _, _)| *candidate == id)
             .map(|(_, local, _)| ParametricSketchCurve::Circle(*local)),
-        SketchCurve::Bezier(_) => None,
+        SketchCurve::Bezier(_)
+        | SketchCurve::Ellipse(_)
+        | SketchCurve::Conic(_)
+        | SketchCurve::Spline(_) => None,
     };
     match kind {
         ConstraintKind::Fix { point: id, at } => point(id).map(|point| Relation::Fix {

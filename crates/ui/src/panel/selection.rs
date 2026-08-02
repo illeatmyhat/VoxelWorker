@@ -10,7 +10,7 @@
 //! mode (an admission filter), never a second data structure.
 
 use document::scene::{NodeContent, NodeId, PointId, Scene};
-use document::sketch::EntityId;
+use document::sketch::{EntityId, SketchCurve};
 
 /// One picked thing. These live in ONE set: mode exclusivity is an admission filter, not a
 /// reason for parallel structures.
@@ -60,6 +60,14 @@ pub enum SelectionTarget {
         /// The circle's id within that sketch.
         entity: EntityId,
     },
+    /// A higher-order authored curve. The typed identity distinguishes the independent aggregate
+    /// stores while every Bézier span of an ellipse or spline selects the same object.
+    SketchHigherCurve {
+        /// The sketch node that owns the entity counter this curve came from.
+        sketch: NodeId,
+        /// The stable typed curve identity.
+        curve: SketchCurve,
+    },
     /// A CONSTRAINT on a sketch. It draws no geometry, but it is an
     /// entity in the same id space as the rest and it is picked the same way — by clicking the
     /// badge that stands for it. Being selectable is what makes it deletable one at a time,
@@ -82,6 +90,7 @@ impl SelectionTarget {
             | SelectionTarget::SketchSegment { sketch, .. }
             | SelectionTarget::SketchArc { sketch, .. }
             | SelectionTarget::SketchCircle { sketch, .. }
+            | SelectionTarget::SketchHigherCurve { sketch, .. }
             | SelectionTarget::SketchConstraint { sketch, .. } => Some(sketch),
             SelectionTarget::Node(_) | SelectionTarget::ReferencePoint(_) => None,
         }
@@ -104,7 +113,8 @@ impl SelectionTarget {
             | SelectionTarget::SketchPoint { .. }
             | SelectionTarget::SketchSegment { .. }
             | SelectionTarget::SketchArc { .. }
-            | SelectionTarget::SketchCircle { .. } => true,
+            | SelectionTarget::SketchCircle { .. }
+            | SelectionTarget::SketchHigherCurve { .. } => true,
             SelectionTarget::SketchConstraint { .. } => false,
         }
     }
@@ -288,6 +298,17 @@ impl Selection {
         })
     }
 
+    /// The picked higher-order curve identities of `sketch`, in pick order.
+    pub fn sketch_higher_curves(&self, sketch: NodeId) -> impl Iterator<Item = SketchCurve> + '_ {
+        self.targets.iter().filter_map(move |target| match *target {
+            SelectionTarget::SketchHigherCurve {
+                sketch: owner,
+                curve,
+            } if owner == sketch => Some(curve),
+            _ => None,
+        })
+    }
+
     /// The picked CONSTRAINT ids of `sketch`, in pick order.
     pub fn sketch_constraints(&self, sketch: NodeId) -> impl Iterator<Item = EntityId> + '_ {
         self.targets.iter().filter_map(move |target| match *target {
@@ -332,6 +353,14 @@ impl Selection {
                 .is_some_and(|s| s.arcs().iter().any(|arc| arc.id == entity)),
             SelectionTarget::SketchCircle { sketch, entity } => sketch_of(scene, sketch)
                 .is_some_and(|s| s.circles().iter().any(|circle| circle.id == entity)),
+            SelectionTarget::SketchHigherCurve { sketch, curve } => sketch_of(scene, sketch)
+                .is_some_and(|held| match curve {
+                    SketchCurve::Bezier(id) => held.beziers().iter().any(|curve| curve.id == id),
+                    SketchCurve::Ellipse(id) => held.ellipses().iter().any(|curve| curve.id == id),
+                    SketchCurve::Conic(id) => held.conics().iter().any(|curve| curve.id == id),
+                    SketchCurve::Spline(id) => held.splines().iter().any(|curve| curve.id == id),
+                    SketchCurve::Segment(_) | SketchCurve::Arc(_) | SketchCurve::Circle(_) => false,
+                }),
             SelectionTarget::SketchConstraint { sketch, entity } => sketch_of(scene, sketch)
                 .is_some_and(|s| s.constraints().iter().any(|held| held.id == entity)),
         });

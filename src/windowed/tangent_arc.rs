@@ -35,7 +35,11 @@ pub(super) fn resolve_source(
             .iter()
             .find(|arc| arc.id == id)
             .is_some_and(|arc| arc.from == seam || arc.to == seam),
-        SketchCurve::Circle(_) | SketchCurve::Bezier(_) => false,
+        SketchCurve::Circle(_)
+        | SketchCurve::Bezier(_)
+        | SketchCurve::Ellipse(_)
+        | SketchCurve::Conic(_)
+        | SketchCurve::Spline(_) => false,
     };
     incident.then_some(TangentArcSource { curve, seam })
 }

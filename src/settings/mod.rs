@@ -104,6 +104,7 @@ impl SelectionConfig {
                     | SelectionTarget::SketchSegment { .. }
                     | SelectionTarget::SketchArc { .. }
                     | SelectionTarget::SketchCircle { .. }
+                    | SelectionTarget::SketchHigherCurve { .. }
                     | SelectionTarget::SketchConstraint { .. } => None,
                 })
                 .collect(),

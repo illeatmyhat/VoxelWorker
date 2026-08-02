@@ -35,10 +35,11 @@
 )]
 
 use super::*;
-use crate::sketch::{EntityId, EntityRole, Operation};
+use crate::sketch::{EntityId, EntityRole, Operation, SketchCurve};
 use glam::Vec3;
 use parametric::EvaluationContext;
 use std::num::NonZeroU32;
+use substrate::curve_intersection::PlanarCurve;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
 /// A circle ready for display: its identity stays paired with its profile-space geometry.
@@ -50,6 +51,15 @@ pub struct SketchCircleHandle {
     pub center: [f64; 2],
     /// The circle's radius in voxels.
     pub radius: f64,
+}
+
+/// One higher-order authored curve resolved into the planar pieces the viewer can sample.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchCurveHandle {
+    /// Stable aggregate identity used by selection and modifiers.
+    pub entity: SketchCurve,
+    /// Exact substrate pieces; tessellation remains a screen-space viewer decision.
+    pub pieces: Vec<PlanarCurve>,
 }
 
 /// The sketch's profile vertices in the recentered render frame, with everything the UI
@@ -83,6 +93,8 @@ pub struct SketchHandles {
     /// Each circle ready for display. Tessellation stays in the viewer, which alone knows the
     /// screen-space tolerance.
     pub circles: Vec<SketchCircleHandle>,
+    /// Rational Bézier, ellipse, conic, and spline aggregates ready for display.
+    pub higher_curves: Vec<SketchCurveHandle>,
     /// A point ON the sketch plane in the render frame (the first vertex) — the ray
     /// intersection anchor.
     pub plane_point: [f32; 3],
@@ -301,6 +313,38 @@ impl Scene {
                 })
             })
             .collect();
+        let higher_sources = producer
+            .sketch
+            .beziers()
+            .iter()
+            .map(|curve| SketchCurve::Bezier(curve.id))
+            .chain(
+                producer
+                    .sketch
+                    .ellipses()
+                    .iter()
+                    .map(|curve| SketchCurve::Ellipse(curve.id)),
+            )
+            .chain(
+                producer
+                    .sketch
+                    .conics()
+                    .iter()
+                    .map(|curve| SketchCurve::Conic(curve.id)),
+            )
+            .chain(
+                producer
+                    .sketch
+                    .splines()
+                    .iter()
+                    .map(|curve| SketchCurve::Spline(curve.id)),
+            );
+        let higher_curves = higher_sources
+            .filter_map(|entity| {
+                let (pieces, _) = producer.sketch.source_planar_curves(entity, context)?;
+                Some(SketchCurveHandle { entity, pieces })
+            })
+            .collect();
 
         let plane_normal = (node.transform.rotation() * unit_axis(normal)).to_array();
         // ANY on-plane point anchors the ray intersection; the producer-local origin (the
@@ -318,6 +362,7 @@ impl Scene {
             segments,
             arcs,
             circles,
+            higher_curves,
             plane_point,
             plane_normal,
             placement,

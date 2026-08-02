@@ -186,6 +186,26 @@ const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
         "Center Point Arc Slot — click center, start, end direction, then width",
         Some(SketchTool::SlotCenterPointArc),
     ),
+    (
+        Icon::EllipseSketch,
+        "Ellipse — click center, major-axis endpoint, then width",
+        Some(SketchTool::Ellipse),
+    ),
+    (
+        Icon::Conic,
+        "Conic — click start, end, then the on-curve vertex",
+        Some(SketchTool::Conic),
+    ),
+    (
+        Icon::SplineFitPoint,
+        "Fit Point Spline — place fit points; Enter finishes, click start to close",
+        Some(SketchTool::FitPointSpline),
+    ),
+    (
+        Icon::SplineControlPoint,
+        "Control Point Spline — place controls; Enter finishes",
+        Some(SketchTool::ControlPointSpline),
+    ),
 ];
 
 /// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch

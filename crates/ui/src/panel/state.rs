@@ -352,6 +352,15 @@ pub enum SketchTool {
     SlotCenterPointArc,
     /// Draw a curved slot from a three-point center arc and a width pick.
     Slot3PointArc,
+    /// Draw an ellipse from its center, major-axis endpoint, and width pick.
+    Ellipse,
+    /// Draw an endpoint/vertex/rho conic. Rho is edited beside the active rail command.
+    Conic,
+    /// Draw a spline through repeated fit points; Enter finishes open and clicking the start
+    /// closes it.
+    FitPointSpline,
+    /// Draw a clamped cubic B-spline from repeated control points; Enter finishes it.
+    ControlPointSpline,
     /// Break the curve under the cursor at every intersection with other sketch geometry.
     BreakCurve,
     /// Trim the clicked native-curve interval to its neighboring intersections.

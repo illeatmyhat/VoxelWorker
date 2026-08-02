@@ -48,6 +48,7 @@ mod center_arc;
 mod events;
 mod export;
 mod geometry;
+mod higher_curve;
 mod line;
 mod midpoint_line;
 mod palette;
@@ -414,6 +415,9 @@ struct WindowedState {
     sketch_arc_chords: Vec<(document::sketch::EntityId, Vec<egui::Pos2>)>,
     /// Each committed circle as `(circle id, its projected ring in physical px)` for this frame.
     sketch_circle_chords: Vec<(document::sketch::EntityId, Vec<egui::Pos2>)>,
+    /// Each authored higher-order curve piece in physical pixels, retaining its aggregate
+    /// identity so every span of an ellipse or spline resolves to the same selectable curve.
+    sketch_higher_curve_chords: Vec<(document::sketch::SketchCurve, Vec<egui::Pos2>)>,
     /// Each derived region as `(its key, its boundary polygon in PHYSICAL px)` for this frame
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.
@@ -476,6 +480,8 @@ struct WindowedState {
     center_arc_gesture: center_arc::CenterArcGesture,
     /// Shared interaction-transient picks for Two-Point and Three-Point Circle.
     point_circle_gesture: point_circle::PointCircleGesture,
+    /// Transient picks for ellipse, conic, and repeated-point spline commands.
+    higher_curve_gesture: higher_curve::HigherCurveGesture,
     /// Three-Point Rectangle's transient base endpoints.
     three_point_rectangle_gesture: three_point_rectangle::ThreePointRectangleGesture,
     /// Shared transient picks for inscribed, circumscribed, and edge polygons.
@@ -880,6 +886,7 @@ impl WindowedState {
             sketch_arc_lines: Vec::new(),
             sketch_arc_chords: Vec::new(),
             sketch_circle_chords: Vec::new(),
+            sketch_higher_curve_chords: Vec::new(),
             sketch_face_polygons: Vec::new(),
             sketch_menu_face: None,
             sketch_insert_preview: None,
@@ -894,6 +901,7 @@ impl WindowedState {
             tangent_arc_gesture: tangent_arc::TangentArcGesture::default(),
             center_arc_gesture: center_arc::CenterArcGesture::default(),
             point_circle_gesture: point_circle::PointCircleGesture::default(),
+            higher_curve_gesture: higher_curve::HigherCurveGesture::default(),
             three_point_rectangle_gesture:
                 three_point_rectangle::ThreePointRectangleGesture::default(),
             polygon_gesture: polygon::PolygonGesture::default(),
@@ -1049,6 +1057,7 @@ impl WindowedState {
             sketch_arc_lines: _,
             sketch_arc_chords: _,
             sketch_circle_chords: _,
+            sketch_higher_curve_chords: _,
             sketch_face_polygons: _,
             sketch_menu_face: _,
             sketch_insert_preview: _,
@@ -1100,6 +1109,7 @@ impl WindowedState {
             tangent_arc_gesture: _,
             center_arc_gesture: _,
             point_circle_gesture: _,
+            higher_curve_gesture: _,
             three_point_rectangle_gesture: _,
             polygon_gesture: _,
             slot_gesture: _,

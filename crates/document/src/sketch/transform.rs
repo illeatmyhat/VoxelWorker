@@ -6,8 +6,8 @@
 //! would either violate an assertion or silently delete it, so Move and Scale refuse that case.
 
 use super::{
-    boxed_push, Arc, Bezier, Circle, CircleRadius, EntityId, Point, ResolvedLength, Segment,
-    Sketch, SketchCurve, SketchPoint, SketchSolid, ABSENT_CENTER,
+    boxed_push, Arc, Bezier, Circle, CircleRadius, Conic, Ellipse, EntityId, Point, ResolvedLength,
+    Segment, Sketch, SketchCurve, SketchPoint, SketchSolid, Spline, ABSENT_CENTER,
 };
 use std::collections::{HashMap, HashSet};
 use substrate::curve_intersection::PlanarCurve;
@@ -37,6 +37,9 @@ struct TransformClosure {
     arcs: HashSet<EntityId>,
     circles: HashSet<EntityId>,
     beziers: HashSet<EntityId>,
+    ellipses: HashSet<EntityId>,
+    conics: HashSet<EntityId>,
+    splines: HashSet<EntityId>,
 }
 
 impl SketchSolid {
@@ -232,38 +235,42 @@ impl SketchSolid {
             .map(SketchCurve::Segment)
             .chain(closure.arcs.iter().copied().map(SketchCurve::Arc))
             .chain(closure.circles.iter().copied().map(SketchCurve::Circle));
-        let curves = curves.chain(closure.beziers.iter().copied().map(SketchCurve::Bezier));
-        curves
-            .map(|curve| {
-                let curve = self
-                    .sketch
-                    .planar_curve(curve, context)
-                    .ok_or(SketchTransformRefusal::UnknownEntity)?;
-                Ok(match curve {
-                    PlanarCurve::Segment { start, end } => PlanarCurve::Segment {
-                        start: transform(start),
-                        end: transform(end),
-                    },
-                    PlanarCurve::Arc {
-                        center,
-                        radius,
-                        start_radians,
-                        sweep_radians,
-                    } => PlanarCurve::Arc {
-                        center: transform(center),
-                        radius,
-                        start_radians,
-                        sweep_radians,
-                    },
-                    PlanarCurve::RationalBezier(curve) => {
-                        PlanarCurve::RationalBezier(substrate::rational_bezier::RationalBezier {
-                            control: curve.control.map(&transform),
-                            weights: curve.weights,
-                        })
-                    }
-                })
-            })
-            .collect()
+        let curves = curves
+            .chain(closure.beziers.iter().copied().map(SketchCurve::Bezier))
+            .chain(closure.ellipses.iter().copied().map(SketchCurve::Ellipse))
+            .chain(closure.conics.iter().copied().map(SketchCurve::Conic))
+            .chain(closure.splines.iter().copied().map(SketchCurve::Spline));
+        let mut transformed = Vec::new();
+        for source in curves {
+            let (pieces, _) = self
+                .sketch
+                .source_planar_curves(source, context)
+                .ok_or(SketchTransformRefusal::UnknownEntity)?;
+            transformed.extend(pieces.into_iter().map(|curve| match curve {
+                PlanarCurve::Segment { start, end } => PlanarCurve::Segment {
+                    start: transform(start),
+                    end: transform(end),
+                },
+                PlanarCurve::Arc {
+                    center,
+                    radius,
+                    start_radians,
+                    sweep_radians,
+                } => PlanarCurve::Arc {
+                    center: transform(center),
+                    radius,
+                    start_radians,
+                    sweep_radians,
+                },
+                PlanarCurve::RationalBezier(curve) => {
+                    PlanarCurve::RationalBezier(substrate::rational_bezier::RationalBezier {
+                        control: curve.control.map(&transform),
+                        weights: curve.weights,
+                    })
+                }
+            }));
+        }
+        Ok(transformed)
     }
 }
 
@@ -320,6 +327,37 @@ impl Sketch {
                     closure.beziers.insert(id);
                     closure.points.extend(bezier.controls);
                 }
+                SketchTransformEntity::Curve(SketchCurve::Ellipse(id)) => {
+                    let ellipse = self
+                        .ellipses
+                        .iter()
+                        .find(|ellipse| ellipse.id == id)
+                        .ok_or(SketchTransformRefusal::UnknownEntity)?;
+                    closure.ellipses.insert(id);
+                    closure.points.extend([
+                        ellipse.center,
+                        ellipse.major_endpoint,
+                        ellipse.width_point,
+                    ]);
+                }
+                SketchTransformEntity::Curve(SketchCurve::Conic(id)) => {
+                    let conic = self
+                        .conics
+                        .iter()
+                        .find(|conic| conic.id == id)
+                        .ok_or(SketchTransformRefusal::UnknownEntity)?;
+                    closure.conics.insert(id);
+                    closure.points.extend([conic.from, conic.to, conic.vertex]);
+                }
+                SketchTransformEntity::Curve(SketchCurve::Spline(id)) => {
+                    let spline = self
+                        .splines
+                        .iter()
+                        .find(|spline| spline.id == id)
+                        .ok_or(SketchTransformRefusal::UnknownEntity)?;
+                    closure.splines.insert(id);
+                    closure.points.extend(spline.points.iter().copied());
+                }
             }
         }
         Ok(closure)
@@ -342,6 +380,9 @@ impl Sketch {
                         || closure.arcs.contains(&curve.id())
                         || closure.circles.contains(&curve.id())
                         || closure.beziers.contains(&curve.id())
+                        || closure.ellipses.contains(&curve.id())
+                        || closure.conics.contains(&curve.id())
+                        || closure.splines.contains(&curve.id())
                 })
         })
     }
@@ -456,6 +497,80 @@ impl Sketch {
                         mapped(&points, source.controls[3])?,
                     ],
                     weights: source.weights,
+                    origin: id,
+                    role: source.role,
+                },
+            );
+        }
+        self.copy_higher_curves(closure, &points)?;
+        Ok(())
+    }
+
+    fn copy_higher_curves(
+        &mut self,
+        closure: &TransformClosure,
+        points: &HashMap<EntityId, EntityId>,
+    ) -> Result<(), SketchTransformRefusal> {
+        let source_ellipses: Vec<Ellipse> = self
+            .ellipses
+            .iter()
+            .filter(|curve| closure.ellipses.contains(&curve.id))
+            .copied()
+            .collect();
+        for source in source_ellipses {
+            let id = self.alloc_id();
+            boxed_push(
+                &mut self.ellipses,
+                Ellipse {
+                    id,
+                    center: mapped(points, source.center)?,
+                    major_endpoint: mapped(points, source.major_endpoint)?,
+                    width_point: mapped(points, source.width_point)?,
+                    origin: id,
+                    role: source.role,
+                },
+            );
+        }
+        let source_conics: Vec<Conic> = self
+            .conics
+            .iter()
+            .filter(|curve| closure.conics.contains(&curve.id))
+            .copied()
+            .collect();
+        for source in source_conics {
+            let id = self.alloc_id();
+            boxed_push(
+                &mut self.conics,
+                Conic {
+                    id,
+                    from: mapped(points, source.from)?,
+                    to: mapped(points, source.to)?,
+                    vertex: mapped(points, source.vertex)?,
+                    rho: source.rho,
+                    origin: id,
+                    role: source.role,
+                },
+            );
+        }
+        let source_splines: Vec<Spline> = self
+            .splines
+            .iter()
+            .filter(|curve| closure.splines.contains(&curve.id))
+            .cloned()
+            .collect();
+        for source in source_splines {
+            let id = self.alloc_id();
+            boxed_push(
+                &mut self.splines,
+                Spline {
+                    id,
+                    points: source
+                        .points
+                        .iter()
+                        .map(|point| mapped(points, *point))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    kind: source.kind,
+                    closed: source.closed,
                     origin: id,
                     role: source.role,
                 },

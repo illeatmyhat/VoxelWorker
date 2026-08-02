@@ -187,75 +187,77 @@ impl Sketch {
         let mut derived = Vec::new();
         for pattern in &self.patterns {
             for &source in &pattern.sources {
-                let Some((geometry, role)) = self.source_planar_curve(source, context) else {
+                let Some((geometries, role)) = self.source_planar_curves(source, context) else {
                     continue;
                 };
-                match &pattern.kind {
-                    SketchPatternKind::Mirror { axis } => {
-                        let Some((axis_from, axis_to)) = self.segment_span(*axis) else {
-                            continue;
-                        };
-                        derived.push(DerivedPatternCurve {
-                            pattern: pattern.id,
-                            instance: [1, 0],
-                            source,
-                            role,
-                            geometry: map_curve(
-                                geometry,
-                                |point| reflect(point, axis_from, axis_to),
-                                true,
-                            ),
-                        });
-                    }
-                    SketchPatternKind::Rectangular { counts, steps } => {
-                        let [first, second] = [steps[0].value(), steps[1].value()];
-                        for i in 0..counts[0] {
-                            for j in 0..counts[1] {
-                                if [i, j] == [0, 0] {
-                                    continue;
-                                }
-                                let offset = [
-                                    f64::from(i) * first[0] + f64::from(j) * second[0],
-                                    f64::from(i) * first[1] + f64::from(j) * second[1],
-                                ];
-                                derived.push(DerivedPatternCurve {
-                                    pattern: pattern.id,
-                                    instance: [i, j],
-                                    source,
-                                    role,
-                                    geometry: map_curve(
-                                        geometry,
-                                        |point| add(point, offset),
-                                        false,
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                    SketchPatternKind::Circular {
-                        center,
-                        count,
-                        angle,
-                    } => {
-                        let Some(center) = self.point_position(*center) else {
-                            continue;
-                        };
-                        let total = angle.to_degrees_f64().to_radians();
-                        let full_turn = (total.abs() - std::f64::consts::TAU).abs() <= 1.0e-10;
-                        let divisor = if full_turn { *count } else { *count - 1 };
-                        for i in 1..*count {
-                            let radians = total * f64::from(i) / f64::from(divisor);
+                for geometry in geometries {
+                    match &pattern.kind {
+                        SketchPatternKind::Mirror { axis } => {
+                            let Some((axis_from, axis_to)) = self.segment_span(*axis) else {
+                                continue;
+                            };
                             derived.push(DerivedPatternCurve {
                                 pattern: pattern.id,
-                                instance: [i, 0],
+                                instance: [1, 0],
                                 source,
                                 role,
                                 geometry: map_curve(
                                     geometry,
-                                    |point| rotate_about(point, center, radians),
-                                    false,
+                                    |point| reflect(point, axis_from, axis_to),
+                                    true,
                                 ),
                             });
+                        }
+                        SketchPatternKind::Rectangular { counts, steps } => {
+                            let [first, second] = [steps[0].value(), steps[1].value()];
+                            for i in 0..counts[0] {
+                                for j in 0..counts[1] {
+                                    if [i, j] == [0, 0] {
+                                        continue;
+                                    }
+                                    let offset = [
+                                        f64::from(i) * first[0] + f64::from(j) * second[0],
+                                        f64::from(i) * first[1] + f64::from(j) * second[1],
+                                    ];
+                                    derived.push(DerivedPatternCurve {
+                                        pattern: pattern.id,
+                                        instance: [i, j],
+                                        source,
+                                        role,
+                                        geometry: map_curve(
+                                            geometry,
+                                            |point| add(point, offset),
+                                            false,
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        SketchPatternKind::Circular {
+                            center,
+                            count,
+                            angle,
+                        } => {
+                            let Some(center) = self.point_position(*center) else {
+                                continue;
+                            };
+                            let total = angle.to_degrees_f64().to_radians();
+                            let full_turn = (total.abs() - std::f64::consts::TAU).abs() <= 1.0e-10;
+                            let divisor = if full_turn { *count } else { *count - 1 };
+                            for i in 1..*count {
+                                let radians = total * f64::from(i) / f64::from(divisor);
+                                derived.push(DerivedPatternCurve {
+                                    pattern: pattern.id,
+                                    instance: [i, 0],
+                                    source,
+                                    role,
+                                    geometry: map_curve(
+                                        geometry,
+                                        |point| rotate_about(point, center, radians),
+                                        false,
+                                    ),
+                                });
+                            }
                         }
                     }
                 }
@@ -283,6 +285,9 @@ impl Sketch {
             .chain(self.arcs.iter().map(|curve| curve.id))
             .chain(self.circles.iter().map(|curve| curve.id))
             .chain(self.beziers.iter().map(|curve| curve.id))
+            .chain(self.ellipses.iter().map(|curve| curve.id))
+            .chain(self.conics.iter().map(|curve| curve.id))
+            .chain(self.splines.iter().map(|curve| curve.id))
             .collect();
         let segments: BTreeSet<EntityId> = self.segments.iter().map(|curve| curve.id).collect();
         let points: BTreeSet<EntityId> = self.points.iter().map(|point| point.id).collect();
@@ -319,7 +324,7 @@ impl Sketch {
             return Err(SketchPatternRefusal::EmptySelection);
         }
         if sources.iter().any(|&source| {
-            self.source_planar_curve(source, default_context())
+            self.source_planar_curves(source, default_context())
                 .is_none()
         }) {
             return Err(SketchPatternRefusal::UnknownSource);
@@ -351,19 +356,19 @@ impl Sketch {
         ))
     }
 
-    fn source_planar_curve(
+    pub(crate) fn source_planar_curves(
         &self,
         source: SketchCurve,
         context: parametric::EvaluationContext,
-    ) -> Option<(PlanarCurve, EntityRole)> {
+    ) -> Option<(Vec<PlanarCurve>, EntityRole)> {
         match source {
             SketchCurve::Segment(id) => {
                 let segment = self.segments.iter().find(|segment| segment.id == id)?;
                 Some((
-                    PlanarCurve::Segment {
+                    vec![PlanarCurve::Segment {
                         start: self.point_position(segment.from)?,
                         end: self.point_position(segment.to)?,
-                    },
+                    }],
                     segment.role,
                 ))
             }
@@ -374,32 +379,60 @@ impl Sketch {
                 let sweep_radians = arc.sweep_degrees().to_radians();
                 let (center, radius) = arc_center_radius(from, to, arc.sweep_degrees())?;
                 Some((
-                    PlanarCurve::Arc {
+                    vec![PlanarCurve::Arc {
                         center,
                         radius,
                         start_radians: (from[1] - center[1]).atan2(from[0] - center[0]),
                         sweep_radians,
-                    },
+                    }],
                     arc.role,
                 ))
             }
             SketchCurve::Circle(id) => {
                 let circle = self.circles.iter().find(|circle| circle.id == id)?;
                 Some((
-                    PlanarCurve::circle(
+                    vec![PlanarCurve::circle(
                         self.point_position(circle.center)?,
                         circle.resolved_radius(context),
-                    ),
+                    )],
                     circle.role,
                 ))
             }
             SketchCurve::Bezier(id) => {
                 let bezier = self.beziers.iter().find(|bezier| bezier.id == id)?;
                 Some((
-                    PlanarCurve::RationalBezier(
+                    vec![PlanarCurve::RationalBezier(
                         self.rational_bezier_from(bezier.controls, bezier.weights)?,
-                    ),
+                    )],
                     bezier.role,
+                ))
+            }
+            SketchCurve::Ellipse(id) => {
+                let ellipse = *self.ellipses.iter().find(|ellipse| ellipse.id == id)?;
+                let candidate = self.ellipse_candidate(ellipse)?;
+                Some((
+                    candidate.quarters.map(PlanarCurve::RationalBezier).to_vec(),
+                    ellipse.role,
+                ))
+            }
+            SketchCurve::Conic(id) => {
+                let conic = *self.conics.iter().find(|conic| conic.id == id)?;
+                Some((
+                    vec![PlanarCurve::RationalBezier(
+                        self.conic_candidate(conic)?.curve,
+                    )],
+                    conic.role,
+                ))
+            }
+            SketchCurve::Spline(id) => {
+                let spline = self.splines.iter().find(|spline| spline.id == id)?;
+                Some((
+                    self.spline_candidate(spline)?
+                        .pieces
+                        .into_iter()
+                        .map(PlanarCurve::RationalBezier)
+                        .collect(),
+                    spline.role,
                 ))
             }
         }

@@ -612,7 +612,10 @@ impl Sketch {
             SketchCurve::Segment(id) => self.break_segment(id, &placement.pieces),
             SketchCurve::Arc(id) => self.break_arc(id, &placement.pieces),
             SketchCurve::Circle(id) => self.break_circle(id, &placement.pieces),
-            SketchCurve::Bezier(_) => {
+            SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => {
                 self.replace_curve_with_pieces(placement.source, &placement.pieces)
             }
         }?;
@@ -736,46 +739,8 @@ impl Sketch {
         source: SketchCurve,
         pieces: &[PlanarCurve],
     ) -> Result<(), BreakRefusal> {
-        let (origin, role) = match source {
-            SketchCurve::Segment(id) => {
-                let held = self
-                    .segments
-                    .iter()
-                    .find(|segment| segment.id == id)
-                    .ok_or(BreakRefusal::UnknownCurve)?;
-                (held.origin, held.role)
-            }
-            SketchCurve::Arc(id) => {
-                let held = self
-                    .arcs
-                    .iter()
-                    .find(|arc| arc.id == id)
-                    .ok_or(BreakRefusal::UnknownCurve)?;
-                (held.origin, held.role)
-            }
-            SketchCurve::Circle(id) => {
-                let held = self
-                    .circles
-                    .iter()
-                    .find(|circle| circle.id == id)
-                    .ok_or(BreakRefusal::UnknownCurve)?;
-                (held.origin, held.role)
-            }
-            SketchCurve::Bezier(id) => {
-                let held = self
-                    .beziers
-                    .iter()
-                    .find(|bezier| bezier.id == id)
-                    .ok_or(BreakRefusal::UnknownCurve)?;
-                (held.origin, held.role)
-            }
-        };
-        match source {
-            SketchCurve::Segment(id) => self.segments.retain(|segment| segment.id != id),
-            SketchCurve::Arc(id) => self.arcs.retain(|arc| arc.id != id),
-            SketchCurve::Circle(id) => self.circles.retain(|circle| circle.id != id),
-            SketchCurve::Bezier(id) => boxed_retain(&mut self.beziers, |bezier| bezier.id != id),
-        }
+        let (origin, role) = self.curve_origin_role(source)?;
+        self.remove_curve(source);
         for piece in pieces {
             let from = self.point_for_break(piece.start(), role)?;
             let to = self.point_for_break(piece.end(), role)?;
@@ -826,6 +791,62 @@ impl Sketch {
         Ok(())
     }
 
+    fn curve_origin_role(
+        &self,
+        source: SketchCurve,
+    ) -> Result<(EntityId, EntityRole), BreakRefusal> {
+        let held = match source {
+            SketchCurve::Segment(id) => self
+                .segments
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| (curve.origin, curve.role)),
+            SketchCurve::Arc(id) => self
+                .arcs
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| (curve.origin, curve.role)),
+            SketchCurve::Circle(id) => self
+                .circles
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| (curve.origin, curve.role)),
+            SketchCurve::Bezier(id) => self
+                .beziers
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| (curve.origin, curve.role)),
+            SketchCurve::Ellipse(id) => self
+                .ellipses
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| (curve.origin, curve.role)),
+            SketchCurve::Conic(id) => self
+                .conics
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| (curve.origin, curve.role)),
+            SketchCurve::Spline(id) => self
+                .splines
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| (curve.origin, curve.role)),
+        };
+        held.ok_or(BreakRefusal::UnknownCurve)
+    }
+
+    fn remove_curve(&mut self, source: SketchCurve) {
+        match source {
+            SketchCurve::Segment(id) => self.segments.retain(|curve| curve.id != id),
+            SketchCurve::Arc(id) => self.arcs.retain(|curve| curve.id != id),
+            SketchCurve::Circle(id) => self.circles.retain(|curve| curve.id != id),
+            SketchCurve::Bezier(id) => boxed_retain(&mut self.beziers, |curve| curve.id != id),
+            SketchCurve::Ellipse(id) => boxed_retain(&mut self.ellipses, |curve| curve.id != id),
+            SketchCurve::Conic(id) => boxed_retain(&mut self.conics, |curve| curve.id != id),
+            SketchCurve::Spline(id) => boxed_retain(&mut self.splines, |curve| curve.id != id),
+        }
+    }
+
     fn apply_extend(&mut self, placement: &ExtendPlacement) -> Result<(), ExtendRefusal> {
         let endpoint = SketchPoint::try_from_continuous(
             match placement.endpoint {
@@ -866,8 +887,12 @@ impl Sketch {
                     ExtendEndpoint::End => arc.to,
                 }
             }
-            SketchCurve::Circle(_) => return Err(ExtendRefusal::ClosedCurve),
-            SketchCurve::Bezier(_) => return Err(ExtendRefusal::Unrepresentable),
+            SketchCurve::Circle(_) | SketchCurve::Ellipse(_) => {
+                return Err(ExtendRefusal::ClosedCurve);
+            }
+            SketchCurve::Bezier(_) | SketchCurve::Conic(_) | SketchCurve::Spline(_) => {
+                return Err(ExtendRefusal::Unrepresentable);
+            }
         };
         let point = self
             .points
@@ -888,6 +913,17 @@ impl Sketch {
                 .beziers
                 .iter()
                 .any(|bezier| bezier.controls.contains(&point))
+            || self.ellipses.iter().any(|ellipse| {
+                [ellipse.center, ellipse.major_endpoint, ellipse.width_point].contains(&point)
+            })
+            || self
+                .conics
+                .iter()
+                .any(|conic| [conic.from, conic.to, conic.vertex].contains(&point))
+            || self
+                .splines
+                .iter()
+                .any(|spline| spline.points.contains(&point))
     }
 
     fn apply_fillet(
@@ -897,13 +933,23 @@ impl Sketch {
     ) -> Result<(), FilletRefusal> {
         let first_id = match placement.first {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
+            SketchCurve::Arc(_)
+            | SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => {
                 return Err(FilletRefusal::UnsupportedCurve);
             }
         };
         let second_id = match placement.second {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
+            SketchCurve::Arc(_)
+            | SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => {
                 return Err(FilletRefusal::UnsupportedCurve);
             }
         };
@@ -970,13 +1016,23 @@ impl Sketch {
     fn apply_chamfer(&mut self, placement: &ChamferPlacement) -> Result<(), ChamferRefusal> {
         let first_id = match placement.first {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
+            SketchCurve::Arc(_)
+            | SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => {
                 return Err(ChamferRefusal::Corner(FilletRefusal::UnsupportedCurve));
             }
         };
         let second_id = match placement.second {
             SketchCurve::Segment(id) => id,
-            SketchCurve::Arc(_) | SketchCurve::Circle(_) | SketchCurve::Bezier(_) => {
+            SketchCurve::Arc(_)
+            | SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => {
                 return Err(ChamferRefusal::Corner(FilletRefusal::UnsupportedCurve));
             }
         };
@@ -1064,6 +1120,21 @@ impl Sketch {
                 .iter()
                 .find(|curve| curve.id == id)
                 .map(|curve| curve.role),
+            SketchCurve::Ellipse(id) => self
+                .ellipses
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| curve.role),
+            SketchCurve::Conic(id) => self
+                .conics
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| curve.role),
+            SketchCurve::Spline(id) => self
+                .splines
+                .iter()
+                .find(|curve| curve.id == id)
+                .map(|curve| curve.role),
         }
         .ok_or(OffsetRefusal::UnknownCurve)?;
         match placement.offset {
@@ -1138,6 +1209,21 @@ impl Sketch {
             }
             SketchCurve::Bezier(id) => {
                 if let Some(curve) = self.beziers.iter_mut().find(|curve| curve.id == id) {
+                    curve.role = role;
+                }
+            }
+            SketchCurve::Ellipse(id) => {
+                if let Some(curve) = self.ellipses.iter_mut().find(|curve| curve.id == id) {
+                    curve.role = role;
+                }
+            }
+            SketchCurve::Conic(id) => {
+                if let Some(curve) = self.conics.iter_mut().find(|curve| curve.id == id) {
+                    curve.role = role;
+                }
+            }
+            SketchCurve::Spline(id) => {
+                if let Some(curve) = self.splines.iter_mut().find(|curve| curve.id == id) {
                     curve.role = role;
                 }
             }
