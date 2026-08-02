@@ -473,6 +473,12 @@ fn map_curve(
                 },
             }
         }
+        PlanarCurve::RationalBezier(curve) => {
+            PlanarCurve::RationalBezier(substrate::rational_bezier::RationalBezier {
+                control: curve.control.map(&map),
+                weights: curve.weights,
+            })
+        }
     }
 }
 

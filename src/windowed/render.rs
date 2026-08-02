@@ -5394,6 +5394,9 @@ fn break_piece_points(piece: &substrate::curve_intersection::PlanarCurve) -> Vec
             points.push(to);
             points
         }
+        substrate::curve_intersection::PlanarCurve::RationalBezier(curve) => {
+            curve.flatten(document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS)
+        }
     }
 }
 

@@ -400,6 +400,13 @@ fn profile_edge(piece: PlanarCurve, from: [f64; 2], to: [f64; 2]) -> ProfileEdge
                 start_radians,
                 sweep_radians,
             }),
+            bezier: None,
+        },
+        PlanarCurve::RationalBezier(curve) => ProfileEdge {
+            from: ends.0,
+            to: ends.1,
+            arc: None,
+            bezier: Some(curve),
         },
     }
 }

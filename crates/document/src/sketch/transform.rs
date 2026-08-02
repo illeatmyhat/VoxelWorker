@@ -135,7 +135,7 @@ impl SketchSolid {
             curves
                 .into_iter()
                 .map(|curve| match curve {
-                    PlanarCurve::Segment { .. } => curve,
+                    PlanarCurve::Segment { .. } | PlanarCurve::RationalBezier(_) => curve,
                     PlanarCurve::Arc {
                         center: curve_center,
                         radius,
@@ -253,6 +253,12 @@ impl SketchSolid {
                         start_radians,
                         sweep_radians,
                     },
+                    PlanarCurve::RationalBezier(curve) => {
+                        PlanarCurve::RationalBezier(substrate::rational_bezier::RationalBezier {
+                            control: curve.control.map(&transform),
+                            weights: curve.weights,
+                        })
+                    }
                 })
             })
             .collect()

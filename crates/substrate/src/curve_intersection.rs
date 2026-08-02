@@ -30,6 +30,8 @@
 
 use std::f64::consts::TAU;
 
+use crate::rational_bezier::RationalBezier;
+
 /// How far apart two positions may be and still be one crossing, in the curve's own units
 /// (voxels, for a sketch).
 ///
@@ -71,6 +73,9 @@ pub enum PlanarCurve {
         /// The signed angle travelled.
         sweep_radians: f64,
     },
+    /// A cubic rational Bézier piece. Polynomial cubics, exact conics, and ellipse quarters all
+    /// share this representation; a multi-piece spline or closed ellipse is a sequence of these.
+    RationalBezier(RationalBezier),
 }
 
 impl PlanarCurve {
@@ -107,6 +112,7 @@ impl PlanarCurve {
                     radius.mul_add(bearing.sin(), center[1]),
                 ]
             }
+            Self::RationalBezier(curve) => curve.point_at(parameter),
         }
     }
 
@@ -126,8 +132,8 @@ impl PlanarCurve {
     #[must_use]
     pub const fn is_closed(&self) -> bool {
         match *self {
-            Self::Segment { .. } => false,
             Self::Arc { sweep_radians, .. } => sweep_radians.abs() >= TAU - ANGULAR_EPSILON,
+            Self::Segment { .. } | Self::RationalBezier(_) => false,
         }
     }
 
@@ -141,6 +147,11 @@ impl PlanarCurve {
                 sweep_radians,
                 ..
             } => radius * sweep_radians.abs(),
+            Self::RationalBezier(curve) => curve
+                .flatten(CROSSING_EPSILON.sqrt())
+                .array_windows::<2>()
+                .map(|pair| length([pair[1][0] - pair[0][0], pair[1][1] - pair[0][1]]))
+                .sum(),
         }
     }
 
@@ -189,6 +200,7 @@ impl PlanarCurve {
                     1.0
                 }
             }
+            Self::RationalBezier(curve) => nearest_bezier_parameter(curve, witness),
         }
     }
 
@@ -215,6 +227,7 @@ impl PlanarCurve {
                 start_radians: sweep_radians.mul_add(from, start_radians),
                 sweep_radians: sweep_radians * (to - from),
             },
+            Self::RationalBezier(curve) => Self::RationalBezier(curve.sub_curve(from, to)),
         }
     }
 
@@ -320,6 +333,20 @@ impl PlanarCurve {
                 mirrored
             }
             (Self::Arc { .. }, Self::Arc { .. }) => arc_meets_arc(self, other),
+            (Self::RationalBezier(first), Self::RationalBezier(second)) => {
+                rational_bezier_meets_curve(*first, *second)
+            }
+            (Self::RationalBezier(bezier), _) => bezier_meets_planar(*bezier, *other),
+            (_, Self::RationalBezier(bezier)) => {
+                let mut mirrored = bezier_meets_planar(*bezier, *self);
+                for crossing in &mut mirrored {
+                    std::mem::swap(
+                        &mut crossing.parameter_on_first,
+                        &mut crossing.parameter_on_second,
+                    );
+                }
+                mirrored
+            }
         };
         found.sort_by(|a, b| a.parameter_on_first.total_cmp(&b.parameter_on_first));
         found
@@ -341,16 +368,225 @@ impl PlanarCurve {
                     end: other_end,
                 } => line_meets_segment(start, end, other_start, other_end),
                 Self::Arc { .. } => line_meets_arc(start, end, other),
+                Self::RationalBezier(_) => Vec::new(),
             },
             Self::Arc { center, radius, .. } => Self::circle(center, radius)
                 .crossings(other)
                 .into_iter()
                 .map(CurveSupportCrossing::from_curve_crossing)
                 .collect(),
+            Self::RationalBezier(_) => Vec::new(),
         };
         found.sort_by(|a, b| a.parameter_on_support.total_cmp(&b.parameter_on_support));
         found
     }
+}
+
+/// A bounded numerical search is used only when at least one curve is rational Bézier. Analytic
+/// line/circle pairs keep their closed-form paths above; the recursive search works in parameter
+/// space and uses exact Bézier subdivision plus conservative control-hull bounds.
+const RATIONAL_CROSSING_EPSILON: f64 = 1.0e-8;
+
+fn nearest_bezier_parameter(curve: RationalBezier, witness: [f64; 2]) -> f64 {
+    const SAMPLES: u32 = 32;
+    let mut best_parameter = 0.0;
+    let mut best_distance = squared_distance(curve.point_at(0.0), witness);
+    for index in 1..=SAMPLES {
+        let parameter = f64::from(index) / f64::from(SAMPLES);
+        let distance = squared_distance(curve.point_at(parameter), witness);
+        if distance < best_distance {
+            best_parameter = parameter;
+            best_distance = distance;
+        }
+    }
+    let step = 1.0 / f64::from(SAMPLES);
+    let mut low = (best_parameter - step).max(0.0);
+    let mut high = (best_parameter + step).min(1.0);
+    // Golden-section refinement is derivative-free and remains stable at cusps and endpoints.
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut left = high - ratio * (high - low);
+    let mut right = low + ratio * (high - low);
+    for _ in 0..48 {
+        let left_distance = squared_distance(curve.point_at(left), witness);
+        let right_distance = squared_distance(curve.point_at(right), witness);
+        if left_distance <= right_distance {
+            high = right;
+            right = left;
+            left = high - ratio * (high - low);
+        } else {
+            low = left;
+            left = right;
+            right = low + ratio * (high - low);
+        }
+    }
+    (low + high) * 0.5
+}
+
+fn rational_bezier_meets_curve(
+    first: RationalBezier,
+    second: RationalBezier,
+) -> Vec<CurveCrossing> {
+    if first == second {
+        return vec![
+            CurveCrossing::shared(first.control[0], 0.0, 0.0),
+            CurveCrossing::shared(first.control[3], 1.0, 1.0),
+        ];
+    }
+    if first == second.reversed() {
+        return vec![
+            CurveCrossing::shared(first.control[0], 0.0, 1.0),
+            CurveCrossing::shared(first.control[3], 1.0, 0.0),
+        ];
+    }
+    numeric_curve_crossings(
+        PlanarCurve::RationalBezier(first),
+        PlanarCurve::RationalBezier(second),
+    )
+}
+
+fn bezier_meets_planar(bezier: RationalBezier, other: PlanarCurve) -> Vec<CurveCrossing> {
+    numeric_curve_crossings(PlanarCurve::RationalBezier(bezier), other)
+}
+
+#[derive(Clone, Copy)]
+struct ParameterSpan {
+    curve: PlanarCurve,
+    from: f64,
+    to: f64,
+}
+
+impl ParameterSpan {
+    fn halves(self) -> [Self; 2] {
+        let middle = (self.from + self.to) * 0.5;
+        [
+            Self {
+                curve: self.curve.sub_curve(0.0, 0.5),
+                from: self.from,
+                to: middle,
+            },
+            Self {
+                curve: self.curve.sub_curve(0.5, 1.0),
+                from: middle,
+                to: self.to,
+            },
+        ]
+    }
+
+    fn midpoint(self) -> (f64, [f64; 2]) {
+        ((self.from + self.to) * 0.5, self.curve.point_at(0.5))
+    }
+}
+
+fn numeric_curve_crossings(first: PlanarCurve, second: PlanarCurve) -> Vec<CurveCrossing> {
+    let mut found = Vec::new();
+    intersect_parameter_spans(
+        ParameterSpan {
+            curve: first,
+            from: 0.0,
+            to: 1.0,
+        },
+        ParameterSpan {
+            curve: second,
+            from: 0.0,
+            to: 1.0,
+        },
+        0,
+        &mut found,
+    );
+    found.sort_by(|a, b| a.parameter_on_first.total_cmp(&b.parameter_on_first));
+    found.dedup_by(|later, earlier| {
+        (later.parameter_on_first - earlier.parameter_on_first).abs() <= 1.0e-6
+            && (later.parameter_on_second - earlier.parameter_on_second).abs() <= 1.0e-6
+    });
+    found
+}
+
+fn intersect_parameter_spans(
+    first: ParameterSpan,
+    second: ParameterSpan,
+    depth: u8,
+    found: &mut Vec<CurveCrossing>,
+) {
+    const MAX_DEPTH: u8 = 52;
+    let first_bounds = planar_curve_bounds(first.curve);
+    let second_bounds = planar_curve_bounds(second.curve);
+    if !bounds_overlap(first_bounds, second_bounds) {
+        return;
+    }
+    let first_size = bounds_size(first_bounds);
+    let second_size = bounds_size(second_bounds);
+    if depth >= MAX_DEPTH
+        || (first_size <= RATIONAL_CROSSING_EPSILON && second_size <= RATIONAL_CROSSING_EPSILON)
+    {
+        let (first_parameter, first_point) = first.midpoint();
+        let (second_parameter, second_point) = second.midpoint();
+        if squared_distance(first_point, second_point) <= (RATIONAL_CROSSING_EPSILON * 8.0).powi(2)
+        {
+            found.push(CurveCrossing::transverse(
+                [
+                    (first_point[0] + second_point[0]) * 0.5,
+                    (first_point[1] + second_point[1]) * 0.5,
+                ],
+                first_parameter,
+                second_parameter,
+            ));
+        }
+        return;
+    }
+    if first_size >= second_size {
+        for half in first.halves() {
+            intersect_parameter_spans(half, second, depth.saturating_add(1), found);
+        }
+    } else {
+        for half in second.halves() {
+            intersect_parameter_spans(first, half, depth.saturating_add(1), found);
+        }
+    }
+}
+
+fn planar_curve_bounds(curve: PlanarCurve) -> ([f64; 2], [f64; 2]) {
+    let start = curve.start();
+    let end = curve.end();
+    let mut low = [start[0].min(end[0]), start[1].min(end[1])];
+    let mut high = [start[0].max(end[0]), start[1].max(end[1])];
+    match curve {
+        PlanarCurve::Segment { .. } => {}
+        PlanarCurve::RationalBezier(bezier) => return bezier.control_bounds(),
+        PlanarCurve::Arc {
+            center,
+            radius,
+            start_radians,
+            sweep_radians,
+        } => {
+            for bearing in [
+                0.0,
+                std::f64::consts::FRAC_PI_2,
+                std::f64::consts::PI,
+                3.0 * std::f64::consts::FRAC_PI_2,
+            ] {
+                let point = [
+                    radius.mul_add(bearing.cos(), center[0]),
+                    radius.mul_add(bearing.sin(), center[1]),
+                ];
+                if parameter_on_arc(center, start_radians, sweep_radians, point).is_some() {
+                    low = [low[0].min(point[0]), low[1].min(point[1])];
+                    high = [high[0].max(point[0]), high[1].max(point[1])];
+                }
+            }
+        }
+    }
+    (low, high)
+}
+
+fn bounds_overlap(first: ([f64; 2], [f64; 2]), second: ([f64; 2], [f64; 2])) -> bool {
+    first.0[0] <= second.1[0] + RATIONAL_CROSSING_EPSILON
+        && first.1[0] + RATIONAL_CROSSING_EPSILON >= second.0[0]
+        && first.0[1] <= second.1[1] + RATIONAL_CROSSING_EPSILON
+        && first.1[1] + RATIONAL_CROSSING_EPSILON >= second.0[1]
+}
+
+fn bounds_size(bounds: ([f64; 2], [f64; 2])) -> f64 {
+    (bounds.1[0] - bounds.0[0]).max(bounds.1[1] - bounds.0[1])
 }
 
 /// Every curve cut at every crossing with every other, each returned as its ordered pieces.
@@ -1293,5 +1529,36 @@ mod tests {
         // A whole voxel past it is a genuine miss.
         let clearly_past = segment([1.0e6 + 1.0, -1.0], [1.0e6 + 1.0, 1.0]);
         assert!(long.crossings(&clearly_past).is_empty());
+    }
+
+    #[test]
+    fn a_rational_bezier_crosses_a_segment_at_curve_parameters() {
+        let bezier = PlanarCurve::RationalBezier(RationalBezier::cubic([
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 0.0],
+        ]));
+        let vertical = segment([1.5, -1.0], [1.5, 1.0]);
+        let crossings = bezier.crossings(&vertical);
+        assert_eq!(crossings.len(), 1);
+        assert_near(crossings[0].point, [1.5, 0.0]);
+        assert!((crossings[0].parameter_on_first - 0.5).abs() <= 1.0e-7);
+        assert!((crossings[0].parameter_on_second - 0.5).abs() <= 1.0e-7);
+    }
+
+    #[test]
+    fn identical_and_reversed_beziers_report_shared_spans() {
+        let curve = RationalBezier::cubic([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
+        let same =
+            PlanarCurve::RationalBezier(curve).crossings(&PlanarCurve::RationalBezier(curve));
+        assert_eq!(same.len(), 2);
+        assert!(same.iter().all(|crossing| crossing.overlapping));
+
+        let reversed = PlanarCurve::RationalBezier(curve)
+            .crossings(&PlanarCurve::RationalBezier(curve.reversed()));
+        assert_eq!(reversed.len(), 2);
+        assert_eq!(reversed[0].parameter_on_second, 1.0);
+        assert_eq!(reversed[1].parameter_on_second, 0.0);
     }
 }

@@ -532,6 +532,7 @@ impl SketchSolid {
                     sweep_radians,
                 }
             }
+            PlanarCurve::RationalBezier(_) => return Err(OffsetRefusal::Unrepresentable),
         };
         Ok(OffsetPlacement { source, offset })
     }
@@ -772,6 +773,7 @@ impl Sketch {
                     origin,
                     role,
                 }),
+                PlanarCurve::RationalBezier(_) => return Err(BreakRefusal::Unrepresentable),
             }
         }
         self.sync_arc_centers();
@@ -1059,6 +1061,7 @@ impl Sketch {
                 self.set_curve_role(SketchCurve::Arc(id), role);
                 self.sync_arc_centers();
             }
+            PlanarCurve::RationalBezier(_) => return Err(OffsetRefusal::Unrepresentable),
         }
         Ok(())
     }
@@ -1164,6 +1167,7 @@ fn extension_candidate(
             };
             Some((travel, extended))
         }
+        PlanarCurve::RationalBezier(_) => None,
     }
 }
 

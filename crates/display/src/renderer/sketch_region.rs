@@ -54,10 +54,14 @@ pub fn sketch_region_loop_role_discriminant(role: LoopRole) -> u32 {
     }
 }
 
-/// The `RegionEdge` variant the shader switches on. **MUST match the WGSL `EDGE_*` constants**;
-/// the exhaustive `match` in [`pack_edge`] makes a new variant a compile error here.
+/// The `RegionEdge` variant the shader switches on. **MUST match the WGSL `EDGE_*` constants**.
 const EDGE_SEGMENT: u32 = 0;
 const EDGE_ARC: u32 = 1;
+
+/// Maximum profile-space deviation used only when adapting a rational curve to the wash shader.
+/// The CPU region and arrangement retain the rational curve; this is a display tessellation at
+/// substantially less than one voxel, not an authoring representation.
+const BEZIER_WASH_TOLERANCE_VOXELS: f64 = 0.125;
 
 /// One boundary edge, as the shader's `RegionEdge` — 40 bytes, offsets matching the WGSL struct.
 #[repr(C)]
@@ -74,9 +78,9 @@ struct RegionEdgeSlot {
 
 /// A `RegionEdge` in the shader's layout. A segment leaves the circle fields zeroed; the shader
 /// never reads them, because `kind` decides first.
-fn pack_edge(edge: &RegionEdge) -> RegionEdgeSlot {
+fn pack_simple_edge(edge: &RegionEdge) -> Option<RegionEdgeSlot> {
     match *edge {
-        RegionEdge::Segment { start, end } => RegionEdgeSlot {
+        RegionEdge::Segment { start, end } => Some(RegionEdgeSlot {
             start_point: start,
             end_point: end,
             center: [0.0; 2],
@@ -84,7 +88,7 @@ fn pack_edge(edge: &RegionEdge) -> RegionEdgeSlot {
             start_radians: 0.0,
             sweep_radians: 0.0,
             kind: EDGE_SEGMENT,
-        },
+        }),
         RegionEdge::Arc {
             start,
             end,
@@ -92,7 +96,7 @@ fn pack_edge(edge: &RegionEdge) -> RegionEdgeSlot {
             radius,
             start_radians,
             sweep_radians,
-        } => RegionEdgeSlot {
+        } => Some(RegionEdgeSlot {
             start_point: start,
             end_point: end,
             center,
@@ -100,7 +104,37 @@ fn pack_edge(edge: &RegionEdge) -> RegionEdgeSlot {
             start_radians,
             sweep_radians,
             kind: EDGE_ARC,
-        },
+        }),
+        RegionEdge::RationalBezier { .. } => None,
+    }
+}
+
+/// Append one CPU boundary edge in the shader's vocabulary. Rational curves are the only edge
+/// kind the shader does not evaluate directly, so they become a tightly bounded segment chain at
+/// this final display adapter.
+fn pack_edge(edge: &RegionEdge, output: &mut Vec<RegionEdgeSlot>) {
+    match *edge {
+        RegionEdge::RationalBezier { control, weights } => {
+            let curve = substrate::rational_bezier::RationalBezier {
+                control: control.map(|[x, y]| [f64::from(x), f64::from(y)]),
+                weights: weights.map(f64::from),
+            };
+            for points in curve.flatten(BEZIER_WASH_TOLERANCE_VOXELS).windows(2) {
+                let [start, end] = points else { continue };
+                output.push(RegionEdgeSlot {
+                    start_point: [start[0] as f32, start[1] as f32],
+                    end_point: [end[0] as f32, end[1] as f32],
+                    center: [0.0; 2],
+                    radius: 0.0,
+                    start_radians: 0.0,
+                    sweep_radians: 0.0,
+                    kind: EDGE_SEGMENT,
+                });
+            }
+        }
+        RegionEdge::Segment { .. } | RegionEdge::Arc { .. } => {
+            output.extend(pack_simple_edge(edge));
+        }
     }
 }
 
@@ -291,12 +325,7 @@ impl SketchRegionRenderer {
         let mut edges: Vec<RegionEdgeSlot> = Vec::with_capacity(total_edges);
         let mut bounds = ([f32::MAX, f32::MAX], [f32::MIN, f32::MIN]);
         for (role, loop_edges) in region {
-            slots.push(RegionLoopSlot {
-                role: sketch_region_loop_role_discriminant(*role),
-                start: edges.len() as u32,
-                count: loop_edges.len() as u32,
-                padding: 0,
-            });
+            let loop_start = edges.len();
             for edge in loop_edges {
                 // An arc's own bounds, so the early-out box never clips a bulge (`RegionEdge`).
                 let (low, high) = edge.bounds();
@@ -304,8 +333,14 @@ impl SketchRegionRenderer {
                     bounds.0[axis] = bounds.0[axis].min(low[axis]);
                     bounds.1[axis] = bounds.1[axis].max(high[axis]);
                 }
-                edges.push(pack_edge(edge));
+                pack_edge(edge, &mut edges);
             }
+            slots.push(RegionLoopSlot {
+                role: sketch_region_loop_role_discriminant(*role),
+                start: loop_start as u32,
+                count: (edges.len() - loop_start) as u32,
+                padding: 0,
+            });
         }
 
         // Grow either storage buffer if this region outgrew it, then rebind — a bind group holds
@@ -452,19 +487,27 @@ mod tests {
     fn edge_slot_matches_the_shader_struct() {
         assert_eq!(std::mem::size_of::<RegionEdgeSlot>(), 40);
         assert_eq!(std::mem::size_of::<RegionEdgeSlot>() % 8, 0);
-        let slot = pack_edge(&RegionEdge::Segment {
-            start: [1.0, 2.0],
-            end: [3.0, 4.0],
-        });
-        assert_eq!(slot.kind, EDGE_SEGMENT);
-        let arc = pack_edge(&RegionEdge::Arc {
-            start: [1.0, 0.0],
-            end: [-1.0, 0.0],
-            center: [0.0, 0.0],
-            radius: 1.0,
-            start_radians: 0.0,
-            sweep_radians: std::f32::consts::PI,
-        });
-        assert_eq!(arc.kind, EDGE_ARC);
+        let mut packed = Vec::new();
+        pack_edge(
+            &RegionEdge::Segment {
+                start: [1.0, 2.0],
+                end: [3.0, 4.0],
+            },
+            &mut packed,
+        );
+        assert_eq!(packed.first().map(|slot| slot.kind), Some(EDGE_SEGMENT));
+        packed.clear();
+        pack_edge(
+            &RegionEdge::Arc {
+                start: [1.0, 0.0],
+                end: [-1.0, 0.0],
+                center: [0.0, 0.0],
+                radius: 1.0,
+                start_radians: 0.0,
+                sweep_radians: std::f32::consts::PI,
+            },
+            &mut packed,
+        );
+        assert_eq!(packed.first().map(|slot| slot.kind), Some(EDGE_ARC));
     }
 }

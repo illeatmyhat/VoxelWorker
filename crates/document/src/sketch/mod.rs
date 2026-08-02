@@ -948,6 +948,9 @@ pub struct ProfileEdge {
     pub to: SketchPoint,
     /// The circle this edge follows, or `None` for a straight span.
     pub arc: Option<ProfileArc>,
+    /// The rational Bézier this edge follows, or `None` for a segment/arc. Exactly one of `arc`
+    /// and `bezier` may be present.
+    pub bezier: Option<substrate::rational_bezier::RationalBezier>,
 }
 
 /// The circle a curved [`ProfileEdge`] follows, solved once from the canonical endpoints-plus-bulge
@@ -971,6 +974,7 @@ impl ProfileEdge {
             from,
             to,
             arc: None,
+            bezier: None,
         }
     }
 
@@ -992,6 +996,7 @@ impl ProfileEdge {
                 start_radians: (tail[1] - center[1]).atan2(tail[0] - center[0]),
                 sweep_radians: sweep_degrees.to_radians(),
             }),
+            bezier: None,
         }
     }
 
@@ -1013,6 +1018,7 @@ impl ProfileEdge {
                 start_radians: 0.0,
                 sweep_radians: std::f64::consts::TAU,
             }),
+            bezier: None,
         }
     }
 
@@ -1034,6 +1040,7 @@ impl ProfileEdge {
                 sweep_radians: -arc.sweep_radians,
                 ..arc
             }),
+            bezier: self.bezier.map(|curve| curve.reversed()),
         }
     }
 
@@ -1041,6 +1048,10 @@ impl ProfileEdge {
     /// its tangent — a quarter turn off the radius, on the side it curves toward — which is what
     /// makes two arcs sharing an endpoint order correctly around that vertex.
     pub fn departure_radians(&self) -> f64 {
+        if let Some(curve) = self.bezier {
+            let tangent = curve.derivative_at(0.0);
+            return tangent[1].atan2(tangent[0]);
+        }
         match self.arc {
             Some(arc) => {
                 let quarter = std::f64::consts::FRAC_PI_2 * arc.sweep_radians.signum();
@@ -1060,6 +1071,13 @@ impl ProfileEdge {
     /// than the area of the chords approximating it.
     pub fn signed_area_term(&self) -> f64 {
         let (from, to) = (self.from.in_plane(), self.to.in_plane());
+        if let Some(curve) = self.bezier {
+            return curve
+                .flatten(1.0e-5)
+                .array_windows::<2>()
+                .map(|pair| 0.5 * (pair[0][0] * pair[1][1] - pair[1][0] * pair[0][1]))
+                .sum();
+        }
         match self.arc {
             Some(arc) => {
                 0.5 * (arc.radius * arc.radius * arc.sweep_radians
@@ -1077,6 +1095,15 @@ impl ProfileEdge {
     /// lets a closed curve through at all: a full turn has a zero-length chord, and there is no
     /// circle to be recovered from that.
     pub fn interior_points(&self, sagitta_tolerance_voxels: f64) -> Vec<SketchPoint> {
+        if let Some(curve) = self.bezier {
+            let points = curve.flatten(sagitta_tolerance_voxels);
+            return points
+                .iter()
+                .skip(1)
+                .take(points.len().saturating_sub(2))
+                .map(|point| SketchPoint::from_continuous(point[0], point[1]))
+                .collect();
+        }
         match self.arc {
             Some(arc) => arc_interior_on_circle(arc, sagitta_tolerance_voxels),
             None => Vec::new(),
@@ -1092,6 +1119,14 @@ impl ProfileEdge {
     pub fn measured(&self) -> substrate::geom2d::RegionEdge {
         let start = self.from.in_plane_measured();
         let end = self.to.in_plane_measured();
+        if let Some(curve) = self.bezier {
+            return substrate::geom2d::RegionEdge::RationalBezier {
+                control: curve
+                    .control
+                    .map(|point| [point[0] as f32, point[1] as f32]),
+                weights: curve.weights.map(|weight| weight as f32),
+            };
+        }
         match self.arc {
             Some(arc) => substrate::geom2d::RegionEdge::Arc {
                 start,
@@ -1131,6 +1166,11 @@ impl ProfileEdge {
                     high[axis] = high[axis].max(reach[axis]);
                 }
             }
+        }
+        if let Some(curve) = self.bezier {
+            let (curve_low, curve_high) = curve.control_bounds();
+            low = [low[0].min(curve_low[0]), low[1].min(curve_low[1])];
+            high = [high[0].max(curve_high[0]), high[1].max(curve_high[1])];
         }
         (low, high)
     }

@@ -457,6 +457,12 @@ pub enum RegionEdge {
         /// The signed angle travelled from `start` to `end`.
         sweep_radians: f32,
     },
+    /// A cubic rational Bézier. Positive weights keep the curve inside its control hull; ordinary
+    /// cubic splines have unit weights, while exact conics use non-unit interior weights.
+    RationalBezier {
+        control: [[f32; 2]; 4],
+        weights: [f32; 4],
+    },
 }
 
 impl RegionEdge {
@@ -466,6 +472,7 @@ impl RegionEdge {
     pub const fn start(&self) -> [f32; 2] {
         match self {
             Self::Segment { start, .. } | Self::Arc { start, .. } => *start,
+            Self::RationalBezier { control, .. } => control[0],
         }
     }
 
@@ -475,6 +482,7 @@ impl RegionEdge {
     pub const fn end(&self) -> [f32; 2] {
         match self {
             Self::Segment { end, .. } | Self::Arc { end, .. } => *end,
+            Self::RationalBezier { control, .. } => control[3],
         }
     }
 
@@ -513,6 +521,12 @@ impl RegionEdge {
                 ];
                 low = [low[0].min(reach[0]), low[1].min(reach[1])];
                 high = [high[0].max(reach[0]), high[1].max(reach[1])];
+            }
+        }
+        if let Self::RationalBezier { control, .. } = self {
+            for point in control {
+                low = [low[0].min(point[0]), low[1].min(point[1])];
+                high = [high[0].max(point[0]), high[1].max(point[1])];
             }
         }
         (low, high)
@@ -557,6 +571,9 @@ impl RegionEdge {
                         point,
                     )),
                 }
+            }
+            Self::RationalBezier { control, weights } => {
+                rational_bezier_distance(*control, *weights, point, metric)
             }
         }
     }
@@ -638,8 +655,77 @@ impl RegionEdge {
                 }
                 crossings
             }
+            Self::RationalBezier { control, weights } => {
+                rational_bezier_crossings(*control, *weights, sample)
+            }
         }
     }
+}
+
+const RATIONAL_BEZIER_MEASUREMENT_STEPS: u16 = 64;
+
+fn rational_bezier_point(control: [[f32; 2]; 4], weights: [f32; 4], parameter: f32) -> [f32; 2] {
+    let [control_0, control_1, control_2, control_3] = control;
+    let [weight_0, weight_1, weight_2, weight_3] = weights;
+    let homogeneous = |point: [f32; 2], weight: f32| [point[0] * weight, point[1] * weight, weight];
+    let mix = |from: [f32; 3], to: [f32; 3]| {
+        [
+            (to[0] - from[0]).mul_add(parameter, from[0]),
+            (to[1] - from[1]).mul_add(parameter, from[1]),
+            (to[2] - from[2]).mul_add(parameter, from[2]),
+        ]
+    };
+    let first = mix(
+        homogeneous(control_0, weight_0),
+        homogeneous(control_1, weight_1),
+    );
+    let second = mix(
+        homogeneous(control_1, weight_1),
+        homogeneous(control_2, weight_2),
+    );
+    let third = mix(
+        homogeneous(control_2, weight_2),
+        homogeneous(control_3, weight_3),
+    );
+    let left = mix(first, second);
+    let right = mix(second, third);
+    let [weighted_x, weighted_y, weight] = mix(left, right);
+    [weighted_x / weight, weighted_y / weight]
+}
+
+fn rational_bezier_distance(
+    control: [[f32; 2]; 4],
+    weights: [f32; 4],
+    point: [f32; 2],
+    metric: Metric,
+) -> f32 {
+    let mut nearest = f32::INFINITY;
+    let mut previous = control.first().copied().unwrap_or_default();
+    for step in 1..=RATIONAL_BEZIER_MEASUREMENT_STEPS {
+        let current = rational_bezier_point(
+            control,
+            weights,
+            f32::from(step) / f32::from(RATIONAL_BEZIER_MEASUREMENT_STEPS),
+        );
+        nearest = nearest.min(distance_point_to_segment(previous, current, point, metric));
+        previous = current;
+    }
+    nearest
+}
+
+fn rational_bezier_crossings(control: [[f32; 2]; 4], weights: [f32; 4], sample: [f32; 2]) -> u32 {
+    let mut crossings = 0_u32;
+    let mut previous = control.first().copied().unwrap_or_default();
+    for step in 1..=RATIONAL_BEZIER_MEASUREMENT_STEPS {
+        let current = rational_bezier_point(
+            control,
+            weights,
+            f32::from(step) / f32::from(RATIONAL_BEZIER_MEASUREMENT_STEPS),
+        );
+        crossings = crossings.saturating_add(segment_crossings(previous, current, sample));
+        previous = current;
+    }
+    crossings
 }
 
 /// How far along a sweep the bearing `bearing` sits, in radians of travel from the start, or `None`
