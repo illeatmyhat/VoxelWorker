@@ -97,6 +97,7 @@ pub mod interval;
 pub mod noise;
 pub mod nonlinear_least_squares;
 pub mod occupancy;
+pub mod rational_bezier;
 pub mod solids;
 pub mod spatial;
 pub mod srgb;
