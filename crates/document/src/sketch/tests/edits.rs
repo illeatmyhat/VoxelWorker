@@ -9,7 +9,9 @@
 //! unless a closed loop exists.
 
 use super::ctx;
-use crate::sketch::{EntityId, PlaneAxis, Sketch, SketchPoint, SketchSolid};
+use crate::sketch::{
+    EntityId, EntityRole, PlaneAxis, Sketch, SketchLength, SketchPoint, SketchSolid,
+};
 
 /// A closed rectangular profile whose bbox-minimum is `[2, 2]`, extruded so it is a real solid.
 fn bracket() -> SketchSolid {
@@ -252,5 +254,55 @@ fn anchor_offset_is_unchanged_when_the_edit_stays_inside_the_bbox() {
         after.anchor_preserving_offset(&before, [10, 10, 10], ctx(16)),
         [10, 10, 10],
         "an interior edit leaves the anchor — and so the offset — where it was"
+    );
+}
+
+#[test]
+fn construction_toggle_retains_identity_and_excludes_geometry_from_regions() {
+    let before = before_triangle();
+    let edge = before.sketch.segments()[0].id;
+    let origin = before.sketch.segments()[0].origin;
+
+    let construction = before
+        .with_construction_toggled([edge])
+        .expect("a selected edge toggles");
+    assert_eq!(
+        construction.sketch.segments()[0].role,
+        EntityRole::Construction
+    );
+    assert_eq!(construction.sketch.segments()[0].id, edge);
+    assert_eq!(construction.sketch.segments()[0].origin, origin);
+    assert!(construction.sketch.flattened_loop(ctx(16)).is_empty());
+
+    let real = construction
+        .with_construction_toggled([edge])
+        .expect("the same edge toggles back");
+    assert_eq!(real.sketch.segments()[0].role, EntityRole::Real);
+    assert_eq!(real.sketch.flattened_loop(ctx(16)).len(), 3);
+}
+
+#[test]
+fn structural_circle_center_refuses_a_construction_toggle() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = sketch
+        .add_circle(SketchPoint::new(2, 3), SketchLength::new(4))
+        .unwrap();
+    let center = sketch
+        .circles()
+        .iter()
+        .find(|held| held.id == circle)
+        .unwrap()
+        .center;
+    let source = SketchSolid::extrude(sketch, 3);
+    assert!(source.with_construction_toggled([center]).is_none());
+    assert_eq!(
+        source
+            .sketch
+            .points()
+            .iter()
+            .find(|point| point.id == center)
+            .unwrap()
+            .role,
+        EntityRole::Construction
     );
 }

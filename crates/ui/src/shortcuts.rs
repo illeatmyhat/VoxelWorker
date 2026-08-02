@@ -165,13 +165,15 @@ pub enum ShortcutCommand {
     EnterConstrainedOrbit,
     /// Carve or fill the sketch region under the cursor.
     ToggleSketchFace,
+    /// Toggle selected sketch geometry between real and construction.
+    ToggleSketchConstruction,
     /// Dump the live scene + camera to the repro file.
     ExportRepro,
 }
 
 impl ShortcutCommand {
     /// Every command, in settings-list order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::AcceptCommand,
         Self::CancelCommand,
         Self::DeleteSelection,
@@ -181,6 +183,7 @@ impl ShortcutCommand {
         Self::ResetOrbitCenter,
         Self::EnterConstrainedOrbit,
         Self::ToggleSketchFace,
+        Self::ToggleSketchConstruction,
         Self::ExportRepro,
     ];
 
@@ -196,6 +199,7 @@ impl ShortcutCommand {
             Self::ResetOrbitCenter => "Reset orbit center",
             Self::EnterConstrainedOrbit => "Constrained orbit",
             Self::ToggleSketchFace => "Carve / fill sketch region",
+            Self::ToggleSketchConstruction => "Toggle sketch construction",
             Self::ExportRepro => "Dump repro",
         }
     }
@@ -240,6 +244,10 @@ impl ShortcutCommand {
             | Self::ResetOrbitCenter
             | Self::EnterConstrainedOrbit
             | Self::ToggleSketchFace => None,
+
+            // Fusion's construction toggle is a bare X. It is mode-scoped by the command handler:
+            // outside an edited sketch (or without toggleable selection) it is a no-op.
+            Self::ToggleSketchConstruction => Some(bare(Key::X)),
 
             // The repro dump: a developer affordance, so it wants a chord nothing else claims
             // rather than a key a modeller might hit by accident. `Shift` plus the platform's own

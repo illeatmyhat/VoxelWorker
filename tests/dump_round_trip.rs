@@ -117,7 +117,7 @@ fn some_chord(key: egui::Key) -> Option<egui::KeyboardShortcut> {
 
 /// Every override command in declaration order, paired with a chord no built-in holds on
 /// any platform (`Ctrl+Alt+F<n>`), so a full override set survives `bind` untouched.
-const OVERRIDE_COMMANDS: [(ShortcutCommandConfig, egui::Key); 9] = [
+const OVERRIDE_COMMANDS: [(ShortcutCommandConfig, egui::Key); 11] = [
     (ShortcutCommandConfig::AcceptCommand, egui::Key::F1),
     (ShortcutCommandConfig::CancelCommand, egui::Key::F2),
     (ShortcutCommandConfig::DeleteSelection, egui::Key::F3),
@@ -126,6 +126,11 @@ const OVERRIDE_COMMANDS: [(ShortcutCommandConfig, egui::Key); 9] = [
     (ShortcutCommandConfig::PlaceOrbitCenter, egui::Key::F6),
     (ShortcutCommandConfig::ResetOrbitCenter, egui::Key::F7),
     (ShortcutCommandConfig::EnterConstrainedOrbit, egui::Key::F8),
+    (ShortcutCommandConfig::ToggleSketchFace, egui::Key::F10),
+    (
+        ShortcutCommandConfig::ToggleSketchConstruction,
+        egui::Key::F11,
+    ),
     (ShortcutCommandConfig::ExportRepro, egui::Key::F9),
 ];
 

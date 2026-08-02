@@ -183,6 +183,8 @@ pub enum ShortcutCommandConfig {
     ExportRepro,
     /// [`ShortcutCommand::ToggleSketchFace`].
     ToggleSketchFace,
+    /// [`ShortcutCommand::ToggleSketchConstruction`].
+    ToggleSketchConstruction,
 }
 
 /// One overridden binding.
@@ -239,6 +241,9 @@ impl ShortcutsConfig {
                         ShortcutCommand::ToggleSketchFace => {
                             ShortcutCommandConfig::ToggleSketchFace
                         }
+                        ShortcutCommand::ToggleSketchConstruction => {
+                            ShortcutCommandConfig::ToggleSketchConstruction
+                        }
                     },
                     shortcut,
                 })
@@ -269,6 +274,9 @@ impl ShortcutsConfig {
                 }
                 ShortcutCommandConfig::ExportRepro => ShortcutCommand::ExportRepro,
                 ShortcutCommandConfig::ToggleSketchFace => ShortcutCommand::ToggleSketchFace,
+                ShortcutCommandConfig::ToggleSketchConstruction => {
+                    ShortcutCommand::ToggleSketchConstruction
+                }
             };
             shortcuts.bind(command, binding.shortcut);
         }

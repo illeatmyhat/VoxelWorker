@@ -849,6 +849,18 @@ pub enum EntityRole {
     Construction,
 }
 
+impl EntityRole {
+    /// The opposite participation role. This is deliberately a role operation rather than a
+    /// delete-and-recreate: stable ids, constraints, curve lineage, and face picks all survive a
+    /// construction toggle.
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Real => Self::Construction,
+            Self::Construction => Self::Real,
+        }
+    }
+}
+
 /// One loop of the profile: a closed boundary of [`ProfileEdge`]s plus how it contributes to the
 /// region. The unit the 2D CSG folds and the unit the overlay draws.
 ///
@@ -1642,6 +1654,35 @@ impl Sketch {
     /// Read-only view of the whole-circle entities.
     pub fn circles(&self) -> &[Circle] {
         &self.circles
+    }
+
+    /// Flip one geometry entity between real and construction while retaining its stable id.
+    ///
+    /// Arc and circle centers are structural construction points, not author geometry. They are
+    /// refused here so no generic selection action can make a derived center participate as a
+    /// profile vertex. Constraint ids and unknown ids are likewise harmless no-ops.
+    pub fn toggle_construction(&mut self, id: EntityId) -> bool {
+        let is_structural_center = self.arcs.iter().any(|arc| arc.center == id)
+            || self.circles.iter().any(|circle| circle.center == id);
+        if !is_structural_center {
+            if let Some(point) = self.points.iter_mut().find(|point| point.id == id) {
+                point.role = point.role.toggled();
+                return true;
+            }
+        }
+        if let Some(segment) = self.segments.iter_mut().find(|segment| segment.id == id) {
+            segment.role = segment.role.toggled();
+            return true;
+        }
+        if let Some(arc) = self.arcs.iter_mut().find(|arc| arc.id == id) {
+            arc.role = arc.role.toggled();
+            return true;
+        }
+        if let Some(circle) = self.circles.iter_mut().find(|circle| circle.id == id) {
+            circle.role = circle.role.toggled();
+            return true;
+        }
+        false
     }
 
     /// Test-only mutable access to the raw segment vector, for constructing the malformed

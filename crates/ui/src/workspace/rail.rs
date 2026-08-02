@@ -232,6 +232,41 @@ const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
     ConstraintVerb::Fix,
 ];
 
+/// Sketch modification verbs in catalog order. A live bit means the command has a complete
+/// document operation and shell route; the remaining glyphs stay visible but inert until that
+/// contract exists. Keeping the inventory here prevents implementation order from silently
+/// becoming the eventual rail order.
+const SKETCH_MODIFIERS: &[(Icon, &str, bool)] = &[
+    (
+        Icon::ConstructionToggle,
+        "Construction — toggle selected geometry between profile and reference",
+        true,
+    ),
+    (Icon::Fillet, "Fillet — round a selected corner", false),
+    (
+        Icon::ChamferEqual,
+        "Equal Distance Chamfer — reserved",
+        false,
+    ),
+    (
+        Icon::ChamferDistanceAngle,
+        "Distance and Angle Chamfer — reserved",
+        false,
+    ),
+    (
+        Icon::ChamferTwoDistance,
+        "Two Distance Chamfer — reserved",
+        false,
+    ),
+    (Icon::Trim, "Trim — reserved", false),
+    (Icon::Extend, "Extend — reserved", false),
+    (Icon::BreakCurve, "Break — reserved", false),
+    (Icon::OffsetCurve, "Offset — reserved", false),
+    (Icon::MoveCopy, "Move / Copy — reserved", false),
+    (Icon::SketchScale, "Scale — reserved", false),
+    (Icon::BlendCurve, "Blend Curve — reserved", false),
+];
+
 /// The set-operation picker on the sketch rail — the operation is a property of the same fused
 /// node. Extrude and Revolve switch the edited node's operation on click; Sweep is the reserved
 /// arm, drawn dimmed.
@@ -311,6 +346,16 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
                 }
             }
             None => sketch_cell(ui, icon, tip, false, true),
+        }
+    }
+    rail_heading(ui, "Modify");
+    for &(icon, tip, live) in SKETCH_MODIFIERS {
+        if live {
+            if sketch_tool_cell(ui, icon, tip, false) && icon == Icon::ConstructionToggle {
+                response.toggle_sketch_construction = true;
+            }
+        } else {
+            sketch_cell(ui, icon, tip, false, true);
         }
     }
     if matches!(
@@ -587,6 +632,35 @@ mod tests {
         assert!(SKETCH_TOOLS.iter().any(|&(icon, tip, tool)| {
             icon == Icon::Line && tip.starts_with("Line —") && tool == Some(SketchTool::Line)
         }));
+    }
+
+    #[test]
+    fn sketch_rail_lists_the_complete_modifier_catalog_and_only_live_commands_arm() {
+        let icons: Vec<_> = SKETCH_MODIFIERS.iter().map(|&(icon, _, _)| icon).collect();
+        assert_eq!(
+            icons,
+            vec![
+                Icon::ConstructionToggle,
+                Icon::Fillet,
+                Icon::ChamferEqual,
+                Icon::ChamferDistanceAngle,
+                Icon::ChamferTwoDistance,
+                Icon::Trim,
+                Icon::Extend,
+                Icon::BreakCurve,
+                Icon::OffsetCurve,
+                Icon::MoveCopy,
+                Icon::SketchScale,
+                Icon::BlendCurve,
+            ]
+        );
+        assert_eq!(
+            SKETCH_MODIFIERS
+                .iter()
+                .filter_map(|&(icon, _, live)| live.then_some(icon))
+                .collect::<Vec<_>>(),
+            vec![Icon::ConstructionToggle]
+        );
     }
 
     #[test]

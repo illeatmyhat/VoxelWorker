@@ -944,6 +944,9 @@ pub struct PanelResponse {
     /// in is a screen-space hit-test only the shell can answer, and it already answered it to
     /// decide whether to offer the row at all. `false` when the row was not chosen.
     pub toggle_sketch_face: bool,
+    /// The sketch rail's Construction command was pressed. The shell owns the selected entity
+    /// ids and commits their role changes through the normal anchor-preserving sketch edit door.
+    pub toggle_sketch_construction: bool,
     /// How the user asked to move the **orbit center** this frame from the general viewport
     /// context menu — the deliberate act that is
     /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW

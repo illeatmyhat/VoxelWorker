@@ -1334,6 +1334,23 @@ impl SketchSolid {
         next
     }
 
+    /// Toggle every selected geometry entity's real/construction role as one prospective edit.
+    ///
+    /// `None` means the selection named no toggleable geometry, allowing callers to avoid an
+    /// empty undo entry. Each entity toggles independently, matching the command's literal role
+    /// semantics for a mixed real/construction selection.
+    pub fn with_construction_toggled(
+        &self,
+        entities: impl IntoIterator<Item = EntityId>,
+    ) -> Option<SketchSolid> {
+        let mut next = self.clone();
+        let mut changed = false;
+        for entity in entities {
+            changed |= next.sketch.toggle_construction(entity);
+        }
+        changed.then_some(next)
+    }
+
     /// This producer with `kind` asserted, the drawing moved to where the solve put it, and the
     /// new constraint's id. `Err` leaves nothing changed — a refusal is not a partial edit, so
     /// a caller that discards the `Err` still holds the drawing the author had.
