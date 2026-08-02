@@ -150,6 +150,7 @@ enum SketchToolConfig {
     Slot3PointArc,
     BreakCurve,
     Trim,
+    Extend,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
@@ -1146,8 +1147,8 @@ mod tests {
     }
 
     #[test]
-    fn trim_and_break_tools_survive_both_sides_of_the_tool_config_shim() {
-        for tool in [SketchTool::Trim, SketchTool::BreakCurve] {
+    fn trim_extend_and_break_tools_survive_both_sides_of_the_tool_config_shim() {
+        for tool in [SketchTool::Trim, SketchTool::Extend, SketchTool::BreakCurve] {
             let mut state = distinctive_state();
             state.sketch_tool = tool;
             let json = Dump::from_state(&state)

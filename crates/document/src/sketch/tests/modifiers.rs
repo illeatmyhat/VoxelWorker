@@ -198,3 +198,149 @@ fn trim_without_a_crossing_deletes_the_curve_and_circle_trim_stays_curved() {
     assert_eq!(trimmed.sketch.arcs().len(), 1);
     assert!((trimmed.sketch.arcs()[0].sweep_degrees().abs() - 180.0).abs() < 1.0e-9);
 }
+
+#[test]
+fn extend_grows_the_witnessed_segment_end_to_the_nearest_finite_crossing() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let target = segment(&mut sketch, [0, 0], [2, 0]);
+    segment(&mut sketch, [5, -2], [5, 2]);
+    segment(&mut sketch, [8, -2], [8, 2]);
+    segment(&mut sketch, [-3, -2], [-3, 2]);
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let placement = source
+        .extend_placement(SketchCurve::Segment(target), [2.0, 0.1], ctx(16))
+        .unwrap();
+    assert_eq!(placement.endpoint, ExtendEndpoint::End);
+    assert_eq!(placement.extended.end(), [5.0, 0.0]);
+    let made = source
+        .with_curve_extended(SketchCurve::Segment(target), [2.0, 0.1], ctx(16))
+        .unwrap();
+    let held = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.id == target)
+        .unwrap();
+    assert_eq!(
+        made.sketch
+            .points()
+            .iter()
+            .find(|point| point.id == held.to)
+            .unwrap()
+            .at,
+        SketchPoint::new(5, 0)
+    );
+
+    let start = source
+        .extend_placement(SketchCurve::Segment(target), [0.0, 0.1], ctx(16))
+        .unwrap();
+    assert_eq!(start.endpoint, ExtendEndpoint::Start);
+    assert_eq!(start.extended.start(), [-3.0, 0.0]);
+}
+
+#[test]
+fn extend_refuses_a_closed_curve_or_a_selected_ray_without_a_hit() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let target = segment(&mut sketch, [0, 0], [2, 0]);
+    segment(&mut sketch, [5, -2], [5, 2]);
+    let circle = sketch
+        .add_circle(SketchPoint::new(20, 0), SketchLength::new(3))
+        .unwrap();
+    let source = SketchSolid::extrude(sketch, 3);
+    assert_eq!(
+        source.extend_placement(SketchCurve::Segment(target), [0.0, 0.0], ctx(16)),
+        Err(ExtendRefusal::NoIntersection)
+    );
+    assert_eq!(
+        source.extend_placement(SketchCurve::Circle(circle), [23.0, 0.0], ctx(16)),
+        Err(ExtendRefusal::ClosedCurve)
+    );
+}
+
+#[test]
+fn extend_keeps_an_arc_native_and_grows_each_end_around_its_supporting_circle() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(5, 0));
+    let to = sketch.add_free_point(SketchPoint::new(0, 5));
+    let target = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .unwrap();
+    segment(&mut sketch, [-5, -1], [-5, 1]);
+    segment(&mut sketch, [-1, -5], [1, -5]);
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let mut fixed = source.clone();
+    fixed.sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
+    assert_eq!(
+        fixed.extend_placement(SketchCurve::Arc(target), [0.0, 5.0], ctx(16)),
+        Err(ExtendRefusal::FixedSweep)
+    );
+
+    let end = source
+        .extend_placement(SketchCurve::Arc(target), [0.0, 5.0], ctx(16))
+        .unwrap();
+    assert_eq!(end.endpoint, ExtendEndpoint::End);
+    let extended_end = end.extended.end();
+    assert!((extended_end[0] + 5.0).abs() < 1.0e-9);
+    assert!(extended_end[1].abs() < 1.0e-9);
+    let made = source
+        .with_curve_extended(SketchCurve::Arc(target), [0.0, 5.0], ctx(16))
+        .unwrap();
+    let held = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| arc.id == target)
+        .unwrap();
+    assert!((held.sweep_degrees() - 180.0).abs() < 1.0e-9);
+    let ::parametric::sketch::CurveGeometry::Circular(geometry) = made
+        .sketch
+        .curve_geometry(SketchCurve::Arc(target), ctx(16))
+        .unwrap()
+    else {
+        panic!("an extended arc must remain circular");
+    };
+    assert!((geometry.radius - 5.0).abs() < 1.0e-9);
+    assert!(geometry.center[0].abs() < 1.0e-9);
+    assert!(geometry.center[1].abs() < 1.0e-9);
+
+    let start = source
+        .extend_placement(SketchCurve::Arc(target), [5.0, 0.0], ctx(16))
+        .unwrap();
+    assert_eq!(start.endpoint, ExtendEndpoint::Start);
+    let extended_start = start.extended.start();
+    assert!(extended_start[0].abs() < 1.0e-9);
+    assert!((extended_start[1] + 5.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn extend_preserves_a_clockwise_arcs_direction_and_radius() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(5, 0));
+    let to = sketch.add_free_point(SketchPoint::new(0, -5));
+    let target = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(-90))
+        .unwrap();
+    segment(&mut sketch, [-5, -1], [-5, 1]);
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let made = source
+        .with_curve_extended(SketchCurve::Arc(target), [0.0, -5.0], ctx(16))
+        .unwrap();
+    let held = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| arc.id == target)
+        .unwrap();
+    assert!((held.sweep_degrees() + 180.0).abs() < 1.0e-9);
+    let ::parametric::sketch::CurveGeometry::Circular(geometry) = made
+        .sketch
+        .curve_geometry(SketchCurve::Arc(target), ctx(16))
+        .unwrap()
+    else {
+        panic!("an extended clockwise arc must remain circular");
+    };
+    assert!((geometry.radius - 5.0).abs() < 1.0e-9);
+}

@@ -356,6 +356,8 @@ pub enum SketchTool {
     BreakCurve,
     /// Trim the clicked native-curve interval to its neighboring intersections.
     Trim,
+    /// Extend the clicked open-curve endpoint to the nearest finite intersection.
+    Extend,
 }
 
 /// The floating Signal **display stack**'s viewer state.

@@ -324,6 +324,33 @@ impl PlanarCurve {
         found.sort_by(|a, b| a.parameter_on_first.total_cmp(&b.parameter_on_first));
         found
     }
+
+    /// Every place the infinite support of this curve meets the finite authored span of `other`.
+    ///
+    /// A segment contributes its supporting line, whose parameter remains `0` at the authored
+    /// tail and `1` at the authored head but may fall outside that interval. An arc contributes
+    /// its full supporting circle, parameterized counter-clockwise from the positive x axis.
+    /// This asymmetric query is the geometric primitive behind operations such as Extend: the
+    /// first curve may grow, while the curve it is trying to reach must still be hit as drawn.
+    #[must_use]
+    pub fn support_crossings_with(&self, other: &Self) -> Vec<CurveSupportCrossing> {
+        let mut found = match *self {
+            Self::Segment { start, end } => match *other {
+                Self::Segment {
+                    start: other_start,
+                    end: other_end,
+                } => line_meets_segment(start, end, other_start, other_end),
+                Self::Arc { .. } => line_meets_arc(start, end, other),
+            },
+            Self::Arc { center, radius, .. } => Self::circle(center, radius)
+                .crossings(other)
+                .into_iter()
+                .map(CurveSupportCrossing::from_curve_crossing)
+                .collect(),
+        };
+        found.sort_by(|a, b| a.parameter_on_support.total_cmp(&b.parameter_on_support));
+        found
+    }
 }
 
 /// Every curve cut at every crossing with every other, each returned as its ordered pieces.
@@ -378,6 +405,30 @@ pub struct CurveCrossing {
     /// Whether the curves are COINCIDENT here rather than crossing — this is one end of a stretch
     /// they share, not a point they pass through.
     pub overlapping: bool,
+}
+
+/// One meeting between a curve's unbounded support and another finite curve.
+///
+/// `parameter_on_support` may be outside `[0, 1]` for a supporting line. For a supporting circle
+/// it uses a full counter-clockwise turn from the positive x axis, independent of the authored
+/// arc's start and direction. `parameter_on_finite` always lies on the other curve as authored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurveSupportCrossing {
+    pub point: [f64; 2],
+    pub parameter_on_support: f64,
+    pub parameter_on_finite: f64,
+    pub overlapping: bool,
+}
+
+impl CurveSupportCrossing {
+    const fn from_curve_crossing(crossing: CurveCrossing) -> Self {
+        Self {
+            point: crossing.point,
+            parameter_on_support: crossing.parameter_on_first,
+            parameter_on_finite: crossing.parameter_on_second,
+            overlapping: crossing.overlapping,
+        }
+    }
 }
 
 impl CurveCrossing {
@@ -513,6 +564,131 @@ fn segment_meets_segment(
         ));
     }
     ends
+}
+
+/// Infinite line against a finite segment. Coincidence reports the finite segment's two ends as
+/// an overlapping span; callers that require a unique meeting can discard those entries.
+fn line_meets_segment(
+    line_start: [f64; 2],
+    line_end: [f64; 2],
+    segment_start: [f64; 2],
+    segment_end: [f64; 2],
+) -> Vec<CurveSupportCrossing> {
+    let line = [line_end[0] - line_start[0], line_end[1] - line_start[1]];
+    let segment = [
+        segment_end[0] - segment_start[0],
+        segment_end[1] - segment_start[1],
+    ];
+    let offset = [
+        segment_start[0] - line_start[0],
+        segment_start[1] - line_start[1],
+    ];
+    let (line_length, segment_length) = (length(line), length(segment));
+    if line_length <= CROSSING_EPSILON || segment_length <= CROSSING_EPSILON {
+        return Vec::new();
+    }
+    let denominator = cross(line, segment);
+    let parallel =
+        denominator.abs() <= CROSSING_EPSILON * line_length.max(1.0) * segment_length.max(1.0);
+    if !parallel {
+        let on_support = cross(offset, segment) / denominator;
+        let Some(on_finite) = clamped_parameter(cross(offset, line) / denominator, segment_length)
+        else {
+            return Vec::new();
+        };
+        return vec![CurveSupportCrossing {
+            point: [
+                line[0].mul_add(on_support, line_start[0]),
+                line[1].mul_add(on_support, line_start[1]),
+            ],
+            parameter_on_support: on_support,
+            parameter_on_finite: on_finite,
+            overlapping: false,
+        }];
+    }
+    if cross(offset, line).abs() > CROSSING_EPSILON * line_length.max(1.0) {
+        return Vec::new();
+    }
+    let line_squared = dot(line, line);
+    [
+        (segment_start, 0.0, dot(offset, line) / line_squared),
+        (
+            segment_end,
+            1.0,
+            dot(
+                [
+                    segment_end[0] - line_start[0],
+                    segment_end[1] - line_start[1],
+                ],
+                line,
+            ) / line_squared,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(point, parameter_on_finite, parameter_on_support)| CurveSupportCrossing {
+            point,
+            parameter_on_support,
+            parameter_on_finite,
+            overlapping: true,
+        },
+    )
+    .collect()
+}
+
+/// Infinite line against a finite circular arc.
+fn line_meets_arc(
+    line_start: [f64; 2],
+    line_end: [f64; 2],
+    arc: &PlanarCurve,
+) -> Vec<CurveSupportCrossing> {
+    let PlanarCurve::Arc {
+        center,
+        radius,
+        start_radians,
+        sweep_radians,
+    } = *arc
+    else {
+        return Vec::new();
+    };
+    let direction = [line_end[0] - line_start[0], line_end[1] - line_start[1]];
+    let to_start = [line_start[0] - center[0], line_start[1] - center[1]];
+    let quadratic = dot(direction, direction);
+    if quadratic <= CROSSING_EPSILON {
+        return Vec::new();
+    }
+    let linear = 2.0 * dot(to_start, direction);
+    let constant = radius.mul_add(-radius, dot(to_start, to_start));
+    let discriminant = (4.0 * quadratic).mul_add(-constant, linear * linear);
+    if discriminant < 0.0 {
+        return Vec::new();
+    }
+    let root = discriminant.max(0.0).sqrt();
+    let parameters: &[f64] = if root <= CROSSING_EPSILON * quadratic.max(1.0) {
+        &[-linear / (2.0 * quadratic)]
+    } else {
+        &[
+            (-linear - root) / (2.0 * quadratic),
+            (-linear + root) / (2.0 * quadratic),
+        ]
+    };
+    parameters
+        .iter()
+        .filter_map(|on_support| {
+            let point = [
+                direction[0].mul_add(*on_support, line_start[0]),
+                direction[1].mul_add(*on_support, line_start[1]),
+            ];
+            parameter_on_arc(center, start_radians, sweep_radians, point).map(|on_finite| {
+                CurveSupportCrossing {
+                    point,
+                    parameter_on_support: *on_support,
+                    parameter_on_finite: on_finite,
+                    overlapping: false,
+                }
+            })
+        })
+        .collect()
 }
 
 /// Segment against arc: substitute the line into the circle, then clip both to their own ranges.
@@ -1067,6 +1243,42 @@ mod tests {
         assert_eq!(pieces[1].len(), 3, "outside, across, outside");
         assert_near(pieces[1][0].end(), [-4.0, 0.0]);
         assert_near(pieces[1][1].end(), [4.0, 0.0]);
+    }
+
+    #[test]
+    fn a_supporting_line_reaches_only_the_other_curve_as_authored() {
+        let source = segment([0.0, 0.0], [2.0, 0.0]);
+        let crossing = segment([5.0, -1.0], [5.0, 1.0]);
+        let found = source.support_crossings_with(&crossing);
+        assert_eq!(found.len(), 1);
+        assert_near(found[0].point, [5.0, 0.0]);
+        assert!((found[0].parameter_on_support - 2.5).abs() < 1.0e-12);
+        assert!((found[0].parameter_on_finite - 0.5).abs() < 1.0e-12);
+
+        let finite_miss = segment([5.0, 2.0], [5.0, 4.0]);
+        assert!(source.support_crossings_with(&finite_miss).is_empty());
+    }
+
+    #[test]
+    fn an_arc_support_is_its_whole_circle_but_the_target_stays_finite() {
+        let source = arc([0.0, 0.0], 5.0, 0.0, 90.0);
+        let target = segment([-6.0, 0.0], [-4.0, 0.0]);
+        let found = source.support_crossings_with(&target);
+        assert_eq!(found.len(), 1);
+        assert_near(found[0].point, [-5.0, 0.0]);
+        assert!((found[0].parameter_on_support - 0.5).abs() < 1.0e-12);
+        assert!((found[0].parameter_on_finite - 0.5).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn collinear_support_contacts_are_explicitly_overlapping() {
+        let source = segment([0.0, 0.0], [2.0, 0.0]);
+        let target = segment([5.0, 0.0], [7.0, 0.0]);
+        let found = source.support_crossings_with(&target);
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|crossing| crossing.overlapping));
+        assert_near(found[0].point, [5.0, 0.0]);
+        assert_near(found[1].point, [7.0, 0.0]);
     }
 
     /// A tiny curve and a huge one are held to the same DISTANCE tolerance, not the same parameter

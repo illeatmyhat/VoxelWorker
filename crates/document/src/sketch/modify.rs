@@ -9,7 +9,9 @@ use super::{
     AngleMeasurement, Arc, ArcSweep, EntityId, EntityRole, Segment, Sketch, SketchCurve,
     SketchPoint, SketchSolid, ABSENT_CENTER,
 };
-use substrate::curve_intersection::PlanarCurve;
+use substrate::curve_intersection::{CurveSupportCrossing, PlanarCurve};
+
+const EXTEND_EPSILON: f64 = 1.0e-9;
 
 /// Canonical pieces a Break command will persist in place of `source`.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +39,31 @@ pub struct TrimPlacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrimRefusal {
     UnknownCurve,
+    Unrepresentable,
+}
+
+/// Which authored end of an open curve an Extend operation grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendEndpoint {
+    Start,
+    End,
+}
+
+/// Canonical native curve after extending one of `source`'s endpoints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtendPlacement {
+    pub source: SketchCurve,
+    pub endpoint: ExtendEndpoint,
+    pub extended: PlanarCurve,
+}
+
+/// Why an authored curve cannot be extended in the requested direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendRefusal {
+    UnknownCurve,
+    ClosedCurve,
+    NoIntersection,
+    FixedSweep,
     Unrepresentable,
 }
 
@@ -143,6 +170,83 @@ impl SketchSolid {
         next.sketch
             .replace_curve_with_pieces(placement.source, &placement.kept)
             .map_err(|_| TrimRefusal::Unrepresentable)?;
+        Ok(next)
+    }
+
+    /// Grow the endpoint nearest `witness` to the first isolated meeting with another authored
+    /// finite curve. A segment follows its supporting ray; an arc follows its supporting circle in
+    /// its existing signed direction. Closed circles have no endpoint and cannot be extended.
+    pub fn extend_placement(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<ExtendPlacement, ExtendRefusal> {
+        let source_curve = self
+            .sketch
+            .planar_curve(source, context)
+            .ok_or(ExtendRefusal::UnknownCurve)?;
+        if source_curve.is_closed() {
+            return Err(ExtendRefusal::ClosedCurve);
+        }
+        if let SketchCurve::Arc(id) = source {
+            let arc = self
+                .sketch
+                .arcs
+                .iter()
+                .find(|arc| arc.id == id)
+                .ok_or(ExtendRefusal::UnknownCurve)?;
+            // Extending an arc necessarily changes its included angle. A measurement-backed
+            // sweep owns that value, so the preview must refuse here instead of promising a
+            // placement the commit would later be unable to persist.
+            if arc.bulge.free_value().is_none() {
+                return Err(ExtendRefusal::FixedSweep);
+            }
+        }
+        let endpoint = if squared_distance(witness, source_curve.start())
+            <= squared_distance(witness, source_curve.end())
+        {
+            ExtendEndpoint::Start
+        } else {
+            ExtendEndpoint::End
+        };
+        let mut candidates = Vec::new();
+        for other in self.sketch.curves() {
+            if other == source {
+                continue;
+            }
+            let Some(other_curve) = self.sketch.planar_curve(other, context) else {
+                continue;
+            };
+            candidates.extend(
+                source_curve
+                    .support_crossings_with(&other_curve)
+                    .into_iter()
+                    .filter(|crossing| !crossing.overlapping)
+                    .filter_map(|crossing| extension_candidate(&source_curve, endpoint, crossing)),
+            );
+        }
+        let (_, extended) = candidates
+            .into_iter()
+            .min_by(|(first, _), (second, _)| first.total_cmp(second))
+            .ok_or(ExtendRefusal::NoIntersection)?;
+        Ok(ExtendPlacement {
+            source,
+            endpoint,
+            extended,
+        })
+    }
+
+    /// Atomically persist the native curve described by [`Self::extend_placement`].
+    pub fn with_curve_extended(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<SketchSolid, ExtendRefusal> {
+        let placement = self.extend_placement(source, witness, context)?;
+        let mut next = self.clone();
+        next.sketch.apply_extend(&placement)?;
         Ok(next)
     }
 }
@@ -375,6 +479,58 @@ impl Sketch {
         self.drop_dangling_constraints();
         Ok(())
     }
+
+    fn apply_extend(&mut self, placement: &ExtendPlacement) -> Result<(), ExtendRefusal> {
+        let endpoint = SketchPoint::try_from_continuous(
+            match placement.endpoint {
+                ExtendEndpoint::Start => placement.extended.start()[0],
+                ExtendEndpoint::End => placement.extended.end()[0],
+            },
+            match placement.endpoint {
+                ExtendEndpoint::Start => placement.extended.start()[1],
+                ExtendEndpoint::End => placement.extended.end()[1],
+            },
+        )
+        .map_err(|_| ExtendRefusal::Unrepresentable)?;
+        let point_id = match placement.source {
+            SketchCurve::Segment(id) => {
+                let segment = self
+                    .segments
+                    .iter()
+                    .find(|segment| segment.id == id)
+                    .ok_or(ExtendRefusal::UnknownCurve)?;
+                match placement.endpoint {
+                    ExtendEndpoint::Start => segment.from,
+                    ExtendEndpoint::End => segment.to,
+                }
+            }
+            SketchCurve::Arc(id) => {
+                let sweep =
+                    piece_sweep(&placement.extended).map_err(|_| ExtendRefusal::Unrepresentable)?;
+                let arc = self
+                    .arcs
+                    .iter_mut()
+                    .find(|arc| arc.id == id)
+                    .ok_or(ExtendRefusal::UnknownCurve)?;
+                if !arc.replace_free_sweep(sweep) {
+                    return Err(ExtendRefusal::FixedSweep);
+                }
+                match placement.endpoint {
+                    ExtendEndpoint::Start => arc.from,
+                    ExtendEndpoint::End => arc.to,
+                }
+            }
+            SketchCurve::Circle(_) => return Err(ExtendRefusal::ClosedCurve),
+        };
+        let point = self
+            .points
+            .iter_mut()
+            .find(|point| point.id == point_id)
+            .ok_or(ExtendRefusal::UnknownCurve)?;
+        point.at = endpoint;
+        self.sync_arc_centers();
+        Ok(())
+    }
 }
 
 fn piece_sweep(piece: &PlanarCurve) -> Result<AngleMeasurement, BreakRefusal> {
@@ -389,4 +545,67 @@ fn distance_to_curve(curve: &PlanarCurve, witness: [f64; 2]) -> f64 {
     let nearest = curve.point_at(curve.nearest_parameter(witness));
     let delta = [nearest[0] - witness[0], nearest[1] - witness[1]];
     delta[0].mul_add(delta[0], delta[1] * delta[1])
+}
+
+fn squared_distance(first: [f64; 2], second: [f64; 2]) -> f64 {
+    let delta = [first[0] - second[0], first[1] - second[1]];
+    delta[0].mul_add(delta[0], delta[1] * delta[1])
+}
+
+fn extension_candidate(
+    source: &PlanarCurve,
+    endpoint: ExtendEndpoint,
+    crossing: CurveSupportCrossing,
+) -> Option<(f64, PlanarCurve)> {
+    match *source {
+        PlanarCurve::Segment { .. } => {
+            let parameter = crossing.parameter_on_support;
+            let travel = match endpoint {
+                ExtendEndpoint::Start if parameter < -EXTEND_EPSILON => -parameter,
+                ExtendEndpoint::End if parameter > 1.0 + EXTEND_EPSILON => parameter - 1.0,
+                ExtendEndpoint::Start | ExtendEndpoint::End => return None,
+            } * source.length();
+            let extended = match endpoint {
+                ExtendEndpoint::Start => source.sub_curve(parameter, 1.0),
+                ExtendEndpoint::End => source.sub_curve(0.0, parameter),
+            };
+            Some((travel, extended))
+        }
+        PlanarCurve::Arc {
+            center,
+            start_radians,
+            sweep_radians,
+            radius,
+        } => {
+            let magnitude = sweep_radians.abs();
+            if magnitude <= EXTEND_EPSILON {
+                return None;
+            }
+            let bearing = (crossing.point[1] - center[1]).atan2(crossing.point[0] - center[0]);
+            let mut travelled = if sweep_radians.is_sign_negative() {
+                (start_radians - bearing).rem_euclid(std::f64::consts::TAU)
+            } else {
+                (bearing - start_radians).rem_euclid(std::f64::consts::TAU)
+            };
+            if travelled >= std::f64::consts::TAU - EXTEND_EPSILON {
+                travelled = 0.0;
+            }
+            if travelled <= magnitude + EXTEND_EPSILON {
+                return None;
+            }
+            let turn_parameter = std::f64::consts::TAU / magnitude;
+            let point_parameter = travelled / magnitude;
+            let (travel, extended) = match endpoint {
+                ExtendEndpoint::Start => (
+                    (std::f64::consts::TAU - travelled) * radius,
+                    source.sub_curve(point_parameter - turn_parameter, 1.0),
+                ),
+                ExtendEndpoint::End => (
+                    (travelled - magnitude) * radius,
+                    source.sub_curve(0.0, point_parameter),
+                ),
+            };
+            Some((travel, extended))
+        }
+    }
 }

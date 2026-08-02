@@ -276,8 +276,8 @@ const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
     ),
     (
         Icon::Extend,
-        "Extend — reserved",
-        SketchModifierRoute::Reserved,
+        "Extend — grow the nearest endpoint to the next intersection",
+        SketchModifierRoute::Tool(SketchTool::Extend),
     ),
     (
         Icon::BreakCurve,
@@ -707,7 +707,12 @@ mod tests {
                     (route != SketchModifierRoute::Reserved).then_some(icon)
                 })
                 .collect::<Vec<_>>(),
-            vec![Icon::ConstructionToggle, Icon::Trim, Icon::BreakCurve]
+            vec![
+                Icon::ConstructionToggle,
+                Icon::Trim,
+                Icon::Extend,
+                Icon::BreakCurve,
+            ]
         );
     }
 
