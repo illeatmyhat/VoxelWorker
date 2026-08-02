@@ -1321,6 +1321,25 @@ pub struct Conic {
     pub role: EntityRole,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SplineKind {
+    FitPoint,
+    ControlPoint,
+}
+
+/// One author-visible spline, regardless of how many cubic pieces its evaluator emits.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Spline {
+    pub id: EntityId,
+    /// Fit points or control-frame points according to [`kind`](Self::kind).
+    pub points: Vec<EntityId>,
+    pub kind: SplineKind,
+    pub closed: bool,
+    pub origin: EntityId,
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
 impl Arc {
     pub(crate) fn sweep_degrees(self) -> f64 {
         self.bulge
@@ -1418,6 +1437,9 @@ pub struct Sketch {
     /// Endpoint/vertex/rho conic entities; absent in older documents.
     #[serde(default)]
     conics: Box<[Conic]>,
+    /// Author-visible fit/control splines; absent in older documents.
+    #[serde(default)]
+    splines: Box<[Spline]>,
     /// Associative operators whose instances are regenerated from authored curves. Generated
     /// curves deliberately have no entity ids of their own: constraints and direct edits continue
     /// to target the sources, so an operator adds no solver freedoms and cannot drift apart.
@@ -1726,6 +1748,7 @@ impl Sketch {
             beziers: Box::default(),
             ellipses: Box::default(),
             conics: Box::default(),
+            splines: Box::default(),
             patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
@@ -1771,6 +1794,7 @@ impl Sketch {
             beziers: Box::default(),
             ellipses: Box::default(),
             conics: Box::default(),
+            splines: Box::default(),
             patterns: Box::default(),
             unpicked_points: Vec::new(),
             constraints: Vec::new(),
@@ -1821,6 +1845,10 @@ impl Sketch {
         &self.conics
     }
 
+    pub fn splines(&self) -> &[Spline] {
+        &self.splines
+    }
+
     /// Read-only view of associative mirror and pattern rules.
     pub fn patterns(&self) -> &[SketchPattern] {
         &self.patterns
@@ -1862,6 +1890,10 @@ impl Sketch {
         }
         if let Some(conic) = self.conics.iter_mut().find(|conic| conic.id == id) {
             conic.role = conic.role.toggled();
+            return true;
+        }
+        if let Some(spline) = self.splines.iter_mut().find(|spline| spline.id == id) {
+            spline.role = spline.role.toggled();
             return true;
         }
         false
@@ -2347,6 +2379,7 @@ impl Sketch {
         boxed_retain(&mut self.conics, |conic| {
             conic.from != id && conic.to != id && conic.vertex != id
         });
+        boxed_retain(&mut self.splines, |spline| !spline.points.contains(&id));
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
         self.drop_dangling_patterns();
@@ -2399,6 +2432,10 @@ impl Sketch {
                 .conics
                 .iter()
                 .any(|conic| conic.from == id || conic.to == id || conic.vertex == id)
+            || self
+                .splines
+                .iter()
+                .any(|spline| spline.points.contains(&id))
     }
 
     /// Erase each candidate that no geometry draws any more. Asked AFTER the edge has gone, so
@@ -3209,6 +3246,95 @@ impl Sketch {
         }
     }
 
+    pub fn add_fit_point_spline(
+        &mut self,
+        points: &[SketchPoint],
+        closed: bool,
+    ) -> Result<EntityId, parametric::sketch::SplineCandidateError> {
+        let continuous: Vec<_> = points.iter().map(SketchPoint::in_plane).collect();
+        parametric::sketch::fit_point_spline(&continuous, closed)?;
+        let points: Vec<_> = points.iter().map(|point| self.add_point(*point)).collect();
+        let id = self.alloc_id();
+        boxed_push(
+            &mut self.splines,
+            Spline {
+                id,
+                points,
+                kind: SplineKind::FitPoint,
+                closed,
+                origin: id,
+                role: EntityRole::Real,
+            },
+        );
+        Ok(id)
+    }
+
+    pub fn add_control_point_spline(
+        &mut self,
+        controls: &[SketchPoint],
+    ) -> Result<EntityId, parametric::sketch::SplineCandidateError> {
+        let continuous: Vec<_> = controls.iter().map(SketchPoint::in_plane).collect();
+        parametric::sketch::control_point_spline(&continuous)?;
+        let last = controls.len().saturating_sub(1);
+        let points: Vec<_> = controls
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                if index == 0 || index == last {
+                    self.add_point(*point)
+                } else {
+                    self.add_construction_point(*point)
+                }
+            })
+            .collect();
+        let id = self.alloc_id();
+        boxed_push(
+            &mut self.splines,
+            Spline {
+                id,
+                points,
+                kind: SplineKind::ControlPoint,
+                closed: false,
+                origin: id,
+                role: EntityRole::Real,
+            },
+        );
+        Ok(id)
+    }
+
+    fn spline_candidate(&self, spline: &Spline) -> Option<parametric::sketch::SplineCandidate> {
+        let points: Option<Vec<_>> = spline
+            .points
+            .iter()
+            .map(|id| {
+                self.points
+                    .iter()
+                    .find(|point| point.id == *id)
+                    .map(|point| point.at.in_plane())
+            })
+            .collect();
+        let points = points?;
+        match spline.kind {
+            SplineKind::FitPoint => {
+                parametric::sketch::fit_point_spline(&points, spline.closed).ok()
+            }
+            SplineKind::ControlPoint => parametric::sketch::control_point_spline(&points).ok(),
+        }
+    }
+
+    pub fn delete_spline(&mut self, id: EntityId) {
+        let points = self
+            .splines
+            .iter()
+            .find(|spline| spline.id == id)
+            .map(|spline| spline.points.clone());
+        boxed_retain(&mut self.splines, |spline| spline.id != id);
+        if let Some(points) = points {
+            self.drop_undrawn_points(points);
+        }
+        self.prune_orphan_centers();
+    }
+
     /// Whether the drawing OWNS this point's coordinates — whether it is an arc's center, which
     /// [`sync_arc_centers`](Self::sync_arc_centers) re-derives from the arc's ends and its
     /// sweep. A derived point is selectable, draggable, snappable and **constrainable** like any
@@ -3272,6 +3398,9 @@ impl Sketch {
         }
         for conic in &*self.conics {
             referenced.extend([conic.from, conic.to, conic.vertex]);
+        }
+        for spline in &*self.splines {
+            referenced.extend(spline.points.iter().copied());
         }
         self.points.retain(|point| {
             point.role != EntityRole::Construction || referenced.contains(&point.id)
@@ -3399,7 +3528,8 @@ impl Sketch {
             + self.circles.len()
             + self.beziers.len()
             + self.ellipses.len()
-            + self.conics.len();
+            + self.conics.len()
+            + self.splines.len();
         self.segments.retain(|seg| {
             seg.from != seg.to && point_ids.contains(&seg.from) && point_ids.contains(&seg.to)
         });
@@ -3436,6 +3566,18 @@ impl Sketch {
                 .all(|id| point_ids.contains(id))
                 && (0.0..1.0).contains(&conic.rho.value())
         });
+        let valid_splines: Vec<_> = self
+            .splines
+            .iter()
+            .filter(|spline| {
+                spline.points.iter().all(|id| point_ids.contains(id))
+                    && self.spline_candidate(spline).is_some()
+            })
+            .map(|spline| spline.id)
+            .collect();
+        boxed_retain(&mut self.splines, |spline| {
+            valid_splines.contains(&spline.id)
+        });
         // Geometry-dependent constraint repair must see derived arc centers at their authored
         // positions, not a stale serialized cache.
         self.sync_arc_centers();
@@ -3451,6 +3593,7 @@ impl Sketch {
             - self.beziers.len()
             - self.ellipses.len()
             - self.conics.len()
+            - self.splines.len()
             - self.patterns.len()
             - self.constraints.len();
         // A document may name no center at all, and a just-erased arc leaves one behind;

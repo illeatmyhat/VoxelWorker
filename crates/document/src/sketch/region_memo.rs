@@ -25,7 +25,7 @@ use substrate::geom2d::{LoopRole, RegionEdge};
 
 use super::{
     Arc as ArcEntity, Bezier, Circle, Conic, Ellipse, FaceKey, PlaneAxis, Point, ProfileLoop,
-    Segment, Sketch, SketchPattern,
+    Segment, Sketch, SketchPattern, Spline,
 };
 use parametric::EvaluationContext;
 
@@ -84,6 +84,7 @@ struct Snapshot {
     beziers: Box<[Bezier]>,
     ellipses: Box<[Ellipse]>,
     conics: Box<[Conic]>,
+    splines: Box<[Spline]>,
     patterns: Box<[SketchPattern]>,
     unpicked_points: Vec<FaceKey>,
 }
@@ -100,6 +101,7 @@ impl Snapshot {
             beziers: sketch.beziers.clone(),
             ellipses: sketch.ellipses.clone(),
             conics: sketch.conics.clone(),
+            splines: sketch.splines.clone(),
             patterns: sketch.patterns.clone(),
             unpicked_points: sketch.unpicked_points.clone(),
         }
@@ -117,6 +119,7 @@ impl Snapshot {
             && self.beziers == sketch.beziers
             && self.ellipses == sketch.ellipses
             && self.conics == sketch.conics
+            && self.splines == sketch.splines
             && self.patterns == sketch.patterns
             && self.unpicked_points == sketch.unpicked_points
     }

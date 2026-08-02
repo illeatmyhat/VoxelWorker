@@ -13,6 +13,7 @@ mod polygon;
 mod rectangle;
 mod slot;
 mod solve;
+mod spline;
 mod symmetry;
 mod tangent;
 mod tangent_circle;
@@ -50,6 +51,7 @@ pub use solve::{
     ProblemBuilder, Relation, RequestError, SegmentId, Settled, SketchCurve, Solution,
     TangentContactFailure, TrialAdd, TrialRejection,
 };
+pub use spline::{control_point_spline, fit_point_spline, SplineCandidate, SplineCandidateError};
 pub use symmetry::{
     choose_symmetry_branch, symmetry_axis_is_valid, symmetry_witness, SymmetryBranch,
     SymmetryError, SymmetryWitness,

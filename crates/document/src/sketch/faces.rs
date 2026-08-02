@@ -341,6 +341,23 @@ fn drawn_curves(
             PlanarCurve::circle(center.in_plane(), circle.resolved_radius(context)),
         ));
     }
+    append_higher_curves(sketch, &mut curves);
+    curves.extend(
+        sketch
+            .derived_pattern_curves(context)
+            .into_iter()
+            .filter(|curve| curve.role == EntityRole::Real)
+            .map(|curve| (curve.pattern, curve.geometry)),
+    );
+    curves
+}
+
+/// Append aggregate curves after resolving their stable document handles into substrate pieces.
+///
+/// Ellipses and splines intentionally remain one author-visible entity even though the planar
+/// arrangement receives several rational Bézier spans. Every span carries the aggregate's origin,
+/// which is what lets face topology still report a durable source identity.
+fn append_higher_curves(sketch: &Sketch, curves: &mut Vec<(EntityId, PlanarCurve)>) {
     for bezier in sketch
         .beziers
         .iter()
@@ -376,14 +393,22 @@ fn drawn_curves(
         };
         curves.push((conic.origin, PlanarCurve::RationalBezier(candidate.curve)));
     }
-    curves.extend(
-        sketch
-            .derived_pattern_curves(context)
-            .into_iter()
-            .filter(|curve| curve.role == EntityRole::Real)
-            .map(|curve| (curve.pattern, curve.geometry)),
-    );
-    curves
+    for spline in sketch
+        .splines
+        .iter()
+        .filter(|spline| spline.role == EntityRole::Real)
+    {
+        let Some(candidate) = sketch.spline_candidate(spline) else {
+            continue;
+        };
+        curves.extend(
+            candidate
+                .pieces
+                .into_iter()
+                .map(PlanarCurve::RationalBezier)
+                .map(|curve| (spline.origin, curve)),
+        );
+    }
 }
 
 /// How far apart two piece endpoints may be and still be ONE arrangement vertex, in voxels.
