@@ -59,9 +59,10 @@ circle tangent to two lines lands on the lattice essentially never.
 `substrate` gets a **pure continuous** geometric constraint solver — residuals, Jacobian, no
 density and no lattice vocabulary, so it stays provable and free of domain knowledge.
 
-The **integer outer loop** lives in `document`, where density and block pitch are known: solve
-continuously, round the quantized degrees of freedom, fix them, re-solve the remainder, repeat until
-stable. It converges in a few rounds or reports failure; it never hangs.
+The **integer outer loop** lives in `parametric`, but receives explicit pitch and phase values from
+the document: solve continuously, freeze the nearest quantized value for that pass, then re-solve
+exactly from the preferred answer. The kernel therefore knows lattice arithmetic but no document
+density or voxel policy.
 
 Algorithm: **DogLeg first, Levenberg–Marquardt behind it.** FreeCAD's planegcs ships three solvers
 with a fallback chain and has filed cases where DogLeg fails and LM succeeds on the same sketch. The
@@ -236,13 +237,11 @@ stored value. Arcs nested through each other's centers are not authorable by any
 a shortcut whose cost is confined to a case that cannot arise is worth taking over a fixed point
 iteration in the residual loop.
 
-**Implementation update (2026-08-01):** Concentric, Tangent and Symmetry now have solver residuals,
+**Implementation update (2026-08-01):** Concentric, Tangent, Symmetry and Quantize now have solver residuals,
 durable document entities and armable rail gestures. Circular curves are in the parameter vector,
 and their center and radius are exposed as derived geometry. The connected Line command and the
 standalone Tangent Arc command also author their required Tangent relation atomically with the new
-arc. Curvature and `Quantize` remain unbacked; the latter still requires Decision 14's integer
-tier. Their glyphs remain deliberately absent from the rail — an armable verb that asserts nothing
-is worse than a cell that is not there.
+arc. Curvature remains unbacked until splines provide geometry whose curvature can be driven.
 
 ### 6. Project, Intersect and Spun Profile are cut
 
@@ -417,6 +416,10 @@ inference (Decision 5) and a representation (Decision 12).
 Minimum feature size and "this arc is too small to survive quantization" are **lints, not
 constraints**. They are properties to check after solving and report; as constraints they would give
 the solver an objective it cannot converge on.
+
+**Implemented (2026-08-01):** the point form stores exact authored `pitch` and `phase`, constrains
+both coordinates, survives drag and density retargeting, and is available as an armable rail verb.
+Distance- and radius-targeted authoring remain future dimension-panel work over the same relation.
 
 ### 15. A constraint ARMS, then collects the entities it needs
 

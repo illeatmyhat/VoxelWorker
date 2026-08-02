@@ -91,5 +91,3 @@ plumbing only; Tangent remains out of scope.
   reference is read from the already-moved points.
 - **Arcs are rigid by chord only.** The chord span is preserved and the sweep is stored, so an
   arc translates rigidly, but nothing expresses a preference against a sweep change.
-- **The integer tier and the anchor have not been run against each other.** Quantization
-  rounds and re-solves; whether the anchor should hold across that loop is undecided.

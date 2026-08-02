@@ -8,13 +8,6 @@ behind it yet.
 
 ## Open
 
-**The integer outer loop.** Decision 2's second tier: solve continuously, round the quantized
-freedoms, fix them, re-solve the rest. The continuous half ships and is called; without the
-outer loop, `Quantize` (Decision 14) means nothing — it is not a `Constraint` variant at all,
-only a glyph and a paragraph. Its interaction with the anchor is the open question at the end
-of `sketch-constraint-solve.md`: quantization rounds and re-solves, and whether the anchor
-should hold across that loop is undecided.
-
 **The expression text parser.** `parametric::expression` ships the AST, the evaluator and the
 symbol table, and `parametric::units::parse` reads a single measurement literal. Nothing reads
 `2*width + 3mm` — a string with an operator and a symbol in it. This belongs to the parameters
@@ -35,5 +28,8 @@ the plural is wrong too.
   gated by `glyphs_match_the_design_sheet`; the constraint marks and the angle / radius / span
   gizmos are in `crates/ui`.
 - **Degrees of freedom on screen.** The top bar reads `DOF`, and `0` reads "fully constrained".
+- **Point Quantize and its integer tier.** The parametric relation freezes the nearest
+  `phase + n*pitch` lattice point per pass; the exact pass re-evaluates from the preferred answer.
+  The document persists exact pitch/phase lengths and the rail authors a one-voxel point lattice.
 - **The solver has callers.** Constraint entities exist and the two-pass settle runs; see
   `sketch-constraint-solve.md` for what each pass was measured to do.

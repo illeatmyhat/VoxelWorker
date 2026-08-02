@@ -182,6 +182,7 @@ pub struct ArmedConstraintConfig {
 enum ConstraintVerbConfig {
     HorizontalOrVertical,
     Fix,
+    Quantize,
     Coincident,
     Parallel,
     Perpendicular,
@@ -209,6 +210,7 @@ impl ArmedConstraintConfig {
                     ConstraintVerbConfig::HorizontalOrVertical
                 }
                 ui::panel::ConstraintVerb::Fix => ConstraintVerbConfig::Fix,
+                ui::panel::ConstraintVerb::Quantize => ConstraintVerbConfig::Quantize,
                 ui::panel::ConstraintVerb::Coincident => ConstraintVerbConfig::Coincident,
                 ui::panel::ConstraintVerb::Parallel => ConstraintVerbConfig::Parallel,
                 ui::panel::ConstraintVerb::Perpendicular => ConstraintVerbConfig::Perpendicular,
@@ -242,6 +244,7 @@ impl ArmedConstraintConfig {
                 ui::panel::ConstraintVerb::HorizontalOrVertical
             }
             ConstraintVerbConfig::Fix => ui::panel::ConstraintVerb::Fix,
+            ConstraintVerbConfig::Quantize => ui::panel::ConstraintVerb::Quantize,
             ConstraintVerbConfig::Coincident => ui::panel::ConstraintVerb::Coincident,
             ConstraintVerbConfig::Parallel => ui::panel::ConstraintVerb::Parallel,
             ConstraintVerbConfig::Perpendicular => ui::panel::ConstraintVerb::Perpendicular,
@@ -1347,6 +1350,18 @@ mod tests {
         let restored = config.restore();
         assert_eq!(restored.verb(), ui::panel::ConstraintVerb::Tangent);
         assert!(restored.picked().is_empty());
+    }
+
+    #[test]
+    fn quantize_artifact_restores_its_point_question() {
+        let armed = ui::panel::ArmedConstraint::new(ui::panel::ConstraintVerb::Quantize);
+        let text = serde_json::to_string(&ArmedConstraintConfig::capture(&armed))
+            .expect("serialize quantize gesture");
+        let restored: ArmedConstraintConfig = serde_json::from_str(&text).expect("restore config");
+        let restored = restored.restore();
+        assert_eq!(restored.verb(), ui::panel::ConstraintVerb::Quantize);
+        assert!(restored.picked().is_empty());
+        assert_eq!(restored.wants(), Some(ui::panel::PickRequirement::Point));
     }
 
     #[test]

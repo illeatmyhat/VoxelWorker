@@ -124,6 +124,8 @@ pub enum ConstraintVerb {
     HorizontalOrVertical,
     /// The picked point stays where it is.
     Fix,
+    /// Both coordinates of the picked point stay on the whole-voxel lattice.
+    Quantize,
     /// Two picked points occupy one place.
     Coincident,
     /// Two picked segments run the same way.
@@ -152,7 +154,7 @@ impl ConstraintVerb {
     pub fn slots(self) -> &'static [SlotKind] {
         match self {
             ConstraintVerb::HorizontalOrVertical => &[SlotKind::Segment],
-            ConstraintVerb::Fix => &[SlotKind::Point],
+            ConstraintVerb::Fix | ConstraintVerb::Quantize => &[SlotKind::Point],
             ConstraintVerb::Coincident => &[SlotKind::Point, SlotKind::Point],
             ConstraintVerb::Parallel
             | ConstraintVerb::Perpendicular
@@ -174,6 +176,7 @@ impl ConstraintVerb {
         match self {
             ConstraintVerb::HorizontalOrVertical => "Horizontal / Vertical — then pick a line",
             ConstraintVerb::Fix => "Fix — then pick a point",
+            ConstraintVerb::Quantize => "Quantize — then pick a point to keep on the voxel lattice",
             ConstraintVerb::Coincident => "Coincident — then pick two points",
             ConstraintVerb::Parallel => "Parallel — then pick two lines",
             ConstraintVerb::Perpendicular => "Perpendicular — then pick two lines",
@@ -196,6 +199,7 @@ impl ConstraintVerb {
         match self {
             ConstraintVerb::HorizontalOrVertical => Icon::ConstraintHorizontalVertical,
             ConstraintVerb::Fix => Icon::ConstraintFix,
+            ConstraintVerb::Quantize => Icon::ConstraintQuantize,
             ConstraintVerb::Coincident => Icon::ConstraintCoincident,
             ConstraintVerb::Parallel => Icon::ConstraintParallel,
             ConstraintVerb::Perpendicular => Icon::ConstraintPerpendicular,
@@ -217,6 +221,7 @@ pub fn constraint_icon(kind: ConstraintKind) -> Icon {
         ConstraintKind::Horizontal { .. } => Icon::ConstraintHorizontal,
         ConstraintKind::Vertical { .. } => Icon::ConstraintVertical,
         ConstraintKind::Fix { .. } => Icon::ConstraintFix,
+        ConstraintKind::Quantize { .. } => Icon::ConstraintQuantize,
         ConstraintKind::Distance { .. } => Icon::SketchDimension,
         ConstraintKind::Coincident { .. } => Icon::ConstraintCoincident,
         ConstraintKind::Parallel { .. } => Icon::ConstraintParallel,
@@ -431,6 +436,14 @@ impl ArmedConstraint {
                     let at = sketch.points().iter().find(|p| p.id == *point)?.at;
                     Some(ConstraintKind::Fix { point: *point, at })
                 }
+                SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
+            },
+            ConstraintVerb::Quantize => match self.picked.first()? {
+                SketchEntity::Point(point) => Some(ConstraintKind::Quantize {
+                    point: *point,
+                    pitch: document::sketch::SketchLength::retained_voxels(1),
+                    phase: document::sketch::SketchLength::retained_voxels(0),
+                }),
                 SketchEntity::Segment(_) | SketchEntity::Arc(_) | SketchEntity::Circle(_) => None,
             },
             ConstraintVerb::Coincident => {
@@ -661,6 +674,28 @@ mod tests {
         };
         assert_eq!(point, to);
         assert_eq!(at.in_plane(), [8.0, 3.0]);
+    }
+
+    #[test]
+    fn quantize_wants_a_point_and_authors_the_voxel_lattice() {
+        let (sketch, from, _, _) = one_segment();
+        let mut armed = ArmedConstraint::new(ConstraintVerb::Quantize);
+        assert_eq!(
+            armed.offer(SketchEntity::Point(from), &sketch),
+            Offer::Complete
+        );
+        assert_eq!(
+            armed.kind(&sketch),
+            Some(ConstraintKind::Quantize {
+                point: from,
+                pitch: document::sketch::SketchLength::retained_voxels(1),
+                phase: document::sketch::SketchLength::retained_voxels(0),
+            })
+        );
+        assert_eq!(
+            constraint_icon(armed.kind(&sketch).unwrap()),
+            Icon::ConstraintQuantize
+        );
     }
 
     /// Geometry that went away between the hit-test and the offer is refused, not asserted about.

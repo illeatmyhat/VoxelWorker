@@ -71,6 +71,69 @@ fn a_fix_pins_two_freedoms_and_moves_nothing() {
     assert_eq!(position(&sketch, head), [10.0, 4.0], "nor its neighbor");
 }
 
+#[test]
+fn quantize_places_a_point_on_its_exact_lattice_and_survives_a_drag() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let point = sketch.add_free_point(SketchPoint::from_continuous(2.6, -1.6));
+    sketch
+        .add_constraint(
+            ConstraintKind::Quantize {
+                point,
+                pitch: SketchLength::from_continuous(2.0),
+                phase: SketchLength::from_continuous(0.5),
+            },
+            ctx(16),
+        )
+        .expect("a free point can land on the lattice");
+    let at = position(&sketch, point);
+    assert!((at[0] - 2.5).abs() < 1e-6);
+    assert!((at[1] + 1.5).abs() < 1e-6);
+    sketch
+        .move_point(point, SketchPoint::from_continuous(5.1, 3.2), ctx(16))
+        .expect("quantization remains a standing assertion");
+    let at = position(&sketch, point);
+    assert!((at[0] - 4.5).abs() < 1e-6, "x snapped after drag: {at:?}");
+    assert!((at[1] - 2.5).abs() < 1e-6, "y snapped after drag: {at:?}");
+    assert_eq!(sketch.degrees_of_freedom(ctx(16)).unwrap(), 0);
+}
+
+#[test]
+fn density_retarget_keeps_fix_targets_and_voxel_quantization_sources_consistent() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let fixed = sketch.add_free_point(SketchPoint::new(4, 6));
+    let quantized = sketch.add_free_point(SketchPoint::from_continuous(2.4, 3.6));
+    sketch
+        .add_constraint(
+            ConstraintKind::Fix {
+                point: fixed,
+                at: SketchPoint::new(4, 6),
+            },
+            ctx(16),
+        )
+        .unwrap();
+    sketch
+        .add_constraint(
+            ConstraintKind::Quantize {
+                point: quantized,
+                pitch: SketchLength::retained_voxels(1),
+                phase: SketchLength::retained_voxels(0),
+            },
+            ctx(16),
+        )
+        .unwrap();
+    sketch.retarget_density(16, 32);
+    sketch.solve(ctx(32)).expect("retargeted assertions agree");
+    assert_eq!(position(&sketch, fixed), [8.0, 12.0]);
+    let at = position(&sketch, quantized);
+    assert!((at[0] - at[0].round()).abs() < 1e-6);
+    assert!((at[1] - at[1].round()).abs() < 1e-6);
+    let ConstraintKind::Quantize { pitch, phase, .. } = sketch.constraints()[1].kind else {
+        panic!("quantize retained");
+    };
+    assert_eq!(pitch.value(), 1.0, "one voxel stays one voxel");
+    assert_eq!(phase.value(), 0.0);
+}
+
 /// `Horizontal` levels a segment, and the least-squares solve moves the drawing **as little as it
 /// can**: neither end is privileged, so they meet in the middle rather than one snapping to the
 /// other. That is the property that makes a solve feel like a nudge.

@@ -119,6 +119,14 @@ pub enum ConstraintKind {
         axis: EntityId,
         branch: SymmetryBranch,
     },
+    /// Both coordinates of this point lie on `phase + n * pitch`. The values are authored sketch
+    /// lengths so density retargeting keeps a block lattice physical while a voxel lattice stays
+    /// in voxel units.
+    Quantize {
+        point: EntityId,
+        pitch: SketchLength,
+        phase: SketchLength,
+    },
 }
 
 impl ConstraintKind {
@@ -198,7 +206,9 @@ impl ConstraintKind {
     /// Every point id named directly, for cascade and liveness checks.
     pub(super) fn points(&self) -> Vec<EntityId> {
         match *self {
-            Self::Fix { point, .. } | Self::Midpoint { point, .. } => vec![point],
+            Self::Fix { point, .. }
+            | Self::Quantize { point, .. }
+            | Self::Midpoint { point, .. } => vec![point],
             Self::Distance { from, to, .. } => vec![from, to],
             Self::Coincident { first, second } => vec![first, second],
             Self::Horizontal { .. }
@@ -245,7 +255,7 @@ impl ConstraintKind {
     /// entity stores and play different semantic roles.
     fn subject(&self) -> [EntityId; 2] {
         match *self {
-            Self::Fix { point, .. } => [point, point],
+            Self::Fix { point, .. } | Self::Quantize { point, .. } => [point, point],
             Self::Horizontal { segment } | Self::Vertical { segment } => [segment, segment],
             Self::Distance { from, to, .. } => [from.min(to), from.max(to)],
             Self::Coincident { first, second }
@@ -291,6 +301,7 @@ impl ConstraintKind {
                 }))
                 .collect(),
             Self::Fix { .. }
+            | Self::Quantize { .. }
             | Self::Distance { .. }
             | Self::Coincident { .. }
             | Self::Concentric { .. } => Vec::new(),
@@ -726,6 +737,7 @@ impl PreparedProblem {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn relation_for(
     kind: ConstraintKind,
     points: &[(EntityId, PointId)],
@@ -760,6 +772,15 @@ fn relation_for(
         ConstraintKind::Fix { point: id, at } => point(id).map(|point| Relation::Fix {
             point,
             at: at.in_plane(),
+        }),
+        ConstraintKind::Quantize {
+            point: id,
+            pitch,
+            phase,
+        } => point(id).map(|point| Relation::Quantize {
+            point,
+            pitch: pitch.value(),
+            phase: phase.value(),
         }),
         ConstraintKind::Horizontal { segment: id } => {
             segment(id).map(|segment| Relation::Horizontal { segment })

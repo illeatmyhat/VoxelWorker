@@ -3313,6 +3313,9 @@ impl WindowedState {
                 document::sketch::ConstraintKind::Fix { point, .. } => {
                     beside_point(point).into_iter().collect()
                 }
+                document::sketch::ConstraintKind::Quantize { point, .. } => {
+                    beside_point(point).into_iter().collect()
+                }
                 // Coincident's two points end up in one place, so a badge on each would
                 // overprint. It marks the pair once, at the first-named point.
                 document::sketch::ConstraintKind::Coincident { first, .. } => {

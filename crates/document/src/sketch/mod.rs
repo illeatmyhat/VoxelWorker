@@ -785,6 +785,17 @@ impl SketchLength {
         }
     }
 
+    /// A voxel-authored length whose unit survives a density retarget. This differs from
+    /// [`new`](Self::new): a plain stored length scales with the drawing, while this retained
+    /// source continues to mean exactly `voxels` at the new density.
+    pub fn retained_voxels(voxels: i64) -> Self {
+        Self {
+            voxels,
+            local_voxels: 0.0,
+            measurement: Some(Measurement::from_voxels(voxels)),
+        }
+    }
+
     /// A CONTINUOUS length: floor lands in [`voxels`](Self::voxels), the fraction in
     /// [`local_voxels`](Self::local_voxels). A non-finite input sanitizes to zero, the same
     /// `NaN` guard [`SketchPoint::from_continuous`] keeps.
@@ -2258,7 +2269,8 @@ impl Sketch {
             ) => ConstraintRefusal::UnknownEntity,
             constraint::TrialMapError::Request(
                 parametric::sketch::RequestError::InvalidRelation(
-                    parametric::sketch::BuildError::InvalidParameter,
+                    parametric::sketch::BuildError::InvalidParameter
+                    | parametric::sketch::BuildError::InvalidQuantization,
                 ),
             ) => ConstraintRefusal::Impossible,
             constraint::TrialMapError::Request(
@@ -2369,6 +2381,19 @@ impl Sketch {
             ConstraintKind::Fix { point, .. } => {
                 if !known_point(point) {
                     return Err(ConstraintRefusal::UnknownEntity);
+                }
+            }
+            ConstraintKind::Quantize {
+                point,
+                pitch,
+                phase,
+            } => {
+                if !known_point(point) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                if !pitch.value().is_finite() || pitch.value() <= 0.0 || !phase.value().is_finite()
+                {
+                    return Err(ConstraintRefusal::Impossible);
                 }
             }
             ConstraintKind::Horizontal { segment } | ConstraintKind::Vertical { segment } => {
@@ -2912,9 +2937,10 @@ impl Sketch {
         min
     }
 
-    /// Re-target every point entity from `old_density` to `new_density` — the `SetDensity`
-    /// arm. Per point: a retained measurement re-evaluates losslessly; a
-    /// plain point rescales its continuous position ([`SketchPoint::retargeted`]).
+    /// Re-target every position and length owned by the sketch from `old_density` to
+    /// `new_density` — the `SetDensity` arm. Retained measurements re-evaluate losslessly;
+    /// plain stored geometry rescales its continuous value. Constraint targets participate too:
+    /// otherwise a later solve would pull a correctly rescaled point back to its old-density fix.
     pub fn retarget_density(&mut self, old_density: u32, new_density: u32) {
         for point in &mut self.points {
             point.at = point.at.retargeted(old_density, new_density);
@@ -2922,6 +2948,31 @@ impl Sketch {
         // A radius is a length like any other: an authored `2 blocks` must stay two blocks.
         for circle in &mut self.circles {
             circle.rescale_free_radius(old_density, new_density);
+        }
+        for constraint in &mut self.constraints {
+            match &mut constraint.kind {
+                ConstraintKind::Fix { at, .. } => {
+                    *at = at.retargeted(old_density, new_density);
+                }
+                ConstraintKind::Distance { length, .. } => {
+                    *length = length.retargeted(old_density, new_density);
+                }
+                ConstraintKind::Quantize { pitch, phase, .. } => {
+                    *pitch = pitch.retargeted(old_density, new_density);
+                    *phase = phase.retargeted(old_density, new_density);
+                }
+                ConstraintKind::Horizontal { .. }
+                | ConstraintKind::Vertical { .. }
+                | ConstraintKind::Coincident { .. }
+                | ConstraintKind::Parallel { .. }
+                | ConstraintKind::Perpendicular { .. }
+                | ConstraintKind::Equal { .. }
+                | ConstraintKind::Midpoint { .. }
+                | ConstraintKind::Collinear { .. }
+                | ConstraintKind::Tangent { .. }
+                | ConstraintKind::Concentric { .. }
+                | ConstraintKind::Symmetry { .. } => {}
+            }
         }
         self.sync_arc_centers();
     }

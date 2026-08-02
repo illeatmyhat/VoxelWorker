@@ -230,6 +230,7 @@ const SKETCH_CONSTRAINTS: &[ConstraintVerb] = &[
     ConstraintVerb::Tangent,
     ConstraintVerb::Midpoint,
     ConstraintVerb::Fix,
+    ConstraintVerb::Quantize,
 ];
 
 /// Sketch modification verbs in catalog order. A live bit means the command has a complete

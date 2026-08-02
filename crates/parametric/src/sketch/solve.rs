@@ -170,6 +170,14 @@ pub enum Relation {
         axis: SegmentId,
         branch: SymmetryBranch,
     },
+    /// Both coordinates of a point lie on the lattice `phase + n * pitch`. Quantize is the
+    /// discrete outer tier: one numerical pass freezes the nearest lattice point from its input
+    /// configuration, then the next exact pass may choose again from the preferred result.
+    Quantize {
+        point: PointId,
+        pitch: f64,
+        phase: f64,
+    },
 }
 
 impl Relation {
@@ -178,6 +186,7 @@ impl Relation {
     fn residual_count(self) -> usize {
         match self {
             Self::Fix { .. }
+            | Self::Quantize { .. }
             | Self::Coincident { .. }
             | Self::Midpoint { .. }
             | Self::Collinear { .. }
@@ -207,6 +216,7 @@ pub enum BuildError {
     InvalidTangent,
     InvalidConcentric,
     InvalidSymmetry,
+    InvalidQuantization,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -842,6 +852,20 @@ impl Problem {
                 slot: point(id)?,
                 at,
             }),
+            Relation::Quantize {
+                point: id,
+                pitch,
+                phase,
+            } => {
+                if !pitch.is_finite() || pitch <= 0.0 || !phase.is_finite() {
+                    return Err(BuildError::InvalidQuantization);
+                }
+                Ok(Resolved::Quantize {
+                    slot: point(id)?,
+                    pitch,
+                    phase,
+                })
+            }
             Relation::Horizontal { segment: id } => {
                 let segment = segment(id)?;
                 Ok(Resolved::SameCoordinate {
@@ -1038,6 +1062,30 @@ mod tests {
             },
         );
         accepts(&problem, Relation::Collinear { first, second });
+        accepts(
+            &problem,
+            Relation::Quantize {
+                point: b,
+                pitch: 1.0,
+                phase: 0.0,
+            },
+        );
+    }
+
+    #[test]
+    fn quantize_places_both_coordinates_on_the_authored_lattice() {
+        let mut builder = ProblemBuilder::new();
+        let point = builder.add_point([2.6, -1.6]);
+        builder.add_constraint(Relation::Quantize {
+            point,
+            pitch: 2.0,
+            phase: 0.5,
+        });
+        let settled = builder.finish().unwrap().settle();
+        assert!(settled.diagnostics.satisfied);
+        let at = settled.solution.position(point).unwrap();
+        assert!((at[0] - 2.5).abs() < SATISFIED_RESIDUAL);
+        assert!((at[1] + 1.5).abs() < SATISFIED_RESIDUAL);
     }
 
     #[test]
@@ -2319,6 +2367,11 @@ enum Resolved {
         slot: usize,
         at: [f64; 2],
     },
+    Quantize {
+        slot: usize,
+        pitch: f64,
+        phase: f64,
+    },
     SameCoordinate {
         from: usize,
         to: usize,
@@ -2761,6 +2814,19 @@ impl ResidualSystem for Residuals<'_> {
         for relation in &self.resolved {
             match *relation {
                 Resolved::Fix { slot, at: target } => {
+                    let here = at(slot);
+                    into[row] = here[0] - target[0];
+                    into[row + 1] = here[1] - target[1];
+                    row += 2;
+                }
+                Resolved::Quantize { slot, pitch, phase } => {
+                    // The lattice branch is chosen from this pass's immutable starting point,
+                    // never from the optimizer's moving iterate. The preferred and exact passes
+                    // therefore form a bounded integer outer loop without a discontinuous
+                    // residual inside either continuous solve.
+                    let start = [self.base[slot * 2], self.base[slot * 2 + 1]];
+                    let target =
+                        start.map(|value| phase + ((value - phase) / pitch).round() * pitch);
                     let here = at(slot);
                     into[row] = here[0] - target[0];
                     into[row + 1] = here[1] - target[1];
@@ -3278,7 +3344,9 @@ impl Problem {
 
     fn named_points(&self, relation: Relation) -> Vec<PointId> {
         let mut points = match relation {
-            Relation::Fix { point, .. } | Relation::Midpoint { point, .. } => vec![point],
+            Relation::Fix { point, .. }
+            | Relation::Quantize { point, .. }
+            | Relation::Midpoint { point, .. } => vec![point],
             Relation::Distance { from, to, .. } => vec![from, to],
             Relation::Coincident { first, second } => vec![first, second],
             Relation::Tangent { first, second, .. } | Relation::Concentric { first, second } => {
@@ -3334,6 +3402,7 @@ impl Problem {
                 }))
                 .collect(),
             Relation::Fix { .. }
+            | Relation::Quantize { .. }
             | Relation::Distance { .. }
             | Relation::Coincident { .. }
             | Relation::Concentric { .. } => Vec::new(),
