@@ -1334,6 +1334,25 @@ impl SketchSolid {
         next
     }
 
+    /// This producer with the curve `curve` deleted, whichever store holds it.
+    ///
+    /// The selection names a curve by its typed identity, so deletion answers in the same
+    /// currency rather than making every caller re-split the identity back into a store and an
+    /// id. An aggregate leaves through one call even though it draws several spans.
+    pub fn with_curve_deleted(&self, curve: SketchCurve) -> SketchSolid {
+        let mut next = self.clone();
+        match curve {
+            SketchCurve::Segment(id) => next.sketch.delete_segment(id),
+            SketchCurve::Arc(id) => next.sketch.delete_arc(id),
+            SketchCurve::Circle(id) => next.sketch.delete_circle(id),
+            SketchCurve::Bezier(id) => next.sketch.delete_bezier(id),
+            SketchCurve::Ellipse(id) => next.sketch.delete_ellipse(id),
+            SketchCurve::Conic(id) => next.sketch.delete_conic(id),
+            SketchCurve::Spline(id) => next.sketch.delete_spline(id),
+        }
+        next
+    }
+
     /// Toggle every selected geometry entity's real/construction role as one prospective edit.
     ///
     /// `None` means the selection named no toggleable geometry, allowing callers to avoid an

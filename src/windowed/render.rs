@@ -1380,6 +1380,37 @@ impl WindowedState {
         nearest
     }
 
+    /// The higher-order AGGREGATE under the cursor (physical px), measured against every span it
+    /// draws.
+    ///
+    /// The spans compete as one candidate rather than several: an ellipse is four rational
+    /// quarters on screen and one object to the author, so the distance that answers is the
+    /// minimum over all of them and the identity that answers is the aggregate's. This is the
+    /// hit-test half of the rule the selection states — every span of an ellipse or spline
+    /// selects the same object.
+    fn nearest_sketch_higher_curve(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<(document::sketch::SketchCurve, f32)> {
+        let pad_px = ui::chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        let mut nearest: Option<(document::sketch::SketchCurve, f32)> = None;
+        for (curve, chords) in &self.sketch_higher_curve_chords {
+            let Some(distance) = chords
+                .array_windows::<2>()
+                .map(|pair| point_to_segment_distance(cursor, pair[0], pair[1]))
+                .min_by(|a, b| a.total_cmp(b))
+            else {
+                continue;
+            };
+            if distance <= pad_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
+                nearest = Some((*curve, distance));
+            }
+        }
+        nearest
+    }
+
     /// The sketch EDGE under the cursor — the nearest segment or curve. One resolution so hover
     /// feedback and the click that follows it can never disagree about which edge the cursor is
     /// on.
@@ -1398,10 +1429,14 @@ impl WindowedState {
         let circle = self
             .nearest_sketch_circle(cursor_x, cursor_y)
             .map(|(id, distance)| (SketchEdgeHit::Circle(id), distance));
+        let higher = self
+            .nearest_sketch_higher_curve(cursor_x, cursor_y)
+            .map(|(curve, distance)| (SketchEdgeHit::HigherCurve(curve), distance));
         nearest_sketch_edge_from_candidates([
             segment.map(|(id, distance)| (SketchEdgeHit::Segment(id), distance)),
             arc,
             circle,
+            higher,
         ])
     }
 
@@ -1863,6 +1898,9 @@ impl WindowedState {
                     .sketch_circles(target)
                     .map(document::sketch::SketchCurve::Circle),
             )
+            // Aggregates arrive already typed: the selection named the whole ellipse or spline,
+            // not one of its spans, so there is nothing to reassemble here.
+            .chain(self.panel_state.selection.sketch_higher_curves(target))
             .collect()
     }
 
@@ -1894,6 +1932,12 @@ impl WindowedState {
                     document::sketch::SketchCurve::Circle(id),
                 )
             }))
+            .chain(
+                self.panel_state
+                    .selection
+                    .sketch_higher_curves(target)
+                    .map(document::sketch::SketchTransformEntity::Curve),
+            )
             .collect()
     }
 
@@ -1977,7 +2021,9 @@ impl WindowedState {
         let curve = match self.nearest_open_sketch_edge(cursor_x, cursor_y)? {
             SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
             SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
-            SketchEdgeHit::Circle(_) => return None,
+            // Neither answers a seam: a circle has no endpoint, and an aggregate's endpoint
+            // semantics are undecided while a spline's spans are re-derived from its fit points.
+            SketchEdgeHit::Circle(_) | SketchEdgeHit::HigherCurve(_) => return None,
         };
         tangent_arc::resolve_source(&producer, curve, seam)
     }
@@ -2696,6 +2742,9 @@ impl WindowedState {
                 });
             }
         }
+        for curve in aggregate_marquee_picks(&self.sketch_higher_curve_chords, rect, window) {
+            picked.push(ui::panel::SelectionTarget::SketchHigherCurve { sketch, curve });
+        }
         // The badges are laid out in egui points; the box is in physical pixels, like every other
         // array here.
         let scale = self.last_pixels_per_point;
@@ -3264,6 +3313,9 @@ impl WindowedState {
                 SketchEdgeHit::Circle(entity) => {
                     ui::panel::SelectionTarget::SketchCircle { sketch, entity }
                 }
+                SketchEdgeHit::HigherCurve(curve) => {
+                    ui::panel::SelectionTarget::SketchHigherCurve { sketch, curve }
+                }
             })
     }
 
@@ -3361,6 +3413,11 @@ impl WindowedState {
         let segments: Vec<_> = self.panel_state.selection.sketch_segments(target).collect();
         let arcs: Vec<_> = self.panel_state.selection.sketch_arcs(target).collect();
         let circles: Vec<_> = self.panel_state.selection.sketch_circles(target).collect();
+        let higher_curves: Vec<_> = self
+            .panel_state
+            .selection
+            .sketch_higher_curves(target)
+            .collect();
         let constraints: Vec<_> = self
             .panel_state
             .selection
@@ -3378,6 +3435,9 @@ impl WindowedState {
         }
         for circle_id in circles {
             next = next.with_circle_deleted(circle_id);
+        }
+        for curve in higher_curves {
+            next = next.with_curve_deleted(curve);
         }
         for constraint_id in constraints {
             next = next.with_constraint_deleted(constraint_id);
@@ -3403,6 +3463,14 @@ impl WindowedState {
             .chain(self.panel_state.selection.sketch_segments(target))
             .chain(self.panel_state.selection.sketch_arcs(target))
             .chain(self.panel_state.selection.sketch_circles(target))
+            // An aggregate toggles as one entity: the role lives on the authored curve, not on
+            // the spans it happens to resolve to.
+            .chain(
+                self.panel_state
+                    .selection
+                    .sketch_higher_curves(target)
+                    .map(document::sketch::SketchCurve::id),
+            )
             .collect();
         let Some(next) = producer.with_construction_toggled(entities) else {
             return;
@@ -3820,7 +3888,7 @@ impl WindowedState {
             self.nearest_sketch_circle(cursor_x, cursor_y)
                 .map(|(id, distance)| (SketchEdgeHit::Circle(id), distance)),
         )
-        .map(sketch_entity_from_curve_hit)
+        .and_then(sketch_entity_from_curve_hit)
     }
 
     /// The derived region under the physical-px cursor (#100), or `None`. The SMALLEST containing
@@ -4495,13 +4563,25 @@ impl WindowedState {
                 .collect();
             self.sketch_arc_lines.push((curve, state));
         }
-        for (_, chords) in &self.sketch_higher_curve_chords {
+        // Every span of an aggregate reads the SAME state, resolved from the aggregate identity —
+        // so selecting an ellipse lights all four quarters and hovering one span lights the
+        // whole spline. Anything per-span here would let one object draw in two states at once.
+        for (entity, chords) in &self.sketch_higher_curve_chords {
+            let picked = ui::panel::SelectionTarget::SketchHigherCurve {
+                sketch: target,
+                curve: *entity,
+            };
+            let selected = self.panel_state.selection.contains(picked);
+            let state = match hovered_edge {
+                _ if selected => ui::gizmos::HandleState::Selected,
+                Some((SketchEdgeHit::HigherCurve(curve), state)) if curve == *entity => state,
+                _ => ui::gizmos::HandleState::Idle,
+            };
             let curve = chords
                 .iter()
                 .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
                 .collect();
-            self.sketch_arc_lines
-                .push((curve, ui::gizmos::HandleState::Idle));
+            self.sketch_arc_lines.push((curve, state));
         }
 
         // Generated operator instances draw from their regenerated curves, but never enter the
@@ -5505,6 +5585,9 @@ pub(super) enum SketchEdgeHit {
     Arc(document::sketch::EntityId),
     /// A circle.
     Circle(document::sketch::EntityId),
+    /// A higher-order aggregate — Bézier, ellipse, conic or spline — named by the identity the
+    /// author sees rather than by whichever span the cursor happened to land on.
+    HigherCurve(document::sketch::SketchCurve),
 }
 
 fn break_piece_points(piece: &substrate::curve_intersection::PlanarCurve) -> Vec<[f64; 2]> {
@@ -5851,8 +5934,37 @@ fn circle_marquee_hit(ring: &[egui::Pos2], rect: egui::Rect, window: bool) -> bo
     }
 }
 
+/// The aggregates the marquee picks, each named once however many spans it drew.
+///
+/// A higher-order curve answers the box as ONE object, so its spans are folded before the
+/// verdict: window needs every span enclosed, crossing needs only one touched. Each span uses
+/// the closed-ring predicate, so window measures the DRAWN points rather than the span endpoints
+/// the arc rule uses — an ellipse's quarter seams are interior to the shape and invisible to the
+/// author, and a box holding only those four encloses nothing anybody can see. Pick follows the
+/// drawn curve here for the same reason it does in the hit test (#102).
+fn aggregate_marquee_picks(
+    chords: &[(document::sketch::SketchCurve, Vec<egui::Pos2>)],
+    rect: egui::Rect,
+    window: bool,
+) -> Vec<document::sketch::SketchCurve> {
+    let mut verdicts: Vec<(document::sketch::SketchCurve, bool)> = Vec::new();
+    for (curve, span) in chords {
+        let hit = circle_marquee_hit(span, rect, window);
+        match verdicts.iter_mut().find(|(seen, _)| seen == curve) {
+            Some((_, verdict)) if window => *verdict &= hit,
+            Some((_, verdict)) => *verdict |= hit,
+            None => verdicts.push((*curve, hit)),
+        }
+    }
+    verdicts
+        .into_iter()
+        .filter_map(|(curve, hit)| hit.then_some(curve))
+        .collect()
+}
+
 /// Resolve the nearest already-qualified edge candidate. Equal distances keep candidate order,
-/// with segments before arcs and circles at the call site.
+/// with segments before arcs, then circles, then higher-order aggregates at the call site — so a
+/// simple primitive wins an exact tie against the curve that merely passes through it.
 fn nearest_sketch_edge_from_candidates<const N: usize>(
     candidates: [Option<(SketchEdgeHit, f32)>; N],
 ) -> Option<SketchEdgeHit> {
@@ -6019,11 +6131,17 @@ fn selection_target(
 }
 
 /// Preserve every authored curve identity when a Tangent curve slot resolves its edge hit.
-fn sketch_entity_from_curve_hit(hit: SketchEdgeHit) -> ui::panel::SketchEntity {
+///
+/// `None` for a higher-order aggregate. `SketchEntity` names only the three primitive kinds, and
+/// no constraint verb accepts an aggregate yet, so admitting one would need a second way to spell
+/// a curve that the pick slots compare by equality — the divergence would be silent. The
+/// requirement filter never offers one either; this arm states the same refusal at the type.
+fn sketch_entity_from_curve_hit(hit: SketchEdgeHit) -> Option<ui::panel::SketchEntity> {
     match hit {
-        SketchEdgeHit::Segment(id) => ui::panel::SketchEntity::Segment(id),
-        SketchEdgeHit::Arc(id) => ui::panel::SketchEntity::Arc(id),
-        SketchEdgeHit::Circle(id) => ui::panel::SketchEntity::Circle(id),
+        SketchEdgeHit::Segment(id) => Some(ui::panel::SketchEntity::Segment(id)),
+        SketchEdgeHit::Arc(id) => Some(ui::panel::SketchEntity::Arc(id)),
+        SketchEdgeHit::Circle(id) => Some(ui::panel::SketchEntity::Circle(id)),
+        SketchEdgeHit::HigherCurve(_) => None,
     }
 }
 
@@ -6032,6 +6150,8 @@ const fn sketch_curve_from_hit(hit: SketchEdgeHit) -> document::sketch::SketchCu
         SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
         SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
         SketchEdgeHit::Circle(id) => document::sketch::SketchCurve::Circle(id),
+        // The aggregate already IS a `SketchCurve`; the hit carried the author's identity.
+        SketchEdgeHit::HigherCurve(curve) => curve,
     }
 }
 
@@ -6247,15 +6367,15 @@ fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
 #[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::{
-        advance_circle_center_diameter_gesture, apply_sketch_snap, circle_gesture_is_current,
-        circle_marquee_hit, circle_ring, closest_point_on_segment, complete_circle_center_diameter,
-        concentric_badge_anchor, nearest_sketch_edge_for_requirement,
-        nearest_sketch_edge_from_candidates, point_in_screen_polygon, point_to_segment_distance,
-        polygon_double_area, reset_failed_sketch_constraint_completion,
-        reset_refused_sketch_constraint_completion, segment_touches_rect, segments_intersect,
-        select_sketch_constraint_refusal_culprits, sketch_constraint_badge_at,
-        sketch_entity_from_curve_hit, sketch_profile_edit_transaction, symmetry_badge_anchor,
-        tangent_badge_anchor, SketchEdgeHit,
+        advance_circle_center_diameter_gesture, aggregate_marquee_picks, apply_sketch_snap,
+        circle_gesture_is_current, circle_marquee_hit, circle_ring, closest_point_on_segment,
+        complete_circle_center_diameter, concentric_badge_anchor,
+        nearest_sketch_edge_for_requirement, nearest_sketch_edge_from_candidates,
+        point_in_screen_polygon, point_to_segment_distance, polygon_double_area,
+        reset_failed_sketch_constraint_completion, reset_refused_sketch_constraint_completion,
+        segment_touches_rect, segments_intersect, select_sketch_constraint_refusal_culprits,
+        sketch_constraint_badge_at, sketch_entity_from_curve_hit, sketch_profile_edit_transaction,
+        symmetry_badge_anchor, tangent_badge_anchor, SketchEdgeHit,
     };
     use document::sketch::{
         ConstraintKind, LineSide, PlaneAxis, Sketch, SketchCurve, SketchLength, SketchPoint,
@@ -6530,15 +6650,71 @@ mod tests {
     fn tangent_curve_pick_keeps_each_real_edge_identity() {
         assert_eq!(
             sketch_entity_from_curve_hit(SketchEdgeHit::Segment(11)),
-            ui::panel::SketchEntity::Segment(11)
+            Some(ui::panel::SketchEntity::Segment(11))
         );
         assert_eq!(
             sketch_entity_from_curve_hit(SketchEdgeHit::Arc(12)),
-            ui::panel::SketchEntity::Arc(12)
+            Some(ui::panel::SketchEntity::Arc(12))
         );
         assert_eq!(
             sketch_entity_from_curve_hit(SketchEdgeHit::Circle(13)),
-            ui::panel::SketchEntity::Circle(13)
+            Some(ui::panel::SketchEntity::Circle(13))
+        );
+    }
+
+    /// A constraint slot has no way to spell an aggregate, so the pick declines rather than
+    /// inventing a second spelling of a curve the slots compare by equality.
+    #[test]
+    fn tangent_curve_pick_declines_a_higher_order_aggregate() {
+        assert_eq!(
+            sketch_entity_from_curve_hit(SketchEdgeHit::HigherCurve(SketchCurve::Ellipse(14))),
+            None
+        );
+    }
+
+    /// Two spans of one ellipse are one marquee answer, and window means the WHOLE curve —
+    /// enclosing a single quarter is not enclosing the ellipse.
+    #[test]
+    fn the_marquee_folds_an_aggregate_into_one_pick() {
+        let ellipse = SketchCurve::Ellipse(7);
+        let inside = vec![egui::pos2(10.0, 10.0), egui::pos2(20.0, 20.0)];
+        let outside = vec![egui::pos2(400.0, 400.0), egui::pos2(500.0, 500.0)];
+        let box_over_the_inside_span =
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let spans = vec![(ellipse, inside.clone()), (ellipse, outside)];
+
+        // Crossing: touching one span is touching the ellipse, and it is named once.
+        assert_eq!(
+            aggregate_marquee_picks(&spans, box_over_the_inside_span, false),
+            vec![ellipse]
+        );
+        // Window: one span outside the box means the ellipse is not enclosed.
+        assert!(aggregate_marquee_picks(&spans, box_over_the_inside_span, true).is_empty());
+        // Window: every span inside encloses it.
+        assert_eq!(
+            aggregate_marquee_picks(&[(ellipse, inside)], box_over_the_inside_span, true),
+            vec![ellipse]
+        );
+    }
+
+    /// An aggregate is offered last, so a segment lying exactly under a spline still wins the
+    /// click — the simpler primitive is what the author means by an exact tie.
+    #[test]
+    fn an_exact_tie_prefers_the_simpler_primitive_over_an_aggregate() {
+        assert_eq!(
+            nearest_sketch_edge_from_candidates([
+                Some((SketchEdgeHit::Segment(1), 4.0)),
+                Some((SketchEdgeHit::HigherCurve(SketchCurve::Spline(2)), 4.0)),
+            ]),
+            Some(SketchEdgeHit::Segment(1))
+        );
+        // A genuinely nearer aggregate still wins.
+        assert_eq!(
+            nearest_sketch_edge_from_candidates([
+                Some((SketchEdgeHit::Segment(1), 4.0)),
+                Some((SketchEdgeHit::HigherCurve(SketchCurve::Spline(2)), 1.0)),
+            ]),
+            Some(SketchEdgeHit::HigherCurve(SketchCurve::Spline(2)))
         );
     }
 
