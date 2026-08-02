@@ -6,8 +6,8 @@
 //! so a hover cannot promise a different cut from the one an undoable click performs.
 
 use super::{
-    AngleMeasurement, Arc, ArcSweep, EntityId, EntityRole, Segment, Sketch, SketchCurve,
-    SketchPoint, SketchSolid, ABSENT_CENTER,
+    AngleMeasurement, Arc, ArcSweep, ConstraintKind, EntityId, EntityRole, Segment, Sketch,
+    SketchCurve, SketchPoint, SketchSolid, ABSENT_CENTER,
 };
 use substrate::curve_intersection::{CurveSupportCrossing, PlanarCurve};
 
@@ -65,6 +65,31 @@ pub enum ExtendRefusal {
     NoIntersection,
     FixedSweep,
     Unrepresentable,
+}
+
+/// Canonical line-line corner replacement produced by Fillet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilletPlacement {
+    pub first: SketchCurve,
+    pub second: SketchCurve,
+    pub shortened_first: PlanarCurve,
+    pub shortened_second: PlanarCurve,
+    pub arc: PlanarCurve,
+    corner: EntityId,
+    first_endpoint: ExtendEndpoint,
+    second_endpoint: ExtendEndpoint,
+}
+
+/// Why a clicked corner cannot be rounded without changing unrelated topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilletRefusal {
+    UnknownCurve,
+    UnsupportedCurve,
+    AmbiguousCorner,
+    RoleMismatch,
+    RadiusOutOfRange,
+    Unrepresentable,
+    Constraint,
 }
 
 impl SketchSolid {
@@ -247,6 +272,84 @@ impl SketchSolid {
         let placement = self.extend_placement(source, witness, context)?;
         let mut next = self.clone();
         next.sketch.apply_extend(&placement)?;
+        Ok(next)
+    }
+
+    /// Round the endpoint nearest `witness` where exactly two same-role line segments meet.
+    /// The witness's projection down the clicked leg chooses the tangent distance and therefore
+    /// the radius, so preview and commit need no hidden default length.
+    pub fn fillet_placement(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<FilletPlacement, FilletRefusal> {
+        let SketchCurve::Segment(source_id) = source else {
+            return Err(FilletRefusal::UnsupportedCurve);
+        };
+        let source_segment = self
+            .sketch
+            .segments
+            .iter()
+            .find(|segment| segment.id == source_id)
+            .ok_or(FilletRefusal::UnknownCurve)?;
+        let source_curve = self
+            .sketch
+            .planar_curve(source, context)
+            .ok_or(FilletRefusal::UnknownCurve)?;
+        let (corner, first_endpoint) = if squared_distance(witness, source_curve.start())
+            <= squared_distance(witness, source_curve.end())
+        {
+            (source_segment.from, ExtendEndpoint::Start)
+        } else {
+            (source_segment.to, ExtendEndpoint::End)
+        };
+        let incident: Vec<_> = self
+            .sketch
+            .segments
+            .iter()
+            .filter(|segment| segment.id != source_id)
+            .filter(|segment| segment.from == corner || segment.to == corner)
+            .collect();
+        if incident.len() != 1 || self.sketch.non_segment_uses_point(corner) {
+            return Err(FilletRefusal::AmbiguousCorner);
+        }
+        let second_segment = incident[0];
+        if second_segment.role != source_segment.role {
+            return Err(FilletRefusal::RoleMismatch);
+        }
+        let second = SketchCurve::Segment(second_segment.id);
+        let second_curve = self
+            .sketch
+            .planar_curve(second, context)
+            .ok_or(FilletRefusal::UnknownCurve)?;
+        let second_endpoint = if second_segment.from == corner {
+            ExtendEndpoint::Start
+        } else {
+            ExtendEndpoint::End
+        };
+        line_fillet_geometry(
+            source,
+            second,
+            source_curve,
+            second_curve,
+            corner,
+            first_endpoint,
+            second_endpoint,
+            witness,
+        )
+    }
+
+    /// Atomically replace one two-line corner by its native tangent arc.
+    pub fn with_corner_filleted(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<SketchSolid, FilletRefusal> {
+        let placement = self.fillet_placement(source, witness, context)?;
+        let mut next = self.clone();
+        next.sketch.apply_fillet(&placement, context)?;
         Ok(next)
     }
 }
@@ -531,6 +634,90 @@ impl Sketch {
         self.sync_arc_centers();
         Ok(())
     }
+
+    fn non_segment_uses_point(&self, point: EntityId) -> bool {
+        self.arcs
+            .iter()
+            .any(|arc| arc.from == point || arc.to == point || arc.center == point)
+            || self.circles.iter().any(|circle| circle.center == point)
+    }
+
+    fn apply_fillet(
+        &mut self,
+        placement: &FilletPlacement,
+        context: parametric::EvaluationContext,
+    ) -> Result<(), FilletRefusal> {
+        let first_id = match placement.first {
+            SketchCurve::Segment(id) => id,
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+                return Err(FilletRefusal::UnsupportedCurve);
+            }
+        };
+        let second_id = match placement.second {
+            SketchCurve::Segment(id) => id,
+            SketchCurve::Arc(_) | SketchCurve::Circle(_) => {
+                return Err(FilletRefusal::UnsupportedCurve);
+            }
+        };
+        let first_at = match placement.first_endpoint {
+            ExtendEndpoint::Start => placement.shortened_first.start(),
+            ExtendEndpoint::End => placement.shortened_first.end(),
+        };
+        let second_at = match placement.second_endpoint {
+            ExtendEndpoint::Start => placement.shortened_second.start(),
+            ExtendEndpoint::End => placement.shortened_second.end(),
+        };
+        let first_at = SketchPoint::try_from_continuous(first_at[0], first_at[1])
+            .map_err(|_| FilletRefusal::Unrepresentable)?;
+        let second_at = SketchPoint::try_from_continuous(second_at[0], second_at[1])
+            .map_err(|_| FilletRefusal::Unrepresentable)?;
+        let sweep = piece_sweep(&placement.arc).map_err(|_| FilletRefusal::Unrepresentable)?;
+        let role = self
+            .segments
+            .iter()
+            .find(|segment| segment.id == first_id)
+            .map(|segment| segment.role)
+            .ok_or(FilletRefusal::UnknownCurve)?;
+
+        let corner_index = self
+            .point_index(placement.corner)
+            .ok_or(FilletRefusal::UnknownCurve)?;
+        self.points[corner_index].at = first_at;
+        let second_point = self.add_point(second_at);
+        if let Some(point) = self
+            .points
+            .iter_mut()
+            .find(|point| point.id == second_point)
+        {
+            point.role = role;
+        }
+        let second_segment = self
+            .segments
+            .iter_mut()
+            .find(|segment| segment.id == second_id)
+            .ok_or(FilletRefusal::UnknownCurve)?;
+        match placement.second_endpoint {
+            ExtendEndpoint::Start => second_segment.from = second_point,
+            ExtendEndpoint::End => second_segment.to = second_point,
+        }
+        let arc_id = self
+            .connect_arc(placement.corner, second_point, sweep)
+            .ok_or(FilletRefusal::Unrepresentable)?;
+        if let Some(arc) = self.arcs.iter_mut().find(|arc| arc.id == arc_id) {
+            arc.role = role;
+        }
+        self.sync_arc_centers();
+        let arc = SketchCurve::Arc(arc_id);
+        for (line, locus) in [(placement.first, first_at), (placement.second, second_at)] {
+            let locus = locus.in_plane();
+            let branch = self
+                .choose_tangent_branch(line, locus, arc, locus, context)
+                .map_err(|_| FilletRefusal::Constraint)?;
+            self.add_constraint(ConstraintKind::tangent(line, arc, branch), context)
+                .map_err(|_| FilletRefusal::Constraint)?;
+        }
+        Ok(())
+    }
 }
 
 fn piece_sweep(piece: &PlanarCurve) -> Result<AngleMeasurement, BreakRefusal> {
@@ -608,4 +795,145 @@ fn extension_candidate(
             Some((travel, extended))
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn line_fillet_geometry(
+    first: SketchCurve,
+    second: SketchCurve,
+    first_curve: PlanarCurve,
+    second_curve: PlanarCurve,
+    corner: EntityId,
+    first_endpoint: ExtendEndpoint,
+    second_endpoint: ExtendEndpoint,
+    witness: [f64; 2],
+) -> Result<FilletPlacement, FilletRefusal> {
+    let corner_at = match first_endpoint {
+        ExtendEndpoint::Start => first_curve.start(),
+        ExtendEndpoint::End => first_curve.end(),
+    };
+    let first_far = match first_endpoint {
+        ExtendEndpoint::Start => first_curve.end(),
+        ExtendEndpoint::End => first_curve.start(),
+    };
+    let second_far = match second_endpoint {
+        ExtendEndpoint::Start => second_curve.end(),
+        ExtendEndpoint::End => second_curve.start(),
+    };
+    let first_span = [first_far[0] - corner_at[0], first_far[1] - corner_at[1]];
+    let second_span = [second_far[0] - corner_at[0], second_far[1] - corner_at[1]];
+    let (first_length, second_length) = (
+        first_span[0].hypot(first_span[1]),
+        second_span[0].hypot(second_span[1]),
+    );
+    if first_length <= EXTEND_EPSILON || second_length <= EXTEND_EPSILON {
+        return Err(FilletRefusal::RadiusOutOfRange);
+    }
+    let first_unit = [first_span[0] / first_length, first_span[1] / first_length];
+    let second_unit = [
+        second_span[0] / second_length,
+        second_span[1] / second_length,
+    ];
+    let (first_tangent, second_tangent, arc) = fillet_rounding(
+        corner_at,
+        first_unit,
+        second_unit,
+        first_length,
+        second_length,
+        witness,
+    )?;
+    let shortened_first = match first_endpoint {
+        ExtendEndpoint::Start => PlanarCurve::Segment {
+            start: first_tangent,
+            end: first_far,
+        },
+        ExtendEndpoint::End => PlanarCurve::Segment {
+            start: first_far,
+            end: first_tangent,
+        },
+    };
+    let shortened_second = match second_endpoint {
+        ExtendEndpoint::Start => PlanarCurve::Segment {
+            start: second_tangent,
+            end: second_far,
+        },
+        ExtendEndpoint::End => PlanarCurve::Segment {
+            start: second_far,
+            end: second_tangent,
+        },
+    };
+    Ok(FilletPlacement {
+        first,
+        second,
+        shortened_first,
+        shortened_second,
+        arc,
+        corner,
+        first_endpoint,
+        second_endpoint,
+    })
+}
+
+fn fillet_rounding(
+    corner: [f64; 2],
+    first_unit: [f64; 2],
+    second_unit: [f64; 2],
+    first_length: f64,
+    second_length: f64,
+    witness: [f64; 2],
+) -> Result<([f64; 2], [f64; 2], PlanarCurve), FilletRefusal> {
+    let cosine = first_unit[0]
+        .mul_add(second_unit[0], first_unit[1] * second_unit[1])
+        .clamp(-1.0, 1.0);
+    let half_angle = cosine.acos() * 0.5;
+    if half_angle.sin() <= EXTEND_EPSILON || half_angle.cos() <= EXTEND_EPSILON {
+        return Err(FilletRefusal::RadiusOutOfRange);
+    }
+    let from_corner = [witness[0] - corner[0], witness[1] - corner[1]];
+    let tangent_distance = first_unit[0].mul_add(from_corner[0], first_unit[1] * from_corner[1]);
+    if tangent_distance <= EXTEND_EPSILON
+        || tangent_distance >= first_length - EXTEND_EPSILON
+        || tangent_distance >= second_length - EXTEND_EPSILON
+    {
+        return Err(FilletRefusal::RadiusOutOfRange);
+    }
+    let first_tangent = [
+        first_unit[0].mul_add(tangent_distance, corner[0]),
+        first_unit[1].mul_add(tangent_distance, corner[1]),
+    ];
+    let second_tangent = [
+        second_unit[0].mul_add(tangent_distance, corner[0]),
+        second_unit[1].mul_add(tangent_distance, corner[1]),
+    ];
+    let bisector = [
+        first_unit[0] + second_unit[0],
+        first_unit[1] + second_unit[1],
+    ];
+    let bisector_length = bisector[0].hypot(bisector[1]);
+    if bisector_length <= EXTEND_EPSILON {
+        return Err(FilletRefusal::RadiusOutOfRange);
+    }
+    let center_distance = tangent_distance / half_angle.cos();
+    let center = [
+        (bisector[0] / bisector_length).mul_add(center_distance, corner[0]),
+        (bisector[1] / bisector_length).mul_add(center_distance, corner[1]),
+    ];
+    let first_radius = [first_tangent[0] - center[0], first_tangent[1] - center[1]];
+    let second_radius = [second_tangent[0] - center[0], second_tangent[1] - center[1]];
+    let sweep_radians = (first_radius[0]
+        .mul_add(second_radius[1], -(first_radius[1] * second_radius[0])))
+    .atan2(first_radius[0].mul_add(second_radius[0], first_radius[1] * second_radius[1]));
+    if sweep_radians.abs() <= EXTEND_EPSILON {
+        return Err(FilletRefusal::RadiusOutOfRange);
+    }
+    Ok((
+        first_tangent,
+        second_tangent,
+        PlanarCurve::Arc {
+            center,
+            radius: tangent_distance * half_angle.tan(),
+            start_radians: first_radius[1].atan2(first_radius[0]),
+            sweep_radians,
+        },
+    ))
 }

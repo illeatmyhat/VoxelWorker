@@ -251,8 +251,8 @@ const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
     ),
     (
         Icon::Fillet,
-        "Fillet — round a selected corner",
-        SketchModifierRoute::Reserved,
+        "Fillet — click along either leg to round its two-line corner",
+        SketchModifierRoute::Tool(SketchTool::Fillet),
     ),
     (
         Icon::ChamferEqual,
@@ -709,6 +709,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 Icon::ConstructionToggle,
+                Icon::Fillet,
                 Icon::Trim,
                 Icon::Extend,
                 Icon::BreakCurve,

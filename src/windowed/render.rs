@@ -1522,6 +1522,33 @@ impl WindowedState {
         }
     }
 
+    /// Replace the two-line corner nearest the clicked leg endpoint by the exact native fillet
+    /// previewed at the cursor-selected tangent distance.
+    pub(super) fn sketch_fillet_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let (Some((segment, _, _)), Some(witness), Some(context)) = (
+            self.nearest_sketch_segment(cursor_x, cursor_y),
+            self.sketch_unsnapped_profile_coord(cursor_x, cursor_y),
+            document::sketch::evaluation_context_from_density(
+                self.panel_state.geometry.voxels_per_block,
+            ),
+        ) else {
+            return;
+        };
+        if let Ok(next) = producer.with_corner_filleted(
+            document::sketch::SketchCurve::Segment(segment),
+            witness,
+            context,
+        ) {
+            self.commit_sketch_profile_edit(target, next);
+        }
+    }
+
     /// The snap-policy profile point under the cursor (physical px), through the cached
     /// ray frame — the shared entry the drawing tools (#99) and vertex edits resolve a press
     /// or release with, quantized by [`PanelState::sketch_snap`] (#96). `None` when the
@@ -1717,6 +1744,7 @@ impl WindowedState {
                 ui::panel::SketchTool::BreakCurve
                     | ui::panel::SketchTool::Trim
                     | ui::panel::SketchTool::Extend
+                    | ui::panel::SketchTool::Fillet
             )
         {
             self.panel_state.sketch_tool = ui::panel::SketchTool::Select;
@@ -3743,7 +3771,8 @@ impl WindowedState {
             | ui::panel::SketchTool::Circle3Tangent
             | ui::panel::SketchTool::BreakCurve
             | ui::panel::SketchTool::Trim
-            | ui::panel::SketchTool::Extend => Some(ui::gizmos::HandleState::Hover),
+            | ui::panel::SketchTool::Extend
+            | ui::panel::SketchTool::Fillet => Some(ui::gizmos::HandleState::Hover),
             // Add-point has its own insert diamond; the drawing tools (#99, #102) target
             // points and empty plane, never an edge.
             ui::panel::SketchTool::AddPoint
@@ -3798,6 +3827,11 @@ impl WindowedState {
                         | ui::panel::SketchTool::Extend
                 ) {
                     return self.nearest_sketch_edge(cx, cy).map(|hit| (hit, state));
+                }
+                if tool == ui::panel::SketchTool::Fillet {
+                    return self
+                        .nearest_sketch_segment(cx, cy)
+                        .map(|(id, _, _)| (SketchEdgeHit::Segment(id), state));
                 }
                 if self.sketch_vertex_at(cx, cy).is_some() {
                     None
@@ -4482,6 +4516,44 @@ impl WindowedState {
                     }
                 }
             }
+            ui::panel::SketchTool::Fillet => {
+                if let (Some((producer, _)), Some((cursor_x, cursor_y)), Some(context)) = (
+                    self.sketch_node_state(target),
+                    self.last_cursor_position,
+                    document::sketch::evaluation_context_from_density(
+                        self.panel_state.geometry.voxels_per_block,
+                    ),
+                ) {
+                    let placement = self
+                        .nearest_sketch_segment(cursor_x, cursor_y)
+                        .map(|(id, _, _)| id)
+                        .zip(self.sketch_unsnapped_profile_coord(cursor_x, cursor_y))
+                        .and_then(|(id, witness)| {
+                            producer
+                                .fillet_placement(
+                                    document::sketch::SketchCurve::Segment(id),
+                                    witness,
+                                    context,
+                                )
+                                .ok()
+                        });
+                    if let Some(placement) = placement {
+                        let ring: Vec<[f64; 2]> = [
+                            &placement.shortened_first,
+                            &placement.arc,
+                            &placement.shortened_second,
+                        ]
+                        .into_iter()
+                        .flat_map(break_piece_points)
+                        .collect();
+                        let projected: Vec<egui::Pos2> =
+                            ring.iter().copied().filter_map(snapped_screen).collect();
+                        if projected.len() == ring.len() {
+                            self.sketch_draw_preview = projected;
+                        }
+                    }
+                }
+            }
             ui::panel::SketchTool::AddPoint => {}
         }
     }
@@ -4613,7 +4685,8 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::Slot3PointArc
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
-        | ui::panel::SketchTool::Extend => None,
+        | ui::panel::SketchTool::Extend
+        | ui::panel::SketchTool::Fillet => None,
     }
 }
 
@@ -4644,7 +4717,8 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::Slot3PointArc
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
-        | ui::panel::SketchTool::Extend => None,
+        | ui::panel::SketchTool::Extend
+        | ui::panel::SketchTool::Fillet => None,
     }
 }
 
@@ -4675,7 +4749,8 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::PolygonEdge
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
-        | ui::panel::SketchTool::Extend => None,
+        | ui::panel::SketchTool::Extend
+        | ui::panel::SketchTool::Fillet => None,
     }
 }
 
@@ -4708,7 +4783,8 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::Slot3PointArc
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
-        | ui::panel::SketchTool::Extend => None,
+        | ui::panel::SketchTool::Extend
+        | ui::panel::SketchTool::Fillet => None,
     }
 }
 

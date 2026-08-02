@@ -358,6 +358,8 @@ pub enum SketchTool {
     Trim,
     /// Extend the clicked open-curve endpoint to the nearest finite intersection.
     Extend,
+    /// Replace the clicked two-line corner by a native tangent arc.
+    Fillet,
 }
 
 /// The floating Signal **display stack**'s viewer state.

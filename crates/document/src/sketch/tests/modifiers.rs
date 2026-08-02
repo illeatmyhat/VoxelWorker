@@ -1,5 +1,6 @@
 use super::*;
 use ::parametric::units::AngleMeasurement;
+use substrate::curve_intersection::PlanarCurve;
 
 fn segment(sketch: &mut Sketch, from: [i64; 2], to: [i64; 2]) -> EntityId {
     let from = sketch.add_free_point(SketchPoint::new(from[0], from[1]));
@@ -343,4 +344,86 @@ fn extend_preserves_a_clockwise_arcs_direction_and_radius() {
         panic!("an extended clockwise arc must remain circular");
     };
     assert!((geometry.radius - 5.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn fillet_rounds_a_two_line_corner_with_a_native_durably_tangent_arc() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let first_far = sketch.add_free_point(SketchPoint::new(10, 0));
+    let corner = sketch.add_free_point(SketchPoint::new(0, 0));
+    let second_far = sketch.add_free_point(SketchPoint::new(0, 10));
+    let first = sketch.connect(first_far, corner).unwrap();
+    let second = sketch.connect(corner, second_far).unwrap();
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let placement = source
+        .fillet_placement(SketchCurve::Segment(first), [2.0, 0.1], ctx(16))
+        .unwrap();
+    assert_eq!(placement.first, SketchCurve::Segment(first));
+    assert_eq!(placement.second, SketchCurve::Segment(second));
+    assert_eq!(placement.shortened_first.end(), [2.0, 0.0]);
+    assert_eq!(placement.shortened_second.start(), [0.0, 2.0]);
+    let PlanarCurve::Arc {
+        center,
+        radius,
+        sweep_radians,
+        ..
+    } = placement.arc
+    else {
+        panic!("a fillet placement must remain a native arc");
+    };
+    assert!((center[0] - 2.0).abs() < 1.0e-9);
+    assert!((center[1] - 2.0).abs() < 1.0e-9);
+    assert!((radius - 2.0).abs() < 1.0e-9);
+    assert!((sweep_radians.to_degrees() + 90.0).abs() < 1.0e-9);
+
+    let made = source
+        .with_corner_filleted(SketchCurve::Segment(first), [2.0, 0.1], ctx(16))
+        .unwrap();
+    assert!(made.sketch.segments().iter().any(|held| held.id == first));
+    assert!(made.sketch.segments().iter().any(|held| held.id == second));
+    assert_eq!(made.sketch.arcs().len(), 1);
+    assert_eq!(made.sketch.constraints().len(), 2);
+    assert!(made
+        .sketch
+        .constraints()
+        .iter()
+        .all(|constraint| matches!(constraint.kind, ConstraintKind::Tangent { .. })));
+    let geometry = made
+        .sketch
+        .curve_geometry(SketchCurve::Arc(made.sketch.arcs()[0].id), ctx(16))
+        .unwrap();
+    let ::parametric::sketch::CurveGeometry::Circular(geometry) = geometry else {
+        panic!("the committed fillet must remain circular");
+    };
+    assert!((geometry.radius - 2.0).abs() < 1.0e-8);
+}
+
+#[test]
+fn fillet_refuses_an_ambiguous_or_overlarge_corner_without_editing() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let corner = sketch.add_free_point(SketchPoint::new(0, 0));
+    let a = sketch.add_free_point(SketchPoint::new(10, 0));
+    let b = sketch.add_free_point(SketchPoint::new(0, 10));
+    let c = sketch.add_free_point(SketchPoint::new(-10, 0));
+    let first = sketch.connect(corner, a).unwrap();
+    sketch.connect(corner, b).unwrap();
+    sketch.connect(corner, c).unwrap();
+    let source = SketchSolid::extrude(sketch, 3);
+    assert_eq!(
+        source.fillet_placement(SketchCurve::Segment(first), [2.0, 0.0], ctx(16)),
+        Err(FilletRefusal::AmbiguousCorner)
+    );
+
+    let mut short = Sketch::empty(PlaneAxis::Z);
+    let corner = short.add_free_point(SketchPoint::new(0, 0));
+    let a = short.add_free_point(SketchPoint::new(10, 0));
+    let b = short.add_free_point(SketchPoint::new(0, 1));
+    let first = short.connect(corner, a).unwrap();
+    short.connect(corner, b).unwrap();
+    let source = SketchSolid::extrude(short, 3);
+    assert_eq!(
+        source.fillet_placement(SketchCurve::Segment(first), [2.0, 0.0], ctx(16)),
+        Err(FilletRefusal::RadiusOutOfRange)
+    );
 }

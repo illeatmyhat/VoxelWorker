@@ -38,7 +38,8 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::Slot3PointArc
         | ui::panel::SketchTool::BreakCurve
         | ui::panel::SketchTool::Trim
-        | ui::panel::SketchTool::Extend => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::Extend
+        | ui::panel::SketchTool::Fillet => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
         ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
             SketchPointerRoute::RectangleDrag
@@ -395,6 +396,9 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::Extend => {
                                         state.sketch_extend_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::Fillet => {
+                                        state.sketch_fillet_click(up_x, up_y);
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Line
@@ -862,6 +866,7 @@ mod tests {
             ui::panel::SketchTool::BreakCurve,
             ui::panel::SketchTool::Trim,
             ui::panel::SketchTool::Extend,
+            ui::panel::SketchTool::Fillet,
         ] {
             assert_eq!(
                 sketch_pointer_route(tool),
