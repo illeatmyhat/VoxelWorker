@@ -413,6 +413,9 @@ impl WindowedState {
         if prepared.panel_response.toggle_sketch_face {
             self.toggle_sketch_menu_face();
         }
+        if prepared.panel_response.close_sketch_loop {
+            self.close_sketch_line_loop();
+        }
         if prepared.panel_response.toggle_sketch_construction {
             self.toggle_sketch_selection_construction();
         }
@@ -3684,6 +3687,43 @@ impl WindowedState {
         self.commit_sketch_profile_edit(target, next);
     }
 
+    /// Close the active connected-Line chain with one native segment. The existing start identity
+    /// is reused, so no coincident twin or hidden constraint is introduced; refusal merely ends
+    /// the session chain and leaves the document untouched.
+    fn close_sketch_line_loop(&mut self) {
+        let Some(chain) = self.line_gesture.chain() else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(chain.owner) else {
+            return;
+        };
+        if let line::LineEdit::Document(next) = self.line_gesture.close(chain.owner, &producer) {
+            self.commit_sketch_profile_edit(chain.owner, next);
+        }
+    }
+
+    /// Apply an explicit face role from the rail rather than toggling it. Repeated Fill or Carve
+    /// clicks are idempotent, which is important for a modal tool: the same verb should never undo
+    /// itself merely because the author clicked twice.
+    pub(super) fn sketch_set_face_picked(&mut self, cursor_x: f64, cursor_y: f64, picked: bool) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(key) = self.sketch_face_at(cursor_x, cursor_y) else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let Some(context) = self.sketch_evaluation_context() else {
+            return;
+        };
+        if producer.sketch.face_is_picked(&key, context) == picked {
+            return;
+        }
+        self.commit_sketch_profile_edit(target, producer.with_face_picked(key, picked, context));
+    }
+
     /// Queue an add/delete profile edit as ONE entry in the open sketch undo
     /// group. Recomputes the bbox-min anchor compensation exactly like the vertex drag — the
     /// producer re-anchors its bbox-min to the node origin, so a vertex inserted or removed at
@@ -4084,7 +4124,9 @@ impl WindowedState {
             | ui::panel::SketchTool::SlotCenterPointArc
             | ui::panel::SketchTool::Slot3PointArc
             | ui::panel::SketchTool::MoveCopy
-            | ui::panel::SketchTool::Scale => None,
+            | ui::panel::SketchTool::Scale
+            | ui::panel::SketchTool::FillRegion
+            | ui::panel::SketchTool::CarveRegion => None,
         }
         .and_then(|state| {
             self.last_cursor_position.and_then(|(cx, cy)| {
@@ -5021,7 +5063,9 @@ impl WindowedState {
                     }
                 }
             }
-            ui::panel::SketchTool::AddPoint => {}
+            ui::panel::SketchTool::AddPoint
+            | ui::panel::SketchTool::FillRegion
+            | ui::panel::SketchTool::CarveRegion => {}
         }
     }
 }
@@ -5159,7 +5203,9 @@ fn point_circle_kind(tool: ui::panel::SketchTool) -> Option<point_circle::PointC
         | ui::panel::SketchTool::ChamferTwoDistance
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
-        | ui::panel::SketchTool::Scale => None,
+        | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::FillRegion
+        | ui::panel::SketchTool::CarveRegion => None,
     }
 }
 
@@ -5197,7 +5243,9 @@ const fn polygon_kind(tool: ui::panel::SketchTool) -> Option<polygon::PolygonKin
         | ui::panel::SketchTool::ChamferTwoDistance
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
-        | ui::panel::SketchTool::Scale => None,
+        | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::FillRegion
+        | ui::panel::SketchTool::CarveRegion => None,
     }
 }
 
@@ -5235,7 +5283,9 @@ const fn slot_kind(tool: ui::panel::SketchTool) -> Option<slot::SlotKind> {
         | ui::panel::SketchTool::ChamferTwoDistance
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
-        | ui::panel::SketchTool::Scale => None,
+        | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::FillRegion
+        | ui::panel::SketchTool::CarveRegion => None,
     }
 }
 
@@ -5275,7 +5325,9 @@ const fn tangent_circle_kind(
         | ui::panel::SketchTool::ChamferTwoDistance
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
-        | ui::panel::SketchTool::Scale => None,
+        | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::FillRegion
+        | ui::panel::SketchTool::CarveRegion => None,
     }
 }
 

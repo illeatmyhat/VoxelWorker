@@ -45,7 +45,9 @@ const fn sketch_pointer_route(tool: ui::panel::SketchTool) -> SketchPointerRoute
         | ui::panel::SketchTool::ChamferTwoDistance
         | ui::panel::SketchTool::Offset
         | ui::panel::SketchTool::MoveCopy
-        | ui::panel::SketchTool::Scale => SketchPointerRoute::StationaryEdit,
+        | ui::panel::SketchTool::Scale
+        | ui::panel::SketchTool::FillRegion
+        | ui::panel::SketchTool::CarveRegion => SketchPointerRoute::StationaryEdit,
         ui::panel::SketchTool::Line => SketchPointerRoute::LineClickOrArcDrag,
         ui::panel::SketchTool::Rectangle | ui::panel::SketchTool::RectangleCenterCorner => {
             SketchPointerRoute::RectangleDrag
@@ -419,6 +421,12 @@ impl ApplicationHandler for App {
                                     }
                                     ui::panel::SketchTool::Scale => {
                                         state.sketch_scale_click(up_x, up_y);
+                                    }
+                                    ui::panel::SketchTool::FillRegion => {
+                                        state.sketch_set_face_picked(up_x, up_y, true);
+                                    }
+                                    ui::panel::SketchTool::CarveRegion => {
+                                        state.sketch_set_face_picked(up_x, up_y, false);
                                     }
                                     ui::panel::SketchTool::Select
                                     | ui::panel::SketchTool::Line

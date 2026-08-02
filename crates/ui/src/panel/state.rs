@@ -372,6 +372,10 @@ pub enum SketchTool {
     MoveCopy,
     /// Uniformly scale selected free geometry about a clicked center.
     Scale,
+    /// Mark the derived face under the cursor as filled.
+    FillRegion,
+    /// Mark the derived face under the cursor as carved.
+    CarveRegion,
 }
 
 /// The floating Signal **display stack**'s viewer state.
@@ -967,6 +971,9 @@ pub struct PanelResponse {
     /// The sketch rail's Construction command was pressed. The shell owns the selected entity
     /// ids and commits their role changes through the normal anchor-preserving sketch edit door.
     pub toggle_sketch_construction: bool,
+    /// The sketch rail's Close Loop action was pressed. The shell owns the active connected-Line
+    /// chain and commits its closing segment through the normal sketch edit door.
+    pub close_sketch_loop: bool,
     /// How the user asked to move the **orbit center** this frame from the general viewport
     /// context menu — the deliberate act that is
     /// the ONLY thing allowed to move it, which is what makes a pan leave it alone. A VIEW

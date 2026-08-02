@@ -158,6 +158,8 @@ enum SketchToolConfig {
     Offset,
     MoveCopy,
     Scale,
+    FillRegion,
+    CarveRegion,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {

@@ -203,6 +203,19 @@ impl LineGesture {
         LineEdit::Document(next)
     }
 
+    /// Close the current chain back to its existing start identity. This is the rail action twin
+    /// of clicking the highlighted start point: it mints no point and finishes the session even
+    /// when the requested closing segment is already present or otherwise refused.
+    pub fn close(&mut self, owner: NodeId, producer: &SketchSolid) -> LineEdit {
+        let Some(chain) = self.chain.filter(|chain| chain.owner == owner) else {
+            return LineEdit::SessionOnly;
+        };
+        self.finish_chain();
+        producer
+            .with_segment_between_traced(chain.end, chain.start)
+            .map_or(LineEdit::SessionOnly, |(next, _)| LineEdit::Document(next))
+    }
+
     pub fn append_tangent_arc(
         &mut self,
         producer: &SketchSolid,
@@ -402,6 +415,30 @@ mod tests {
         assert_eq!(closed.sketch.points().len(), 3, "the start id is reused");
         assert_eq!(closed.sketch.segments().len(), 3);
         assert_eq!(gesture.chain(), None);
+    }
+
+    #[test]
+    fn close_action_joins_the_active_chain_without_minting_a_point() {
+        let owner = NodeId(10);
+        let mut gesture = LineGesture::default();
+        let LineEdit::Document(one) = gesture.click(owner, &empty(), SketchPoint::new(0, 0), None)
+        else {
+            panic!("first point")
+        };
+        let LineEdit::Document(two) = gesture.click(owner, &one, SketchPoint::new(10, 0), None)
+        else {
+            panic!("first edge")
+        };
+        let LineEdit::Document(three) = gesture.click(owner, &two, SketchPoint::new(10, 10), None)
+        else {
+            panic!("second edge")
+        };
+        let LineEdit::Document(closed) = gesture.close(owner, &three) else {
+            panic!("close action")
+        };
+        assert_eq!(closed.sketch.points().len(), 3);
+        assert_eq!(closed.sketch.segments().len(), 3);
+        assert!(gesture.chain().is_none());
     }
 
     #[test]

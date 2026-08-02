@@ -244,6 +244,46 @@ enum SketchModifierRoute {
     Tool(SketchTool),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SketchOperatorRoute {
+    Reserved,
+    CloseLoopAction,
+    Tool(SketchTool),
+}
+
+const SKETCH_OPERATORS: &[(Icon, &str, SketchOperatorRoute)] = &[
+    (
+        Icon::Mirror,
+        "Mirror — reserved",
+        SketchOperatorRoute::Reserved,
+    ),
+    (
+        Icon::RectangularPattern,
+        "Rectangular Pattern — reserved",
+        SketchOperatorRoute::Reserved,
+    ),
+    (
+        Icon::CircularPattern,
+        "Circular Pattern — reserved",
+        SketchOperatorRoute::Reserved,
+    ),
+    (
+        Icon::CloseLoop,
+        "Close Loop — join the active Line chain back to its start",
+        SketchOperatorRoute::CloseLoopAction,
+    ),
+    (
+        Icon::FillRegion,
+        "Fill Region — click a bounded face to include it",
+        SketchOperatorRoute::Tool(SketchTool::FillRegion),
+    ),
+    (
+        Icon::CarveRegion,
+        "Carve Region — click a bounded face to subtract it",
+        SketchOperatorRoute::Tool(SketchTool::CarveRegion),
+    ),
+];
+
 const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
     (
         Icon::ConstructionToggle,
@@ -398,6 +438,23 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
                 }
             }
             SketchModifierRoute::Tool(tool) => {
+                let active = state.sketch_tool == tool;
+                if sketch_tool_cell(ui, icon, tip, active) {
+                    state.sketch_tool = tool;
+                }
+            }
+        }
+    }
+    rail_heading(ui, "Operate");
+    for &(icon, tip, route) in SKETCH_OPERATORS {
+        match route {
+            SketchOperatorRoute::Reserved => sketch_cell(ui, icon, tip, false, true),
+            SketchOperatorRoute::CloseLoopAction => {
+                if sketch_tool_cell(ui, icon, tip, false) {
+                    response.close_sketch_loop = true;
+                }
+            }
+            SketchOperatorRoute::Tool(tool) => {
                 let active = state.sketch_tool == tool;
                 if sketch_tool_cell(ui, icon, tip, active) {
                     state.sketch_tool = tool;
@@ -720,6 +777,45 @@ mod tests {
                 Icon::OffsetCurve,
                 Icon::MoveCopy,
                 Icon::SketchScale,
+            ]
+        );
+    }
+
+    #[test]
+    fn sketch_rail_exposes_face_roles_and_close_loop_but_keeps_patterns_reserved() {
+        assert_eq!(
+            SKETCH_OPERATORS,
+            &[
+                (
+                    Icon::Mirror,
+                    "Mirror — reserved",
+                    SketchOperatorRoute::Reserved
+                ),
+                (
+                    Icon::RectangularPattern,
+                    "Rectangular Pattern — reserved",
+                    SketchOperatorRoute::Reserved,
+                ),
+                (
+                    Icon::CircularPattern,
+                    "Circular Pattern — reserved",
+                    SketchOperatorRoute::Reserved,
+                ),
+                (
+                    Icon::CloseLoop,
+                    "Close Loop — join the active Line chain back to its start",
+                    SketchOperatorRoute::CloseLoopAction,
+                ),
+                (
+                    Icon::FillRegion,
+                    "Fill Region — click a bounded face to include it",
+                    SketchOperatorRoute::Tool(SketchTool::FillRegion),
+                ),
+                (
+                    Icon::CarveRegion,
+                    "Carve Region — click a bounded face to subtract it",
+                    SketchOperatorRoute::Tool(SketchTool::CarveRegion),
+                ),
             ]
         );
     }
