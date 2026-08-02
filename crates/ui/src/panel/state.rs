@@ -354,9 +354,10 @@ pub enum SketchTool {
     Slot3PointArc,
     /// Draw an ellipse from its center, major-axis endpoint, and width pick.
     Ellipse,
-    /// Draw an endpoint/vertex/rho conic: two endpoints, a point on the curve, then the APEX that
-    /// names rho — the sharpness left free by the first three, and what makes the same three
-    /// points elliptic, parabolic or hyperbolic.
+    /// Draw a conic: two anchors, then a control point the curve bends toward, then a shoulder
+    /// gizmo on the track between them saying how hard that control point pulls. The pull is the
+    /// freedom the first three picks leave open, and what makes the same three elliptic,
+    /// parabolic or hyperbolic.
     Conic,
     /// Draw a spline through repeated fit points; Enter finishes open and clicking the start
     /// closes it.

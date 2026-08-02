@@ -5160,11 +5160,22 @@ impl WindowedState {
                     self.last_cursor_position,
                 ) {
                     let cursor = self.sketch_target_at(cursor_x, cursor_y);
+                    // An arc slot's CENTERLINE, from the moment its picks settle an arc.
+                    let spine = cursor
+                        .and_then(|cursor| self.slot_gesture.spine(target, kind, cursor.at))
+                        .map(|spine| arc_spine_points(&spine));
                     let ring = cursor.and_then(|cursor| {
                         self.slot_gesture
                             .placement(target, kind, &producer, cursor)
                             .map(|placement| slot_ring(&placement))
                             .or_else(|| {
+                                // A straight run through the picks is all a PARTIAL grammar can
+                                // say, and it looks nothing like the arc the slot is about to be
+                                // swept around. Once the arc exists it is the better answer, and
+                                // drawing both leaves the polyline underneath it.
+                                if spine.is_some() {
+                                    return None;
+                                }
                                 self.slot_gesture.guide(target, kind).map(|mut guide| {
                                     guide.push(cursor.at);
                                     guide.into_iter().map(|point| point.in_plane()).collect()
@@ -5178,13 +5189,7 @@ impl WindowedState {
                             self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
                     }
-                    // An arc slot's CENTERLINE, from the moment three picks settle it. The
-                    // straight run above is all a partial arc grammar could say, and it looks
-                    // nothing like the arc the slot is about to be swept around.
-                    if let Some(spine) = cursor
-                        .and_then(|cursor| self.slot_gesture.spine(target, kind, cursor.at))
-                        .map(|spine| arc_spine_points(&spine))
-                    {
+                    if let Some(spine) = spine {
                         let projected: Vec<egui::Pos2> =
                             spine.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == spine.len() {
@@ -5206,6 +5211,37 @@ impl WindowedState {
                             profile.iter().copied().filter_map(snapped_screen).collect();
                         if projected.len() == profile.len() {
                             self.sketch_draw_preview = vec![preview_outline(projected)];
+                        }
+                        // The conic's last step is a gizmo, not a free pick: the shoulder is
+                        // captive to the track between the chord and the control point, and how
+                        // far along it sits IS how hard the control point pulls. Drawing the
+                        // track is what makes that a thing to grab rather than a number.
+                        if let Some((track, shoulder)) = self
+                            .higher_curve_gesture
+                            .conic_shoulder_gizmo(target, kind, cursor)
+                        {
+                            let rail: Vec<egui::Pos2> =
+                                track.iter().copied().filter_map(snapped_screen).collect();
+                            if rail.len() == track.len() {
+                                self.sketch_draw_preview.push(preview_guide(rail));
+                            }
+                            if let Some(at) = snapped_screen(shoulder) {
+                                self.sketch_draw_preview
+                                    .push(ui::chrome::SketchPreviewMark::Point { at });
+                            }
+                        }
+                        // A refused control point still draws its pick polyline, which reads
+                        // exactly like a gesture mid-flight. The mark is what separates "keep
+                        // going" from "this click buys nothing"; it sits at the cursor because
+                        // moving the cursor is the fix.
+                        if self
+                            .higher_curve_gesture
+                            .refuses_cursor(target, kind, cursor)
+                        {
+                            if let Some(at) = snapped_screen(cursor.in_plane()) {
+                                self.sketch_draw_preview
+                                    .push(ui::chrome::SketchPreviewMark::Refused { at });
+                            }
                         }
                     }
                 }

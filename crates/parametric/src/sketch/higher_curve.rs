@@ -102,42 +102,80 @@ pub enum ConicCandidateError {
     CollapsedVertex,
 }
 
-/// The rho that makes the conic through `from`/`to`/`vertex` also aim at `apex`.
+/// The rho a conic starts at before its shoulder is dragged.
 ///
-/// The three picks fix the curve's endpoints and one point ON it; rho is the remaining freedom,
-/// and on its own it is a bare number with nothing on screen to grab. This is what gives it a
-/// handle: the APEX is where the two end tangents meet, the vertex always sits on the segment from
-/// the chord midpoint to it, and rho is exactly how far along that segment it sits —
-/// `vertex = midpoint + rho * (apex - midpoint)`. So pointing at an apex names a rho, and pulling
-/// the apex away from the chord sharpens the curve.
+/// A parabola: the exact boundary between the elliptic and hyperbolic halves of the family, and so
+/// the reading that presumes least about which half the author is reaching for.
+pub const CONIC_PARABOLIC_RHO: f64 = 0.5;
+
+/// How close to degenerate a dragged shoulder is allowed to get.
 ///
-/// The cursor is projected onto the midpoint→vertex ray, because only that direction can carry an
-/// apex consistent with the vertex already picked. `None` when the projection falls at or behind
-/// the vertex, where no rho in the open interval `(0, 1)` answers.
+/// Rho lives on the OPEN interval `(0, 1)`, which has no endpoints to clamp a drag against. Both
+/// ends are curves nobody means to author — at 0 the conic is its own chord, at 1 it is a corner
+/// at the control point — so the gizmo stops just short of each.
+const SHOULDER_RHO_MARGIN: f64 = 1.0e-3;
+
+/// The segment a conic's shoulder gizmo slides along: chord midpoint to control point.
+///
+/// Every conic through `from` and `to` with its tangents meeting at `apex` puts its on-curve
+/// shoulder somewhere on this segment, and rho is exactly how far along it sits. That makes the
+/// segment the whole authoring space of the last step, with nothing outside it to refuse. One
+/// definition so the drawn track, the rho the cursor names, and the committed vertex agree.
+///
+/// `None` when the control point falls on the chord midpoint, where the track has no length and no
+/// conic exists to shape.
 #[must_use]
-pub fn conic_rho_from_apex(
-    from: [f64; 2],
-    to: [f64; 2],
-    vertex: [f64; 2],
-    apex: [f64; 2],
-) -> Option<f64> {
-    if ![from, to, vertex, apex]
-        .into_iter()
-        .flatten()
-        .all(f64::is_finite)
-    {
+pub fn conic_shoulder_track(from: [f64; 2], to: [f64; 2], apex: [f64; 2]) -> Option<[[f64; 2]; 2]> {
+    if ![from, to, apex].into_iter().flatten().all(f64::is_finite) {
         return None;
     }
     let midpoint = [(from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5];
-    let toward_vertex = [vertex[0] - midpoint[0], vertex[1] - midpoint[1]];
-    let reach = toward_vertex[0].hypot(toward_vertex[1]);
-    if reach <= f64::EPSILON {
+    let reach = (apex[0] - midpoint[0]).hypot(apex[1] - midpoint[1]);
+    (reach > f64::EPSILON).then_some([midpoint, apex])
+}
+
+/// The rho a cursor names when it drags the shoulder along [`conic_shoulder_track`].
+///
+/// The cursor is projected onto the track and clamped to it, because the gizmo is captive: the
+/// author is choosing how far along a known segment to sit, not pointing at a free position that
+/// might miss. `None` only when there is no track at all.
+#[must_use]
+pub fn conic_rho_from_shoulder(
+    from: [f64; 2],
+    to: [f64; 2],
+    apex: [f64; 2],
+    shoulder: [f64; 2],
+) -> Option<f64> {
+    if !shoulder.iter().copied().all(f64::is_finite) {
         return None;
     }
-    let unit = [toward_vertex[0] / reach, toward_vertex[1] / reach];
-    let along = (apex[0] - midpoint[0]).mul_add(unit[0], (apex[1] - midpoint[1]) * unit[1]);
-    // The apex must lie strictly beyond the vertex, or the vertex is not between the two.
-    (along > reach).then(|| reach / along)
+    let [midpoint, apex] = conic_shoulder_track(from, to, apex)?;
+    let track = [apex[0] - midpoint[0], apex[1] - midpoint[1]];
+    let length = track[0].hypot(track[1]);
+    let unit = [track[0] / length, track[1] / length];
+    let along = (shoulder[0] - midpoint[0]).mul_add(unit[0], (shoulder[1] - midpoint[1]) * unit[1]);
+    Some((along / length).clamp(SHOULDER_RHO_MARGIN, 1.0 - SHOULDER_RHO_MARGIN))
+}
+
+/// Where a given rho puts the on-curve shoulder — `midpoint + rho * (apex - midpoint)`.
+///
+/// The inverse of [`conic_rho_from_shoulder`], and what turns the gizmo's position back into the
+/// vertex [`conic_candidate`] is authored from.
+#[must_use]
+pub fn conic_vertex_from_rho(
+    from: [f64; 2],
+    to: [f64; 2],
+    apex: [f64; 2],
+    rho: f64,
+) -> Option<[f64; 2]> {
+    if !rho.is_finite() {
+        return None;
+    }
+    let [midpoint, apex] = conic_shoulder_track(from, to, apex)?;
+    Some([
+        rho.mul_add(apex[0] - midpoint[0], midpoint[0]),
+        rho.mul_add(apex[1] - midpoint[1], midpoint[1]),
+    ])
 }
 
 /// Build Fusion's endpoint/vertex/rho conic.
@@ -207,6 +245,42 @@ mod tests {
                 ellipse.quarters[index].control[3],
                 ellipse.quarters[(index + 1) % 4].control[0]
             );
+        }
+    }
+
+    #[test]
+    fn the_shoulder_track_runs_from_the_chord_midpoint_to_the_control_point() {
+        let [midpoint, apex] = conic_shoulder_track([-2.0, 0.0], [2.0, 0.0], [0.0, 6.0]).unwrap();
+        assert_eq!(midpoint, [0.0, 0.0]);
+        assert_eq!(apex, [0.0, 6.0]);
+        assert!(conic_shoulder_track([-2.0, 0.0], [2.0, 0.0], [0.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn a_shoulder_drag_is_captive_to_its_track() {
+        let track = |shoulder| {
+            conic_rho_from_shoulder([-2.0, 0.0], [2.0, 0.0], [0.0, 4.0], shoulder).unwrap()
+        };
+        // Halfway up names the parabola, and sideways drift off the track does not change that:
+        // only the distance ALONG it is the parameter.
+        assert!((track([0.0, 2.0]) - 0.5).abs() < 1.0e-12);
+        assert!((track([9.0, 2.0]) - 0.5).abs() < 1.0e-12);
+        // Past either end the gizmo stops rather than leaving the open interval.
+        assert!(track([0.0, -50.0]) > 0.0);
+        assert!(track([0.0, 50.0]) < 1.0);
+    }
+
+    #[test]
+    fn the_shoulder_a_rho_names_lies_on_the_curve_that_rho_builds() {
+        let (from, to, apex) = ([-2.0, 0.0], [2.0, 0.0], [0.0, 4.0]);
+        for rho in [0.25, 0.5, 0.75] {
+            let vertex = conic_vertex_from_rho(from, to, apex, rho).unwrap();
+            let recovered = conic_rho_from_shoulder(from, to, apex, vertex).unwrap();
+            assert!((recovered - rho).abs() < 1.0e-12);
+            let conic = conic_candidate(from, to, vertex, rho).unwrap();
+            let point = conic.curve.point_at(0.5);
+            assert!((point[0] - vertex[0]).abs() < 1.0e-12);
+            assert!((point[1] - vertex[1]).abs() < 1.0e-12);
         }
     }
 

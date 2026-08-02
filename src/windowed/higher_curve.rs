@@ -106,6 +106,13 @@ impl HigherCurveGesture {
             });
             return HigherCurveEdit::InteractionOnly;
         }
+        // A pick the grammar cannot use is not taken at all. Accepting a conic control point that
+        // sits on its own chord would bank a gesture that can never commit, and the author would
+        // have to guess that Escape is the way out. This is the same question the preview's
+        // refusal mark asks, so what the cursor warned about is what the click declines.
+        if self.refuses_cursor(owner, kind, target.at) {
+            return HigherCurveEdit::InteractionOnly;
+        }
         let Some(pending) = self.pending.as_mut() else {
             return HigherCurveEdit::InteractionOnly;
         };
@@ -123,16 +130,26 @@ impl HigherCurveGesture {
             return self.finish_with(producer, true);
         }
         pending.points.push(target.at);
-        // The conic takes a FOURTH pick the ellipse does not: its three points leave rho free, and
-        // rho is the whole difference between an elliptic, parabolic and hyperbolic curve through
-        // the same three points. The fourth pick is the apex that names it.
+        // The conic takes a FOURTH pick the ellipse does not. Two anchors and a control point fix
+        // a whole FAMILY of curves, not one: how hard the control point pulls is still free, and
+        // that freedom is the difference between an elliptic, parabolic and hyperbolic curve
+        // through the same three picks. The fourth pick spends it.
         let arity = match kind {
             HigherCurveKind::Ellipse => 3,
             HigherCurveKind::Conic => 4,
             HigherCurveKind::FitPointSpline | HigherCurveKind::ControlPointSpline => usize::MAX,
         };
         if pending.points.len() == arity {
-            return self.finish_with(producer, false);
+            let mut restore = pending.clone();
+            let edit = self.finish_with(producer, false);
+            if matches!(edit, HigherCurveEdit::InteractionOnly) {
+                // The completing pick named no curve. Consuming the gesture here would charge the
+                // author every earlier pick for one bad cursor position, so it comes back minus
+                // the pick that answered nothing, ready for another try at the last step.
+                restore.points.pop();
+                self.pending = Some(restore);
+            }
+            return edit;
         }
         HigherCurveEdit::InteractionOnly
     }
@@ -154,9 +171,14 @@ impl HigherCurveGesture {
                     .ok()
             }),
             HigherCurveKind::Conic => pending.points.get(..4).and_then(|points| {
-                let rho = conic_rho(points[0], points[1], points[2], points[3])?;
+                // The document stores the conic by its ON-CURVE shoulder, which is what the gizmo
+                // was sitting on — the control point was the track's far end, never a vertex.
+                let resolved = conic_from_picks(points[0], points[1], points[2], Some(points[3]))?;
+                let shoulder =
+                    SketchPoint::try_from_continuous(resolved.shoulder[0], resolved.shoulder[1])
+                        .ok()?;
                 next.sketch
-                    .add_conic(points[0], points[1], points[2], rho)
+                    .add_conic(points[0], points[1], shoulder, resolved.rho)
                     .ok()
             }),
             HigherCurveKind::FitPointSpline => next
@@ -170,6 +192,63 @@ impl HigherCurveGesture {
         made.map_or(HigherCurveEdit::InteractionOnly, |_| {
             HigherCurveEdit::Document(next)
         })
+    }
+
+    /// Whether clicking here would author nothing — a conic control point on its own chord.
+    ///
+    /// The pick polyline cannot say this on its own: a refused step draws exactly like a gesture
+    /// still in progress, so without a mark the author reads a dead cursor as a live one. Only the
+    /// conic's control-point step can refuse. The shoulder step after it cannot, because the gizmo
+    /// is captive to its track and every position on the track is a curve.
+    pub fn refuses_cursor(
+        &self,
+        owner: NodeId,
+        kind: HigherCurveKind,
+        cursor: SketchPoint,
+    ) -> bool {
+        let Some(pending) = self
+            .pending
+            .as_ref()
+            .filter(|pending| pending.owner == owner && pending.kind == kind)
+        else {
+            return false;
+        };
+        match kind {
+            HigherCurveKind::Conic => {
+                pending.points.len() == 2
+                    && pending.points.get(..2).is_some_and(|anchors| {
+                        conic_from_picks(anchors[0], anchors[1], cursor, None).is_none()
+                    })
+            }
+            HigherCurveKind::Ellipse
+            | HigherCurveKind::FitPointSpline
+            | HigherCurveKind::ControlPointSpline => false,
+        }
+    }
+
+    /// The conic shoulder gizmo: the track it slides on, then its position on that track.
+    ///
+    /// Live only during the last conic step, when the control point is placed and the cursor is
+    /// choosing how hard it pulls. Profile space; the caller projects.
+    pub fn conic_shoulder_gizmo(
+        &self,
+        owner: NodeId,
+        kind: HigherCurveKind,
+        cursor: SketchPoint,
+    ) -> Option<([[f64; 2]; 2], [f64; 2])> {
+        if kind != HigherCurveKind::Conic {
+            return None;
+        }
+        let pending = self
+            .pending
+            .as_ref()
+            .filter(|pending| pending.owner == owner && pending.kind == kind)?;
+        let picks = pending
+            .points
+            .get(..3)
+            .filter(|_| pending.points.len() == 3)?;
+        let resolved = conic_from_picks(picks[0], picks[1], picks[2], Some(cursor))?;
+        Some((resolved.track, resolved.shoulder))
     }
 
     /// Profile-space preview through the current cursor. Invalid partial candidates fall back to
@@ -198,20 +277,17 @@ impl HigherCurveGesture {
                     .ok()
                     .map(|candidate| candidate.quarters.to_vec())
             }
-            // The rho step previews the curve the fourth pick is choosing between; before that
-            // pick exists there is no rho, so the three points stand on their own.
-            HigherCurveKind::Conic if continuous.len() == 4 => {
-                conic_rho(points[0], points[1], points[2], points[3])
-                    .and_then(|rho| {
-                        parametric::sketch::conic_candidate(
-                            continuous[0],
-                            continuous[1],
-                            continuous[2],
-                            rho,
-                        )
-                        .ok()
-                    })
-                    .map(|candidate| vec![candidate.curve])
+            // A real conic from the moment both anchors are down: while the control point is still
+            // moving it reads at the parabolic default, so the author watches the curve bend under
+            // the cursor rather than watching a polyline stand in for it. The last step swaps the
+            // cursor from control point to shoulder and the same curve keeps answering.
+            HigherCurveKind::Conic if points.len() == 3 => {
+                conic_from_picks(points[0], points[1], points[2], None)
+                    .map(|resolved| vec![resolved.curve])
+            }
+            HigherCurveKind::Conic if points.len() == 4 => {
+                conic_from_picks(points[0], points[1], points[2], Some(points[3]))
+                    .map(|resolved| vec![resolved.curve])
             }
             HigherCurveKind::FitPointSpline => {
                 parametric::sketch::fit_point_spline(&continuous, false)
@@ -229,23 +305,47 @@ impl HigherCurveGesture {
     }
 }
 
-/// The rho a conic's fourth pick names, in the gesture's own pick order.
+/// A conic resolved from the gesture's picks: two anchors, the control point the end tangents meet
+/// at, and where the shoulder sits on the track between them.
+struct ConicPicks {
+    /// Where the shoulder gizmo slides — chord midpoint to control point.
+    track: [[f64; 2]; 2],
+    /// The gizmo's position on that track, which is also the curve's point at t = 0.5.
+    shoulder: [f64; 2],
+    rho: f64,
+    curve: substrate::rational_bezier::RationalBezier,
+}
+
+/// Resolve the conic a run of picks names, in the gesture's own pick order.
 ///
-/// One definition for the preview and the commit, so the curve the author is aiming at is the
-/// curve the click authors. `None` when the apex pick does not lie beyond the vertex, where no rho
-/// answers — the tool then shows nothing rather than snapping to an invented sharpness.
-fn conic_rho(
+/// One definition behind the preview, the drawn gizmo and the commit, so the curve the author is
+/// shaping is the curve the click authors.
+///
+/// `shoulder` is `None` while the control point is still being placed. The curve then reads at the
+/// parabolic default, which is what lets the author watch an actual conic bend under the control
+/// point instead of waiting for a step that has not happened yet.
+///
+/// `None` only when the control point falls on the chord midpoint, where there is no track and no
+/// conic to shape.
+fn conic_from_picks(
     from: SketchPoint,
     to: SketchPoint,
-    vertex: SketchPoint,
     apex: SketchPoint,
-) -> Option<f64> {
-    parametric::sketch::conic_rho_from_apex(
-        from.in_plane(),
-        to.in_plane(),
-        vertex.in_plane(),
-        apex.in_plane(),
-    )
+    shoulder: Option<SketchPoint>,
+) -> Option<ConicPicks> {
+    let (from, to, apex) = (from.in_plane(), to.in_plane(), apex.in_plane());
+    let track = parametric::sketch::conic_shoulder_track(from, to, apex)?;
+    let rho = shoulder.map_or(Some(parametric::sketch::CONIC_PARABOLIC_RHO), |shoulder| {
+        parametric::sketch::conic_rho_from_shoulder(from, to, apex, shoulder.in_plane())
+    })?;
+    let shoulder = parametric::sketch::conic_vertex_from_rho(from, to, apex, rho)?;
+    let candidate = parametric::sketch::conic_candidate(from, to, shoulder, rho).ok()?;
+    Some(ConicPicks {
+        track,
+        shoulder,
+        rho,
+        curve: candidate.curve,
+    })
 }
 
 fn flatten_joined(curves: Vec<RationalBezier>) -> Vec<[f64; 2]> {
@@ -278,23 +378,23 @@ mod tests {
     fn fixed_arity_curves_commit_atomically_on_their_last_pick() {
         let owner = NodeId(1);
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
-        for (kind, apex) in [
+        for (kind, shoulder) in [
             (HigherCurveKind::Ellipse, None),
-            // Beyond the vertex on the midpoint→vertex ray, so a rho in (0, 1) answers.
-            (HigherCurveKind::Conic, Some(target(2, 9))),
+            // On the track between the chord midpoint (2.5, 0) and the control point (2, 3).
+            (HigherCurveKind::Conic, Some(target(2, 2))),
         ] {
             let mut gesture = HigherCurveGesture::default();
             gesture.click(owner, kind, &source, Some(target(0, 0)));
             gesture.click(owner, kind, &source, Some(target(5, 0)));
             let third = gesture.click(owner, kind, &source, Some(target(2, 3)));
-            let made = match apex {
+            let made = match shoulder {
                 None => third,
-                Some(apex) => {
+                Some(shoulder) => {
                     assert!(
                         matches!(third, HigherCurveEdit::InteractionOnly),
-                        "a conic's third pick leaves rho unchosen"
+                        "a conic's control point leaves its pull unchosen"
                     );
-                    gesture.click(owner, kind, &source, Some(apex))
+                    gesture.click(owner, kind, &source, Some(shoulder))
                 }
             };
             assert!(matches!(made, HigherCurveEdit::Document(_)));
@@ -302,45 +402,98 @@ mod tests {
         }
     }
 
-    /// The apex pick names rho, so two different apexes on the same three points are two
-    /// different curves — the freedom the fourth pick exists to spend.
+    /// The shoulder gizmo names how hard the control point pulls: sliding it toward the control
+    /// point sharpens the curve, sliding it back toward the chord flattens it. That is the whole
+    /// freedom the fourth pick exists to spend.
     #[test]
-    fn the_apex_pick_chooses_the_conics_sharpness() {
+    fn the_shoulder_gizmo_chooses_how_hard_the_control_point_pulls() {
         let owner = NodeId(3);
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
-        let rho_for = |apex: ResolvedSketchTarget| {
+        // Anchors (0, 0) and (8, 0) put the chord midpoint at (4, 0); the control point at (4, 8)
+        // makes the track a clean eight voxels of straight up.
+        let rho_for = |shoulder: ResolvedSketchTarget| {
             let mut gesture = HigherCurveGesture::default();
-            for point in [target(0, 0), target(8, 0), target(4, 2)] {
+            for point in [target(0, 0), target(8, 0), target(4, 8)] {
                 gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
             }
             let HigherCurveEdit::Document(made) =
-                gesture.click(owner, HigherCurveKind::Conic, &source, Some(apex))
+                gesture.click(owner, HigherCurveKind::Conic, &source, Some(shoulder))
             else {
-                panic!("the apex pick commits")
+                panic!("the shoulder pick commits")
             };
             made.sketch.conics()[0].rho.value()
         };
-        let near = rho_for(target(4, 3));
-        let far = rho_for(target(4, 20));
+        let near_the_control_point = rho_for(target(4, 6));
+        let near_the_chord = rho_for(target(4, 2));
         assert!(
-            near > far,
-            "pulling the apex away sharpens: {near} vs {far}"
+            near_the_control_point > near_the_chord,
+            "toward the control point sharpens: {near_the_control_point} vs {near_the_chord}"
         );
-        assert!((0.0..1.0).contains(&near) && (0.0..1.0).contains(&far));
+        assert!(
+            (0.0..1.0).contains(&near_the_control_point) && (0.0..1.0).contains(&near_the_chord)
+        );
     }
 
-    /// An apex that does not lie beyond the vertex names no rho, and the tool refuses rather than
-    /// inventing a sharpness the author did not point at.
+    /// The gizmo is captive: dragged past either end of its track it stops rather than refusing,
+    /// so the last step of a conic has no way to fail on the author.
     #[test]
-    fn an_apex_short_of_the_vertex_commits_nothing() {
+    fn a_shoulder_dragged_off_the_end_of_its_track_still_commits() {
+        let owner = NodeId(5);
+        let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+        for overshoot in [target(4, -40), target(4, 40)] {
+            let mut gesture = HigherCurveGesture::default();
+            for point in [target(0, 0), target(8, 0), target(4, 8)] {
+                gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+            }
+            let made = gesture.click(owner, HigherCurveKind::Conic, &source, Some(overshoot));
+            assert!(matches!(made, HigherCurveEdit::Document(_)));
+        }
+    }
+
+    /// A control point on the chord midpoint shapes nothing: no track for the shoulder to slide
+    /// on, and no conic to build. The pick is declined outright rather than banked into a gesture
+    /// that could never commit, and the anchors behind it survive to be finished properly.
+    #[test]
+    fn a_control_point_on_the_chord_is_declined_and_keeps_the_anchors() {
         let owner = NodeId(4);
         let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
         let mut gesture = HigherCurveGesture::default();
-        for point in [target(0, 0), target(8, 0), target(4, 6)] {
+        for point in [target(0, 0), target(8, 0)] {
             gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
         }
-        let made = gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 2)));
-        assert!(matches!(made, HigherCurveEdit::InteractionOnly));
+        let declined = gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 0)));
+        assert!(matches!(declined, HigherCurveEdit::InteractionOnly));
+        assert_eq!(gesture.placed_points(owner).len(), 2);
+        gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 8)));
+        let made = gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 4)));
+        assert!(matches!(made, HigherCurveEdit::Document(_)));
+    }
+
+    /// The conic shows a real curve from the moment its control point starts moving, not a
+    /// polyline through the picks — the curve IS the affordance for placing the control point.
+    #[test]
+    fn a_conic_previews_a_curve_while_its_control_point_is_still_moving() {
+        let owner = NodeId(6);
+        let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+        let mut gesture = HigherCurveGesture::default();
+        for point in [target(0, 0), target(8, 0)] {
+            gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+        }
+        let bending = gesture.preview(owner, HigherCurveKind::Conic, SketchPoint::new(4, 8));
+        assert!(
+            bending.len() > 3,
+            "a flattened conic, not the three picks: {bending:?}"
+        );
+        // The gizmo only exists once the control point is placed, and then it rides its track.
+        assert!(gesture
+            .conic_shoulder_gizmo(owner, HigherCurveKind::Conic, SketchPoint::new(4, 4))
+            .is_none());
+        gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 8)));
+        let (track, shoulder) = gesture
+            .conic_shoulder_gizmo(owner, HigherCurveKind::Conic, SketchPoint::new(4, 6))
+            .expect("the shoulder gizmo is live once the control point is down");
+        assert_eq!(track, [[4.0, 0.0], [4.0, 8.0]]);
+        assert!((shoulder[1] - 6.0).abs() < 1.0e-9, "{shoulder:?}");
     }
 
     #[test]
