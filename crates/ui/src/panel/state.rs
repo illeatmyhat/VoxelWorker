@@ -354,6 +354,8 @@ pub enum SketchTool {
     Slot3PointArc,
     /// Break the curve under the cursor at every intersection with other sketch geometry.
     BreakCurve,
+    /// Trim the clicked native-curve interval to its neighboring intersections.
+    Trim,
 }
 
 /// The floating Signal **display stack**'s viewer state.

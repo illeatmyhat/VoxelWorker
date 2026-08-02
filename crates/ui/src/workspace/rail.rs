@@ -269,7 +269,11 @@ const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
         "Two Distance Chamfer — reserved",
         SketchModifierRoute::Reserved,
     ),
-    (Icon::Trim, "Trim — reserved", SketchModifierRoute::Reserved),
+    (
+        Icon::Trim,
+        "Trim — remove the clicked interval to its neighboring intersections",
+        SketchModifierRoute::Tool(SketchTool::Trim),
+    ),
     (
         Icon::Extend,
         "Extend — reserved",
@@ -703,7 +707,7 @@ mod tests {
                     (route != SketchModifierRoute::Reserved).then_some(icon)
                 })
                 .collect::<Vec<_>>(),
-            vec![Icon::ConstructionToggle, Icon::BreakCurve]
+            vec![Icon::ConstructionToggle, Icon::Trim, Icon::BreakCurve]
         );
     }
 

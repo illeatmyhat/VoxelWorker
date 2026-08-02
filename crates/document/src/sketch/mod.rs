@@ -65,7 +65,7 @@ pub use constraint::{
     SymmetryBranch, TangentBranch,
 };
 pub use faces::{Face, FaceKey};
-pub use modify::{BreakPlacement, BreakRefusal};
+pub use modify::{BreakPlacement, BreakRefusal, TrimPlacement, TrimRefusal};
 pub use parametric::sketch::{SolveOutcome, SolveReport};
 pub use parametric::{ArcSweep, CircleRadius, CurveParameter, ResolvedLength};
 pub use solid::SketchSolid;

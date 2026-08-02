@@ -149,6 +149,7 @@ enum SketchToolConfig {
     SlotCenterPointArc,
     Slot3PointArc,
     BreakCurve,
+    Trim,
 }
 
 const fn default_sketch_polygon_sides() -> u16 {
@@ -1145,19 +1146,21 @@ mod tests {
     }
 
     #[test]
-    fn break_tool_survives_both_sides_of_the_tool_config_shim() {
-        let mut state = distinctive_state();
-        state.sketch_tool = SketchTool::BreakCurve;
-        let json = Dump::from_state(&state)
-            .to_json()
-            .expect("serialize Break tool");
-        assert_eq!(
-            Dump::from_json(&json)
-                .expect("deserialize Break tool")
-                .into_state()
-                .sketch_tool,
-            SketchTool::BreakCurve
-        );
+    fn trim_and_break_tools_survive_both_sides_of_the_tool_config_shim() {
+        for tool in [SketchTool::Trim, SketchTool::BreakCurve] {
+            let mut state = distinctive_state();
+            state.sketch_tool = tool;
+            let json = Dump::from_state(&state)
+                .to_json()
+                .expect("serialize modifier tool");
+            assert_eq!(
+                Dump::from_json(&json)
+                    .expect("deserialize modifier tool")
+                    .into_state()
+                    .sketch_tool,
+                tool
+            );
+        }
     }
 
     /// The flattening is a format decision, so it is pinned as one. If the three parts ever

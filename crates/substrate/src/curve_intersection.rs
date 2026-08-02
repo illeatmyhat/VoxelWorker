@@ -144,6 +144,54 @@ impl PlanarCurve {
         }
     }
 
+    /// The parameter of the point on this finite curve nearest `witness`.
+    ///
+    /// Segments use the clamped orthogonal projection. Arcs use the witness bearing when it lies
+    /// inside the signed sweep and otherwise choose the nearer endpoint. A whole circle has no
+    /// endpoints, so every bearing maps directly into its wrapped `[0, 1)` parameter.
+    #[must_use]
+    pub fn nearest_parameter(&self, witness: [f64; 2]) -> f64 {
+        match *self {
+            Self::Segment { start, end } => {
+                let direction = [end[0] - start[0], end[1] - start[1]];
+                let length_squared =
+                    direction[0].mul_add(direction[0], direction[1] * direction[1]);
+                if length_squared <= f64::EPSILON {
+                    return 0.0;
+                }
+                (direction[0].mul_add(
+                    witness[0] - start[0],
+                    direction[1] * (witness[1] - start[1]),
+                ) / length_squared)
+                    .clamp(0.0, 1.0)
+            }
+            Self::Arc {
+                center,
+                start_radians,
+                sweep_radians,
+                ..
+            } => {
+                let bearing = (witness[1] - center[1]).atan2(witness[0] - center[0]);
+                let travelled = if sweep_radians.is_sign_negative() {
+                    (start_radians - bearing).rem_euclid(TAU)
+                } else {
+                    (bearing - start_radians).rem_euclid(TAU)
+                };
+                let parameter = travelled / sweep_radians.abs();
+                if self.is_closed() || parameter <= 1.0 {
+                    return parameter.min(1.0);
+                }
+                let start_distance = squared_distance(witness, self.start());
+                let end_distance = squared_distance(witness, self.end());
+                if start_distance <= end_distance {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+        }
+    }
+
     /// The stretch of this curve between two parameters, as a curve in its own right.
     ///
     /// An arc keeps its circle and narrows its sweep — it does not become a chord, and it does not
@@ -381,6 +429,11 @@ fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 fn length(a: [f64; 2]) -> f64 {
     a[0].hypot(a[1])
+}
+
+fn squared_distance(first: [f64; 2], second: [f64; 2]) -> f64 {
+    let delta = [first[0] - second[0], first[1] - second[1]];
+    delta[0].mul_add(delta[0], delta[1] * delta[1])
 }
 
 /// Segment against segment: the parametric cross-product solve, with the collinear case answered
@@ -792,6 +845,22 @@ mod tests {
         assert_eq!(crossings.len(), 2);
         assert_near(crossings[0].point, [-4.0, 0.0]);
         assert_near(crossings[1].point, [4.0, 0.0]);
+    }
+
+    #[test]
+    fn nearest_parameter_projects_segments_and_respects_arc_domains() {
+        assert!(
+            (segment([0.0, 0.0], [10.0, 0.0]).nearest_parameter([4.0, 3.0]) - 0.4).abs() < 1.0e-12
+        );
+        assert_eq!(
+            segment([0.0, 0.0], [10.0, 0.0]).nearest_parameter([-2.0, 1.0]),
+            0.0
+        );
+        let quarter = arc([0.0, 0.0], 5.0, 0.0, 90.0);
+        assert!((quarter.nearest_parameter([4.0, 4.0]) - 0.5).abs() < 1.0e-12);
+        assert_eq!(quarter.nearest_parameter([-5.0, 0.0]), 1.0);
+        let circle = PlanarCurve::circle([0.0, 0.0], 5.0);
+        assert!((circle.nearest_parameter([0.0, -8.0]) - 0.75).abs() < 1.0e-12);
     }
 
     /// A tangent line touches once. Reporting it twice would make an arrangement cut the same

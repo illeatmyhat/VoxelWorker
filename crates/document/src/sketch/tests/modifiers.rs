@@ -142,3 +142,59 @@ fn break_refuses_a_curve_without_an_interior_intersection_atomically() {
     );
     assert_eq!(source.sketch.segments().len(), 2);
 }
+
+#[test]
+fn trim_removes_only_the_witnessed_interval_between_neighboring_crossings() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let target = segment(&mut sketch, [0, 0], [12, 0]);
+    segment(&mut sketch, [3, -2], [3, 2]);
+    segment(&mut sketch, [9, -2], [9, 2]);
+    let origin = sketch.segments()[0].origin;
+    let source = SketchSolid::extrude(sketch, 3);
+
+    let placement = source
+        .trim_placement(SketchCurve::Segment(target), [6.0, 0.2], ctx(16))
+        .unwrap();
+    assert_eq!(placement.kept.len(), 2);
+    assert_eq!(placement.removed.start(), [3.0, 0.0]);
+    assert_eq!(placement.removed.end(), [9.0, 0.0]);
+    let made = source
+        .with_curve_trimmed(SketchCurve::Segment(target), [6.0, 0.2], ctx(16))
+        .unwrap();
+    let kept: Vec<_> = made
+        .sketch
+        .segments()
+        .iter()
+        .filter(|segment| segment.origin == origin)
+        .collect();
+    assert_eq!(kept.len(), 2);
+    assert!(made
+        .sketch
+        .segments()
+        .iter()
+        .all(|segment| segment.id != target));
+}
+
+#[test]
+fn trim_without_a_crossing_deletes_the_curve_and_circle_trim_stays_curved() {
+    let mut lone = Sketch::empty(PlaneAxis::Z);
+    let line = segment(&mut lone, [0, 0], [5, 0]);
+    let source = SketchSolid::extrude(lone, 3);
+    let deleted = source
+        .with_curve_trimmed(SketchCurve::Segment(line), [2.0, 0.0], ctx(16))
+        .unwrap();
+    assert!(deleted.sketch.segments().is_empty());
+
+    let mut crossed = Sketch::empty(PlaneAxis::Z);
+    let circle = crossed
+        .add_circle(SketchPoint::new(0, 0), SketchLength::new(5))
+        .unwrap();
+    segment(&mut crossed, [-10, 0], [10, 0]);
+    let source = SketchSolid::extrude(crossed, 3);
+    let trimmed = source
+        .with_curve_trimmed(SketchCurve::Circle(circle), [0.0, 4.0], ctx(16))
+        .unwrap();
+    assert!(trimmed.sketch.circles().is_empty());
+    assert_eq!(trimmed.sketch.arcs().len(), 1);
+    assert!((trimmed.sketch.arcs()[0].sweep_degrees().abs() - 180.0).abs() < 1.0e-9);
+}

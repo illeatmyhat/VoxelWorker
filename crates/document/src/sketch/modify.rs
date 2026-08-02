@@ -26,6 +26,20 @@ pub enum BreakRefusal {
     Unrepresentable,
 }
 
+/// Canonical result of trimming the interval nearest the click witness.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrimPlacement {
+    pub source: SketchCurve,
+    pub removed: PlanarCurve,
+    pub kept: Vec<PlanarCurve>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrimRefusal {
+    UnknownCurve,
+    Unrepresentable,
+}
+
 impl SketchSolid {
     /// Resolve every intersection of `source` with the other authored curves, retaining native
     /// line/arc pieces. End-only contacts do not break an already-open curve.
@@ -69,6 +83,66 @@ impl SketchSolid {
         let placement = self.break_placement(source, context)?;
         let mut next = self.clone();
         next.sketch.apply_break(&placement)?;
+        Ok(next)
+    }
+
+    /// Resolve the finite interval of `source` nearest `witness` between adjacent crossings.
+    /// With no crossing the whole curve is the interval, matching Fusion's delete-on-no-crossing
+    /// Trim behavior.
+    pub fn trim_placement(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<TrimPlacement, TrimRefusal> {
+        let source_curve = self
+            .sketch
+            .planar_curve(source, context)
+            .ok_or(TrimRefusal::UnknownCurve)?;
+        let mut cuts = Vec::new();
+        for other in self.sketch.curves() {
+            if other == source {
+                continue;
+            }
+            let Some(other_curve) = self.sketch.planar_curve(other, context) else {
+                continue;
+            };
+            cuts.extend(
+                source_curve
+                    .crossings(&other_curve)
+                    .into_iter()
+                    .map(|crossing| crossing.parameter_on_first),
+            );
+        }
+        let mut pieces = source_curve.split_at(&cuts);
+        let remove_index = pieces
+            .iter()
+            .enumerate()
+            .min_by(|(_, first), (_, second)| {
+                distance_to_curve(first, witness).total_cmp(&distance_to_curve(second, witness))
+            })
+            .map(|(index, _)| index)
+            .ok_or(TrimRefusal::UnknownCurve)?;
+        let removed = pieces.remove(remove_index);
+        Ok(TrimPlacement {
+            source,
+            removed,
+            kept: pieces,
+        })
+    }
+
+    /// Atomically remove the clicked Trim interval and persist the remaining native pieces.
+    pub fn with_curve_trimmed(
+        &self,
+        source: SketchCurve,
+        witness: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<SketchSolid, TrimRefusal> {
+        let placement = self.trim_placement(source, witness, context)?;
+        let mut next = self.clone();
+        next.sketch
+            .replace_curve_with_pieces(placement.source, &placement.kept)
+            .map_err(|_| TrimRefusal::Unrepresentable)?;
         Ok(next)
     }
 }
@@ -236,6 +310,71 @@ impl Sketch {
         }
         Ok(id)
     }
+
+    fn replace_curve_with_pieces(
+        &mut self,
+        source: SketchCurve,
+        pieces: &[PlanarCurve],
+    ) -> Result<(), BreakRefusal> {
+        let (origin, role) = match source {
+            SketchCurve::Segment(id) => {
+                let held = self
+                    .segments
+                    .iter()
+                    .find(|segment| segment.id == id)
+                    .ok_or(BreakRefusal::UnknownCurve)?;
+                (held.origin, held.role)
+            }
+            SketchCurve::Arc(id) => {
+                let held = self
+                    .arcs
+                    .iter()
+                    .find(|arc| arc.id == id)
+                    .ok_or(BreakRefusal::UnknownCurve)?;
+                (held.origin, held.role)
+            }
+            SketchCurve::Circle(id) => {
+                let held = self
+                    .circles
+                    .iter()
+                    .find(|circle| circle.id == id)
+                    .ok_or(BreakRefusal::UnknownCurve)?;
+                (held.origin, held.role)
+            }
+        };
+        match source {
+            SketchCurve::Segment(id) => self.segments.retain(|segment| segment.id != id),
+            SketchCurve::Arc(id) => self.arcs.retain(|arc| arc.id != id),
+            SketchCurve::Circle(id) => self.circles.retain(|circle| circle.id != id),
+        }
+        for piece in pieces {
+            let from = self.point_for_break(piece.start(), role)?;
+            let to = self.point_for_break(piece.end(), role)?;
+            let id = self.alloc_id();
+            match *piece {
+                PlanarCurve::Segment { .. } => self.segments.push(Segment {
+                    id,
+                    from,
+                    to,
+                    origin,
+                    role,
+                }),
+                PlanarCurve::Arc { .. } => self.arcs.push(Arc {
+                    id,
+                    from,
+                    to,
+                    bulge: ArcSweep::free(piece_sweep(piece)?),
+                    center: ABSENT_CENTER,
+                    origin,
+                    role,
+                }),
+            }
+        }
+        self.sync_arc_centers();
+        self.prune_orphan_centers();
+        self.drop_dangling_constraints();
+        Ok(())
+    }
 }
 
 fn piece_sweep(piece: &PlanarCurve) -> Result<AngleMeasurement, BreakRefusal> {
@@ -244,4 +383,10 @@ fn piece_sweep(piece: &PlanarCurve) -> Result<AngleMeasurement, BreakRefusal> {
     };
     AngleMeasurement::try_from_degrees_f64(sweep_radians.to_degrees())
         .map_err(|_| BreakRefusal::Unrepresentable)
+}
+
+fn distance_to_curve(curve: &PlanarCurve, witness: [f64; 2]) -> f64 {
+    let nearest = curve.point_at(curve.nearest_parameter(witness));
+    let delta = [nearest[0] - witness[0], nearest[1] - witness[1]];
+    delta[0].mul_add(delta[0], delta[1] * delta[1])
 }
