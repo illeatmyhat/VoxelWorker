@@ -391,6 +391,10 @@ struct WindowedState {
     /// the SAME order — maps an overlay hit index to the entity to drag or delete (the store has
     /// no positional index).
     sketch_point_ids: Vec<document::sketch::EntityId>,
+    /// Whether each entry in [`sketch_point_ids`](Self::sketch_point_ids) is a DERIVED point, in
+    /// the same order — read by the vertex hit-test to break a tie in favour of the point an
+    /// author can actually drag.
+    sketch_point_derived: Vec<bool>,
     /// Each segment's identity, its two endpoint indices into
     /// [`sketch_vertex_px`](Self::sketch_vertex_px), and its role — the add-point hit-test splits
     /// the named segment by id, and the overlay draws a line per entry, not consecutive pairs.
@@ -880,6 +884,7 @@ impl WindowedState {
             viewport_transactions: Vec::new(),
             sketch_overlay_points: Vec::new(),
             sketch_vertex_px: Vec::new(),
+            sketch_point_derived: Vec::new(),
             sketch_point_ids: Vec::new(),
             sketch_segments: Vec::new(),
             sketch_segment_lines: Vec::new(),
@@ -1052,6 +1057,7 @@ impl WindowedState {
             sketch_overlay_points: _,
             sketch_vertex_px: _,
             sketch_point_ids: _,
+            sketch_point_derived: _,
             sketch_segments: _,
             sketch_segment_lines: _,
             sketch_arc_lines: _,

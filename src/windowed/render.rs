@@ -9,6 +9,10 @@ use super::*;
 /// any zoom; it only ever refines the DRAWING, never the resolved profile.
 const ARC_SCREEN_SAGITTA_PX: f64 = 0.25;
 
+/// How much closer (logical px) a DERIVED vertex must be before it outranks an authored one under
+/// the cursor. Sub-pixel on purpose: it settles the stacked case and nothing else.
+const SKETCH_STACKED_HANDLE_BIAS: f32 = 0.5;
+
 /// The shape a click is about to author — every drawing tool's ordinary preview mark.
 fn preview_outline(chords: Vec<egui::Pos2>) -> ui::chrome::SketchPreviewMark {
     ui::chrome::SketchPreviewMark::Polyline {
@@ -1310,15 +1314,36 @@ impl WindowedState {
     /// grab radius, or `None`. Reads the profile-order [`sketch_vertex_px`](Self::sketch_vertex_px)
     /// cache, so it shares the exact projection the overlay drew. Used by the vertex-drag grab
     /// (#94) and the selection click resolve.
+    ///
+    /// A DERIVED point loses a near-tie. Some shapes deliberately stack an authored handle on top
+    /// of a point the drawing derives — a slot's center is a real, draggable point pinned to the
+    /// center its rails turn about — and the two then project to the same pixel, so distance alone
+    /// decides the grab by whatever order the store happens to be in. Landing on the derived twin
+    /// is the dead half of that coin: dragging it authors a radius rather than moving the shape.
+    /// The bias is under a pixel, so it can only ever settle a tie the author could not see anyway.
     fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
-        let grab_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
-            * self.window.scale_factor() as f32;
+        let scale = self.window.scale_factor() as f32;
+        let grab_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD) * scale;
+        let stacked_px = SKETCH_STACKED_HANDLE_BIAS * scale;
         let mut nearest: Option<(usize, f32)> = None;
         for (index, center) in self.sketch_vertex_px.iter().enumerate() {
             let Some(center) = center else { continue };
             let distance = (cursor_x as f32 - center.x).hypot(cursor_y as f32 - center.y);
-            if distance <= grab_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
-                nearest = Some((index, distance));
+            if distance > grab_px {
+                continue;
+            }
+            let ranked = if self
+                .sketch_point_derived
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+            {
+                distance + stacked_px
+            } else {
+                distance
+            };
+            if nearest.map(|(_, best)| ranked < best).unwrap_or(true) {
+                nearest = Some((index, ranked));
             }
         }
         nearest.map(|(index, _)| index)
@@ -4086,6 +4111,7 @@ impl WindowedState {
         self.sketch_overlay_points.clear();
         self.sketch_vertex_px.clear();
         self.sketch_point_ids.clear();
+        self.sketch_point_derived.clear();
         self.sketch_segments.clear();
         self.sketch_segment_lines.clear();
         self.sketch_arc_lines.clear();
@@ -4301,6 +4327,7 @@ impl WindowedState {
         // `sketch_vertex_px` — the press hit-tests (in `events`) read these to resolve a click to
         // the entity it targets.
         self.sketch_point_ids = handles.point_ids.clone();
+        self.sketch_point_derived = handles.derived.clone();
         self.sketch_segments = handles.segments.clone();
 
         // Arc chord polylines in PHYSICAL px (#102), tessellated for the SCREEN. The resolve's

@@ -116,6 +116,13 @@ pub struct SketchHandles {
     /// drag / delete can map a hit index back to the stable entity it must mutate (the entity
     /// store has no positional index).
     pub point_ids: Vec<EntityId>,
+    /// Whether each vertex is one the drawing DERIVES, in the same order.
+    ///
+    /// A derived point is a readout, not a freedom: dragging it authors the quantity behind it
+    /// rather than a position. Slots stack an authored handle exactly on top of one, so a hit-test
+    /// that only knows distance is picking between them by accident — see
+    /// [`SketchHandles::point_ids`] for the identity that hit resolves to.
+    pub derived: Vec<bool>,
     /// Each segment entity, its two endpoint indices into
     /// [`vertices`](Self::vertices)/[`point_ids`](Self::point_ids), and its role. The UI draws a
     /// line per entry and hit-tests add-point against them (splitting the named segment by id).
@@ -222,6 +229,10 @@ impl Scene {
         };
         let points = producer.sketch.points();
         let point_ids: Vec<EntityId> = points.iter().map(|point| point.id).collect();
+        let derived: Vec<bool> = point_ids
+            .iter()
+            .map(|id| producer.sketch.is_derived_point(*id))
+            .collect();
 
         // The overlay frame anchors on the RESOLVE's anchor — the filled region's bbox-min, the
         // same `profile_bbox_min` the producer re-seats to the node origin. One anchor, so a
@@ -409,6 +420,7 @@ impl Scene {
         Some(SketchHandles {
             vertices,
             point_ids,
+            derived,
             segments,
             arcs,
             circles,
@@ -450,6 +462,8 @@ mod tests {
     use super::Scene;
     use crate::scene::{Node, NodeContent, NodeId, NodeTransform};
     use crate::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
+    use parametric::EvaluationContext;
+    use std::num::NonZeroU32;
     use voxel_core::core_geom::MaterialChoice;
 
     const DENSITY: u32 = 8;
@@ -499,6 +513,39 @@ mod tests {
                 expected.offset_voxels,
             );
         }
+    }
+
+    /// The overlay has to be able to tell a handle from the point it stands on.
+    ///
+    /// A slot pins an authored center onto the center its rails turn about, so the two project to
+    /// the same pixel and a hit-test that knows only distance picks between them by accident. What
+    /// this pins is that the flags are aligned with the ids AND that the stacking is real — if a
+    /// later change stopped stacking them the tie-break would go quietly untested.
+    #[test]
+    fn stacked_slot_handles_report_which_point_the_drawing_derives() {
+        let made = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 4)
+            .with_center_arc_slot(
+                SketchPoint::new(0, 0),
+                SketchPoint::new(8, 0),
+                SketchPoint::new(0, 8),
+                parametric::sketch::ArcTurn::CounterClockwise,
+                SketchPoint::new(10, 0),
+                EvaluationContext::new(NonZeroU32::new(DENSITY).unwrap()),
+            )
+            .expect("a quarter-turn arc slot");
+        let (scene, id) = scene_with_sketch((*made.sketch).clone(), 3, [0, 0, 0]);
+        let handles = scene.sketch_handles(id, DENSITY).expect("sketch handles");
+
+        assert_eq!(handles.derived.len(), handles.point_ids.len());
+        for (index, point) in handles.point_ids.iter().enumerate() {
+            assert_eq!(handles.derived[index], made.sketch.is_derived_point(*point));
+        }
+        let stacked = handles.vertices.iter().enumerate().any(|(index, vertex)| {
+            handles.vertices.iter().enumerate().any(|(other, twin)| {
+                other != index && twin == vertex && handles.derived[other] != handles.derived[index]
+            })
+        });
+        assert!(stacked, "a slot stands an authored center on a derived one");
     }
 
     #[test]
