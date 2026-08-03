@@ -3322,8 +3322,10 @@ impl Sketch {
     /// Draw one endpoint/control/rho conic with exact dimensionless rho storage.
     ///
     /// The control point is off the curve, so it is reified as a CONSTRUCTION point — the same
-    /// treatment a control-point spline's interior frame gets. That is what makes it a handle
-    /// rather than a vertex of the profile.
+    /// treatment a control-point spline's interior frame gets. On a POINT that role is a lifetime,
+    /// not a linetype: it says [`prune_orphan_centers`](Self::prune_orphan_centers) may sweep the
+    /// point once no curve names it. A handle draws and hit-tests the same either way, which is
+    /// what makes the control point grabbable with no drawing code at all.
     pub fn add_conic(
         &mut self,
         from: SketchPoint,
