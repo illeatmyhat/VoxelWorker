@@ -1398,6 +1398,21 @@ pub enum SplineKind {
     ControlPoint,
 }
 
+impl SplineKind {
+    /// The fewest points this kind of spline still describes a curve with.
+    ///
+    /// Below it there is no curve left to simplify to, so a point delete that would cross this
+    /// floor deletes the spline instead of healing it.
+    const fn fewest_points(self, closed: bool) -> usize {
+        match self {
+            // A closed interpolant needs three points to be a loop rather than a doubled-back
+            // pair; open, two points are the curve through both of them.
+            Self::FitPoint if closed => 3,
+            Self::FitPoint | Self::ControlPoint => 2,
+        }
+    }
+}
+
 /// One author-visible spline, regardless of how many cubic pieces its evaluator emits.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Spline {
@@ -3018,11 +3033,52 @@ impl Sketch {
         boxed_retain(&mut self.conics, |conic| {
             conic.from != id && conic.to != id && conic.control != id && conic.shoulder != id
         });
-        boxed_retain(&mut self.splines, |spline| !spline.points.contains(&id));
+        self.heal_splines_without(id);
         self.points.retain(|point| point.id != id);
         self.prune_orphan_centers();
         self.drop_dangling_patterns();
         self.drop_dangling_constraints();
+    }
+
+    /// Drop `id` out of every spline that names it, SIMPLIFYING the spline instead of deleting it.
+    ///
+    /// Every other curve is a fixed arity — an arc is three points, a conic is four — so losing one
+    /// of them leaves nothing the curve could be, and the cascade deletes it. A spline is the one
+    /// curve whose arity is the author's: it is however many points they placed. Removing one is
+    /// therefore an edit to the curve, not the end of it. The spline heals down through the degrees
+    /// its remaining frame supports — cubic, quadratic, the straight line between two ends — and
+    /// only dies when it falls under [`SplineKind::fewest_points`].
+    ///
+    /// A control-point spline is minted with Real ends and a Construction interior, so when the
+    /// deleted point WAS an end the point behind it inherits the job and is promoted. Roles are
+    /// only ever promoted here, never demoted: a point that has become interior may still be an
+    /// endpoint of some other curve, and Construction on a point is a lifetime — demoting one would
+    /// hand it to [`prune_orphan_centers`](Self::prune_orphan_centers) to sweep.
+    fn heal_splines_without(&mut self, id: EntityId) {
+        let mut healed = Vec::with_capacity(self.splines.len());
+        let mut promote = Vec::new();
+        for spline in &*self.splines {
+            if !spline.points.contains(&id) {
+                healed.push(spline.clone());
+                continue;
+            }
+            let mut spline = spline.clone();
+            spline.points.retain(|point| *point != id);
+            if spline.points.len() < spline.kind.fewest_points(spline.closed) {
+                continue;
+            }
+            if spline.kind == SplineKind::ControlPoint {
+                promote.extend(spline.points.first().copied());
+                promote.extend(spline.points.last().copied());
+            }
+            healed.push(spline);
+        }
+        self.splines = healed.into_boxed_slice();
+        for point in &mut self.points {
+            if promote.contains(&point.id) {
+                point.role = EntityRole::Real;
+            }
+        }
     }
 
     /// Delete the segment with id `seg_id`, **and each of its ends that nothing else draws**.

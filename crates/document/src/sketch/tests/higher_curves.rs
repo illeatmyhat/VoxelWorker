@@ -215,6 +215,91 @@ fn control_point_spline_keeps_only_its_endpoints_visible() {
 }
 
 #[test]
+fn deleting_a_control_simplifies_the_spline_until_only_its_ends_remain() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_control_point_spline(&[
+            SketchPoint::new(0, 0),
+            SketchPoint::new(2, 5),
+            SketchPoint::new(6, 5),
+            SketchPoint::new(8, 0),
+        ])
+        .expect("four controls make one cubic span");
+    let controls = sketch.splines()[0].points.clone();
+
+    // An interior control leaves: cubic becomes quadratic, the spline lives.
+    sketch.delete_point_cascade(controls[1]);
+    assert_eq!(sketch.splines().len(), 1);
+    assert_eq!(
+        sketch.splines()[0].points,
+        vec![controls[0], controls[2], controls[3]]
+    );
+
+    // An END leaves: the control behind it inherits the job and is promoted out of Construction,
+    // which is the only thing keeping it off `prune_orphan_centers`' sweep.
+    sketch.delete_point_cascade(controls[0]);
+    assert_eq!(sketch.splines()[0].points, vec![controls[2], controls[3]]);
+    let role = |id| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.role)
+    };
+    assert_eq!(role(controls[2]), Some(EntityRole::Real));
+
+    // Two ends is the floor: the last delete has no curve left to simplify to.
+    sketch.delete_point_cascade(controls[2]);
+    assert!(sketch.splines().is_empty());
+}
+
+#[test]
+fn deleting_a_fit_point_simplifies_the_spline_and_a_closed_one_opens_no_lower_than_three() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(-4, -2),
+                SketchPoint::new(4, -2),
+                SketchPoint::new(0, 5),
+            ],
+            true,
+        )
+        .expect("three distinct points make a closed fit spline");
+    let fits = sketch.splines()[0].points.clone();
+
+    sketch.delete_point_cascade(fits[0]);
+    assert!(
+        sketch.splines().is_empty(),
+        "a closed loop of two is not a loop"
+    );
+
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(1, 2),
+                SketchPoint::new(4, 6),
+                SketchPoint::new(8, 2),
+            ],
+            false,
+        )
+        .expect("valid open fit spline");
+    let fits = sketch.splines()[0].points.clone();
+
+    sketch.delete_point_cascade(fits[1]);
+    assert_eq!(sketch.splines()[0].points, vec![fits[0], fits[2]]);
+    assert_eq!(
+        sketch.faces(ctx(16)).len(),
+        0,
+        "an open two-point spline is no face"
+    );
+
+    sketch.delete_point_cascade(fits[0]);
+    assert!(sketch.splines().is_empty());
+}
+
+#[test]
 fn spline_points_retarget_and_invalid_loaded_splines_repair_atomically() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     sketch

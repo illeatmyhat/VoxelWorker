@@ -67,17 +67,28 @@ pub fn fit_point_spline(
     Ok(SplineCandidate { pieces, closed })
 }
 
-/// Convert a clamped uniform cubic control-point spline into exact cubic Bézier spans.
+/// Convert a clamped uniform control-point spline into exact cubic Bézier spans.
+///
+/// # Degree follows the control count
+///
+/// Cubic wherever there are controls enough for it, and one degree lower for each control short of
+/// that: three controls is a quadratic, two is the straight line between them. A clamped uniform
+/// B-spline of degree `d` needs `d + 1` controls, so this is the highest degree the polygon
+/// actually supports rather than a special case bolted on.
+///
+/// That is what lets a control point be DELETED. The author's spline simplifies and heals instead
+/// of vanishing, down to the two ends — pinning degree at three would make the curve die the
+/// moment it dropped to three controls, which is not what removing a point means.
 ///
 /// # Errors
 ///
-/// Returns a typed error for non-finite input, fewer than four controls, or a collapsed control
+/// Returns a typed error for non-finite input, fewer than two controls, or a collapsed control
 /// polygon.
 pub fn control_point_spline(
     controls: &[[f64; 2]],
 ) -> Result<SplineCandidate, SplineCandidateError> {
-    validate(controls, 4)?;
-    let degree = 3;
+    validate(controls, 2)?;
+    let degree = 3.min(controls.len() - 1);
     let span_count = controls.len() - degree;
     let knots = clamped_uniform_knots(controls.len(), degree);
     let mut pieces = Vec::with_capacity(span_count);
@@ -354,5 +365,52 @@ mod tests {
         let controls = [[0.0, 0.0], [1.0, 3.0], [4.0, 3.0], [5.0, 0.0]];
         let spline = control_point_spline(&controls).unwrap();
         assert_eq!(spline.pieces, vec![RationalBezier::cubic(controls)]);
+    }
+
+    /// Three controls is the quadratic through them, degree-elevated — the shape a cubic authoring
+    /// path has to produce so that removing a control changes the curve without ending it.
+    #[test]
+    fn three_control_points_are_the_quadratic_they_describe() {
+        let controls = [[0.0, 0.0], [2.0, 4.0], [6.0, 0.0]];
+        let spline = control_point_spline(&controls).unwrap();
+        assert_eq!(spline.pieces.len(), 1);
+        let elevated = spline.pieces[0].control;
+        assert_eq!(elevated[0], controls[0]);
+        assert_eq!(elevated[3], controls[2]);
+        // Cubic elevation of a quadratic puts the inner controls a third of the way from each end
+        // toward the shoulder.
+        for axis in 0..2 {
+            let toward = controls[0][axis] + (controls[1][axis] - controls[0][axis]) * 2.0 / 3.0;
+            assert!((elevated[1][axis] - toward).abs() < 1.0e-10);
+            let back = controls[2][axis] + (controls[1][axis] - controls[2][axis]) * 2.0 / 3.0;
+            assert!((elevated[2][axis] - back).abs() < 1.0e-10);
+        }
+    }
+
+    /// The floor of the heal: two controls still answer, as the straight line between them.
+    #[test]
+    fn two_control_points_are_the_segment_between_them() {
+        let controls = [[1.0, 1.0], [7.0, 4.0]];
+        let spline = control_point_spline(&controls).unwrap();
+        assert_eq!(spline.pieces.len(), 1);
+        for step in 0..=4 {
+            let along = f64::from(step) / 4.0;
+            let on_curve = spline.pieces[0].point_at(along);
+            for axis in 0..2 {
+                let straight = controls[0][axis] + (controls[1][axis] - controls[0][axis]) * along;
+                assert!(
+                    (on_curve[axis] - straight).abs() < 1.0e-10,
+                    "at {along} axis {axis}: {on_curve:?} is not on the chord"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_control_point_is_not_a_curve() {
+        assert_eq!(
+            control_point_spline(&[[0.0, 0.0]]),
+            Err(SplineCandidateError::TooFewPoints)
+        );
     }
 }
