@@ -5239,20 +5239,20 @@ impl WindowedState {
                         if projected.len() == profile.len() {
                             self.sketch_draw_preview = vec![preview_outline(projected)];
                         }
-                        // The conic's last step is a gizmo, not a free pick: the control point is
-                        // captive to the ray running out through the curve's on-curve point, and
-                        // how far out it sits IS how hard it pulls. Drawing the track is what
+                        // The conic's last step is a gizmo, not a free pick: the shoulder slides on
+                        // the track from the chord's midpoint out to the control point, and where
+                        // it sits IS how hard the control point pulls. Drawing the track is what
                         // makes that a thing to grab rather than a number.
-                        if let Some((track, control)) = self
+                        if let Some((track, shoulder)) = self
                             .higher_curve_gesture
-                            .conic_control_gizmo(target, kind, cursor)
+                            .conic_shoulder_gizmo(target, kind, cursor)
                         {
                             let rail: Vec<egui::Pos2> =
                                 track.iter().copied().filter_map(snapped_screen).collect();
                             if rail.len() == track.len() {
                                 self.sketch_draw_preview.push(preview_guide(rail));
                             }
-                            if let Some(at) = snapped_screen(control) {
+                            if let Some(at) = snapped_screen(shoulder) {
                                 self.sketch_draw_preview
                                     .push(ui::chrome::SketchPreviewMark::Point { at });
                             }

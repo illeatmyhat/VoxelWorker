@@ -919,7 +919,7 @@ impl Sketch {
             || self
                 .conics
                 .iter()
-                .any(|conic| [conic.from, conic.to, conic.vertex].contains(&point))
+                .any(|conic| [conic.from, conic.to, conic.control].contains(&point))
             || self
                 .splines
                 .iter()

@@ -1340,13 +1340,18 @@ pub struct Ellipse {
     pub role: EntityRole,
 }
 
-/// One endpoint/vertex/rho conic. Rho is exact and dimensionless in durable storage.
+/// One endpoint/control/rho conic. Rho is exact and dimensionless in durable storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Conic {
     pub id: EntityId,
     pub from: EntityId,
     pub to: EntityId,
-    pub vertex: EntityId,
+    /// The construction point the two end tangents meet at — the handle the curve bends toward.
+    ///
+    /// Stored rather than the on-curve shoulder because this is the point the author placed and
+    /// the point they reach for afterwards: moving it drags the curve the way a Bezier handle
+    /// does, while the shoulder is a consequence of it and [`rho`](Self::rho).
+    pub control: EntityId,
     pub rho: parametric::ResolvedScalar,
     pub origin: EntityId,
     #[serde(default)]
@@ -1466,7 +1471,7 @@ pub struct Sketch {
     /// Closed ellipse entities; absent in older documents.
     #[serde(default)]
     ellipses: Box<[Ellipse]>,
-    /// Endpoint/vertex/rho conic entities; absent in older documents.
+    /// Endpoint/control/rho conic entities; absent in older documents.
     #[serde(default)]
     conics: Box<[Conic]>,
     /// Author-visible fit/control splines; absent in older documents.
@@ -2446,7 +2451,7 @@ impl Sketch {
             ellipse.center != id && ellipse.major_endpoint != id && ellipse.width_point != id
         });
         boxed_retain(&mut self.conics, |conic| {
-            conic.from != id && conic.to != id && conic.vertex != id
+            conic.from != id && conic.to != id && conic.control != id
         });
         boxed_retain(&mut self.splines, |spline| !spline.points.contains(&id));
         self.points.retain(|point| point.id != id);
@@ -2500,7 +2505,7 @@ impl Sketch {
             || self
                 .conics
                 .iter()
-                .any(|conic| conic.from == id || conic.to == id || conic.vertex == id)
+                .any(|conic| conic.from == id || conic.to == id || conic.control == id)
             || self
                 .splines
                 .iter()
@@ -3248,25 +3253,29 @@ impl Sketch {
         Ok(id)
     }
 
-    /// Draw one endpoint/vertex/rho conic with exact dimensionless rho storage.
+    /// Draw one endpoint/control/rho conic with exact dimensionless rho storage.
+    ///
+    /// The control point is off the curve, so it is reified as a CONSTRUCTION point — the same
+    /// treatment a control-point spline's interior frame gets. That is what makes it a handle
+    /// rather than a vertex of the profile.
     pub fn add_conic(
         &mut self,
         from: SketchPoint,
         to: SketchPoint,
-        vertex: SketchPoint,
+        control: SketchPoint,
         rho: f64,
     ) -> Result<EntityId, parametric::sketch::ConicCandidateError> {
         parametric::sketch::conic_candidate(
             from.in_plane(),
             to.in_plane(),
-            vertex.in_plane(),
+            control.in_plane(),
             rho,
         )?;
         let rho = parametric::ResolvedScalar::try_from_f64(rho)
             .map_err(|_| parametric::sketch::ConicCandidateError::InvalidRho)?;
         let from = self.add_point(from);
         let to = self.add_point(to);
-        let vertex = self.add_point(vertex);
+        let control = self.add_construction_point(control);
         let id = self.alloc_id();
         boxed_push(
             &mut self.conics,
@@ -3274,7 +3283,7 @@ impl Sketch {
                 id,
                 from,
                 to,
-                vertex,
+                control,
                 rho,
                 origin: id,
                 role: EntityRole::Real,
@@ -3308,7 +3317,7 @@ impl Sketch {
         parametric::sketch::conic_candidate(
             position(conic.from)?,
             position(conic.to)?,
-            position(conic.vertex)?,
+            position(conic.control)?,
             conic.rho.value(),
         )
         .ok()
@@ -3324,7 +3333,7 @@ impl Sketch {
             .conics
             .iter()
             .find(|conic| conic.id == id)
-            .map(|conic| [conic.from, conic.to, conic.vertex]);
+            .map(|conic| [conic.from, conic.to, conic.control]);
         boxed_retain(&mut self.conics, |conic| conic.id != id);
         if let Some(points) = points {
             self.drop_undrawn_points(points);
@@ -3492,7 +3501,7 @@ impl Sketch {
             referenced.extend([ellipse.center, ellipse.major_endpoint, ellipse.width_point]);
         }
         for conic in &*self.conics {
-            referenced.extend([conic.from, conic.to, conic.vertex]);
+            referenced.extend([conic.from, conic.to, conic.control]);
         }
         for spline in &*self.splines {
             referenced.extend(spline.points.iter().copied());
@@ -3666,7 +3675,7 @@ impl Sketch {
                 .all(|id| point_ids.contains(id))
         });
         boxed_retain(&mut self.conics, |conic| {
-            [conic.from, conic.to, conic.vertex]
+            [conic.from, conic.to, conic.control]
                 .iter()
                 .all(|id| point_ids.contains(id))
                 && (0.0..1.0).contains(&conic.rho.value())

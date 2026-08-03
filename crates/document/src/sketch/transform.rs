@@ -347,7 +347,7 @@ impl Sketch {
                         .find(|conic| conic.id == id)
                         .ok_or(SketchTransformRefusal::UnknownEntity)?;
                     closure.conics.insert(id);
-                    closure.points.extend([conic.from, conic.to, conic.vertex]);
+                    closure.points.extend([conic.from, conic.to, conic.control]);
                 }
                 SketchTransformEntity::Curve(SketchCurve::Spline(id)) => {
                     let spline = self
@@ -545,7 +545,7 @@ impl Sketch {
                     id,
                     from: mapped(points, source.from)?,
                     to: mapped(points, source.to)?,
-                    vertex: mapped(points, source.vertex)?,
+                    control: mapped(points, source.control)?,
                     rho: source.rho,
                     origin: id,
                     role: source.role,
