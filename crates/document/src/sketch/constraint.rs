@@ -117,6 +117,13 @@ pub enum ConstraintKind {
     /// of `second`'s ends from `first`'s line says both at once without reconciling two
     /// differently-scaled rows.
     Collinear { first: EntityId, second: EntityId },
+    /// A point lies on a curve's SUPPORT — the infinite line a segment runs along, or the whole
+    /// circle an arc is cut from. One residual: the point keeps its freedom to slide.
+    ///
+    /// This is what Fusion spells as a Coincident between a point and a curve. It is a separate
+    /// kind here rather than a polymorphic `Coincident` because the two assert different things:
+    /// two points occupying one place pins both coordinates, and a point on a line pins one.
+    PointOnCurve { point: EntityId, curve: SketchCurve },
     /// Two finite authored curves touch at this stable solution branch. `first` and `second` are
     /// canonicalized by stable entity id; an internal branch names that persisted order.
     Tangent {
@@ -230,7 +237,9 @@ impl ConstraintKind {
     /// nothing at all.
     pub(super) fn anchored_points(&self) -> Vec<EntityId> {
         match *self {
-            Self::Midpoint { point, .. } => vec![point],
+            // Both hold a point up against geometry that is still drawn: the midpoint of a
+            // diagonal, or the arc center a slot's spine runs through.
+            Self::Midpoint { point, .. } | Self::PointOnCurve { point, .. } => vec![point],
             Self::Fix { .. }
             | Self::Quantize { .. }
             | Self::Distance { .. }
@@ -252,7 +261,8 @@ impl ConstraintKind {
         match *self {
             Self::Fix { point, .. }
             | Self::Quantize { point, .. }
-            | Self::Midpoint { point, .. } => vec![point],
+            | Self::Midpoint { point, .. }
+            | Self::PointOnCurve { point, .. } => vec![point],
             Self::Distance { from, to, .. } => vec![from, to],
             Self::Coincident { first, second } => vec![first, second],
             Self::Horizontal { .. }
@@ -313,6 +323,7 @@ impl ConstraintKind {
             }
             Self::Symmetry { first, second, .. } => [first.id(), second.id()],
             Self::Midpoint { point, segment } => [point, segment],
+            Self::PointOnCurve { point, curve } => [point, curve.id()],
         }
     }
 
@@ -354,6 +365,15 @@ impl ConstraintKind {
                     | SketchCurve::Spline(_) => None,
                 }))
                 .collect(),
+            Self::PointOnCurve { curve, .. } => match curve {
+                SketchCurve::Segment(id) => vec![id],
+                SketchCurve::Arc(_)
+                | SketchCurve::Circle(_)
+                | SketchCurve::Bezier(_)
+                | SketchCurve::Ellipse(_)
+                | SketchCurve::Conic(_)
+                | SketchCurve::Spline(_) => Vec::new(),
+            },
             Self::Fix { .. }
             | Self::Quantize { .. }
             | Self::Distance { .. }
@@ -379,6 +399,7 @@ impl ConstraintKind {
             | Self::Equal { first, second }
             | Self::Collinear { first, second } => vec![first, second],
             Self::Midpoint { point, segment } => vec![point, segment],
+            Self::PointOnCurve { point, curve } => vec![point, curve.id()],
             Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
                 vec![first.id(), second.id()]
             }
@@ -910,6 +931,12 @@ fn relation_for(
         ConstraintKind::Collinear { first, second } => segment(first)
             .zip(segment(second))
             .map(|(first, second)| Relation::Collinear { first, second }),
+        ConstraintKind::PointOnCurve {
+            point: id,
+            curve: subject,
+        } => point(id)
+            .zip(curve(subject))
+            .map(|(point, curve)| Relation::PointOnCurve { point, curve }),
         ConstraintKind::Tangent {
             first,
             second,

@@ -931,6 +931,115 @@ fn an_endpoint_is_refused_as_its_own_segments_midpoint() {
     );
 }
 
+/// Point-on-curve spends ONE freedom: the point lands on the line and is still free to slide
+/// along it. Two points made coincident would have spent two.
+#[test]
+fn a_point_lands_on_a_segments_line_and_keeps_sliding() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(20, 0));
+    let segment = sketch.connect(tail, head).expect("a segment");
+    let point = sketch.add_free_point(SketchPoint::new(6, 9));
+    let before = sketch.degrees_of_freedom(ctx(16)).expect("no fixed source");
+
+    sketch
+        .add_constraint(
+            ConstraintKind::PointOnCurve {
+                point,
+                curve: SketchCurve::Segment(segment),
+            },
+            ctx(16),
+        )
+        .expect("a free point can always reach a line");
+
+    let here = position(&sketch, point);
+    assert!(here[1].abs() < 1e-6, "off the line: {here:?}");
+    assert_eq!(
+        sketch.degrees_of_freedom(ctx(16)).expect("no fixed source"),
+        before - 1
+    );
+}
+
+/// The support is the whole circle an arc is cut from, not the finite piece. A residual that had
+/// to report "past the end" would have a kink there, and the optimizer would be walking a cliff —
+/// so a point outside the sweep lands on the circle right where it stands, not dragged to an end.
+#[test]
+fn a_point_lands_on_the_circle_an_arc_is_cut_from() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let from = sketch.add_free_point(SketchPoint::new(10, 0));
+    let to = sketch.add_free_point(SketchPoint::new(0, 10));
+    let arc = sketch
+        .connect_arc(from, to, AngleMeasurement::from_degrees(90))
+        .expect("a quarter arc about the origin");
+    // Diagonally opposite the quarter the arc covers, and well off its circle.
+    let point = sketch.add_free_point(SketchPoint::new(-20, -20));
+
+    sketch
+        .add_constraint(
+            ConstraintKind::PointOnCurve {
+                point,
+                curve: SketchCurve::Arc(arc),
+            },
+            ctx(16),
+        )
+        .expect("a free point can always reach a circle");
+
+    let here = position(&sketch, point);
+    let (center, radius) = arc_center_radius(
+        position(&sketch, from),
+        position(&sketch, to),
+        sketch.arcs()[0].sweep_degrees(),
+    )
+    .expect("the arc still has a center");
+    assert!(
+        ((here[0] - center[0]).hypot(here[1] - center[1]) - radius).abs() < 1e-6,
+        "off the circle: {here:?} against {center:?} r{radius}"
+    );
+    assert!(
+        here[1] < center[1],
+        "it landed below the quarter the arc actually covers, so the support is the whole circle          and not the finite piece: {here:?}"
+    );
+}
+
+/// An endpoint is already on its own line, so the row could never be violated; and a higher curve
+/// has no support the kernel models to put a point on.
+#[test]
+fn a_vacuous_or_unmodelled_point_on_curve_is_refused() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let tail = sketch.add_free_point(SketchPoint::new(0, 0));
+    let head = sketch.add_free_point(SketchPoint::new(20, 0));
+    let segment = sketch.connect(tail, head).expect("a segment");
+    let spline = sketch
+        .add_control_point_spline(&[
+            SketchPoint::new(0, 8),
+            SketchPoint::new(4, 12),
+            SketchPoint::new(9, 12),
+            SketchPoint::new(13, 8),
+        ])
+        .expect("a spline");
+
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::PointOnCurve {
+                point: tail,
+                curve: SketchCurve::Segment(segment),
+            },
+            ctx(16)
+        ),
+        Err(ConstraintRefusal::Impossible)
+    );
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::PointOnCurve {
+                point: tail,
+                curve: SketchCurve::Spline(spline),
+            },
+            ctx(16)
+        ),
+        Err(ConstraintRefusal::UnknownEntity)
+    );
+}
+
 /// Collinear says parallel AND no offset, which is why it spends two freedoms where Parallel
 /// spends one.
 #[test]

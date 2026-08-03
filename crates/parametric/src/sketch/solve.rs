@@ -151,6 +151,15 @@ pub enum Relation {
     Midpoint { point: PointId, segment: SegmentId },
     /// Collinear contributes two distances to a datum line: parallel plus zero offset.
     Collinear { first: SegmentId, second: SegmentId },
+    /// A point lies on the curve's SUPPORT: the infinite line a segment runs along, or the whole
+    /// circle an arc is cut from. One row, because a support is one condition and the point keeps
+    /// its freedom to slide along it.
+    ///
+    /// The support and not the finite piece, for the same reason [`Relation::Collinear`] uses the
+    /// infinite line: a residual that had to report "off the end" would be discontinuous where the
+    /// piece stops, and the optimizer would be walking a cliff. Whether the author meant a point
+    /// past the end of an arc is an authoring question, answered before the relation is asserted.
+    PointOnCurve { point: PointId, curve: SketchCurve },
     /// Two curves touch at the persisted branch. The branch is fixed during a solve; it must never
     /// be inferred from a transient contact or switched by the optimizer.
     Tangent {
@@ -197,7 +206,8 @@ impl Relation {
             | Self::Parallel { .. }
             | Self::Perpendicular { .. }
             | Self::Equal { .. }
-            | Self::Tangent { .. } => 1,
+            | Self::Tangent { .. }
+            | Self::PointOnCurve { .. } => 1,
             Self::Symmetry { first, .. } => match first {
                 SketchCurve::Segment(_) => 4,
                 SketchCurve::Arc(_) => 5,
@@ -538,7 +548,9 @@ impl ProblemBuilder {
         }
         for (_, relation) in &self.constraints {
             let points = match *relation {
-                Relation::Fix { point, .. } | Relation::Midpoint { point, .. } => vec![point],
+                Relation::Fix { point, .. }
+                | Relation::Midpoint { point, .. }
+                | Relation::PointOnCurve { point, .. } => vec![point],
                 Relation::Distance { from, to, .. } => vec![from, to],
                 Relation::Coincident { first, second } => vec![first, second],
                 _ => Vec::new(),
@@ -913,6 +925,13 @@ impl Problem {
             Relation::Collinear { first, second } => Ok(Resolved::Collinear {
                 datum: segment(first)?,
                 other: segment(second)?,
+            }),
+            Relation::PointOnCurve {
+                point: id,
+                curve: subject,
+            } => Ok(Resolved::PointOnCurve {
+                point: point(id)?,
+                curve: curve(subject)?,
             }),
             Relation::Tangent {
                 first,
@@ -2406,6 +2425,10 @@ enum Resolved {
         datum: SegmentSlots,
         other: SegmentSlots,
     },
+    PointOnCurve {
+        point: usize,
+        curve: ResolvedCurve,
+    },
     Tangent {
         first: ResolvedCurve,
         second: ResolvedCurve,
@@ -2882,6 +2905,35 @@ impl ResidualSystem for Residuals<'_> {
                             (here[0] - anchor[0]) * normal[0] + (here[1] - anchor[1]) * normal[1];
                     }
                     row += 2;
+                }
+                Resolved::PointOnCurve { point, curve } => {
+                    let here = at(point);
+                    into[row] = match curve_geometry(
+                        curve,
+                        &at,
+                        &self.problem.parameters,
+                        &whole,
+                        self.problem.points.len(),
+                    ) {
+                        // The signed distance to the line, which is zero on either side of it and
+                        // has no kink at the ends the way a distance to the finite piece would.
+                        CurveGeometry::Segment { from, to } => {
+                            let span = [to[0] - from[0], to[1] - from[1]];
+                            let length = span[0].hypot(span[1]);
+                            if length <= f64::EPSILON {
+                                0.0
+                            } else {
+                                (here[1] - from[1])
+                                    .mul_add(span[0], -((here[0] - from[0]) * span[1]))
+                                    / length
+                            }
+                        }
+                        CurveGeometry::Circular(support) => {
+                            (here[0] - support.center[0]).hypot(here[1] - support.center[1])
+                                - support.radius
+                        }
+                    };
+                    row += 1;
                 }
                 Resolved::Tangent {
                     first,
@@ -3374,6 +3426,9 @@ impl Problem {
             Relation::Fix { point, .. }
             | Relation::Quantize { point, .. }
             | Relation::Midpoint { point, .. } => vec![point],
+            Relation::PointOnCurve { point, curve } => std::iter::once(point)
+                .chain(self.points_of_curve(curve))
+                .collect(),
             Relation::Distance { from, to, .. } => vec![from, to],
             Relation::Coincident { first, second } => vec![first, second],
             Relation::Tangent { first, second, .. } | Relation::Concentric { first, second } => {
@@ -3428,6 +3483,10 @@ impl Problem {
                     SketchCurve::Arc(_) | SketchCurve::Circle(_) => None,
                 }))
                 .collect(),
+            Relation::PointOnCurve { curve, .. } => match curve {
+                SketchCurve::Segment(segment) => vec![segment],
+                SketchCurve::Arc(_) | SketchCurve::Circle(_) => Vec::new(),
+            },
             Relation::Fix { .. }
             | Relation::Quantize { .. }
             | Relation::Distance { .. }

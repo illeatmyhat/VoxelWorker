@@ -59,6 +59,13 @@ pub struct SlotCandidate {
     pub edges: [SlotEdgeCandidate; 4],
     /// The centerline these edges are offset from.
     pub spine: SlotSpine,
+    /// The two points the author clicked, when the grammar asked for the slot's OVERALL extent.
+    ///
+    /// Every other grammar's picks already ARE spine handles, and this is `None` for them. Overall
+    /// is the one that asks for something else — the far ends of the finished shape — and those
+    /// picks would otherwise be spent computing the spine and thrown away, leaving the author with
+    /// no handle on the quantity they actually named.
+    pub reach: Option<[[f64; 2]; 2]>,
     /// How the boundary meets itself at each of its four corners: junction `i` joins
     /// edge `i` to edge `i + 1` of [`edges`](Self::edges), wrapping, in that member order.
     ///
@@ -140,12 +147,13 @@ pub fn linear_slot_candidate(
             second,
         ),
     };
-    Ok(linear_boundary(
-        start_center,
-        end_center,
-        normal,
-        half_width,
-    ))
+    let mut candidate = linear_boundary(start_center, end_center, normal, half_width);
+    // Only Overall spent its picks on something other than the spine, so only Overall has a reach
+    // to report. The other two grammars' picks survive as the spine handles themselves.
+    if kind == LinearSlotKind::Overall {
+        candidate.reach = Some([first, second]);
+    }
+    Ok(candidate)
 }
 
 /// Construct a curved slot whose centerline is the circular arc through three points.
@@ -294,6 +302,7 @@ fn linear_boundary(
             end: end_center,
             turn: SlotTurn::Straight,
         },
+        reach: None,
         junctions: [TangentBranch::Line(cap_side); 4],
         edges: [
             SlotEdgeCandidate::Line {
@@ -362,6 +371,7 @@ fn arc_boundary(
             end,
             turn: SlotTurn::About(center),
         },
+        reach: None,
         // The two long arcs are concentric with the spine at radius +/- the half-width; each cap
         // is centered ON the spine, a full spine radius from that shared center. So the OUTER arc
         // and a cap have their centers (R + w) - w apart, which is internal tangency with the

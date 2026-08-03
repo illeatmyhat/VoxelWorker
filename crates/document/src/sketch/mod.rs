@@ -297,6 +297,9 @@ pub struct SlotPlacement {
     /// The centerline, in canonical storage. Its handles become real points on commit and its
     /// turn decides what holds the two rails together.
     pub spine: SlotSpinePlacement,
+    /// The two extremes an Overall Slot was authored by, absent for every other grammar. On
+    /// commit they become points joined by a construction line down the slot's middle.
+    pub reach: Option<[SketchPoint; 2]>,
 }
 
 /// A slot's centerline in canonical storage: the handles the drawing will remember it by.
@@ -3405,6 +3408,40 @@ impl Sketch {
                     return Err(ConstraintRefusal::Impossible);
                 }
             }
+            ConstraintKind::PointOnCurve { point, curve } => {
+                if !known_point(point) {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                let live = match curve {
+                    // A collapsed segment has no line to be on, and the residual would divide by
+                    // its length. Refusing says so instead of letting the solve report a collapse.
+                    SketchCurve::Segment(id) => self
+                        .segments
+                        .iter()
+                        .find(|segment| segment.id == id)
+                        .is_some_and(|segment| segment.from != segment.to),
+                    SketchCurve::Arc(id) => self.arcs.iter().any(|arc| arc.id == id),
+                    SketchCurve::Circle(id) => self.circles.iter().any(|circle| circle.id == id),
+                    // The higher curves have no support the kernel models — a rational Bézier is
+                    // neither a line nor a circle — so there is nothing to put the point on.
+                    SketchCurve::Bezier(_)
+                    | SketchCurve::Ellipse(_)
+                    | SketchCurve::Conic(_)
+                    | SketchCurve::Spline(_) => false,
+                };
+                if !live {
+                    return Err(ConstraintRefusal::UnknownEntity);
+                }
+                // An endpoint is already on its own segment's line, so the assertion is vacuous
+                // and would only add a row that can never be violated.
+                if let SketchCurve::Segment(id) = curve {
+                    if self.segments.iter().any(|segment| {
+                        segment.id == id && (segment.from == point || segment.to == point)
+                    }) {
+                        return Err(ConstraintRefusal::Impossible);
+                    }
+                }
+            }
             ConstraintKind::Tangent { first, second, .. } => {
                 if !kind.tangent_is_structurally_valid() {
                     return Err(ConstraintRefusal::InvalidTangent {
@@ -4350,6 +4387,7 @@ impl Sketch {
                 | ConstraintKind::Equal { .. }
                 | ConstraintKind::Midpoint { .. }
                 | ConstraintKind::Collinear { .. }
+                | ConstraintKind::PointOnCurve { .. }
                 | ConstraintKind::Tangent { .. }
                 | ConstraintKind::Concentric { .. }
                 | ConstraintKind::Symmetry { .. } => {}

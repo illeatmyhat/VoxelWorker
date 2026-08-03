@@ -3644,9 +3644,10 @@ impl WindowedState {
                 document::sketch::ConstraintKind::Coincident { first, .. } => {
                     beside_point(first).into_iter().collect()
                 }
-                // Midpoint marks the POINT, which is the thing being placed. The carrier is
-                // already visibly a line through it.
-                document::sketch::ConstraintKind::Midpoint { point, .. } => {
+                // Midpoint and point-on-curve mark the POINT, which is the thing being placed. The
+                // carrier is already visibly a curve through it.
+                document::sketch::ConstraintKind::Midpoint { point, .. }
+                | document::sketch::ConstraintKind::PointOnCurve { point, .. } => {
                     beside_point(point).into_iter().collect()
                 }
                 // Perpendicular has a LOCUS, and the rule above does not apply to it: two lines

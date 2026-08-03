@@ -44,7 +44,18 @@ fn every_linear_slot_grammar_commits_two_lines_and_two_native_caps() {
         let made = source
             .with_linear_slot(kind, first, second, SketchPoint::new(0, 1), ctx(16))
             .unwrap();
-        assert_eq!(made.sketch.segments().len(), 2);
+        // Overall draws a third line: the construction spine down its middle, which the author
+        // asked for by clicking the extremes and which never bounds the region.
+        let spine_line = usize::from(kind == ::parametric::sketch::LinearSlotKind::Overall);
+        assert_eq!(made.sketch.segments().len(), 2 + spine_line);
+        assert_eq!(
+            made.sketch
+                .segments()
+                .iter()
+                .filter(|segment| segment.role == EntityRole::Construction)
+                .count(),
+            spine_line
+        );
         assert_eq!(made.sketch.arcs().len(), 2);
         assert_eq!(made.sketch.region(ctx(16)).len(), 1);
         for edge in placement.edges {
@@ -250,6 +261,71 @@ fn dragging_a_spine_end_reshapes_the_slot_instead_of_moving_it() {
 
 /// The width is the one freedom a slot's relations leave open, and dragging a rail is how an
 /// author spends it. The rail follows the cursor; the spine it was drawn from does not go with it.
+/// An Overall Slot is authored by its two far ends, so the drawing keeps them: a construction line
+/// down the middle joining them, the cap centers held on that line, and each end held on its cap.
+/// The width is still the one thing nothing pins.
+#[test]
+fn an_overall_slot_keeps_its_extremes_on_a_construction_line() {
+    let made = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::Overall,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(20, 0),
+            SketchPoint::new(0, 4),
+            ctx(16),
+        )
+        .expect("a valid overall slot");
+
+    let line = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.role == EntityRole::Construction)
+        .copied()
+        .expect("the middle is drawn as a construction line");
+    let position = |id: EntityId| {
+        made.sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("a named point exists")
+    };
+    let (tail, head) = (position(line.from), position(line.to));
+    for end in [tail, head] {
+        assert!(
+            (end[0] - 0.0).abs() < 1.0e-6 || (end[0] - 20.0).abs() < 1.0e-6,
+            "the line runs between the authored extremes, not the cap centers: {end:?}"
+        );
+    }
+
+    // Every cap center is on that line, which is what the relations say and what the author sees.
+    let span = [head[0] - tail[0], head[1] - tail[1]];
+    let length = span[0].hypot(span[1]);
+    for arc in made.sketch.arcs() {
+        let center = position(arc.center);
+        let off = ((center[1] - tail[1]) * span[0] - (center[0] - tail[0]) * span[1]) / length;
+        assert!(
+            off.abs() < 1.0e-6,
+            "cap center {center:?} off the line by {off}"
+        );
+    }
+
+    // Four new rows against four new coordinates, so the width is still free to drag.
+    let rail = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.role == EntityRole::Real)
+        .map(|segment| SketchCurve::Segment(segment.id))
+        .expect("a rail");
+    let mut widened = made.clone();
+    assert!(widened
+        .sketch
+        .move_curve(rail, [10.0, 7.0], ctx(16))
+        .expect("the rail drag is answered"));
+}
+
 #[test]
 fn dragging_a_rail_widens_the_slot_without_moving_its_spine() {
     let mut made = arc_slot();

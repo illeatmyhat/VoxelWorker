@@ -1092,7 +1092,7 @@ impl SketchSolid {
         // handle is a REAL point tied by Coincident rather than the derived center itself —
         // dragging a derived center authors the quantity behind it and does not settle, which
         // would make the slot's own center a dead handle.
-        let coincidences = [
+        let handles = [
             (placement.spine.start, start_cap),
             (placement.spine.end, end_cap),
         ]
@@ -1115,18 +1115,27 @@ impl SketchSolid {
                 .find(|point| !next.sketch.is_derived_point(point.id) && point.at.coincides(&at))
                 .map(|point| point.id);
             let handle = standing.unwrap_or_else(|| next.sketch.add_free_point(at));
-            Ok(ConstraintKind::Coincident {
-                first: handle.min(derived),
-                second: handle.max(derived),
-            })
+            Ok((handle, derived))
         })
         .collect::<Result<Vec<_>, SlotRefusal>>()?;
+        let coincidences = handles
+            .iter()
+            .map(|&(handle, derived)| ConstraintKind::Coincident {
+                first: handle.min(derived),
+                second: handle.max(derived),
+            });
+        let spine_line =
+            slot_spine_line(&mut next.sketch, placement, &handles, [start_cap, end_cap])?;
         let tangencies = placement
             .junctions
             .into_iter()
             .zip(corners)
             .map(|(branch, (first, second))| ConstraintKind::tangent(first, second, branch));
-        for kind in tangencies.chain(std::iter::once(rails)).chain(coincidences) {
+        for kind in tangencies
+            .chain(std::iter::once(rails))
+            .chain(coincidences)
+            .chain(spine_line)
+        {
             match next.sketch.add_constraint(kind, context) {
                 Ok(_) | Err(ConstraintRefusal::AlreadyAsserted { .. }) => {}
                 Err(refusal) => return Err(SlotRefusal::Constraint(refusal)),
@@ -1971,6 +1980,57 @@ enum RectangleFrame {
     Oriented,
 }
 
+/// Draw an Overall Slot's middle as a construction line, and return what holds it there.
+///
+/// An Overall Slot is authored by clicking the two far ends of the finished shape, and those two
+/// picks used to be spent: the tool insets each by half a width to find a cap center and throws the
+/// extremes away, so all three linear grammars committed an identical drawing. The author's own
+/// quantity — how long the slot is END TO END — had no handle on it afterwards.
+///
+/// So the extremes become points, joined by a construction line down the middle, with the cap
+/// centers held on that line and each extreme held on the cap it reaches. Four rows against four
+/// new freedoms: the width is still the one thing nothing pins, so it is still dragged rather than
+/// typed. Every other slot grammar reports no reach and this does nothing.
+fn slot_spine_line(
+    sketch: &mut Sketch,
+    placement: &SlotPlacement,
+    handles: &[(EntityId, EntityId)],
+    caps: [SketchCurve; 2],
+) -> Result<Vec<ConstraintKind>, SlotRefusal> {
+    let Some(reach) = placement.reach else {
+        return Ok(Vec::new());
+    };
+    let ends = reach.map(|at| match sketch.point_at(at) {
+        Some(standing) => standing,
+        None => {
+            let id = sketch.add_free_point(at);
+            // The extreme belongs to the slot: it is drawn only because the construction line and
+            // the cap name it, and it should go when they do rather than litter a dot.
+            sketch.set_point_lifetime(id, PointLifetime::CurveAnchored);
+            id
+        }
+    });
+    let [first_end, second_end] = ends;
+    let line = sketch
+        .connect(first_end, second_end)
+        .or_else(|| sketch.segment_between(first_end, second_end))
+        .ok_or(SlotRefusal::Unrepresentable)?;
+    sketch.set_construction(line);
+    let centers_on_the_line =
+        handles
+            .iter()
+            .take(2)
+            .map(|&(handle, _)| ConstraintKind::PointOnCurve {
+                point: handle,
+                curve: SketchCurve::Segment(line),
+            });
+    let ends_on_their_caps = ends
+        .into_iter()
+        .zip(caps)
+        .map(|(point, curve)| ConstraintKind::PointOnCurve { point, curve });
+    Ok(centers_on_the_line.chain(ends_on_their_caps).collect())
+}
+
 /// Join two existing points with a CONSTRUCTION segment, reusing a standing edge.
 ///
 /// A diagonal is reference geometry: it exists to give the center something to be the middle of,
@@ -2181,10 +2241,15 @@ fn canonical_slot(
             parametric::sketch::SlotTurn::About(center) => Some(canonical(center)?),
         },
     };
+    let reach = match candidate.reach {
+        Some([first, second]) => Some([canonical(first)?, canonical(second)?]),
+        None => None,
+    };
     Ok(SlotPlacement {
         edges,
         junctions: candidate.junctions,
         spine,
+        reach,
     })
 }
 
