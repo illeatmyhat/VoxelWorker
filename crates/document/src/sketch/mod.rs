@@ -2325,6 +2325,10 @@ impl Sketch {
                 }
             }
         })();
+        // Either arm can leave a conic with nothing to shape — the hand on its control point, or a
+        // settle that walked an endpoint onto it. One check covers both, and the rollback below is
+        // already the right answer.
+        let result = result.map(|stood| stood && self.every_conic_resolves());
         match result {
             Ok(true) => Ok(true),
             Ok(false) => {
@@ -3305,6 +3309,19 @@ impl Sketch {
             position(ellipse.width_point)?,
         )
         .ok()
+    }
+
+    /// Whether every conic in the drawing still resolves to a curve.
+    ///
+    /// A conic collapses when its control point lands on the chord midpoint: the shoulder track has
+    /// no length and there is no conic left to shape. The authoring gesture refuses that pick, and
+    /// now that the control is a draggable handle the DRAG has to refuse it too — otherwise the
+    /// curve silently disappears from the handles, the faces and the patterns while the entity
+    /// stays in the document.
+    fn every_conic_resolves(&self) -> bool {
+        self.conics
+            .iter()
+            .all(|conic| self.conic_candidate(*conic).is_some())
     }
 
     fn conic_candidate(&self, conic: Conic) -> Option<parametric::sketch::ConicCandidate> {

@@ -44,6 +44,39 @@ fn conic_and_its_chord_bound_a_profile_and_preserve_exact_rho() {
     assert_eq!(sketch.faces(ctx(16)).len(), 1);
 }
 
+/// The control point is a draggable handle now, so the drag has to decline what the authoring
+/// gesture already declines. On the chord midpoint the shoulder track has no length and no conic
+/// exists; without this the curve would vanish from the handles and faces while the entity stayed.
+#[test]
+fn dragging_a_conic_control_point_onto_its_chord_is_refused_and_rolls_back() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_conic(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(8, 0),
+            SketchPoint::new(4, 6),
+            0.5,
+        )
+        .expect("valid conic");
+    let control = sketch.conics()[0].control;
+
+    let stood = sketch
+        .move_point(control, SketchPoint::new(4, 0), ctx(16))
+        .expect("the drag is answered, not errored");
+
+    assert!(!stood, "a collapsed conic is not a drag that stands");
+    let held = sketch
+        .points()
+        .iter()
+        .find(|point| point.id == control)
+        .expect("the control point survives a refused drag");
+    assert_eq!(held.at, SketchPoint::new(4, 6));
+    assert_eq!(sketch.faces(ctx(16)).len(), 0, "no chord, so no face");
+    assert!(sketch
+        .move_point(control, SketchPoint::new(4, 9), ctx(16))
+        .expect("the drag is answered"));
+}
+
 #[test]
 fn higher_curve_handles_retarget_with_density_but_rho_does_not() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);

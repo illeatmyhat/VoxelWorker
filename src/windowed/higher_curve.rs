@@ -9,6 +9,11 @@ use substrate::rational_bezier::RationalBezier;
 
 use super::sketch_target::ResolvedSketchTarget;
 
+/// How many conic picks are banked once the shoulder step begins: two anchors and the control
+/// point. The step after them cannot fail, so it is the one step exempt from the gates that
+/// decline a pick.
+const CONIC_SHOULDER_PICK: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HigherCurveKind {
     Ellipse,
@@ -116,10 +121,17 @@ impl HigherCurveGesture {
         let Some(pending) = self.pending.as_mut() else {
             return HigherCurveEdit::InteractionOnly;
         };
-        if pending
-            .points
-            .last()
-            .is_some_and(|point| point.coincides(&target.at))
+        // Repeating the previous pick names no new geometry — except on the conic's shoulder step,
+        // where the track RUNS to the control point and clicking it means "pull as hard as it
+        // goes". The clamp already keeps that off the degenerate end, and this step is the one the
+        // author cannot fail.
+        let shoulder_step =
+            kind == HigherCurveKind::Conic && pending.points.len() == CONIC_SHOULDER_PICK;
+        if !shoulder_step
+            && pending
+                .points
+                .last()
+                .is_some_and(|point| point.coincides(&target.at))
         {
             return HigherCurveEdit::InteractionOnly;
         }
@@ -265,7 +277,11 @@ impl HigherCurveGesture {
             return Vec::new();
         };
         let mut points = pending.points.clone();
-        if points.last().is_none_or(|point| !point.coincides(&cursor)) {
+        // On the shoulder step the cursor always counts, even resting on the control point: drop it
+        // there and the preview falls back to the three-pick parabolic default, so hovering the far
+        // end of the track flickers the curve away from what the click would make.
+        let shoulder_step = kind == HigherCurveKind::Conic && points.len() == CONIC_SHOULDER_PICK;
+        if shoulder_step || points.last().is_none_or(|point| !point.coincides(&cursor)) {
             points.push(cursor);
         }
         let continuous: Vec<_> = points.iter().map(SketchPoint::in_plane).collect();
@@ -445,6 +461,29 @@ mod tests {
             let made = gesture.click(owner, HigherCurveKind::Conic, &source, Some(overshoot));
             assert!(matches!(made, HigherCurveEdit::Document(_)));
         }
+    }
+
+    /// The far end of the shoulder track IS the control point, so clicking it means "pull as hard
+    /// as it goes" — not a repeated pick to swallow. Resting there previews the same curve the
+    /// click makes, instead of flickering back to the parabolic default.
+    #[test]
+    fn a_shoulder_clicked_on_the_control_point_commits_the_hardest_pull() {
+        let owner = NodeId(6);
+        let source = SketchSolid::extrude(Sketch::empty(PlaneAxis::Z), 3);
+        let mut gesture = HigherCurveGesture::default();
+        for point in [target(0, 0), target(8, 0), target(4, 8)] {
+            gesture.click(owner, HigherCurveKind::Conic, &source, Some(point));
+        }
+        let resting = gesture.preview(owner, HigherCurveKind::Conic, SketchPoint::new(4, 8));
+        let halfway = gesture.preview(owner, HigherCurveKind::Conic, SketchPoint::new(4, 4));
+        assert_ne!(resting, halfway, "the track's far end is its own reading");
+
+        let HigherCurveEdit::Document(made) =
+            gesture.click(owner, HigherCurveKind::Conic, &source, Some(target(4, 8)))
+        else {
+            panic!("the shoulder pick commits even on the control point")
+        };
+        assert!(made.sketch.conics()[0].rho.value() > 0.99);
     }
 
     /// A control point on the chord midpoint shapes nothing: no track for the shoulder to slide
