@@ -1055,10 +1055,10 @@ impl WindowedState {
         viewport_px: [u32; 4],
     ) -> crate::IntentEffect {
         use crate::IntentEffect;
-        let Some((point_id, original_min, original_offset)) = self
+        let Some((held, original_min, original_offset)) = self
             .sketch_drag
             .as_ref()
-            .map(|drag| (drag.point_id, drag.original_min, drag.original_offset))
+            .map(|drag| (drag.held, drag.original_min, drag.original_offset))
         else {
             return IntentEffect::none();
         };
@@ -1110,7 +1110,17 @@ impl WindowedState {
             self.sketch_drag = None;
             return IntentEffect::none();
         };
-        let Ok(moved) = preview.sketch.move_point(point_id, snapped, context) else {
+        let moved = match held {
+            SketchGrab::Point(id) => preview.sketch.move_point(id, snapped, context),
+            // A curve goes where the cursor is, not where a sum of frames left it, so the SNAPPED
+            // cursor is the whole input — the same absolute reading the point path uses.
+            SketchGrab::Curve(curve) => {
+                preview
+                    .sketch
+                    .move_curve(curve, snapped.in_plane(), context)
+            }
+        };
+        let Ok(moved) = moved else {
             self.sketch_drag = None;
             return IntentEffect::none();
         };
@@ -4061,11 +4071,14 @@ impl WindowedState {
             ));
     }
 
-    /// If the cursor (physical px) is over a profile-vertex handle, build the
-    /// [`SketchVertexDrag`] that grabs it — the nearest handle within the grab radius, with the
-    /// current producer snapshotted so the whole gesture coalesces to one command. `None` when
-    /// no handle is under the cursor (the press falls through to the normal camera/placement
-    /// path). Called from the `events` press handler, only under the Select tool.
+    /// If the cursor (physical px) is over a profile handle, build the [`SketchVertexDrag`] that
+    /// grabs it — the nearest vertex within the grab radius, or failing that the edge under the
+    /// cursor, with the current producer snapshotted so the whole gesture coalesces to one
+    /// command. `None` when nothing grabbable is under the cursor (the press falls through to the
+    /// normal camera/placement path). Called from the `events` press handler, only under Select.
+    ///
+    /// Vertices win over edges, and by more than proximity: every edge passes through its own
+    /// endpoints, so an endpoint grab would be unreachable if the nearer edge could take it.
     pub(super) fn begin_sketch_vertex_drag(
         &self,
         cursor_x: f64,
@@ -4082,18 +4095,39 @@ impl WindowedState {
         {
             return None;
         }
-        let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
-        let point_id = *self.sketch_point_ids.get(index)?;
+        let held = self
+            .sketch_vertex_at(cursor_x, cursor_y)
+            .and_then(|index| self.sketch_point_ids.get(index).copied())
+            .map(SketchGrab::Point)
+            .or_else(|| self.grabbable_sketch_curve_at(cursor_x, cursor_y))?;
         let node = self.panel_state.scene.node_by_id(target)?;
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
             return None;
         };
         Some(SketchVertexDrag {
-            point_id,
+            held,
             original: producer.clone(),
             original_offset: node.transform.offset_voxels,
             original_min: self.profile_bbox_min(producer)?,
         })
+    }
+
+    /// The curve under the cursor that a drag can move as a WHOLE, if there is one.
+    ///
+    /// A segment or an arc has a single perpendicular direction, so "drag it sideways" names one
+    /// motion. A circle would have to grow, which is what dragging its rim already means through
+    /// its own handles; the higher curves carry their shape in control points, and moving the
+    /// aggregate would need a decision this gesture does not have to offer.
+    fn grabbable_sketch_curve_at(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchGrab> {
+        match self.nearest_sketch_edge(cursor_x, cursor_y)? {
+            SketchEdgeHit::Segment(id) => Some(SketchGrab::Curve(
+                document::sketch::SketchCurve::Segment(id),
+            )),
+            SketchEdgeHit::Arc(id) => {
+                Some(SketchGrab::Curve(document::sketch::SketchCurve::Arc(id)))
+            }
+            SketchEdgeHit::Circle(_) | SketchEdgeHit::HigherCurve(_) => None,
+        }
     }
 
     /// Recompute the sketch overlay for the NEXT frame. Projects
@@ -4274,7 +4308,7 @@ impl WindowedState {
             self.sketch_circle_target = None;
         }
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
-        let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
+        let dragging_point = self.sketch_drag.as_ref().and_then(|drag| drag.held.point());
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
         let hover_radius_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
             * pixels_per_point;

@@ -248,6 +248,57 @@ fn dragging_a_spine_end_reshapes_the_slot_instead_of_moving_it() {
     assert!(center_at[0].hypot(center_at[1]) < 1.0e-6, "{center_at:?}");
 }
 
+/// The width is the one freedom a slot's relations leave open, and dragging a rail is how an
+/// author spends it. The rail follows the cursor; the spine it was drawn from does not go with it.
+#[test]
+fn dragging_a_rail_widens_the_slot_without_moving_its_spine() {
+    let mut made = arc_slot();
+    let center = handle_at(&made, SketchPoint::new(0, 0));
+    // The outer rail of a quarter-turn slot of half-width two, drawn about the origin at radius 8.
+    let outer = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| {
+            let from = made
+                .sketch
+                .points()
+                .iter()
+                .find(|point| point.id == arc.from)
+                .map(|point| point.at.in_plane());
+            from.is_some_and(|at| (at[0].hypot(at[1]) - 10.0).abs() < 1.0e-6)
+        })
+        .map(|arc| SketchCurve::Arc(arc.id))
+        .expect("the slot's outer rail");
+
+    assert!(made.sketch.move_curve(outer, [13.0, 0.0], ctx(16)).unwrap());
+
+    let position = |id: EntityId| {
+        made.sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.at.in_plane())
+            .expect("the point survives the drag")
+    };
+    let center_at = position(center);
+    assert!(center_at[0].hypot(center_at[1]) < 1.0e-6, "{center_at:?}");
+    let SketchCurve::Arc(outer_id) = outer else {
+        panic!("the rail is an arc")
+    };
+    let widened = made
+        .sketch
+        .arcs()
+        .iter()
+        .find(|arc| arc.id == outer_id)
+        .map(|arc| position(arc.from))
+        .expect("the rail survives its own drag");
+    assert!(
+        (widened[0].hypot(widened[1]) - 13.0).abs() < 1.0e-6,
+        "{widened:?} should stand where the cursor left the rail"
+    );
+}
+
 #[test]
 fn invalid_and_duplicate_slots_refuse_atomically() {
     let source = source();

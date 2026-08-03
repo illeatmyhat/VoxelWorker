@@ -2327,34 +2327,66 @@ impl Sketch {
         if self.point_index(id).is_none() {
             return Ok(false);
         }
+        self.drag_or_leave_it_alone(|sketch| sketch.point_move_attempt(id, at, context))
+    }
+
+    /// Move the whole CURVE `curve` so that it passes under `at`, and settle around it. Reports
+    /// whether the drawing accepted the move.
+    ///
+    /// PERPENDICULAR motion only — radial, on a curve that turns. Dragging a line along itself
+    /// produces the same line, so the one thing this gesture can mean is "further from where it
+    /// was, or nearer", and stating that as a distance rather than as a displacement makes the
+    /// drag ABSOLUTE: the curve goes where the cursor is now, not where a sum of increments left
+    /// it. Nothing accumulates and nothing to drift.
+    ///
+    /// This is the gesture that authors a slot's width, the freedom its relations deliberately
+    /// leave open. The rails' endpoints are the corners the caps are tangent at, so widening one
+    /// rail widens the caps through the tangencies; the OTHER rail is not touched. One-sided on
+    /// purpose — geometry the author did not grab stays where they put it.
+    pub fn move_curve(
+        &mut self,
+        curve: SketchCurve,
+        at: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
+        let Some(hands) = self.hands_moving_a_curve(curve, at) else {
+            return Ok(false);
+        };
+        self.drag_or_leave_it_alone(|sketch| {
+            for (point, to) in &hands {
+                if let Some(index) = sketch.point_index(*point) {
+                    sketch.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
+                }
+            }
+            sketch.sync_derived_points();
+            sketch.settle_under_the_hands(&hands, context)
+        })
+    }
+
+    /// Run a drag attempt, and put the drawing back exactly as it was unless it stands.
+    ///
+    /// Every way an attempt can decline — a refusal, an error, a conic left with nothing to shape
+    /// — meets ONE rollback here rather than one apiece.
+    fn drag_or_leave_it_alone(
+        &mut self,
+        attempt: impl FnOnce(&mut Self) -> Result<bool, SketchEvaluationError>,
+    ) -> Result<bool, SketchEvaluationError> {
         let before_points = self.points.clone();
         let before_arcs = self.arcs.clone();
         let before_circles = self.circles.clone();
         let before_conics = self.conics.clone();
-        let result = self.point_move_attempt(id, at, context);
-        // Either arm can leave a conic with nothing to shape — the hand on its control point, or a
-        // settle that walked an endpoint onto it. One check covers both, and the rollback below is
-        // already the right answer.
-        let result = result.map(|stood| stood && self.every_conic_resolves());
-        match result {
-            Ok(true) => Ok(true),
-            Ok(false) => {
-                self.points = before_points;
-                self.arcs = before_arcs;
-                self.circles = before_circles;
-                self.conics = before_conics;
-                self.sync_derived_points();
-                Ok(false)
-            }
-            Err(error) => {
-                self.points = before_points;
-                self.arcs = before_arcs;
-                self.circles = before_circles;
-                self.conics = before_conics;
-                self.sync_derived_points();
-                Err(error)
-            }
+        // Any drag can leave a conic with nothing to shape — a hand on its control point, or a
+        // settle that walked an endpoint onto it. One check covers them all.
+        let result = attempt(self).map(|stood| stood && self.every_conic_resolves());
+        if matches!(result, Ok(true)) {
+            return result;
         }
+        self.points = before_points;
+        self.arcs = before_arcs;
+        self.circles = before_circles;
+        self.conics = before_conics;
+        self.sync_derived_points();
+        result
     }
 
     /// The move itself, before [`move_point`](Self::move_point) decides whether to keep it.
@@ -2467,6 +2499,81 @@ impl Sketch {
             hands.push((carried, [stood[0] + delta[0], stood[1] + delta[1]]));
         }
         hands
+    }
+
+    /// The hands a curve drag puts on the drawing, or nothing if this curve cannot be dragged.
+    ///
+    /// One signed offset, measured once, applied along each endpoint's OWN outward direction. For
+    /// a straight curve those directions agree and the segment slides sideways; for a turning one
+    /// they are radial and differ, and applying the same offset to each is what makes the motion a
+    /// change of RADIUS rather than a shove. The distinction matters to the solver, not just to the
+    /// eye: an equal-offset hand set is one a pure width change satisfies exactly, so the settle
+    /// has nothing to trade off. Hands built from a raw cursor displacement would disagree by
+    /// bearing, leaving no configuration that meets both and a mushy answer that splits them.
+    ///
+    /// Only the curves an author can hold as a WHOLE — a segment, an arc. The higher curves carry
+    /// their shape in control points, so there is no single offset that means anything for them.
+    fn hands_moving_a_curve(
+        &self,
+        curve: SketchCurve,
+        at: [f64; 2],
+    ) -> Option<Vec<(EntityId, [f64; 2])>> {
+        // Below this the direction the offset is measured along stops being meaningful, and the
+        // drag would report a wild displacement from a rounding difference.
+        const DEGENERATE_SPAN_VOXELS: f64 = 1.0e-9;
+        match curve {
+            SketchCurve::Segment(id) => {
+                let segment = self.segments.iter().find(|segment| segment.id == id)?;
+                let tail = self.point_in_plane(segment.from)?;
+                let head = self.point_in_plane(segment.to)?;
+                let span = [head[0] - tail[0], head[1] - tail[1]];
+                let length = span[0].hypot(span[1]);
+                if length < DEGENERATE_SPAN_VOXELS {
+                    return None;
+                }
+                let outward = [-span[1] / length, span[0] / length];
+                let offset = (at[0] - tail[0]).mul_add(outward[0], (at[1] - tail[1]) * outward[1]);
+                let slid = |from: [f64; 2]| {
+                    [
+                        offset.mul_add(outward[0], from[0]),
+                        offset.mul_add(outward[1], from[1]),
+                    ]
+                };
+                Some(vec![(segment.from, slid(tail)), (segment.to, slid(head))])
+            }
+            SketchCurve::Arc(id) => {
+                let arc = self.arcs.iter().find(|arc| arc.id == id)?;
+                let center = self.point_in_plane(arc.center)?;
+                let tail = self.point_in_plane(arc.from)?;
+                let head = self.point_in_plane(arc.to)?;
+                let radius = (tail[0] - center[0]).hypot(tail[1] - center[1]);
+                let reach = (at[0] - center[0]).hypot(at[1] - center[1]);
+                if radius < DEGENERATE_SPAN_VOXELS || reach < DEGENERATE_SPAN_VOXELS {
+                    return None;
+                }
+                // Both endpoints stand at `radius` by definition of an arc, so scaling each about
+                // the center by the same ratio offsets both radially by the same amount.
+                let grown = reach / radius;
+                let swelled = |from: [f64; 2]| {
+                    [
+                        grown.mul_add(from[0] - center[0], center[0]),
+                        grown.mul_add(from[1] - center[1], center[1]),
+                    ]
+                };
+                Some(vec![(arc.from, swelled(tail)), (arc.to, swelled(head))])
+            }
+            SketchCurve::Circle(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => None,
+        }
+    }
+
+    /// Where the point `id` stands, in plane coordinates.
+    fn point_in_plane(&self, id: EntityId) -> Option<[f64; 2]> {
+        self.point_index(id)
+            .map(|index| self.points[index].at.in_plane())
     }
 
     /// Every OTHER point of the shape whose center is `held`, or nothing if `held` is not one.

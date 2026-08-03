@@ -564,12 +564,36 @@ struct WindowedState {
     shift_held: bool,
 }
 
-/// An in-progress sketch point-vertex drag, identified by stable id.
+/// What a sketch drag has hold of.
+///
+/// A point and a whole curve are the same gesture from the shell's side — press, preview per
+/// frame off the pre-drag snapshot, commit one edit — and differ only in the door they call. The
+/// distinction lives here so the preview asks once rather than at every step of the plumbing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SketchGrab {
+    /// A point entity, which goes where the cursor goes.
+    Point(document::sketch::EntityId),
+    /// A whole curve, which moves perpendicular to itself to pass under the cursor — the gesture
+    /// that authors a slot's width.
+    Curve(document::sketch::SketchCurve),
+}
+
+impl SketchGrab {
+    /// The point this grab holds, if it holds one — the overlay marks that handle as dragged.
+    const fn point(self) -> Option<document::sketch::EntityId> {
+        match self {
+            Self::Point(id) => Some(id),
+            Self::Curve(_) => None,
+        }
+    }
+}
+
+/// An in-progress sketch drag, identified by the stable entity it holds.
 #[derive(Debug, Clone)]
 struct SketchVertexDrag {
-    /// The stable id of the point entity being dragged — NOT a loop index, which is invalid
-    /// once the graph opens.
-    point_id: document::sketch::EntityId,
+    /// What the press grabbed — a stable entity, NOT a loop index, which is invalid once the
+    /// graph opens.
+    held: SketchGrab,
     /// The sketch producer as it stood when the vertex was grabbed — the base every preview
     /// moves the dragged vertex on (a fresh clone), so successive frames never compound, and
     /// the RESTORE-before-commit reverts to exactly this.
