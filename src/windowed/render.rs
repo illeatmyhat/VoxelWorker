@@ -853,21 +853,27 @@ impl WindowedState {
             let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
                 return None;
             };
-            Some((handles, producer.sketch.clone()))
+            // No tolerance and no screen-scale heuristic: the region carries its arcs and the wash
+            // measures the curve, so there is nothing here for a zoom level to be right about.
+            //
+            // Derived from the sketch IN PLACE, never from a copy. `RegionMemo` clones EMPTY, so a
+            // cloned sketch re-runs the whole arrangement every frame and throws the result away
+            // with the copy.
+            let region = self
+                .sketch_evaluation_context()
+                .map(|context| producer.sketch.region_field_loops(context));
+            Some((handles, region))
         });
-        if let Some((handles, sketch)) = sketch_region {
+        if let Some((handles, region)) = sketch_region {
+            let Some(region) = region else {
+                self.sketch_region_renderer.disarm();
+                return;
+            };
             let origin = handles.profile_to_render([0.0, 0.0]);
             let axis = |coord: [f64; 2]| {
                 let tip = handles.profile_to_render(coord);
                 [tip[0] - origin[0], tip[1] - origin[1], tip[2] - origin[2]]
             };
-            // No tolerance and no screen-scale heuristic: the region carries its arcs and the wash
-            // measures the curve, so there is nothing here for a zoom level to be right about.
-            let Some(context) = self.sketch_evaluation_context() else {
-                self.sketch_region_renderer.disarm();
-                return;
-            };
-            let region = sketch.region_field_loops(context);
             self.sketch_region_renderer.update(
                 &self.gpu.device,
                 &self.gpu.queue,
@@ -4643,19 +4649,15 @@ impl WindowedState {
         }
 
         // The derived faces (#100), in physical px for the right-press hit-test. Derivation is a
-        // graph walk over the sketch's own entities, so it re-runs here with the rest of the overlay
-        // rather than being cached against an edit counter. The WASH is not projected here at all:
-        // it is a GPU pass over the plane (`SketchRegionRenderer`), so no boundary is projected for
-        // it and nesting is the region field's business, not the overlay's.
-        let sketch = self
-            .panel_state
-            .scene
-            .node_by_id(target)
-            .and_then(|node| match &node.content {
-                document::scene::NodeContent::SketchTool { producer, .. } => Some(&producer.sketch),
-                _ => None,
-            })
-            .cloned();
+        // graph walk over the sketch's own entities, and it is asked for here once per frame. The
+        // WASH is not projected here at all: it is a GPU pass over the plane
+        // (`SketchRegionRenderer`), so no boundary is projected for it and nesting is the region
+        // field's business, not the overlay's.
+        //
+        // Asked of the sketch IN PLACE, never of a copy. `RegionMemo` clones EMPTY — a copy of a
+        // sketch is the same sketch, cache or no cache — so a cloned sketch re-runs the whole
+        // arrangement every frame and throws the result away with the copy. On a document holding
+        // a couple of splines that alone is a frame's entire budget.
         // A behind-camera boundary vertex culls the whole outline, as it culls an arc.
         let project = |boundary: &[document::sketch::SketchPoint]| -> Option<Vec<egui::Pos2>> {
             boundary
@@ -4673,18 +4675,35 @@ impl WindowedState {
                 })
                 .collect()
         };
-        if let (Some(sketch), Some(context)) = (sketch, self.sketch_evaluation_context()) {
-            for (index, face) in sketch.faces(context).into_iter().enumerate() {
-                // A hit-test polygon IS discrete, so this is a terminal adapter: it flattens here
-                // rather than asking the region for a coarser boundary.
-                let boundary = document::sketch::flatten_edges(
-                    &face.boundary,
-                    document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
-                );
-                if let Some(projected) = project(&boundary) {
-                    self.sketch_face_polygons.push((index, projected));
-                }
-            }
+        if let Some(context) = self.sketch_evaluation_context() {
+            let projected_faces: Vec<(usize, Vec<egui::Pos2>)> = self
+                .panel_state
+                .scene
+                .node_by_id(target)
+                .and_then(|node| match &node.content {
+                    document::scene::NodeContent::SketchTool { producer, .. } => {
+                        Some(&producer.sketch)
+                    }
+                    _ => None,
+                })
+                .map(|sketch| {
+                    sketch
+                        .faces(context)
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, face)| {
+                            // A hit-test polygon IS discrete, so this is a terminal adapter: it
+                            // flattens here rather than asking the region for a coarser boundary.
+                            let boundary = document::sketch::flatten_edges(
+                                &face.boundary,
+                                document::sketch::ARC_SAGITTA_TOLERANCE_VOXELS,
+                            );
+                            project(&boundary).map(|projected| (index, projected))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.sketch_face_polygons.extend(projected_faces);
         }
 
         // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
