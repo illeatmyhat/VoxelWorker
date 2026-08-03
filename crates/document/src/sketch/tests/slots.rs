@@ -103,11 +103,12 @@ fn both_arc_slots_commit_four_native_arcs_with_preview_identity() {
     assert_eq!(centered.sketch.region(ctx(16)).len(), 1);
 }
 
-/// A slot is not four curves that happen to touch — it is four curves held together. Every
-/// grammar commits the same five relations: a tangency at each corner, plus the one that keeps
-/// the rails rails. The WIDTH is the freedom deliberately left over.
+/// A slot is not four curves that happen to touch — it is four curves held together, around a
+/// spine the drawing remembers. Every grammar commits a tangency at each corner, the one relation
+/// that keeps the rails rails, and one coincidence per spine handle. The WIDTH is the freedom
+/// deliberately left over.
 #[test]
-fn every_slot_grammar_commits_four_tangencies_and_one_rail_relation() {
+fn every_slot_grammar_commits_its_tangencies_rail_relation_and_spine() {
     let source = source();
     let straight = source
         .with_linear_slot(
@@ -129,15 +130,24 @@ fn every_slot_grammar_commits_four_tangencies_and_one_rail_relation() {
         )
         .unwrap();
 
-    for made in [&straight, &curved] {
-        let tangencies = made
-            .sketch
-            .constraints()
-            .iter()
-            .filter(|constraint| matches!(constraint.kind, ConstraintKind::Tangent { .. }))
-            .count();
-        assert_eq!(tangencies, 4);
-        assert_eq!(made.sketch.constraints().len(), 5);
+    // A straight spine has two handles; a turning one also has the center it turns about.
+    for (made, handles) in [(&straight, 2), (&curved, 3)] {
+        let kinds = |wanted: fn(&ConstraintKind) -> bool| {
+            made.sketch
+                .constraints()
+                .iter()
+                .filter(|constraint| wanted(&constraint.kind))
+                .count()
+        };
+        assert_eq!(
+            kinds(|kind| matches!(kind, ConstraintKind::Tangent { .. })),
+            4
+        );
+        assert_eq!(
+            kinds(|kind| matches!(kind, ConstraintKind::Coincident { .. })),
+            handles
+        );
+        assert_eq!(made.sketch.constraints().len(), 5 + handles);
         // The relations must be true of the geometry the tool just drew — a slot that has to be
         // solved into shape the moment it lands is a slot the tool got wrong.
         assert!(made.sketch.standing_constraints_hold(ctx(16)).unwrap());
@@ -153,6 +163,52 @@ fn every_slot_grammar_commits_four_tangencies_and_one_rail_relation() {
         .constraints()
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Concentric { .. })));
+}
+
+/// PROBE, not a contract: what does a bare one-point pull on the slot's own center actually do?
+///
+/// The owner wants it to translate the whole slot. Least-motion has a cheaper answer available —
+/// grow the radius and leave the spine ends where they are — so this measures which one the
+/// solver takes before any drag policy is built on top of it.
+#[test]
+#[ignore = "design probe — run with --ignored --nocapture"]
+fn what_a_single_hand_on_the_slot_center_does() {
+    let mut made = source()
+        .with_center_arc_slot(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(8, 0),
+            SketchPoint::new(0, 8),
+            ::parametric::sketch::ArcTurn::CounterClockwise,
+            SketchPoint::new(10, 0),
+            ctx(16),
+        )
+        .unwrap();
+    let center = made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| {
+            !made.sketch.is_derived_point(point.id) && point.at.coincides(&SketchPoint::new(0, 0))
+        })
+        .map(|point| point.id)
+        .expect("the slot reifies its own center as a draggable handle");
+    let before: Vec<[f64; 2]> = made
+        .sketch
+        .points()
+        .iter()
+        .map(|point| point.at.in_plane())
+        .collect();
+    let stood = made
+        .sketch
+        .move_point(center, SketchPoint::new(5, 3), ctx(16));
+    println!("stood: {stood:?}");
+    for (was, now) in before.iter().zip(made.sketch.points()) {
+        let now = now.at.in_plane();
+        println!(
+            "{was:?} -> {now:?}   delta {:?}",
+            [now[0] - was[0], now[1] - was[1]]
+        );
+    }
 }
 
 #[test]

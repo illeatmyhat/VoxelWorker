@@ -20,26 +20,45 @@ pub enum SlotEdgeCandidate {
     },
 }
 
-/// How a slot's two long edges are held to one another — the relation that keeps the shape a
-/// slot instead of two independent rails that happen to be a fixed distance apart.
+/// Whether a slot's centerline runs straight or turns about a center.
 ///
-/// Which one it is follows from the spine: a straight spine gives straight rails that must stay
-/// parallel; a curved one gives concentric rails. Either way the WIDTH is deliberately left
-/// unconstrained — it is the one freedom the shape has left, and it is what an author changes by
-/// dragging a rail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlotRails {
-    Parallel,
-    Concentric,
+/// This one discriminant also settles how the two rails are held to each other — a straight spine
+/// gives rails that must stay parallel, a turning one gives concentric rails — so the two facts
+/// cannot drift apart into disagreement. What it deliberately does NOT settle is the width: that
+/// is the one freedom the shape keeps, and it is what an author changes by dragging a rail.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlotTurn {
+    Straight,
+    About([f64; 2]),
+}
+
+/// The centerline a slot's rails are offset from, in the terms an author holds it by.
+///
+/// A slot IS a spine plus a width, but the boundary the tool emits has no spine in it — the
+/// centerline is exactly the curve that does not get drawn. Carrying it here is what lets the
+/// commit reify the author's own picks and tie them to the boundary, so that afterwards the
+/// center translates the shape and the ends reshape it.
+///
+/// Every grammar reports the same three handles regardless of what it asked the author to click:
+/// Overall Slot picks the extremes and Center Point Slot picks a midpoint, but both RESOLVE to a
+/// spine, and it is the spine the drawing should remember.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotSpine {
+    /// Where the centerline starts — the center of the cap that closes that end.
+    pub start: [f64; 2],
+    /// Where it ends, likewise.
+    pub end: [f64; 2],
+    pub turn: SlotTurn,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotCandidate {
     /// Four boundary curves in connected traversal order. The two long rails are `[0]` and `[2]`;
-    /// the caps between them are `[1]` and `[3]`.
+    /// the caps between them are `[1]` and `[3]`, closing the `end` and `start` of the spine
+    /// respectively.
     pub edges: [SlotEdgeCandidate; 4],
-    /// The relation holding the two rails to each other.
-    pub rails: SlotRails,
+    /// The centerline these edges are offset from.
+    pub spine: SlotSpine,
     /// How the boundary meets itself at each of its four corners: junction `i` joins
     /// edge `i` to edge `i + 1` of [`edges`](Self::edges), wrapping, in that member order.
     ///
@@ -270,7 +289,11 @@ fn linear_boundary(
         LineSide::Left
     };
     SlotCandidate {
-        rails: SlotRails::Parallel,
+        spine: SlotSpine {
+            start: start_center,
+            end: end_center,
+            turn: SlotTurn::Straight,
+        },
         junctions: [TangentBranch::Line(cap_side); 4],
         edges: [
             SlotEdgeCandidate::Line {
@@ -334,7 +357,11 @@ fn arc_boundary(
     let sweep_degrees = sweep_radians.to_degrees();
     let cap_sweep = sweep_degrees.signum() * 180.0;
     Ok(SlotCandidate {
-        rails: SlotRails::Concentric,
+        spine: SlotSpine {
+            start,
+            end,
+            turn: SlotTurn::About(center),
+        },
         // The two long arcs are concentric with the spine at radius +/- the half-width; each cap
         // is centered ON the spine, a full spine radius from that shared center. So the OUTER arc
         // and a cap have their centers (R + w) - w apart, which is internal tangency with the

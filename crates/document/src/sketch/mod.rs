@@ -294,9 +294,25 @@ pub struct SlotPlacement {
     /// [`edges`](Self::edges), wrapping, in that member order. Read off the continuous
     /// construction, never re-derived here.
     pub junctions: [parametric::sketch::TangentBranch; 4],
-    /// What holds the two rails to each other. Also read off the construction: whether a slot's
-    /// sides are parallel or concentric is a fact about the spine, and the spine lives there.
-    pub rails: parametric::sketch::SlotRails,
+    /// The centerline, in canonical storage. Its handles become real points on commit and its
+    /// turn decides what holds the two rails together.
+    pub spine: SlotSpinePlacement,
+}
+
+/// A slot's centerline in canonical storage: the handles the drawing will remember it by.
+///
+/// The boundary does not contain these points — a spine is exactly the curve a slot does not
+/// draw — so they are reified and tied to the boundary's own derived centers. That tie is what
+/// makes the shape behave the way it was authored: hold the center and the slot translates, hold
+/// an end and the slot reshapes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotSpinePlacement {
+    /// Coincides with the center of the cap closing the start.
+    pub start: SketchPoint,
+    /// Coincides with the center of the cap closing the end.
+    pub end: SketchPoint,
+    /// Present when the spine turns; coincides with the center both rails share.
+    pub center: Option<SketchPoint>,
 }
 
 /// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
@@ -3649,6 +3665,31 @@ impl Sketch {
                     || (arc.from == b && arc.to == a && arc.sweep_degrees() == -degrees)
             })
             .map(|arc| arc.id)
+    }
+
+    /// The point entity holding a circular curve's center, if it has one.
+    ///
+    /// `None` for every curve that turns without a center to turn about — a segment, a Bézier, a
+    /// spline. Asking is how a caller ties something to a curve's center without knowing which
+    /// store the curve came out of.
+    pub fn center_point_of(&self, curve: SketchCurve) -> Option<EntityId> {
+        match curve {
+            SketchCurve::Arc(id) => self
+                .arcs
+                .iter()
+                .find(|arc| arc.id == id)
+                .map(|arc| arc.center),
+            SketchCurve::Circle(id) => self
+                .circles
+                .iter()
+                .find(|circle| circle.id == id)
+                .map(|circle| circle.center),
+            SketchCurve::Segment(_)
+            | SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => None,
+        }
     }
 
     /// Whether a straight segment already joins `a` and `b` in either direction.

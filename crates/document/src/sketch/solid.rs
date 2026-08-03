@@ -23,7 +23,6 @@
 
 use super::produce::{revolve_box_within_sweep_arc, to_region_curve_bounds, to_region_points};
 use super::*;
-use parametric::sketch::SlotRails;
 use parametric::EvaluationContext;
 use rayon::prelude::*;
 use std::sync::Arc;
@@ -993,9 +992,9 @@ impl SketchSolid {
             (second_rail, start_cap),
             (start_cap, first_rail),
         ];
-        let rails = match (placement.rails, first_rail, second_rail) {
-            (SlotRails::Concentric, first, second) => ConstraintKind::concentric(first, second),
-            (SlotRails::Parallel, SketchCurve::Segment(first), SketchCurve::Segment(second)) => {
+        let rails = match (placement.spine.center, first_rail, second_rail) {
+            (Some(_), first, second) => ConstraintKind::concentric(first, second),
+            (None, SketchCurve::Segment(first), SketchCurve::Segment(second)) => {
                 let (first, second) = if first <= second {
                     (first, second)
                 } else {
@@ -1004,14 +1003,48 @@ impl SketchSolid {
                 ConstraintKind::Parallel { first, second }
             }
             // A straight-spined slot whose rails came back as anything but segments is not a slot.
-            (SlotRails::Parallel, _, _) => return Err(SlotRefusal::Unrepresentable),
+            (None, _, _) => return Err(SlotRefusal::Unrepresentable),
         };
+        // Each spine handle is pinned to a center the boundary already derives: the caps' centers
+        // are the spine's two ends, and a turning spine's center is the one both rails share. The
+        // handle is a REAL point tied by Coincident rather than the derived center itself —
+        // dragging a derived center authors the quantity behind it and does not settle, which
+        // would make the slot's own center a dead handle.
+        let coincidences = [
+            (placement.spine.start, start_cap),
+            (placement.spine.end, end_cap),
+        ]
+        .into_iter()
+        .chain(placement.spine.center.map(|center| (center, first_rail)))
+        .map(|(at, curve)| {
+            let derived = next
+                .sketch
+                .center_point_of(curve)
+                .ok_or(SlotRefusal::Unrepresentable)?;
+            // A handle has to be a point that can be DRAGGED, and the ordinary "reuse whatever is
+            // standing here" lookup cannot give one: this spot is already occupied by the very
+            // center being tied to, and — where two rails share a center — by its twin as well.
+            // Tying to either would assert a coincidence the drawing already keeps and leave the
+            // author no handle at all.
+            let standing = next
+                .sketch
+                .points()
+                .iter()
+                .find(|point| !next.sketch.is_derived_point(point.id) && point.at.coincides(&at))
+                .map(|point| point.id);
+            let handle = standing.unwrap_or_else(|| next.sketch.add_free_point(at));
+            Ok(ConstraintKind::Coincident {
+                first: handle.min(derived),
+                second: handle.max(derived),
+            })
+        })
+        .collect::<Result<Vec<_>, SlotRefusal>>()?;
         let tangencies = placement
             .junctions
             .into_iter()
             .zip(corners)
             .map(|(branch, (first, second))| ConstraintKind::tangent(first, second, branch));
-        for kind in tangencies.chain(std::iter::once(rails)) {
+        for kind in tangencies.chain(std::iter::once(rails)).chain(coincidences) {
             match next.sketch.add_constraint(kind, context) {
                 Ok(_) | Err(ConstraintRefusal::AlreadyAsserted { .. }) => {}
                 Err(refusal) => return Err(SlotRefusal::Constraint(refusal)),
@@ -2055,10 +2088,21 @@ fn canonical_slot(
     }) {
         return Err(SlotRefusal::Unrepresentable);
     }
+    let canonical = |at: [f64; 2]| {
+        SketchPoint::try_from_continuous(at[0], at[1]).map_err(|_| SlotRefusal::Unrepresentable)
+    };
+    let spine = SlotSpinePlacement {
+        start: canonical(candidate.spine.start)?,
+        end: canonical(candidate.spine.end)?,
+        center: match candidate.spine.turn {
+            parametric::sketch::SlotTurn::Straight => None,
+            parametric::sketch::SlotTurn::About(center) => Some(canonical(center)?),
+        },
+    };
     Ok(SlotPlacement {
         edges,
         junctions: candidate.junctions,
-        rails: candidate.rails,
+        spine,
     })
 }
 

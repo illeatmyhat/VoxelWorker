@@ -3177,14 +3177,41 @@ impl Problem {
     ///
     /// Returns an error if the held point is not local to this problem.
     pub fn drag(&self, held: PointId, at: [f64; 2]) -> Result<DragOutcome, RequestError> {
-        if held.owner != self.owner || held.index >= self.points.len() {
-            return Err(RequestError::UnknownPoint);
+        self.drag_together(&[(held, at)])
+    }
+
+    /// Pull SEVERAL local points toward their targets at once, then release and settle.
+    ///
+    /// One hand asks the drawing to do whatever it likes as long as this point ends up here, and
+    /// least motion decides the rest — which is right for grabbing a vertex and wrong for grabbing
+    /// a SHAPE. Moving a shape means every point of it goes the same way, and there is no relation
+    /// that says so: the freedoms a slot keeps on purpose (its width, its radius) are exactly the
+    /// ones a single hand will spend instead of translating. Naming all the points the gesture
+    /// holds is how the caller says which motion it meant, without a rigidity relation that would
+    /// take those freedoms away for good.
+    ///
+    /// Each hand joins as one more least-squares row, so they trade off against each other as well
+    /// as against everything standing; a set of targets the drawing cannot meet lands as close as
+    /// it can rather than failing outright.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any held point is not local to this problem.
+    pub fn drag_together(
+        &self,
+        hands: &[(PointId, [f64; 2])],
+    ) -> Result<DragOutcome, RequestError> {
+        let mut pulled = self.clone();
+        for (held, at) in hands.iter().copied() {
+            if held.owner != self.owner || held.index >= self.points.len() {
+                return Err(RequestError::UnknownPoint);
+            }
+            let pull = Relation::Fix { point: held, at };
+            pulled = pulled.with_candidate(
+                pull,
+                self.resolve(pull).map_err(RequestError::InvalidRelation)?,
+            );
         }
-        let pull = Relation::Fix { point: held, at };
-        let pulled = self.with_candidate(
-            pull,
-            self.resolve(pull).map_err(RequestError::InvalidRelation)?,
-        );
         let mut positions: Vec<_> = self.points.iter().map(|point| point.at).collect();
         let mut scalar_coordinates = self.scalar_coordinates();
         run(
