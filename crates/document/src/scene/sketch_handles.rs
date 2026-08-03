@@ -35,7 +35,7 @@
 )]
 
 use super::*;
-use crate::sketch::{EntityId, EntityRole, Operation, SketchCurve};
+use crate::sketch::{EntityId, EntityRole, Operation, PointLifetime, SketchCurve};
 use glam::Vec3;
 use parametric::EvaluationContext;
 use std::num::NonZeroU32;
@@ -251,11 +251,11 @@ impl Scene {
         let anchor = producer.profile_bbox_min(context);
 
         // The extent of the box the HANDLES occupy, which is theirs and not the resolve's — it
-        // covers free points and open chains that no face contains. Construction points are
+        // covers free points and open chains that no face contains. Points a curve anchors are
         // excluded: an arc's center can sit well outside the profile.
         let mut real = points
             .iter()
-            .filter(|point| point.role == EntityRole::Real)
+            .filter(|point| point.lifetime == PointLifetime::Freestanding)
             .map(|point| point.at.offset_voxels);
         let mut min = real.next().unwrap_or([0, 0]);
         let mut max = min;

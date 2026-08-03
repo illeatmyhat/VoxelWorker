@@ -10,7 +10,7 @@
 
 use super::ctx;
 use crate::sketch::{
-    EntityId, EntityRole, PlaneAxis, Sketch, SketchLength, SketchPoint, SketchSolid,
+    EntityId, EntityRole, PlaneAxis, PointLifetime, Sketch, SketchLength, SketchPoint, SketchSolid,
 };
 
 /// A closed rectangular profile whose bbox-minimum is `[2, 2]`, extruded so it is a real solid.
@@ -305,14 +305,14 @@ fn no_point_takes_a_construction_toggle_structural_or_free() {
             .iter()
             .find(|point| point.id == id)
             .unwrap()
-            .role
+            .lifetime
     };
 
     assert!(source.with_construction_toggled([center]).is_none());
     assert!(source.with_construction_toggled([free]).is_none());
     assert!(source.with_construction_toggled([center, free]).is_none());
-    assert_eq!(role_of(center), EntityRole::Construction);
-    assert_eq!(role_of(free), EntityRole::Real);
+    assert_eq!(role_of(center), PointLifetime::CurveAnchored);
+    assert_eq!(role_of(free), PointLifetime::Freestanding);
 }
 
 /// Every curve kind answers the same door. `set_construction` used to reach segments only and

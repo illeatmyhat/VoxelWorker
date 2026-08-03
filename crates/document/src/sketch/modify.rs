@@ -7,8 +7,8 @@
 
 use super::{
     boxed_push, boxed_retain, AngleMeasurement, Arc, ArcSweep, ConstraintKind, EntityId,
-    EntityRole, Segment, Sketch, SketchCurve, SketchLength, SketchPoint, SketchSolid,
-    ABSENT_DERIVED_POINT,
+    EntityRole, PointLifetime, Segment, Sketch, SketchCurve, SketchLength, SketchPoint,
+    SketchSolid, ABSENT_DERIVED_POINT,
 };
 use substrate::curve_intersection::{CurveSupportCrossing, PlanarCurve};
 
@@ -729,7 +729,7 @@ impl Sketch {
         }
         let id = self.add_point(point);
         if let Some(stored) = self.points.iter_mut().find(|stored| stored.id == id) {
-            stored.role = role;
+            stored.lifetime = PointLifetime::serving(role);
         }
         Ok(id)
     }
@@ -991,7 +991,7 @@ impl Sketch {
             .iter_mut()
             .find(|point| point.id == second_point)
         {
-            point.role = role;
+            point.lifetime = PointLifetime::serving(role);
         }
         let second_segment = self
             .segments
@@ -1082,7 +1082,7 @@ impl Sketch {
             .iter_mut()
             .find(|point| point.id == second_point)
         {
-            point.role = role;
+            point.lifetime = PointLifetime::serving(role);
         }
         let second_segment = self
             .segments
@@ -1153,8 +1153,8 @@ impl Sketch {
                     .map_err(|_| OffsetRefusal::Unrepresentable)?;
                 let from = self.add_point(start);
                 let to = self.add_point(end);
-                self.set_point_role(from, role);
-                self.set_point_role(to, role);
+                self.set_point_lifetime(from, PointLifetime::serving(role));
+                self.set_point_lifetime(to, PointLifetime::serving(role));
                 let id = self
                     .connect(from, to)
                     .ok_or(OffsetRefusal::Unrepresentable)?;
@@ -1183,8 +1183,8 @@ impl Sketch {
                     .map_err(|_| OffsetRefusal::Unrepresentable)?;
                 let from = self.add_point(start);
                 let to = self.add_point(end);
-                self.set_point_role(from, role);
-                self.set_point_role(to, role);
+                self.set_point_lifetime(from, PointLifetime::serving(role));
+                self.set_point_lifetime(to, PointLifetime::serving(role));
                 let sweep =
                     piece_sweep(&placement.offset).map_err(|_| OffsetRefusal::Unrepresentable)?;
                 let id = self
@@ -1244,9 +1244,9 @@ impl Sketch {
     /// control-point spline's interior frame, a rectangle's center — and
     /// [`prune_orphan_centers`](Sketch::prune_orphan_centers) sweeps it once nothing refers to it.
     /// Construction as the author knows it is a mode on CURVES and never reaches here.
-    pub(super) fn set_point_role(&mut self, point: EntityId, role: EntityRole) {
+    pub(super) fn set_point_lifetime(&mut self, point: EntityId, lifetime: PointLifetime) {
         if let Some(point) = self.points.iter_mut().find(|held| held.id == point) {
-            point.role = role;
+            point.lifetime = lifetime;
         }
     }
 }

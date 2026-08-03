@@ -16,7 +16,7 @@ fn ellipse_is_one_closed_profile_without_boundary_points() {
     assert!(sketch
         .points()
         .iter()
-        .all(|point| point.role == EntityRole::Construction));
+        .all(|point| point.lifetime == PointLifetime::CurveAnchored));
     assert_eq!(sketch.faces(ctx(16)).len(), 1);
 
     let restored: Sketch =
@@ -167,7 +167,7 @@ fn closed_fit_spline_is_one_profile_with_only_authored_fit_points() {
     assert!(sketch
         .points()
         .iter()
-        .all(|point| point.role == EntityRole::Real));
+        .all(|point| point.lifetime == PointLifetime::Freestanding));
     assert_eq!(sketch.faces(ctx(16)).len(), 1);
 
     let restored: Sketch =
@@ -200,16 +200,16 @@ fn control_point_spline_keeps_only_its_endpoints_visible() {
                 .iter()
                 .find(|point| point.id == *id)
                 .expect("control exists")
-                .role
+                .lifetime
         })
         .collect();
     assert_eq!(
         roles,
         vec![
-            EntityRole::Real,
-            EntityRole::Construction,
-            EntityRole::Construction,
-            EntityRole::Real,
+            PointLifetime::Freestanding,
+            PointLifetime::CurveAnchored,
+            PointLifetime::CurveAnchored,
+            PointLifetime::Freestanding,
         ]
     );
 }
@@ -244,9 +244,9 @@ fn deleting_a_control_simplifies_the_spline_until_only_its_ends_remain() {
             .points()
             .iter()
             .find(|point| point.id == id)
-            .map(|point| point.role)
+            .map(|point| point.lifetime)
     };
-    assert_eq!(role(controls[2]), Some(EntityRole::Real));
+    assert_eq!(role(controls[2]), Some(PointLifetime::Freestanding));
 
     // Two ends is the floor: the last delete has no curve left to simplify to.
     sketch.delete_point_cascade(controls[2]);
@@ -297,6 +297,55 @@ fn deleting_a_fit_point_simplifies_the_spline_and_a_closed_one_opens_no_lower_th
 
     sketch.delete_point_cascade(fits[0]);
     assert!(sketch.splines().is_empty());
+}
+
+/// A point's lifetime rode the `role` field, spelled with a curve's role names, until the two
+/// quantities were split. Documents written then must still say what they meant — a handle that
+/// loaded as Freestanding would stop being swept and litter a dot for every ellipse ever drawn.
+#[test]
+fn a_points_old_role_loads_as_the_lifetime_it_always_was() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_ellipse(
+            SketchPoint::new(2, 3),
+            SketchPoint::new(8, 3),
+            SketchPoint::new(2, 7),
+        )
+        .expect("valid ellipse");
+    let free = sketch.add_free_point(SketchPoint::new(9, 9));
+
+    let mut raw = serde_json::to_value(&sketch).expect("sketch serializes");
+    for point in raw["points"]
+        .as_array_mut()
+        .expect("points is an array")
+        .iter_mut()
+    {
+        let old = point
+            .as_object_mut()
+            .expect("a point is an object")
+            .remove("lifetime")
+            .expect("the point wrote its lifetime");
+        let old = match old.as_str().expect("a lifetime is a string") {
+            "CurveAnchored" => "Construction",
+            _ => "Real",
+        };
+        point["role"] = serde_json::json!(old);
+    }
+
+    let loaded: Sketch = serde_json::from_value(raw).expect("an older document loads");
+    assert_eq!(loaded, sketch);
+    let lifetime_of = |id| {
+        loaded
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .map(|point| point.lifetime)
+    };
+    assert_eq!(lifetime_of(free), Some(PointLifetime::Freestanding));
+    assert_eq!(
+        lifetime_of(loaded.ellipses()[0].center),
+        Some(PointLifetime::CurveAnchored)
+    );
 }
 
 #[test]

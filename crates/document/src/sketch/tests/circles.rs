@@ -96,7 +96,7 @@ fn the_boundary_is_one_closed_edge_with_no_on_curve_vertex() {
         1,
         "the center, and nothing on the curve"
     );
-    assert_eq!(sketch.points()[0].role, EntityRole::Construction);
+    assert_eq!(sketch.points()[0].lifetime, PointLifetime::CurveAnchored);
     let center = sketch.points()[0].at.in_plane();
     assert_eq!(center, [3.0, 5.0]);
 }
@@ -711,7 +711,10 @@ fn center_diameter_reuses_or_mints_only_its_center() {
         1,
         "the perimeter is not a point entity"
     );
-    assert_eq!(made.sketch.points()[0].role, EntityRole::Construction);
+    assert_eq!(
+        made.sketch.points()[0].lifetime,
+        PointLifetime::CurveAnchored
+    );
     assert_eq!(made.sketch.circles()[0].free_radius_value(), Some(4.0));
     let circle = made.sketch.circles()[0].id;
     let removed = made.with_circle_deleted(circle);

@@ -5,7 +5,8 @@
 use super::ctx;
 use crate::sketch::{
     arc_center_radius, arc_interior_points, included_angle_through_degrees, ArcSweep, EntityId,
-    EntityRole, PlaneAxis, Point, Sketch, SketchPoint, SketchSolid, ARC_SAGITTA_TOLERANCE_VOXELS,
+    PlaneAxis, Point, PointLifetime, Sketch, SketchPoint, SketchSolid,
+    ARC_SAGITTA_TOLERANCE_VOXELS,
 };
 use crate::voxel::VoxelProducer;
 use ::parametric::units::AngleMeasurement;
@@ -455,7 +456,7 @@ fn an_arc_reifies_its_center_as_a_selectable_point() {
     let center = center_of(&sketch, arc);
 
     assert_near(center.at.in_plane(), [2.0, 0.0]);
-    assert_eq!(center.role, EntityRole::Construction);
+    assert_eq!(center.lifetime, PointLifetime::CurveAnchored);
     assert!(
         ![from, to].contains(&center.id),
         "the center is its own entity, not an endpoint wearing a second hat"

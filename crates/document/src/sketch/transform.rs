@@ -424,7 +424,7 @@ impl Sketch {
             self.points.push(Point {
                 id,
                 at,
-                role: source.role,
+                lifetime: source.lifetime,
             });
             points.insert(source.id, id);
         }

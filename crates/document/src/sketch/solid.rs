@@ -737,9 +737,9 @@ impl SketchSolid {
             .point_at(center)
             .unwrap_or_else(|| next.sketch.add_free_point(center));
         // The center belongs to the rectangle, not the author: nothing but the two diagonals
-        // refers to it, so it is Construction for its LIFETIME, not for how it draws.
+        // refers to it, so it goes when they do.
         next.sketch
-            .set_point_role(center_id, EntityRole::Construction);
+            .set_point_lifetime(center_id, PointLifetime::CurveAnchored);
         // Halfway along BOTH diagonals. The second assertion is implied by the first once the
         // sides are square, and the solver keeps it flagged rather than refusing it — the
         // author drew a center rectangle, so both diagonals owning the center is the intent.

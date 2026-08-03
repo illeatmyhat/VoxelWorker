@@ -941,6 +941,47 @@ impl EntityRole {
     }
 }
 
+/// How long a [`Point`] outlives the things that refer to it.
+///
+/// This is NOT [`EntityRole`], though a point once carried that type and the confusion cost four
+/// bugs. A role is a linetype: how a curve draws and whether the region counts it as a boundary. A
+/// point has no linetype — every point draws identically, which the author ratified — and no point
+/// bounds anything on its own. What a point has instead is a question no curve has to answer: when
+/// the last thing referring to it goes away, is it still there?
+///
+/// It is also not the same question as [`is_derived_point`](Sketch::is_derived_point), which asks
+/// who OWNS a position. An ellipse's width handle is anchored and authored at once: the author
+/// placed it, nothing re-derives it, and it still has no business surviving its ellipse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum PointLifetime {
+    /// The author placed it and it stays until the author deletes it, incident geometry or not.
+    #[default]
+    #[serde(alias = "Real")]
+    Freestanding,
+    /// It exists to serve the curves that name it. [`prune_orphan_centers`] sweeps it as soon as
+    /// none of them do — an ellipse handle, a rectangle's center, a control-point spline's
+    /// interior frame.
+    ///
+    /// [`prune_orphan_centers`]: Sketch::prune_orphan_centers
+    #[serde(alias = "Construction")]
+    CurveAnchored,
+}
+
+impl PointLifetime {
+    /// What a point minted to serve a curve of this role should outlive.
+    ///
+    /// Breaking, filleting or offsetting a curve mints the points its pieces meet at, and those
+    /// points inherit from the curve. The two quantities are different, so the inheritance is
+    /// written out rather than assumed: reference geometry's junctions are the drawing's and go
+    /// when it does; real geometry's junctions are the author's and stay as free points.
+    pub const fn serving(role: EntityRole) -> Self {
+        match role {
+            EntityRole::Real => Self::Freestanding,
+            EntityRole::Construction => Self::CurveAnchored,
+        }
+    }
+}
+
 /// One loop of the profile: a closed boundary of [`ProfileEdge`]s plus how it contributes to the
 /// region. The unit the 2D CSG folds and the unit the overlay draws.
 ///
@@ -1242,9 +1283,10 @@ pub struct Point {
     pub id: EntityId,
     /// The point's in-plane position (see [`SketchPoint`]).
     pub at: SketchPoint,
-    /// Real vs construction geometry.
-    #[serde(default)]
-    pub role: EntityRole,
+    /// Whether this point outlives the curves that name it. Reads `role` in documents written
+    /// while a point still carried an [`EntityRole`].
+    #[serde(default, alias = "role")]
+    pub lifetime: PointLifetime,
 }
 
 /// A line-segment entity joining two [`Point`]s **by id**. Coincidence IS shared
@@ -1963,7 +2005,7 @@ impl Sketch {
     /// the drawing rather than to the author — an ellipse handle, a control-point spline's interior
     /// frame — and [`prune_orphan_centers`](Self::prune_orphan_centers) sweeps it the moment nothing
     /// refers to it. That is bookkeeping, not a mode the author can be offered, so it has its own
-    /// door in `set_point_role` and this one refuses it.
+    /// door in `set_point_lifetime` and this one refuses it.
     pub fn set_construction(&mut self, id: EntityId) {
         if let Some(curve) = self.curve_named(id) {
             self.set_curve_role(curve, EntityRole::Construction);
@@ -2030,18 +2072,18 @@ impl Sketch {
         self.points.push(Point {
             id,
             at,
-            role: EntityRole::Real,
+            lifetime: PointLifetime::Freestanding,
         });
         id
     }
 
-    /// Allocate a construction point at `at` — geometry that never bounds a region.
+    /// Allocate a point that serves a curve and is swept once no curve names it.
     fn add_construction_point(&mut self, at: SketchPoint) -> EntityId {
         let id = self.alloc_id();
         self.points.push(Point {
             id,
             at,
-            role: EntityRole::Construction,
+            lifetime: PointLifetime::CurveAnchored,
         });
         id
     }
@@ -3067,7 +3109,7 @@ impl Sketch {
         self.splines = healed.into_boxed_slice();
         for point in &mut self.points {
             if promote.contains(&point.id) {
-                point.role = EntityRole::Real;
+                point.lifetime = PointLifetime::Freestanding;
             }
         }
     }
@@ -4150,7 +4192,7 @@ impl Sketch {
             referenced.extend(spline.points.iter().copied());
         }
         self.points.retain(|point| {
-            point.role != EntityRole::Construction || referenced.contains(&point.id)
+            point.lifetime != PointLifetime::CurveAnchored || referenced.contains(&point.id)
         });
     }
 
