@@ -665,7 +665,7 @@ impl RegionEdge {
 /// The most uniform steps a rational curve is ever measured in — what every curve used to cost.
 ///
 /// It stays the CEILING rather than the count, so no curve is measured more coarsely than it was
-/// before [`rational_bezier_measurement_steps`] existed.
+/// before `rational_bezier_measurement_steps` existed.
 const RATIONAL_BEZIER_MEASUREMENT_STEPS: u16 = 64;
 
 /// How far the chord run measuring a rational curve may sit from the curve, in the caller's units
@@ -674,7 +674,7 @@ const RATIONAL_BEZIER_MEASUREMENT_STEPS: u16 = 64;
 const RATIONAL_BEZIER_MEASUREMENT_TOLERANCE: f32 = 1.0 / 1024.0;
 
 /// How many uniform steps this curve needs to be measured to within
-/// [`RATIONAL_BEZIER_MEASUREMENT_TOLERANCE`].
+/// `RATIONAL_BEZIER_MEASUREMENT_TOLERANCE`.
 ///
 /// A cubic subdivided into `n` uniform pieces sits within `(d(d-1)/8)·max‖Δ²P‖/n²` of its chord
 /// run — Wang's bound, `d = 3` here. Inverting it gives the steps the curve actually needs, which
@@ -1001,19 +1001,19 @@ fn outside_bounds(low: [f32; 2], high: [f32; 2], point: [f32; 2]) -> bool {
 /// # Why a rational curve is walked here and not per sample
 ///
 /// A rational Bézier has no closed-form distance, so both halves of the field measure it against a
-/// run of chords fine enough to sit within [`RATIONAL_BEZIER_MEASUREMENT_TOLERANCE`] of it. That
-/// run depends only on the curve — [`rational_bezier_measurement_steps`] reads it off the control
+/// run of chords fine enough to sit within `RATIONAL_BEZIER_MEASUREMENT_TOLERANCE` of it. That
+/// run depends only on the curve — `rational_bezier_measurement_steps` reads it off the control
 /// points — yet the free functions rebuild it from scratch on every sample, evaluating a rational
 /// cubic per step per edge. On a profile with eight spline pieces that was 2.2us per voxel, which
 /// is where a real drawing's rebuild time went.
 ///
 /// Walking each curve ONCE at construction and keeping its chords is not an approximation of the
-/// per-sample walk, it IS the per-sample walk — the same [`walk_rational_bezier_chords`], the same
+/// per-sample walk, it IS the per-sample walk — the same `walk_rational_bezier_chords`, the same
 /// chords, in the same order, folded by the same segment routines.
 ///
 /// # The prune is exact, not approximate
 ///
-/// [`distance_to_bounds`] is a LOWER bound on the distance to anything a box contains, so a loop
+/// `distance_to_bounds` is a LOWER bound on the distance to anything a box contains, so a loop
 /// whose box already loses to the running best could not have won it; and a point outside a loop's
 /// box cannot be inside the loop. Every answer here is the free function's answer, bit for bit.
 /// That is a requirement rather than a nicety: the WGSL mirror is held to the unprepared walk by a

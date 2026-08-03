@@ -795,7 +795,16 @@ impl Sketch {
         &self,
         source: SketchCurve,
     ) -> Result<(EntityId, EntityRole), BreakRefusal> {
-        let held = match source {
+        self.curve_lineage_and_role(source)
+            .ok_or(BreakRefusal::UnknownCurve)
+    }
+
+    /// The lineage id and role a curve holds, if a curve store holds it.
+    pub(super) fn curve_lineage_and_role(
+        &self,
+        source: SketchCurve,
+    ) -> Option<(EntityId, EntityRole)> {
+        match source {
             SketchCurve::Segment(id) => self
                 .segments
                 .iter()
@@ -831,8 +840,7 @@ impl Sketch {
                 .iter()
                 .find(|curve| curve.id == id)
                 .map(|curve| (curve.origin, curve.role)),
-        };
-        held.ok_or(BreakRefusal::UnknownCurve)
+        }
     }
 
     fn remove_curve(&mut self, source: SketchCurve) {
@@ -1190,7 +1198,7 @@ impl Sketch {
         Ok(())
     }
 
-    fn set_curve_role(&mut self, curve: SketchCurve, role: EntityRole) {
+    pub(super) fn set_curve_role(&mut self, curve: SketchCurve, role: EntityRole) {
         match curve {
             SketchCurve::Segment(id) => {
                 if let Some(curve) = self.segments.iter_mut().find(|curve| curve.id == id) {
@@ -1230,7 +1238,13 @@ impl Sketch {
         }
     }
 
-    fn set_point_role(&mut self, point: EntityId, role: EntityRole) {
+    /// Set what a POINT's role means on a point: its lifetime, not a linetype.
+    ///
+    /// A Construction point is one the drawing owns rather than the author — an ellipse handle, a
+    /// control-point spline's interior frame, a rectangle's center — and
+    /// [`prune_orphan_centers`](Sketch::prune_orphan_centers) sweeps it once nothing refers to it.
+    /// Construction as the author knows it is a mode on CURVES and never reaches here.
+    pub(super) fn set_point_role(&mut self, point: EntityId, role: EntityRole) {
         if let Some(point) = self.points.iter_mut().find(|held| held.id == point) {
             point.role = role;
         }

@@ -3508,11 +3508,12 @@ impl WindowedState {
         let Some((producer, _)) = self.sketch_node_state(target) else {
             return;
         };
+        // Points are absent deliberately: construction is a mode a CURVE is in, and offering it on
+        // a selected point would flip a lifetime flag the author never asked about.
         let entities: Vec<_> = self
             .panel_state
             .selection
-            .sketch_points(target)
-            .chain(self.panel_state.selection.sketch_segments(target))
+            .sketch_segments(target)
             .chain(self.panel_state.selection.sketch_arcs(target))
             .chain(self.panel_state.selection.sketch_circles(target))
             // An aggregate toggles as one entity: the role lives on the authored curve, not on

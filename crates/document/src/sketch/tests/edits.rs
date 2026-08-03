@@ -281,8 +281,11 @@ fn construction_toggle_retains_identity_and_excludes_geometry_from_regions() {
     assert_eq!(real.sketch.flattened_loop(ctx(16)).len(), 3);
 }
 
+/// Construction is a mode a CURVE is in. Neither a point the drawing owns nor one the author
+/// placed has a linetype to flip, so both refuse — and refusing the center is what keeps a
+/// structural one from being talked into participating as a profile vertex.
 #[test]
-fn structural_circle_center_refuses_a_construction_toggle() {
+fn no_point_takes_a_construction_toggle_structural_or_free() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
     let circle = sketch
         .add_circle(SketchPoint::new(2, 3), SketchLength::new(4))
@@ -293,16 +296,56 @@ fn structural_circle_center_refuses_a_construction_toggle() {
         .find(|held| held.id == circle)
         .unwrap()
         .center;
+    let free = sketch.add_free_point(SketchPoint::new(9, 9));
     let source = SketchSolid::extrude(sketch, 3);
-    assert!(source.with_construction_toggled([center]).is_none());
-    assert_eq!(
+    let role_of = |id| {
         source
             .sketch
             .points()
             .iter()
-            .find(|point| point.id == center)
+            .find(|point| point.id == id)
             .unwrap()
-            .role,
-        EntityRole::Construction
-    );
+            .role
+    };
+
+    assert!(source.with_construction_toggled([center]).is_none());
+    assert!(source.with_construction_toggled([free]).is_none());
+    assert!(source.with_construction_toggled([center, free]).is_none());
+    assert_eq!(role_of(center), EntityRole::Construction);
+    assert_eq!(role_of(free), EntityRole::Real);
+}
+
+/// Every curve kind answers the same door. `set_construction` used to reach segments only and
+/// silently drop the other six, so a tool that authored reference geometry got a real boundary.
+#[test]
+fn set_construction_reaches_every_curve_kind() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let circle = sketch
+        .add_circle(SketchPoint::new(2, 3), SketchLength::new(4))
+        .unwrap();
+    let conic = sketch
+        .add_conic(
+            SketchPoint::new(-4, 0),
+            SketchPoint::new(4, 0),
+            SketchPoint::new(0, 4),
+            0.5,
+        )
+        .unwrap();
+    let spline = sketch
+        .add_control_point_spline(&[
+            SketchPoint::new(0, 0),
+            SketchPoint::new(2, 5),
+            SketchPoint::new(6, 5),
+            SketchPoint::new(8, 0),
+        ])
+        .unwrap();
+
+    for id in [circle, conic, spline] {
+        sketch.set_construction(id);
+    }
+
+    assert_eq!(sketch.circles()[0].role, EntityRole::Construction);
+    assert_eq!(sketch.conics()[0].role, EntityRole::Construction);
+    assert_eq!(sketch.splines()[0].role, EntityRole::Construction);
+    assert!(sketch.faces(ctx(16)).is_empty());
 }

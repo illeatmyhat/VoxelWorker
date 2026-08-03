@@ -1949,64 +1949,42 @@ impl Sketch {
         &self.patterns
     }
 
-    /// Put a point or segment into the construction role, whatever role it held.
+    /// Put a curve into the construction role, whatever role it held.
     ///
     /// Idempotent where [`toggle_construction`](Self::toggle_construction) is not. A tool that
     /// authors reference geometry knows the role it wants; toggling would flip an entity it
     /// happened to reuse back to real and quietly hand the region a new boundary.
+    ///
+    /// # Construction is a mode a curve is in, and a point is not a curve
+    ///
+    /// Construction says how a curve DRAWS and whether the region counts it as a boundary. A point
+    /// has neither of those, so a point id is a no-op here. What a point carries in the same field
+    /// is a different quantity wearing the same name: its LIFETIME. A Construction point belongs to
+    /// the drawing rather than to the author — an ellipse handle, a control-point spline's interior
+    /// frame — and [`prune_orphan_centers`](Self::prune_orphan_centers) sweeps it the moment nothing
+    /// refers to it. That is bookkeeping, not a mode the author can be offered, so it has its own
+    /// door in `set_point_role` and this one refuses it.
     pub fn set_construction(&mut self, id: EntityId) {
-        if let Some(point) = self.points.iter_mut().find(|point| point.id == id) {
-            point.role = EntityRole::Construction;
-            return;
-        }
-        if let Some(segment) = self.segments.iter_mut().find(|segment| segment.id == id) {
-            segment.role = EntityRole::Construction;
+        if let Some(curve) = self.curve_named(id) {
+            self.set_curve_role(curve, EntityRole::Construction);
         }
     }
 
-    /// Flip one geometry entity between real and construction while retaining its stable id.
+    /// Flip one CURVE between real and construction while retaining its stable id.
     ///
-    /// Arc and circle centers are structural construction points, not author geometry. They are
-    /// refused here so no generic selection action can make a derived center participate as a
-    /// profile vertex. Constraint ids and unknown ids are likewise harmless no-ops.
+    /// Points, constraint ids and unknown ids are harmless no-ops — see
+    /// [`set_construction`](Self::set_construction) for why a point has no construction mode to
+    /// flip. Refusing every point is also what keeps a derived arc or circle center out of the
+    /// region: no generic selection action can make one participate as a profile vertex.
     pub fn toggle_construction(&mut self, id: EntityId) -> bool {
-        let is_structural_center = self.arcs.iter().any(|arc| arc.center == id)
-            || self.circles.iter().any(|circle| circle.center == id);
-        if !is_structural_center {
-            if let Some(point) = self.points.iter_mut().find(|point| point.id == id) {
-                point.role = point.role.toggled();
-                return true;
-            }
-        }
-        if let Some(segment) = self.segments.iter_mut().find(|segment| segment.id == id) {
-            segment.role = segment.role.toggled();
-            return true;
-        }
-        if let Some(arc) = self.arcs.iter_mut().find(|arc| arc.id == id) {
-            arc.role = arc.role.toggled();
-            return true;
-        }
-        if let Some(circle) = self.circles.iter_mut().find(|circle| circle.id == id) {
-            circle.role = circle.role.toggled();
-            return true;
-        }
-        if let Some(bezier) = self.beziers.iter_mut().find(|bezier| bezier.id == id) {
-            bezier.role = bezier.role.toggled();
-            return true;
-        }
-        if let Some(ellipse) = self.ellipses.iter_mut().find(|ellipse| ellipse.id == id) {
-            ellipse.role = ellipse.role.toggled();
-            return true;
-        }
-        if let Some(conic) = self.conics.iter_mut().find(|conic| conic.id == id) {
-            conic.role = conic.role.toggled();
-            return true;
-        }
-        if let Some(spline) = self.splines.iter_mut().find(|spline| spline.id == id) {
-            spline.role = spline.role.toggled();
-            return true;
-        }
-        false
+        let Some(curve) = self.curve_named(id) else {
+            return false;
+        };
+        let Some((_, role)) = self.curve_lineage_and_role(curve) else {
+            return false;
+        };
+        self.set_curve_role(curve, role.toggled());
+        true
     }
 
     /// Test-only mutable access to the raw segment vector, for constructing the malformed
@@ -2859,7 +2837,12 @@ impl Sketch {
             .unwrap_or_default()
     }
 
-    /// The curve this id names, if a curve store holds it.
+    /// The curve this id names, if any curve store holds it.
+    ///
+    /// Asks every store, higher curves included. [`points_of`](Self::points_of) answers empty for
+    /// those, so a caller that walks from a curve to its points sees no change from the three
+    /// stores this used to ask; a caller that only wants to know WHAT the id is now gets a true
+    /// answer instead of `None`.
     fn curve_named(&self, entity: EntityId) -> Option<SketchCurve> {
         if self.segments.iter().any(|segment| segment.id == entity) {
             Some(SketchCurve::Segment(entity))
@@ -2867,6 +2850,14 @@ impl Sketch {
             Some(SketchCurve::Arc(entity))
         } else if self.circles.iter().any(|circle| circle.id == entity) {
             Some(SketchCurve::Circle(entity))
+        } else if self.beziers.iter().any(|bezier| bezier.id == entity) {
+            Some(SketchCurve::Bezier(entity))
+        } else if self.ellipses.iter().any(|ellipse| ellipse.id == entity) {
+            Some(SketchCurve::Ellipse(entity))
+        } else if self.conics.iter().any(|conic| conic.id == entity) {
+            Some(SketchCurve::Conic(entity))
+        } else if self.splines.iter().any(|spline| spline.id == entity) {
+            Some(SketchCurve::Spline(entity))
         } else {
             None
         }
