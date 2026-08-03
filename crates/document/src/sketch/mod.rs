@@ -2765,6 +2765,105 @@ impl Sketch {
             .collect()
     }
 
+    /// Every point a drag of these could possibly move, the held ones included.
+    ///
+    /// Closed under two rules, applied until nothing new arrives. A CURVE standing on a reached
+    /// point brings its other ends, because the solver holds every drawn edge's span and half a
+    /// curve in the problem is a different problem. A RELATION naming anything reached brings
+    /// everything else it names, which is the ordinary sense in which two shapes are one shape.
+    ///
+    /// Anything left out is unreachable in the strict sense — no relation and no edge connects it
+    /// — so no solve could have moved it and leaving it out changes nothing but the price.
+    fn what_a_drag_of_these_can_reach(&self, held: &[EntityId]) -> Vec<EntityId> {
+        let mut reached: Vec<EntityId> = held.to_vec();
+        loop {
+            let known = reached.len();
+            for curve in self.curves_standing_on_any(&reached) {
+                for point in self.points_of(curve) {
+                    if !reached.contains(&point) {
+                        reached.push(point);
+                    }
+                }
+            }
+            for constraint in &self.constraints {
+                let named = self.points_named_by(constraint);
+                if !named.iter().any(|point| reached.contains(point)) {
+                    continue;
+                }
+                for point in named {
+                    if !reached.contains(&point) {
+                        reached.push(point);
+                    }
+                }
+            }
+            if reached.len() == known {
+                return reached;
+            }
+        }
+    }
+
+    /// Every curve standing on any of these points.
+    fn curves_standing_on_any(&self, points: &[EntityId]) -> Vec<SketchCurve> {
+        let stands = |curve: SketchCurve| {
+            self.points_of(curve)
+                .iter()
+                .any(|point| points.contains(point))
+        };
+        self.segments
+            .iter()
+            .map(|segment| SketchCurve::Segment(segment.id))
+            .chain(self.arcs.iter().map(|arc| SketchCurve::Arc(arc.id)))
+            .chain(
+                self.circles
+                    .iter()
+                    .map(|circle| SketchCurve::Circle(circle.id)),
+            )
+            .filter(|curve| stands(*curve))
+            .collect()
+    }
+
+    /// Every point a relation reaches, whether it names the point itself or the curve it stands on.
+    fn points_named_by(&self, constraint: &Constraint) -> Vec<EntityId> {
+        constraint
+            .kind
+            .named_entities()
+            .into_iter()
+            .flat_map(|entity| self.points_standing_for(entity))
+            .collect()
+    }
+
+    /// The points an entity id amounts to: itself if it is a point, the ones its curve stands on
+    /// otherwise. Empty for anything the solver does not model, which is the same geometry a
+    /// relation naming it would be dropped over.
+    fn points_standing_for(&self, entity: EntityId) -> Vec<EntityId> {
+        if self.point_index(entity).is_some() {
+            return vec![entity];
+        }
+        self.curve_named(entity)
+            .map(|curve| self.points_of(curve))
+            .unwrap_or_default()
+    }
+
+    /// The curve this id names, if a curve store holds it.
+    fn curve_named(&self, entity: EntityId) -> Option<SketchCurve> {
+        if self.segments.iter().any(|segment| segment.id == entity) {
+            Some(SketchCurve::Segment(entity))
+        } else if self.arcs.iter().any(|arc| arc.id == entity) {
+            Some(SketchCurve::Arc(entity))
+        } else if self.circles.iter().any(|circle| circle.id == entity) {
+            Some(SketchCurve::Circle(entity))
+        } else {
+            None
+        }
+    }
+
+    /// Whether a relation stands ENTIRELY within these points — the ones a scoped problem can
+    /// carry. A relation reaching outside would name geometry the problem does not hold.
+    fn constraint_stands_within(&self, constraint: &Constraint, points: &[EntityId]) -> bool {
+        let named = self.points_named_by(constraint);
+        !named.is_empty() && named.iter().all(|point| points.contains(point))
+    }
+
     /// Re-solve the standing constraints with the gesture's hands pulling, writing the result back
     /// only if the standing residuals are met. Reports whether they were.
     ///
@@ -2790,10 +2889,23 @@ impl Sketch {
         hands: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        if self.constraints.is_empty() {
+        // Only the part of the drawing the hands can reach takes part. What the rest of the plane
+        // holds cannot change the answer, but it does change what the answer COSTS: the kernel
+        // prices a solve by how many free coordinates and drawn edges it carries, and its dense
+        // algebra over them grows faster than the drawing does. Measured on eight unrelated arc
+        // slots, one drag cost 177ms whole-drawing against 1ms for the slot actually held.
+        let held: Vec<EntityId> = hands.iter().map(|(point, _)| *point).collect();
+        let reach = self.what_a_drag_of_these_can_reach(&held);
+        let standing: Vec<Constraint> = self
+            .constraints
+            .iter()
+            .filter(|constraint| self.constraint_stands_within(constraint, &reach))
+            .copied()
+            .collect();
+        if standing.is_empty() {
             return Ok(true);
         }
-        let prepared = constraint::prepare(self, &self.constraints, Some(context))
+        let prepared = constraint::prepare_scoped(self, &standing, Some(context), Some(&reach))
             .map_err(map_prepare_evaluation_error)?;
         let (settled, accepted) = match prepared.drag_together(hands) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),

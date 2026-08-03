@@ -1745,14 +1745,22 @@ fn loaded_off_domain_tangent_keeps_solve_and_drag_atomic() {
     );
 
     assert_eq!(
-        loaded.move_point(valid_from, SketchPoint::new(0, 11), ctx(16)),
+        loaded.move_point(from, SketchPoint::new(0, 1), ctx(16)),
         Err(SketchEvaluationError::InvalidTangent {
             constraint: 999,
             error: ::parametric::sketch::TangentContactError::OutsideFirstDomain,
         }),
-        "drag reports the same offending Tangent as solve"
+        "a drag of the geometry it names reports the same offending Tangent as solve"
     );
     assert_eq!(serde_json::to_value(&loaded).expect("after drag"), before);
+
+    // A drag answers for what it can REACH. The malformed tangent names the other shape, and no
+    // relation or edge connects the two, so this drag could not have broken it and does not solve
+    // it — the whole-drawing `solve` above is what reports a corrupt load. The alternative, making
+    // every drag anywhere answer for the entire plane, is what made a drag cost the whole drawing.
+    assert!(loaded
+        .move_point(valid_from, SketchPoint::new(0, 11), ctx(16))
+        .expect("an unreachable breakage is not this drag's to report"));
 }
 
 #[test]

@@ -299,6 +299,37 @@ fn dragging_a_rail_widens_the_slot_without_moving_its_spine() {
     );
 }
 
+/// A drag reaches its own shape and stops there.
+///
+/// This is a COST invariant, not a correctness one — geometry no relation connects could never
+/// have moved either way. It is worth pinning because the kernel prices a solve by how big the
+/// problem is: measured on eight unrelated arc slots, one drag was 177ms whole-drawing against
+/// 1ms scoped. If the walk ever starts dragging in the rest of the plane, that returns silently.
+#[test]
+fn a_drag_reaches_its_own_slot_and_no_further() {
+    let mut made = arc_slot();
+    let mine: Vec<EntityId> = made.sketch.points().iter().map(|point| point.id).collect();
+    made = made
+        .with_center_arc_slot(
+            SketchPoint::new(60, 0),
+            SketchPoint::new(68, 0),
+            SketchPoint::new(60, 8),
+            ::parametric::sketch::ArcTurn::CounterClockwise,
+            SketchPoint::new(70, 0),
+            ctx(16),
+        )
+        .expect("a second slot, well clear of the first");
+
+    let center = handle_at(&made, SketchPoint::new(0, 0));
+    let reach = made.sketch.what_a_drag_of_these_can_reach(&[center]);
+    assert!(
+        reach.iter().all(|point| mine.contains(point)),
+        "the drag reached the other slot: {reach:?} against {mine:?}"
+    );
+    // The whole of its OWN slot, though — anything less would cut a shape in half.
+    assert_eq!(reach.len(), mine.len());
+}
+
 #[test]
 fn invalid_and_duplicate_slots_refuse_atomically() {
     let source = source();

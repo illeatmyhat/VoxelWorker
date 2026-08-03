@@ -362,6 +362,35 @@ impl ConstraintKind {
         }
     }
 
+    /// Every entity id this relation names, whatever store holds it.
+    ///
+    /// The other accessors here answer "which segments" or "which points" because cascade and
+    /// liveness care which store an id came from. Scoping a solve does not: it asks only which
+    /// geometry a relation could speak about, and an answer that omitted a kind would silently
+    /// cut a shape in half. One arm per relation, so a new one cannot answer by omission.
+    pub(super) fn named_entities(&self) -> Vec<EntityId> {
+        match *self {
+            Self::Fix { point, .. } | Self::Quantize { point, .. } => vec![point],
+            Self::Horizontal { segment } | Self::Vertical { segment } => vec![segment],
+            Self::Distance { from, to, .. } => vec![from, to],
+            Self::Coincident { first, second }
+            | Self::Parallel { first, second }
+            | Self::Perpendicular { first, second }
+            | Self::Equal { first, second }
+            | Self::Collinear { first, second } => vec![first, second],
+            Self::Midpoint { point, segment } => vec![point, segment],
+            Self::Tangent { first, second, .. } | Self::Concentric { first, second } => {
+                vec![first.id(), second.id()]
+            }
+            Self::Symmetry {
+                first,
+                second,
+                axis,
+                ..
+            } => vec![first.id(), second.id(), axis],
+        }
+    }
+
     /// Every curve id named by a generic curve relation, for cascade/repair.
     pub(super) fn curves(&self) -> Vec<SketchCurve> {
         match *self {
@@ -938,8 +967,33 @@ pub(super) fn prepare(
     constraints: &[Constraint],
     context: Option<EvaluationContext>,
 ) -> Result<PreparedProblem, PrepareError> {
+    prepare_scoped(sketch, constraints, context, None)
+}
+
+/// Build the same problem over a NAMED SET of points rather than the whole drawing.
+///
+/// The kernel's cost is set by how big the problem is, not by how much of it the author is
+/// touching: every free coordinate is a Jacobian column, every drawn edge is a rigidity row, and
+/// the dense linear algebra over them grows faster than the drawing does. Two shapes with no
+/// relation between them cannot influence one another whatever the solver does, so putting both
+/// in one system buys nothing and costs the difference between `n³` and two of `(n/2)³`.
+///
+/// `scope` names the points that may take part; a curve joins when both its ends do. Everything
+/// left out simply is not in the problem, so it cannot move and is not written back — which is
+/// exactly the guarantee that made leaving it out safe.
+pub(super) fn prepare_scoped(
+    sketch: &Sketch,
+    constraints: &[Constraint],
+    context: Option<EvaluationContext>,
+    scope: Option<&[EntityId]>,
+) -> Result<PreparedProblem, PrepareError> {
+    let in_scope = |id: EntityId| scope.is_none_or(|named| named.contains(&id));
     let mut builder = ProblemBuilder::new();
-    let mut ordered_points: Vec<&Point> = sketch.points.iter().collect();
+    let mut ordered_points: Vec<&Point> = sketch
+        .points
+        .iter()
+        .filter(|point| in_scope(point.id))
+        .collect();
     ordered_points.sort_by_key(|point| point.id);
     let points: Vec<(EntityId, PointId)> = ordered_points
         .into_iter()
@@ -956,6 +1010,9 @@ pub(super) fn prepare(
     ordered_segments.sort_by_key(|segment| segment.id);
     let mut segments = Vec::with_capacity(ordered_segments.len());
     for segment in ordered_segments {
+        if !in_scope(segment.from) || !in_scope(segment.to) {
+            continue;
+        }
         let (Some(from), Some(to)) = (point(segment.from), point(segment.to)) else {
             return Err(PrepareError::InvalidDocumentGeometry);
         };
@@ -965,7 +1022,11 @@ pub(super) fn prepare(
     arcs.sort_by_key(|arc| arc.id);
     let mut local_arcs = Vec::new();
     for arc in arcs {
-        if arc.center == ABSENT_DERIVED_POINT {
+        if arc.center == ABSENT_DERIVED_POINT
+            || !in_scope(arc.center)
+            || !in_scope(arc.from)
+            || !in_scope(arc.to)
+        {
             continue;
         }
         let (Some(center), Some(from), Some(to)) =
@@ -987,6 +1048,9 @@ pub(super) fn prepare(
     circles.sort_by_key(|circle| circle.id);
     let mut local_circles = Vec::new();
     for circle in circles {
+        if !in_scope(circle.center) {
+            continue;
+        }
         let center = point(circle.center).ok_or(PrepareError::InvalidDocumentGeometry)?;
         let radius = match (circle.radius.free_value(), circle.radius.fixed_source()) {
             (Some(value), None) => builder.add_free_positive_radius(value.value()),
