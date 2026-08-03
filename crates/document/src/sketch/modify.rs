@@ -8,7 +8,7 @@
 use super::{
     boxed_push, boxed_retain, AngleMeasurement, Arc, ArcSweep, ConstraintKind, EntityId,
     EntityRole, Segment, Sketch, SketchCurve, SketchLength, SketchPoint, SketchSolid,
-    ABSENT_CENTER,
+    ABSENT_DERIVED_POINT,
 };
 use substrate::curve_intersection::{CurveSupportCrossing, PlanarCurve};
 
@@ -619,7 +619,7 @@ impl Sketch {
                 self.replace_curve_with_pieces(placement.source, &placement.pieces)
             }
         }?;
-        self.sync_arc_centers();
+        self.sync_derived_points();
         self.prune_orphan_centers();
         self.drop_dangling_patterns();
         self.drop_dangling_constraints();
@@ -666,7 +666,7 @@ impl Sketch {
                 from: pair[0],
                 to: pair[1],
                 bulge: ArcSweep::free(piece_sweep(piece)?),
-                center: ABSENT_CENTER,
+                center: ABSENT_DERIVED_POINT,
                 origin: source.origin,
                 role: source.role,
             });
@@ -693,7 +693,7 @@ impl Sketch {
                 from: boundaries[piece_index],
                 to: boundaries[next_index],
                 bulge: ArcSweep::free(piece_sweep(piece)?),
-                center: ABSENT_CENTER,
+                center: ABSENT_DERIVED_POINT,
                 origin: source.origin,
                 role: source.role,
             });
@@ -758,7 +758,7 @@ impl Sketch {
                     from,
                     to,
                     bulge: ArcSweep::free(piece_sweep(piece)?),
-                    center: ABSENT_CENTER,
+                    center: ABSENT_DERIVED_POINT,
                     origin,
                     role,
                 }),
@@ -784,7 +784,7 @@ impl Sketch {
                 }
             }
         }
-        self.sync_arc_centers();
+        self.sync_derived_points();
         self.prune_orphan_centers();
         self.drop_dangling_patterns();
         self.drop_dangling_constraints();
@@ -900,7 +900,7 @@ impl Sketch {
             .find(|point| point.id == point_id)
             .ok_or(ExtendRefusal::UnknownCurve)?;
         point.at = endpoint;
-        self.sync_arc_centers();
+        self.sync_derived_points();
         Ok(())
     }
 
@@ -919,7 +919,7 @@ impl Sketch {
             || self
                 .conics
                 .iter()
-                .any(|conic| [conic.from, conic.to, conic.control].contains(&point))
+                .any(|conic| [conic.from, conic.to, conic.control, conic.shoulder].contains(&point))
             || self
                 .splines
                 .iter()
@@ -1000,7 +1000,7 @@ impl Sketch {
         if let Some(arc) = self.arcs.iter_mut().find(|arc| arc.id == arc_id) {
             arc.role = role;
         }
-        self.sync_arc_centers();
+        self.sync_derived_points();
         let arc = SketchCurve::Arc(arc_id);
         for (line, locus) in [(placement.first, first_at), (placement.second, second_at)] {
             let locus = locus.in_plane();
@@ -1183,7 +1183,7 @@ impl Sketch {
                     .connect_arc(from, to, sweep)
                     .ok_or(OffsetRefusal::Unrepresentable)?;
                 self.set_curve_role(SketchCurve::Arc(id), role);
-                self.sync_arc_centers();
+                self.sync_derived_points();
             }
             PlanarCurve::RationalBezier(_) => return Err(OffsetRefusal::Unrepresentable),
         }

@@ -355,7 +355,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         from: p,
         to: 77, // dangling
         bulge: ArcSweep::free(AngleMeasurement::from_degrees(90)),
-        center: crate::sketch::ABSENT_CENTER,
+        center: crate::sketch::ABSENT_DERIVED_POINT,
         origin: 90,
         role: crate::sketch::EntityRole::Real,
     });
@@ -364,7 +364,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         from: p,
         to: p, // self-loop
         bulge: ArcSweep::free(AngleMeasurement::from_degrees(90)),
-        center: crate::sketch::ABSENT_CENTER,
+        center: crate::sketch::ABSENT_DERIVED_POINT,
         origin: 91,
         role: crate::sketch::EntityRole::Real,
     });
@@ -373,7 +373,7 @@ fn delete_cascades_and_repair_cover_arcs() {
         from: q,
         to: p,
         bulge: ArcSweep::free(AngleMeasurement::from_degrees(0)), // degenerate bulge
-        center: crate::sketch::ABSENT_CENTER,
+        center: crate::sketch::ABSENT_DERIVED_POINT,
         origin: 92,
         role: crate::sketch::EntityRole::Real,
     });
@@ -622,7 +622,7 @@ fn a_pre_center_document_gains_its_centers_on_load() {
         .retain(|point| point["role"] != "Construction");
 
     let mut loaded: Sketch = serde_json::from_value(value).expect("a pre-center document loads");
-    assert_eq!(loaded.arcs()[0].center, crate::sketch::ABSENT_CENTER);
+    assert_eq!(loaded.arcs()[0].center, crate::sketch::ABSENT_DERIVED_POINT);
     assert_eq!(
         loaded.repair(ctx(16)),
         0,

@@ -1263,12 +1263,12 @@ pub struct Arc {
     pub bulge: ArcSweep,
     /// The [`Point`] entity standing at the arc's center — a REIFIED derived value. Its
     /// coordinates are recomputed from the endpoints and the bulge by
-    /// [`Sketch::sync_arc_centers`] and are never authored directly, but it is a real point
+    /// [`Sketch::sync_derived_points`] and are never authored directly, but it is a real point
     /// entity with a stable id so it selects, snaps and drags exactly like every other
     /// sketch point. Always [`EntityRole::Construction`]: a center never bounds a region.
-    /// `serde(default)` yields [`ABSENT_CENTER`] for a document that names no center, which
+    /// `serde(default)` yields [`ABSENT_DERIVED_POINT`] for a document that names no center, which
     /// [`Sketch::repair`] materializes on load.
-    #[serde(default = "absent_center")]
+    #[serde(default = "absent_derived_point")]
     pub center: EntityId,
     /// Lineage id for region identity across edits, like [`Segment::origin`].
     pub origin: EntityId,
@@ -1352,6 +1352,15 @@ pub struct Conic {
     /// the point they reach for afterwards: moving it drags the curve the way a Bezier handle
     /// does, while the shoulder is a consequence of it and [`rho`](Self::rho).
     pub control: EntityId,
+    /// The on-curve point at `t = 0.5`, DERIVED from the other three and
+    /// [`rho`](Self::rho) — see [`Sketch::sync_derived_points`].
+    ///
+    /// Reified so that rho, the one authored freedom with no other handle, stays editable after
+    /// the conic is placed. Dragging it re-solves rho exactly the way dragging an arc's center
+    /// re-solves that arc's sweep. `serde(default)` yields [`ABSENT_DERIVED_POINT`] for a document
+    /// written before the shoulder was reified, which the next sync materializes.
+    #[serde(default = "absent_derived_point")]
+    pub shoulder: EntityId,
     pub rho: parametric::ResolvedScalar,
     pub origin: EntityId,
     #[serde(default)]
@@ -1422,13 +1431,13 @@ impl Circle {
     }
 }
 
-/// The `center` of an arc that has no center point yet — a document that names none, or an
-/// arc mid-construction. Ids are handed out monotonically from zero and never reused, so the top
-/// of the range can never collide with a live entity.
-pub const ABSENT_CENTER: EntityId = EntityId::MAX;
+/// A derived point a curve has not been given yet — an arc's center or a conic's shoulder in a
+/// document that names none, or a curve mid-construction. Ids are handed out monotonically from
+/// zero and never reused, so the top of the range can never collide with a live entity.
+pub const ABSENT_DERIVED_POINT: EntityId = EntityId::MAX;
 
-fn absent_center() -> EntityId {
-    ABSENT_CENTER
+fn absent_derived_point() -> EntityId {
+    ABSENT_DERIVED_POINT
 }
 
 /// Mutate a compact boxed store without making every [`Sketch`] carry a `Vec`'s spare-capacity
@@ -2273,9 +2282,14 @@ impl Sketch {
     /// Move the point `id` to `at` and settle the drawing around it — the drag write path.
     /// Reports whether the point exists.
     ///
-    /// Dragging an arc's CENTER moves only the center: the endpoints hold still and the arc's
-    /// radius follows the cursor ([`resweep_arc_to_center`](Self::resweep_arc_to_center)). Every
-    /// other point simply takes `at`, and then the standing constraints are re-solved with it
+    /// A DERIVED point drags the quantity behind it, not itself. An arc's center resweeps the arc,
+    /// holding its endpoints still while the radius follows the cursor
+    /// ([`resweep_arc_to_center`](Self::resweep_arc_to_center)); a conic's shoulder re-solves that
+    /// conic's rho, which is the same edit in a different currency
+    /// ([`reshape_conic_to_shoulder`](Self::reshape_conic_to_shoulder)). Neither can be pinned
+    /// where the cursor left it, so neither settles: the authored quantity is the whole edit.
+    ///
+    /// Every other point simply takes `at`, and then the standing constraints are re-solved with it
     /// pinned there — see [`settle_under_the_hand`](Self::settle_under_the_hand). A constraint
     /// that only held at the moment it was asserted is not a constraint; it has to survive the
     /// next drag, which is the first thing the author does to test it.
@@ -2291,36 +2305,27 @@ impl Sketch {
         let before_points = self.points.clone();
         let before_arcs = self.arcs.clone();
         let before_circles = self.circles.clone();
+        let before_conics = self.conics.clone();
+        let held_arc = self.arcs.iter().position(|arc| arc.center == id);
+        let held_conic = self.conics.iter().position(|conic| conic.shoulder == id);
         let result = (|| -> Result<bool, SketchEvaluationError> {
-            match self.arcs.iter().position(|arc| arc.center == id) {
-                // An arc's center is DERIVED from its ends and its sweep, so there is no pinning it:
-                // the resweep is the whole edit and no constraint can hold the result anywhere else.
-                Some(arc_index) => {
+            match (held_arc, held_conic) {
+                (Some(arc_index), _) => {
                     self.resweep_arc_to_center(arc_index, at.in_plane());
-                    self.sync_arc_centers();
-                    // Center dragging owns only the arc sweep: settling here could "heal" an
-                    // invalid resweep by moving its endpoints, breaking the special center-drag
-                    // contract. Accept only the authored configuration produced by the resweep.
-                    let prepared = constraint::prepare(self, &self.constraints, Some(context))
-                        .map_err(map_prepare_evaluation_error)?;
-                    let current = prepared.validate_current();
-                    if let Some(failure) = current.tangent_failure {
-                        let failure = prepared
-                            .standing_tangent_failure(failure)
-                            .map_err(map_prepare_evaluation_error)?;
-                        Err(SketchEvaluationError::InvalidTangent {
-                            constraint: failure.constraint,
-                            error: failure.error,
-                        })
-                    } else if !current.satisfied || current.collapsed.is_some() {
-                        Ok(false)
-                    } else {
-                        Ok(true)
-                    }
+                    self.sync_derived_points();
+                    // Dragging a derived point owns only the quantity behind it: settling here
+                    // could "heal" an invalid result by moving the curve's own endpoints, breaking
+                    // that contract. Accept only the authored configuration it produced.
+                    self.standing_constraints_hold(context)
                 }
-                None => {
+                (None, Some(conic_index)) => {
+                    self.reshape_conic_to_shoulder(conic_index, at.in_plane());
+                    self.sync_derived_points();
+                    self.standing_constraints_hold(context)
+                }
+                (None, None) => {
                     self.points[index].at = at;
-                    self.sync_arc_centers();
+                    self.sync_derived_points();
                     self.settle_under_the_hand(id, at, context)
                 }
             }
@@ -2335,17 +2340,41 @@ impl Sketch {
                 self.points = before_points;
                 self.arcs = before_arcs;
                 self.circles = before_circles;
-                self.sync_arc_centers();
+                self.conics = before_conics;
+                self.sync_derived_points();
                 Ok(false)
             }
             Err(error) => {
                 self.points = before_points;
                 self.arcs = before_arcs;
                 self.circles = before_circles;
-                self.sync_arc_centers();
+                self.conics = before_conics;
+                self.sync_derived_points();
                 Err(error)
             }
         }
+    }
+
+    /// Whether the standing constraint system is met by the drawing exactly as it stands, with
+    /// nothing moved to make it so. The acceptance test for a derived-point drag, which authors a
+    /// quantity rather than a position and so has no freedom left to settle with.
+    fn standing_constraints_hold(
+        &self,
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
+        let prepared = constraint::prepare(self, &self.constraints, Some(context))
+            .map_err(map_prepare_evaluation_error)?;
+        let current = prepared.validate_current();
+        if let Some(failure) = current.tangent_failure {
+            let failure = prepared
+                .standing_tangent_failure(failure)
+                .map_err(map_prepare_evaluation_error)?;
+            return Err(SketchEvaluationError::InvalidTangent {
+                constraint: failure.constraint,
+                error: failure.error,
+            });
+        }
+        Ok(current.satisfied && current.collapsed.is_none())
     }
 
     /// Re-solve the standing constraints with the hand pulling `held` toward `at`, writing the
@@ -2392,7 +2421,7 @@ impl Sketch {
             .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
         plan.apply(self);
-        self.sync_arc_centers();
+        self.sync_derived_points();
         Ok(true)
     }
 
@@ -2439,6 +2468,39 @@ impl Sketch {
         }
     }
 
+    /// Re-solve a conic's rho from a dragged shoulder — the post-commit half of the authoring
+    /// gesture's last step.
+    ///
+    /// The shoulder is captive to the track from the chord midpoint out to the control point, and
+    /// where it sits along that track IS rho: back at the chord the conic flattens toward its own
+    /// straight line, out at the control point it sharpens toward a corner. So the drag projects
+    /// onto the track and reads rho off it, the same one definition
+    /// ([`parametric::sketch::conic_rho_from_shoulder`]) the gesture uses, clamped short of both
+    /// degenerate ends. A conic whose defining points have gone missing is left alone.
+    fn reshape_conic_to_shoulder(&mut self, conic_index: usize, target: [f64; 2]) {
+        let conic = self.conics[conic_index];
+        let position = |id| {
+            self.points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at.in_plane())
+        };
+        let (Some(from), Some(to), Some(control)) = (
+            position(conic.from),
+            position(conic.to),
+            position(conic.control),
+        ) else {
+            return;
+        };
+        let Some(rho) = parametric::sketch::conic_rho_from_shoulder(from, to, control, target)
+        else {
+            return;
+        };
+        if let Ok(rho) = parametric::ResolvedScalar::try_from_f64(rho) {
+            self.conics[conic_index].rho = rho;
+        }
+    }
+
     /// Delete a point by id and every segment/arc incident to it. The edges' other endpoints
     /// survive as free points. No dangling reference can result: relations do not keep geometry
     /// alive, so their own liveness cascade follows after every geometry cascade.
@@ -2455,7 +2517,7 @@ impl Sketch {
             ellipse.center != id && ellipse.major_endpoint != id && ellipse.width_point != id
         });
         boxed_retain(&mut self.conics, |conic| {
-            conic.from != id && conic.to != id && conic.control != id
+            conic.from != id && conic.to != id && conic.control != id && conic.shoulder != id
         });
         boxed_retain(&mut self.splines, |spline| !spline.points.contains(&id));
         self.points.retain(|point| point.id != id);
@@ -2509,7 +2571,7 @@ impl Sketch {
             || self
                 .conics
                 .iter()
-                .any(|conic| conic.from == id || conic.to == id || conic.control == id)
+                .any(|conic| [conic.from, conic.to, conic.control, conic.shoulder].contains(&id))
             || self
                 .splines
                 .iter()
@@ -2646,7 +2708,7 @@ impl Sketch {
             redundant,
         });
         plan.apply(self);
-        self.sync_arc_centers();
+        self.sync_derived_points();
         Ok(id)
     }
 
@@ -2857,7 +2919,7 @@ impl Sketch {
             .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
         plan.apply(self);
-        self.sync_arc_centers();
+        self.sync_derived_points();
         Ok(settled.diagnostics.report)
     }
 
@@ -3048,11 +3110,11 @@ impl Sketch {
             from,
             to,
             bulge: ArcSweep::free(bulge),
-            center: ABSENT_CENTER,
+            center: ABSENT_DERIVED_POINT,
             origin: id,
             role: EntityRole::Real,
         });
-        self.sync_arc_centers();
+        self.sync_derived_points();
         Some(id)
     }
 
@@ -3288,11 +3350,13 @@ impl Sketch {
                 from,
                 to,
                 control,
+                shoulder: ABSENT_DERIVED_POINT,
                 rho,
                 origin: id,
                 role: EntityRole::Real,
             },
         );
+        self.sync_derived_points();
         Ok(id)
     }
 
@@ -3350,7 +3414,7 @@ impl Sketch {
             .conics
             .iter()
             .find(|conic| conic.id == id)
-            .map(|conic| [conic.from, conic.to, conic.control]);
+            .map(|conic| [conic.from, conic.to, conic.control, conic.shoulder]);
         boxed_retain(&mut self.conics, |conic| conic.id != id);
         if let Some(points) = points {
             self.drop_undrawn_points(points);
@@ -3446,26 +3510,29 @@ impl Sketch {
         self.prune_orphan_centers();
     }
 
-    /// Whether the drawing OWNS this point's coordinates — whether it is an arc's center, which
-    /// [`sync_arc_centers`](Self::sync_arc_centers) re-derives from the arc's ends and its
-    /// sweep. A derived point is selectable, draggable, snappable and **constrainable** like any
-    /// other; what it is not is a freedom, which is why
+    /// Whether the drawing OWNS this point's coordinates — an arc's center, or a conic's on-curve
+    /// shoulder, both of which [`sync_derived_points`](Self::sync_derived_points) re-derives from
+    /// the curve they belong to. A derived point is selectable, draggable, snappable and
+    /// **constrainable** like any other; what it is not is a freedom, which is why
     /// [`degrees_of_freedom`](Self::degrees_of_freedom) does not count it.
     ///
-    /// A constraint naming one is met by moving the ARC — see `constraint::position_of`, where the
-    /// residual system reads it as the function it is.
+    /// A constraint naming one is met by moving the CURVE — see `constraint::position_of`, where
+    /// the residual system reads it as the function it is.
     pub fn is_derived_point(&self, id: EntityId) -> bool {
         self.arcs.iter().any(|arc| arc.center == id)
+            || self.conics.iter().any(|conic| conic.shoulder == id)
     }
 
-    /// Re-derive every arc's center point from its endpoints and bulge, minting one for any arc
-    /// that has none yet. The center is a real [`Point`] so it can be selected, snapped to and
-    /// dragged like any other, but its coordinates are OWNED here — every edit that can move an arc
-    /// ends by calling this, so a center can never drift out of agreement with the curve it belongs
-    /// to. Solver write-back follows the same function rather than trusting the stored center slot.
-    /// An arc whose endpoints are missing or coincident is left alone; [`repair`](Self::repair)
-    /// erases it.
-    pub fn sync_arc_centers(&mut self) {
+    /// Re-derive every point whose coordinates the drawing owns, minting one for any curve that has
+    /// none yet. A derived point is a real [`Point`] so it can be selected, snapped to and dragged
+    /// like any other, but its position is OWNED here — every edit that can move the curve behind
+    /// it ends by calling this, so it can never drift out of agreement. Solver write-back follows
+    /// the same function rather than trusting the stored slot.
+    ///
+    /// An arc's center comes from its endpoints and bulge; a conic's shoulder from its endpoints,
+    /// its control point and rho. A curve whose defining points are missing or degenerate is left
+    /// alone; [`repair`](Self::repair) erases it.
+    pub fn sync_derived_points(&mut self) {
         for index in 0..self.arcs.len() {
             let arc = self.arcs[index];
             let (Some(tail), Some(head)) = (self.point_index(arc.from), self.point_index(arc.to))
@@ -3483,6 +3550,17 @@ impl Sketch {
             match self.point_index(arc.center) {
                 Some(existing) => self.points[existing].at = at,
                 None => self.arcs[index].center = self.add_construction_point(at),
+            }
+        }
+        for index in 0..self.conics.len() {
+            let conic = self.conics[index];
+            let Some(candidate) = self.conic_candidate(conic) else {
+                continue;
+            };
+            let at = SketchPoint::from_continuous(candidate.vertex[0], candidate.vertex[1]);
+            match self.point_index(conic.shoulder) {
+                Some(existing) => self.points[existing].at = at,
+                None => self.conics[index].shoulder = self.add_construction_point(at),
             }
         }
     }
@@ -3518,7 +3596,7 @@ impl Sketch {
             referenced.extend([ellipse.center, ellipse.major_endpoint, ellipse.width_point]);
         }
         for conic in &*self.conics {
-            referenced.extend([conic.from, conic.to, conic.control]);
+            referenced.extend([conic.from, conic.to, conic.control, conic.shoulder]);
         }
         for spline in &*self.splines {
             referenced.extend(spline.points.iter().copied());
@@ -3640,7 +3718,7 @@ impl Sketch {
                 | ConstraintKind::Symmetry { .. } => {}
             }
         }
-        self.sync_arc_centers();
+        self.sync_derived_points();
     }
 
     /// Erase every structurally-invalid segment or arc — one that references a point id not in the
@@ -3711,7 +3789,7 @@ impl Sketch {
         });
         // Geometry-dependent constraint repair must see derived arc centers at their authored
         // positions, not a stale serialized cache.
-        self.sync_arc_centers();
+        self.sync_derived_points();
         // A constraint naming geometry the store does not hold asserts nothing about anything,
         // and left in place it would keep a row in the residual system for a shape that is gone.
         let before = before + self.constraints.len() + self.patterns.len();
@@ -3730,7 +3808,7 @@ impl Sketch {
         // A document may name no center at all, and a just-erased arc leaves one behind;
         // both are settled here, so a loaded sketch always agrees with its arcs.
         self.prune_orphan_centers();
-        self.sync_arc_centers();
+        self.sync_derived_points();
         dropped
     }
 }

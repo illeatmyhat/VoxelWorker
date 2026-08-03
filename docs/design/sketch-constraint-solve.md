@@ -17,7 +17,7 @@ something, what should move?**
 
 | Report | What was happening | What answers it |
 | --- | --- | --- |
-| "I can't coincident a point to an arc's center" | The center is derived; the solver wrote a coordinate `sync_arc_centers` overwrote on the next edit | Read the derived point as a function of the arc's ends |
+| "I can't coincident a point to an arc's center" | The center is derived; the solver wrote a coordinate `sync_derived_points` overwrote on the next edit | Read the derived point as a function of the arc's ends |
 | "I can't move the other end of the line any more" | The drag was a hard pin; a cursor off the one allowed line made the system unsatisfiable | The hand is a pull, resolved in two passes |
 | "It ended up translating both of them towards a midpoint" | Rigidity made each piece move as one, but least squares split the gap by mass | Anchor the heavier piece out of the parameter vector |
 | Blast radius (above) | Least travel drags the named point alone and deforms everything attached | Span-preserving rows per edge and axis |

@@ -18,7 +18,7 @@ use std::f64::consts::{PI, TAU};
 /// It is the whole memory of the latch. Reversing therefore costs twice this much counter-motion
 /// (from one rail across to the other) no matter how far the sweep went first, and anything smaller
 /// than it is jitter that cannot flip the answer.
-const DIRECTION_DEAD_BAND: f64 = PI / 18.0;
+pub const DIRECTION_DEAD_BAND: f64 = PI / 18.0;
 
 /// Wrap an angle difference into `(-PI, PI]`.
 ///

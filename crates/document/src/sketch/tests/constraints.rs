@@ -1054,7 +1054,7 @@ fn arc_with_center() -> (Sketch, EntityId, EntityId, EntityId, EntityId) {
 /// **A constraint on an arc's center is met by moving the ARC.** The center is not a coordinate the
 /// solver may choose — it is what the ends and the sweep make it — so the correction lands on the
 /// ends and the center follows. A correction written into the center's own slot instead would do
-/// nothing visible: `sync_arc_centers` overwrites that slot on the next edit.
+/// nothing visible: `sync_derived_points` overwrites that slot on the next edit.
 ///
 /// The loose point is `Fix`ed so that it is the reference piece and the arc is what travels. Left
 /// free, the three-point arc outweighs it under the parametric anchoring policy and the point comes
@@ -1093,12 +1093,12 @@ fn a_constraint_on_an_arcs_center_moves_the_arc() {
     assert!(moved, "the ends took the correction, not the center's slot");
 
     // And the stored center still agrees with the arc it belongs to — the write-back re-derives it,
-    // so a later `sync_arc_centers` is a no-op rather than an eraser.
+    // so a later `sync_derived_points` is a no-op rather than an eraser.
     // Not exact: a `SketchPoint` stores an integer voxel plus an f32 fraction, so re-deriving from
     // the ROUND-TRIPPED endpoints lands a storage epsilon away. The claim is that the sync leaves
     // it where the solve put it, not that the two arithmetics agree bit for bit.
     let settled = position(&sketch, center);
-    sketch.sync_arc_centers();
+    sketch.sync_derived_points();
     let after_sync = position(&sketch, center);
     assert!(
         (settled[0] - after_sync[0]).abs() < 1e-5 && (settled[1] - after_sync[1]).abs() < 1e-5,
@@ -3013,7 +3013,7 @@ fn concentric_preserves_a_fixed_arc_sweep() {
         .connect_arc(from, to, AngleMeasurement::from_degrees(90))
         .expect("arc");
     sketch.arcs_mut_for_test()[0].bulge = ArcSweep::fixed(AngleMeasurement::from_degrees(90));
-    sketch.sync_arc_centers();
+    sketch.sync_derived_points();
     let center = sketch
         .circular_curve_center(SketchCurve::Arc(arc))
         .expect("derived center");

@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 ///
 /// A cursor position cannot answer this on its own — the same point on the circle is reachable
 /// either way round — so the caller that watched the cursor get there has to say. See
-/// [`substrate::winding::WindingAccumulator`], which is how an interactive caller works it out.
+/// [`substrate::winding::TurnLatch`], which is how an interactive caller works it out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArcTurn {
     CounterClockwise,

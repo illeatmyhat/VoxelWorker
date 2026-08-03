@@ -7,7 +7,7 @@
 
 use super::{
     boxed_push, Arc, Bezier, Circle, CircleRadius, Conic, Ellipse, EntityId, Point, ResolvedLength,
-    Segment, Sketch, SketchCurve, SketchPoint, SketchSolid, Spline, ABSENT_CENTER,
+    Segment, Sketch, SketchCurve, SketchPoint, SketchSolid, Spline, ABSENT_DERIVED_POINT,
 };
 use std::collections::{HashMap, HashSet};
 use substrate::curve_intersection::PlanarCurve;
@@ -180,7 +180,7 @@ impl SketchSolid {
                 [point[0] + delta[0], point[1] + delta[1]]
             })?;
         }
-        next.sketch.sync_arc_centers();
+        next.sketch.sync_derived_points();
         Ok(next)
     }
 
@@ -217,7 +217,7 @@ impl SketchSolid {
                 .map_err(|_| SketchTransformRefusal::Unrepresentable)?;
             circle.radius = CircleRadius::free(scaled);
         }
-        next.sketch.sync_arc_centers();
+        next.sketch.sync_derived_points();
         Ok(next)
     }
 
@@ -457,7 +457,7 @@ impl Sketch {
                 from: mapped(&points, source.from)?,
                 to: mapped(&points, source.to)?,
                 bulge: source.bulge,
-                center: ABSENT_CENTER,
+                center: ABSENT_DERIVED_POINT,
                 origin: id,
                 role: source.role,
             });
@@ -546,6 +546,7 @@ impl Sketch {
                     from: mapped(points, source.from)?,
                     to: mapped(points, source.to)?,
                     control: mapped(points, source.control)?,
+                    shoulder: ABSENT_DERIVED_POINT,
                     rho: source.rho,
                     origin: id,
                     role: source.role,

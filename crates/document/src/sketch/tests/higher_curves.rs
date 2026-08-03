@@ -77,6 +77,46 @@ fn dragging_a_conic_control_point_onto_its_chord_is_refused_and_rolls_back() {
         .expect("the drag is answered"));
 }
 
+/// Rho is the one authored freedom of a conic with no other handle on it, so the shoulder is
+/// reified and dragging it re-solves rho — the same trade an arc's center makes for its sweep.
+/// Moving the CONTROL point instead leaves rho alone and takes the shoulder along with it.
+#[test]
+fn dragging_a_conic_shoulder_resolves_its_rho_while_the_control_point_keeps_it() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_conic(
+            SketchPoint::new(0, 0),
+            SketchPoint::new(8, 0),
+            SketchPoint::new(4, 8),
+            0.5,
+        )
+        .expect("valid conic");
+    let held = sketch.conics()[0];
+    let shoulder_at = |sketch: &Sketch| {
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == held.shoulder)
+            .expect("the shoulder is a real point")
+            .at
+    };
+    assert_eq!(shoulder_at(&sketch), SketchPoint::new(4, 4));
+    assert!(sketch.is_derived_point(held.shoulder));
+
+    assert!(sketch
+        .move_point(held.shoulder, SketchPoint::new(4, 6), ctx(16))
+        .expect("the shoulder drag is answered"));
+    assert!((sketch.conics()[0].rho.value() - 0.75).abs() < 1.0e-9);
+    assert_eq!(shoulder_at(&sketch), SketchPoint::new(4, 6));
+
+    // The control point authors position, not pull: rho survives and the shoulder follows.
+    assert!(sketch
+        .move_point(held.control, SketchPoint::new(4, 16), ctx(16))
+        .expect("the control drag is answered"));
+    assert!((sketch.conics()[0].rho.value() - 0.75).abs() < 1.0e-9);
+    assert_eq!(shoulder_at(&sketch), SketchPoint::new(4, 12));
+}
+
 #[test]
 fn higher_curve_handles_retarget_with_density_but_rho_does_not() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -98,7 +138,12 @@ fn higher_curve_handles_retarget_with_density_but_rho_does_not() {
         .iter()
         .map(|point| point.at.in_plane())
         .collect();
-    assert_eq!(positions, vec![[0.0, 0.0], [8.0, 0.0], [4.0, 4.0]]);
+    // Anchors, control point, and the derived shoulder that rho puts three quarters of the way
+    // from the chord midpoint (4, 0) out to the control point (4, 4).
+    assert_eq!(
+        positions,
+        vec![[0.0, 0.0], [8.0, 0.0], [4.0, 4.0], [4.0, 3.0]]
+    );
 }
 
 #[test]

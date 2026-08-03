@@ -20,7 +20,7 @@
 
 use super::{
     Arc, Circle, CircleRadius, EntityId, Point, Segment, Sketch, SketchLength, SketchPoint,
-    ABSENT_CENTER,
+    ABSENT_DERIVED_POINT,
 };
 use parametric::sketch::{
     ArcId, BuildError, CircleId, ConstraintId, PointId, Problem, ProblemBuilder, Relation,
@@ -960,7 +960,7 @@ pub(super) fn prepare(
     arcs.sort_by_key(|arc| arc.id);
     let mut local_arcs = Vec::new();
     for arc in arcs {
-        if arc.center == ABSENT_CENTER {
+        if arc.center == ABSENT_DERIVED_POINT {
             continue;
         }
         let (Some(center), Some(from), Some(to)) =
