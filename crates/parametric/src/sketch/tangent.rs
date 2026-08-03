@@ -230,11 +230,23 @@ pub(super) fn branch_matches(
 }
 
 /// A bounded domain tolerance derived from the solver's residual tolerance and curve magnitude.
+///
+/// The residual is not a bound on where the contact is, and taking it for one is the single
+/// easiest way to reject a perfectly good tangency. Two curves that TOUCH separate quadratically
+/// about the contact, so a residual `r` leaves the contact free to slide roughly `sqrt(r * scale)`
+/// along them — square root, not linear, and on any curve worth drawing that is orders of
+/// magnitude looser than `r` itself. Judged linearly, a smooth chain such as a slot passes the
+/// moment it is built and then fails "outside the domain" on the first drag, with the rejection
+/// growing as the drag does: the mark of a conditioning problem rather than a geometric one.
+///
+/// The bound stays proportional to `scale` so it means the same thing on a three-voxel curve and a
+/// three-hundred-voxel one, and it remains far below anything an author can see either way.
 pub(super) fn contact_tolerance(scale: f64) -> f64 {
     let scale = scale.max(COLLAPSED_SPAN);
-    (SATISFIED_RESIDUAL * 8.0 * scale.min(1.0))
+    (SATISFIED_RESIDUAL * scale)
+        .sqrt()
         .max(f64::EPSILON * 64.0 * scale)
-        .min(1.0e-3)
+        .min(scale * 1.0e-3)
 }
 
 pub(super) fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {

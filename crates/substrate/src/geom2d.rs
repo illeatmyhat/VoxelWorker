@@ -700,7 +700,8 @@ fn rational_bezier_measurement_steps(control: [[f32; 2]; 4], weights: [f32; 4]) 
     let needed = (0.75 * deviation * spread / RATIONAL_BEZIER_MEASUREMENT_TOLERANCE).sqrt();
     // Everything the narrowing below could get wrong — NaN, negative, out of range — takes the
     // ceiling instead, which is the count this function had before it could choose.
-    if !(needed < f32::from(RATIONAL_BEZIER_MEASUREMENT_STEPS)) {
+    let narrows = needed.is_finite() && needed < f32::from(RATIONAL_BEZIER_MEASUREMENT_STEPS);
+    if !narrows {
         return RATIONAL_BEZIER_MEASUREMENT_STEPS;
     }
     #[allow(

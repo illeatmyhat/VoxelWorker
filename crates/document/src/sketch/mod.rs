@@ -2315,7 +2315,7 @@ impl Sketch {
     /// where the cursor left it, so neither settles: the authored quantity is the whole edit.
     ///
     /// Every other point simply takes `at`, and then the standing constraints are re-solved with it
-    /// pinned there — see [`settle_under_the_hand`](Self::settle_under_the_hand). A constraint
+    /// pinned there — see [`settle_under_the_hands`](Self::settle_under_the_hands). A constraint
     /// that only held at the moment it was asserted is not a constraint; it has to survive the
     /// next drag, which is the first thing the author does to test it.
     pub fn move_point(
@@ -2324,37 +2324,14 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        let Some(index) = self.point_index(id) else {
+        if self.point_index(id).is_none() {
             return Ok(false);
-        };
+        }
         let before_points = self.points.clone();
         let before_arcs = self.arcs.clone();
         let before_circles = self.circles.clone();
         let before_conics = self.conics.clone();
-        let held_arc = self.arcs.iter().position(|arc| arc.center == id);
-        let held_conic = self.conics.iter().position(|conic| conic.shoulder == id);
-        let result = (|| -> Result<bool, SketchEvaluationError> {
-            match (held_arc, held_conic) {
-                (Some(arc_index), _) => {
-                    self.resweep_arc_to_center(arc_index, at.in_plane());
-                    self.sync_derived_points();
-                    // Dragging a derived point owns only the quantity behind it: settling here
-                    // could "heal" an invalid result by moving the curve's own endpoints, breaking
-                    // that contract. Accept only the authored configuration it produced.
-                    self.standing_constraints_hold(context)
-                }
-                (None, Some(conic_index)) => {
-                    self.reshape_conic_to_shoulder(conic_index, at.in_plane());
-                    self.sync_derived_points();
-                    self.standing_constraints_hold(context)
-                }
-                (None, None) => {
-                    self.points[index].at = at;
-                    self.sync_derived_points();
-                    self.settle_under_the_hand(id, at, context)
-                }
-            }
-        })();
+        let result = self.point_move_attempt(id, at, context);
         // Either arm can leave a conic with nothing to shape — the hand on its control point, or a
         // settle that walked an endpoint onto it. One check covers both, and the rollback below is
         // already the right answer.
@@ -2376,6 +2353,49 @@ impl Sketch {
                 self.conics = before_conics;
                 self.sync_derived_points();
                 Err(error)
+            }
+        }
+    }
+
+    /// The move itself, before [`move_point`](Self::move_point) decides whether to keep it.
+    ///
+    /// Separate so that every way it can decline — a refusal, an error, a conic left with nothing
+    /// to shape — meets ONE rollback rather than one apiece.
+    fn point_move_attempt(
+        &mut self,
+        id: EntityId,
+        at: SketchPoint,
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
+        let held_arc = self.arcs.iter().position(|arc| arc.center == id);
+        let held_conic = self.conics.iter().position(|conic| conic.shoulder == id);
+        match (held_arc, held_conic) {
+            (Some(arc_index), _) => {
+                self.resweep_arc_to_center(arc_index, at.in_plane());
+                self.sync_derived_points();
+                // Dragging a derived point owns only the quantity behind it: settling here could
+                // "heal" an invalid result by moving the curve's own endpoints, breaking that
+                // contract. Accept only the authored configuration it produced.
+                self.standing_constraints_hold(context)
+            }
+            (None, Some(conic_index)) => {
+                self.reshape_conic_to_shoulder(conic_index, at.in_plane());
+                self.sync_derived_points();
+                self.standing_constraints_hold(context)
+            }
+            (None, None) => {
+                // Read the hand set BEFORE anything moves: everything carried states its own
+                // displacement, and that is measured from where the drawing currently stands. Then
+                // put the whole set where it is going, so a carried shape starts the settle already
+                // standing rather than distorted around the one point that led.
+                let hands = self.hands_moving_with(id, at);
+                for (point, to) in &hands {
+                    if let Some(index) = self.point_index(*point) {
+                        self.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
+                    }
+                }
+                self.sync_derived_points();
+                self.settle_under_the_hands(&hands, context)
             }
         }
     }
@@ -2402,15 +2422,251 @@ impl Sketch {
         Ok(current.satisfied && current.collapsed.is_none())
     }
 
-    /// Re-solve the standing constraints with the hand pulling `held` toward `at`, writing the
-    /// result back only if the standing residuals are met. Reports whether they were.
+    /// Every hand a drag of `id` toward `at` puts on the drawing, the held point's own included.
+    ///
+    /// Almost always just the one: grabbing a vertex asks the drawing to do whatever it likes so
+    /// long as that vertex lands under the cursor, and least motion answers well. The exception is
+    /// a handle that names a whole SHAPE rather than a corner of one — a slot's center — where the
+    /// author means "move this thing". There, one hand is measurably wrong: the freedoms a slot
+    /// keeps on purpose (its width, its radius) are cheaper for least motion to spend than a
+    /// translation is, and the pull ends up either reshaping the slot or failing its tangencies
+    /// outright. Naming the rest of the spine, each carried by the SAME displacement, says which
+    /// motion was meant — and the translated configuration satisfies every standing relation
+    /// exactly, because they are all relative.
+    ///
+    /// The other handles of such a shape get a second hand for the opposite reason: they RESHAPE
+    /// it, and a reshape turns about something. Naming the center as a hand that stays put is what
+    /// makes it a pivot; without it least motion is free to slide the whole shape a little to meet
+    /// the cursor for less, and the author watches the thing they were reshaping wander off.
+    ///
+    /// This is a drag policy, not a relation. A relation that made the slot rigid would take those
+    /// freedoms away for good, and they are the ones the other handles exist to author.
+    fn hands_moving_with(&self, id: EntityId, at: SketchPoint) -> Vec<(EntityId, [f64; 2])> {
+        let mut hands = vec![(id, at.in_plane())];
+        let Some(index) = self.point_index(id) else {
+            return hands;
+        };
+        let was = self.points[index].at.in_plane();
+        let now = at.in_plane();
+        let delta = [now[0] - was[0], now[1] - was[1]];
+        if let Some(pivot) = self.pivot_a_reshape_turns_about(id) {
+            if let Some(index) = self.point_index(pivot) {
+                hands.push((pivot, self.points[index].at.in_plane()));
+            }
+        }
+        for carried in self.rest_of_the_shape_held_by(id) {
+            // A derived point is not a freedom and needs no hand: it follows whatever its curve
+            // does, and the curve is carried by the points that DO get one.
+            if self.is_derived_point(carried) {
+                continue;
+            }
+            let Some(index) = self.point_index(carried) else {
+                continue;
+            };
+            let stood = self.points[index].at.in_plane();
+            hands.push((carried, [stood[0] + delta[0], stood[1] + delta[1]]));
+        }
+        hands
+    }
+
+    /// Every OTHER point of the shape whose center is `held`, or nothing if `held` is not one.
+    ///
+    /// A point earns this by standing coincident with a center that names a whole shape — which is
+    /// what a slot's center is, and what a corner, an endpoint, or the center of a single end cap
+    /// never is. From the curves turning about it the shape is walked out through the relations
+    /// that hold it together, and every point they stand on comes with it.
+    ///
+    /// The whole shape rather than only its handles, because that is what makes the answer exact:
+    /// carry all of it by one displacement and the standing system is satisfied to begin with, so
+    /// the settle has nothing left to trade off and no chance to spend the move on a freedom the
+    /// author did not offer. A shape held to geometry OUTSIDE it moves alone and the drag is
+    /// refused, which is the honest outcome — translating a slot is not permission to drag
+    /// whatever it was attached to.
+    fn rest_of_the_shape_held_by(&self, held: EntityId) -> Vec<EntityId> {
+        let Some(center) = self.center_this_handle_stands_on(held) else {
+            return Vec::new();
+        };
+        let seeds = self.curves_centered_on(center);
+        if !self.names_a_whole_shape(&seeds) {
+            return Vec::new();
+        }
+        let mut carried: Vec<EntityId> = Vec::new();
+        let mut pending: Vec<EntityId> = self
+            .shape_holding(seeds)
+            .into_iter()
+            .flat_map(|curve| self.points_of(curve))
+            .collect();
+        while let Some(point) = pending.pop() {
+            if point == held || carried.contains(&point) {
+                continue;
+            }
+            carried.push(point);
+            // A handle is only reachable through the center it is pinned to, so coincidence is
+            // part of the walk rather than a pass over the result.
+            pending.extend(self.coincident_partners(point));
+        }
+        carried
+    }
+
+    /// The handle a drag of `held` should turn about, or nothing if the drag is not a reshape.
+    ///
+    /// The mirror image of the translate policy, and it asks the same two questions in the other
+    /// order: `held` must stand on a center that names ONE curve — an end cap, the reshaping kind
+    /// of handle — belonging to a shape that does have a center of its own. That shared center is
+    /// the pivot, named by the handle pinned to it, because a hand is a thing an author can hold
+    /// and a derived point is not.
+    fn pivot_a_reshape_turns_about(&self, held: EntityId) -> Option<EntityId> {
+        let center = self.center_this_handle_stands_on(held)?;
+        let seeds = self.curves_centered_on(center);
+        if seeds.is_empty() || self.names_a_whole_shape(&seeds) {
+            return None;
+        }
+        self.shape_holding(seeds)
+            .into_iter()
+            .flat_map(|curve| self.points_of(curve))
+            .filter(|point| self.is_derived_point(*point))
+            .filter(|point| self.names_a_whole_shape(&self.curves_centered_on(*point)))
+            // Where two rails share a center by relation rather than by identity, only ONE of the
+            // pair carries the handle — so keep looking rather than settling for the first.
+            .find_map(|shared| {
+                self.coincident_partners(shared)
+                    .into_iter()
+                    .find(|partner| !self.is_derived_point(*partner))
+            })
+    }
+
+    /// The derived center an authored handle is pinned to, where it is that kind of handle.
+    fn center_this_handle_stands_on(&self, held: EntityId) -> Option<EntityId> {
+        self.coincident_partners(held)
+            .into_iter()
+            .find(|partner| self.is_derived_point(*partner))
+    }
+
+    /// Whether curves turning about one center name a whole shape rather than one end of it.
+    ///
+    /// Only a SHARED center does. An unshared one names a single end cap, and its handle is for
+    /// reshaping: carrying the cap's own corners with it would fix the cap's orientation, and the
+    /// shape could then only slide to follow rather than swing round. Sharing can be either kind:
+    /// the same center entity, or separate centers held together by
+    /// [`Concentric`](ConstraintKind::Concentric), which is how two rails share one without merging
+    /// their points.
+    fn names_a_whole_shape(&self, seeds: &[SketchCurve]) -> bool {
+        !seeds.is_empty()
+            && (seeds.len() > 1
+                || seeds
+                    .iter()
+                    .any(|curve| self.stands_in_a_concentric_relation(*curve)))
+    }
+
+    /// Every curve reachable from these by the relations that make curves behave as one shape.
+    fn shape_holding(&self, seeds: Vec<SketchCurve>) -> Vec<SketchCurve> {
+        let mut shape: Vec<SketchCurve> = Vec::new();
+        let mut frontier = seeds;
+        while let Some(curve) = frontier.pop() {
+            if shape.contains(&curve) {
+                continue;
+            }
+            shape.push(curve);
+            frontier.extend(self.curves_held_to(curve));
+        }
+        shape
+    }
+
+    /// Every point a curve stands on, its center included where it has one.
+    fn points_of(&self, curve: SketchCurve) -> Vec<EntityId> {
+        match curve {
+            SketchCurve::Arc(id) => self
+                .arcs
+                .iter()
+                .find(|arc| arc.id == id)
+                .map(|arc| vec![arc.from, arc.to, arc.center])
+                .unwrap_or_default(),
+            SketchCurve::Segment(id) => self
+                .segments
+                .iter()
+                .find(|segment| segment.id == id)
+                .map(|segment| vec![segment.from, segment.to])
+                .unwrap_or_default(),
+            SketchCurve::Circle(id) => self
+                .circles
+                .iter()
+                .find(|circle| circle.id == id)
+                .map(|circle| vec![circle.center])
+                .unwrap_or_default(),
+            SketchCurve::Bezier(_)
+            | SketchCurve::Ellipse(_)
+            | SketchCurve::Conic(_)
+            | SketchCurve::Spline(_) => Vec::new(),
+        }
+    }
+
+    /// Every point standing coincident with this one by an authored relation.
+    fn coincident_partners(&self, id: EntityId) -> Vec<EntityId> {
+        self.constraints
+            .iter()
+            .filter_map(|constraint| match constraint.kind {
+                ConstraintKind::Coincident { first, second } if first == id => Some(second),
+                ConstraintKind::Coincident { first, second } if second == id => Some(first),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether this curve is held to another about a shared center.
+    fn stands_in_a_concentric_relation(&self, curve: SketchCurve) -> bool {
+        self.constraints.iter().any(|constraint| {
+            matches!(
+                constraint.kind,
+                ConstraintKind::Concentric { first, second } if first == curve || second == curve
+            )
+        })
+    }
+
+    /// Every circular curve turning about this point.
+    fn curves_centered_on(&self, center: EntityId) -> Vec<SketchCurve> {
+        self.arcs
+            .iter()
+            .filter(|arc| arc.center == center)
+            .map(|arc| SketchCurve::Arc(arc.id))
+            .chain(
+                self.circles
+                    .iter()
+                    .filter(|circle| circle.center == center)
+                    .map(|circle| SketchCurve::Circle(circle.id)),
+            )
+            .collect()
+    }
+
+    /// Every curve joined to this one by a relation that makes the two behave as one shape.
+    fn curves_held_to(&self, curve: SketchCurve) -> Vec<SketchCurve> {
+        self.constraints
+            .iter()
+            .filter_map(|constraint| {
+                let (ConstraintKind::Tangent { first, second, .. }
+                | ConstraintKind::Concentric { first, second }) = constraint.kind
+                else {
+                    return None;
+                };
+                if first == curve {
+                    Some(second)
+                } else if second == curve {
+                    Some(first)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Re-solve the standing constraints with the gesture's hands pulling, writing the result back
+    /// only if the standing residuals are met. Reports whether they were.
     ///
     /// The assertions hold DURING the gesture, not merely at the moment they were made.
     ///
-    /// **The hand is a PULL, not a demand — two stages.** The drag joins the system as one more
-    /// least-squares row and the solve trades it off against everything standing; then the hand
-    /// lets go and the standing system alone is re-solved from that answer, which restores it
-    /// exactly while moving as little as it can. The grabbed point therefore lands at the nearest
+    /// **A hand is a PULL, not a demand — two stages.** The drag joins the system as one more
+    /// least-squares row per hand and the solve trades them off against everything standing; then
+    /// the hands let go and the standing system alone is re-solved from that answer, which restores
+    /// it exactly while moving as little as it can. The grabbed point therefore lands at the nearest
     /// place the drawing allows, and only the standing residuals decide whether the drag stands.
     ///
     /// **Not a hard pin.** A hard pin makes the whole drag all-or-nothing: a point free to slide
@@ -2422,10 +2678,9 @@ impl Sketch {
     ///
     /// A drag that IS achievable is unaffected: stage one meets the pull exactly, so stage two
     /// starts at a solution and moves nothing.
-    fn settle_under_the_hand(
+    fn settle_under_the_hands(
         &mut self,
-        held: EntityId,
-        at: SketchPoint,
+        hands: &[(EntityId, [f64; 2])],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
         if self.constraints.is_empty() {
@@ -2433,7 +2688,7 @@ impl Sketch {
         }
         let prepared = constraint::prepare(self, &self.constraints, Some(context))
             .map_err(map_prepare_evaluation_error)?;
-        let (settled, accepted) = match prepared.drag(held, at.in_plane()) {
+        let (settled, accepted) = match prepared.drag_together(hands) {
             Ok(parametric::sketch::DragOutcome::Accepted(settled)) => (settled, true),
             Ok(parametric::sketch::DragOutcome::Rejected(settled)) => (settled, false),
             Err(_) => return Ok(false),

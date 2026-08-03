@@ -672,15 +672,20 @@ impl PreparedProblem {
             .map_err(TrialMapError::Request)
     }
 
-    pub(super) fn drag(
+    /// Pull one or more points at once. See [`parametric::sketch::Problem::drag_together`].
+    pub(super) fn drag_together(
         &self,
-        held: EntityId,
-        at: [f64; 2],
+        hands: &[(EntityId, [f64; 2])],
     ) -> Result<parametric::sketch::DragOutcome, parametric::sketch::RequestError> {
-        let point = self
-            .point(held)
-            .ok_or(parametric::sketch::RequestError::UnknownPoint)?;
-        self.problem.drag(point, at)
+        let hands = hands
+            .iter()
+            .map(|(held, at)| {
+                self.point(*held)
+                    .map(|point| (point, *at))
+                    .ok_or(parametric::sketch::RequestError::UnknownPoint)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.problem.drag_together(&hands)
     }
 
     pub(super) fn plan_apply(

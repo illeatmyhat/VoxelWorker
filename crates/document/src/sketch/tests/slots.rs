@@ -165,15 +165,19 @@ fn every_slot_grammar_commits_its_tangencies_rail_relation_and_spine() {
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Concentric { .. })));
 }
 
-/// PROBE, not a contract: what does a bare one-point pull on the slot's own center actually do?
-///
-/// The owner wants it to translate the whole slot. Least-motion has a cheaper answer available —
-/// grow the radius and leave the spine ends where they are — so this measures which one the
-/// solver takes before any drag policy is built on top of it.
-#[test]
-#[ignore = "design probe — run with --ignored --nocapture"]
-fn what_a_single_hand_on_the_slot_center_does() {
-    let mut made = source()
+/// The handle an author drags to move the slot, found the way the UI finds it: the point standing
+/// at that spot that is not one the drawing derives.
+fn handle_at(made: &SketchSolid, at: SketchPoint) -> EntityId {
+    made.sketch
+        .points()
+        .iter()
+        .find(|point| !made.sketch.is_derived_point(point.id) && point.at.coincides(&at))
+        .map(|point| point.id)
+        .expect("the slot reifies its spine as draggable handles")
+}
+
+fn arc_slot() -> SketchSolid {
+    source()
         .with_center_arc_slot(
             SketchPoint::new(0, 0),
             SketchPoint::new(8, 0),
@@ -182,33 +186,66 @@ fn what_a_single_hand_on_the_slot_center_does() {
             SketchPoint::new(10, 0),
             ctx(16),
         )
-        .unwrap();
-    let center = made
-        .sketch
-        .points()
-        .iter()
-        .find(|point| {
-            !made.sketch.is_derived_point(point.id) && point.at.coincides(&SketchPoint::new(0, 0))
-        })
-        .map(|point| point.id)
-        .expect("the slot reifies its own center as a draggable handle");
+        .expect("a quarter-turn arc slot of half-width two")
+}
+
+/// The owner's contract for the center handle: it moves the SLOT, not part of it.
+///
+/// Least motion on one hand does not produce this and cannot be made to — the freedoms a slot
+/// keeps on purpose are cheaper to spend than a translation is — so what this really pins is that
+/// the drag policy is still in place. Measured before it existed, the same pull was a dead drag.
+#[test]
+fn dragging_the_center_translates_the_whole_arc_slot() {
+    let mut made = arc_slot();
+    let center = handle_at(&made, SketchPoint::new(0, 0));
     let before: Vec<[f64; 2]> = made
         .sketch
         .points()
         .iter()
         .map(|point| point.at.in_plane())
         .collect();
-    let stood = made
+
+    assert!(made
         .sketch
-        .move_point(center, SketchPoint::new(5, 3), ctx(16));
-    println!("stood: {stood:?}");
+        .move_point(center, SketchPoint::new(5, 3), ctx(16))
+        .unwrap());
+
     for (was, now) in before.iter().zip(made.sketch.points()) {
         let now = now.at.in_plane();
-        println!(
-            "{was:?} -> {now:?}   delta {:?}",
-            [now[0] - was[0], now[1] - was[1]]
+        let slipped = (now[0] - was[0] - 5.0).hypot(now[1] - was[1] - 3.0);
+        assert!(
+            slipped < 1.0e-6,
+            "{was:?} -> {now:?} is not the translation"
         );
     }
+}
+
+/// The other two handles reshape the arc rather than carrying the slot, which is the whole reason
+/// the policy asks whether the held point is the shape's CENTER instead of translating on any
+/// spine handle it finds.
+#[test]
+fn dragging_a_spine_end_reshapes_the_slot_instead_of_moving_it() {
+    let mut made = arc_slot();
+    let end = handle_at(&made, SketchPoint::new(0, 8));
+    let center = handle_at(&made, SketchPoint::new(0, 0));
+
+    assert!(made
+        .sketch
+        .move_point(
+            end,
+            SketchPoint::from_continuous(8.0 / 2.0_f64.sqrt(), 8.0 / 2.0_f64.sqrt()),
+            ctx(16),
+        )
+        .unwrap());
+
+    let center_at = made
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.id == center)
+        .map(|point| point.at.in_plane())
+        .expect("the center survives its neighbour moving");
+    assert!(center_at[0].hypot(center_at[1]) < 1.0e-6, "{center_at:?}");
 }
 
 #[test]
