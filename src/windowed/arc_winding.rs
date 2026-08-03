@@ -6,7 +6,7 @@
 //! here once rather than being mirrored into two gesture modules that could drift apart.
 
 use document::sketch::SketchPoint;
-use substrate::winding::WindingAccumulator;
+use substrate::winding::TurnLatch;
 
 /// How far from the center a reading has to be before its bearing means anything.
 ///
@@ -21,13 +21,13 @@ fn bearing(center: SketchPoint, at: SketchPoint) -> Option<f64> {
     (offset[0].hypot(offset[1]) > BEARING_DEAD_ZONE_VOXELS).then(|| offset[1].atan2(offset[0]))
 }
 
-/// Fold one cursor reading into a gesture's running winding, seeding it if this is the first.
+/// Fold one cursor reading into a gesture's direction latch, seeding it if this is the first.
 ///
-/// The seed is the START point's bearing, not the first cursor position: the sweep is measured from
+/// The seed is the START point's bearing, not the first cursor position: the direction is read from
 /// where the arc actually begins, so a pointer that has already travelled before the first frame
-/// arrives cannot lose the turn it made getting there.
+/// arrives cannot lose the move it made getting there.
 pub(super) fn track(
-    winding: &mut Option<WindingAccumulator>,
+    winding: &mut Option<TurnLatch>,
     center: SketchPoint,
     start: SketchPoint,
     cursor: SketchPoint,
@@ -41,16 +41,16 @@ pub(super) fn track(
         }
         None => {
             let mut seeded =
-                WindingAccumulator::starting_at(bearing(center, start).unwrap_or(cursor_bearing));
+                TurnLatch::starting_at(bearing(center, start).unwrap_or(cursor_bearing));
             seeded.advance(cursor_bearing);
             *winding = Some(seeded);
         }
     }
 }
 
-/// The direction a tracked winding describes; counter-clockwise until the pointer says otherwise.
-pub(super) fn turn(winding: Option<WindingAccumulator>) -> parametric::sketch::ArcTurn {
-    if winding.is_some_and(|winding| winding.turned() < 0.0) {
+/// The direction a tracked latch describes; counter-clockwise until the pointer says otherwise.
+pub(super) fn turn(winding: Option<TurnLatch>) -> parametric::sketch::ArcTurn {
+    if winding.is_some_and(|winding| winding.held() < 0.0) {
         parametric::sketch::ArcTurn::Clockwise
     } else {
         parametric::sketch::ArcTurn::CounterClockwise
@@ -102,11 +102,11 @@ mod tests {
         let start = at(4.0, 0.0);
         let mut winding = None;
         track(&mut winding, center, start, at(4.0, -1.0));
-        let after_a_real_reading = winding.unwrap().turned();
+        let after_a_real_reading = winding.unwrap().held();
         for _ in 0..32 {
             track(&mut winding, center, start, at(0.1, -0.1));
         }
-        assert_eq!(winding.unwrap().turned(), after_a_real_reading);
+        assert_eq!(winding.unwrap().held(), after_a_real_reading);
         assert_eq!(turn(winding), parametric::sketch::ArcTurn::Clockwise);
     }
 

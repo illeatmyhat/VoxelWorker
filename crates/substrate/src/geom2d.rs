@@ -662,7 +662,57 @@ impl RegionEdge {
     }
 }
 
+/// The most uniform steps a rational curve is ever measured in — what every curve used to cost.
+///
+/// It stays the CEILING rather than the count, so no curve is measured more coarsely than it was
+/// before [`rational_bezier_measurement_steps`] existed.
 const RATIONAL_BEZIER_MEASUREMENT_STEPS: u16 = 64;
+
+/// How far the chord run measuring a rational curve may sit from the curve, in the caller's units
+/// (profile voxels). Three orders of magnitude below anything authoring or display can see, which
+/// is what lets the step count fall without the field moving.
+const RATIONAL_BEZIER_MEASUREMENT_TOLERANCE: f32 = 1.0 / 1024.0;
+
+/// How many uniform steps this curve needs to be measured to within
+/// [`RATIONAL_BEZIER_MEASUREMENT_TOLERANCE`].
+///
+/// A cubic subdivided into `n` uniform pieces sits within `(d(d-1)/8)·max‖Δ²P‖/n²` of its chord
+/// run — Wang's bound, `d = 3` here. Inverting it gives the steps the curve actually needs, which
+/// for the near-straight pieces a spline is made of is a small fraction of the old fixed 64. The
+/// bound is stated for POLYNOMIAL control points, so the weight spread scales it: at equal weights
+/// (every spline, every straight run) the factor is one and the bound is exact.
+///
+/// This is why a spline profile stopped costing 300× a circle at every voxel sample. The
+/// measurement is a fold over the boundary; making one curve cheap makes the whole field cheap.
+fn rational_bezier_measurement_steps(control: [[f32; 2]; 4], weights: [f32; 4]) -> u16 {
+    let second_difference = |from: [f32; 2], middle: [f32; 2], to: [f32; 2]| {
+        let offset = [
+            2.0_f32.mul_add(-middle[0], from[0]) + to[0],
+            2.0_f32.mul_add(-middle[1], from[1]) + to[1],
+        ];
+        offset[0].hypot(offset[1])
+    };
+    let deviation = second_difference(control[0], control[1], control[2])
+        .max(second_difference(control[1], control[2], control[3]));
+    let low = weights.into_iter().fold(f32::INFINITY, f32::min);
+    let high = weights.into_iter().fold(0.0_f32, f32::max);
+    let spread = if low > 0.0 { high / low } else { f32::INFINITY };
+    let needed = (0.75 * deviation * spread / RATIONAL_BEZIER_MEASUREMENT_TOLERANCE).sqrt();
+    // Everything the narrowing below could get wrong — NaN, negative, out of range — takes the
+    // ceiling instead, which is the count this function had before it could choose.
+    if !(needed < f32::from(RATIONAL_BEZIER_MEASUREMENT_STEPS)) {
+        return RATIONAL_BEZIER_MEASUREMENT_STEPS;
+    }
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    // Guarded above into `0.0..64.0`, so the ceiling is exactly representable and non-negative.
+    let steps = needed.ceil() as u16;
+    // At least one step, so a curve is never measured by its endpoints alone.
+    steps.max(1)
+}
 
 fn rational_bezier_point(control: [[f32; 2]; 4], weights: [f32; 4], parameter: f32) -> [f32; 2] {
     let [control_0, control_1, control_2, control_3] = control;
@@ -699,14 +749,11 @@ fn rational_bezier_distance(
     point: [f32; 2],
     metric: Metric,
 ) -> f32 {
+    let steps = rational_bezier_measurement_steps(control, weights);
     let mut nearest = f32::INFINITY;
     let mut previous = control.first().copied().unwrap_or_default();
-    for step in 1..=RATIONAL_BEZIER_MEASUREMENT_STEPS {
-        let current = rational_bezier_point(
-            control,
-            weights,
-            f32::from(step) / f32::from(RATIONAL_BEZIER_MEASUREMENT_STEPS),
-        );
+    for step in 1..=steps {
+        let current = rational_bezier_point(control, weights, f32::from(step) / f32::from(steps));
         nearest = nearest.min(distance_point_to_segment(previous, current, point, metric));
         previous = current;
     }
@@ -714,14 +761,13 @@ fn rational_bezier_distance(
 }
 
 fn rational_bezier_crossings(control: [[f32; 2]; 4], weights: [f32; 4], sample: [f32; 2]) -> u32 {
+    // The SAME step count the distance uses, so the sign and the magnitude are read off one chord
+    // run. Two resolutions would let a sample land inside by one and outside by the other.
+    let steps = rational_bezier_measurement_steps(control, weights);
     let mut crossings = 0_u32;
     let mut previous = control.first().copied().unwrap_or_default();
-    for step in 1..=RATIONAL_BEZIER_MEASUREMENT_STEPS {
-        let current = rational_bezier_point(
-            control,
-            weights,
-            f32::from(step) / f32::from(RATIONAL_BEZIER_MEASUREMENT_STEPS),
-        );
+    for step in 1..=steps {
+        let current = rational_bezier_point(control, weights, f32::from(step) / f32::from(steps));
         crossings = crossings.saturating_add(segment_crossings(previous, current, sample));
         previous = current;
     }
@@ -812,21 +858,52 @@ fn segment_crossings(a: [f32; 2], b: [f32; 2], sample: [f32; 2]) -> u32 {
     u32::from(sample[0] < crossing_0)
 }
 
+/// A LOWER bound on the distance from `point` to anything inside the box `low..=high`.
+///
+/// Exact for the box itself, and never larger than the distance to a curve the box contains, so a
+/// caller can only ever skip work that could not have won. Zero once `point` is inside the box,
+/// which is the case where nothing can be skipped and nothing should be.
+fn distance_to_bounds(low: [f32; 2], high: [f32; 2], point: [f32; 2], metric: Metric) -> f32 {
+    metric.length([
+        (low[0] - point[0]).max(point[0] - high[0]).max(0.0),
+        (low[1] - point[1]).max(point[1] - high[1]).max(0.0),
+    ])
+}
+
 /// Whether `sample` is inside the closed loop of possibly curved edges.
 /// The test uses the same crossing-number rule as [`point_in_polygon`].
 #[must_use]
 pub fn point_in_edge_loop(edges: &[RegionEdge], sample: [f32; 2]) -> bool {
-    let crossings: u32 = edges.iter().map(|edge| edge.crossings(sample)).sum();
+    let mut crossings: u32 = 0;
+    for edge in edges {
+        // The `+axis0` ray meets this edge only if the edge spans the sample's `axis1` and reaches
+        // PAST it in `axis0` — every crossing sits at or below `high[0]`, and the rule counts one
+        // only when `sample[0]` is strictly below it. Four comparisons stand in for a rational
+        // curve's fixed 64-step walk, which is the whole cost of a spline profile.
+        let (low, high) = edge.bounds();
+        if sample[1] < low[1] || sample[1] > high[1] || sample[0] >= high[0] {
+            continue;
+        }
+        crossings = crossings.saturating_add(edge.crossings(sample));
+    }
     crossings % 2 == 1
 }
 
 /// The UNSIGNED distance to the loop's nearest edge. `f32::INFINITY` for an empty loop.
 #[must_use]
 pub fn nearest_boundary_distance(edges: &[RegionEdge], point: [f32; 2], metric: Metric) -> f32 {
-    edges
-        .iter()
-        .map(|edge| edge.distance(point, metric))
-        .fold(f32::INFINITY, f32::min)
+    let mut nearest = f32::INFINITY;
+    for edge in edges {
+        // A box that cannot beat the best answer so far holds nothing worth measuring. The edges of
+        // a loop run along the boundary, so the running best drops on the first edge and prunes
+        // almost every one after it — no ordering pass and no index to keep.
+        let (low, high) = edge.bounds();
+        if distance_to_bounds(low, high, point, metric) >= nearest {
+            continue;
+        }
+        nearest = nearest.min(edge.distance(point, metric));
+    }
+    nearest
 }
 
 /// Whether `sample` is inside the region `loops` — decided by the FIRST loop that contains it.

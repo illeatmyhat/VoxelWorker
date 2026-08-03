@@ -10,14 +10,14 @@ struct PendingCenterArc {
     owner: NodeId,
     center: SketchPoint,
     start: Option<ResolvedSketchTarget>,
-    /// How far the cursor has wound about the center since the start point landed.
+    /// Which way the cursor has been going about the center since the start point landed.
     ///
     /// The arc's direction is a property of the PATH the cursor took, not of where it currently
     /// is: the same point on the circle is reachable either way round. Living inside the pending
     /// record is what keeps it honest — every reset, cancel and context change that drops the
     /// gesture drops this with it, so there is no roster to keep in sync and no way for a stale
-    /// winding to outlive the arc it described.
-    winding: Option<substrate::winding::WindingAccumulator>,
+    /// direction to outlive the arc it described.
+    winding: Option<substrate::winding::TurnLatch>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

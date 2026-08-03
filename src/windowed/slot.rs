@@ -28,12 +28,12 @@ struct PendingSlot {
     owner: NodeId,
     kind: SlotKind,
     picks: Vec<SketchPoint>,
-    /// How far the cursor wound about the center while the center-arc spine was being aimed.
+    /// Which way the cursor was going about the center while the center-arc spine was being aimed.
     ///
     /// Only [`SlotKind::CenterPointArc`] ever fills this in; the other four grammars have no arc
     /// whose direction is in question. It stops advancing once the direction pick lands, so the
     /// width step cannot reverse a spine the author already settled.
-    winding: Option<substrate::winding::WindingAccumulator>,
+    winding: Option<substrate::winding::TurnLatch>,
 }
 
 impl PendingSlot {
@@ -118,13 +118,7 @@ impl SlotGesture {
             .map(|pending| pending.picks.clone())
     }
 
-    /// The centerline arc of an arc slot whose spine is settled but whose WIDTH is not — the
-    /// intermediate the two arc grammars spend most of their clicks in.
-    ///
-    /// Without this the width step previewed a straight run through the picks, which looks nothing
-    /// like the arc slot it is about to become. The cursor stands in for the last spine pick until
-    /// that pick is taken, so the arc is live from the moment it is determined.
-    /// Fold this frame's cursor into the winding that decides which way a center-arc spine runs.
+    /// Fold this frame's cursor into the latch that decides which way a center-arc spine runs.
     ///
     /// Called once per frame before the preview is asked for, and only while the direction pick is
     /// still the one being aimed — after that the cursor is driving the width.
@@ -154,6 +148,12 @@ impl SlotGesture {
         )
     }
 
+    /// The centerline arc of an arc slot whose spine is settled but whose WIDTH is not — the
+    /// intermediate the two arc grammars spend most of their clicks in.
+    ///
+    /// Without this the width step previewed a straight run through the picks, which looks nothing
+    /// like the arc slot it is about to become. The cursor stands in for the last spine pick until
+    /// that pick is taken, so the arc is live from the moment it is determined.
     pub fn spine(
         &self,
         owner: NodeId,
