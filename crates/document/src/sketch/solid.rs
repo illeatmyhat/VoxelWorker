@@ -2389,15 +2389,19 @@ impl SketchSolid {
         // matching `Box`. The center is a half-integer for any grid size → always on
         // the global voxel lattice.
         //
-        // The normal-axis LAYERS are order-independent (each layer writes a disjoint
-        // set of voxels), so — mirroring `SdfShape::resolve`'s slice parallelism —
-        // each layer produces a local `Vec<Voxel>` and the results are concatenated
-        // with rayon. The emission ORDER may differ from the serial version, but the
-        // SET is identical (consumers recover indices from each voxel's position).
+        // The normal-axis layer sweep is SERIAL, deliberately.
+        //
+        // The layers are order-independent, so it once ran through rayon the way
+        // `SdfShape::resolve` slices its work. But the expensive half of this resolve — the
+        // in-plane `contains` raster above — is serial regardless, and what the sweep does is
+        // copy the same fill up the normal. Parallelizing a memory write bought nothing, and it
+        // was NESTED: every boundary block of every dirty chunk opened its own fan-out inside the
+        // chunk fan-out that is already saturating the pool. Measured on a real drag frame, the
+        // nested split cost 40% at 24 threads and the whole rebuild got SLOWER as cores were
+        // added. The chunk is the parallel granularity; below it, do the work.
         let profile_axes = [in_plane_0, in_plane_1, normal];
         grid.occupied = (layer_lo..layer_hi)
-            .into_par_iter()
-            .flat_map_iter(|layer| {
+            .flat_map(|layer| {
                 let [in_plane_0, in_plane_1, normal] = profile_axes;
                 filled_in_plane.iter().map(move |&[cell_0, cell_1]| {
                     let mut index = [0u32; 3];

@@ -750,29 +750,39 @@ fn rational_bezier_distance(
     point: [f32; 2],
     metric: Metric,
 ) -> f32 {
-    let steps = rational_bezier_measurement_steps(control, weights);
     let mut nearest = f32::INFINITY;
-    let mut previous = control.first().copied().unwrap_or_default();
-    for step in 1..=steps {
-        let current = rational_bezier_point(control, weights, f32::from(step) / f32::from(steps));
-        nearest = nearest.min(distance_point_to_segment(previous, current, point, metric));
-        previous = current;
-    }
+    walk_rational_bezier_chords(control, weights, |from, to| {
+        nearest = nearest.min(distance_point_to_segment(from, to, point, metric));
+    });
     nearest
 }
 
 fn rational_bezier_crossings(control: [[f32; 2]; 4], weights: [f32; 4], sample: [f32; 2]) -> u32 {
-    // The SAME step count the distance uses, so the sign and the magnitude are read off one chord
-    // run. Two resolutions would let a sample land inside by one and outside by the other.
-    let steps = rational_bezier_measurement_steps(control, weights);
     let mut crossings = 0_u32;
+    walk_rational_bezier_chords(control, weights, |from, to| {
+        crossings = crossings.saturating_add(segment_crossings(from, to, sample));
+    });
+    crossings
+}
+
+/// Hand `chord` each `(from, to)` pair of the chord run this curve is measured by.
+///
+/// The ONE definition of that run. The sign and the magnitude are read off the same chords — two
+/// resolutions would let a sample land inside by one and outside by the other — and
+/// [`PreparedEdge`] keeps the run rather than rebuilding it per sample, which only stays honest
+/// while there is a single place that says what the run is.
+fn walk_rational_bezier_chords(
+    control: [[f32; 2]; 4],
+    weights: [f32; 4],
+    mut chord: impl FnMut([f32; 2], [f32; 2]),
+) {
+    let steps = rational_bezier_measurement_steps(control, weights);
     let mut previous = control.first().copied().unwrap_or_default();
     for step in 1..=steps {
         let current = rational_bezier_point(control, weights, f32::from(step) / f32::from(steps));
-        crossings = crossings.saturating_add(segment_crossings(previous, current, sample));
+        chord(previous, current);
         previous = current;
     }
-    crossings
 }
 
 /// How far along a sweep the bearing `bearing` sits, in radians of travel from the start, or `None`
@@ -988,6 +998,19 @@ fn outside_bounds(low: [f32; 2], high: [f32; 2], point: [f32; 2]) -> bool {
 /// broadphase has narrowed WHICH chunks an edit rebuilds, this is the cost left inside the ones
 /// that do, and it is the reason a redraw still grows with the whole drawing.
 ///
+/// # Why a rational curve is walked here and not per sample
+///
+/// A rational Bézier has no closed-form distance, so both halves of the field measure it against a
+/// run of chords fine enough to sit within [`RATIONAL_BEZIER_MEASUREMENT_TOLERANCE`] of it. That
+/// run depends only on the curve — [`rational_bezier_measurement_steps`] reads it off the control
+/// points — yet the free functions rebuild it from scratch on every sample, evaluating a rational
+/// cubic per step per edge. On a profile with eight spline pieces that was 2.2us per voxel, which
+/// is where a real drawing's rebuild time went.
+///
+/// Walking each curve ONCE at construction and keeping its chords is not an approximation of the
+/// per-sample walk, it IS the per-sample walk — the same [`walk_rational_bezier_chords`], the same
+/// chords, in the same order, folded by the same segment routines.
+///
 /// # The prune is exact, not approximate
 ///
 /// [`distance_to_bounds`] is a LOWER bound on the distance to anything a box contains, so a loop
@@ -1006,10 +1029,127 @@ pub struct BoundedRegion {
 #[derive(Debug, Clone, PartialEq)]
 struct BoundedLoop {
     role: LoopRole,
-    edges: Vec<RegionEdge>,
+    edges: Vec<PreparedEdge>,
     /// The union of the edges' own bounds, or `None` for a loop with no edges — which encloses
     /// nothing, so it is skippable everywhere.
     bounds: Option<([f32; 2], [f32; 2])>,
+}
+
+/// One boundary edge with whatever it costs to measure paid up front.
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedEdge {
+    edge: RegionEdge,
+    bounds: ([f32; 2], [f32; 2]),
+    /// The chord run a rational curve is measured by, as its `steps + 1` joints. EMPTY for a
+    /// segment or an arc, which have exact closed forms and nothing to precompute.
+    chords: Vec<[f32; 2]>,
+}
+
+impl PreparedEdge {
+    fn measure(edge: RegionEdge) -> Self {
+        let mut chords = Vec::new();
+        if let RegionEdge::RationalBezier { control, weights } = edge {
+            chords.push(control.first().copied().unwrap_or_default());
+            walk_rational_bezier_chords(control, weights, |_, current| chords.push(current));
+        }
+        Self {
+            bounds: edge.bounds(),
+            edge,
+            chords,
+        }
+    }
+
+    /// This edge's chords, as the `(from, to)` pairs of its joint run.
+    fn chord_pairs(&self) -> impl Iterator<Item = ([f32; 2], [f32; 2])> + '_ {
+        self.chords
+            .iter()
+            .zip(self.chords.iter().skip(1))
+            .map(|(from, to)| (*from, *to))
+    }
+
+    /// The nearest point on the edge, skipping the chords that cannot beat what is already held.
+    ///
+    /// The chords are pruned INDIVIDUALLY, not just the edge as a whole. A curve's box is the
+    /// whole curve's reach, so a sample beside one end of it would otherwise pay for the far end
+    /// too — and a curve carries up to [`RATIONAL_BEZIER_MEASUREMENT_STEPS`] chords, which makes it
+    /// the edge that costs the most to walk by two orders of magnitude.
+    fn distance(&self, point: [f32; 2], metric: Metric) -> f32 {
+        if self.chords.is_empty() {
+            return self.edge.distance(point, metric);
+        }
+        let mut nearest = f32::INFINITY;
+        for (from, to) in self.chord_pairs() {
+            let (low, high) = chord_bounds(from, to);
+            if distance_to_bounds(low, high, point, metric) >= nearest {
+                continue;
+            }
+            nearest = nearest.min(distance_point_to_segment(from, to, point, metric));
+        }
+        nearest
+    }
+
+    /// How often the `+x` ray from `sample` crosses the edge, skipping the chords it cannot reach.
+    ///
+    /// The same test [`point_in_prepared_loop`] applies per edge, applied per chord: a chord whose
+    /// span misses the sample's row, or lies entirely behind it, contributes zero. Dropping zeroes
+    /// from a sum changes nothing, so the count is the count the unpruned walk would have reached.
+    fn crossings(&self, sample: [f32; 2]) -> u32 {
+        if self.chords.is_empty() {
+            return self.edge.crossings(sample);
+        }
+        let mut crossings = 0_u32;
+        for (from, to) in self.chord_pairs() {
+            let (low, high) = chord_bounds(from, to);
+            if unreachable_by_ray(low, high, sample) {
+                continue;
+            }
+            crossings = crossings.saturating_add(segment_crossings(from, to, sample));
+        }
+        crossings
+    }
+}
+
+/// A chord's own axis-aligned box. Held nowhere: two endpoints are four comparisons away from it,
+/// and a run of chords walked in order is friendlier in cache than one carrying its box along.
+#[inline]
+const fn chord_bounds(from: [f32; 2], to: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+    (
+        [from[0].min(to[0]), from[1].min(to[1])],
+        [from[0].max(to[0]), from[1].max(to[1])],
+    )
+}
+
+/// Whether the `+x` ray from `sample` misses this box entirely, so whatever is inside it crosses
+/// nothing. The one definition of the crossing prune, shared by the loop walk and the chord walk.
+#[inline]
+fn unreachable_by_ray(low: [f32; 2], high: [f32; 2], sample: [f32; 2]) -> bool {
+    sample[1] < low[1] || sample[1] > high[1] || sample[0] >= high[0]
+}
+
+/// [`point_in_edge_loop`] over prepared edges.
+fn point_in_prepared_loop(edges: &[PreparedEdge], sample: [f32; 2]) -> bool {
+    let mut crossings: u32 = 0;
+    for edge in edges {
+        let (low, high) = edge.bounds;
+        if unreachable_by_ray(low, high, sample) {
+            continue;
+        }
+        crossings = crossings.saturating_add(edge.crossings(sample));
+    }
+    crossings % 2 == 1
+}
+
+/// [`nearest_boundary_distance`] over prepared edges.
+fn nearest_prepared_distance(edges: &[PreparedEdge], point: [f32; 2], metric: Metric) -> f32 {
+    let mut nearest = f32::INFINITY;
+    for edge in edges {
+        let (low, high) = edge.bounds;
+        if distance_to_bounds(low, high, point, metric) >= nearest {
+            continue;
+        }
+        nearest = nearest.min(edge.distance(point, metric));
+    }
+    nearest
 }
 
 impl BoundedRegion {
@@ -1022,7 +1162,7 @@ impl BoundedRegion {
                 .map(|(role, edges)| BoundedLoop {
                     bounds: edges_bounds(&edges),
                     role,
-                    edges,
+                    edges: edges.into_iter().map(PreparedEdge::measure).collect(),
                 })
                 .collect(),
         }
@@ -1040,7 +1180,12 @@ impl BoundedRegion {
     pub fn to_loops(&self) -> Vec<(LoopRole, Vec<RegionEdge>)> {
         self.loops
             .iter()
-            .map(|bounded| (bounded.role, bounded.edges.clone()))
+            .map(|bounded| {
+                (
+                    bounded.role,
+                    bounded.edges.iter().map(|edge| edge.edge).collect(),
+                )
+            })
             .collect()
     }
 
@@ -1075,7 +1220,7 @@ impl BoundedRegion {
             if outside_bounds(low, high, sample) {
                 continue;
             }
-            if point_in_edge_loop(&bounded.edges, sample) {
+            if point_in_prepared_loop(&bounded.edges, sample) {
                 return bounded.role == LoopRole::Fill;
             }
         }
@@ -1095,13 +1240,13 @@ impl BoundedRegion {
             // distance on the first loop that is measured, so on a drawing of scattered shapes
             // every distant one after it is rejected on that single test.
             if distance_to_bounds(low, high, point, metric) < nearest {
-                nearest = nearest.min(nearest_boundary_distance(&bounded.edges, point, metric));
+                nearest = nearest.min(nearest_prepared_distance(&bounded.edges, point, metric));
             }
             // The innermost containing loop decides, so only the first one to answer counts — and
             // a point outside the box is outside the loop, which settles most of them for free.
             if inside.is_none()
                 && !outside_bounds(low, high, point)
-                && point_in_edge_loop(&bounded.edges, point)
+                && point_in_prepared_loop(&bounded.edges, point)
             {
                 inside = Some(bounded.role == LoopRole::Fill);
             }
@@ -1395,6 +1540,37 @@ mod tests {
         }]
     }
 
+    /// A closed loop with nothing straight about it — two rational Béziers, out and back.
+    ///
+    /// The chord run is the only thing the prepared form actually PRECOMPUTES; a region built from
+    /// segments and arcs would exercise the pruning and leave that cache untouched.
+    fn lens(center: [f32; 2], radius: f32) -> Vec<RegionEdge> {
+        let left = [center[0] - radius, center[1]];
+        let right = [center[0] + radius, center[1]];
+        let bulge = radius * 1.4;
+        let arm = radius * 0.5;
+        vec![
+            RegionEdge::RationalBezier {
+                control: [
+                    left,
+                    [center[0] - arm, center[1] + bulge],
+                    [center[0] + arm, center[1] + bulge],
+                    right,
+                ],
+                weights: [1.0, 0.6, 1.8, 1.0],
+            },
+            RegionEdge::RationalBezier {
+                control: [
+                    right,
+                    [center[0] + arm, center[1] - bulge],
+                    [center[0] - arm, center[1] - bulge],
+                    left,
+                ],
+                weights: [1.0, 1.8, 0.6, 1.0],
+            },
+        ]
+    }
+
     /// The prepared region must be a pure ACCELERATION: same answer, every sample, bit for bit.
     ///
     /// The claim is not "close enough". The sketch preview's WGSL is a hand-written mirror of the
@@ -1412,6 +1588,13 @@ mod tests {
             loops.push((
                 LoopRole::Fill,
                 circle([30.0 + 40.0 * index as f32, 6.0], 8.0),
+            ));
+        }
+        // Curves, because the chord run is the part that is cached rather than merely pruned.
+        for index in 0..3 {
+            loops.push((
+                LoopRole::Fill,
+                lens([20.0 + 70.0 * index as f32, 18.0], 11.0),
             ));
         }
         let prepared = BoundedRegion::new(loops.clone());

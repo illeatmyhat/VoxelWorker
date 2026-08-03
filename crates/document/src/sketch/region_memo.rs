@@ -169,9 +169,23 @@ impl RegionMemo {
 
     /// The region derived from `sketch`, from the cache when the store has not moved since.
     ///
-    /// A miss derives OUTSIDE the write lock, so two threads racing a miss both compute and the
-    /// later one wins — wasteful once, never wrong. A poisoned lock degrades to deriving every
-    /// time rather than propagating a panic into geometry.
+    /// # One derivation per miss, however many threads arrive at once
+    ///
+    /// A miss derives UNDER the write lock, re-checking the store once it holds it. The chunk
+    /// build fans one shared leaf producer out across every dirty chunk at once, so a miss is
+    /// almost never one thread — it is a dozen starting together on a producer whose memo is
+    /// empty. Deriving outside the lock let every one of them compute the same arrangement and
+    /// throw all but one away, which on a real drawing cost more than the voxels did: a 12-chunk
+    /// drag frame scaled 1.8x across 24 cores instead of 12x, because the cores were racing to
+    /// duplicate a 2.4ms arrangement rather than resolving voxels.
+    ///
+    /// Holding the lock across the derivation is safe because [`Derived::of`] does not re-enter:
+    /// it calls `faces_uncached` (the arrangement, cache-free by name) and `region_from_faces`,
+    /// and neither reads the memo. The RETURNED value is still handed out behind an [`Arc`], so
+    /// no lock is held while a caller uses it — that was always the re-entrancy that mattered.
+    ///
+    /// A poisoned lock degrades to deriving every time rather than propagating a panic into
+    /// geometry.
     pub(super) fn derived(&self, sketch: &Sketch, context: EvaluationContext) -> Arc<Derived> {
         if let Ok(guard) = self.remembered.read() {
             if let Some(held) = guard.as_deref() {
@@ -180,15 +194,25 @@ impl RegionMemo {
                 }
             }
         }
+        let Ok(mut guard) = self.remembered.write() else {
+            #[cfg(test)]
+            self.derivations.fetch_add(1, Ordering::Relaxed);
+            return Arc::new(Derived::of(sketch, context));
+        };
+        // Whoever held the write lock ahead of this thread may have derived exactly what it came
+        // for. Asking again is one comparison against a dozen redundant arrangements.
+        if let Some(held) = guard.as_deref() {
+            if held.snapshot.matches(sketch, context) {
+                return Arc::clone(&held.derived);
+            }
+        }
         #[cfg(test)]
         self.derivations.fetch_add(1, Ordering::Relaxed);
         let fresh = Arc::new(Derived::of(sketch, context));
-        if let Ok(mut guard) = self.remembered.write() {
-            *guard = Some(Box::new(Remembered {
-                snapshot: Snapshot::of(sketch, context),
-                derived: Arc::clone(&fresh),
-            }));
-        }
+        *guard = Some(Box::new(Remembered {
+            snapshot: Snapshot::of(sketch, context),
+            derived: Arc::clone(&fresh),
+        }));
         fresh
     }
 }

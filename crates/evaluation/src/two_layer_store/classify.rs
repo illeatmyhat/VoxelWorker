@@ -794,6 +794,13 @@ pub(crate) fn compose_leaf_into_region(
         ],
     );
     let window_local = abs_box_to_producer_local(leaf, block_abs, voxels_per_block);
+    // ONE placement map for every voxel this leaf emits into the block.
+    //
+    // [`producer_local_voxel_to_abs`] rebuilds it per call, and building it reads the producer's
+    // `full_dimensions` — which for a sketch is a derived quantity behind a lock. Asking a
+    // producer how big it is once per EMITTED VOXEL turned the drag frame's chunk fan-out into a
+    // queue on that lock: 235k acquisitions per rebuild, and more threads made it slower.
+    let affine = leaf_affine(leaf, voxels_per_block);
     let mut local = VoxelGrid::default();
     leaf.producer
         .resolve_into(&mut local, voxels_per_block, window_local);
@@ -810,7 +817,7 @@ pub(crate) fn compose_leaf_into_region(
         for voxel in &local.occupied {
             // The voxel's index is in the producer's local frame; map it to absolute
             // via the forward affine (exact for an axis-aligned leaf) before rebasing to block-local.
-            let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
+            let abs = affine.world_cell_of_local_center(voxel.local_index);
             let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
             if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
                 continue; // Outside this block (the window clamps, but guard anyway).
@@ -828,7 +835,7 @@ pub(crate) fn compose_leaf_into_region(
     for voxel in &local.occupied {
         // Map the producer-local index into absolute via the forward affine, then rebase
         // to block-local. An identity leaf reproduces a plain `index + offset − block`.
-        let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
+        let abs = affine.world_cell_of_local_center(voxel.local_index);
         let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
         if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
             continue; // Outside this block (the window clamps, but guard anyway).
