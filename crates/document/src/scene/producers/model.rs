@@ -332,6 +332,53 @@ pub fn leaf_content_fingerprint(
     // AABBs — the spatial index records such leaves under a distinct fingerprint kind
     // (`LeafFingerprint::MasksBeyondItsBox`, chosen in `build_leaf_spatial_index`) so
     // the edit diff degrades to a wholesale clear instead of trusting the box union.
+    let content = match body {
+        LeafBody::Content(content) => *content,
+        // A composed scope has no `NodeContent` to hash. Its key is built at compose time
+        // from its members' ids and their own keys, so any edit inside the scope — a member
+        // moving, changing shape, or changing its own outset — changes it, exactly as an
+        // edit to an ordinary leaf changes that leaf's.
+        LeafBody::Composed { fingerprint, .. } => {
+            return format!(
+                "Composed@{world_offset_voxels:?}{fingerprint}{}",
+                leaf_context_fingerprint(grid_on_faces, operation, scope_path)
+            )
+        }
+    };
+    let settings = leaf_context_fingerprint(grid_on_faces, operation, scope_path);
+    match content {
+        NodeContent::Tool { shape, material } => {
+            format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{settings}")
+        }
+        NodeContent::SketchTool { producer, material } => {
+            format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{settings}")
+        }
+        NodeContent::VoxelBody(voxel_body) => {
+            format!("VoxelBody@{world_offset_voxels:?}:{voxel_body:?}{settings}")
+        }
+        // for_each_leaf only ever yields leaf content (Tool / SketchTool / VoxelBody);
+        // Group / Instance are interior and never reach a visitor. Fingerprint
+        // defensively anyway.
+        NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{settings}"),
+        NodeContent::Instance(def_id) => {
+            format!("Instance@{world_offset_voxels:?}:{def_id:?}{settings}")
+        }
+    }
+}
+
+/// The part of a leaf's fingerprint that is not its geometry: the on-face-grid flag, its
+/// [`CombineOp`], and its chain of enclosing sealed scopes.
+///
+/// Split out so a caller that fingerprints a PIECE of a leaf — see
+/// `Scene::build_leaf_spatial_index`'s per-loop sketch entries — can carry the same settings
+/// without also carrying the whole producer, which would make every piece change whenever any
+/// part of the leaf did and defeat the split.
+#[must_use]
+pub fn leaf_context_fingerprint(
+    grid_on_faces: bool,
+    operation: CombineOp,
+    scope_path: &[ScopeFrame],
+) -> String {
     let grid = if grid_on_faces { ":grid=1" } else { ":grid=0" };
     let op_token = |operation: CombineOp| match operation {
         CombineOp::Union => "union".to_string(),
@@ -357,36 +404,7 @@ pub fn leaf_content_fingerprint(
         token.push(']');
         token
     };
-    let content = match body {
-        LeafBody::Content(content) => *content,
-        // A composed scope has no `NodeContent` to hash. Its key is built at compose time
-        // from its members' ids and their own keys, so any edit inside the scope — a member
-        // moving, changing shape, or changing its own outset — changes it, exactly as an
-        // edit to an ordinary leaf changes that leaf's.
-        LeafBody::Composed { fingerprint, .. } => {
-            return format!("Composed@{world_offset_voxels:?}{fingerprint}{grid}{op}{scopes}")
-        }
-    };
-    match content {
-        NodeContent::Tool { shape, material } => {
-            format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}{op}{scopes}")
-        }
-        NodeContent::SketchTool { producer, material } => {
-            format!(
-                "SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}{op}{scopes}"
-            )
-        }
-        NodeContent::VoxelBody(voxel_body) => {
-            format!("VoxelBody@{world_offset_voxels:?}:{voxel_body:?}{grid}{op}{scopes}")
-        }
-        // for_each_leaf only ever yields leaf content (Tool / SketchTool / VoxelBody);
-        // Group / Instance are interior and never reach a visitor. Fingerprint
-        // defensively anyway.
-        NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}{op}{scopes}"),
-        NodeContent::Instance(def_id) => {
-            format!("Instance@{world_offset_voxels:?}:{def_id:?}{grid}{op}{scopes}")
-        }
-    }
+    format!("{grid}{op}{scopes}")
 }
 
 /// One enabled leaf of the op-stack as a resolvable producer. The two-layer classifier +

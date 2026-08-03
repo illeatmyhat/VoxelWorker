@@ -33,6 +33,7 @@ mod pick_net;
 mod placement;
 mod resolve;
 mod sealed_scopes;
+mod sketch_broadphase;
 mod subtract;
 
 /// Mint stable [`NodeId`]s for a freshly-built test scene, so a fixture can name its

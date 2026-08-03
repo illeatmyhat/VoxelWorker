@@ -22,8 +22,11 @@
 use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
 use super::extent::{fold_leaf_boxes, leaf_placed_voxel_box, rotated_grid_extent_voxels};
+use glam::Quat;
+
 use super::producers::{
-    leaf_content_fingerprint, operation_masks_beyond_bounds, outset_voxels_at, VisitedLeaf,
+    leaf_content_fingerprint, leaf_context_fingerprint, operation_masks_beyond_bounds,
+    outset_voxels_at, LeafBody, VisitedLeaf,
 };
 use super::*;
 
@@ -175,15 +178,40 @@ impl Scene {
                     // (its mask kills cells anywhere outside its body), so it carries the
                     // fingerprint kind whose presence in an edit diff forces a wholesale
                     // clear. The box itself stays real for overlap queries.
-                    let fingerprint = if operation_masks_beyond_bounds(operation, scope_path) {
-                        LeafFingerprint::MasksBeyondItsBox(payload)
-                    } else {
-                        LeafFingerprint::Bounded(payload)
+                    let masks_beyond = operation_masks_beyond_bounds(operation, scope_path);
+                    let kind = |payload| {
+                        if masks_beyond {
+                            LeafFingerprint::MasksBeyondItsBox(payload)
+                        } else {
+                            LeafFingerprint::Bounded(payload)
+                        }
                     };
-                    entries.push(LeafEntry {
-                        world_aabb: VoxelAabb::new(min, max),
-                        fingerprint,
-                    });
+                    // A sketch leaf refines into one entry per profile loop where it soundly
+                    // can, so a drag of one shape does not read as an edit to the whole
+                    // drawing. `None` — a revolve, a rotated node, a degenerate profile —
+                    // keeps the single whole-leaf entry.
+                    match sketch_profile_entries(
+                        &body,
+                        rotation,
+                        voxels_per_block,
+                        world_offset_voxels,
+                        grid_voxels,
+                        outset_voxels,
+                        &leaf_context_fingerprint(grid_on_faces, operation, scope_path),
+                    ) {
+                        Some(refined) => {
+                            for (world_aabb, piece_payload) in refined {
+                                entries.push(LeafEntry {
+                                    world_aabb,
+                                    fingerprint: kind(piece_payload),
+                                });
+                            }
+                        }
+                        None => entries.push(LeafEntry {
+                            world_aabb: VoxelAabb::new(min, max),
+                            fingerprint: kind(payload),
+                        }),
+                    }
                 }
                 None => {
                     // A region-spanning leaf (a VoxelBody): no intrinsic box. Record it
@@ -210,6 +238,82 @@ impl Scene {
         }
     }
 }
+
+/// A sketch leaf's per-loop broadphase entries: one world-AABB + fingerprint per profile piece.
+///
+/// The edit diff cancels entries that match on BOTH box and fingerprint, so splitting a sketch
+/// into per-loop entries is what lets an untouched shape cancel while the dragged one does not.
+/// Without it every sketch node is a single entry spanning the whole drawing, and any vertex move
+/// dirties every chunk the drawing covers.
+///
+/// Soundness rests on the piece box CONTAINING every cell that piece decides. That holds for an
+/// extrusion (a loop's cells are its in-plane box swept along the normal) with no rotation. It is
+/// refused — `None`, keep the single whole-leaf entry — for:
+///
+/// * a **rotated** node, whose sub-box would need placing through the rotation rather than
+///   corner-anchoring, and whose loop boxes therefore no longer bound the leaf's cells;
+/// * anything [`crate::sketch::SketchSolid::profile_pieces`] itself refuses (a revolve, a
+///   degenerate profile).
+///
+/// A cell inside the leaf box but outside every piece box is air in every profile the pieces
+/// describe, so leaving it out of the union cannot leave a stale cell behind.
+fn sketch_profile_entries(
+    body: &LeafBody<'_>,
+    rotation: Quat,
+    voxels_per_block: u32,
+    world_offset_voxels: [i64; 3],
+    grid_voxels: [i64; 3],
+    outset_voxels: i64,
+    settings: &str,
+) -> Option<Vec<(VoxelAabb, String)>> {
+    if !rotation.abs_diff_eq(Quat::IDENTITY, ROTATION_IS_IDENTITY) {
+        return None;
+    }
+    let LeafBody::Content(NodeContent::SketchTool { producer, material }) = body else {
+        return None;
+    };
+    let context = parametric::EvaluationContext::new(std::num::NonZeroU32::new(voxels_per_block)?);
+    let pieces = producer.profile_pieces(context)?;
+    let [in_plane_0, in_plane_1] = producer.sketch.plane.in_plane_axes();
+    let normal = producer.sketch.plane.normal_axis();
+
+    // `world_offset_voxels` has already had the outset subtracted, and `grid_voxels` already
+    // carries it on both sides, so the profile's own origin sits one outset INTO the box. A
+    // piece's dilated span is therefore `[origin + low - outset, origin + high + outset)` —
+    // which, folded through `origin = world_offset + outset`, is the arithmetic below.
+    Some(
+        pieces
+            .into_iter()
+            .map(|piece| {
+                let (low, high) = piece.local_box;
+                let mut min = world_offset_voxels;
+                let mut max: [i64; 3] =
+                    std::array::from_fn(|axis| world_offset_voxels[axis] + grid_voxels[axis]);
+                for (axis, index) in [(in_plane_0, 0), (in_plane_1, 1)] {
+                    // Clamped to the leaf's own box: a piece can only ever name cells the leaf
+                    // emits, and the diff must never dirty on a piece's behalf outside it.
+                    let span = grid_voxels[axis];
+                    min[axis] = world_offset_voxels[axis] + low[index].clamp(0, span);
+                    max[axis] = world_offset_voxels[axis]
+                        + (high[index] + 2 * outset_voxels).clamp(0, span);
+                }
+                // The normal axis keeps the full leaf span: an extrusion carries every loop
+                // through the whole prism depth.
+                min[normal] = world_offset_voxels[normal];
+                max[normal] = world_offset_voxels[normal] + grid_voxels[normal];
+                (
+                    VoxelAabb::new(min, max),
+                    format!("SketchPiece:{material:?}{settings}:{}", piece.fingerprint),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// How far a leaf's rotation may sit from identity and still be treated as unrotated for the
+/// per-loop refinement above. A sketch node dropped on a plane is exactly identity; this only
+/// absorbs the round-trip of a quaternion through serialization.
+const ROTATION_IS_IDENTITY: f32 = 1.0e-6;
 
 /// Narrow an `i64` chunk coordinate to `i32` (the cache-key / chunk-index width).
 ///

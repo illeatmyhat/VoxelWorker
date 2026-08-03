@@ -15,8 +15,8 @@ mod scope_fold;
 mod walk;
 
 pub use model::{
-    leaf_content_fingerprint, outset_voxels_at, AccumulatedOffset, ComposedScope, LeafBody,
-    LeafVisitor, VisitedLeaf,
+    leaf_content_fingerprint, leaf_context_fingerprint, outset_voxels_at, AccumulatedOffset,
+    ComposedScope, LeafBody, LeafVisitor, VisitedLeaf,
 };
 pub use model::{
     operation_masks_beyond_bounds, quat_from_lattice, LeafProducer, NodeContent, ScopeFrame,

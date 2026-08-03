@@ -251,6 +251,19 @@ impl PreparedSketchField<'_> {
     }
 }
 
+/// One independently-invalidatable piece of a profile: a region loop's own footprint, plus the
+/// bytes that decide what resolves inside it. Produced by [`SketchSolid::profile_pieces`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfilePiece {
+    /// The piece's box in the producer's local voxel grid, half-open `[low, high)` per in-plane
+    /// axis, measured from the profile's bbox minimum.
+    pub local_box: ([i64; 2], [i64; 2]),
+    /// Everything about this piece that changes the voxels inside its box — its boundary, its
+    /// Fill/Hole role, and the node-wide settings it resolves under. Two pieces with the same
+    /// box and the same fingerprint resolve to the same cells.
+    pub fingerprint: String,
+}
+
 /// A [`Sketch`] paired with an [`Operation`] that turns its 2D profile into a 3D volume — the
 /// sketch→volume producer. It sits **alongside** `SdfShape`; both implement
 /// [`VoxelProducer`](crate::voxel::VoxelProducer) and resolve through the same stamp /
@@ -352,6 +365,76 @@ impl SketchSolid {
             [min[0].floor() as i64, min[1].floor() as i64],
             [max[0].ceil() as i64, max[1].ceil() as i64],
         ))
+    }
+
+    /// The profile broken into the pieces an edit can dirty INDEPENDENTLY — one per region loop,
+    /// each with the box its cells are confined to.
+    ///
+    /// The edit broadphase records one entry per leaf, and a sketch node is one leaf, so moving a
+    /// single vertex reads as "the whole profile changed" and re-resolves every chunk the drawing
+    /// covers. That is the difference between a drag costing what the shape costs and a drag
+    /// costing what the DRAWING costs — thirty shapes on a plane and every frame pays for all
+    /// thirty. A loop's occupancy contribution lives inside the loop's own bounding box, so the
+    /// broadphase can carry a box per loop and let the untouched ones cancel in the diff.
+    ///
+    /// `None` when the profile cannot be split soundly, and the caller must fall back to one
+    /// whole-profile entry:
+    ///
+    /// * a **revolve** — the turn carries a loop's cells around the axis, so they do not stay
+    ///   inside the loop's in-plane box;
+    /// * a **degenerate or empty** profile, which has no box to divide;
+    /// * a loop with no edges, which has no box of its own.
+    ///
+    /// Boxes are in the producer's local voxel grid, half-open `[low, high)`, measured from the
+    /// profile's bbox minimum — the same origin
+    /// [`prepare_field`](Self::prepare_field) addresses cells from.
+    pub fn profile_pieces(&self, context: EvaluationContext) -> Option<Vec<ProfilePiece>> {
+        let Operation::Extrude { height_voxels } = self.operation else {
+            return None;
+        };
+        let (profile_min, _profile_max) = self.profile_bounds(context)?;
+        let region = self.sketch.region(context);
+        if region.is_empty() {
+            return None;
+        }
+        // Everything about the NODE that changes what its cells resolve to, shared by every
+        // piece. The node's world offset is deliberately absent: the entry's AABB already
+        // carries where the piece sits, and folding the offset in here would re-fingerprint
+        // every untouched loop each time the anchor compensation nudges the node — which is
+        // every frame of a drag, and exactly the cancellation this exists to get.
+        let shared = format!("{:?}:h={height_voxels}", self.sketch.plane);
+        let mut pieces = Vec::with_capacity(region.len());
+        for profile_loop in &region {
+            let mut extent: Option<([f64; 2], [f64; 2])> = None;
+            for edge in &profile_loop.edges {
+                let (low, high) = edge.bounds();
+                extent = Some(match extent {
+                    None => (low, high),
+                    Some((min, max)) => (
+                        [min[0].min(low[0]), min[1].min(low[1])],
+                        [max[0].max(high[0]), max[1].max(high[1])],
+                    ),
+                });
+            }
+            let (low, high) = extent?;
+            pieces.push(ProfilePiece {
+                local_box: (
+                    [
+                        low[0].floor() as i64 - profile_min[0],
+                        low[1].floor() as i64 - profile_min[1],
+                    ],
+                    [
+                        high[0].ceil() as i64 - profile_min[0],
+                        high[1].ceil() as i64 - profile_min[1],
+                    ],
+                ),
+                // The loop's ROLE is in the key as well as its geometry: a loop that keeps its
+                // shape but flips Fill↔Hole because something moved around it resolves to the
+                // opposite occupancy inside the very same box.
+                fingerprint: format!("{shared}:{:?}:{:?}", profile_loop.role, profile_loop.edges),
+            });
+        }
+        Some(pieces)
     }
 
     /// The profile's in-plane bounding-box **minimum** per profile coordinate — `[0, 0]` for an
