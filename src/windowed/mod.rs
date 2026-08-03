@@ -569,13 +569,24 @@ struct WindowedState {
 /// A point and a whole curve are the same gesture from the shell's side — press, preview per
 /// frame off the pre-drag snapshot, commit one edit — and differ only in the door they call. The
 /// distinction lives here so the preview asks once rather than at every step of the plumbing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum SketchGrab {
     /// A point entity, which goes where the cursor goes.
     Point(document::sketch::EntityId),
     /// A whole curve, which moves perpendicular to itself to pass under the cursor — the gesture
     /// that authors a slot's width.
     Curve(document::sketch::SketchCurve),
+    /// A whole spline, which TRANSLATES by however far the cursor has come since the press.
+    ///
+    /// `from` is where the press landed, in profile coordinates, and it is filled on the first
+    /// frame that can read it rather than at the press: the press handler holds screen pixels and
+    /// has no ray to unproject them with. Every other sketch drag is absolute and needs no such
+    /// memory — this is the one gesture whose meaning depends on where it STARTED, because "the
+    /// spline goes where the cursor is" names no particular place on it.
+    Translate {
+        curve: document::sketch::SketchCurve,
+        from: Option<document::sketch::SketchPoint>,
+    },
 }
 
 impl SketchGrab {
@@ -583,7 +594,7 @@ impl SketchGrab {
     const fn point(self) -> Option<document::sketch::EntityId> {
         match self {
             Self::Point(id) => Some(id),
-            Self::Curve(_) => None,
+            Self::Curve(_) | Self::Translate { .. } => None,
         }
     }
 }

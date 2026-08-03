@@ -299,6 +299,54 @@ fn deleting_a_fit_point_simplifies_the_spline_and_a_closed_one_opens_no_lower_th
     assert!(sketch.splines().is_empty());
 }
 
+/// A spline has no perpendicular to offset along, so grabbing its body TRANSLATES it: every point
+/// moves by the same displacement and the shape is untouched.
+#[test]
+fn dragging_a_splines_body_carries_every_point_by_the_same_step() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    let spline = sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 6),
+                SketchPoint::new(10, 2),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let before: Vec<_> = sketch
+        .points()
+        .iter()
+        .map(|point| (point.id, point.at.in_plane()))
+        .collect();
+
+    assert!(sketch
+        .translate_curve(SketchCurve::Spline(spline), [3.0, -2.0], ctx(16))
+        .expect("the translate is answered"));
+
+    for (id, was) in before {
+        let now = sketch
+            .points()
+            .iter()
+            .find(|point| point.id == id)
+            .expect("every point survives a translation")
+            .at
+            .in_plane();
+        assert!(
+            (now[0] - (was[0] + 3.0)).abs() < 1e-6 && (now[1] - (was[1] - 2.0)).abs() < 1e-6,
+            "{was:?} went to {now:?}"
+        );
+    }
+
+    // Only a spline translates. A segment already has a gesture that means something else.
+    let tail = sketch.add_free_point(SketchPoint::new(-9, -9));
+    let head = sketch.add_free_point(SketchPoint::new(-9, -3));
+    let segment = sketch.connect(tail, head).expect("a segment");
+    assert!(!sketch
+        .translate_curve(SketchCurve::Segment(segment), [1.0, 1.0], ctx(16))
+        .expect("the translate is answered"));
+}
+
 /// A point's lifetime rode the `role` field, spelled with a curve's role names, until the two
 /// quantities were split. Documents written then must still say what they meant — a handle that
 /// loaded as Freestanding would stop being swept and litter a dot for every ellipse ever drawn.

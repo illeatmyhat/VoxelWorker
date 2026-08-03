@@ -2401,6 +2401,54 @@ impl Sketch {
         })
     }
 
+    /// Slide a whole SPLINE by `by`, carrying every point it stands on, and settle around it.
+    /// Reports whether the drawing accepted the move.
+    ///
+    /// A translation, where [`move_curve`](Self::move_curve) is a perpendicular offset. The two
+    /// gestures are different because the curves are: a segment dragged along itself is the same
+    /// segment, so the only thing sideways can mean is nearer or further — but a spline has no
+    /// single perpendicular, and the one motion that means anything for the aggregate is moving
+    /// all of it. Nothing about the shape changes, which is what makes it safe to state as equal
+    /// hands: a rigid displacement satisfies every relation that held before it, so the settle has
+    /// nothing to trade off and no configuration to split the difference between.
+    ///
+    /// This is a DISPLACEMENT and not an absolute reading, unlike every other sketch drag. The
+    /// caller measures it from where the press landed, because "the spline goes where the cursor
+    /// is" names no particular place on a curve with no single handle.
+    pub fn translate_curve(
+        &mut self,
+        curve: SketchCurve,
+        by: [f64; 2],
+        context: parametric::EvaluationContext,
+    ) -> Result<bool, SketchEvaluationError> {
+        let SketchCurve::Spline(id) = curve else {
+            return Ok(false);
+        };
+        let Some(spline) = self.splines.iter().find(|spline| spline.id == id) else {
+            return Ok(false);
+        };
+        let hands: Vec<_> = spline
+            .points
+            .iter()
+            .filter_map(|point| {
+                let stood = self.point_in_plane(*point)?;
+                Some((*point, [stood[0] + by[0], stood[1] + by[1]]))
+            })
+            .collect();
+        if hands.is_empty() {
+            return Ok(false);
+        }
+        self.drag_or_leave_it_alone(|sketch| {
+            for (point, to) in &hands {
+                if let Some(index) = sketch.point_index(*point) {
+                    sketch.points[index].at = SketchPoint::from_continuous(to[0], to[1]);
+                }
+            }
+            sketch.sync_derived_points();
+            sketch.settle_under_the_hands(&hands, context)
+        })
+    }
+
     /// Run a drag attempt, and put the drawing back exactly as it was unless it stands.
     ///
     /// Every way an attempt can decline — a refusal, an error, a conic left with nothing to shape

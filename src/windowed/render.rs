@@ -1119,6 +1119,29 @@ impl WindowedState {
                     .sketch
                     .move_curve(curve, snapped.in_plane(), context)
             }
+            // The press could not read a profile coordinate, so the first frame that can records
+            // where the gesture started and moves nothing. Every frame after measures from it,
+            // and since the preview is rebuilt from the pre-drag producer each time, the sum
+            // never compounds.
+            SketchGrab::Translate { curve, from } => match from {
+                Some(from) => {
+                    let (from, now) = (from.in_plane(), snapped.in_plane());
+                    preview.sketch.translate_curve(
+                        curve,
+                        [now[0] - from[0], now[1] - from[1]],
+                        context,
+                    )
+                }
+                None => {
+                    if let Some(drag) = self.sketch_drag.as_mut() {
+                        drag.held = SketchGrab::Translate {
+                            curve,
+                            from: Some(snapped),
+                        };
+                    }
+                    return IntentEffect::none();
+                }
+            },
         };
         let Ok(moved) = moved else {
             self.sketch_drag = None;
@@ -4118,8 +4141,10 @@ impl WindowedState {
     ///
     /// A segment or an arc has a single perpendicular direction, so "drag it sideways" names one
     /// motion. A circle would have to grow, which is what dragging its rim already means through
-    /// its own handles; the higher curves carry their shape in control points, and moving the
-    /// aggregate would need a decision this gesture does not have to offer.
+    /// its own handles. A spline has no perpendicular at all, so it TRANSLATES instead — a
+    /// different verb, and the one the author means when they grab the body of a curve whose shape
+    /// lives in its points. The remaining higher curves are fixed-arity handles the author moves
+    /// one at a time, and moving the aggregate would need a decision this gesture cannot offer.
     fn grabbable_sketch_curve_at(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchGrab> {
         match self.nearest_sketch_edge(cursor_x, cursor_y)? {
             SketchEdgeHit::Segment(id) => Some(SketchGrab::Curve(
@@ -4127,6 +4152,11 @@ impl WindowedState {
             )),
             SketchEdgeHit::Arc(id) => {
                 Some(SketchGrab::Curve(document::sketch::SketchCurve::Arc(id)))
+            }
+            // A spline moves as a whole because that is the only motion its aggregate has: it
+            // carries its shape in control points, and there is no perpendicular to offset along.
+            SketchEdgeHit::HigherCurve(curve @ document::sketch::SketchCurve::Spline(_)) => {
+                Some(SketchGrab::Translate { curve, from: None })
             }
             SketchEdgeHit::Circle(_) | SketchEdgeHit::HigherCurve(_) => None,
         }
