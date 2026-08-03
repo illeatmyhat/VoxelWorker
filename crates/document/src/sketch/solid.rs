@@ -135,11 +135,9 @@ impl RevolveField {
                 RevolveAxis::InPlane0 => (profile_axial, signed_radius),
                 RevolveAxis::InPlane1 => (signed_radius, profile_axial),
             };
-            substrate::geom2d::signed_distance_to_region(
-                &self.derived.region_field_loops,
-                [sample_0, sample_1],
-                substrate::geom2d::Metric::Euclidean,
-            )
+            self.derived
+                .region_field
+                .signed_distance([sample_0, sample_1], substrate::geom2d::Metric::Euclidean)
         };
         // A solid of revolution is symmetric about its axis, so a point is inside if the
         // profile contains it at EITHER sign of radius — a union, hence `min`.
@@ -237,11 +235,9 @@ impl PreparedSketchField<'_> {
                     profile_min[0] as f32 + point_local_voxels[*in_plane_0],
                     profile_min[1] as f32 + point_local_voxels[*in_plane_1],
                 ];
-                let to_profile = substrate::geom2d::signed_distance_to_region(
-                    &derived.region_field_loops,
-                    in_profile,
-                    substrate::geom2d::Metric::Chebyshev,
-                );
+                let to_profile = derived
+                    .region_field
+                    .signed_distance(in_profile, substrate::geom2d::Metric::Chebyshev);
                 let along_normal = point_local_voxels[*normal];
                 let to_slab = (-along_normal).max(along_normal - *height_voxels as f32);
                 to_profile.max(to_slab)
@@ -1777,11 +1773,11 @@ impl SketchSolid {
                     profile_min[0] as f32 + point_local_voxels[in_plane_0],
                     profile_min[1] as f32 + point_local_voxels[in_plane_1],
                 ];
-                let to_profile = substrate::geom2d::signed_distance_to_region(
-                    &self.sketch.derived(context).region_field_loops,
-                    in_profile,
-                    substrate::geom2d::Metric::Chebyshev,
-                );
+                let to_profile = self
+                    .sketch
+                    .derived(context)
+                    .region_field
+                    .signed_distance(in_profile, substrate::geom2d::Metric::Chebyshev);
                 // `grid_dimensions` sets `dimensions[normal] = height_voxels`, so the solid
                 // spans `[0, height]` along the normal in this frame.
                 let along_normal = point_local_voxels[normal];
@@ -2375,13 +2371,13 @@ impl SketchSolid {
         // FULL-derived; only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
         let derived = self.sketch.derived(context);
-        let region_edges = &derived.region_field_loops;
+        let region_field = &derived.region_field;
         let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
         for cell_1 in cell_1_lo..cell_1_hi {
             let sample_1 = min[1] as f32 + cell_1 as f32 + 0.5;
             for cell_0 in cell_0_lo..cell_0_hi {
                 let sample_0 = min[0] as f32 + cell_0 as f32 + 0.5;
-                if substrate::geom2d::point_in_region(region_edges, [sample_0, sample_1]) {
+                if region_field.contains([sample_0, sample_1]) {
                     filled_in_plane.push([cell_0, cell_1]);
                 }
             }

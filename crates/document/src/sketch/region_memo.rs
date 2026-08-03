@@ -21,7 +21,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-use substrate::geom2d::{LoopRole, RegionEdge};
+use substrate::geom2d::{BoundedRegion, LoopRole};
 
 use super::{
     Arc as ArcEntity, Bezier, Circle, Conic, Ellipse, FaceKey, PlaneAxis, Point, ProfileLoop,
@@ -37,8 +37,10 @@ pub struct Derived {
     pub faces: Vec<super::Face>,
     /// The tagged loops — what [`Sketch::region`] hands out.
     pub region: Vec<ProfileLoop>,
-    /// The same region in the measurement width, which the field folds per sample.
-    pub region_field_loops: Vec<(LoopRole, Vec<RegionEdge>)>,
+    /// The same region in the measurement width, which the field queries per sample — with each
+    /// loop's box measured once here, so a sample skips the shapes it is nowhere near instead of
+    /// walking all of them.
+    pub region_field: BoundedRegion,
     /// The `Fill` loops' bounding box, the profile's footprint.
     pub filled_extent: Option<([f64; 2], [f64; 2])>,
 }
@@ -51,12 +53,12 @@ impl Derived {
         // own copy.
         let faces = sketch.faces_uncached(context);
         let region = sketch.region_from_faces(&faces);
-        let region_field_loops = super::produce::to_region_edges_measured(&region);
+        let region_field = BoundedRegion::new(super::produce::to_region_edges_measured(&region));
         let filled_extent = filled_extent(&region);
         Self {
             faces,
             region,
-            region_field_loops,
+            region_field,
             filled_extent,
         }
     }

@@ -2101,7 +2101,7 @@ impl Sketch {
         &self,
         context: parametric::EvaluationContext,
     ) -> Vec<(LoopRole, Vec<substrate::geom2d::RegionEdge>)> {
-        self.derived(context).region_field_loops.clone()
+        self.derived(context).region_field.to_loops()
     }
 
     /// The `Fill` loops' bounding box in voxels — the profile's FOOTPRINT, and what the producer

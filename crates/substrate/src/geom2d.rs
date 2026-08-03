@@ -970,6 +970,166 @@ pub fn signed_distance_to_region(
     }
 }
 
+/// Whether `point` is provably outside the closed box `low..=high`. Written as the NEGATIVE test so
+/// a `NaN` coordinate fails every comparison and nothing is skipped on its account.
+fn outside_bounds(low: [f32; 2], high: [f32; 2], point: [f32; 2]) -> bool {
+    point[0] < low[0] || point[0] > high[0] || point[1] < low[1] || point[1] > high[1]
+}
+
+/// A region with every loop's own bounding box measured once, so a query can SKIP the loops that
+/// cannot matter to it.
+///
+/// # Why the free functions are not enough
+///
+/// [`point_in_region`] and [`signed_distance_to_region`] walk EVERY loop for EVERY sample. That is
+/// the right shape for a specification — the sketch preview's WGSL is written straight off them —
+/// but it is the wrong shape for a drawing. A plate with thirty-two slots pays thirty-two loop
+/// walks per voxel, and thirty-one of those loops are nowhere near the voxel. Once an invalidation
+/// broadphase has narrowed WHICH chunks an edit rebuilds, this is the cost left inside the ones
+/// that do, and it is the reason a redraw still grows with the whole drawing.
+///
+/// # The prune is exact, not approximate
+///
+/// [`distance_to_bounds`] is a LOWER bound on the distance to anything a box contains, so a loop
+/// whose box already loses to the running best could not have won it; and a point outside a loop's
+/// box cannot be inside the loop. Every answer here is the free function's answer, bit for bit.
+/// That is a requirement rather than a nicety: the WGSL mirror is held to the unprepared walk by a
+/// parity test, so a prune that shifted a value by an ulp would break a shader that never changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundedRegion {
+    /// Innermost-first, the order [`point_in_region`] states — the prune skips loops, never
+    /// reorders them, because the order carries the region's meaning.
+    loops: Vec<BoundedLoop>,
+}
+
+/// One loop of a [`BoundedRegion`], carrying the box that lets it be skipped.
+#[derive(Debug, Clone, PartialEq)]
+struct BoundedLoop {
+    role: LoopRole,
+    edges: Vec<RegionEdge>,
+    /// The union of the edges' own bounds, or `None` for a loop with no edges — which encloses
+    /// nothing, so it is skippable everywhere.
+    bounds: Option<([f32; 2], [f32; 2])>,
+}
+
+impl BoundedRegion {
+    /// Take ownership of innermost-first `loops` and measure each one's box.
+    #[must_use]
+    pub fn new(loops: Vec<(LoopRole, Vec<RegionEdge>)>) -> Self {
+        Self {
+            loops: loops
+                .into_iter()
+                .map(|(role, edges)| BoundedLoop {
+                    bounds: edges_bounds(&edges),
+                    role,
+                    edges,
+                })
+                .collect(),
+        }
+    }
+
+    /// The same, for a caller that only has a borrow. Copies the edges once so that a search making
+    /// thousands of queries against them does not re-measure a box per query.
+    #[must_use]
+    pub fn measure(loops: &[(LoopRole, Vec<RegionEdge>)]) -> Self {
+        Self::new(loops.to_vec())
+    }
+
+    /// The loops back in the plain form the free functions take.
+    #[must_use]
+    pub fn to_loops(&self) -> Vec<(LoopRole, Vec<RegionEdge>)> {
+        self.loops
+            .iter()
+            .map(|bounded| (bounded.role, bounded.edges.clone()))
+            .collect()
+    }
+
+    /// How many loops the region has.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.loops.len()
+    }
+
+    /// Whether the region has no loops at all — it then encloses nothing.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.loops.is_empty()
+    }
+
+    /// The union of every loop's box, or `None` for an empty region.
+    #[must_use]
+    pub fn bounds(&self) -> Option<([f32; 2], [f32; 2])> {
+        self.loops
+            .iter()
+            .filter_map(|bounded| bounded.bounds)
+            .reduce(union_bounds)
+    }
+
+    /// [`point_in_region`] over these loops.
+    #[must_use]
+    pub fn contains(&self, sample: [f32; 2]) -> bool {
+        for bounded in &self.loops {
+            let Some((low, high)) = bounded.bounds else {
+                continue;
+            };
+            if outside_bounds(low, high, sample) {
+                continue;
+            }
+            if point_in_edge_loop(&bounded.edges, sample) {
+                return bounded.role == LoopRole::Fill;
+            }
+        }
+        false
+    }
+
+    /// [`signed_distance_to_region`] over these loops.
+    #[must_use]
+    pub fn signed_distance(&self, point: [f32; 2], metric: Metric) -> f32 {
+        let mut nearest = f32::INFINITY;
+        let mut inside = None;
+        for bounded in &self.loops {
+            let Some((low, high)) = bounded.bounds else {
+                continue;
+            };
+            // One box test stands in for the loop's whole edge walk. `nearest` drops to a real
+            // distance on the first loop that is measured, so on a drawing of scattered shapes
+            // every distant one after it is rejected on that single test.
+            if distance_to_bounds(low, high, point, metric) < nearest {
+                nearest = nearest.min(nearest_boundary_distance(&bounded.edges, point, metric));
+            }
+            // The innermost containing loop decides, so only the first one to answer counts — and
+            // a point outside the box is outside the loop, which settles most of them for free.
+            if inside.is_none()
+                && !outside_bounds(low, high, point)
+                && point_in_edge_loop(&bounded.edges, point)
+            {
+                inside = Some(bounded.role == LoopRole::Fill);
+            }
+        }
+        if inside.unwrap_or(false) {
+            -nearest
+        } else {
+            nearest
+        }
+    }
+}
+
+/// The union of every edge's [`RegionEdge::bounds`], or `None` when there are no edges.
+fn edges_bounds(edges: &[RegionEdge]) -> Option<([f32; 2], [f32; 2])> {
+    edges.iter().map(RegionEdge::bounds).reduce(union_bounds)
+}
+
+/// The smallest box containing both.
+const fn union_bounds(
+    (was_low, was_high): ([f32; 2], [f32; 2]),
+    (low, high): ([f32; 2], [f32; 2]),
+) -> ([f32; 2], [f32; 2]) {
+    (
+        [was_low[0].min(low[0]), was_low[1].min(low[1])],
+        [was_high[0].max(high[0]), was_high[1].max(high[1])],
+    )
+}
+
 /// The point of the region's interior FARTHEST from its boundary — its pole of inaccessibility —
 /// together with that clearance. `None` when the region encloses nothing.
 ///
@@ -1003,14 +1163,17 @@ pub fn deepest_interior_point(
     loops: &[(LoopRole, Vec<RegionEdge>)],
     precision: f32,
 ) -> Option<([f32; 2], f32)> {
-    let (low, high) = region_bounds(loops)?;
+    // The search spends thousands of queries on ONE fixed region, so it measures the loop boxes
+    // once up front and lets every query skip the loops it is nowhere near.
+    let prepared = BoundedRegion::measure(loops);
+    let (low, high) = prepared.bounds()?;
     let (width, height) = (high[0] - low[0], high[1] - low[1]);
     let side = width.min(height);
     // NaN bounds and a degenerate span alike: there is no interior to search.
     if side.is_nan() || side <= 0.0 {
         return None;
     }
-    let depth = |point: [f32; 2]| -signed_distance_to_region(loops, point, Metric::Euclidean);
+    let depth = |point: [f32; 2]| -prepared.signed_distance(point, Metric::Euclidean);
     // Seed with the bounds' center so a convex loop is answered before any subdivision, and so
     // there is always a best to compare optimiztic bounds against.
     let mut best = [low[0] + width / 2.0, low[1] + height / 2.0];
@@ -1099,23 +1262,6 @@ impl Ord for Cell {
 
 /// The cost ceiling on one [`deepest_interior_point`] search.
 const MAXIMUM_POLE_CELLS: usize = 4096;
-
-/// The union of every edge's [`RegionEdge::bounds`] across every loop, or `None` for an empty
-/// region.
-fn region_bounds(loops: &[(LoopRole, Vec<RegionEdge>)]) -> Option<([f32; 2], [f32; 2])> {
-    let mut bounds: Option<([f32; 2], [f32; 2])> = None;
-    for edge in loops.iter().flat_map(|(_, edges)| edges) {
-        let (low, high) = edge.bounds();
-        bounds = Some(match bounds {
-            None => (low, high),
-            Some((was_low, was_high)) => (
-                [was_low[0].min(low[0]), was_low[1].min(low[1])],
-                [was_high[0].max(high[0]), was_high[1].max(high[1])],
-            ),
-        });
-    }
-    bounds
-}
 
 /// Whether a closed axis-aligned rectangle lies entirely inside the region.
 /// The innermost loop that touches it must be a `Fill` containing it whole.
@@ -1247,6 +1393,76 @@ mod tests {
             start_radians: 0.0,
             sweep_radians: std::f32::consts::TAU,
         }]
+    }
+
+    /// The prepared region must be a pure ACCELERATION: same answer, every sample, bit for bit.
+    ///
+    /// The claim is not "close enough". The sketch preview's WGSL is a hand-written mirror of the
+    /// unprepared walk and a parity test holds the two together, so a prune that moved a value by
+    /// an ulp would break a shader that was never edited. Swept over a grid that straddles every
+    /// boundary of a donut plus a row of disjoint discs — inside, outside, and on the edges.
+    #[test]
+    fn preparing_a_region_changes_no_answer() {
+        let mut loops = vec![
+            (LoopRole::Hole, closed_loop(&INNER_MEASURED)),
+            (LoopRole::Fill, closed_loop(&OUTER_MEASURED)),
+        ];
+        // Scattered shapes are the case the prune exists for: most samples are near none of them.
+        for index in 0..6 {
+            loops.push((
+                LoopRole::Fill,
+                circle([30.0 + 40.0 * index as f32, 6.0], 8.0),
+            ));
+        }
+        let prepared = BoundedRegion::new(loops.clone());
+        assert_eq!(prepared.len(), loops.len());
+        assert_eq!(prepared.to_loops(), loops);
+
+        let mut samples = 0_u32;
+        for step_x in 0..512 {
+            for step_y in 0..52 {
+                let point = [
+                    (step_x as f32).mul_add(0.5, -6.0),
+                    (step_y as f32).mul_add(0.5, -6.0),
+                ];
+                assert_eq!(
+                    prepared.contains(point),
+                    point_in_region(&loops, point),
+                    "containment disagreed at {point:?}"
+                );
+                for metric in [Metric::Euclidean, Metric::Chebyshev] {
+                    assert_eq!(
+                        prepared.signed_distance(point, metric).to_bits(),
+                        signed_distance_to_region(&loops, point, metric).to_bits(),
+                        "distance disagreed at {point:?} under {metric:?}"
+                    );
+                }
+                samples += 1;
+            }
+        }
+        assert!(samples > 20_000, "the sweep covered {samples} samples");
+    }
+
+    /// An empty region answers the way the free functions do, and a loop with no edges is skipped
+    /// rather than mistaken for one that encloses everything.
+    #[test]
+    fn a_prepared_region_with_nothing_in_it_encloses_nothing() {
+        let empty = BoundedRegion::new(Vec::new());
+        assert!(empty.is_empty());
+        assert!(empty.bounds().is_none());
+        assert!(!empty.contains([0.0, 0.0]));
+        assert_eq!(
+            empty.signed_distance([0.0, 0.0], Metric::Euclidean),
+            f32::INFINITY
+        );
+
+        let edgeless = BoundedRegion::new(vec![(LoopRole::Fill, Vec::new())]);
+        assert!(!edgeless.is_empty());
+        assert!(!edgeless.contains([0.0, 0.0]));
+        assert_eq!(
+            edgeless.signed_distance([0.0, 0.0], Metric::Euclidean),
+            f32::INFINITY
+        );
     }
 
     /// A hole is carved, not parity-canceled: the ring is inside and the pocket is not. Loops run
