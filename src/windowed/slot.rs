@@ -2,6 +2,7 @@
 
 use document::scene::NodeId;
 use document::sketch::{SketchPoint, SketchSolid, SlotPlacement};
+use parametric::EvaluationContext;
 
 use super::sketch_target::ResolvedSketchTarget;
 
@@ -216,6 +217,7 @@ impl SlotGesture {
         kind: SlotKind,
         producer: &SketchSolid,
         target: Option<ResolvedSketchTarget>,
+        context: EvaluationContext,
     ) -> SlotEdit {
         let Some(target) = target else {
             return SlotEdit::InteractionOnly;
@@ -248,6 +250,7 @@ impl SlotGesture {
             &picks,
             super::arc_winding::turn(winding),
             target.at,
+            context,
         )
         .map_or(SlotEdit::InteractionOnly, SlotEdit::Document)
     }
@@ -301,6 +304,7 @@ fn commit_from(
     picks: &[SketchPoint],
     turn: parametric::sketch::ArcTurn,
     cursor: SketchPoint,
+    context: EvaluationContext,
 ) -> Option<SketchSolid> {
     match (kind, picks) {
         (SlotKind::CenterToCenter, [first, second]) => producer
@@ -309,6 +313,7 @@ fn commit_from(
                 *first,
                 *second,
                 cursor,
+                context,
             )
             .ok(),
         (SlotKind::Overall, [first, second]) => producer
@@ -317,6 +322,7 @@ fn commit_from(
                 *first,
                 *second,
                 cursor,
+                context,
             )
             .ok(),
         (SlotKind::CenterPoint, [first, second]) => producer
@@ -325,26 +331,32 @@ fn commit_from(
                 *first,
                 *second,
                 cursor,
+                context,
             )
             .ok(),
         (SlotKind::ThreePointArc, [start, end, through]) => producer
-            .with_three_point_arc_slot(*start, *end, *through, cursor)
+            .with_three_point_arc_slot(*start, *end, *through, cursor, context)
             .ok(),
         (SlotKind::CenterPointArc, [center, start, end_direction]) => producer
-            .with_center_arc_slot(*center, *start, *end_direction, turn, cursor)
+            .with_center_arc_slot(*center, *start, *end_direction, turn, cursor, context)
             .ok(),
         _ => None,
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use document::sketch::{PlaneAxis, Sketch};
+    use std::num::NonZeroU32;
 
     fn target(at: SketchPoint) -> ResolvedSketchTarget {
         ResolvedSketchTarget { at, existing: None }
+    }
+
+    fn context() -> EvaluationContext {
+        EvaluationContext::new(NonZeroU32::new(16).unwrap())
     }
 
     #[test]
@@ -372,6 +384,7 @@ mod tests {
                     kind,
                     &source,
                     Some(target(SketchPoint::new(point[0], point[1]))),
+                    context(),
                 );
             }
             let SlotEdit::Document(made) = result else {

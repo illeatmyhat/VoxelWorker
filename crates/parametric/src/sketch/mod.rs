@@ -45,7 +45,7 @@ pub use rectangle::{
 pub use slot::{
     center_arc_slot_candidate, center_arc_slot_spine, linear_slot_candidate,
     three_point_arc_slot_candidate, three_point_arc_slot_spine, ArcSlotSpine, LinearSlotKind,
-    SlotCandidate, SlotCandidateError, SlotEdgeCandidate,
+    SlotCandidate, SlotCandidateError, SlotEdgeCandidate, SlotRails,
 };
 pub use solve::{
     concentric_center, Analysis, ArcId, BuildError, CircleId, ConstraintId, CurrentValidation,

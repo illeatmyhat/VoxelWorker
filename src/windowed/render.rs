@@ -2484,9 +2484,14 @@ impl WindowedState {
             self.slot_gesture.reset();
             return;
         };
+        let Some(context) = self.sketch_evaluation_context() else {
+            self.slot_gesture.reset();
+            return;
+        };
         let resolved = self.sketch_target_at(cursor_x, cursor_y);
-        if let slot::SlotEdit::Document(next) =
-            self.slot_gesture.click(target, kind, &producer, resolved)
+        if let slot::SlotEdit::Document(next) = self
+            .slot_gesture
+            .click(target, kind, &producer, resolved, context)
         {
             self.commit_sketch_profile_edit(target, next);
         }

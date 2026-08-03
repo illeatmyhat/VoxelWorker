@@ -23,6 +23,7 @@
 
 use super::produce::{revolve_box_within_sweep_arc, to_region_curve_bounds, to_region_points};
 use super::*;
+use parametric::sketch::SlotRails;
 use parametric::EvaluationContext;
 use rayon::prelude::*;
 use std::sync::Arc;
@@ -896,9 +897,10 @@ impl SketchSolid {
         first: SketchPoint,
         second: SketchPoint,
         width_point: SketchPoint,
+        context: EvaluationContext,
     ) -> Result<SketchSolid, SlotRefusal> {
         let placement = self.linear_slot_placement(kind, first, second, width_point)?;
-        self.with_slot_placement(&placement)
+        self.with_slot_placement(&placement, context)
     }
 
     pub fn with_three_point_arc_slot(
@@ -907,9 +909,10 @@ impl SketchSolid {
         end: SketchPoint,
         through: SketchPoint,
         width_point: SketchPoint,
+        context: EvaluationContext,
     ) -> Result<SketchSolid, SlotRefusal> {
         let placement = self.three_point_arc_slot_placement(start, end, through, width_point)?;
-        self.with_slot_placement(&placement)
+        self.with_slot_placement(&placement, context)
     }
 
     pub fn with_center_arc_slot(
@@ -919,14 +922,31 @@ impl SketchSolid {
         end_direction: SketchPoint,
         turn: parametric::sketch::ArcTurn,
         width_point: SketchPoint,
+        context: EvaluationContext,
     ) -> Result<SketchSolid, SlotRefusal> {
         let placement =
             self.center_arc_slot_placement(center, start, end_direction, turn, width_point)?;
-        self.with_slot_placement(&placement)
+        self.with_slot_placement(&placement, context)
     }
 
-    fn with_slot_placement(&self, placement: &SlotPlacement) -> Result<SketchSolid, SlotRefusal> {
+    /// Append a slot's four boundary curves and the five relations that make them one shape:
+    /// a tangency at each of the four corners, plus the one that holds the two rails together.
+    ///
+    /// Without them a placed slot is an inert outline: drag any corner and the caps come away from
+    /// the sides. The assertions are what carry the author's intent forward, so a boundary that
+    /// stands but cannot be constrained is a refusal, not a partial success — the same
+    /// all-or-nothing contract a rectangle keeps.
+    ///
+    /// What is deliberately NOT asserted is the width. The five relations leave exactly one
+    /// freedom, and that freedom is the slot's width — which is why an author changes it by
+    /// dragging a rail rather than by editing a stored number.
+    fn with_slot_placement(
+        &self,
+        placement: &SlotPlacement,
+        context: EvaluationContext,
+    ) -> Result<SketchSolid, SlotRefusal> {
         let mut next = self.clone();
+        let mut curves = Vec::with_capacity(4);
         for edge in placement.edges {
             let (from, to) = match edge {
                 SlotEdgePlacement::Line { from, to } | SlotEdgePlacement::Arc { from, to, .. } => {
@@ -941,18 +961,63 @@ impl SketchSolid {
                 .sketch
                 .point_at(to)
                 .unwrap_or_else(|| next.sketch.add_free_point(to));
-            match edge {
-                SlotEdgePlacement::Line { .. } => {
-                    next.sketch.connect(from, to);
-                }
-                SlotEdgePlacement::Arc { sweep, .. } => {
-                    next.sketch.connect_arc(from, to, sweep);
-                }
+            // A boundary the drawing already carries is REUSED, not doubled — and it is that
+            // standing curve the tangency must name, or the relations would skip whichever side
+            // the sketch already had.
+            let curve = match edge {
+                SlotEdgePlacement::Line { .. } => next
+                    .sketch
+                    .connect(from, to)
+                    .or_else(|| next.sketch.segment_between(from, to))
+                    .map(SketchCurve::Segment),
+                SlotEdgePlacement::Arc { sweep, .. } => next
+                    .sketch
+                    .connect_arc(from, to, sweep)
+                    .or_else(|| next.sketch.arc_between(from, to, sweep))
+                    .map(SketchCurve::Arc),
+            };
+            curves.push(curve.ok_or(SlotRefusal::Unrepresentable)?);
+        }
+        if next == *self {
+            return Err(SlotRefusal::AlreadyExists);
+        }
+        // Naming the four curves is what lets the corners be written as literal pairs; walking them
+        // by index would put modular arithmetic between the shape and the relations that describe
+        // it, for no gain on a boundary that is always exactly four curves long.
+        let [first_rail, end_cap, second_rail, start_cap] = curves[..] else {
+            return Err(SlotRefusal::Unrepresentable);
+        };
+        let corners = [
+            (first_rail, end_cap),
+            (end_cap, second_rail),
+            (second_rail, start_cap),
+            (start_cap, first_rail),
+        ];
+        let rails = match (placement.rails, first_rail, second_rail) {
+            (SlotRails::Concentric, first, second) => ConstraintKind::concentric(first, second),
+            (SlotRails::Parallel, SketchCurve::Segment(first), SketchCurve::Segment(second)) => {
+                let (first, second) = if first <= second {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                ConstraintKind::Parallel { first, second }
+            }
+            // A straight-spined slot whose rails came back as anything but segments is not a slot.
+            (SlotRails::Parallel, _, _) => return Err(SlotRefusal::Unrepresentable),
+        };
+        let tangencies = placement
+            .junctions
+            .into_iter()
+            .zip(corners)
+            .map(|(branch, (first, second))| ConstraintKind::tangent(first, second, branch));
+        for kind in tangencies.chain(std::iter::once(rails)) {
+            match next.sketch.add_constraint(kind, context) {
+                Ok(_) | Err(ConstraintRefusal::AlreadyAsserted { .. }) => {}
+                Err(refusal) => return Err(SlotRefusal::Constraint(refusal)),
             }
         }
-        (next != *self)
-            .then_some(next)
-            .ok_or(SlotRefusal::AlreadyExists)
+        Ok(next)
     }
 
     /// This producer with the point `point_id` deleted, CASCADING to its incident segments:
@@ -1990,7 +2055,11 @@ fn canonical_slot(
     }) {
         return Err(SlotRefusal::Unrepresentable);
     }
-    Ok(SlotPlacement { edges })
+    Ok(SlotPlacement {
+        edges,
+        junctions: candidate.junctions,
+        rails: candidate.rails,
+    })
 }
 
 impl SketchSolid {

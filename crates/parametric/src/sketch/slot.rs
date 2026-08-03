@@ -2,7 +2,10 @@
 
 use std::f64::consts::PI;
 
-use super::{center_arc_candidate, three_point_circle_candidate, ArcTurn};
+use super::{
+    center_arc_candidate, three_point_circle_candidate, ArcTurn, InternalContainment, LineSide,
+    TangentBranch,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SlotEdgeCandidate {
@@ -17,10 +20,35 @@ pub enum SlotEdgeCandidate {
     },
 }
 
+/// How a slot's two long edges are held to one another — the relation that keeps the shape a
+/// slot instead of two independent rails that happen to be a fixed distance apart.
+///
+/// Which one it is follows from the spine: a straight spine gives straight rails that must stay
+/// parallel; a curved one gives concentric rails. Either way the WIDTH is deliberately left
+/// unconstrained — it is the one freedom the shape has left, and it is what an author changes by
+/// dragging a rail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotRails {
+    Parallel,
+    Concentric,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotCandidate {
-    /// Four boundary curves in connected traversal order.
+    /// Four boundary curves in connected traversal order. The two long rails are `[0]` and `[2]`;
+    /// the caps between them are `[1]` and `[3]`.
     pub edges: [SlotEdgeCandidate; 4],
+    /// The relation holding the two rails to each other.
+    pub rails: SlotRails,
+    /// How the boundary meets itself at each of its four corners: junction `i` joins
+    /// edge `i` to edge `i + 1` of [`edges`](Self::edges), wrapping, in that member order.
+    ///
+    /// A slot is smooth all the way round — that is what makes it a slot rather than four curves
+    /// that happen to touch — so every junction is a tangency, and the branch is read off the
+    /// geometry HERE rather than re-derived by whoever asserts it. A caller that had to work out
+    /// which side of a straight edge its cap sits on, or which of two circles contains the other,
+    /// would be deriving a second time what this function already knew exactly.
+    pub junctions: [TangentBranch; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,7 +254,24 @@ fn linear_boundary(
         [end_center[0] - offset[0], end_center[1] - offset[1]],
         [start_center[0] - offset[0], start_center[1] - offset[1]],
     ];
+    // Every cap sits on the spine, and every straight edge is offset one half-width off the spine
+    // to the `normal` side, so all four junctions see their cap on the side OPPOSITE `normal` —
+    // and the same named side for both edges, because the second edge runs the other way and its
+    // offset flips with it. `offset_hand` is which hand `normal` is on relative to the spine's
+    // direction; the caps are on the other one.
+    let spine = [
+        end_center[0] - start_center[0],
+        end_center[1] - start_center[1],
+    ];
+    let offset_hand = (-normal[0]).mul_add(spine[1], normal[1] * spine[0]);
+    let cap_side = if offset_hand > 0.0 {
+        LineSide::Right
+    } else {
+        LineSide::Left
+    };
     SlotCandidate {
+        rails: SlotRails::Parallel,
+        junctions: [TangentBranch::Line(cap_side); 4],
         edges: [
             SlotEdgeCandidate::Line {
                 from: points[0],
@@ -289,6 +334,22 @@ fn arc_boundary(
     let sweep_degrees = sweep_radians.to_degrees();
     let cap_sweep = sweep_degrees.signum() * 180.0;
     Ok(SlotCandidate {
+        rails: SlotRails::Concentric,
+        // The two long arcs are concentric with the spine at radius +/- the half-width; each cap
+        // is centered ON the spine, a full spine radius from that shared center. So the OUTER arc
+        // and a cap have their centers (R + w) - w apart, which is internal tangency with the
+        // outer one containing the cap; the INNER arc and a cap are (R - w) + w apart, which is
+        // external. Containment is stated relative to the junction's own member order.
+        junctions: [
+            TangentBranch::Internal {
+                contains: InternalContainment::First,
+            },
+            TangentBranch::External,
+            TangentBranch::External,
+            TangentBranch::Internal {
+                contains: InternalContainment::Second,
+            },
+        ],
         edges: [
             SlotEdgeCandidate::Arc {
                 from: points[0],

@@ -260,7 +260,7 @@ pub struct PolygonPlacement {
 }
 
 /// Why a slot boundary could not be appended atomically.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotRefusal {
     /// The continuous construction is invalid or degenerate.
     Candidate(parametric::sketch::SlotCandidateError),
@@ -268,6 +268,8 @@ pub enum SlotRefusal {
     Unrepresentable,
     /// The complete boundary already exists.
     AlreadyExists,
+    /// The boundary stands but the tangency that makes it a slot could not be asserted.
+    Constraint(ConstraintRefusal),
 }
 
 /// One document-canonical boundary curve of a slot.
@@ -286,8 +288,15 @@ pub enum SlotEdgePlacement {
 /// Canonical four-curve slot boundary shared by preview and commit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SlotPlacement {
-    /// Connected boundary curves in traversal order.
+    /// Connected boundary curves in traversal order. The two long rails are `[0]` and `[2]`.
     pub edges: [SlotEdgePlacement; 4],
+    /// The tangency at each corner: junction `i` joins edge `i` to edge `i + 1` of
+    /// [`edges`](Self::edges), wrapping, in that member order. Read off the continuous
+    /// construction, never re-derived here.
+    pub junctions: [parametric::sketch::TangentBranch; 4],
+    /// What holds the two rails to each other. Also read off the construction: whether a slot's
+    /// sides are parallel or concentric is a fact about the spine, and the spine lives there.
+    pub rails: parametric::sketch::SlotRails,
 }
 
 /// The exact document-side geometry shared by standalone Tangent Arc preview and commit.
@@ -3618,6 +3627,28 @@ impl Sketch {
             .iter()
             .find(|seg| (seg.from == a && seg.to == b) || (seg.from == b && seg.to == a))
             .map(|seg| seg.id)
+    }
+
+    /// The arc of exactly this signed sweep joining `a` and `b`, if one is held.
+    ///
+    /// The sweep is part of the question, unlike [`segment_between`](Self::segment_between): a
+    /// pair of points can carry two different arcs at once — a lens — so "the arc between them"
+    /// is not on its own a curve. Reading the same direction back the other way is the same arc,
+    /// which is why the reversed pair matches the NEGATED sweep.
+    pub fn arc_between(
+        &self,
+        a: EntityId,
+        b: EntityId,
+        sweep: AngleMeasurement,
+    ) -> Option<EntityId> {
+        let degrees = sweep.to_degrees_f64();
+        self.arcs
+            .iter()
+            .find(|arc| {
+                (arc.from == a && arc.to == b && arc.sweep_degrees() == degrees)
+                    || (arc.from == b && arc.to == a && arc.sweep_degrees() == -degrees)
+            })
+            .map(|arc| arc.id)
     }
 
     /// Whether a straight segment already joins `a` and `b` in either direction.
