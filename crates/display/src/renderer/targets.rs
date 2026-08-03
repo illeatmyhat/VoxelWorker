@@ -50,11 +50,9 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        // TEXTURE_BINDING is retained for compatibility with the bind-group layout; the
-        // current pass does not use it.
-        // sampled this MSAA depth as a texture to occlude its march. The current onion
-        // and operand ghosts occlude by depth-TESTING (`Less`/fail) against this same
-        // attachment inside the shared MSAA pass instead, so nothing samples it today.
+        // TEXTURE_BINDING because the selection outline samples this view directly
+        // (`mesh::selection_outline`); the onion and operand ghosts instead occlude by
+        // depth-TESTING against the same attachment inside the shared MSAA pass.
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

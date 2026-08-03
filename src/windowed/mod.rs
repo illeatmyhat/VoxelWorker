@@ -625,9 +625,22 @@ impl WindowedState {
             // Open maximized so the 3D view + panels get the full screen.
             .with_maximized(true);
         if let Some(config) = &config {
-            window_attributes = window_attributes.with_inner_size(winit::dpi::LogicalSize::new(
-                config.window_size[0],
-                config.window_size[1],
+            // `save_config` records `surface_config` — PHYSICAL pixels — so restore them as
+            // physical. Restoring them as logical points inflated the surface by the display
+            // scale on every round trip (3840x2054 saved came back as 5760x3081 at 1.5), and the
+            // 4-sample color + depth attachments for that are half a gigabyte: fine on a
+            // discrete card, an out-of-memory panic in `create_depth_view` on an iGPU.
+            //
+            // Clamped to the monitor the window will actually open on, so a size saved on a
+            // larger display can never ask this adapter for a surface it cannot allocate.
+            let ceiling = event_loop.primary_monitor().map(|monitor| monitor.size());
+            let fits = |asked: u32, limit: Option<u32>| match limit {
+                Some(limit) if limit > 0 => asked.min(limit),
+                _ => asked,
+            };
+            window_attributes = window_attributes.with_inner_size(winit::dpi::PhysicalSize::new(
+                fits(config.window_size[0], ceiling.map(|size| size.width)),
+                fits(config.window_size[1], ceiling.map(|size| size.height)),
             ));
         }
         let window = Arc::new(
