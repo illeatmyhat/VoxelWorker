@@ -2486,9 +2486,13 @@ impl Sketch {
         let Some(spline) = self.splines.iter().find(|spline| spline.id == id) else {
             return Ok(false);
         };
+        // The tangent handles travel with the fit points they steer. A handle left standing would
+        // re-aim its tangent by exactly the distance the spline moved, which is the one thing a
+        // rigid translation must not do.
         let hands: Vec<_> = spline
             .points
             .iter()
+            .chain(spline.tangents.values())
             .filter_map(|point| {
                 let stood = self.point_in_plane(*point)?;
                 Some((*point, [stood[0] + by[0], stood[1] + by[1]]))
@@ -3077,7 +3081,9 @@ impl Sketch {
         let plan = prepared
             .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
+        let before = self.points.clone();
         plan.apply(self);
+        self.carry_authored_handles(&before);
         self.sync_derived_points();
         Ok(true)
     }
@@ -3412,7 +3418,9 @@ impl Sketch {
             kind,
             redundant,
         });
+        let before = self.points.clone();
         plan.apply(self);
+        self.carry_authored_handles(&before);
         self.sync_derived_points();
         Ok(id)
     }
@@ -3657,7 +3665,9 @@ impl Sketch {
         let plan = prepared
             .plan_apply(&self.points, &self.arcs, &self.circles, &settled.solution)
             .map_err(|_| SketchEvaluationError::ScalarWritebackFailed)?;
+        let before = self.points.clone();
         plan.apply(self);
+        self.carry_authored_handles(&before);
         self.sync_derived_points();
         Ok(settled.diagnostics.report)
     }
@@ -4359,6 +4369,79 @@ impl Sketch {
     pub fn is_derived_point(&self, id: EntityId) -> bool {
         self.arcs.iter().any(|arc| arc.center == id)
             || self.conics.iter().any(|conic| conic.shoulder == id)
+    }
+
+    /// Every authored point that STANDS OFF another, as `(anchor, follower)`.
+    ///
+    /// Both are authored — neither is [`is_derived_point`](Self::is_derived_point) — but the
+    /// follower's meaning is its OFFSET from the anchor rather than its position: a spline's
+    /// tangent is the vector to its handle, and an ellipse's axes are the vectors to its
+    /// endpoints. That is the pairing [`carry_authored_handles`](Self::carry_authored_handles)
+    /// preserves across a solve.
+    fn authored_followers(&self) -> Vec<(EntityId, EntityId)> {
+        self.splines
+            .iter()
+            .flat_map(|spline| {
+                spline
+                    .tangents
+                    .iter()
+                    .map(|(fit, handle)| (*fit, *handle))
+                    .collect::<Vec<_>>()
+            })
+            .chain(self.ellipses.iter().flat_map(|ellipse| {
+                [
+                    (ellipse.center, ellipse.major_endpoint),
+                    (ellipse.center, ellipse.width_point),
+                ]
+            }))
+            .collect()
+    }
+
+    /// Carry every authored handle along with the point it stands off, `before` being where the
+    /// points were when the solve started.
+    ///
+    /// # A handle names an offset, and the kernel cannot see that
+    ///
+    /// To the solver a handle is two loose coordinates in no relation to anything, so a solve that
+    /// moves its ANCHOR leaves it standing where it was — and the quantity it names, which is the
+    /// offset, silently re-aims. A constraint that never mentioned a spline's tangent would rotate
+    /// it as a side effect of moving the fit point under it.
+    ///
+    /// So the handle follows its anchor's displacement, UNLESS the solve moved the handle too: a
+    /// constraint that reached the handle itself decided where it goes, and that answer wins over
+    /// this one. Comparison is exact because a point's stored position is exact — this asks
+    /// whether the writeback touched it, not whether it is nearly where it was.
+    fn carry_authored_handles(&mut self, before: &[Point]) {
+        let stood = |points: &[Point], id: EntityId| {
+            points
+                .iter()
+                .find(|point| point.id == id)
+                .map(|point| point.at)
+        };
+        for (anchor, follower) in self.authored_followers() {
+            let (Some(was), Some(now)) = (stood(before, anchor), stood(&self.points, anchor))
+            else {
+                continue;
+            };
+            let (was, now) = (was.in_plane(), now.in_plane());
+            let delta = [now[0] - was[0], now[1] - was[1]];
+            if delta[0] == 0.0 && delta[1] == 0.0 {
+                continue;
+            }
+            let (Some(held_before), Some(held_now)) =
+                (stood(before, follower), stood(&self.points, follower))
+            else {
+                continue;
+            };
+            if held_before != held_now {
+                continue;
+            }
+            let held = held_now.in_plane();
+            if let Some(index) = self.point_index(follower) {
+                self.points[index].at =
+                    SketchPoint::from_continuous(held[0] + delta[0], held[1] + delta[1]);
+            }
+        }
     }
 
     /// Re-derive every point whose coordinates the drawing owns, minting one for any curve that has

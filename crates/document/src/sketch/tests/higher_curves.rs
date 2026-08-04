@@ -402,6 +402,56 @@ fn tangent_handles_go_when_their_fit_point_or_their_spline_does() {
     );
 }
 
+/// A tangent is the vector from a fit point to its handle, so a solve that moves the FIT POINT
+/// has to bring the handle along. Left behind, the handle would silently re-aim the tangent as a
+/// side effect of solving something else — the author's steering rotated by a constraint that
+/// never mentioned it.
+#[test]
+fn a_solve_that_moves_a_fit_point_carries_its_tangent_handle() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let fit = sketch.splines()[0].points[0];
+    let handle = sketch.add_tangent_handle(fit).expect("a handle");
+    let tangent = |sketch: &Sketch| {
+        let at = sketch.point_in_plane(fit).expect("the fit point stands");
+        let held = sketch.point_in_plane(handle).expect("the handle stands");
+        [held[0] - at[0], held[1] - at[1]]
+    };
+    let before = tangent(&sketch);
+
+    // A constraint that says nothing about the handle, and moves the point it steers.
+    let elsewhere = sketch.add_free_point(SketchPoint::new(-6, -6));
+    sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: fit.min(elsewhere),
+                second: fit.max(elsewhere),
+            },
+            ctx(16),
+        )
+        .expect("the coincidence is asserted");
+
+    let moved = sketch.point_in_plane(fit).expect("the fit point stands");
+    assert!(
+        (moved[0] - 0.0).abs() > 0.5 || (moved[1] - 0.0).abs() > 0.5,
+        "the solve has to have moved the fit point for this to test anything: {moved:?}"
+    );
+    let after = tangent(&sketch);
+    assert!(
+        (before[0] - after[0]).abs() < 1.0e-6 && (before[1] - after[1]).abs() < 1.0e-6,
+        "the tangent was re-aimed by a constraint that never named it: {before:?} became {after:?}"
+    );
+}
+
 /// The control frame is derived from the point list, so it names controls in leg order and names
 /// nothing at all for a fit spline, whose points are on the curve rather than off it.
 #[test]
@@ -481,6 +531,27 @@ fn dragging_a_splines_body_carries_every_point_by_the_same_step() {
             "{was:?} went to {now:?}"
         );
     }
+
+    // A handle travels with the spline: a translation that left it behind would re-aim the
+    // tangent by exactly the distance the curve moved.
+    let steered = sketch.splines()[0].points[0];
+    let handle = sketch.add_tangent_handle(steered).expect("a handle");
+    let reach = |sketch: &Sketch| {
+        let at = sketch
+            .point_in_plane(steered)
+            .expect("the fit point stands");
+        let held = sketch.point_in_plane(handle).expect("the handle stands");
+        [held[0] - at[0], held[1] - at[1]]
+    };
+    let tangent = reach(&sketch);
+    assert!(sketch
+        .translate_curve(SketchCurve::Spline(spline), [-5.0, 1.0], ctx(16))
+        .expect("the translate is answered"));
+    let after = reach(&sketch);
+    assert!(
+        (tangent[0] - after[0]).abs() < 1.0e-6 && (tangent[1] - after[1]).abs() < 1.0e-6,
+        "the handle stayed home: {tangent:?} became {after:?}"
+    );
 
     // Only a spline translates. A segment already has a gesture that means something else.
     let tail = sketch.add_free_point(SketchPoint::new(-9, -9));
