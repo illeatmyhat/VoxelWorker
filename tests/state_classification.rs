@@ -90,7 +90,7 @@ fn the_escape_hatches_are_exactly_these() {
             ("sketch_constraint_refusal", StateCategory::Derived),
             // The camera target, rounded to whole blocks, refreshed each frame.
             ("point_add_position_blocks", StateCategory::Derived),
-            // Which rail tool family has its flyout open — dismissed by the next pointer press
+            // Which rail tool family is slid open — dismissed by the next pointer press
             // anywhere else, so it cannot outlive the gesture that opened it.
             ("open_rail_group", StateCategory::Transient),
         ],

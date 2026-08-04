@@ -67,7 +67,12 @@ const TOOLS: &[(Icon, bool)] = &[
     (Icon::Measure, false),
 ];
 
-/// One family of rail verbs, drawn as a single cell whose flyout holds the rest.
+/// One family of rail verbs, drawn as `[face][>]` — a single cell whose chevron slides the rest
+/// out sideways, into `[face][member][member][>]`.
+///
+/// Sideways rather than down: the rail is a vertical scroll column, so a list unfolding downward
+/// pushes every section below it and moves the target the author is reaching for. To the right
+/// there is only viewport, and nothing to push.
 ///
 /// # The face is fixed
 ///
@@ -77,12 +82,12 @@ const TOOLS: &[(Icon, bool)] = &[
 /// last-used is for. What would remain is only its cost: the same pixel meaning a different verb
 /// depending on history, which is what muscle memory cannot absorb.
 ///
-/// A family of one has no flyout and draws as an ordinary cell. That is not a special case in the
-/// rendering — it falls out of having nothing else to show.
+/// A family of one has no chevron and draws as an ordinary cell. That is not a special case in
+/// the rendering — it falls out of having nothing else to show.
 struct RailGroup<Route: 'static> {
     /// The mark this family always shows on the rail.
     face: Icon,
-    /// The family's name: the face's tooltip, and the flyout's heading.
+    /// The family's name: the face's tooltip, and the id the open row animates under.
     name: &'static str,
     /// The verbs in the family, canonical member first.
     members: &'static [(Icon, &'static str, Route)],
@@ -528,29 +533,44 @@ pub(super) fn build_rail(
             let column = ui.max_rect();
             hairline(ui.painter(), column, Edge::Right, theme::BORDER);
 
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                    if state.sketch_mode.is_some() {
-                        build_sketch_rail(ui, state, response);
-                    } else {
-                        // Only the sketch rail has families, and the mode can end without a
-                        // pointer press — undo deleting the sketch node, or a load that finds the
-                        // id stale. Clearing here rather than at each of those exits means a
-                        // flyout cannot survive to pop open unprompted on the next entry.
-                        state.open_rail_group = None;
-                        rail_heading(ui, "Shape");
-                        for &(icon, kind) in SHAPES {
-                            shape_cell(ui, icon, kind, state, response);
-                        }
-                        rail_heading(ui, "Tool");
-                        for &(icon, enabled) in TOOLS {
-                            tool_cell(ui, icon, enabled);
-                        }
+            rail_scroll_area().show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                if state.sketch_mode.is_some() {
+                    build_sketch_rail(ui, state, response);
+                } else {
+                    // Only the sketch rail has families, and the mode can end without a
+                    // pointer press — undo deleting the sketch node, or a load that finds the
+                    // id stale. Clearing here rather than at each of those exits means a
+                    // row cannot survive to slide out unprompted on the next entry.
+                    state.open_rail_group = None;
+                    rail_heading(ui, "Shape");
+                    for &(icon, kind) in SHAPES {
+                        shape_cell(ui, icon, kind, state, response);
                     }
-                });
+                    rail_heading(ui, "Tool");
+                    for &(icon, enabled) in TOOLS {
+                        tool_cell(ui, icon, enabled);
+                    }
+                }
+            });
         });
+}
+
+/// The rail's scrolling column.
+///
+/// The bar is an INDICATOR here, not a handle. It floats over the right edge of every cell, and
+/// that edge is where a family's chevron lives, so a draggable bar eats the click that slides the
+/// family out (owner, 2026-08-03). Dropping `scroll_bar` from the sources leaves the bar
+/// hover-sensing, and egui's hit test only considers click-sensing rects, so the chevron
+/// underneath wins. The alternative — giving the bar its own strip — costs every cell that width
+/// and moves the viewport along with it.
+///
+/// Shared with the tests rather than spelled out twice, so what they click through is the shipping
+/// configuration.
+fn rail_scroll_area() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .scroll_source(egui::scroll_area::ScrollSource::MOUSE_WHEEL)
 }
 
 /// The swapped rail while a sketch is being edited: the accent `SKETCH` head (the whole-mode
@@ -812,56 +832,98 @@ fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved:
     cell.on_hover_text(tip);
 }
 
-/// The corner tick's box: the bottom-right square of a family's face cell, the zone that opens
-/// the flyout instead of arming the face's verb.
-const FAMILY_TICK: f32 = 13.0;
+/// The chevron box on a family cell: full cell height, hugging the cell's right edge. Wide enough
+/// to be a target in its own right — the corner tick it replaced was both too small and sitting
+/// exactly where the scroll bar draws (owner, 2026-08-03).
+const CHEVRON_WIDTH: f32 = 16.0;
 
-/// One tool **family** on the rail: the fixed face cell, its corner tick, and the flyout the tick
-/// opens. Returns the route the author chose this frame, whether by clicking the face (the
-/// canonical member) or by picking out of the flyout.
+/// How long a family takes to slide open or shut.
+const SLIDE_SECONDS: f32 = 0.12;
+
+/// One tool **family** on the rail: `[face][>]` collapsed, sliding open to
+/// `[face][member][member][>]` along the row. Returns the route the author chose this frame,
+/// whether by clicking the face (the canonical member) or a member out of the open row.
 ///
 /// `is_active` answers, for one member, whether that verb is the one currently armed — the caller
 /// owns that question because a route means different things per section. A family whose member is
-/// armed lights its face, so the rail still says what is in hand even though the face never
-/// changes to say it.
+/// armed lights that member, and lights the face while closed, so the rail still says what is in
+/// hand even though the face never changes to say it.
 ///
-/// A family of one draws as an ordinary cell with no tick and no flyout; that falls out of the
-/// member count rather than being a special case.
+/// A family of one draws as an ordinary cell with no chevron and nothing to slide; that falls out
+/// of the member count rather than being a special case.
 fn rail_group<Route: Copy>(
     ui: &mut egui::Ui,
     state: &mut PanelState,
     group: &'static RailGroup<Route>,
     is_active: impl Fn(&PanelState, &Route) -> bool,
 ) -> Option<Route> {
-    let armed = group
+    let lit: Vec<bool> = group
         .members
         .iter()
-        .any(|(_, _, route)| is_active(state, route));
+        .map(|(_, _, route)| is_active(state, route))
+        .collect();
+    let armed = lit.iter().any(|lit| *lit);
     let family = group.members.len() > 1;
     let open = family && state.open_rail_group == Some(group.face);
 
+    // The row always occupies its COLLAPSED footprint in the column; the part that slides out
+    // hangs over the viewport, so opening a family never moves the cells under it.
     let (rect, cell) = ui.allocate_exact_size(
         egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
         egui::Sense::click(),
     );
-    let hovered = cell.hovered();
-    paint_cell(ui, rect, armed, hovered);
-    let ink = cell_ink(armed, hovered, false);
-    let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TOOL_GLYPH));
-    group.face.draw(ui.painter(), glyph, ink);
+    let openness = ui.ctx().animate_bool_with_time(
+        egui::Id::new(("rail_family", group.name)),
+        open,
+        SLIDE_SECONDS,
+    );
 
-    let tick = egui::Rect::from_min_max(
-        rect.right_bottom() - egui::Vec2::splat(FAMILY_TICK),
-        rect.right_bottom(),
+    if openness > 0.0 {
+        // Mid-slide the whole row belongs to the floating strip, face included, so the cell
+        // underneath paints nothing and the two can never disagree about what is drawn where.
+        let picked = rail_slide_out(ui, group, &lit, rect, openness);
+        let dismissed = ui.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|at| !slid_row(rect, group, openness).contains(at))
+        });
+        return match picked {
+            Some(SlidePick::Member(route)) => {
+                state.open_rail_group = None;
+                Some(route)
+            }
+            Some(SlidePick::Chevron) => {
+                state.open_rail_group = None;
+                None
+            }
+            None => {
+                if dismissed {
+                    state.open_rail_group = None;
+                }
+                None
+            }
+        };
+    }
+
+    let (face, chevron) = split_off_chevron(rect, family);
+    let on_chevron = hovering(&cell, chevron);
+    paint_cell(ui, face, armed, cell.hovered() && !on_chevron);
+    group.face.draw(
+        ui.painter(),
+        egui::Rect::from_center_size(face.center(), egui::Vec2::splat(TOOL_GLYPH)),
+        cell_ink(armed, cell.hovered() && !on_chevron, false),
     );
     if family {
-        paint_family_tick(ui, tick, ink);
+        paint_cell(ui, chevron, false, on_chevron);
+        paint_chevron(ui, chevron, cell_ink(false, on_chevron, false), 0.0);
     }
 
     let (_, canonical_tip, canonical) = group.members[0];
     let tip = if family {
         format!(
-            "{} — {canonical_tip}\nCorner tick for the other {}",
+            "{} — {canonical_tip}\nThe chevron slides out the other {}",
             group.name,
             group.members.len() - 1
         )
@@ -870,120 +932,161 @@ fn rail_group<Route: Copy>(
     };
     let cell = cell.on_hover_text(tip);
 
-    let hit_tick = cell
+    if !cell.clicked() {
+        return None;
+    }
+    let hit_chevron = cell
         .interact_pointer_pos()
-        .is_some_and(|at| tick.contains(at));
-    let mut chosen = None;
-    if cell.clicked() {
-        if family && hit_tick {
-            state.open_rail_group = if open { None } else { Some(group.face) };
-        } else {
-            state.open_rail_group = None;
-            chosen = Some(canonical);
-        }
+        .is_some_and(|at| chevron.contains(at));
+    if family && hit_chevron {
+        state.open_rail_group = Some(group.face);
+        return None;
     }
-
-    if open {
-        // Precomputed because the flyout's closure cannot hold `state` while the pick below
-        // writes to it.
-        let lit: Vec<bool> = group
-            .members
-            .iter()
-            .map(|(_, _, route)| is_active(state, route))
-            .collect();
-        let (picked, panel) = rail_flyout(ui, group, &lit, rect);
-        // Any press that missed both the face and the panel dismisses it, the way every other
-        // menu in the app closes without a Cancel.
-        let dismissed = ui.input(|input| {
-            input.pointer.any_pressed()
-                && input
-                    .pointer
-                    .interact_pos()
-                    .is_some_and(|at| !panel.contains(at) && !rect.contains(at))
-        });
-        if picked.is_some() || dismissed {
-            state.open_rail_group = None;
-        }
-        chosen = picked.or(chosen);
-    }
-    chosen
+    Some(canonical)
 }
 
-/// The open family's member list: a floating panel beside the face cell, one row per verb.
+/// Whether the pointer hovering `cell` is inside `zone`.
+fn hovering(cell: &egui::Response, zone: egui::Rect) -> bool {
+    cell.hover_pos().is_some_and(|at| zone.contains(at))
+}
+
+/// A family cell's two zones: the face, which arms, and the chevron, which slides. A family of one
+/// has no chevron, so the face takes the whole cell and the chevron rect is empty.
+fn split_off_chevron(cell: egui::Rect, family: bool) -> (egui::Rect, egui::Rect) {
+    if !family {
+        return (cell, egui::Rect::NOTHING);
+    }
+    let split = cell.right() - CHEVRON_WIDTH;
+    (
+        egui::Rect::from_min_max(cell.min, egui::pos2(split, cell.bottom())),
+        egui::Rect::from_min_max(egui::pos2(split, cell.top()), cell.max),
+    )
+}
+
+/// What a click on the slid-open row resolved to.
+enum SlidePick<Route> {
+    /// A member's box — arm that verb and close the row.
+    Member(Route),
+    /// The chevron at the end of the row — close it, arming nothing.
+    Chevron,
+}
+
+/// The full extent of the row at this point in the slide, collapsed footprint included.
+fn slid_row<Route>(cell: egui::Rect, group: &RailGroup<Route>, openness: f32) -> egui::Rect {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a family holds single digits of members"
+    )]
+    let extra = (group.members.len() - 1) as f32 * RAIL_WIDTH;
+    egui::Rect::from_min_size(
+        cell.min,
+        egui::vec2(cell.width() + extra * openness, cell.height()),
+    )
+}
+
+/// The open family's members, sliding out to the RIGHT of the rail: `[face][member][member][>]`.
 ///
-/// An [`egui::Area`] rather than an in-place expansion, and deliberately: the rail is a scroll
-/// column, so growing a cell would push every section below it down and move the target the author
-/// is reaching for. It also must not allocate in the rail's `Ui` — floating chrome that does
-/// carves a dead band out of whatever is behind it.
-fn rail_flyout<Route: Copy>(
+/// A floating [`egui::Area`] rather than an in-place expansion, and deliberately: the rail is a
+/// vertical scroll column, so growing the cell downward would push every section below it and move
+/// the target the author is reaching for. Sideways there is nothing to push. It also must not
+/// allocate in the rail's `Ui` — floating chrome that does carves a dead band out of the viewport
+/// behind it.
+///
+/// The row is clipped to its animated width, so members emerge from under the face rather than
+/// appearing somewhere they were not.
+fn rail_slide_out<Route: Copy>(
     ui: &egui::Ui,
     group: &'static RailGroup<Route>,
     lit: &[bool],
-    face: egui::Rect,
-) -> (Option<Route>, egui::Rect) {
+    cell: egui::Rect,
+    openness: f32,
+) -> Option<SlidePick<Route>> {
+    let row = slid_row(cell, group, openness);
     let mut picked = None;
-    let area = egui::Area::new(egui::Id::new(("rail_flyout", group.name)))
+    egui::Area::new(egui::Id::new(("rail_family_row", group.name)))
         .order(egui::Order::Foreground)
-        .fixed_pos(face.right_top())
+        .fixed_pos(cell.left_top())
         .show(ui.ctx(), |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-            egui::Frame::popup(ui.style())
-                .fill(theme::DIALOG_BG)
-                .stroke(egui::Stroke::new(1.0_f32, theme::DIALOG_BORDER))
-                .show(ui, |ui| {
-                    let heading = theme::letter_spaced(ui, group.name, theme::TEXT_HINT, 8.0, 1.2);
-                    ui.label(heading);
-                    for (index, &(icon, tip, route)) in group.members.iter().enumerate() {
-                        if rail_flyout_row(ui, icon, tip, lit.get(index) == Some(&true)) {
-                            picked = Some(route);
-                        }
-                    }
-                });
+            ui.set_clip_rect(row);
+            ui.painter().rect_filled(row, 0.0, theme::BG);
+
+            for (index, &(icon, tip, route)) in group.members.iter().enumerate() {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a family holds single digits of members"
+                )]
+                let offset = index as f32 * RAIL_WIDTH;
+                let box_rect = egui::Rect::from_min_size(
+                    cell.left_top() + egui::vec2(offset, 0.0),
+                    egui::vec2(RAIL_WIDTH, cell.height()),
+                );
+                if member_box(ui, box_rect, icon, tip, lit.get(index) == Some(&true)) {
+                    picked = Some(SlidePick::Member(route));
+                }
+            }
+
+            // The chevron rides the row's right edge, so it is always at the end of whatever is
+            // currently showing — the same pixel that opened the family closes it.
+            let chevron = egui::Rect::from_min_max(
+                egui::pos2(row.right() - CHEVRON_WIDTH, row.top()),
+                row.max,
+            );
+            let response = ui.interact(
+                chevron,
+                egui::Id::new(("rail_family_close", group.name)),
+                egui::Sense::click(),
+            );
+            paint_cell(ui, chevron, false, response.hovered());
+            paint_chevron(
+                ui,
+                chevron,
+                cell_ink(false, response.hovered(), false),
+                openness,
+            );
+            if response.clicked() {
+                picked = Some(SlidePick::Chevron);
+            }
         });
-    (picked, area.response.rect)
+    picked
 }
 
-/// One flyout row: the member's own glyph beside the verb's name, lit when that member is the
-/// armed one. The name is the tooltip's first clause — the flyout is where the author goes to read
-/// what a family contains, so the words have to be on screen rather than behind a hover.
-fn rail_flyout_row(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> bool {
-    let name = tip.split(" — ").next().unwrap_or(tip);
-    let galley = ui.painter().layout_no_wrap(
-        name.to_string(),
-        egui::TextStyle::Body.resolve(ui.style()),
-        cell_ink(active, false, false),
+/// One member box in the slid-open row: the member's own glyph at cell size, lit when it is the
+/// armed one. Glyph only, as on the rail itself — the row is read by shape at a glance, and the
+/// name is one hover away.
+fn member_box(ui: &egui::Ui, rect: egui::Rect, icon: Icon, tip: &str, active: bool) -> bool {
+    let response = ui.interact(
+        rect,
+        egui::Id::new(("rail_family_member", tip)),
+        egui::Sense::click(),
     );
-    let size = egui::vec2(
-        TOOL_GLYPH + 10.0 + galley.size().x + 8.0,
-        TOOL_CELL_HEIGHT * 0.6,
-    );
-    let (rect, row) = ui.allocate_exact_size(size, egui::Sense::click());
-    let hovered = row.hovered();
+    let hovered = response.hovered();
     paint_cell(ui, rect, active, hovered);
-    let ink = cell_ink(active, hovered, false);
-    let glyph = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 4.0 + TOOL_GLYPH * 0.5, rect.center().y),
-        egui::Vec2::splat(TOOL_GLYPH * 0.75),
+    icon.draw(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TOOL_GLYPH)),
+        cell_ink(active, hovered, false),
     );
-    icon.draw(ui.painter(), glyph, ink);
-    ui.painter().galley(
-        egui::pos2(glyph.right() + 8.0, rect.center().y - galley.size().y * 0.5),
-        galley,
-        ink,
-    );
-    row.on_hover_text(tip.to_string()).clicked()
+    response.on_hover_text(tip.to_string()).clicked()
 }
 
-/// The mark that says "this cell is a family": a small filled corner wedge, in the cell's own ink
-/// so it reads as part of the glyph rather than a second signal.
-fn paint_family_tick(ui: &egui::Ui, tick: egui::Rect, ink: egui::Color32) {
-    let wedge = vec![
-        tick.right_bottom(),
-        tick.right_bottom() - egui::vec2(FAMILY_TICK * 0.55, 0.0),
-        tick.right_bottom() - egui::vec2(0.0, FAMILY_TICK * 0.55),
-    ];
-    ui.painter()
-        .add(egui::Shape::convex_polygon(wedge, ink, egui::Stroke::NONE));
+/// The mark that says "this cell is a family": a chevron pointing the way the row will travel,
+/// turning to point back as it opens.
+fn paint_chevron(ui: &egui::Ui, zone: egui::Rect, ink: egui::Color32, openness: f32) {
+    if !zone.is_positive() {
+        return;
+    }
+    let center = zone.center();
+    // +1 at rest points right ("more this way"), −1 fully open points back ("put it away").
+    let facing = 1.0 - 2.0 * openness;
+    let (reach, rise) = (3.0 * facing, 4.0);
+    ui.painter().add(egui::Shape::line(
+        vec![
+            center - egui::vec2(reach, rise),
+            center + egui::vec2(reach, 0.0),
+            center - egui::vec2(reach, -rise),
+        ],
+        egui::Stroke::new(1.5_f32, ink),
+    ));
 }
 
 /// One shape cell. Clicking an expressible shape ARMS live placement of that primitive — the
@@ -1106,13 +1209,13 @@ mod tests {
     }
 
     /// A two-member family to drive the cell through a real egui frame loop. Named with a face no
-    /// shipping family uses, so it cannot collide with the rail's own flyout ids.
+    /// shipping family uses, so it cannot collide with the rail's own family ids.
     const PROBE: RailGroup<u8> = RailGroup {
         face: Icon::Probe,
         name: "Probe",
         members: &[
             (Icon::Probe, "First — the canonical member", 1),
-            (Icon::Measure, "Second — behind the flyout", 2),
+            (Icon::Measure, "Second — behind the chevron", 2),
         ],
     };
 
@@ -1159,40 +1262,115 @@ mod tests {
         probe_frame(context, state, vec![button(false)])
     }
 
+    /// Run frames until the slide has finished, so a click lands on a member box that has stopped
+    /// moving.
+    fn settle(context: &egui::Context, state: &mut PanelState) {
+        for _ in 0..30 {
+            probe_frame(context, state, Vec::new());
+        }
+    }
+
+    /// The chevron's zone: the right strip of the cell, at full height. The point of the shape —
+    /// the corner tick it replaced was under the scroll bar and too small to hit.
+    fn chevron_of(cell: egui::Rect) -> egui::Pos2 {
+        egui::pos2(cell.right() - CHEVRON_WIDTH * 0.5, cell.center().y)
+    }
+
     /// The whole point of the reshape: a verb that is NOT its family's face is still reachable, in
-    /// two clicks — the corner tick, then the row. Clicking the face could never return the second
-    /// member, so this cannot pass by accident.
+    /// two clicks — the chevron, then the box that slid out. Clicking the face could never return
+    /// the second member, so this cannot pass by accident.
     #[test]
-    fn the_corner_tick_opens_the_flyout_and_its_rows_arm_the_hidden_member() {
+    fn the_chevron_slides_the_family_out_and_its_boxes_arm_the_hidden_member() {
         let context = egui::Context::default();
         let mut state = PanelState::default();
-        let (_, face) = probe_frame(&context, &mut state, Vec::new());
+        let (_, cell) = probe_frame(&context, &mut state, Vec::new());
 
-        let tick = face.right_bottom() - egui::Vec2::splat(FAMILY_TICK * 0.5);
-        let (chosen, _) = click_at(&context, &mut state, tick);
+        let (chosen, _) = click_at(&context, &mut state, chevron_of(cell));
         assert_eq!(
             chosen, None,
-            "the tick opens the family, it does not arm it"
+            "the chevron slides the family out, it does not arm it"
         );
         assert_eq!(state.open_rail_group, Some(Icon::Probe));
 
-        // Draw the open flyout once so its area rect is on record, then click its LAST row — the
-        // member the face cannot reach.
-        probe_frame(&context, &mut state, Vec::new());
-        let panel = context
-            .memory(|memory| memory.area_rect(egui::Id::new(("rail_flyout", PROBE.name))))
-            .unwrap_or(egui::Rect::NOTHING);
-        assert!(panel.is_positive(), "the open flyout registers an area");
-        let last_row = panel.right_bottom() - egui::vec2(8.0, 8.0);
-        let (chosen, _) = click_at(&context, &mut state, last_row);
-        assert_eq!(
-            chosen,
-            Some(2),
-            "the flyout's last row arms the last member"
-        );
+        settle(&context, &mut state);
+        // The second member's box sits one full cell to the RIGHT of the face — the direction the
+        // row travels, and a place the collapsed cell never occupied.
+        let second = egui::pos2(cell.left() + RAIL_WIDTH * 1.5, cell.center().y);
+        let (chosen, _) = click_at(&context, &mut state, second);
+        assert_eq!(chosen, Some(2), "the box that slid out arms its member");
         assert_eq!(
             state.open_rail_group, None,
-            "picking closes the family behind it"
+            "picking slides the family shut behind it"
+        );
+    }
+
+    /// The chevron rides the row's right edge, so the pixel that opened the family is the pixel
+    /// that closes it — and closing arms nothing.
+    #[test]
+    fn the_chevron_at_the_end_of_the_open_row_slides_it_shut() {
+        let context = egui::Context::default();
+        let mut state = PanelState::default();
+        let (_, cell) = probe_frame(&context, &mut state, Vec::new());
+        click_at(&context, &mut state, chevron_of(cell));
+        settle(&context, &mut state);
+
+        let row = slid_row(cell, &PROBE, 1.0);
+        assert!(
+            row.width() > cell.width(),
+            "the open row has to be wider than the cell it grew from: {row:?}"
+        );
+        let (chosen, _) = click_at(&context, &mut state, chevron_of(row));
+        assert_eq!(chosen, None, "closing the row arms nothing");
+        assert_eq!(state.open_rail_group, None);
+    }
+
+    /// **The bug the owner reported.** The chevron rides the cell's right edge, which is exactly
+    /// where a scrolling column draws its bar — and a bar that senses clicks takes them, leaving
+    /// the family unreachable. Run through [`rail_scroll_area`] itself, in a column short enough to
+    /// overflow so the bar is really there.
+    #[test]
+    fn the_scroll_bar_does_not_eat_the_chevron() {
+        let context = egui::Context::default();
+        let mut state = PanelState::default();
+
+        // A column the probe cell overflows several times over, so the bar has a handle to draw.
+        let column = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(RAIL_WIDTH, 60.0));
+        let mut cell = egui::Rect::NOTHING;
+        let mut frame = |events: Vec<egui::Event>, cell: &mut egui::Rect| {
+            let raw_input = egui::RawInput {
+                screen_rect: Some(column),
+                events,
+                ..Default::default()
+            };
+            let _ = context.run_ui(raw_input, |ui| {
+                rail_scroll_area().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                    *cell = egui::Rect::from_min_size(
+                        ui.available_rect_before_wrap().min,
+                        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+                    );
+                    rail_group(ui, &mut state, &PROBE, |_, _| false);
+                    ui.allocate_space(egui::vec2(RAIL_WIDTH, 400.0));
+                });
+            });
+        };
+
+        frame(Vec::new(), &mut cell);
+        let at = chevron_of(cell);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        frame(vec![egui::Event::PointerMoved(at)], &mut cell);
+        frame(vec![button(true)], &mut cell);
+        frame(vec![button(false)], &mut cell);
+
+        assert_eq!(
+            state.open_rail_group,
+            Some(Icon::Probe),
+            "the scroll bar swallowed the chevron's click at {at:?}"
         );
     }
 
@@ -1208,8 +1386,8 @@ mod tests {
         assert_eq!(state.open_rail_group, None);
     }
 
-    /// The open flyout is keyed by face glyph, so two families sharing a face would open each
-    /// other's list.
+    /// The open family is keyed by face glyph, so two families sharing a face would slide out
+    /// each other's row.
     #[test]
     fn no_two_families_share_a_face() {
         let mut faces: Vec<Icon> = SKETCH_CREATE.iter().map(|group| group.face).collect();

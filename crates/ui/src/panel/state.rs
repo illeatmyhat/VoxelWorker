@@ -739,15 +739,15 @@ pub struct PanelState {
     /// with the same tool in hand.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
-    /// Which rail tool family currently has its flyout open, named by that family's fixed face
+    /// Which rail tool family is currently slid open, named by that family's fixed face
     /// glyph. `None` — the usual state — means every family is showing just its face.
     ///
     /// Keyed by the face rather than by an index so the rail tables can be reordered without
-    /// silently re-pointing an open flyout at a different family.
+    /// silently re-pointing an open row at a different family.
     ///
-    /// **Transient**, and NOT session state despite sitting beside the rail's other fields: a
-    /// flyout is dismissed by the very next pointer press anywhere else, so it cannot outlive the
-    /// gesture that opened it, let alone a relaunch. That is the same footing as "the mouse is
+    /// **Transient**, and NOT session state despite sitting beside the rail's other fields: an
+    /// open row is dismissed by the very next pointer press anywhere else, so it cannot outlive
+    /// the gesture that opened it, let alone a relaunch. That is the same footing as "the mouse is
     /// currently held mid-drag", the category's own example — unlike
     /// [`stack`](Self::stack)'s fold state, which is furniture the author deliberately left
     /// arranged.
