@@ -512,6 +512,103 @@ fn dragging_a_rail_widens_the_slot_without_moving_its_spine() {
         (widened[0].hypot(widened[1]) - 13.0).abs() < 1.0e-6,
         "{widened:?} should stand where the cursor left the rail"
     );
+    // The far rail MIRRORS: the spine held at radius 8, so a rail pulled 3 out puts the other 3
+    // in. Left free it drifted the wrong way instead — 6 to 5.4 for this same pull.
+    let inner = made
+        .sketch
+        .arcs()
+        .iter()
+        .filter(|arc| arc.id != outer_id)
+        .map(|arc| position(arc.from))
+        .map(|at| at[0].hypot(at[1]))
+        .find(|reach| (*reach - 3.0).abs() < 1.0e-6);
+    assert!(
+        inner.is_some(),
+        "the far rail should have mirrored to radius 3: {:?}",
+        made.sketch
+            .arcs()
+            .iter()
+            .map(|arc| position(arc.from))
+            .map(|at| at[0].hypot(at[1]))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A slot widens SYMMETRICALLY about the centerline it was drawn around (owner, 2026-08-04): pull
+/// one rail and the other mirrors it, the construction spine does not move, and the length is
+/// untouched.
+///
+/// Nothing asserts the rails are equidistant. The spine is pinned as a second hand and the rest
+/// follows from the tangency web: a cap is a circle whose center is equidistant from its own ends
+/// by construction, and that center stands on the spine. Left unpinned, least motion spent the
+/// slack across everything — measured, a 2.0 pull moved the far rail 0.4 the WRONG way and slid
+/// the centerline 0.8, so the slot stayed a slot and stopped being the one the author drew.
+#[test]
+fn dragging_a_rail_widens_a_linear_slot_about_a_centerline_that_holds() {
+    let mut made = source()
+        .with_linear_slot(
+            ::parametric::sketch::LinearSlotKind::CenterToCenter,
+            SketchPoint::new(0, 0),
+            SketchPoint::new(6, 0),
+            SketchPoint::new(0, 2),
+            ctx(16),
+        )
+        .expect("a center-to-center slot, six long and four wide");
+    let rail = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| {
+            segment.role != EntityRole::Construction
+                && made
+                    .sketch
+                    .point_in_plane(segment.from)
+                    .is_some_and(|at| at[1] > 1.0)
+        })
+        .map(|segment| SketchCurve::Segment(segment.id))
+        .expect("the +Y rail");
+
+    assert!(made
+        .sketch
+        .move_curve(rail, [3.0, 4.0], ctx(16))
+        .expect("the rail drag is answered"));
+
+    let corners: Vec<[f64; 2]> = made
+        .sketch
+        .segments()
+        .iter()
+        .filter(|segment| segment.role != EntityRole::Construction)
+        .filter_map(|segment| made.sketch.point_in_plane(segment.from))
+        .collect();
+    for want in [4.0_f64, -4.0] {
+        assert!(
+            corners.iter().any(|at| (at[1] - want).abs() < 1.0e-6),
+            "a rail should stand at y={want}: {corners:?}"
+        );
+    }
+    // The spine, cap center to cap center: still on the axis, still six long.
+    let spine = made
+        .sketch
+        .segments()
+        .iter()
+        .find(|segment| segment.role == EntityRole::Construction)
+        .expect("the centerline");
+    let (tail, head) = (
+        made.sketch
+            .point_in_plane(spine.from)
+            .expect("the centerline stands"),
+        made.sketch
+            .point_in_plane(spine.to)
+            .expect("the centerline stands"),
+    );
+    assert!(
+        tail[1].abs() < 1.0e-6 && head[1].abs() < 1.0e-6,
+        "the centerline slid off the axis: {tail:?} to {head:?}"
+    );
+    assert!(
+        ((head[0] - tail[0]).hypot(head[1] - tail[1]) - 6.0).abs() < 1.0e-6,
+        "a widen changed the length: {tail:?} to {head:?}"
+    );
 }
 
 /// A drag reaches its own shape and stops there.

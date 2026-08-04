@@ -2488,18 +2488,21 @@ impl Sketch {
     /// it. Nothing accumulates and nothing to drift.
     ///
     /// This is the gesture that authors a slot's width, the freedom its relations deliberately
-    /// leave open. The rails' endpoints are the corners the caps are tangent at, so widening one
-    /// rail widens the caps through the tangencies; the OTHER rail is not touched. One-sided on
-    /// purpose — geometry the author did not grab stays where they put it.
+    /// leave open. It widens SYMMETRICALLY: the centerline holds and the far rail mirrors the
+    /// grabbed one (owner, 2026-08-04). That is not a rule stated here so much as one the shape
+    /// already implies — see
+    /// [`handles_a_widening_must_hold`](Self::handles_a_widening_must_hold) for why holding the
+    /// spine is the whole of it.
     pub fn move_curve(
         &mut self,
         curve: SketchCurve,
         at: [f64; 2],
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
-        let Some(hands) = self.hands_moving_a_curve(curve, at) else {
+        let Some(mut hands) = self.hands_moving_a_curve(curve, at) else {
             return Ok(false);
         };
+        hands.extend(self.handles_a_widening_must_hold(&hands));
         self.drag_or_leave_it_alone(|sketch| {
             for (point, to) in &hands {
                 if let Some(index) = sketch.point_index(*point) {
@@ -2769,6 +2772,47 @@ impl Sketch {
             | SketchCurve::Conic(_)
             | SketchCurve::Spline(_) => None,
         }
+    }
+
+    /// The spine handles a curve drag has to hold still, each pinned where it already stands.
+    ///
+    /// # Why a widening needs a second hand at all
+    ///
+    /// A slot keeps ONE freedom on purpose, its width, and a rail drag is how the author spends
+    /// it. But "the width" is not a coordinate the solver can see: what it sees is two rails, two
+    /// caps tangent to both, and cap centers standing on the spine. Pull one rail out and that
+    /// system has a whole family of answers — move the far rail in, slide the spine, grow the
+    /// caps, in any mixture that keeps the tangencies. Least motion picks the cheapest mixture,
+    /// which is a bit of each: measured, a 2.0 pull on one rail moved the far rail 0.4 the wrong
+    /// way and slid the centerline 0.8. The slot stayed a slot and stopped being the slot the
+    /// author drew.
+    ///
+    /// So the spine is pinned, and that single hand is the whole of the symmetric rule. Nothing
+    /// asserts that the rails are equidistant, and nothing needs to: a cap is a circle, its center
+    /// is equidistant from its own two ends BY CONSTRUCTION, and that center is coincident with a
+    /// spine handle. Hold the spine and the mirror follows from the tangency web that is already
+    /// there. It costs no new relation, and it reads the same for a straight slot and a turning
+    /// one — where a `Symmetry` relation could not, since it wants a segment axis and an arc
+    /// slot's spine is an arc.
+    ///
+    /// # What counts as a spine handle
+    ///
+    /// An authored point standing coincident with a DERIVED center, found by walking out from what
+    /// the drag already holds. That is a slot's cap centers and its turning center, and it is not
+    /// a corner, an endpoint, or anything in the rest of the drawing. Points the drag is already
+    /// moving are left alone: a hand that both moves and holds is not a hand.
+    fn handles_a_widening_must_hold(
+        &self,
+        hands: &[(EntityId, [f64; 2])],
+    ) -> Vec<(EntityId, [f64; 2])> {
+        let held: Vec<EntityId> = hands.iter().map(|(point, _)| *point).collect();
+        self.what_a_drag_of_these_can_reach(&held)
+            .iter()
+            .filter(|point| !held.contains(point))
+            .filter(|point| !self.is_derived_point(**point))
+            .filter(|point| self.center_this_handle_stands_on(**point).is_some())
+            .filter_map(|point| Some((*point, self.point_in_plane(*point)?)))
+            .collect()
     }
 
     /// Where the point `id` stands, in plane coordinates.
