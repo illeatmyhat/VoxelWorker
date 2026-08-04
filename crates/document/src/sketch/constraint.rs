@@ -545,6 +545,10 @@ pub enum ConstraintRefusal {
     InvalidSymmetry,
     /// The request names geometry the store does not hold.
     UnknownEntity,
+    /// It names the BACK arm of a tangent lever, whose position is re-derived as the mirror of
+    /// the forward arm after every edit. A relation on it would be met by the solve and then
+    /// silently overwritten, which is worse than declining it.
+    MirroredTangentArm,
     /// Its own terms cannot be met by any drawing: for example a negative distance or a horizontal
     /// assertion on one segment endpoint twice. There is nothing standing to blame.
     Impossible,
@@ -590,6 +594,7 @@ impl ConstraintRefusal {
             } => vec![*constraint],
             Self::MissingEvaluationContext
             | Self::UnknownEntity
+            | Self::MirroredTangentArm
             | Self::Impossible
             | Self::InvalidConcentric
             | Self::InvalidSymmetry

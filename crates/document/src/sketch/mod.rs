@@ -3371,6 +3371,7 @@ impl Sketch {
     ) -> Result<EntityId, ConstraintRefusal> {
         let kind = kind.normalized();
         self.check_names_live_geometry(kind, context)?;
+        self.check_names_no_mirrored_arm(kind)?;
         self.check_is_not_already_asserted(kind)?;
         let prepared = constraint::prepare(self, &self.constraints, Some(context)).map_err(
             |error| match error {
@@ -3490,6 +3491,35 @@ impl Sketch {
             Some(held) => Err(ConstraintRefusal::AlreadyAsserted { existing: held.id }),
             None => Ok(()),
         }
+    }
+
+    /// Decline a relation that names the BACK arm of a tangent lever.
+    ///
+    /// The back arm is not a freedom: [`sync_tangent_arms`](Self::sync_tangent_arms) puts it back
+    /// on the mirror of the forward arm after every edit, so a constraint on it would be met by
+    /// the solve and then quietly undone by the re-derivation half a step later. An arc's center
+    /// is re-derived too and is still constrainable, but only because the residual system reads it
+    /// AS the function it is; the back arm has no such reading, and until it does, declining is
+    /// the only answer that does not lie.
+    fn check_names_no_mirrored_arm(&self, kind: ConstraintKind) -> Result<(), ConstraintRefusal> {
+        let named = kind.points();
+        if named
+            .iter()
+            .any(|point| self.is_mirrored_tangent_arm(*point))
+        {
+            return Err(ConstraintRefusal::MirroredTangentArm);
+        }
+        Ok(())
+    }
+
+    /// Whether `point` is the BACK arm of some lever — the mirrored end, not the authored one.
+    pub fn is_mirrored_tangent_arm(&self, point: EntityId) -> bool {
+        self.splines.iter().any(|spline| {
+            spline
+                .tangents
+                .values()
+                .any(|handle| handle.backward == point)
+        })
     }
 
     /// Whether every entity `kind` names is live in the store, and its own terms are meetable.

@@ -421,6 +421,49 @@ fn a_tangent_lever_is_symmetric_about_the_fit_point_it_steers() {
     mirrored(&sketch);
 }
 
+/// The back arm's position is re-derived after every edit, so a relation on it would be met by
+/// the solve and then silently overwritten. The door declines it instead — and still accepts one
+/// on the FORWARD arm, which is authored and stays where a constraint puts it.
+#[test]
+fn a_constraint_is_declined_on_the_mirrored_arm_and_taken_on_the_authored_one() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let fit = sketch.splines()[0].points[0];
+    let lever = sketch.tangent_handle_of(fit).expect("a lever");
+    let elsewhere = sketch.add_free_point(SketchPoint::new(-6, -6));
+
+    assert_eq!(
+        sketch.add_constraint(
+            ConstraintKind::Coincident {
+                first: lever.backward.min(elsewhere),
+                second: lever.backward.max(elsewhere),
+            },
+            ctx(16),
+        ),
+        Err(ConstraintRefusal::MirroredTangentArm)
+    );
+
+    let other = sketch.add_free_point(SketchPoint::new(-9, -9));
+    assert!(sketch
+        .add_constraint(
+            ConstraintKind::Coincident {
+                first: lever.forward.min(other),
+                second: lever.forward.max(other),
+            },
+            ctx(16),
+        )
+        .is_ok());
+}
+
 /// Grabbing the BACK arm steers the FORWARD one. The two ends name one quantity, so a drag on
 /// either has to land the same lever — and the arm the author grabbed has to end up under their
 /// cursor, not at the mirror of it.

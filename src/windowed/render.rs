@@ -1430,6 +1430,25 @@ impl WindowedState {
     /// decides the grab by whatever order the store happens to be in. Landing on the derived twin
     /// is the dead half of that coin: dragging it authors a radius rather than moving the shape.
     /// The bias is under a pixel, so it can only ever settle a tie the author could not see anyway.
+    /// The GEOMETRY point under the cursor: like
+    /// [`sketch_vertex_at`](Self::sketch_vertex_at), but blind to a tangent lever's arms.
+    ///
+    /// An arm is a manipulator, not a place in the drawing. A tool that seams onto an existing
+    /// point — a line chain, an arc, a pattern center — must not seam onto one, or the author
+    /// draws geometry anchored to a thing whose whole job is to move when they steer the curve.
+    /// The DRAG path deliberately does not go through here: grabbing an arm is the point of it.
+    fn sketch_geometry_point_at(
+        &self,
+        target: document::scene::NodeId,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<document::sketch::EntityId> {
+        let point = self
+            .sketch_vertex_at(cursor_x, cursor_y)
+            .and_then(|index| self.sketch_point_ids.get(index).copied())?;
+        (!self.tangent_arm_points(target).contains(&point)).then_some(point)
+    }
+
     fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
         let scale = self.window.scale_factor() as f32;
         let grab_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD) * scale;
@@ -2023,10 +2042,7 @@ impl WindowedState {
         let Some(target) = self.panel_state.sketch_mode else {
             return;
         };
-        let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) else {
-            return;
-        };
-        let Some(center) = self.sketch_point_ids.get(index).copied() else {
+        let Some(center) = self.sketch_geometry_point_at(target, cursor_x, cursor_y) else {
             return;
         };
         let sources = self.sketch_curve_selection(target);
@@ -2162,9 +2178,7 @@ impl WindowedState {
     ) -> Option<sketch_target::ResolvedSketchTarget> {
         let target = self.panel_state.sketch_mode?;
         let (producer, _) = self.sketch_node_state(target)?;
-        let existing = self
-            .sketch_vertex_at(cursor_x, cursor_y)
-            .and_then(|index| self.sketch_point_ids.get(index).copied());
+        let existing = self.sketch_geometry_point_at(target, cursor_x, cursor_y);
         sketch_target::resolve_target(
             &producer,
             existing,
@@ -2182,9 +2196,7 @@ impl WindowedState {
     ) -> Option<tangent_arc::TangentArcSource> {
         let target = self.panel_state.sketch_mode?;
         let (producer, _) = self.sketch_node_state(target)?;
-        let seam = self
-            .sketch_vertex_at(cursor_x, cursor_y)
-            .and_then(|index| self.sketch_point_ids.get(index).copied())?;
+        let seam = self.sketch_geometry_point_at(target, cursor_x, cursor_y)?;
         let curve = match self.nearest_open_sketch_edge(cursor_x, cursor_y)? {
             SketchEdgeHit::Segment(id) => document::sketch::SketchCurve::Segment(id),
             SketchEdgeHit::Arc(id) => document::sketch::SketchCurve::Arc(id),
@@ -2227,9 +2239,7 @@ impl WindowedState {
             return;
         };
         self.validate_line_gesture(target);
-        let hit = self
-            .sketch_vertex_at(cursor_x, cursor_y)
-            .and_then(|index| self.sketch_point_ids.get(index).copied());
+        let hit = self.sketch_geometry_point_at(target, cursor_x, cursor_y);
         let hit_live_end = self
             .line_gesture
             .chain()
@@ -2753,9 +2763,7 @@ impl WindowedState {
             return;
         }
 
-        let existing = self
-            .sketch_vertex_at(cursor_x, cursor_y)
-            .and_then(|index| self.sketch_point_ids.get(index).copied());
+        let existing = self.sketch_geometry_point_at(target, cursor_x, cursor_y);
         let (next, clicked) = match existing {
             Some(id) => (producer.clone(), id),
             None => {
@@ -2880,9 +2888,17 @@ impl WindowedState {
             egui::Pos2::new(up_x as f32, up_y as f32),
         );
         let mut picked: Vec<ui::panel::SelectionTarget> = Vec::new();
+        let arms = self.tangent_arm_points(sketch);
         for (index, vertex) in self.sketch_vertex_px.iter().enumerate() {
             let inside = vertex.map(|px| rect.contains(px)).unwrap_or(false);
             if let (true, Some(&entity)) = (inside, self.sketch_point_ids.get(index)) {
+                // A lever's arms are swept up by any box drawn over the spline they steer, and
+                // they are manipulators rather than geometry: selecting them lights chrome the
+                // author did not reach for, and hands the next verb a set it cannot act on.
+                // A deliberate click still picks one — this is about the sweep.
+                if arms.contains(&entity) {
+                    continue;
+                }
                 picked.push(ui::panel::SelectionTarget::SketchPoint { sketch, entity });
             }
         }
@@ -6783,6 +6799,9 @@ fn refusal_text(why: &document::sketch::ConstraintRefusal) -> &'static str {
     use document::sketch::ConstraintRefusal;
     match why {
         ConstraintRefusal::UnknownEntity => "names geometry that is gone",
+        ConstraintRefusal::MirroredTangentArm => {
+            "that end of the handle is a mirror — relate the other one"
+        }
         ConstraintRefusal::Impossible => "no drawing can meet it",
         // Whether a culprit was isolated changes what the sentence can honestly promise: with one
         // selected, "this" points at a lit badge; without, the author is on their own and the
