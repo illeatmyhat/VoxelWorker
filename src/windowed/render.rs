@@ -1248,6 +1248,32 @@ impl WindowedState {
         Some((producer.clone(), node.transform.offset_voxels))
     }
 
+    /// Every control-point spline's frame in `target`, as its aggregate identity and its controls
+    /// in leg order.
+    ///
+    /// Ids only, and deliberately not the producer: this runs every frame, and
+    /// [`sketch_node_state`](Self::sketch_node_state) clones the whole solid to hand one back.
+    fn control_polygons(
+        &self,
+        target: document::scene::NodeId,
+    ) -> Vec<(
+        document::sketch::SketchCurve,
+        Vec<document::sketch::EntityId>,
+    )> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return Vec::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return Vec::new();
+        };
+        producer
+            .sketch
+            .control_polygons()
+            .into_iter()
+            .map(|(spline, controls)| (document::sketch::SketchCurve::Spline(spline), controls))
+            .collect()
+    }
+
     /// Direct-mutate the sketch node `target`'s producer + world voxel offset — the transient
     /// live-drag preview / restore. Always reconciled through `apply_intent` on release, so the
     /// command stack stays the single source of truth for undo.
@@ -1479,7 +1505,14 @@ impl WindowedState {
         let pad_px = ui::chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
         let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
         let mut nearest: Option<(document::sketch::SketchCurve, f32)> = None;
-        for (curve, chords) in &self.sketch_higher_curve_chords {
+        // A control frame's legs compete as spans of the spline they steer. They are drawn, not
+        // stored, so there is no entity for a leg hit to mean — and the spline is what the author
+        // is reaching for when they grab one.
+        for (curve, chords) in self
+            .sketch_higher_curve_chords
+            .iter()
+            .chain(&self.sketch_spline_polygons)
+        {
             let Some(distance) = chords
                 .array_windows::<2>()
                 .map(|pair| point_to_segment_distance(cursor, pair[0], pair[1]))
@@ -4184,6 +4217,7 @@ impl WindowedState {
         self.sketch_arc_chords.clear();
         self.sketch_circle_chords.clear();
         self.sketch_higher_curve_chords.clear();
+        self.sketch_spline_polygons.clear();
         self.sketch_face_polygons.clear();
         self.sketch_constraint_badges.clear();
         self.sketch_insert_preview = None;
@@ -4471,6 +4505,22 @@ impl WindowedState {
                 }
             }
         }
+        // The control frames, projected through the vertex cache their controls already went
+        // through — so a leg meets its two dots exactly, rather than by two projections agreeing.
+        // One behind-camera control culls the whole frame, as a behind-camera endpoint culls a
+        // segment line.
+        for (spline, controls) in self.control_polygons(target) {
+            let legs: Option<Vec<egui::Pos2>> = controls
+                .iter()
+                .map(|id| {
+                    let index = self.sketch_point_ids.iter().position(|held| held == id)?;
+                    *self.sketch_vertex_px.get(index)?
+                })
+                .collect();
+            if let Some(legs) = legs {
+                self.sketch_spline_polygons.push((spline, legs));
+            }
+        }
 
         // Which curved entities are construction, joined from the handles while they are still in
         // hand. The chord caches above answer "where is it on screen" for the hit-test and are
@@ -4714,6 +4764,30 @@ impl WindowedState {
                 chords,
                 state,
                 construction: construction_higher.contains(entity),
+            });
+        }
+
+        // A control-point spline's frame, in construction ink and under the spline's own state:
+        // hovering a leg lights the curve it steers, because that is what the leg resolves to.
+        for (spline, legs) in &self.sketch_spline_polygons {
+            let picked = ui::panel::SelectionTarget::SketchHigherCurve {
+                sketch: target,
+                curve: *spline,
+            };
+            let selected = self.panel_state.selection.contains(picked);
+            let state = match hovered_edge {
+                _ if selected => ui::gizmos::HandleState::Selected,
+                Some((SketchEdgeHit::HigherCurve(curve), state)) if curve == *spline => state,
+                _ => ui::gizmos::HandleState::Idle,
+            };
+            let chords = legs
+                .iter()
+                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
+                .collect();
+            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
+                chords,
+                state,
+                construction: true,
             });
         }
 

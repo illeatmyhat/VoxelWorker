@@ -424,6 +424,11 @@ struct WindowedState {
     /// Each authored higher-order curve piece in physical pixels, retaining its aggregate
     /// identity so every span of an ellipse or spline resolves to the same selectable curve.
     sketch_higher_curve_chords: Vec<(document::sketch::SketchCurve, Vec<egui::Pos2>)>,
+    /// Each control-point spline's FRAME in physical px, under the spline's own identity — the
+    /// legs `Sketch::control_polygons` names. Kept apart from
+    /// [`sketch_higher_curve_chords`](Self::sketch_higher_curve_chords) because a leg draws in
+    /// construction ink while the curve it carries does not; both hit-test to the same spline.
+    sketch_spline_polygons: Vec<(document::sketch::SketchCurve, Vec<egui::Pos2>)>,
     /// Each derived region as `(its key, its boundary polygon in PHYSICAL px)` for this frame
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.
@@ -940,6 +945,7 @@ impl WindowedState {
             sketch_arc_chords: Vec::new(),
             sketch_circle_chords: Vec::new(),
             sketch_higher_curve_chords: Vec::new(),
+            sketch_spline_polygons: Vec::new(),
             sketch_face_polygons: Vec::new(),
             sketch_menu_face: None,
             sketch_insert_preview: None,
@@ -1112,6 +1118,7 @@ impl WindowedState {
             sketch_arc_chords: _,
             sketch_circle_chords: _,
             sketch_higher_curve_chords: _,
+            sketch_spline_polygons: _,
             sketch_face_polygons: _,
             sketch_menu_face: _,
             sketch_insert_preview: _,

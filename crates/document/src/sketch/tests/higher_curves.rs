@@ -299,6 +299,47 @@ fn deleting_a_fit_point_simplifies_the_spline_and_a_closed_one_opens_no_lower_th
     assert!(sketch.splines().is_empty());
 }
 
+/// The control frame is derived from the point list, so it names controls in leg order and names
+/// nothing at all for a fit spline, whose points are on the curve rather than off it.
+#[test]
+fn only_a_control_point_spline_reports_a_frame_and_it_runs_in_control_order() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(-6, 0),
+                SketchPoint::new(-3, 4),
+                SketchPoint::new(0, 0),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    assert!(sketch.control_polygons().is_empty());
+
+    let spline = sketch
+        .add_control_point_spline(&[
+            SketchPoint::new(0, 0),
+            SketchPoint::new(2, 5),
+            SketchPoint::new(6, 5),
+            SketchPoint::new(8, 0),
+        ])
+        .expect("four controls make one cubic span");
+    let index = sketch
+        .splines()
+        .iter()
+        .position(|held| held.id == spline)
+        .expect("the spline stands");
+    let controls = sketch.splines()[index].points.clone();
+    assert_eq!(sketch.control_polygons(), vec![(spline, controls.clone())]);
+
+    // A closed frame's last leg returns to the first control, so the polygon loops as the curve
+    // it carries does.
+    sketch.splines[index].closed = true;
+    let looped = sketch.control_polygons();
+    assert_eq!(looped[0].1.len(), controls.len() + 1);
+    assert_eq!(looped[0].1.last(), controls.first());
+}
+
 /// A spline has no perpendicular to offset along, so grabbing its body TRANSLATES it: every point
 /// moves by the same displacement and the shape is untouched.
 #[test]

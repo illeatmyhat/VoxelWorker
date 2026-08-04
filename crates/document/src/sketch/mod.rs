@@ -1994,6 +1994,35 @@ impl Sketch {
         &self.patterns
     }
 
+    /// Every control-point spline's frame: the spline's id, and its controls in the order the
+    /// legs between them run, closing back to the first control when the spline is closed.
+    ///
+    /// # The legs are drawn, never stored
+    ///
+    /// A leg IS the adjacency of the spline's own point list, so there is nothing here to
+    /// serialize, retarget, or delete — which is what makes the frame derived and undeletable by
+    /// construction rather than by a guard. Reifying the legs as segments would put curve-shaped
+    /// things in the store that no face may use and no constraint may name, and every cascade,
+    /// trim, and break would have to learn to spare them. A viewer that wants a leg to be
+    /// PICKABLE resolves the hit to the spline, the way an arc's rim resolves to the arc;
+    /// pickable and stored are separate questions.
+    ///
+    /// Fit-point splines are absent: their points are ON the curve, so there is no frame standing
+    /// off it to draw.
+    pub fn control_polygons(&self) -> Vec<(EntityId, Vec<EntityId>)> {
+        self.splines
+            .iter()
+            .filter(|spline| spline.kind == SplineKind::ControlPoint)
+            .map(|spline| {
+                let mut controls = spline.points.clone();
+                if spline.closed {
+                    controls.extend(spline.points.first().copied());
+                }
+                (spline.id, controls)
+            })
+            .collect()
+    }
+
     /// Put a curve into the construction role, whatever role it held.
     ///
     /// Idempotent where [`toggle_construction`](Self::toggle_construction) is not. A tool that
