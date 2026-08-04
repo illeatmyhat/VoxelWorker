@@ -99,6 +99,30 @@ impl RationalBezier {
             / (speed_squared * speed_squared.sqrt())
     }
 
+    /// The curvature VECTOR: the signed curvature times the leftward unit normal.
+    ///
+    /// Unlike [`curvature_at`](Self::curvature_at) this does not depend on which way the curve is
+    /// traversed. Reversing the parameter flips the sign of the curvature AND the direction of the
+    /// normal, so their product is the same arrow either way — it points from the curve toward its
+    /// center of curvature, with length `1/radius`.
+    ///
+    /// That invariance is the whole reason to have it. Comparing the curvature of two curves that
+    /// MEET is otherwise a question about their two traversal directions before it is a question
+    /// about their shapes, and the resulting sign analysis has a case for every way the pair can be
+    /// oriented. Comparing arrows has none.
+    ///
+    /// A stationary or malformed point reports `[NaN; 2]`, for the reason `curvature_at` does.
+    #[must_use]
+    pub fn curvature_vector_at(&self, parameter: f64) -> [f64; 2] {
+        let first = self.derivatives_at(parameter).0;
+        let speed = first[0].hypot(first[1]);
+        if speed <= f64::EPSILON || !speed.is_finite() {
+            return [f64::NAN; 2];
+        }
+        let curvature = self.curvature_at(parameter);
+        [-first[1] / speed * curvature, first[0] / speed * curvature]
+    }
+
     /// The same curve with its parameter direction reversed.
     #[must_use]
     pub const fn reversed(&self) -> Self {
@@ -325,6 +349,46 @@ mod tests {
         close(middle.control[0], [0.75, 0.0]);
         close(middle.control[3], [2.25, 0.0]);
         close(middle.reversed().point_at(0.0), [2.25, 0.0]);
+    }
+
+    /// The curvature arrow points at the center of curvature, is `1/radius` long, and reads the
+    /// same on a curve traversed backwards — the property the G2 relation is built on.
+    #[test]
+    fn the_curvature_vector_points_at_the_center_and_ignores_traversal() {
+        let radius = 4.0;
+        let quarter = RationalBezier::elevated_quadratic(
+            [[radius, 0.0], [radius, radius], [0.0, radius]],
+            [1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0],
+        );
+        for parameter in [0.0_f64, 0.25, 0.5, 1.0] {
+            let at = quarter.point_at(parameter);
+            let arrow = quarter.curvature_vector_at(parameter);
+            // Toward the origin, which is this arc's center, with length 1/radius.
+            let length = arrow[0].hypot(arrow[1]);
+            assert!(
+                (length - 1.0 / radius).abs() <= 1.0e-10,
+                "length {length} at {parameter}"
+            );
+            let toward_center = [-at[0] / radius, -at[1] / radius];
+            for axis in 0..2 {
+                assert!(
+                    (arrow[axis] - toward_center[axis] / radius).abs() <= 1.0e-10,
+                    "{arrow:?} should point at the center from {at:?}"
+                );
+            }
+            // Backwards along the same curve, the same arrow.
+            let backwards = quarter.reversed().curvature_vector_at(1.0 - parameter);
+            for axis in 0..2 {
+                assert!(
+                    (arrow[axis] - backwards[axis]).abs() <= 1.0e-10,
+                    "traversal changed the arrow: {arrow:?} vs {backwards:?}"
+                );
+            }
+        }
+        // A straight run curves nowhere.
+        let line = RationalBezier::cubic([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]);
+        let straight = line.curvature_vector_at(0.0);
+        assert!(straight[0].abs() <= 1.0e-12 && straight[1].abs() <= 1.0e-12);
     }
 
     #[test]

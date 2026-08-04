@@ -5,6 +5,7 @@
 
 mod center_arc;
 mod circle;
+mod curvature;
 mod curve;
 mod higher_curve;
 mod midpoint_line;
@@ -23,6 +24,9 @@ mod tests;
 pub use center_arc::{center_arc_candidate, ArcTurn, CenterArcCandidate, CenterArcCandidateError};
 pub use circle::{
     three_point_circle_candidate, two_point_circle_candidate, CircleCandidate, CircleCandidateError,
+};
+pub use curvature::{
+    curvature_arrow_at, curvature_residual, direction_at, direction_residual, JointSpan, SpanEnd,
 };
 pub use curve::{ArcDomain, CircularCurve, CurveGeometry};
 pub use higher_curve::{

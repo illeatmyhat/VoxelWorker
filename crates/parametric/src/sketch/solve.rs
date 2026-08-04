@@ -18,6 +18,7 @@
     clippy::use_self
 )]
 
+use super::curvature::{curvature_residual, direction_residual, JointSpan, SpanEnd};
 use super::curve::{
     ArcDomain, CircularCurve, CurveGeometry, COLLAPSE_TOLERANCE as COLLAPSED_SPAN,
     SATISFACTION_TOLERANCE as SATISFIED_RESIDUAL,
@@ -179,6 +180,33 @@ pub enum Relation {
         axis: SegmentId,
         branch: SymmetryBranch,
     },
+    /// A spline's lever at `joint` runs along `against`. This is G1 across the joint, expressed
+    /// over the lever's ARM rather than over a curve the solver holds: a spline is not one of its
+    /// curves, but the arm steering it is one of its points, and the direction the arm gives is the
+    /// direction the spline leaves at.
+    TangentDirection {
+        joint: PointId,
+        joint_arm: PointId,
+        against: SketchCurve,
+    },
+    /// A spline's curvature at `joint` matches `against`'s — G2 across the joint.
+    ///
+    /// The four points name the span the joint belongs to, which is all a spline's shape there
+    /// depends on while every fit point carries an authored tangent. See [`JointSpan`] for why
+    /// that locality holds and why the comparison is made between curvature ARROWS rather than
+    /// signed scalars.
+    ///
+    /// This asserts curvature ALONE. G2 in the authoring sense is this plus
+    /// [`Relation::TangentDirection`], because two curves can agree about how hard they bend while
+    /// leaving a joint in different directions — a cusp with a matching comb.
+    Curvature {
+        joint: PointId,
+        joint_arm: PointId,
+        neighbor: PointId,
+        neighbor_arm: PointId,
+        end: SpanEnd,
+        against: SketchCurve,
+    },
     /// Both coordinates of a point lie on the lattice `phase + n * pitch`. Quantize is the
     /// discrete outer tier: one numerical pass freezes the nearest lattice point from its input
     /// configuration, then the next exact pass may choose again from the preferred result.
@@ -207,6 +235,8 @@ impl Relation {
             | Self::Perpendicular { .. }
             | Self::Equal { .. }
             | Self::Tangent { .. }
+            | Self::TangentDirection { .. }
+            | Self::Curvature { .. }
             | Self::PointOnCurve { .. } => 1,
             Self::Symmetry { first, .. } => match first {
                 SketchCurve::Segment(_) => 4,
@@ -553,6 +583,16 @@ impl ProblemBuilder {
                 | Relation::PointOnCurve { point, .. } => vec![point],
                 Relation::Distance { from, to, .. } => vec![from, to],
                 Relation::Coincident { first, second } => vec![first, second],
+                Relation::TangentDirection {
+                    joint, joint_arm, ..
+                } => vec![joint, joint_arm],
+                Relation::Curvature {
+                    joint,
+                    joint_arm,
+                    neighbor,
+                    neighbor_arm,
+                    ..
+                } => vec![joint, joint_arm, neighbor, neighbor_arm],
                 _ => Vec::new(),
             };
             if points.into_iter().any(|point| !known_point(point)) {
@@ -933,6 +973,30 @@ impl Problem {
                 point: point(id)?,
                 curve: curve(subject)?,
             }),
+            Relation::TangentDirection {
+                joint,
+                joint_arm,
+                against,
+            } => Ok(Resolved::TangentDirection {
+                joint: point(joint)?,
+                joint_arm: point(joint_arm)?,
+                against: curve(against)?,
+            }),
+            Relation::Curvature {
+                joint,
+                joint_arm,
+                neighbor,
+                neighbor_arm,
+                end,
+                against,
+            } => Ok(Resolved::Curvature {
+                joint: point(joint)?,
+                joint_arm: point(joint_arm)?,
+                neighbor: point(neighbor)?,
+                neighbor_arm: point(neighbor_arm)?,
+                end,
+                against: curve(against)?,
+            }),
             Relation::Tangent {
                 first,
                 second,
@@ -1088,6 +1152,80 @@ mod tests {
                 pitch: 1.0,
                 phase: 0.0,
             },
+        );
+    }
+
+    /// The solver drives a spline's end lever until the spline leaves a circle the way the circle
+    /// was going: same direction, same curvature.
+    ///
+    /// The lever's LENGTH is the freedom this spends. It is a real one — the arm is an ordinary
+    /// point in the parameter vector — which is the whole reason curvature can be a true relation
+    /// here rather than something written into the geometry after the fact.
+    #[test]
+    fn a_spline_end_settles_into_curvature_continuity_with_a_circle() {
+        let mut builder = ProblemBuilder::new();
+        // A circle of radius 5 about the origin, and a spline whose first point sits on it at
+        // [5, 0]. Its lever starts pointing the right way but at the wrong LENGTH, so the joint is
+        // tangent from the start and the curvature is what has to be found.
+        let center = builder.add_point([0.0, 0.0]);
+        // The circle is GIVEN, not negotiable: left free, the solver meets the relation by
+        // shrinking it to the spline instead of bending the spline to it, which is a valid answer
+        // to a question nobody asked.
+        let radius = builder.add_fixed_positive_radius(5.0).unwrap();
+        let circle = builder.add_circle(center, radius);
+        let joint = builder.add_point([5.0, 0.0]);
+        let joint_arm = builder.add_point([5.0, 0.35]);
+        let neighbor = builder.add_point([4.0, 4.0]);
+        let neighbor_arm = builder.add_point([4.0 - 2.1 / 3.0, 4.0 + 1.0 / 3.0]);
+        // Pin everything the gesture does not author, so the only way to meet the relation is to
+        // move the arm — otherwise least motion is free to drag the circle to the spline.
+        builder.add_constraint(Relation::Fix {
+            point: center,
+            at: [0.0, 0.0],
+        });
+        builder.add_constraint(Relation::Fix {
+            point: joint,
+            at: [5.0, 0.0],
+        });
+        builder.add_constraint(Relation::Fix {
+            point: neighbor,
+            at: [4.0, 4.0],
+        });
+        builder.add_constraint(Relation::Fix {
+            point: neighbor_arm,
+            at: [4.0 - 2.1 / 3.0, 4.0 + 1.0 / 3.0],
+        });
+        let direction = Relation::TangentDirection {
+            joint,
+            joint_arm,
+            against: SketchCurve::Circle(circle),
+        };
+        let curvature = Relation::Curvature {
+            joint,
+            joint_arm,
+            neighbor,
+            neighbor_arm,
+            end: SpanEnd::Start,
+            against: SketchCurve::Circle(circle),
+        };
+        assert_eq!(direction.residual_count(), 1);
+        assert_eq!(curvature.residual_count(), 1);
+        builder.add_constraint(direction);
+        builder.add_constraint(curvature);
+
+        let settled = builder.finish().unwrap().settle();
+        assert!(settled.diagnostics.satisfied, "the joint should settle");
+
+        let arm = settled.solution.position(joint_arm).unwrap();
+        // Still tangent: the arm stands straight up from a point on the circle's equator.
+        assert!(
+            (arm[0] - 5.0).abs() < SATISFIED_RESIDUAL,
+            "the lever left the tangent: {arm:?}"
+        );
+        // And the curvature matches, which for this span happens at a lever of length 1.
+        assert!(
+            (arm[1].abs() - 1.0).abs() < 1.0e-4,
+            "the lever should have found length 1, stands at {arm:?}"
         );
     }
 
@@ -2429,6 +2567,19 @@ enum Resolved {
         point: usize,
         curve: ResolvedCurve,
     },
+    TangentDirection {
+        joint: usize,
+        joint_arm: usize,
+        against: ResolvedCurve,
+    },
+    Curvature {
+        joint: usize,
+        joint_arm: usize,
+        neighbor: usize,
+        neighbor_arm: usize,
+        end: SpanEnd,
+        against: ResolvedCurve,
+    },
     Tangent {
         first: ResolvedCurve,
         second: ResolvedCurve,
@@ -2959,6 +3110,50 @@ impl ResidualSystem for Residuals<'_> {
                     );
                     row += 1;
                 }
+                Resolved::TangentDirection {
+                    joint,
+                    joint_arm,
+                    against,
+                } => {
+                    into[row] = direction_residual(
+                        at(joint),
+                        at(joint_arm),
+                        curve_geometry(
+                            against,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        ),
+                    );
+                    row += 1;
+                }
+                Resolved::Curvature {
+                    joint,
+                    joint_arm,
+                    neighbor,
+                    neighbor_arm,
+                    end,
+                    against,
+                } => {
+                    into[row] = curvature_residual(
+                        JointSpan {
+                            joint: at(joint),
+                            joint_arm: at(joint_arm),
+                            neighbor: at(neighbor),
+                            neighbor_arm: at(neighbor_arm),
+                            end,
+                        },
+                        curve_geometry(
+                            against,
+                            &at,
+                            &self.problem.parameters,
+                            &whole,
+                            self.problem.points.len(),
+                        ),
+                    );
+                    row += 1;
+                }
                 Resolved::Symmetry {
                     first,
                     second,
@@ -3431,6 +3626,25 @@ impl Problem {
                 .collect(),
             Relation::Distance { from, to, .. } => vec![from, to],
             Relation::Coincident { first, second } => vec![first, second],
+            Relation::TangentDirection {
+                joint,
+                joint_arm,
+                against,
+            } => [joint, joint_arm]
+                .into_iter()
+                .chain(self.points_of_curve(against))
+                .collect(),
+            Relation::Curvature {
+                joint,
+                joint_arm,
+                neighbor,
+                neighbor_arm,
+                end: _,
+                against,
+            } => [joint, joint_arm, neighbor, neighbor_arm]
+                .into_iter()
+                .chain(self.points_of_curve(against))
+                .collect(),
             Relation::Tangent { first, second, .. } | Relation::Concentric { first, second } => {
                 [first, second]
                     .into_iter()
@@ -3487,6 +3701,12 @@ impl Problem {
                 SketchCurve::Segment(segment) => vec![segment],
                 SketchCurve::Arc(_) | SketchCurve::Circle(_) => Vec::new(),
             },
+            Relation::TangentDirection { against, .. } | Relation::Curvature { against, .. } => {
+                match against {
+                    SketchCurve::Segment(segment) => vec![segment],
+                    SketchCurve::Arc(_) | SketchCurve::Circle(_) => Vec::new(),
+                }
+            }
             Relation::Fix { .. }
             | Relation::Quantize { .. }
             | Relation::Distance { .. }
