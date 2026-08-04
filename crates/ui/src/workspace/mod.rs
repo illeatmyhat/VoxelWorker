@@ -211,8 +211,9 @@ use crate::theme;
 
 /// Top bar height (design points) — brand, breadcrumbs, viewer segment, readouts.
 const TOP_BAR_HEIGHT: f32 = 42.0;
-/// The pinned rail: shapes and tools, the two sets that cannot grow.
-const RAIL_WIDTH: f32 = 54.0;
+/// The pinned rail: shapes and tools, the two sets that cannot grow. A grid of two columns —
+/// glyph tile and chevron tile — with the scroll lane down the left of both.
+const RAIL_WIDTH: f32 = rail::BAR_LANE + rail::CELL_WIDTH + rail::CHEVRON_WIDTH;
 /// The browser: the scene's parts, definitions and sketches.
 const BROWSER_WIDTH: f32 = 222.0;
 /// The inspector: the selected node's own dialog.

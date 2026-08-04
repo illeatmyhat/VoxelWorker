@@ -34,6 +34,20 @@ const TOOL_CELL_HEIGHT: f32 = 44.0;
 const TILE_GLYPH: f32 = 32.0;
 /// The rail glyph's box inside a tool cell (owner 2026-07-30 — 19 px read as small).
 const TOOL_GLYPH: f32 = 32.0;
+
+/// The grid's glyph column: one tool tile, the 32 px glyph with air around it.
+pub(super) const CELL_WIDTH: f32 = 44.0;
+
+/// The scroll indicator's lane, down the LEFT edge of the column.
+///
+/// Left because the right edge is the chevron column, and egui draws its own bar hard against the
+/// right — over the very tile that opens a family. egui has no side to put it on other than that
+/// one ([`egui::containers::scroll_area`] pins the bar to `max_cross`), so the rail hides egui's
+/// bar and paints its own here.
+pub(super) const BAR_LANE: f32 = 10.0;
+
+/// One grid row: both columns, the lane excluded.
+const ROW_WIDTH: f32 = CELL_WIDTH + CHEVRON_WIDTH;
 /// Opacity of a reserved cell — present, legible, plainly not yet clickable.
 const RESERVED_DIM: f32 = 0.35;
 
@@ -533,45 +547,107 @@ pub(super) fn build_rail(
             let column = ui.max_rect();
             hairline(ui.painter(), column, Edge::Right, theme::BORDER);
 
-            rail_scroll_area().show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                if state.sketch_mode.is_some() {
-                    build_sketch_rail(ui, state, response);
-                } else {
-                    // Only the sketch rail has families, and the mode can end without a
-                    // pointer press — undo deleting the sketch node, or a load that finds the
-                    // id stale. Clearing here rather than at each of those exits means a
-                    // row cannot survive to slide out unprompted on the next entry.
-                    state.open_rail_group = None;
-                    rail_heading(ui, "Shape");
-                    for &(icon, kind) in SHAPES {
-                        shape_cell(ui, icon, kind, state, response);
-                    }
-                    rail_heading(ui, "Tool");
-                    for &(icon, enabled) in TOOLS {
-                        tool_cell(ui, icon, enabled);
-                    }
-                }
-            });
+            let lane = egui::Rect::from_min_max(
+                column.min,
+                egui::pos2(column.left() + BAR_LANE, column.bottom()),
+            );
+            let grid = egui::Rect::from_min_max(egui::pos2(lane.right(), column.top()), column.max);
+
+            let scrolled = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(grid), |ui| {
+                    rail_scroll_area().show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                        if state.sketch_mode.is_some() {
+                            build_sketch_rail(ui, state, response);
+                        } else {
+                            // Only the sketch rail has families, and the mode can end without a
+                            // pointer press — undo deleting the sketch node, or a load that finds
+                            // the id stale. Clearing here rather than at each of those exits means
+                            // an open row cannot survive to slide out unprompted on the next entry.
+                            state.open_rail_group = None;
+                            rail_heading(ui, "Shape");
+                            for &(icon, kind) in SHAPES {
+                                shape_cell(ui, icon, kind, state, response);
+                            }
+                            rail_heading(ui, "Tool");
+                            for &(icon, enabled) in TOOLS {
+                                tool_cell(ui, icon, enabled);
+                            }
+                        }
+                    })
+                })
+                .inner;
+
+            rail_scroll_lane(ui, lane, &scrolled);
         });
 }
 
-/// The rail's scrolling column.
+/// The rail's own scroll indicator, painted down the [`BAR_LANE`] and draggable.
 ///
-/// The bar is an INDICATOR here, not a handle. It floats over the right edge of every cell, and
-/// that edge is where a family's chevron lives, so a draggable bar eats the click that slides the
-/// family out (owner, 2026-08-03). Dropping `scroll_bar` from the sources leaves the bar
-/// hover-sensing, and egui's hit test only considers click-sensing rects, so the chevron
-/// underneath wins. The alternative — giving the bar its own strip — costs every cell that width
-/// and moves the viewport along with it.
+/// Hand-drawn because egui pins its bar to the right edge of the scrolling area, which here is the
+/// chevron column — the tile that opens a family. The bar took those clicks, and the owner read a
+/// bar sitting over the tools as the design being wrong rather than the click being lost, which it
+/// was both times. So egui's bar is hidden and this one lives in a lane of its own, where it
+/// overlaps nothing and can be dragged again.
+///
+/// Nothing is drawn while everything fits: a full-length handle is a bar that says nothing.
+fn rail_scroll_lane<Route>(
+    ui: &egui::Ui,
+    lane: egui::Rect,
+    scrolled: &egui::scroll_area::ScrollAreaOutput<Route>,
+) {
+    let reach = scrolled.content_size.y - scrolled.inner_rect.height();
+    if reach <= 0.0 {
+        return;
+    }
+    let travel = lane.height();
+    let handle_height = (travel * scrolled.inner_rect.height() / scrolled.content_size.y)
+        .max(BAR_HANDLE_MIN_HEIGHT)
+        .min(travel);
+    let at = scrolled.state.offset.y / reach;
+    let top = lane.top() + at.clamp(0.0, 1.0) * (travel - handle_height);
+    let handle = egui::Rect::from_min_size(
+        egui::pos2(lane.center().x - BAR_HANDLE_WIDTH * 0.5, top),
+        egui::vec2(BAR_HANDLE_WIDTH, handle_height),
+    );
+
+    let response = ui.interact(lane, ui.id().with("rail_scroll_lane"), egui::Sense::drag());
+    if response.dragged() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            // Drag the HANDLE, not the lane: the pointer names where the middle of the handle
+            // should sit, so grabbing it does not jump it under the cursor.
+            let free = travel - handle_height;
+            let wanted = (pointer.y - lane.top() - handle_height * 0.5) / free.max(f32::EPSILON);
+            let mut state = scrolled.state;
+            state.offset.y = wanted.clamp(0.0, 1.0) * reach;
+            state.store(ui.ctx(), scrolled.id);
+        }
+    }
+
+    let ink = if response.dragged() || response.hovered() {
+        theme::TEXT_HINT
+    } else {
+        theme::RULE
+    };
+    ui.painter()
+        .rect_filled(handle, BAR_HANDLE_WIDTH * 0.5, ink);
+}
+
+/// The rail's scrolling column, with egui's own bar hidden — [`rail_scroll_lane`] draws the one
+/// the rail uses, in a lane where it overlaps no tile.
 ///
 /// Shared with the tests rather than spelled out twice, so what they click through is the shipping
 /// configuration.
 fn rail_scroll_area() -> egui::ScrollArea {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .scroll_source(egui::scroll_area::ScrollSource::MOUSE_WHEEL)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 }
+
+/// The scroll handle's width inside its lane, and the shortest it is allowed to get — a handle
+/// that shrinks with the content stops being a target long before the content stops growing.
+const BAR_HANDLE_WIDTH: f32 = 4.0;
+const BAR_HANDLE_MIN_HEIGHT: f32 = 24.0;
 
 /// The swapped rail while a sketch is being edited: the accent `SKETCH` head (the whole-mode
 /// indicator), the vertex tools, then an `OP` separator and the set-operation picker. The
@@ -769,7 +845,7 @@ fn rail_heading(ui: &mut egui::Ui, title: &str) {
     ui.add_space(9.0);
     let galley = theme::letter_spaced(ui, title, theme::TEXT_HINT, 8.0, 1.2);
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(RAIL_WIDTH, galley.size().y + 5.0),
+        egui::vec2(ROW_WIDTH, galley.size().y + 5.0),
         egui::Sense::hover(),
     );
     let at = egui::pos2(rect.center().x - galley.size().x * 0.5, rect.top());
@@ -783,7 +859,7 @@ fn rail_heading(ui: &mut egui::Ui, title: &str) {
 fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
     let galley = theme::letter_spaced(ui, title, theme::BG, 9.0, 1.6);
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(RAIL_WIDTH, galley.size().y + 15.0),
+        egui::vec2(ROW_WIDTH, galley.size().y + 15.0),
         egui::Sense::hover(),
     );
     ui.painter().rect_filled(rect, 0.0, theme::ACCENT);
@@ -799,7 +875,7 @@ fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
 /// active bar / hover fill are the shared rail treatment ([`paint_cell`]).
 fn sketch_tool_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> bool {
     let (rect, cell) = ui.allocate_exact_size(
-        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+        egui::vec2(CELL_WIDTH, TOOL_CELL_HEIGHT),
         egui::Sense::click(),
     );
     let hovered = cell.hovered();
@@ -816,7 +892,7 @@ fn sketch_tool_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> b
 /// op cells go through [`sketch_tool_cell`] instead.
 fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved: bool) {
     let (rect, cell) = ui.allocate_exact_size(
-        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+        egui::vec2(CELL_WIDTH, TOOL_CELL_HEIGHT),
         egui::Sense::hover(),
     );
     let hovered = cell.hovered() && !reserved;
@@ -832,10 +908,10 @@ fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved:
     cell.on_hover_text(tip);
 }
 
-/// The chevron box on a family cell: full cell height, hugging the cell's right edge. Wide enough
-/// to be a target in its own right — the corner tick it replaced was both too small and sitting
-/// exactly where the scroll bar draws (owner, 2026-08-03).
-const CHEVRON_WIDTH: f32 = 16.0;
+/// The grid's chevron column, to the RIGHT of the glyph column rather than laid over it. A
+/// family's chevron is a tile of the grid in its own right: on top of the glyph it was both hard
+/// to aim at and hard to read (owner, 2026-08-03).
+pub(super) const CHEVRON_WIDTH: f32 = 18.0;
 
 /// How long a family takes to slide open or shut.
 const SLIDE_SECONDS: f32 = 0.12;
@@ -866,10 +942,10 @@ fn rail_group<Route: Copy>(
     let family = group.members.len() > 1;
     let open = family && state.open_rail_group == Some(group.face);
 
-    // The row always occupies its COLLAPSED footprint in the column; the part that slides out
-    // hangs over the viewport, so opening a family never moves the cells under it.
+    // A full grid row — glyph column plus chevron column — and always the collapsed one: the part
+    // that slides out hangs over the viewport, so opening a family never moves the cells under it.
     let (rect, cell) = ui.allocate_exact_size(
-        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+        egui::vec2(ROW_WIDTH, TOOL_CELL_HEIGHT),
         egui::Sense::click(),
     );
     let openness = ui.ctx().animate_bool_with_time(
@@ -956,16 +1032,20 @@ fn hovering(cell: &egui::Response, zone: egui::Rect) -> bool {
     cell.hover_pos().is_some_and(|at| zone.contains(at))
 }
 
-/// A family cell's two zones: the face, which arms, and the chevron, which slides. A family of one
-/// has no chevron, so the face takes the whole cell and the chevron rect is empty.
-fn split_off_chevron(cell: egui::Rect, family: bool) -> (egui::Rect, egui::Rect) {
+/// A grid row's two columns: the glyph tile, which arms, and the chevron tile, which slides.
+///
+/// The glyph tile is [`CELL_WIDTH`] whether or not the row has a chevron, so a family of one lines
+/// up with its neighbours instead of stretching across both columns. A family of one has nothing
+/// to slide out, so its chevron tile is empty.
+fn split_off_chevron(row: egui::Rect, family: bool) -> (egui::Rect, egui::Rect) {
+    let split = row.left() + CELL_WIDTH;
+    let face = egui::Rect::from_min_max(row.min, egui::pos2(split, row.bottom()));
     if !family {
-        return (cell, egui::Rect::NOTHING);
+        return (face, egui::Rect::NOTHING);
     }
-    let split = cell.right() - CHEVRON_WIDTH;
     (
-        egui::Rect::from_min_max(cell.min, egui::pos2(split, cell.bottom())),
-        egui::Rect::from_min_max(egui::pos2(split, cell.top()), cell.max),
+        face,
+        egui::Rect::from_min_max(egui::pos2(split, row.top()), row.max),
     )
 }
 
@@ -978,12 +1058,15 @@ enum SlidePick<Route> {
 }
 
 /// The full extent of the row at this point in the slide, collapsed footprint included.
+///
+/// Open, the row is one glyph tile per member plus the chevron tile — the chevron is COUNTED, not
+/// laid over the last member (owner, 2026-08-03). Collapsed, it is the grid row it grew from.
 fn slid_row<Route>(cell: egui::Rect, group: &RailGroup<Route>, openness: f32) -> egui::Rect {
     #[expect(
         clippy::cast_precision_loss,
         reason = "a family holds single digits of members"
     )]
-    let extra = (group.members.len() - 1) as f32 * RAIL_WIDTH;
+    let extra = (group.members.len() - 1) as f32 * CELL_WIDTH;
     egui::Rect::from_min_size(
         cell.min,
         egui::vec2(cell.width() + extra * openness, cell.height()),
@@ -1021,10 +1104,10 @@ fn rail_slide_out<Route: Copy>(
                     clippy::cast_precision_loss,
                     reason = "a family holds single digits of members"
                 )]
-                let offset = index as f32 * RAIL_WIDTH;
+                let offset = index as f32 * CELL_WIDTH;
                 let box_rect = egui::Rect::from_min_size(
                     cell.left_top() + egui::vec2(offset, 0.0),
-                    egui::vec2(RAIL_WIDTH, cell.height()),
+                    egui::vec2(CELL_WIDTH, cell.height()),
                 );
                 let id = egui::Id::new(("rail_family_member", group.name, index));
                 if member_box(ui, box_rect, id, icon, tip, lit.get(index) == Some(&true)) {
@@ -1125,7 +1208,7 @@ fn shape_cell(
     } else {
         egui::Sense::click()
     };
-    let (rect, cell) = ui.allocate_exact_size(egui::vec2(RAIL_WIDTH, CELL_HEIGHT), sense);
+    let (rect, cell) = ui.allocate_exact_size(egui::vec2(CELL_WIDTH, CELL_HEIGHT), sense);
     paint_cell(ui, rect, armed, cell.hovered() && !reserved);
 
     let color = cell_ink(armed, cell.hovered() && !reserved, reserved);
@@ -1162,7 +1245,7 @@ fn tool_cell(ui: &mut egui::Ui, icon: Icon, enabled: bool) {
     } else {
         egui::Sense::hover()
     };
-    let (rect, cell) = ui.allocate_exact_size(egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT), sense);
+    let (rect, cell) = ui.allocate_exact_size(egui::vec2(CELL_WIDTH, TOOL_CELL_HEIGHT), sense);
     let hovered = cell.hovered() && enabled;
     // Selection is the only live tool, so it is the one that reads active.
     paint_cell(ui, rect, enabled, hovered);
@@ -1264,7 +1347,7 @@ mod tests {
         };
         let _ = context.run_ui(raw_input, |ui| {
             let at = ui.available_rect_before_wrap().min;
-            face = egui::Rect::from_min_size(at, egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT));
+            face = egui::Rect::from_min_size(at, egui::vec2(ROW_WIDTH, TOOL_CELL_HEIGHT));
             chosen = rail_group(ui, state, &PROBE, |_, _| false);
         });
         (chosen, face)
@@ -1321,7 +1404,7 @@ mod tests {
         settle(&context, &mut state);
         // The second member's box sits one full cell to the RIGHT of the face — the direction the
         // row travels, and a place the collapsed cell never occupied.
-        let second = egui::pos2(cell.left() + RAIL_WIDTH * 1.5, cell.center().y);
+        let second = egui::pos2(cell.left() + CELL_WIDTH * 1.5, cell.center().y);
         let (chosen, _) = click_at(&context, &mut state, second);
         assert_eq!(chosen, Some(2), "the box that slid out arms its member");
         assert_eq!(
@@ -1372,7 +1455,7 @@ mod tests {
             for (slot, group) in cells.iter_mut().zip([&PROBE, &PROBE_BELOW]) {
                 *slot = egui::Rect::from_min_size(
                     ui.available_rect_before_wrap().min,
-                    egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+                    egui::vec2(ROW_WIDTH, TOOL_CELL_HEIGHT),
                 );
                 chosen = rail_group(ui, state, group, |_, _| false).or(chosen);
             }
@@ -1433,7 +1516,7 @@ mod tests {
         let mut state = PanelState::default();
 
         // A column the probe cell overflows several times over, so the bar has a handle to draw.
-        let column = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(RAIL_WIDTH, 60.0));
+        let column = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(ROW_WIDTH, 60.0));
         let mut cell = egui::Rect::NOTHING;
         let mut frame = |events: Vec<egui::Event>, cell: &mut egui::Rect| {
             let raw_input = egui::RawInput {
@@ -1446,10 +1529,10 @@ mod tests {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                     *cell = egui::Rect::from_min_size(
                         ui.available_rect_before_wrap().min,
-                        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+                        egui::vec2(ROW_WIDTH, TOOL_CELL_HEIGHT),
                     );
                     rail_group(ui, &mut state, &PROBE, |_, _| false);
-                    ui.allocate_space(egui::vec2(RAIL_WIDTH, 400.0));
+                    ui.allocate_space(egui::vec2(ROW_WIDTH, 400.0));
                 });
             });
         };
@@ -1471,6 +1554,43 @@ mod tests {
             Some(Icon::Probe),
             "the scroll bar swallowed the chevron's click at {at:?}"
         );
+    }
+
+    /// The open row counts its chevron rather than laying it over the last member. Geometry
+    /// directly, because the failure is a drawing one the owner saw before any click misrouted:
+    /// clicking the CENTER of the last member still worked while its right edge was under the
+    /// chevron, so no gesture test would have caught it.
+    #[test]
+    fn the_open_row_reserves_a_column_for_its_chevron() {
+        let cell = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(ROW_WIDTH, 44.0));
+        let row = slid_row(cell, &PROBE, 1.0);
+
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a family holds single digits of members"
+        )]
+        let members = PROBE.members.len() as f32;
+        let last_member_right = cell.left() + members * CELL_WIDTH;
+        assert!(
+            (row.right() - CHEVRON_WIDTH - last_member_right).abs() < f32::EPSILON,
+            "the chevron column has to start where the members stop: row {row:?}, members end at \
+             {last_member_right}"
+        );
+    }
+
+    /// Every row's glyph tile is the same width, family or not, so the rail reads as a grid rather
+    /// than as rows that stretch to fill whatever the chevron does not take.
+    #[test]
+    fn the_glyph_column_is_one_width() {
+        let row = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(ROW_WIDTH, 44.0));
+        for family in [true, false] {
+            let (face, chevron) = split_off_chevron(row, family);
+            assert!(
+                (face.width() - CELL_WIDTH).abs() < f32::EPSILON,
+                "family={family} face {face:?}"
+            );
+            assert_eq!(chevron.is_positive(), family);
+        }
     }
 
     /// The face cell arms the canonical member directly — a family costs no extra click for the
