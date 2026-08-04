@@ -1172,6 +1172,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &[],
         // #100: and no viewport menu is open, so no region is under one.
         None,
+        // nor a selected fit point to offer a tangent handle to.
+        false,
         // likewise no add-point insert preview in the headless goldens.
         None,
         // #99: nor a drawing-tool preview — drawing is a windowed-only gesture.

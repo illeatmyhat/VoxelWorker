@@ -304,9 +304,14 @@ impl HigherCurveGesture {
                     .map(|resolved| vec![resolved.curve])
             }
             HigherCurveKind::FitPointSpline => {
-                parametric::sketch::fit_point_spline(&continuous, false)
-                    .ok()
-                    .map(|candidate| candidate.pieces)
+                // A spline still being drawn has no handles yet, so every tangent is natural.
+                parametric::sketch::fit_point_spline(
+                    &continuous,
+                    &vec![None; continuous.len()],
+                    false,
+                )
+                .ok()
+                .map(|candidate| candidate.pieces)
             }
             HigherCurveKind::ControlPointSpline => {
                 parametric::sketch::control_point_spline(&continuous)

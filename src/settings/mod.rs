@@ -184,6 +184,8 @@ pub enum ShortcutCommandConfig {
     ExportRepro,
     /// [`ShortcutCommand::ToggleSketchFace`].
     ToggleSketchFace,
+    /// [`ShortcutCommand::AddTangentHandle`].
+    AddTangentHandle,
     /// [`ShortcutCommand::ToggleSketchConstruction`].
     ToggleSketchConstruction,
 }
@@ -245,6 +247,9 @@ impl ShortcutsConfig {
                         ShortcutCommand::ToggleSketchConstruction => {
                             ShortcutCommandConfig::ToggleSketchConstruction
                         }
+                        ShortcutCommand::AddTangentHandle => {
+                            ShortcutCommandConfig::AddTangentHandle
+                        }
                     },
                     shortcut,
                 })
@@ -278,6 +283,7 @@ impl ShortcutsConfig {
                 ShortcutCommandConfig::ToggleSketchConstruction => {
                     ShortcutCommand::ToggleSketchConstruction
                 }
+                ShortcutCommandConfig::AddTangentHandle => ShortcutCommand::AddTangentHandle,
             };
             shortcuts.bind(command, binding.shortcut);
         }

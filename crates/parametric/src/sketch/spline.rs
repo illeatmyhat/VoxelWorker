@@ -33,21 +33,42 @@ pub enum SplineCandidateError {
     Singular,
 }
 
-/// Interpolate authored fit points with a C2 cubic spline.
+/// Interpolate authored fit points with a C2 cubic spline, honoring any AUTHORED tangents.
+///
+/// `tangents` runs alongside `points`: `Some(vector)` is the curve's derivative at that fit point,
+/// authored by the tangent handle standing there, and `None` leaves it to the interpolant.
+///
+/// # An authored tangent spends the C2 freedom at its point
+///
+/// The unauthored system asks for two continuous derivatives everywhere and solves for the one
+/// tangent field that delivers it. Naming a tangent replaces that point's equation with the answer
+/// — a Dirichlet row — so the curve still meets itself in position and slope there, but its
+/// curvature is free to jump across the point. That is exactly what authoring a tangent MEANS:
+/// the author has taken the freedom the smoothness condition was spending.
 ///
 /// # Errors
 ///
-/// Returns a typed error for non-finite input, insufficient/distinct points, or a singular
-/// interpolation system.
+/// Returns a typed error for non-finite input, insufficient/distinct points, a tangent that is not
+/// finite, or a singular interpolation system.
 pub fn fit_point_spline(
     points: &[[f64; 2]],
+    tangents: &[Option<[f64; 2]>],
     closed: bool,
 ) -> Result<SplineCandidate, SplineCandidateError> {
     validate(points, if closed { 3 } else { 2 })?;
+    if tangents.len() != points.len()
+        || !tangents
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|value| value.is_finite())
+    {
+        return Err(SplineCandidateError::NonFinite);
+    }
     let derivatives = if closed {
-        periodic_derivatives(points)?
+        periodic_derivatives(points, tangents)?
     } else {
-        natural_derivatives(points)?
+        natural_derivatives(points, tangents)?
     };
     let piece_count = if closed {
         points.len()
@@ -131,11 +152,17 @@ fn validate(points: &[[f64; 2]], minimum: usize) -> Result<(), SplineCandidateEr
     Ok(())
 }
 
-fn natural_derivatives(points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, SplineCandidateError> {
+fn natural_derivatives(
+    points: &[[f64; 2]],
+    tangents: &[Option<[f64; 2]>],
+) -> Result<Vec<[f64; 2]>, SplineCandidateError> {
     let count = points.len();
     if count == 2 {
-        let derivative = subtract(points[1], points[0]);
-        return Ok(vec![derivative; 2]);
+        let chord = subtract(points[1], points[0]);
+        return Ok(vec![
+            tangents[0].unwrap_or(chord),
+            tangents[1].unwrap_or(chord),
+        ]);
     }
     let mut lower = vec![1.0; count];
     let mut diagonal = vec![4.0; count];
@@ -150,10 +177,20 @@ fn natural_derivatives(points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, SplineCandi
     for index in 1..count - 1 {
         right[index] = scale(subtract(points[index + 1], points[index - 1]), 3.0);
     }
+    for (index, authored) in tangents.iter().enumerate() {
+        let Some(authored) = *authored else { continue };
+        lower[index] = 0.0;
+        diagonal[index] = 1.0;
+        upper[index] = 0.0;
+        right[index] = authored;
+    }
     solve_tridiagonal(&lower, &diagonal, &upper, &right)
 }
 
-fn periodic_derivatives(points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, SplineCandidateError> {
+fn periodic_derivatives(
+    points: &[[f64; 2]],
+    tangents: &[Option<[f64; 2]>],
+) -> Result<Vec<[f64; 2]>, SplineCandidateError> {
     let count = points.len();
     let mut matrix = vec![vec![0.0; count]; count];
     let mut right = vec![[0.0; 2]; count];
@@ -168,6 +205,12 @@ fn periodic_derivatives(points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, SplineCand
             ),
             3.0,
         );
+    }
+    for (index, authored) in tangents.iter().enumerate() {
+        let Some(authored) = *authored else { continue };
+        matrix[index].fill(0.0);
+        matrix[index][index] = 1.0;
+        right[index] = authored;
     }
     solve_dense(matrix, right)
 }
@@ -334,7 +377,7 @@ mod tests {
     #[test]
     fn fit_spline_passes_every_fit_point_with_c2_joins() {
         let points = [[0.0, 0.0], [2.0, 3.0], [5.0, 1.0], [8.0, 4.0]];
-        let spline = fit_point_spline(&points, false).unwrap();
+        let spline = fit_point_spline(&points, &vec![None; points.len()], false).unwrap();
         assert_eq!(spline.pieces.len(), 3);
         for (index, piece) in spline.pieces.iter().enumerate() {
             assert_eq!(piece.control[0], points[index]);
@@ -348,10 +391,69 @@ mod tests {
         }
     }
 
+    /// An authored tangent is met exactly, and the points around it still take the smoothest
+    /// tangents that can reach it — the condition replaces one equation, it does not rewrite the
+    /// system.
+    #[test]
+    fn an_authored_tangent_is_honored_exactly_and_only_at_its_point() {
+        let points = [[0.0, 0.0], [2.0, 3.0], [5.0, 1.0], [8.0, 4.0]];
+        let authored = [0.0, 6.0];
+        let spline = fit_point_spline(&points, &[Some(authored), None, None, None], false).unwrap();
+
+        let leaving = spline.pieces[0].derivative_at(0.0);
+        assert!((leaving[0] - authored[0]).abs() < 1.0e-10);
+        assert!((leaving[1] - authored[1]).abs() < 1.0e-10);
+        // The curve still passes through every fit point, and the joins the author did not touch
+        // are still smooth.
+        for (index, piece) in spline.pieces.iter().enumerate() {
+            assert_eq!(piece.control[0], points[index]);
+            assert_eq!(piece.control[3], points[index + 1]);
+        }
+        for pair in spline.pieces.array_windows::<2>() {
+            let first = pair[0].derivative_at(1.0);
+            let second = pair[1].derivative_at(0.0);
+            assert!((first[0] - second[0]).abs() < 1.0e-10);
+            assert!((first[1] - second[1]).abs() < 1.0e-10);
+        }
+    }
+
+    /// A closed spline honors an authored tangent the same way, through the periodic system.
+    #[test]
+    fn a_closed_spline_honors_an_authored_tangent() {
+        let authored = [1.0, -2.0];
+        let spline = fit_point_spline(
+            &[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+            &[None, Some(authored), None, None],
+            true,
+        )
+        .unwrap();
+        let leaving = spline.pieces[1].derivative_at(0.0);
+        assert!((leaving[0] - authored[0]).abs() < 1.0e-10);
+        assert!((leaving[1] - authored[1]).abs() < 1.0e-10);
+    }
+
+    /// A tangent list that does not run alongside the points is not a spline anyone can read.
+    #[test]
+    fn a_mismatched_or_non_finite_tangent_list_is_refused() {
+        let points = [[0.0, 0.0], [2.0, 3.0], [5.0, 1.0]];
+        assert_eq!(
+            fit_point_spline(&points, &[None, None], false),
+            Err(SplineCandidateError::NonFinite)
+        );
+        assert_eq!(
+            fit_point_spline(&points, &[Some([f64::NAN, 0.0]), None, None], false),
+            Err(SplineCandidateError::NonFinite)
+        );
+    }
+
     #[test]
     fn closed_fit_spline_is_periodic() {
-        let spline =
-            fit_point_spline(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]], true).unwrap();
+        let spline = fit_point_spline(
+            &[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+            &[None; 4],
+            true,
+        )
+        .unwrap();
         assert_eq!(spline.pieces.len(), 4);
         assert_eq!(spline.pieces[3].control[3], spline.pieces[0].control[0]);
         let leaving = spline.pieces[0].derivative_at(0.0);

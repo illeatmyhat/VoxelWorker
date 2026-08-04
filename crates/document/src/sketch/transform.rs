@@ -357,6 +357,9 @@ impl Sketch {
                         .ok_or(SketchTransformRefusal::UnknownEntity)?;
                     closure.splines.insert(id);
                     closure.points.extend(spline.points.iter().copied());
+                    // A tangent handle carries the curve's shape as surely as a fit point does, so
+                    // a copy that left it behind would come out a different curve.
+                    closure.points.extend(spline.tangents.values().copied());
                 }
             }
         }
@@ -574,6 +577,11 @@ impl Sketch {
                     closed: source.closed,
                     origin: id,
                     role: source.role,
+                    tangents: source
+                        .tangents
+                        .iter()
+                        .map(|(fit, handle)| Ok((mapped(points, *fit)?, mapped(points, *handle)?)))
+                        .collect::<Result<_, SketchTransformRefusal>>()?,
                 },
             );
         }

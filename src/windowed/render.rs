@@ -175,6 +175,7 @@ impl WindowedState {
         let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
         let orbit_reticle = self.orbit_reticle_visible();
         let sketch_face_at_menu = self.sketch_menu_face_is_picked();
+        let tangent_handle_offered = self.sketch_selection_takes_a_tangent_handle();
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -215,6 +216,9 @@ impl WindowedState {
                 // #100: the pick state of the region the open menu was raised inside, so the
                 // menu can label its row "carve" or "fill".
                 sketch_face_at_menu,
+                // Whether the selection holds a fit point with no tangent handle yet — the one
+                // question that decides whether the menu offers to mint one.
+                tangent_handle_offered,
                 // The add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
                 // #99: the drawing tools' dashed preview, projected last frame.
@@ -425,6 +429,9 @@ impl WindowedState {
         }
         if prepared.panel_response.toggle_sketch_construction {
             self.toggle_sketch_selection_construction();
+        }
+        if prepared.panel_response.add_tangent_handle {
+            self.add_sketch_tangent_handles();
         }
         // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
         // is not the document (this is view state).
@@ -1248,8 +1255,8 @@ impl WindowedState {
         Some((producer.clone(), node.transform.offset_voxels))
     }
 
-    /// Every control-point spline's frame in `target`, as its aggregate identity and its controls
-    /// in leg order.
+    /// Every construction run a spline in `target` draws, as the spline's aggregate identity and
+    /// the points the run passes through: the control frame, and each tangent handle's line.
     ///
     /// Ids only, and deliberately not the producer: this runs every frame, and
     /// [`sketch_node_state`](Self::sketch_node_state) clones the whole solid to hand one back.
@@ -1266,10 +1273,20 @@ impl WindowedState {
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
             return Vec::new();
         };
+        // Both kinds of construction run a spline draws: the control frame, and every tangent
+        // handle's virtual line. They are one list because they draw and hit-test identically —
+        // point runs in construction ink that answer for the spline they belong to.
         producer
             .sketch
             .control_polygons()
             .into_iter()
+            .chain(
+                producer
+                    .sketch
+                    .tangent_handle_legs()
+                    .into_iter()
+                    .map(|(spline, leg)| (spline, leg.to_vec())),
+            )
             .map(|(spline, controls)| (document::sketch::SketchCurve::Spline(spline), controls))
             .collect()
     }
@@ -3258,6 +3275,9 @@ impl WindowedState {
                 // #100: the carve / fill verb needs the region the RIGHT-PRESS resolved, so a
                 // keyboard binding has nothing to act on until the menu has been raised.
                 ui::shortcuts::ShortcutCommand::ToggleSketchFace => self.toggle_sketch_menu_face(),
+                ui::shortcuts::ShortcutCommand::AddTangentHandle => {
+                    self.add_sketch_tangent_handles();
+                }
                 ui::shortcuts::ShortcutCommand::ToggleSketchConstruction => {
                     self.toggle_sketch_selection_construction();
                 }
@@ -3557,6 +3577,38 @@ impl WindowedState {
     /// Flip the selected sketch geometry between real and construction as one undoable edit.
     /// Constraints are selection entities too but are intentionally excluded; structural arc and
     /// circle centers are filtered again by the document invariant.
+    /// Whether the sketch selection holds a fit point that could take a tangent handle.
+    fn sketch_selection_takes_a_tangent_handle(&self) -> bool {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return false;
+        };
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return false;
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return false;
+        };
+        self.panel_state
+            .selection
+            .sketch_points(target)
+            .any(|point| producer.sketch.takes_a_tangent_handle(point))
+    }
+
+    /// Mint a tangent handle on every selected fit point that has none.
+    pub(super) fn add_sketch_tangent_handles(&mut self) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
+        let Some(next) = producer.with_tangent_handles(points) else {
+            return;
+        };
+        self.commit_sketch_profile_edit(target, next);
+    }
+
     pub(super) fn toggle_sketch_selection_construction(&mut self) {
         let Some(target) = self.panel_state.sketch_mode else {
             return;

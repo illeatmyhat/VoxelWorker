@@ -246,6 +246,7 @@ pub fn run_egui_frame(
     // whether that face is currently picked — the shell hit-tests, the menu only labels the row.
     // `None` when the menu is closed or was raised over no face.
     sketch_face_at_menu: Option<bool>,
+    tangent_handle_offered: bool,
     // The add-point insert-preview marker for THIS frame (egui points), or
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
@@ -484,6 +485,26 @@ pub fn run_egui_frame(
                                 panel_response.toggle_sketch_face = true;
                                 close = true;
                             }
+                        }
+
+                        // The TANGENT HANDLE row, offered only when the selection holds a fit
+                        // point that has no handle yet. A fit spline draws the smoothest curve
+                        // through its points until the author takes a tangent over, so this is the
+                        // act of taking one — and it is offered where the author is looking rather
+                        // than as a rail verb, because it acts on one point, not on a tool mode.
+                        if tangent_handle_offered
+                            && context_menu_row(
+                                ui,
+                                &shortcuts,
+                                ui::icons::Icon::ConstraintTangent,
+                                "Add tangent handle",
+                                ui::shortcuts::ShortcutCommand::AddTangentHandle,
+                                true,
+                                None,
+                            )
+                        {
+                            panel_response.add_tangent_handle = true;
+                            close = true;
                         }
 
                         // The ORBIT CENTER rows (docs/design/tool-modes-and-navigation.md).

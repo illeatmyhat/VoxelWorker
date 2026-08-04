@@ -1469,6 +1469,19 @@ pub struct Spline {
     pub origin: EntityId,
     #[serde(default)]
     pub role: EntityRole,
+    /// The tangent handle standing at a fit point, keyed by the fit point it steers.
+    ///
+    /// The handle is an ordinary authored point, the way an ellipse's major endpoint is: the
+    /// author drags it, and the curve's derivative there follows from where it lands. Its ABSENCE
+    /// is the natural tangent — a fit point with no handle keeps the smoothest curve the
+    /// interpolant can draw through it, which is what a fit spline is for until the author says
+    /// otherwise.
+    ///
+    /// Keyed rather than a slot per point, so the map says which point each handle belongs to
+    /// instead of a reader having to count. Empty for a control-point spline, whose points steer
+    /// the curve by standing off it.
+    #[serde(default)]
+    pub tangents: std::collections::BTreeMap<EntityId, EntityId>,
 }
 
 impl Arc {
@@ -1992,6 +2005,23 @@ impl Sketch {
     /// Read-only view of associative mirror and pattern rules.
     pub fn patterns(&self) -> &[SketchPattern] {
         &self.patterns
+    }
+
+    /// Every tangent handle's virtual line: the spline it steers, and the two points the line
+    /// runs between — the fit point and the handle standing off it.
+    ///
+    /// Drawn, not stored, exactly as [`control_polygons`](Self::control_polygons) is: the line is
+    /// the pair, and there is nothing to keep.
+    pub fn tangent_handle_legs(&self) -> Vec<(EntityId, [EntityId; 2])> {
+        self.splines
+            .iter()
+            .flat_map(|spline| {
+                spline
+                    .tangents
+                    .iter()
+                    .map(|(fit, handle)| (spline.id, [*fit, *handle]))
+            })
+            .collect()
     }
 
     /// Every control-point spline's frame: the spline's id, and its controls in the order the
@@ -3171,12 +3201,19 @@ impl Sketch {
         let mut healed = Vec::with_capacity(self.splines.len());
         let mut promote = Vec::new();
         for spline in &*self.splines {
+            // Deleting a HANDLE returns its fit point to the natural tangent rather than touching
+            // the point list: the author took the steering off, they did not remove a point from
+            // the curve.
             if !spline.points.contains(&id) {
-                healed.push(spline.clone());
+                let mut spline = spline.clone();
+                spline.tangents.retain(|_, handle| *handle != id);
+                healed.push(spline);
                 continue;
             }
             let mut spline = spline.clone();
             spline.points.retain(|point| *point != id);
+            // A fit point that goes takes its handle with it, wherever the spline lands below.
+            spline.tangents.remove(&id);
             if spline.points.len() < spline.kind.fewest_points(spline.closed) {
                 continue;
             }
@@ -4131,7 +4168,9 @@ impl Sketch {
         closed: bool,
     ) -> Result<EntityId, parametric::sketch::SplineCandidateError> {
         let continuous: Vec<_> = points.iter().map(SketchPoint::in_plane).collect();
-        parametric::sketch::fit_point_spline(&continuous, closed)?;
+        // A spline is born with no handle anywhere: every tangent is the natural one until the
+        // author takes one over.
+        parametric::sketch::fit_point_spline(&continuous, &vec![None; continuous.len()], closed)?;
         let points: Vec<_> = points.iter().map(|point| self.add_point(*point)).collect();
         let id = self.alloc_id();
         boxed_push(
@@ -4143,6 +4182,7 @@ impl Sketch {
                 closed,
                 origin: id,
                 role: EntityRole::Real,
+                tangents: std::collections::BTreeMap::new(),
             },
         );
         Ok(id)
@@ -4176,6 +4216,7 @@ impl Sketch {
                 closed: false,
                 origin: id,
                 role: EntityRole::Real,
+                tangents: std::collections::BTreeMap::new(),
             },
         );
         Ok(id)
@@ -4195,18 +4236,111 @@ impl Sketch {
         let points = points?;
         match spline.kind {
             SplineKind::FitPoint => {
-                parametric::sketch::fit_point_spline(&points, spline.closed).ok()
+                let tangents = self.spline_tangents(spline, &points);
+                parametric::sketch::fit_point_spline(&points, &tangents, spline.closed).ok()
             }
             SplineKind::ControlPoint => parametric::sketch::control_point_spline(&points).ok(),
         }
     }
 
+    /// The authored derivative at each of `spline`'s fit points, `None` where no handle stands.
+    ///
+    /// A handle sits on the cubic's own control point, one third of the derivative out from the
+    /// fit point, so dragging it lands the curve where the handle is rather than three times
+    /// further along — the tangent it authors is therefore three times the offset it holds. A
+    /// handle dropped exactly on its fit point names no direction, and reads as absent rather
+    /// than collapsing the curve.
+    fn spline_tangents(&self, spline: &Spline, points: &[[f64; 2]]) -> Vec<Option<[f64; 2]>> {
+        spline
+            .points
+            .iter()
+            .zip(points)
+            .map(|(id, at)| {
+                let handle = self.point_in_plane(*spline.tangents.get(id)?)?;
+                let tangent = [(handle[0] - at[0]) * 3.0, (handle[1] - at[1]) * 3.0];
+                (tangent[0] != 0.0 || tangent[1] != 0.0).then_some(tangent)
+            })
+            .collect()
+    }
+
+    /// The tangent handle standing at `fit_point`, if one does.
+    ///
+    /// Answers for the point the handle STEERS, not for the handle itself: asking about a handle
+    /// answers `None`, because a handle has no handle.
+    pub fn tangent_handle_of(&self, fit_point: EntityId) -> Option<EntityId> {
+        self.splines
+            .iter()
+            .find_map(|spline| spline.tangents.get(&fit_point).copied())
+    }
+
+    /// Whether `point` is a fit point that could TAKE a tangent handle — a fit point of a
+    /// fit-point spline that has none yet. What the authoring verb asks before offering itself.
+    pub fn takes_a_tangent_handle(&self, point: EntityId) -> bool {
+        self.splines.iter().any(|spline| {
+            spline.kind == SplineKind::FitPoint
+                && spline.points.contains(&point)
+                && !spline.tangents.contains_key(&point)
+        })
+    }
+
+    /// Give `fit_point` a tangent handle, and answer the handle point it now steers the curve by.
+    ///
+    /// The handle is minted where the curve ALREADY bends — on the cubic control point the
+    /// natural interpolant put there — so taking the tangent over changes nothing until the author
+    /// drags it. Answers the standing handle if the point already has one, so the verb is
+    /// idempotent; `None` if the point is not a fit point of a fit-point spline, or if the spline
+    /// draws no curve to read a tangent off.
+    pub fn add_tangent_handle(&mut self, fit_point: EntityId) -> Option<EntityId> {
+        let spline = self
+            .splines
+            .iter()
+            .find(|spline| {
+                spline.kind == SplineKind::FitPoint && spline.points.contains(&fit_point)
+            })?
+            .clone();
+        if let Some(standing) = spline.tangents.get(&fit_point) {
+            return Some(*standing);
+        }
+        let at = self.natural_handle_position(&spline, fit_point)?;
+        let handle = self.add_point(at);
+        self.set_point_lifetime(handle, PointLifetime::CurveAnchored);
+        let index = self.splines.iter().position(|held| held.id == spline.id)?;
+        self.splines[index].tangents.insert(fit_point, handle);
+        Some(handle)
+    }
+
+    /// Where a fresh handle for `fit_point` goes: the cubic control point beside it, which is the
+    /// curve's own reading of the tangent there.
+    fn natural_handle_position(&self, spline: &Spline, fit_point: EntityId) -> Option<SketchPoint> {
+        let index = spline.points.iter().position(|id| *id == fit_point)?;
+        let at = self.point_in_plane(fit_point)?;
+        let candidate = self.spline_candidate(spline)?;
+        // Every piece but the last starts at its own fit point, so the derivative leaving that
+        // piece is the tangent there. The final point of an open spline has no piece starting at
+        // it, so its tangent is read at the END of the last one — the same slope, from the other
+        // side.
+        let tangent = match candidate.pieces.get(index) {
+            Some(piece) => piece.derivative_at(0.0),
+            None => candidate.pieces.last()?.derivative_at(1.0),
+        };
+        Some(SketchPoint::from_continuous(
+            at[0] + tangent[0] / 3.0,
+            at[1] + tangent[1] / 3.0,
+        ))
+    }
+
     pub fn delete_spline(&mut self, id: EntityId) {
+        // The handles go with the fit points they steered: a tangent handle has no meaning apart
+        // from the curve it bends.
         let points = self
             .splines
             .iter()
             .find(|spline| spline.id == id)
-            .map(|spline| spline.points.clone());
+            .map(|spline| {
+                let mut points = spline.points.clone();
+                points.extend(spline.tangents.values().copied());
+                points
+            });
         boxed_retain(&mut self.splines, |spline| spline.id != id);
         if let Some(points) = points {
             self.drop_undrawn_points(points);
@@ -4304,6 +4438,7 @@ impl Sketch {
         }
         for spline in &*self.splines {
             referenced.extend(spline.points.iter().copied());
+            referenced.extend(spline.tangents.values().copied());
         }
         self.points.retain(|point| {
             point.lifetime != PointLifetime::CurveAnchored || referenced.contains(&point.id)

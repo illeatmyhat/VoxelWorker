@@ -299,6 +299,109 @@ fn deleting_a_fit_point_simplifies_the_spline_and_a_closed_one_opens_no_lower_th
     assert!(sketch.splines().is_empty());
 }
 
+/// A handle is minted where the curve ALREADY bends, so taking a tangent over changes nothing
+/// until the author drags it. Dragging it then bends the curve toward the handle.
+#[test]
+fn a_tangent_handle_starts_on_the_natural_tangent_and_steers_once_moved() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let fit_points = sketch.splines()[0].points.clone();
+    let drawn = |sketch: &Sketch| {
+        let held = sketch.splines()[0].clone();
+        sketch.spline_candidate(&held).expect("the spline draws")
+    };
+    let before = drawn(&sketch);
+
+    let handle = sketch
+        .add_tangent_handle(fit_points[0])
+        .expect("a fit point takes a handle");
+    // Not bit-exact: the handle's position round-trips through a point's sub-voxel storage, so
+    // "changes nothing" is a claim about the curve, not about the last bit of the control points.
+    let after = drawn(&sketch);
+    for (was, now) in before.pieces.iter().zip(&after.pieces) {
+        for (was, now) in was.control.iter().zip(&now.control) {
+            assert!(
+                (was[0] - now[0]).abs() < 1.0e-6 && (was[1] - now[1]).abs() < 1.0e-6,
+                "the natural tangent is what the handle was minted holding: {was:?} vs {now:?}"
+            );
+        }
+    }
+    // Asking twice hands back the same handle rather than stacking a second one.
+    assert_eq!(sketch.add_tangent_handle(fit_points[0]), Some(handle));
+    assert_eq!(
+        sketch
+            .points()
+            .iter()
+            .find(|point| point.id == handle)
+            .expect("the handle is a real point")
+            .lifetime,
+        PointLifetime::CurveAnchored
+    );
+
+    // Steering the start tangent straight up puts the curve above the chord it used to leave on.
+    assert!(sketch
+        .move_point(handle, SketchPoint::new(0, 3), ctx(16))
+        .expect("the handle drag is answered"));
+    let leaving = drawn(&sketch).pieces[0].point_at(0.2);
+    assert!(
+        leaving[0] < leaving[1],
+        "the curve should leave upward, not along the chord: {leaving:?}"
+    );
+
+    // Deleting the handle returns that fit point to the natural tangent, and takes nothing else.
+    sketch.delete_point_cascade(handle);
+    assert!(sketch.splines()[0].tangents.is_empty());
+    assert_eq!(sketch.splines()[0].points, fit_points);
+}
+
+/// A handle belongs to the curve it bends, so it goes when the curve does — and a fit point that
+/// is deleted takes only its OWN handle.
+#[test]
+fn tangent_handles_go_when_their_fit_point_or_their_spline_does() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+                SketchPoint::new(12, 4),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let fit_points = sketch.splines()[0].points.clone();
+    let first = sketch
+        .add_tangent_handle(fit_points[1])
+        .expect("a handle on the second fit point");
+    let second = sketch
+        .add_tangent_handle(fit_points[2])
+        .expect("a handle on the third fit point");
+    assert_eq!(sketch.points().len(), 6);
+
+    sketch.delete_point_cascade(fit_points[1]);
+    assert!(
+        sketch.points().iter().all(|point| point.id != first),
+        "the deleted fit point's handle has no fit point left to steer"
+    );
+    assert_eq!(sketch.splines()[0].tangents.len(), 1);
+
+    sketch.delete_spline(sketch.splines()[0].id);
+    assert!(
+        sketch.points().iter().all(|point| point.id != second),
+        "the spline took its remaining handle with it"
+    );
+}
+
 /// The control frame is derived from the point list, so it names controls in leg order and names
 /// nothing at all for a fit spline, whose points are on the curve rather than off it.
 #[test]

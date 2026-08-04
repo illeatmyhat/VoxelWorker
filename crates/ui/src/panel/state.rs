@@ -993,6 +993,11 @@ pub struct PanelResponse {
     /// in is a screen-space hit-test only the shell can answer, and it already answered it to
     /// decide whether to offer the row at all. `false` when the row was not chosen.
     pub toggle_sketch_face: bool,
+    /// The viewport menu's **Add tangent handle** row was chosen → the shell mints a handle on
+    /// each selected fit point. A flag rather than a key for the same reason
+    /// [`toggle_sketch_face`](Self::toggle_sketch_face) is: the shell owns the selection the row
+    /// acts on, and it already read it to decide whether to offer the row.
+    pub add_tangent_handle: bool,
     /// The sketch rail's Construction command was pressed. The shell owns the selected entity
     /// ids and commits their role changes through the normal anchor-preserving sketch edit door.
     pub toggle_sketch_construction: bool,

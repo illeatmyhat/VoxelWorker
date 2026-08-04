@@ -1605,6 +1605,23 @@ impl SketchSolid {
         changed.then_some(next)
     }
 
+    /// This producer with a tangent handle standing at each named fit point.
+    ///
+    /// `None` when none of them took one — a point that is not a fit point of a fit-point spline,
+    /// or one that already has a handle, so the verb costs no empty undo entry.
+    pub fn with_tangent_handles(
+        &self,
+        points: impl IntoIterator<Item = EntityId>,
+    ) -> Option<SketchSolid> {
+        let mut next = self.clone();
+        let mut minted = false;
+        for point in points {
+            let standing = next.sketch.tangent_handle_of(point);
+            minted |= next.sketch.add_tangent_handle(point).is_some() && standing.is_none();
+        }
+        minted.then_some(next)
+    }
+
     /// This producer with `kind` asserted, the drawing moved to where the solve put it, and the
     /// new constraint's id. `Err` leaves nothing changed — a refusal is not a partial edit, so
     /// a caller that discards the `Err` still holds the drawing the author had.
