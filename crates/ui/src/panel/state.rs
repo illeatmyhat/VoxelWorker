@@ -397,6 +397,56 @@ pub enum SketchTool {
     CarveRegion,
 }
 
+impl SketchTool {
+    /// Every tool, in declaration order. The rail's completeness test walks this: a tool with no
+    /// cell anywhere on the rail is unreachable, and grouping the rail into families is exactly
+    /// the kind of edit that could drop one silently.
+    pub const ALL: &'static [Self] = &[
+        Self::Select,
+        Self::AddPoint,
+        Self::Line,
+        Self::MidpointLine,
+        Self::Rectangle,
+        Self::Rectangle3Point,
+        Self::RectangleCenterCorner,
+        Self::ThreePointArc,
+        Self::ArcCenterEndpoints,
+        Self::ArcTangent,
+        Self::CircleCenterDiameter,
+        Self::Circle2Point,
+        Self::Circle3Point,
+        Self::Circle2Tangent,
+        Self::Circle3Tangent,
+        Self::PolygonInscribed,
+        Self::PolygonCircumscribed,
+        Self::PolygonEdge,
+        Self::SlotCenterToCenter,
+        Self::SlotOverall,
+        Self::SlotCenterPoint,
+        Self::SlotCenterPointArc,
+        Self::Slot3PointArc,
+        Self::Ellipse,
+        Self::Conic,
+        Self::FitPointSpline,
+        Self::ControlPointSpline,
+        Self::BreakCurve,
+        Self::Trim,
+        Self::Extend,
+        Self::Fillet,
+        Self::ChamferEqual,
+        Self::ChamferDistanceAngle,
+        Self::ChamferTwoDistance,
+        Self::Offset,
+        Self::MoveCopy,
+        Self::Scale,
+        Self::Mirror,
+        Self::RectangularPattern,
+        Self::CircularPattern,
+        Self::FillRegion,
+        Self::CarveRegion,
+    ];
+}
+
 /// The floating Signal **display stack**'s viewer state.
 ///
 /// The stack is the near-black instrument panel that floats top-right of the 3D viewport
@@ -689,6 +739,20 @@ pub struct PanelState {
     /// with the same tool in hand.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
+    /// Which rail tool family currently has its flyout open, named by that family's fixed face
+    /// glyph. `None` — the usual state — means every family is showing just its face.
+    ///
+    /// Keyed by the face rather than by an index so the rail tables can be reordered without
+    /// silently re-pointing an open flyout at a different family.
+    ///
+    /// **Transient**, and NOT session state despite sitting beside the rail's other fields: a
+    /// flyout is dismissed by the very next pointer press anywhere else, so it cannot outlive the
+    /// gesture that opened it, let alone a relaunch. That is the same footing as "the mouse is
+    /// currently held mid-drag", the category's own example — unlike
+    /// [`stack`](Self::stack)'s fold state, which is furniture the author deliberately left
+    /// arranged.
+    #[snapshot(transient)]
+    pub open_rail_group: Option<crate::icons::Icon>,
     /// Side count used by all regular-polygon creation tools. Values outside `3..=128` are
     /// normalized to the six-sided default at the interaction seam, which keeps older session
     /// artifacts (where this field is absent and therefore zero) deterministic.

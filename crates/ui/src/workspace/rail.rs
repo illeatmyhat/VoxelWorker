@@ -67,146 +67,235 @@ const TOOLS: &[(Icon, bool)] = &[
     (Icon::Measure, false),
 ];
 
-/// The sketch-mode rail toolset: the direct-manipulation vertex tools, each ARMING its
-/// [`SketchTool`] on click. Rendered in place of `SHAPES`/`TOOLS` while a sketch is being
-/// edited. Delete is NOT a tool: it acts on the selection via the Delete key or context menu.
-const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
-    (
-        Icon::SelectVertex,
-        "Select / move vertex",
-        Some(SketchTool::Select),
-    ),
-    (
-        Icon::AddPoint,
-        "Add point — split an edge",
-        Some(SketchTool::AddPoint),
-    ),
-    (
-        Icon::Line,
-        "Line — click for straight segments; drag the live end for a tangent arc",
-        Some(SketchTool::Line),
-    ),
-    (
-        Icon::MidpointLine,
-        "Midpoint Line — click midpoint, then endpoint",
-        Some(SketchTool::MidpointLine),
-    ),
-    (
-        Icon::Rectangle,
-        "Rectangle — drag opposite corners",
-        Some(SketchTool::Rectangle),
-    ),
-    (
-        Icon::Rectangle3Point,
-        "3-Point Rectangle — click base endpoints, then width",
-        Some(SketchTool::Rectangle3Point),
-    ),
-    (
-        Icon::RectangleCenterCorner,
-        "Center Rectangle — drag from center to corner",
-        Some(SketchTool::RectangleCenterCorner),
-    ),
-    (
-        Icon::ThreePointArc,
-        "Arc — click start, end, then a point it passes through",
-        Some(SketchTool::ThreePointArc),
-    ),
-    (
-        Icon::ArcCenterEndpoints,
-        "Center Point Arc — click center, start, then end direction",
-        Some(SketchTool::ArcCenterEndpoints),
-    ),
-    (
-        Icon::ArcTangent,
-        "Tangent Arc — click a line/arc endpoint, then the other endpoint",
-        Some(SketchTool::ArcTangent),
-    ),
-    (
-        Icon::CircleCenterDiameter,
-        "Circle — click center, then perimeter",
-        Some(SketchTool::CircleCenterDiameter),
-    ),
-    (
-        Icon::Circle2Point,
-        "2-Point Circle — click opposite diameter endpoints",
-        Some(SketchTool::Circle2Point),
-    ),
-    (
-        Icon::Circle3Point,
-        "3-Point Circle — click three circumference points",
-        Some(SketchTool::Circle3Point),
-    ),
-    (
-        Icon::Circle2Tangent,
-        "2-Tangent Circle — select two lines, then place the radius",
-        Some(SketchTool::Circle2Tangent),
-    ),
-    (
-        Icon::Circle3Tangent,
-        "3-Tangent Circle — select three lines",
-        Some(SketchTool::Circle3Tangent),
-    ),
-    (
-        Icon::PolygonInscribed,
-        "Inscribed Polygon — click center, then a vertex",
-        Some(SketchTool::PolygonInscribed),
-    ),
-    (
-        Icon::PolygonCircumscribed,
-        "Circumscribed Polygon — click center, then an edge midpoint",
-        Some(SketchTool::PolygonCircumscribed),
-    ),
-    (
-        Icon::PolygonEdge,
-        "Edge Polygon — click edge endpoints, then choose the body side",
-        Some(SketchTool::PolygonEdge),
-    ),
-    (
-        Icon::SlotCenterToCenter,
-        "Center-to-Center Slot — click cap centers, then width",
-        Some(SketchTool::SlotCenterToCenter),
-    ),
-    (
-        Icon::SlotOverall,
-        "Overall Slot — click overall endpoints, then width",
-        Some(SketchTool::SlotOverall),
-    ),
-    (
-        Icon::SlotCenterPoint,
-        "Center Point Slot — click midpoint, cap center, then width",
-        Some(SketchTool::SlotCenterPoint),
-    ),
-    (
-        Icon::Slot3PointArc,
-        "3-Point Arc Slot — click arc endpoints, through point, then width",
-        Some(SketchTool::Slot3PointArc),
-    ),
-    (
-        Icon::SlotCenterPointArc,
-        "Center Point Arc Slot — click center, start, end direction, then width",
-        Some(SketchTool::SlotCenterPointArc),
-    ),
-    (
-        Icon::EllipseSketch,
-        "Ellipse — click center, major-axis endpoint, then width",
-        Some(SketchTool::Ellipse),
-    ),
-    (
-        Icon::Conic,
-        "Conic — click start, end, then the on-curve vertex",
-        Some(SketchTool::Conic),
-    ),
-    (
-        Icon::SplineFitPoint,
-        "Fit Point Spline — place fit points; Enter finishes, click start to close",
-        Some(SketchTool::FitPointSpline),
-    ),
-    (
-        Icon::SplineControlPoint,
-        "Control Point Spline — place controls; Enter finishes",
-        Some(SketchTool::ControlPointSpline),
-    ),
+/// One family of rail verbs, drawn as a single cell whose flyout holds the rest.
+///
+/// # The face is fixed
+///
+/// A group's face is its canonical member, always — never the last one used. Fusion's last-used
+/// face exists to serve re-invoking the same variant in a UI where a tool DISARMS after each use;
+/// here a tool stays armed until it is disarmed, so the arming model already delivers what
+/// last-used is for. What would remain is only its cost: the same pixel meaning a different verb
+/// depending on history, which is what muscle memory cannot absorb.
+///
+/// A family of one has no flyout and draws as an ordinary cell. That is not a special case in the
+/// rendering — it falls out of having nothing else to show.
+struct RailGroup<Route: 'static> {
+    /// The mark this family always shows on the rail.
+    face: Icon,
+    /// The family's name: the face's tooltip, and the flyout's heading.
+    name: &'static str,
+    /// The verbs in the family, canonical member first.
+    members: &'static [(Icon, &'static str, Route)],
+}
+
+/// The sketch CREATE families, in Fusion's own order and with Fusion's own membership.
+///
+/// # Fusion's cut, warts included
+///
+/// The owner has spent this epic reverse-engineering Fusion entity by entity and asked for
+/// "Fusion-like tool groups" in those words, so a taxonomy invented here would make them relearn
+/// a layout they already know and invite a re-cut at every "in Fusion this is under Modify".
+/// Fusion's cut is also the principled one a level up: create MINTS entities, modify REWRITES
+/// what is there, constrain RELATES them. Every verb does exactly one of those, including the
+/// ones not written yet, which is why the cut does not need re-cutting as the set grows.
+///
+/// Deviations from Fusion, each deliberate: Midpoint Line rides in the Line family (Fusion has no
+/// such grammar), and the three chamfers ride in one Modify family for the same reason. Select
+/// and the snap picker are not Create verbs and sit outside this table.
+const SKETCH_CREATE: &[RailGroup<SketchTool>] = &[
+    RailGroup {
+        face: Icon::Line,
+        name: "Line",
+        members: &[
+            (
+                Icon::Line,
+                "Line — click for straight segments; drag the live end for a tangent arc",
+                SketchTool::Line,
+            ),
+            (
+                Icon::MidpointLine,
+                "Midpoint Line — click midpoint, then endpoint",
+                SketchTool::MidpointLine,
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::Rectangle,
+        name: "Rectangle",
+        members: &[
+            (
+                Icon::Rectangle,
+                "Rectangle — drag opposite corners",
+                SketchTool::Rectangle,
+            ),
+            (
+                Icon::Rectangle3Point,
+                "3-Point Rectangle — click base endpoints, then width",
+                SketchTool::Rectangle3Point,
+            ),
+            (
+                Icon::RectangleCenterCorner,
+                "Center Rectangle — drag from center to corner",
+                SketchTool::RectangleCenterCorner,
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::CircleCenterDiameter,
+        name: "Circle",
+        members: &[
+            (
+                Icon::CircleCenterDiameter,
+                "Circle — click center, then perimeter",
+                SketchTool::CircleCenterDiameter,
+            ),
+            (
+                Icon::Circle2Point,
+                "2-Point Circle — click opposite diameter endpoints",
+                SketchTool::Circle2Point,
+            ),
+            (
+                Icon::Circle3Point,
+                "3-Point Circle — click three circumference points",
+                SketchTool::Circle3Point,
+            ),
+            (
+                Icon::Circle2Tangent,
+                "2-Tangent Circle — select two lines, then place the radius",
+                SketchTool::Circle2Tangent,
+            ),
+            (
+                Icon::Circle3Tangent,
+                "3-Tangent Circle — select three lines",
+                SketchTool::Circle3Tangent,
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::ThreePointArc,
+        name: "Arc",
+        members: &[
+            (
+                Icon::ThreePointArc,
+                "Arc — click start, end, then a point it passes through",
+                SketchTool::ThreePointArc,
+            ),
+            (
+                Icon::ArcCenterEndpoints,
+                "Center Point Arc — click center, start, then end direction",
+                SketchTool::ArcCenterEndpoints,
+            ),
+            (
+                Icon::ArcTangent,
+                "Tangent Arc — click a line/arc endpoint, then the other endpoint",
+                SketchTool::ArcTangent,
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::PolygonInscribed,
+        name: "Polygon",
+        members: &[
+            (
+                Icon::PolygonInscribed,
+                "Inscribed Polygon — click center, then a vertex",
+                SketchTool::PolygonInscribed,
+            ),
+            (
+                Icon::PolygonCircumscribed,
+                "Circumscribed Polygon — click center, then an edge midpoint",
+                SketchTool::PolygonCircumscribed,
+            ),
+            (
+                Icon::PolygonEdge,
+                "Edge Polygon — click edge endpoints, then choose the body side",
+                SketchTool::PolygonEdge,
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::EllipseSketch,
+        name: "Ellipse",
+        members: &[(
+            Icon::EllipseSketch,
+            "Ellipse — click center, major-axis endpoint, then width",
+            SketchTool::Ellipse,
+        )],
+    },
+    RailGroup {
+        face: Icon::SlotCenterToCenter,
+        name: "Slot",
+        members: &[
+            (
+                Icon::SlotCenterToCenter,
+                "Center-to-Center Slot — click cap centers, then width",
+                SketchTool::SlotCenterToCenter,
+            ),
+            (
+                Icon::SlotOverall,
+                "Overall Slot — click overall endpoints, then width",
+                SketchTool::SlotOverall,
+            ),
+            (
+                Icon::SlotCenterPoint,
+                "Center Point Slot — click midpoint, cap center, then width",
+                SketchTool::SlotCenterPoint,
+            ),
+            (
+                Icon::Slot3PointArc,
+                "3-Point Arc Slot — click arc endpoints, through point, then width",
+                SketchTool::Slot3PointArc,
+            ),
+            (
+                Icon::SlotCenterPointArc,
+                "Center Point Arc Slot — click center, start, end direction, then width",
+                SketchTool::SlotCenterPointArc,
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::SplineFitPoint,
+        name: "Spline",
+        members: &[
+            (
+                Icon::SplineFitPoint,
+                "Fit Point Spline — place fit points; Enter finishes, click start to close",
+                SketchTool::FitPointSpline,
+            ),
+            (
+                Icon::SplineControlPoint,
+                "Control Point Spline — place controls; Enter finishes",
+                SketchTool::ControlPointSpline,
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::Conic,
+        name: "Conic Curve",
+        members: &[(
+            Icon::Conic,
+            "Conic — click start, end, then the on-curve vertex",
+            SketchTool::Conic,
+        )],
+    },
+    RailGroup {
+        face: Icon::AddPoint,
+        name: "Point",
+        members: &[(
+            Icon::AddPoint,
+            "Add point — split an edge",
+            SketchTool::AddPoint,
+        )],
+    },
 ];
+
+/// The one cell that is not a verb: the pointer. It arms like a tool and reads like a mode, and
+/// it belongs above Create rather than in it — selecting mints nothing.
+const SKETCH_SELECT: (Icon, &str, SketchTool) = (
+    Icon::SelectVertex,
+    "Select / move vertex",
+    SketchTool::Select,
+);
 
 /// The sketch-mode position-snap picker (#96): how a vertex edit quantizes on the sketch
 /// plane's own grid. One is always active; clicking another switches
@@ -303,67 +392,116 @@ const SKETCH_OPERATORS: &[(Icon, &str, SketchOperatorRoute)] = &[
     ),
 ];
 
-const SKETCH_MODIFIERS: &[(Icon, &str, SketchModifierRoute)] = &[
-    (
-        Icon::ConstructionToggle,
-        "Construction — toggle selected geometry between profile and reference",
-        SketchModifierRoute::ConstructionAction,
-    ),
-    (
-        Icon::Fillet,
-        "Fillet — click along either leg to round its two-line corner",
-        SketchModifierRoute::Tool(SketchTool::Fillet),
-    ),
-    (
-        Icon::ChamferEqual,
-        "Equal Distance Chamfer — click one leg to bevel both equally",
-        SketchModifierRoute::Tool(SketchTool::ChamferEqual),
-    ),
-    (
-        Icon::ChamferDistanceAngle,
-        "Distance and Angle Chamfer — choose a distance, then the angle on the other leg",
-        SketchModifierRoute::Tool(SketchTool::ChamferDistanceAngle),
-    ),
-    (
-        Icon::ChamferTwoDistance,
-        "Two Distance Chamfer — choose one tangent point on each leg",
-        SketchModifierRoute::Tool(SketchTool::ChamferTwoDistance),
-    ),
-    (
-        Icon::Trim,
-        "Trim — remove the clicked interval to its neighboring intersections",
-        SketchModifierRoute::Tool(SketchTool::Trim),
-    ),
-    (
-        Icon::Extend,
-        "Extend — grow the nearest endpoint to the next intersection",
-        SketchModifierRoute::Tool(SketchTool::Extend),
-    ),
-    (
-        Icon::BreakCurve,
-        "Break — split a curve at its intersections",
-        SketchModifierRoute::Tool(SketchTool::BreakCurve),
-    ),
-    (
-        Icon::OffsetCurve,
-        "Offset — select a curve, then place its parallel or concentric copy",
-        SketchModifierRoute::Tool(SketchTool::Offset),
-    ),
-    (
-        Icon::MoveCopy,
-        "Move / Copy — choose a base and destination; hold Shift to copy",
-        SketchModifierRoute::Tool(SketchTool::MoveCopy),
-    ),
-    (
-        Icon::SketchScale,
-        "Scale — choose a center, then a uniform size",
-        SketchModifierRoute::Tool(SketchTool::Scale),
-    ),
-    (
-        Icon::BlendCurve,
-        "Blend Curve — reserved",
-        SketchModifierRoute::Reserved,
-    ),
+/// The sketch MODIFY families, in Fusion's order: the corner treatments, then the verbs that cut
+/// and grow what is drawn, then the ones that move it.
+///
+/// Deviations from Fusion, each deliberate: the three chamfers are one family (Fusion's sketch
+/// has no chamfer at all), Construction is a cell here rather than a palette toggle, and Blend
+/// Curve is reserved — drawn so the finished shape of the set is visible without pretending the
+/// verb works.
+const SKETCH_MODIFY: &[RailGroup<SketchModifierRoute>] = &[
+    RailGroup {
+        face: Icon::Fillet,
+        name: "Fillet",
+        members: &[(
+            Icon::Fillet,
+            "Fillet — click along either leg to round its two-line corner",
+            SketchModifierRoute::Tool(SketchTool::Fillet),
+        )],
+    },
+    RailGroup {
+        face: Icon::ChamferEqual,
+        name: "Chamfer",
+        members: &[
+            (
+                Icon::ChamferEqual,
+                "Equal Distance Chamfer — click one leg to bevel both equally",
+                SketchModifierRoute::Tool(SketchTool::ChamferEqual),
+            ),
+            (
+                Icon::ChamferDistanceAngle,
+                "Distance and Angle Chamfer — choose a distance, then the angle on the other leg",
+                SketchModifierRoute::Tool(SketchTool::ChamferDistanceAngle),
+            ),
+            (
+                Icon::ChamferTwoDistance,
+                "Two Distance Chamfer — choose one tangent point on each leg",
+                SketchModifierRoute::Tool(SketchTool::ChamferTwoDistance),
+            ),
+        ],
+    },
+    RailGroup {
+        face: Icon::Trim,
+        name: "Trim",
+        members: &[(
+            Icon::Trim,
+            "Trim — remove the clicked interval to its neighboring intersections",
+            SketchModifierRoute::Tool(SketchTool::Trim),
+        )],
+    },
+    RailGroup {
+        face: Icon::Extend,
+        name: "Extend",
+        members: &[(
+            Icon::Extend,
+            "Extend — grow the nearest endpoint to the next intersection",
+            SketchModifierRoute::Tool(SketchTool::Extend),
+        )],
+    },
+    RailGroup {
+        face: Icon::BreakCurve,
+        name: "Break",
+        members: &[(
+            Icon::BreakCurve,
+            "Break — split a curve at its intersections",
+            SketchModifierRoute::Tool(SketchTool::BreakCurve),
+        )],
+    },
+    RailGroup {
+        face: Icon::SketchScale,
+        name: "Scale",
+        members: &[(
+            Icon::SketchScale,
+            "Scale — choose a center, then a uniform size",
+            SketchModifierRoute::Tool(SketchTool::Scale),
+        )],
+    },
+    RailGroup {
+        face: Icon::OffsetCurve,
+        name: "Offset",
+        members: &[(
+            Icon::OffsetCurve,
+            "Offset — select a curve, then place its parallel or concentric copy",
+            SketchModifierRoute::Tool(SketchTool::Offset),
+        )],
+    },
+    RailGroup {
+        face: Icon::MoveCopy,
+        name: "Move / Copy",
+        members: &[(
+            Icon::MoveCopy,
+            "Move / Copy — choose a base and destination; hold Shift to copy",
+            SketchModifierRoute::Tool(SketchTool::MoveCopy),
+        )],
+    },
+    RailGroup {
+        face: Icon::ConstructionToggle,
+        name: "Construction",
+        members: &[(
+            Icon::ConstructionToggle,
+            "Construction — toggle selected geometry between profile and reference",
+            SketchModifierRoute::ConstructionAction,
+        )],
+    },
+    RailGroup {
+        face: Icon::BlendCurve,
+        name: "Blend Curve",
+        members: &[(
+            Icon::BlendCurve,
+            "Blend Curve — reserved",
+            SketchModifierRoute::Reserved,
+        )],
+    },
 ];
 
 /// The set-operation picker on the sketch rail — the operation is a property of the same fused
@@ -434,50 +572,52 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
     };
 
     rail_heading_active(ui, "Sketch");
-    // The vertex tools. An armable tool (Some) lights when it is the current `sketch_tool` and
-    // selects it on click; unavailable entries (None) remain visibly reserved.
-    for &(icon, tip, tool) in SKETCH_TOOLS {
-        match tool {
-            Some(tool) => {
-                let active = state.sketch_tool == tool;
-                if sketch_tool_cell(ui, icon, tip, active) {
-                    state.sketch_tool = tool;
-                }
-            }
-            None => sketch_cell(ui, icon, tip, false, true),
+    let (icon, tip, tool) = SKETCH_SELECT;
+    if sketch_tool_cell(ui, icon, tip, state.sketch_tool == tool) {
+        state.sketch_tool = tool;
+    }
+
+    rail_heading(ui, "Create");
+    for group in SKETCH_CREATE {
+        // A drawing tool is one route, so the group's activeness and its click are the same
+        // question asked of whichever member the author reached: is this the armed tool, and make
+        // it so.
+        if let Some(tool) = rail_group(ui, state, group, |state, tool| state.sketch_tool == *tool) {
+            state.sketch_tool = tool;
         }
     }
-    rail_heading(ui, "Modify");
-    for &(icon, tip, route) in SKETCH_MODIFIERS {
-        match route {
-            SketchModifierRoute::Reserved => sketch_cell(ui, icon, tip, false, true),
-            SketchModifierRoute::ConstructionAction => {
-                if sketch_tool_cell(ui, icon, tip, false) {
-                    response.toggle_sketch_construction = true;
-                }
-            }
-            SketchModifierRoute::Tool(tool) => {
-                let active = state.sketch_tool == tool;
-                if sketch_tool_cell(ui, icon, tip, active) {
-                    state.sketch_tool = tool;
-                }
-            }
-        }
-    }
-    rail_heading(ui, "Operate");
+    // Mirror and the patterns are CREATE verbs in Fusion — they mint entities rather than rewrite
+    // the ones named — and so they are here rather than in a section of their own. Close Loop and
+    // the two region roles have no Fusion analog; they mint too, so they keep this company.
+    //
+    // Flat rather than grouped, deliberately: Mirror and Close Loop are alone, and the two
+    // pattern verbs and the two region roles have no canonical member between them. A family
+    // whose face is arbitrary buys one saved row for a click on every use of the other half.
     for &(icon, tip, route) in SKETCH_OPERATORS {
-        match route {
-            SketchOperatorRoute::CloseLoopAction => {
-                if sketch_tool_cell(ui, icon, tip, false) {
-                    response.close_sketch_loop = true;
-                }
+        let active = match route {
+            SketchOperatorRoute::CloseLoopAction => false,
+            SketchOperatorRoute::Tool(tool) => state.sketch_tool == tool,
+        };
+        if sketch_tool_cell(ui, icon, tip, active) {
+            match route {
+                SketchOperatorRoute::CloseLoopAction => response.close_sketch_loop = true,
+                SketchOperatorRoute::Tool(tool) => state.sketch_tool = tool,
             }
-            SketchOperatorRoute::Tool(tool) => {
-                let active = state.sketch_tool == tool;
-                if sketch_tool_cell(ui, icon, tip, active) {
-                    state.sketch_tool = tool;
-                }
+        }
+    }
+
+    rail_heading(ui, "Modify");
+    for group in SKETCH_MODIFY {
+        let chosen = rail_group(ui, state, group, |state, route| match route {
+            SketchModifierRoute::Tool(tool) => state.sketch_tool == *tool,
+            SketchModifierRoute::Reserved | SketchModifierRoute::ConstructionAction => false,
+        });
+        match chosen {
+            Some(SketchModifierRoute::Tool(tool)) => state.sketch_tool = tool,
+            Some(SketchModifierRoute::ConstructionAction) => {
+                response.toggle_sketch_construction = true;
             }
+            Some(SketchModifierRoute::Reserved) | None => {}
         }
     }
     if matches!(
@@ -528,7 +668,7 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState, response: &mut P
             state.sketch_snap = snap;
         }
     }
-    rail_heading(ui, "Constrain");
+    rail_heading(ui, "Constraints");
     for &verb in SKETCH_CONSTRAINTS {
         let icon = verb.icon();
         let armed = state
@@ -667,6 +807,180 @@ fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved:
     cell.on_hover_text(tip);
 }
 
+/// The corner tick's box: the bottom-right square of a family's face cell, the zone that opens
+/// the flyout instead of arming the face's verb.
+const FAMILY_TICK: f32 = 13.0;
+
+/// One tool **family** on the rail: the fixed face cell, its corner tick, and the flyout the tick
+/// opens. Returns the route the author chose this frame, whether by clicking the face (the
+/// canonical member) or by picking out of the flyout.
+///
+/// `is_active` answers, for one member, whether that verb is the one currently armed — the caller
+/// owns that question because a route means different things per section. A family whose member is
+/// armed lights its face, so the rail still says what is in hand even though the face never
+/// changes to say it.
+///
+/// A family of one draws as an ordinary cell with no tick and no flyout; that falls out of the
+/// member count rather than being a special case.
+fn rail_group<Route: Copy>(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    group: &'static RailGroup<Route>,
+    is_active: impl Fn(&PanelState, &Route) -> bool,
+) -> Option<Route> {
+    let armed = group
+        .members
+        .iter()
+        .any(|(_, _, route)| is_active(state, route));
+    let family = group.members.len() > 1;
+    let open = family && state.open_rail_group == Some(group.face);
+
+    let (rect, cell) = ui.allocate_exact_size(
+        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+        egui::Sense::click(),
+    );
+    let hovered = cell.hovered();
+    paint_cell(ui, rect, armed, hovered);
+    let ink = cell_ink(armed, hovered, false);
+    let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TOOL_GLYPH));
+    group.face.draw(ui.painter(), glyph, ink);
+
+    let tick = egui::Rect::from_min_max(
+        rect.right_bottom() - egui::Vec2::splat(FAMILY_TICK),
+        rect.right_bottom(),
+    );
+    if family {
+        paint_family_tick(ui, tick, ink);
+    }
+
+    let (_, canonical_tip, canonical) = group.members[0];
+    let tip = if family {
+        format!(
+            "{} — {canonical_tip}\nCorner tick for the other {}",
+            group.name,
+            group.members.len() - 1
+        )
+    } else {
+        canonical_tip.to_string()
+    };
+    let cell = cell.on_hover_text(tip);
+
+    let hit_tick = cell
+        .interact_pointer_pos()
+        .is_some_and(|at| tick.contains(at));
+    let mut chosen = None;
+    if cell.clicked() {
+        if family && hit_tick {
+            state.open_rail_group = if open { None } else { Some(group.face) };
+        } else {
+            state.open_rail_group = None;
+            chosen = Some(canonical);
+        }
+    }
+
+    if open {
+        // Precomputed because the flyout's closure cannot hold `state` while the pick below
+        // writes to it.
+        let lit: Vec<bool> = group
+            .members
+            .iter()
+            .map(|(_, _, route)| is_active(state, route))
+            .collect();
+        let (picked, panel) = rail_flyout(ui, group, &lit, rect);
+        // Any press that missed both the face and the panel dismisses it, the way every other
+        // menu in the app closes without a Cancel.
+        let dismissed = ui.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|at| !panel.contains(at) && !rect.contains(at))
+        });
+        if picked.is_some() || dismissed {
+            state.open_rail_group = None;
+        }
+        chosen = picked.or(chosen);
+    }
+    chosen
+}
+
+/// The open family's member list: a floating panel beside the face cell, one row per verb.
+///
+/// An [`egui::Area`] rather than an in-place expansion, and deliberately: the rail is a scroll
+/// column, so growing a cell would push every section below it down and move the target the author
+/// is reaching for. It also must not allocate in the rail's `Ui` — floating chrome that does
+/// carves a dead band out of whatever is behind it.
+fn rail_flyout<Route: Copy>(
+    ui: &egui::Ui,
+    group: &'static RailGroup<Route>,
+    lit: &[bool],
+    face: egui::Rect,
+) -> (Option<Route>, egui::Rect) {
+    let mut picked = None;
+    let area = egui::Area::new(egui::Id::new(("rail_flyout", group.name)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(face.right_top())
+        .show(ui.ctx(), |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            egui::Frame::popup(ui.style())
+                .fill(theme::DIALOG_BG)
+                .stroke(egui::Stroke::new(1.0_f32, theme::DIALOG_BORDER))
+                .show(ui, |ui| {
+                    let heading = theme::letter_spaced(ui, group.name, theme::TEXT_HINT, 8.0, 1.2);
+                    ui.label(heading);
+                    for (index, &(icon, tip, route)) in group.members.iter().enumerate() {
+                        if rail_flyout_row(ui, icon, tip, lit.get(index) == Some(&true)) {
+                            picked = Some(route);
+                        }
+                    }
+                });
+        });
+    (picked, area.response.rect)
+}
+
+/// One flyout row: the member's own glyph beside the verb's name, lit when that member is the
+/// armed one. The name is the tooltip's first clause — the flyout is where the author goes to read
+/// what a family contains, so the words have to be on screen rather than behind a hover.
+fn rail_flyout_row(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> bool {
+    let name = tip.split(" — ").next().unwrap_or(tip);
+    let galley = ui.painter().layout_no_wrap(
+        name.to_string(),
+        egui::TextStyle::Body.resolve(ui.style()),
+        cell_ink(active, false, false),
+    );
+    let size = egui::vec2(
+        TOOL_GLYPH + 10.0 + galley.size().x + 8.0,
+        TOOL_CELL_HEIGHT * 0.6,
+    );
+    let (rect, row) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hovered = row.hovered();
+    paint_cell(ui, rect, active, hovered);
+    let ink = cell_ink(active, hovered, false);
+    let glyph = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 4.0 + TOOL_GLYPH * 0.5, rect.center().y),
+        egui::Vec2::splat(TOOL_GLYPH * 0.75),
+    );
+    icon.draw(ui.painter(), glyph, ink);
+    ui.painter().galley(
+        egui::pos2(glyph.right() + 8.0, rect.center().y - galley.size().y * 0.5),
+        galley,
+        ink,
+    );
+    row.on_hover_text(tip.to_string()).clicked()
+}
+
+/// The mark that says "this cell is a family": a small filled corner wedge, in the cell's own ink
+/// so it reads as part of the glyph rather than a second signal.
+fn paint_family_tick(ui: &egui::Ui, tick: egui::Rect, ink: egui::Color32) {
+    let wedge = vec![
+        tick.right_bottom(),
+        tick.right_bottom() - egui::vec2(FAMILY_TICK * 0.55, 0.0),
+        tick.right_bottom() - egui::vec2(0.0, FAMILY_TICK * 0.55),
+    ];
+    ui.painter()
+        .add(egui::Shape::convex_polygon(wedge, ink, egui::Stroke::NONE));
+}
+
 /// One shape cell. Clicking an expressible shape ARMS live placement of that primitive — the
 /// same flow as the scene panel's "+ Add" chips: a ghost follows the cursor and a stationary
 /// click drops a node, staying armed for repeats. Clicking the already-armed cell disarms. The
@@ -774,54 +1088,287 @@ fn cell_ink(active: bool, hovered: bool, reserved: bool) -> egui::Color32 {
 mod tests {
     use super::*;
 
+    /// Every family's face is its canonical member's own glyph. The face is fixed, so if it were
+    /// some other mark the rail would show a verb the click does not perform.
     #[test]
-    fn sketch_rail_exposes_line_with_the_complete_line_glyph() {
-        assert!(SKETCH_TOOLS.iter().any(|&(icon, tip, tool)| {
-            icon == Icon::Line && tip.starts_with("Line —") && tool == Some(SketchTool::Line)
-        }));
+    fn every_family_faces_its_canonical_member() {
+        for group in SKETCH_CREATE {
+            assert_eq!(group.face, group.members[0].0, "{}", group.name);
+        }
+        for group in SKETCH_MODIFY {
+            assert_eq!(group.face, group.members[0].0, "{}", group.name);
+        }
     }
 
+    /// A two-member family to drive the cell through a real egui frame loop. Named with a face no
+    /// shipping family uses, so it cannot collide with the rail's own flyout ids.
+    const PROBE: RailGroup<u8> = RailGroup {
+        face: Icon::Probe,
+        name: "Probe",
+        members: &[
+            (Icon::Probe, "First — the canonical member", 1),
+            (Icon::Measure, "Second — behind the flyout", 2),
+        ],
+    };
+
+    /// Run one frame of [`PROBE`]'s cell at the ui origin, feeding `events`, and report both what
+    /// the cell returned and where it drew.
+    fn probe_frame(
+        context: &egui::Context,
+        state: &mut PanelState,
+        events: Vec<egui::Event>,
+    ) -> (Option<u8>, egui::Rect) {
+        let mut chosen = None;
+        let mut face = egui::Rect::NOTHING;
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = context.run_ui(raw_input, |ui| {
+            let at = ui.available_rect_before_wrap().min;
+            face = egui::Rect::from_min_size(at, egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT));
+            chosen = rail_group(ui, state, &PROBE, |_, _| false);
+        });
+        (chosen, face)
+    }
+
+    /// Press and release at `at`, over three frames: egui resolves interaction against the
+    /// PREVIOUS frame's widget rects, so the pointer has to arrive before the press does.
+    fn click_at(
+        context: &egui::Context,
+        state: &mut PanelState,
+        at: egui::Pos2,
+    ) -> (Option<u8>, egui::Rect) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        probe_frame(context, state, vec![egui::Event::PointerMoved(at)]);
+        probe_frame(context, state, vec![button(true)]);
+        probe_frame(context, state, vec![button(false)])
+    }
+
+    /// The whole point of the reshape: a verb that is NOT its family's face is still reachable, in
+    /// two clicks — the corner tick, then the row. Clicking the face could never return the second
+    /// member, so this cannot pass by accident.
     #[test]
-    fn sketch_rail_lists_the_complete_modifier_catalog_and_only_live_commands_arm() {
-        let icons: Vec<_> = SKETCH_MODIFIERS.iter().map(|&(icon, _, _)| icon).collect();
+    fn the_corner_tick_opens_the_flyout_and_its_rows_arm_the_hidden_member() {
+        let context = egui::Context::default();
+        let mut state = PanelState::default();
+        let (_, face) = probe_frame(&context, &mut state, Vec::new());
+
+        let tick = face.right_bottom() - egui::Vec2::splat(FAMILY_TICK * 0.5);
+        let (chosen, _) = click_at(&context, &mut state, tick);
         assert_eq!(
-            icons,
-            vec![
-                Icon::ConstructionToggle,
-                Icon::Fillet,
-                Icon::ChamferEqual,
-                Icon::ChamferDistanceAngle,
-                Icon::ChamferTwoDistance,
-                Icon::Trim,
-                Icon::Extend,
-                Icon::BreakCurve,
-                Icon::OffsetCurve,
-                Icon::MoveCopy,
-                Icon::SketchScale,
-                Icon::BlendCurve,
-            ]
+            chosen, None,
+            "the tick opens the family, it does not arm it"
+        );
+        assert_eq!(state.open_rail_group, Some(Icon::Probe));
+
+        // Draw the open flyout once so its area rect is on record, then click its LAST row — the
+        // member the face cannot reach.
+        probe_frame(&context, &mut state, Vec::new());
+        let panel = context
+            .memory(|memory| memory.area_rect(egui::Id::new(("rail_flyout", PROBE.name))))
+            .unwrap_or(egui::Rect::NOTHING);
+        assert!(panel.is_positive(), "the open flyout registers an area");
+        let last_row = panel.right_bottom() - egui::vec2(8.0, 8.0);
+        let (chosen, _) = click_at(&context, &mut state, last_row);
+        assert_eq!(
+            chosen,
+            Some(2),
+            "the flyout's last row arms the last member"
         );
         assert_eq!(
-            SKETCH_MODIFIERS
+            state.open_rail_group, None,
+            "picking closes the family behind it"
+        );
+    }
+
+    /// The face cell arms the canonical member directly — a family costs no extra click for the
+    /// verb the author reaches for most.
+    #[test]
+    fn the_face_arms_the_canonical_member_without_opening_anything() {
+        let context = egui::Context::default();
+        let mut state = PanelState::default();
+        let (_, face) = probe_frame(&context, &mut state, Vec::new());
+        let (chosen, _) = click_at(&context, &mut state, face.center());
+        assert_eq!(chosen, Some(1));
+        assert_eq!(state.open_rail_group, None);
+    }
+
+    /// The open flyout is keyed by face glyph, so two families sharing a face would open each
+    /// other's list.
+    #[test]
+    fn no_two_families_share_a_face() {
+        let mut faces: Vec<Icon> = SKETCH_CREATE.iter().map(|group| group.face).collect();
+        faces.extend(SKETCH_MODIFY.iter().map(|group| group.face));
+        let mut seen = Vec::new();
+        for face in faces {
+            assert!(!seen.contains(&face), "{face:?} faces two families");
+            seen.push(face);
+        }
+    }
+
+    /// Regrouping a flat list into families is exactly the edit that drops a verb without anyone
+    /// noticing, so the rail's tools and [`SketchTool::ALL`] must be the same set.
+    #[test]
+    fn the_rail_reaches_every_sketch_tool() {
+        let mut on_rail = vec![SKETCH_SELECT.2];
+        on_rail.extend(
+            SKETCH_CREATE
                 .iter()
-                .filter_map(|&(icon, _, route)| {
-                    (route != SketchModifierRoute::Reserved).then_some(icon)
+                .flat_map(|group| group.members.iter().map(|&(_, _, tool)| tool)),
+        );
+        on_rail.extend(SKETCH_MODIFY.iter().flat_map(|group| {
+            group
+                .members
+                .iter()
+                .filter_map(|&(_, _, route)| match route {
+                    SketchModifierRoute::Tool(tool) => Some(tool),
+                    SketchModifierRoute::Reserved | SketchModifierRoute::ConstructionAction => None,
                 })
-                .collect::<Vec<_>>(),
+        }));
+        on_rail.extend(
+            SKETCH_OPERATORS
+                .iter()
+                .filter_map(|&(_, _, route)| match route {
+                    SketchOperatorRoute::Tool(tool) => Some(tool),
+                    SketchOperatorRoute::CloseLoopAction => None,
+                }),
+        );
+        for tool in SketchTool::ALL {
+            assert!(on_rail.contains(tool), "{tool:?} has no rail cell");
+        }
+        for tool in &on_rail {
+            assert!(
+                SketchTool::ALL.contains(tool),
+                "{tool:?} is on the rail but missing from SketchTool::ALL"
+            );
+        }
+        assert_eq!(on_rail.len(), SketchTool::ALL.len(), "a tool has two cells");
+    }
+
+    /// The Create families in Fusion's order, each with the grammars Fusion puts inside it.
+    #[test]
+    fn create_families_carry_fusion_membership_in_fusion_order() {
+        let families: Vec<(&str, Vec<SketchTool>)> = SKETCH_CREATE
+            .iter()
+            .map(|group| {
+                (
+                    group.name,
+                    group.members.iter().map(|&(_, _, tool)| tool).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            families,
             vec![
-                Icon::ConstructionToggle,
-                Icon::Fillet,
-                Icon::ChamferEqual,
-                Icon::ChamferDistanceAngle,
-                Icon::ChamferTwoDistance,
-                Icon::Trim,
-                Icon::Extend,
-                Icon::BreakCurve,
-                Icon::OffsetCurve,
-                Icon::MoveCopy,
-                Icon::SketchScale,
+                ("Line", vec![SketchTool::Line, SketchTool::MidpointLine]),
+                (
+                    "Rectangle",
+                    vec![
+                        SketchTool::Rectangle,
+                        SketchTool::Rectangle3Point,
+                        SketchTool::RectangleCenterCorner
+                    ]
+                ),
+                (
+                    "Circle",
+                    vec![
+                        SketchTool::CircleCenterDiameter,
+                        SketchTool::Circle2Point,
+                        SketchTool::Circle3Point,
+                        SketchTool::Circle2Tangent,
+                        SketchTool::Circle3Tangent
+                    ]
+                ),
+                (
+                    "Arc",
+                    vec![
+                        SketchTool::ThreePointArc,
+                        SketchTool::ArcCenterEndpoints,
+                        SketchTool::ArcTangent
+                    ]
+                ),
+                (
+                    "Polygon",
+                    vec![
+                        SketchTool::PolygonInscribed,
+                        SketchTool::PolygonCircumscribed,
+                        SketchTool::PolygonEdge
+                    ]
+                ),
+                ("Ellipse", vec![SketchTool::Ellipse]),
+                (
+                    "Slot",
+                    vec![
+                        SketchTool::SlotCenterToCenter,
+                        SketchTool::SlotOverall,
+                        SketchTool::SlotCenterPoint,
+                        SketchTool::Slot3PointArc,
+                        SketchTool::SlotCenterPointArc
+                    ]
+                ),
+                (
+                    "Spline",
+                    vec![SketchTool::FitPointSpline, SketchTool::ControlPointSpline]
+                ),
+                ("Conic Curve", vec![SketchTool::Conic]),
+                ("Point", vec![SketchTool::AddPoint]),
             ]
         );
+    }
+
+    /// The Modify families, in Fusion's order: the corner treatments, then the cutters, then the
+    /// movers, then this app's two additions.
+    #[test]
+    fn modify_families_run_in_fusion_order_and_keep_blend_curve_reserved() {
+        let names: Vec<&str> = SKETCH_MODIFY.iter().map(|group| group.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Fillet",
+                "Chamfer",
+                "Trim",
+                "Extend",
+                "Break",
+                "Scale",
+                "Offset",
+                "Move / Copy",
+                "Construction",
+                "Blend Curve",
+            ]
+        );
+        let chamfer = SKETCH_MODIFY.iter().find(|group| group.name == "Chamfer");
+        assert_eq!(chamfer.map(|group| group.members.len()), Some(3));
+        let reserved: Vec<&str> = SKETCH_MODIFY
+            .iter()
+            .filter(|group| {
+                group
+                    .members
+                    .iter()
+                    .all(|&(_, _, route)| route == SketchModifierRoute::Reserved)
+            })
+            .map(|group| group.name)
+            .collect();
+        assert_eq!(reserved, vec!["Blend Curve"]);
+    }
+
+    /// Select is not a Create verb and does not ride in a family — it is the one cell above them.
+    #[test]
+    fn select_stands_outside_the_families() {
+        assert_eq!(SKETCH_SELECT.2, SketchTool::Select);
+        assert!(SKETCH_CREATE.iter().all(|group| group
+            .members
+            .iter()
+            .all(|&(_, _, tool)| tool != SketchTool::Select)));
     }
 
     #[test]
@@ -861,125 +1408,5 @@ mod tests {
                 ),
             ]
         );
-    }
-
-    #[test]
-    fn sketch_rail_places_midpoint_line_immediately_after_line() {
-        assert!(SKETCH_TOOLS.windows(2).any(|pair| {
-            matches!(
-                pair,
-                [
-                    (_, _, Some(SketchTool::Line)),
-                    (
-                        Icon::MidpointLine,
-                        "Midpoint Line — click midpoint, then endpoint",
-                        Some(SketchTool::MidpointLine)
-                    )
-                ]
-            )
-        }));
-    }
-
-    #[test]
-    fn sketch_rail_places_center_and_tangent_arcs_after_three_point_arc() {
-        assert!(SKETCH_TOOLS.windows(3).any(|items| {
-            matches!(
-                items,
-                [
-                    (_, _, Some(SketchTool::ThreePointArc)),
-                    (
-                        Icon::ArcCenterEndpoints,
-                        "Center Point Arc — click center, start, then end direction",
-                        Some(SketchTool::ArcCenterEndpoints)
-                    ),
-                    (
-                        Icon::ArcTangent,
-                        "Tangent Arc — click a line/arc endpoint, then the other endpoint",
-                        Some(SketchTool::ArcTangent)
-                    )
-                ]
-            )
-        }));
-    }
-
-    #[test]
-    fn sketch_rail_groups_all_circle_grammars() {
-        assert!(SKETCH_TOOLS.windows(5).any(|items| {
-            matches!(
-                items,
-                [
-                    (_, _, Some(SketchTool::CircleCenterDiameter)),
-                    (Icon::Circle2Point, _, Some(SketchTool::Circle2Point)),
-                    (Icon::Circle3Point, _, Some(SketchTool::Circle3Point)),
-                    (Icon::Circle2Tangent, _, Some(SketchTool::Circle2Tangent)),
-                    (Icon::Circle3Tangent, _, Some(SketchTool::Circle3Tangent))
-                ]
-            )
-        }));
-    }
-
-    #[test]
-    fn sketch_rail_groups_all_polygon_grammars_after_circles() {
-        assert!(SKETCH_TOOLS.windows(4).any(|items| {
-            matches!(
-                items,
-                [
-                    (_, _, Some(SketchTool::Circle3Tangent)),
-                    (
-                        Icon::PolygonInscribed,
-                        _,
-                        Some(SketchTool::PolygonInscribed)
-                    ),
-                    (
-                        Icon::PolygonCircumscribed,
-                        _,
-                        Some(SketchTool::PolygonCircumscribed)
-                    ),
-                    (Icon::PolygonEdge, _, Some(SketchTool::PolygonEdge))
-                ]
-            )
-        }));
-    }
-
-    #[test]
-    fn sketch_rail_groups_all_five_slot_grammars() {
-        assert!(SKETCH_TOOLS.windows(5).any(|items| {
-            matches!(
-                items,
-                [
-                    (
-                        Icon::SlotCenterToCenter,
-                        _,
-                        Some(SketchTool::SlotCenterToCenter)
-                    ),
-                    (Icon::SlotOverall, _, Some(SketchTool::SlotOverall)),
-                    (Icon::SlotCenterPoint, _, Some(SketchTool::SlotCenterPoint)),
-                    (Icon::Slot3PointArc, _, Some(SketchTool::Slot3PointArc)),
-                    (
-                        Icon::SlotCenterPointArc,
-                        _,
-                        Some(SketchTool::SlotCenterPointArc)
-                    )
-                ]
-            )
-        }));
-    }
-
-    #[test]
-    fn sketch_rail_groups_all_rectangle_grammars() {
-        assert!(SKETCH_TOOLS.windows(3).any(|items| {
-            matches!(
-                items,
-                [
-                    (_, _, Some(SketchTool::Rectangle)),
-                    (Icon::Rectangle3Point, _, Some(SketchTool::Rectangle3Point)),
-                    (
-                        Icon::RectangleCenterCorner,
-                        _,
-                        Some(SketchTool::RectangleCenterCorner)
-                    )
-                ]
-            )
-        }));
     }
 }

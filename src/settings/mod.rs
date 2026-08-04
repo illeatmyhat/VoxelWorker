@@ -756,6 +756,8 @@ impl AppConfig {
             // Restore the armed sketch tool, so a mid-edit repro re-enters with
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
+            // An open rail flyout is dismissed by the next click, so there is nothing to restore.
+            open_rail_group: None,
             sketch_polygon_sides: self.sketch_polygon_sides.clamp(3, 128),
             sketch_pattern_counts: self.sketch_pattern_counts.map(|count| count.clamp(1, 128)),
             sketch_circular_pattern_count: self.sketch_circular_pattern_count.clamp(2, 128),
