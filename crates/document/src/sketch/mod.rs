@@ -1469,19 +1469,50 @@ pub struct Spline {
     pub origin: EntityId,
     #[serde(default)]
     pub role: EntityRole,
-    /// The tangent handle standing at a fit point, keyed by the fit point it steers.
+    /// The tangent handle standing at each fit point, keyed by the fit point it steers.
     ///
-    /// The handle is an ordinary authored point, the way an ellipse's major endpoint is: the
-    /// author drags it, and the curve's derivative there follows from where it lands. Its ABSENCE
-    /// is the natural tangent — a fit point with no handle keeps the smoothest curve the
-    /// interpolant can draw through it, which is what a fit spline is for until the author says
-    /// otherwise.
+    /// EVERY fit point has one, from the moment the spline is drawn: a handle is furniture the
+    /// curve comes with rather than a thing the author adds, and there is no verb to add or remove
+    /// one (owner, 2026-08-03). Each is minted where the curve already bends, so a fresh spline
+    /// draws exactly the curve it would have drawn with no handles at all.
     ///
     /// Keyed rather than a slot per point, so the map says which point each handle belongs to
     /// instead of a reader having to count. Empty for a control-point spline, whose points steer
     /// the curve by standing off it.
     #[serde(default)]
-    pub tangents: std::collections::BTreeMap<EntityId, EntityId>,
+    pub tangents: std::collections::BTreeMap<EntityId, TangentHandle>,
+}
+
+/// One fit point's tangent handle: a double-sided lever whose midpoint IS the fit point.
+///
+/// # Two ends, one quantity
+///
+/// The lever is symmetric — equal arms, mirrored about the point they steer (owner, 2026-08-03)
+/// — so [`backward`](Self::backward) holds nothing [`forward`](Self::forward) does not. `forward`
+/// is the truth; the back arm is restored to the mirror of it by
+/// [`Sketch::sync_tangent_arms`] after every edit, and grabbing the back arm steers the front one.
+///
+/// # So why store the back arm at all
+///
+/// Because a grabbable thing has to be a point here. The shell resolves a click to an id out of
+/// the document's own point list, so an arm drawn without being stored is an arm the author can
+/// see and cannot take hold of — a painted affordance that does nothing, which is the one thing
+/// this codebase has already been told not to ship. The mirror cannot drift in exchange, because
+/// nothing reads it: the curve's derivative is read off `forward` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TangentHandle {
+    /// The arm on the far side of the fit point from the curve's start — the one the tangent is
+    /// measured to.
+    pub forward: EntityId,
+    /// The mirrored arm, behind the fit point. Grabbable, derived, read by nothing.
+    pub backward: EntityId,
+}
+
+impl TangentHandle {
+    /// Both ends, for the cascades that must treat the lever as one object.
+    pub fn arms(self) -> [EntityId; 2] {
+        [self.forward, self.backward]
+    }
 }
 
 impl Arc {
@@ -2007,19 +2038,20 @@ impl Sketch {
         &self.patterns
     }
 
-    /// Every tangent handle's virtual line: the spline it steers, and the two points the line
-    /// runs between — the fit point and the handle standing off it.
+    /// Every tangent handle's lever: the spline it steers, and the three points the line runs
+    /// through — back arm, fit point, forward arm, in that order.
     ///
     /// Drawn, not stored, exactly as [`control_polygons`](Self::control_polygons) is: the line is
-    /// the pair, and there is nothing to keep.
-    pub fn tangent_handle_legs(&self) -> Vec<(EntityId, [EntityId; 2])> {
+    /// the run of points, and there is nothing to keep. The ARMS are stored, because they are
+    /// grabbed; the line between them is not.
+    pub fn tangent_handle_legs(&self) -> Vec<(EntityId, [EntityId; 3])> {
         self.splines
             .iter()
             .flat_map(|spline| {
                 spline
                     .tangents
                     .iter()
-                    .map(|(fit, handle)| (spline.id, [*fit, *handle]))
+                    .map(|(fit, handle)| (spline.id, [handle.backward, *fit, handle.forward]))
             })
             .collect()
     }
@@ -2421,6 +2453,25 @@ impl Sketch {
         at: SketchPoint,
         context: parametric::EvaluationContext,
     ) -> Result<bool, SketchEvaluationError> {
+        // Grabbing the BACK arm of a tangent lever steers the FRONT one. The two ends name one
+        // quantity, so only one of them can be the thing that moves; the mirror is restored by
+        // `sync_tangent_arms` once the drag settles.
+        let (id, at) = match self.back_arm_steers(id) {
+            Some((fit, forward)) => {
+                let Some(anchor) = self.point_in_plane(fit) else {
+                    return Ok(false);
+                };
+                let grabbed = at.in_plane();
+                (
+                    forward,
+                    SketchPoint::from_continuous(
+                        2.0 * anchor[0] - grabbed[0],
+                        2.0 * anchor[1] - grabbed[1],
+                    ),
+                )
+            }
+            None => (id, at),
+        };
         if self.point_index(id).is_none() {
             return Ok(false);
         }
@@ -2492,10 +2543,11 @@ impl Sketch {
         let hands: Vec<_> = spline
             .points
             .iter()
-            .chain(spline.tangents.values())
+            .copied()
+            .chain(spline.tangents.values().flat_map(|handle| handle.arms()))
             .filter_map(|point| {
-                let stood = self.point_in_plane(*point)?;
-                Some((*point, [stood[0] + by[0], stood[1] + by[1]]))
+                let stood = self.point_in_plane(point)?;
+                Some((point, [stood[0] + by[0], stood[1] + by[1]]))
             })
             .collect();
         if hands.is_empty() {
@@ -3170,6 +3222,12 @@ impl Sketch {
     /// Deleting an arc's CENTER deletes that arc: the center is the arc's own derived
     /// geometry, so there is no arc left for it to be the center of.
     pub fn delete_point_cascade(&mut self, id: EntityId) {
+        // A tangent handle is furniture the curve comes with, not a point the author placed, so it
+        // is not theirs to remove — the same standing a control-point spline's frame has, asserted
+        // here because a handle IS a real point and would otherwise delete like one.
+        if self.is_tangent_handle(id) {
+            return;
+        }
         self.segments.retain(|seg| seg.from != id && seg.to != id);
         self.arcs
             .retain(|arc| arc.from != id && arc.to != id && arc.center != id);
@@ -3207,13 +3265,8 @@ impl Sketch {
         let mut healed = Vec::with_capacity(self.splines.len());
         let mut promote = Vec::new();
         for spline in &*self.splines {
-            // Deleting a HANDLE returns its fit point to the natural tangent rather than touching
-            // the point list: the author took the steering off, they did not remove a point from
-            // the curve.
             if !spline.points.contains(&id) {
-                let mut spline = spline.clone();
-                spline.tangents.retain(|_, handle| *handle != id);
-                healed.push(spline);
+                healed.push(spline.clone());
                 continue;
             }
             let mut spline = spline.clone();
@@ -4178,8 +4231,9 @@ impl Sketch {
         closed: bool,
     ) -> Result<EntityId, parametric::sketch::SplineCandidateError> {
         let continuous: Vec<_> = points.iter().map(SketchPoint::in_plane).collect();
-        // A spline is born with no handle anywhere: every tangent is the natural one until the
-        // author takes one over.
+        // Resolved with no handle anywhere, which is what the curve looks like the instant it is
+        // born: every handle is minted below AT the natural tangent, so having them changes
+        // nothing until one is dragged.
         parametric::sketch::fit_point_spline(&continuous, &vec![None; continuous.len()], closed)?;
         let points: Vec<_> = points.iter().map(|point| self.add_point(*point)).collect();
         let id = self.alloc_id();
@@ -4195,6 +4249,7 @@ impl Sketch {
                 tangents: std::collections::BTreeMap::new(),
             },
         );
+        self.mint_tangent_handles(id);
         Ok(id)
     }
 
@@ -4266,7 +4321,7 @@ impl Sketch {
             .iter()
             .zip(points)
             .map(|(id, at)| {
-                let handle = self.point_in_plane(*spline.tangents.get(id)?)?;
+                let handle = self.point_in_plane(spline.tangents.get(id)?.forward)?;
                 let tangent = [(handle[0] - at[0]) * 3.0, (handle[1] - at[1]) * 3.0];
                 (tangent[0] != 0.0 || tangent[1] != 0.0).then_some(tangent)
             })
@@ -4277,30 +4332,67 @@ impl Sketch {
     ///
     /// Answers for the point the handle STEERS, not for the handle itself: asking about a handle
     /// answers `None`, because a handle has no handle.
-    pub fn tangent_handle_of(&self, fit_point: EntityId) -> Option<EntityId> {
+    pub fn tangent_handle_of(&self, fit_point: EntityId) -> Option<TangentHandle> {
         self.splines
             .iter()
             .find_map(|spline| spline.tangents.get(&fit_point).copied())
     }
 
-    /// Whether `point` is a fit point that could TAKE a tangent handle — a fit point of a
-    /// fit-point spline that has none yet. What the authoring verb asks before offering itself.
-    pub fn takes_a_tangent_handle(&self, point: EntityId) -> bool {
-        self.splines.iter().any(|spline| {
-            spline.kind == SplineKind::FitPoint
-                && spline.points.contains(&point)
-                && !spline.tangents.contains_key(&point)
+    /// The `(fit point, forward arm)` a BACK arm steers, if `point` is one.
+    ///
+    /// The redirection [`move_point`](Self::move_point) applies: a lever has one authored end, and
+    /// a grab on the other end is a grab on that one, mirrored.
+    fn back_arm_steers(&self, point: EntityId) -> Option<(EntityId, EntityId)> {
+        self.splines.iter().find_map(|spline| {
+            spline
+                .tangents
+                .iter()
+                .find(|(_, handle)| handle.backward == point)
+                .map(|(fit, handle)| (*fit, handle.forward))
         })
     }
 
-    /// Give `fit_point` a tangent handle, and answer the handle point it now steers the curve by.
+    /// Whether `point` is a tangent handle some spline steers by.
     ///
-    /// The handle is minted where the curve ALREADY bends — on the cubic control point the
-    /// natural interpolant put there — so taking the tangent over changes nothing until the author
-    /// drags it. Answers the standing handle if the point already has one, so the verb is
-    /// idempotent; `None` if the point is not a fit point of a fit-point spline, or if the spline
-    /// draws no curve to read a tangent off.
-    pub fn add_tangent_handle(&mut self, fit_point: EntityId) -> Option<EntityId> {
+    /// A handle is not the author's to delete — it is furniture the curve comes with, the way a
+    /// control-point spline's frame is — so the delete cascade asks this before it does anything.
+    pub fn is_tangent_handle(&self, point: EntityId) -> bool {
+        self.splines.iter().any(|spline| {
+            spline
+                .tangents
+                .values()
+                .any(|handle| handle.arms().contains(&point))
+        })
+    }
+
+    /// Give every fit point of `spline` the handle it is born with.
+    ///
+    /// A fit-point spline has handles on all of its points, always: they are not added and not
+    /// removed (owner, 2026-08-03). Each is minted where the curve ALREADY bends, so a spline with
+    /// its full set of handles draws exactly the curve it drew without them, and the handles are
+    /// there to be dragged rather than there to be arranged for.
+    ///
+    /// Minting one at a time is safe in any order for exactly that reason: a handle at the natural
+    /// position authors the tangent the curve already had, so it moves nothing the next mint reads.
+    fn mint_tangent_handles(&mut self, spline: EntityId) {
+        let Some(points) = self
+            .splines
+            .iter()
+            .find(|held| held.id == spline && held.kind == SplineKind::FitPoint)
+            .map(|held| held.points.clone())
+        else {
+            return;
+        };
+        for point in points {
+            self.mint_tangent_handle(point);
+        }
+    }
+
+    /// Mint `fit_point`'s lever, and answer the two arms the curve is now steered by.
+    ///
+    /// Answers the standing handle if the point already has one; `None` if the point is not a fit
+    /// point of a fit-point spline, or if the spline draws no curve to read a tangent off.
+    fn mint_tangent_handle(&mut self, fit_point: EntityId) -> Option<TangentHandle> {
         let spline = self
             .splines
             .iter()
@@ -4311,17 +4403,61 @@ impl Sketch {
         if let Some(standing) = spline.tangents.get(&fit_point) {
             return Some(*standing);
         }
+        let anchor = self.point_in_plane(fit_point)?;
         let at = self.natural_handle_position(&spline, fit_point)?;
-        let handle = self.add_point(at);
-        self.set_point_lifetime(handle, PointLifetime::CurveAnchored);
+        let mirrored = at.in_plane();
+        let forward = self.add_point(at);
+        let backward = self.add_point(SketchPoint::from_continuous(
+            2.0 * anchor[0] - mirrored[0],
+            2.0 * anchor[1] - mirrored[1],
+        ));
+        for arm in [forward, backward] {
+            self.set_point_lifetime(arm, PointLifetime::CurveAnchored);
+        }
+        let handle = TangentHandle { forward, backward };
         let index = self.splines.iter().position(|held| held.id == spline.id)?;
         self.splines[index].tangents.insert(fit_point, handle);
         Some(handle)
     }
 
+    /// Put every back arm back on the mirror of its forward arm.
+    ///
+    /// The arms are symmetric about the fit point between them, and only the forward one is
+    /// authored, so this is a re-derivation and not a solve: it runs after every edit that could
+    /// have moved either end, out of [`sync_derived_points`](Self::sync_derived_points), which is
+    /// already the pass every such edit ends with.
+    fn sync_tangent_arms(&mut self) {
+        let levers: Vec<_> = self
+            .splines
+            .iter()
+            .flat_map(|spline| {
+                spline
+                    .tangents
+                    .iter()
+                    .map(|(fit, handle)| (*fit, *handle))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (fit, handle) in levers {
+            let (Some(anchor), Some(forward)) = (
+                self.point_in_plane(fit),
+                self.point_in_plane(handle.forward),
+            ) else {
+                continue;
+            };
+            if let Some(index) = self.point_index(handle.backward) {
+                self.points[index].at = SketchPoint::from_continuous(
+                    2.0 * anchor[0] - forward[0],
+                    2.0 * anchor[1] - forward[1],
+                );
+            }
+        }
+    }
+
     /// Where a fresh handle for `fit_point` goes: the cubic control point beside it, which is the
     /// curve's own reading of the tangent there.
     fn natural_handle_position(&self, spline: &Spline, fit_point: EntityId) -> Option<SketchPoint> {
+        // The FORWARD arm's position; the back arm is its mirror through the fit point.
         let index = spline.points.iter().position(|id| *id == fit_point)?;
         let at = self.point_in_plane(fit_point)?;
         let candidate = self.spline_candidate(spline)?;
@@ -4348,7 +4484,7 @@ impl Sketch {
             .find(|spline| spline.id == id)
             .map(|spline| {
                 let mut points = spline.points.clone();
-                points.extend(spline.tangents.values().copied());
+                points.extend(spline.tangents.values().flat_map(|handle| handle.arms()));
                 points
             });
         boxed_retain(&mut self.splines, |spline| spline.id != id);
@@ -4406,10 +4542,13 @@ impl Sketch {
         self.splines
             .iter()
             .flat_map(|spline| {
+                // The forward arm only. The back arm is a mirror, and `sync_tangent_arms` puts it
+                // back on the mirror after this pass runs — carrying it here as well would be two
+                // answers for one position.
                 spline
                     .tangents
                     .iter()
-                    .map(|(fit, handle)| (*fit, *handle))
+                    .map(|(fit, handle)| (*fit, handle.forward))
                     .collect::<Vec<_>>()
             })
             .chain(self.ellipses.iter().flat_map(|ellipse| {
@@ -4510,6 +4649,7 @@ impl Sketch {
                 None => self.conics[index].shoulder = self.add_construction_point(at),
             }
         }
+        self.sync_tangent_arms();
     }
 
     /// Drop every construction point nothing references any more — the center of an arc that
@@ -4547,7 +4687,7 @@ impl Sketch {
         }
         for spline in &*self.splines {
             referenced.extend(spline.points.iter().copied());
-            referenced.extend(spline.tangents.values().copied());
+            referenced.extend(spline.tangents.values().flat_map(|handle| handle.arms()));
         }
         self.points.retain(|point| {
             point.lifetime != PointLifetime::CurveAnchored || referenced.contains(&point.id)

@@ -300,7 +300,32 @@ pub struct SketchEdgeLine {
 pub struct SketchCurveLine {
     pub chords: Vec<Pos2>,
     pub state: gizmos::HandleState,
-    pub construction: bool,
+    pub ink: SketchCurveInk,
+}
+
+/// What a curved mark IS, which is what decides how it draws.
+///
+/// Three answers rather than a `construction` flag, because a tangent lever is neither: it is not
+/// the shape (Real) and it is not reference geometry the shape is built against (Construction),
+/// it is a manipulator that happens to be a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchCurveInk {
+    /// Profile geometry — part of the shape.
+    Real,
+    /// Reference geometry — locates, but is not part of the shape. Dashed, warm.
+    Construction,
+    /// A fit point's tangent lever. Solid teal, and nothing snaps or constrains to it.
+    TangentLever,
+}
+
+/// One sketch point ready to paint.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SketchVertexHandle {
+    pub at: Pos2,
+    pub state: gizmos::HandleState,
+    /// Whether this point is one of a tangent lever's two arms, which draw green rather than in
+    /// the profile's accent.
+    pub tangent_arm: bool,
 }
 
 /// Draw the committed segment lines between their projected endpoints. Idle edges first, then the
@@ -338,7 +363,17 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[SketchCurveLine]) {
         Id::new("sketch_arc_curves"),
     ));
     let draw = |curve: &SketchCurveLine| {
-        gizmos::roled_curve(&painter, &curve.chords, curve.state, curve.construction);
+        match curve.ink {
+            SketchCurveInk::TangentLever => {
+                gizmos::tangent_lever(&painter, &curve.chords, curve.state);
+            }
+            ink => gizmos::roled_curve(
+                &painter,
+                &curve.chords,
+                curve.state,
+                ink == SketchCurveInk::Construction,
+            ),
+        }
         if curve.state == gizmos::HandleState::Marked {
             if let Some(mid) = curve.chords.get(curve.chords.len() / 2) {
                 gizmos::warn_cross(&painter, *mid);
@@ -361,7 +396,7 @@ pub fn sketch_arc_curves(ui: &egui::Ui, curves: &[SketchCurveLine]) {
 /// chrome so a press drags the vertex instead of orbiting.
 pub fn sketch_vertex_handles(
     ui: &egui::Ui,
-    handles: &[(Pos2, gizmos::HandleState)],
+    handles: &[SketchVertexHandle],
     chrome_rects: &mut Vec<Rect>,
 ) {
     let painter = ui.ctx().layer_painter(LayerId::new(
@@ -369,9 +404,13 @@ pub fn sketch_vertex_handles(
         Id::new("sketch_vertex_handles"),
     ));
     let grab = SKETCH_HANDLE_HALF + SKETCH_HANDLE_GRAB_PAD;
-    for (center, state) in handles {
-        gizmos::vertex_handle(&painter, *center, SKETCH_HANDLE_HALF, *state);
-        chrome_rects.push(Rect::from_center_size(*center, Vec2::splat(grab * 2.0)));
+    for handle in handles {
+        if handle.tangent_arm {
+            gizmos::tangent_arm_handle(&painter, handle.at, SKETCH_HANDLE_HALF, handle.state);
+        } else {
+            gizmos::vertex_handle(&painter, handle.at, SKETCH_HANDLE_HALF, handle.state);
+        }
+        chrome_rects.push(Rect::from_center_size(handle.at, Vec2::splat(grab * 2.0)));
     }
 }
 

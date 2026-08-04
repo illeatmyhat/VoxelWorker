@@ -163,11 +163,17 @@ fn closed_fit_spline_is_one_profile_with_only_authored_fit_points() {
     assert_eq!(sketch.splines()[0].id, spline);
     assert_eq!(sketch.splines()[0].kind, SplineKind::FitPoint);
     assert!(sketch.splines()[0].closed);
-    assert_eq!(sketch.points().len(), 3);
-    assert!(sketch
-        .points()
-        .iter()
-        .all(|point| point.lifetime == PointLifetime::Freestanding));
+    // Three authored fit points, plus the two-armed lever each one is born with.
+    assert_eq!(sketch.points().len(), 9);
+    let fit_points = sketch.splines()[0].points.clone();
+    assert!(sketch.points().iter().all(|point| {
+        let lifetime = if fit_points.contains(&point.id) {
+            PointLifetime::Freestanding
+        } else {
+            PointLifetime::CurveAnchored
+        };
+        point.lifetime == lifetime
+    }));
     assert_eq!(sketch.faces(ctx(16)).len(), 1);
 
     let restored: Sketch =
@@ -299,8 +305,9 @@ fn deleting_a_fit_point_simplifies_the_spline_and_a_closed_one_opens_no_lower_th
     assert!(sketch.splines().is_empty());
 }
 
-/// A handle is minted where the curve ALREADY bends, so taking a tangent over changes nothing
-/// until the author drags it. Dragging it then bends the curve toward the handle.
+/// Every fit point is born with a handle, and each is minted where the curve ALREADY bends — so a
+/// spline with its full set of levers draws exactly the curve it would have drawn with none.
+/// Dragging one then bends the curve toward it.
 #[test]
 fn a_tangent_handle_starts_on_the_natural_tangent_and_steers_once_moved() {
     let mut sketch = Sketch::empty(PlaneAxis::Z);
@@ -319,24 +326,28 @@ fn a_tangent_handle_starts_on_the_natural_tangent_and_steers_once_moved() {
         let held = sketch.splines()[0].clone();
         sketch.spline_candidate(&held).expect("the spline draws")
     };
-    let before = drawn(&sketch);
-
-    let handle = sketch
-        .add_tangent_handle(fit_points[0])
-        .expect("a fit point takes a handle");
-    // Not bit-exact: the handle's position round-trips through a point's sub-voxel storage, so
-    // "changes nothing" is a claim about the curve, not about the last bit of the control points.
-    let after = drawn(&sketch);
-    for (was, now) in before.pieces.iter().zip(&after.pieces) {
+    // What the same points draw with NO tangent authored anywhere — the curve the levers have to
+    // leave alone. Not bit-exact: a handle's position round-trips through a point's sub-voxel
+    // storage, so "changes nothing" is a claim about the curve, not about the last bit of it.
+    let bare = ::parametric::sketch::fit_point_spline(
+        &[[0.0, 0.0], [4.0, 4.0], [8.0, 0.0]],
+        &[None, None, None],
+        false,
+    )
+    .expect("the natural interpolant draws");
+    let born = drawn(&sketch);
+    for (was, now) in bare.pieces.iter().zip(&born.pieces) {
         for (was, now) in was.control.iter().zip(&now.control) {
             assert!(
                 (was[0] - now[0]).abs() < 1.0e-6 && (was[1] - now[1]).abs() < 1.0e-6,
-                "the natural tangent is what the handle was minted holding: {was:?} vs {now:?}"
+                "the natural tangent is what the levers were minted holding: {was:?} vs {now:?}"
             );
         }
     }
-    // Asking twice hands back the same handle rather than stacking a second one.
-    assert_eq!(sketch.add_tangent_handle(fit_points[0]), Some(handle));
+    let handle = sketch
+        .tangent_handle_of(fit_points[0])
+        .expect("every fit point is born with a lever")
+        .forward;
     assert_eq!(
         sketch
             .points()
@@ -357,10 +368,107 @@ fn a_tangent_handle_starts_on_the_natural_tangent_and_steers_once_moved() {
         "the curve should leave upward, not along the chord: {leaving:?}"
     );
 
-    // Deleting the handle returns that fit point to the natural tangent, and takes nothing else.
+    // A lever is not the author's to remove: the delete cascade declines it outright, rather than
+    // dropping the fit point back to its natural tangent.
+    let steered = sketch.point_in_plane(handle).expect("the handle stands");
     sketch.delete_point_cascade(handle);
-    assert!(sketch.splines()[0].tangents.is_empty());
+    assert_eq!(sketch.splines()[0].tangents.len(), fit_points.len());
     assert_eq!(sketch.splines()[0].points, fit_points);
+    assert_eq!(
+        sketch.point_in_plane(handle),
+        Some(steered),
+        "the handle did not even move"
+    );
+}
+
+/// The lever is double-sided and symmetric: its midpoint IS the fit point, and its two arms are
+/// the same length. That holds when it is minted and it holds after a drag, because only the
+/// forward arm is authored — the back one is put back on the mirror after every edit.
+#[test]
+fn a_tangent_lever_is_symmetric_about_the_fit_point_it_steers() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let fit = sketch.splines()[0].points[1];
+    let lever = sketch.tangent_handle_of(fit).expect("a lever");
+    let mirrored = |sketch: &Sketch| {
+        let anchor = sketch.point_in_plane(fit).expect("the fit point stands");
+        let forward = sketch
+            .point_in_plane(lever.forward)
+            .expect("the forward arm stands");
+        let backward = sketch
+            .point_in_plane(lever.backward)
+            .expect("the back arm stands");
+        let want = [2.0 * anchor[0] - forward[0], 2.0 * anchor[1] - forward[1]];
+        assert!(
+            (backward[0] - want[0]).abs() < 1.0e-6 && (backward[1] - want[1]).abs() < 1.0e-6,
+            "the back arm is off the mirror: {backward:?} should be {want:?}"
+        );
+    };
+    mirrored(&sketch);
+
+    assert!(sketch
+        .move_point(lever.forward, SketchPoint::new(5, 7), ctx(16))
+        .expect("the handle drag is answered"));
+    mirrored(&sketch);
+}
+
+/// Grabbing the BACK arm steers the FORWARD one. The two ends name one quantity, so a drag on
+/// either has to land the same lever — and the arm the author grabbed has to end up under their
+/// cursor, not at the mirror of it.
+#[test]
+fn dragging_the_back_arm_of_a_lever_steers_the_front_one() {
+    let mut sketch = Sketch::empty(PlaneAxis::Z);
+    sketch
+        .add_fit_point_spline(
+            &[
+                SketchPoint::new(0, 0),
+                SketchPoint::new(4, 4),
+                SketchPoint::new(8, 0),
+            ],
+            false,
+        )
+        .expect("a valid open fit spline");
+    let fit = sketch.splines()[0].points[1];
+    let lever = sketch.tangent_handle_of(fit).expect("a lever");
+    let anchor = sketch.point_in_plane(fit).expect("the fit point stands");
+
+    let grabbed_to = [anchor[0] - 3.0, anchor[1] - 1.0];
+    assert!(sketch
+        .move_point(
+            lever.backward,
+            SketchPoint::from_continuous(grabbed_to[0], grabbed_to[1]),
+            ctx(16)
+        )
+        .expect("the back-arm drag is answered"));
+
+    let backward = sketch
+        .point_in_plane(lever.backward)
+        .expect("the back arm stands");
+    assert!(
+        (backward[0] - grabbed_to[0]).abs() < 1.0e-6
+            && (backward[1] - grabbed_to[1]).abs() < 1.0e-6,
+        "the arm the author grabbed did not follow the cursor: {backward:?}"
+    );
+    let forward = sketch
+        .point_in_plane(lever.forward)
+        .expect("the forward arm stands");
+    let want = [
+        2.0 * anchor[0] - grabbed_to[0],
+        2.0 * anchor[1] - grabbed_to[1],
+    ];
+    assert!(
+        (forward[0] - want[0]).abs() < 1.0e-6 && (forward[1] - want[1]).abs() < 1.0e-6,
+        "the front arm should have taken the mirror of the grab: {forward:?} vs {want:?}"
+    );
 }
 
 /// A handle belongs to the curve it bends, so it goes when the curve does — and a fit point that
@@ -381,24 +489,31 @@ fn tangent_handles_go_when_their_fit_point_or_their_spline_does() {
         .expect("a valid open fit spline");
     let fit_points = sketch.splines()[0].points.clone();
     let first = sketch
-        .add_tangent_handle(fit_points[1])
-        .expect("a handle on the second fit point");
+        .tangent_handle_of(fit_points[1])
+        .expect("a lever on the second fit point");
     let second = sketch
-        .add_tangent_handle(fit_points[2])
-        .expect("a handle on the third fit point");
-    assert_eq!(sketch.points().len(), 6);
+        .tangent_handle_of(fit_points[2])
+        .expect("a lever on the third fit point");
+    // Four fit points, each with a two-armed lever.
+    assert_eq!(sketch.points().len(), 12);
 
     sketch.delete_point_cascade(fit_points[1]);
     assert!(
-        sketch.points().iter().all(|point| point.id != first),
-        "the deleted fit point's handle has no fit point left to steer"
+        first
+            .arms()
+            .iter()
+            .all(|arm| sketch.points().iter().all(|point| point.id != *arm)),
+        "the deleted fit point's lever has no fit point left to steer"
     );
-    assert_eq!(sketch.splines()[0].tangents.len(), 1);
+    assert_eq!(sketch.splines()[0].tangents.len(), 3);
 
     sketch.delete_spline(sketch.splines()[0].id);
     assert!(
-        sketch.points().iter().all(|point| point.id != second),
-        "the spline took its remaining handle with it"
+        second
+            .arms()
+            .iter()
+            .all(|arm| sketch.points().iter().all(|point| point.id != *arm)),
+        "the spline took its remaining levers with it"
     );
 }
 
@@ -420,7 +535,7 @@ fn a_solve_that_moves_a_fit_point_carries_its_tangent_handle() {
         )
         .expect("a valid open fit spline");
     let fit = sketch.splines()[0].points[0];
-    let handle = sketch.add_tangent_handle(fit).expect("a handle");
+    let handle = sketch.tangent_handle_of(fit).expect("a lever").forward;
     let tangent = |sketch: &Sketch| {
         let at = sketch.point_in_plane(fit).expect("the fit point stands");
         let held = sketch.point_in_plane(handle).expect("the handle stands");
@@ -471,7 +586,7 @@ fn a_pinned_tangent_handle_stays_pinned_when_its_fit_point_moves() {
         )
         .expect("a valid open fit spline");
     let fit = sketch.splines()[0].points[0];
-    let handle = sketch.add_tangent_handle(fit).expect("a handle");
+    let handle = sketch.tangent_handle_of(fit).expect("a lever").forward;
 
     // Pin the handle to a point of its own, so a relation names it directly.
     let stands = sketch.point_in_plane(handle).expect("the handle stands");
@@ -595,7 +710,7 @@ fn dragging_a_splines_body_carries_every_point_by_the_same_step() {
     // A handle travels with the spline: a translation that left it behind would re-aim the
     // tangent by exactly the distance the curve moved.
     let steered = sketch.splines()[0].points[0];
-    let handle = sketch.add_tangent_handle(steered).expect("a handle");
+    let handle = sketch.tangent_handle_of(steered).expect("a lever").forward;
     let reach = |sketch: &Sketch| {
         let at = sketch
             .point_in_plane(steered)
@@ -685,10 +800,11 @@ fn spline_points_retarget_and_invalid_loaded_splines_repair_atomically() {
         )
         .expect("valid open fit spline");
     sketch.retarget_density(16, 32);
-    let positions: Vec<_> = sketch
-        .points()
+    // The FIT points; the levers' arms rescale alongside them and are read by their own test.
+    let positions: Vec<_> = sketch.splines()[0]
+        .points
         .iter()
-        .map(|point| point.at.in_plane())
+        .filter_map(|id| sketch.point_in_plane(*id))
         .collect();
     assert_eq!(positions, vec![[2.0, 4.0], [8.0, 12.0], [16.0, 4.0]]);
 

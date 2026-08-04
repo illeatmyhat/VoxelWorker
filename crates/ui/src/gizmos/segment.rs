@@ -100,6 +100,28 @@ pub fn roled_curve(painter: &Painter, chords: &[Pos2], state: HandleState, const
     }
 }
 
+/// A tangent handle's lever: the solid teal line running through a fit point out to both of its
+/// arms.
+///
+/// Its own ink, and not construction's, because it is not reference geometry: nothing snaps to a
+/// lever, nothing constrains one, and no region counts one as a boundary. Drawing it dashed-warm
+/// would promise all three. Solid, so it reads as a live manipulator — which is exactly what it
+/// is, the only one in the sketch that is always on screen.
+pub fn tangent_lever(painter: &Painter, chords: &[Pos2], state: HandleState) {
+    if chords.len() < 2 {
+        return;
+    }
+    let width = match state {
+        HandleState::Hover => STROKE_SEGMENT_HOVER,
+        HandleState::Selected => STROKE_SEGMENT_SELECTED,
+        HandleState::Idle | HandleState::Snapped | HandleState::Marked => STROKE_SEGMENT,
+    };
+    painter.add(egui::Shape::line(
+        chords.to_vec(),
+        Stroke::new(width, color_palette::SKETCH_TANGENT_LEG),
+    ));
+}
+
 /// A profile segment **armed for deletion** — the Delete tool is hovering this edge (and no
 /// vertex, which would take priority). The whole line goes warn-red with a warn `✕` at its
 /// midpoint: the line analog of the vertex handle's [`Marked`](super::HandleState::Marked)

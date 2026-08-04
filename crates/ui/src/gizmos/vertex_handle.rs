@@ -29,6 +29,28 @@ pub enum HandleState {
 /// `center`: dark fill + accent border idle, bright fill on hover, accent fill when selected,
 /// and the snap tick-cross around it when snapped. Distinct from the 3D position axis-handles
 /// (those move a whole node; this moves one profile vertex).
+/// The grabbable end of a tangent handle's lever.
+///
+/// Green, where the lever is teal: the thing you can take hold of has to be separable at a glance
+/// from the line it rides, and every other split this chrome draws (fill versus stroke, hollow
+/// versus filled) is already spent saying idle / hover / selected. Filled in every state, because
+/// an arm is never "unselected" in the way a profile point is — it is furniture, and it is always
+/// live.
+pub fn tangent_arm_handle(painter: &Painter, center: Pos2, half: f32, state: HandleState) {
+    let ink = match state {
+        HandleState::Hover | HandleState::Snapped => HANDLE_HOVER,
+        _ => color_palette::SKETCH_TANGENT_POINT,
+    };
+    let rect = Rect::from_center_size(center, Vec2::splat(half * 2.0));
+    painter.rect_filled(rect, 0.0, ink);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(STROKE_HANDLE, ink),
+        StrokeKind::Inside,
+    );
+}
+
 pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleState) {
     let (fill, border) = match state {
         HandleState::Idle => (HANDLE_FILL, HANDLE_ACCENT),

@@ -175,7 +175,6 @@ impl WindowedState {
         let orbit_center_marker = self.orbit_center_marker(pixels_per_point);
         let orbit_reticle = self.orbit_reticle_visible();
         let sketch_face_at_menu = self.sketch_menu_face_is_picked();
-        let tangent_handle_offered = self.sketch_selection_takes_a_tangent_handle();
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -218,7 +217,6 @@ impl WindowedState {
                 sketch_face_at_menu,
                 // Whether the selection holds a fit point with no tangent handle yet — the one
                 // question that decides whether the menu offers to mint one.
-                tangent_handle_offered,
                 // The add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
                 // #99: the drawing tools' dashed preview, projected last frame.
@@ -429,9 +427,6 @@ impl WindowedState {
         }
         if prepared.panel_response.toggle_sketch_construction {
             self.toggle_sketch_selection_construction();
-        }
-        if prepared.panel_response.add_tangent_handle {
-            self.add_sketch_tangent_handles();
         }
         // The context menu's orbit-center rows. Not an `Intent` and not undoable — the camera
         // is not the document (this is view state).
@@ -1273,21 +1268,59 @@ impl WindowedState {
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
             return Vec::new();
         };
-        // Both kinds of construction run a spline draws: the control frame, and every tangent
-        // handle's virtual line. They are one list because they draw and hit-test identically —
-        // point runs in construction ink that answer for the spline they belong to.
         producer
             .sketch
             .control_polygons()
             .into_iter()
-            .chain(
-                producer
-                    .sketch
-                    .tangent_handle_legs()
-                    .into_iter()
-                    .map(|(spline, leg)| (spline, leg.to_vec())),
-            )
             .map(|(spline, controls)| (document::sketch::SketchCurve::Spline(spline), controls))
+            .collect()
+    }
+
+    /// Every fit point's tangent lever as ids: the spline it steers, and the run back-arm → fit
+    /// point → forward-arm. Ids only, for the same reason
+    /// [`control_polygons`](Self::control_polygons) is.
+    fn tangent_levers(
+        &self,
+        target: document::scene::NodeId,
+    ) -> Vec<(
+        document::sketch::SketchCurve,
+        Vec<document::sketch::EntityId>,
+    )> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return Vec::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return Vec::new();
+        };
+        producer
+            .sketch
+            .tangent_handle_legs()
+            .into_iter()
+            .map(|(spline, lever)| {
+                (
+                    document::sketch::SketchCurve::Spline(spline),
+                    lever.to_vec(),
+                )
+            })
+            .collect()
+    }
+
+    /// Every point that is one end of a tangent lever, for the frame that has to paint them green.
+    fn tangent_arm_points(
+        &self,
+        target: document::scene::NodeId,
+    ) -> std::collections::BTreeSet<document::sketch::EntityId> {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return std::collections::BTreeSet::new();
+        };
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return std::collections::BTreeSet::new();
+        };
+        producer
+            .sketch
+            .splines()
+            .iter()
+            .flat_map(|spline| spline.tangents.values().flat_map(|handle| handle.arms()))
             .collect()
     }
 
@@ -1529,6 +1562,7 @@ impl WindowedState {
             .sketch_higher_curve_chords
             .iter()
             .chain(&self.sketch_spline_polygons)
+            .chain(&self.sketch_tangent_levers)
         {
             let Some(distance) = chords
                 .array_windows::<2>()
@@ -3275,9 +3309,6 @@ impl WindowedState {
                 // #100: the carve / fill verb needs the region the RIGHT-PRESS resolved, so a
                 // keyboard binding has nothing to act on until the menu has been raised.
                 ui::shortcuts::ShortcutCommand::ToggleSketchFace => self.toggle_sketch_menu_face(),
-                ui::shortcuts::ShortcutCommand::AddTangentHandle => {
-                    self.add_sketch_tangent_handles();
-                }
                 ui::shortcuts::ShortcutCommand::ToggleSketchConstruction => {
                     self.toggle_sketch_selection_construction();
                 }
@@ -3577,38 +3608,6 @@ impl WindowedState {
     /// Flip the selected sketch geometry between real and construction as one undoable edit.
     /// Constraints are selection entities too but are intentionally excluded; structural arc and
     /// circle centers are filtered again by the document invariant.
-    /// Whether the sketch selection holds a fit point that could take a tangent handle.
-    fn sketch_selection_takes_a_tangent_handle(&self) -> bool {
-        let Some(target) = self.panel_state.sketch_mode else {
-            return false;
-        };
-        let Some(node) = self.panel_state.scene.node_by_id(target) else {
-            return false;
-        };
-        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
-            return false;
-        };
-        self.panel_state
-            .selection
-            .sketch_points(target)
-            .any(|point| producer.sketch.takes_a_tangent_handle(point))
-    }
-
-    /// Mint a tangent handle on every selected fit point that has none.
-    pub(super) fn add_sketch_tangent_handles(&mut self) {
-        let Some(target) = self.panel_state.sketch_mode else {
-            return;
-        };
-        let Some((producer, _)) = self.sketch_node_state(target) else {
-            return;
-        };
-        let points: Vec<_> = self.panel_state.selection.sketch_points(target).collect();
-        let Some(next) = producer.with_tangent_handles(points) else {
-            return;
-        };
-        self.commit_sketch_profile_edit(target, next);
-    }
-
     pub(super) fn toggle_sketch_selection_construction(&mut self) {
         let Some(target) = self.panel_state.sketch_mode else {
             return;
@@ -4270,6 +4269,7 @@ impl WindowedState {
         self.sketch_circle_chords.clear();
         self.sketch_higher_curve_chords.clear();
         self.sketch_spline_polygons.clear();
+        self.sketch_tangent_levers.clear();
         self.sketch_face_polygons.clear();
         self.sketch_constraint_badges.clear();
         self.sketch_insert_preview = None;
@@ -4426,6 +4426,7 @@ impl WindowedState {
             self.sketch_circle_target = None;
         }
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
+        let tangent_arms = self.tangent_arm_points(target);
         let dragging_point = self.sketch_drag.as_ref().and_then(|drag| drag.held.point());
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
         let hover_radius_px = (ui::chrome::SKETCH_HANDLE_HALF + ui::chrome::SKETCH_HANDLE_GRAB_PAD)
@@ -4471,7 +4472,12 @@ impl WindowedState {
             };
 
             let center_pt = egui::Pos2::new(px / pixels_per_point, py / pixels_per_point);
-            self.sketch_overlay_points.push((center_pt, state));
+            self.sketch_overlay_points
+                .push(ui::chrome::SketchVertexHandle {
+                    at: center_pt,
+                    state,
+                    tangent_arm: point_id.is_some_and(|id| tangent_arms.contains(&id)),
+                });
             self.sketch_vertex_px.push(Some(center_px));
         }
 
@@ -4571,6 +4577,20 @@ impl WindowedState {
                 .collect();
             if let Some(legs) = legs {
                 self.sketch_spline_polygons.push((spline, legs));
+            }
+        }
+        // The tangent levers, through the same vertex cache and for the same reason: a lever must
+        // meet its two green arms exactly, not by two projections agreeing.
+        for (spline, lever) in self.tangent_levers(target) {
+            let run: Option<Vec<egui::Pos2>> = lever
+                .iter()
+                .map(|id| {
+                    let index = self.sketch_point_ids.iter().position(|held| held == id)?;
+                    *self.sketch_vertex_px.get(index)?
+                })
+                .collect();
+            if let Some(run) = run {
+                self.sketch_tangent_levers.push((spline, run));
             }
         }
 
@@ -4770,7 +4790,7 @@ impl WindowedState {
             self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
                 chords,
                 state,
-                construction: construction_arcs.contains(arc_id),
+                ink: curve_ink(construction_arcs.contains(arc_id)),
             });
         }
         for (circle_id, ring) in &self.sketch_circle_chords {
@@ -4791,7 +4811,7 @@ impl WindowedState {
             self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
                 chords,
                 state,
-                construction: construction_circles.contains(circle_id),
+                ink: curve_ink(construction_circles.contains(circle_id)),
             });
         }
         // Every span of an aggregate reads the SAME state, resolved from the aggregate identity —
@@ -4815,7 +4835,7 @@ impl WindowedState {
             self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
                 chords,
                 state,
-                construction: construction_higher.contains(entity),
+                ink: curve_ink(construction_higher.contains(entity)),
             });
         }
 
@@ -4839,7 +4859,32 @@ impl WindowedState {
             self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
                 chords,
                 state,
-                construction: true,
+                ink: ui::chrome::SketchCurveInk::Construction,
+            });
+        }
+
+        // The tangent levers, in their own teal ink and under their spline's state. Last of the
+        // curve pushes, so a lever draws OVER the curve it steers rather than under it: the
+        // handle is what the author is reaching for, and it is the thinner mark of the two.
+        for (spline, run) in &self.sketch_tangent_levers {
+            let picked = ui::panel::SelectionTarget::SketchHigherCurve {
+                sketch: target,
+                curve: *spline,
+            };
+            let selected = self.panel_state.selection.contains(picked);
+            let state = match hovered_edge {
+                _ if selected => ui::gizmos::HandleState::Selected,
+                Some((SketchEdgeHit::HigherCurve(curve), state)) if curve == *spline => state,
+                _ => ui::gizmos::HandleState::Idle,
+            };
+            let chords = run
+                .iter()
+                .map(|px| egui::Pos2::new(px.x / pixels_per_point, px.y / pixels_per_point))
+                .collect();
+            self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
+                chords,
+                state,
+                ink: ui::chrome::SketchCurveInk::TangentLever,
             });
         }
 
@@ -4866,7 +4911,7 @@ impl WindowedState {
                     self.sketch_arc_lines.push(ui::chrome::SketchCurveLine {
                         chords: projected,
                         state: ui::gizmos::HandleState::Idle,
-                        construction: construction(derived.role),
+                        ink: curve_ink(construction(derived.role)),
                     });
                 }
             }
@@ -6783,6 +6828,18 @@ fn point_in_screen_polygon(boundary: &[egui::Pos2], point: egui::Pos2) -> bool {
         }
     }
     inside
+}
+
+/// A curved mark's ink from the one bit the caches carry: whether it is construction.
+///
+/// The third answer, [`TangentLever`](ui::chrome::SketchCurveInk::TangentLever), is never reached
+/// through here — a lever is not an entity with a role, so it names its ink at its own push site.
+fn curve_ink(construction: bool) -> ui::chrome::SketchCurveInk {
+    if construction {
+        ui::chrome::SketchCurveInk::Construction
+    } else {
+        ui::chrome::SketchCurveInk::Real
+    }
 }
 
 #[cfg(test)]

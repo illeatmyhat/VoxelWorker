@@ -379,7 +379,7 @@ struct WindowedState {
     /// The sketch profile's vertex handles, projected to egui points with
     /// their interaction state, refreshed at the END of each frame and drawn on the NEXT
     /// (a one-frame lag, imperceptible for handle chrome). Empty outside sketch mode.
-    sketch_overlay_points: Vec<(egui::Pos2, ui::gizmos::HandleState)>,
+    sketch_overlay_points: Vec<ui::chrome::SketchVertexHandle>,
     /// Every profile vertex's center in PHYSICAL pixels, **in profile order** — `None` where
     /// projection culled a behind-camera vertex. The press hit-tests (in `events`, outside
     /// `render`) read these: a vertex grab / delete finds the nearest `Some`, and add-point
@@ -429,6 +429,11 @@ struct WindowedState {
     /// [`sketch_higher_curve_chords`](Self::sketch_higher_curve_chords) because a leg draws in
     /// construction ink while the curve it carries does not; both hit-test to the same spline.
     sketch_spline_polygons: Vec<(document::sketch::SketchCurve, Vec<egui::Pos2>)>,
+    /// Every fit point's tangent lever this frame, in PHYSICAL px: the spline it steers, and the
+    /// run back-arm → fit point → forward-arm. Its own cache rather than a row in
+    /// [`sketch_spline_polygons`](Self::sketch_spline_polygons) because it draws in its own ink —
+    /// a lever is a manipulator, not the construction geometry a control frame is.
+    sketch_tangent_levers: Vec<(document::sketch::SketchCurve, Vec<egui::Pos2>)>,
     /// Each derived region as `(its key, its boundary polygon in PHYSICAL px)` for this frame
     /// (#100) — what the right-press hit-test resolves a cursor against. A face with any
     /// behind-camera boundary vertex is culled whole, as an arc is.
@@ -946,6 +951,7 @@ impl WindowedState {
             sketch_circle_chords: Vec::new(),
             sketch_higher_curve_chords: Vec::new(),
             sketch_spline_polygons: Vec::new(),
+            sketch_tangent_levers: Vec::new(),
             sketch_face_polygons: Vec::new(),
             sketch_menu_face: None,
             sketch_insert_preview: None,
@@ -1119,6 +1125,7 @@ impl WindowedState {
             sketch_circle_chords: _,
             sketch_higher_curve_chords: _,
             sketch_spline_polygons: _,
+            sketch_tangent_levers: _,
             sketch_face_polygons: _,
             sketch_menu_face: _,
             sketch_insert_preview: _,

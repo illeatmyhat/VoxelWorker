@@ -359,7 +359,9 @@ impl Sketch {
                     closure.points.extend(spline.points.iter().copied());
                     // A tangent handle carries the curve's shape as surely as a fit point does, so
                     // a copy that left it behind would come out a different curve.
-                    closure.points.extend(spline.tangents.values().copied());
+                    closure
+                        .points
+                        .extend(spline.tangents.values().flat_map(|handle| handle.arms()));
                 }
             }
         }
@@ -580,7 +582,15 @@ impl Sketch {
                     tangents: source
                         .tangents
                         .iter()
-                        .map(|(fit, handle)| Ok((mapped(points, *fit)?, mapped(points, *handle)?)))
+                        .map(|(fit, handle)| {
+                            Ok((
+                                mapped(points, *fit)?,
+                                crate::sketch::TangentHandle {
+                                    forward: mapped(points, handle.forward)?,
+                                    backward: mapped(points, handle.backward)?,
+                                },
+                            ))
+                        })
                         .collect::<Result<_, SketchTransformRefusal>>()?,
                 },
             );

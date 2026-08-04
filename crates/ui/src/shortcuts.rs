@@ -167,15 +167,13 @@ pub enum ShortcutCommand {
     ToggleSketchFace,
     /// Toggle selected sketch geometry between real and construction.
     ToggleSketchConstruction,
-    /// Give the selected fit point a tangent handle to steer its spline by.
-    AddTangentHandle,
     /// Dump the live scene + camera to the repro file.
     ExportRepro,
 }
 
 impl ShortcutCommand {
     /// Every command, in settings-list order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::AcceptCommand,
         Self::CancelCommand,
         Self::DeleteSelection,
@@ -186,7 +184,6 @@ impl ShortcutCommand {
         Self::EnterConstrainedOrbit,
         Self::ToggleSketchFace,
         Self::ToggleSketchConstruction,
-        Self::AddTangentHandle,
         Self::ExportRepro,
     ];
 
@@ -203,7 +200,6 @@ impl ShortcutCommand {
             Self::EnterConstrainedOrbit => "Constrained orbit",
             Self::ToggleSketchFace => "Carve / fill sketch region",
             Self::ToggleSketchConstruction => "Toggle sketch construction",
-            Self::AddTangentHandle => "Add tangent handle",
             Self::ExportRepro => "Dump repro",
         }
     }
@@ -247,8 +243,7 @@ impl ShortcutCommand {
             Self::PlaceOrbitCenter
             | Self::ResetOrbitCenter
             | Self::EnterConstrainedOrbit
-            | Self::ToggleSketchFace
-            | Self::AddTangentHandle => None,
+            | Self::ToggleSketchFace => None,
 
             // Fusion's construction toggle is a bare X. It is mode-scoped by the command handler:
             // outside an edited sketch (or without toggleable selection) it is a no-op.
